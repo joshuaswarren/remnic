@@ -435,15 +435,8 @@ export async function persistExplicitCapture(
     expiresAt: candidate.expiresAt,
     source: source === "inline" ? "explicit-inline" : "explicit",
   });
-  // Record the catalog write touch (issue #1499, round 5 codex P2). Explicit
-  // captures bypass the extraction write path, so without this their namespace
-  // never updates `lastWriteAt`. An undefined namespace means the DEFAULT root
-  // (round 6, codex P2), which recordCatalogWrite resolves. The method is an
-  // optional best-effort hook — guard so Orchestrator-like callers without it
-  // don't break (rule #33). Best-effort and failure-tolerant.
-  if (typeof orchestrator.recordCatalogWrite === "function") {
-    orchestrator.recordCatalogWrite(resolvedNamespace, storage.dir);
-  }
+  // #1522: catalog touch handled at the storage chokepoint — the StorageManager's
+  // post-write hook records the namespace touch automatically.
 
   const created = new Date().toISOString();
   const event: MemoryLifecycleEvent = {
@@ -559,9 +552,7 @@ export async function queueExplicitCaptureForReview(
     // `writeMemory` returns an id. If the later pending-review frontmatter update
     // fails, the memory file is still durable and must not disappear from
     // writtenSince/maintenance scheduling. Guarded optional hook (rule #33).
-    if (typeof orchestrator.recordCatalogWrite === "function") {
-      orchestrator.recordCatalogWrite(queueNamespace, storage.dir);
-    }
+    // #1522: catalog touch handled at the storage chokepoint.
   }
   const event: MemoryLifecycleEvent = {
     eventId: `mle-${randomUUID()}`,

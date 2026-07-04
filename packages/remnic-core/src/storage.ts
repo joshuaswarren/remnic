@@ -2238,24 +2238,12 @@ export class StorageManager {
 
   // Cache for readAllColdMemories() — keyed by cold root directory path.
   // Prevents an uncached full-tree directory scan on every structured-attribute
-  // write (Finding UOGi, PR #402 round-6).  The cache is only invalidated when
-  // cold-tier content actually changes (via invalidateColdMemoriesCache), NOT
-  // on every hot-tier write.  It also expires after COLD_SCAN_CACHE_TTL_MS as
-  // a safety net.
-  //
-  // Finding UvUy (PR #402 round-11): cache entries now carry a `coldVersion`
-  // sentinel that is bumped (via a file-size counter in state/cold-write.log)
-  // on every write that modifies cold-tier content.  Before serving a cached
-  // result, readAllColdMemories() reads the sentinel from disk and compares.
-  // If they differ the entry is dropped and the cold tree is re-scanned.  This
-  // makes the cache correct across process boundaries (gateway + CLI): a second
-  // process that writes a new cold memory bumps the sentinel on disk, so the
-  // first process's next readAllColdMemories() sees the change within one call
-  // (rather than waiting up to 30s for TTL expiry).
-  //
-  // After Finding UTsP broadened readAllColdMemories to scan the entire cold/
-  // subtree (not just facts/+corrections/), amortizing this I/O across
-  // back-to-back writes in the same burst is even more important.
+  // write (Finding UOGi, PR #402 round-6). Invalidated when cold-tier content
+  // changes (via invalidateColdMemoriesCache) and expires after COLD_SCAN_CACHE_TTL_MS.
+  // Entries carry a `coldVersion` sentinel (Finding UvUy, PR #402 round-11) bumped
+  // on every cold-tier write, making the cache correct across process boundaries
+  // (gateway + CLI). After Finding UTsP broadened the scan to the entire cold/
+  // subtree, amortizing across back-to-back writes is even more important.
   private static readonly COLD_SCAN_CACHE_TTL_MS = 30_000; // 30 seconds
   private static readonly coldMemoriesCache = new Map<string, { memories: MemoryFile[]; loadedAt: number; coldVersion: number }>();
 
@@ -2289,6 +2277,11 @@ export class StorageManager {
   private offlineSyncDigestCacheWriteTimer: ReturnType<typeof setTimeout> | null = null;
   /** Optional: set by the orchestrator after construction to enable template-aware citation stripping during legacy hash rebuild. */
   citationTemplate: string = DEFAULT_CITATION_FORMAT;
+  /** Post-write catalog hook (#1522). Installed by the namespace router; fire-and-forget. */
+  onCatalogWrite?: () => void;
+  private notifyCatalogWrite(): void {
+    try { this.onCatalogWrite?.(); } catch { /* gotcha #13 */ }
+  }
 
   /** Page-versioning configuration.  Set by the orchestrator after construction. */
   private _versioningConfig: VersioningConfig | null = null;
@@ -2576,7 +2569,7 @@ export class StorageManager {
   ): Promise<void> {
     const targetPath = this.wearableTranscriptPath(sourceId, date);
     // writeMaybeEncryptedFile handles mkdir + atomic temp→rename.
-    await writeMaybeEncryptedFile(targetPath, serialized, this.resolveWriteKey(), {}, this.baseDir);
+    await this.writeStorageSecureFile(targetPath, serialized);
   }
 
   /** Read a stored day transcript; null when the day has no file. */
@@ -2747,8 +2740,13 @@ export class StorageManager {
   private readStorageSecureFile(filePath: string): Promise<string> {
     return readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
   }
-  private writeStorageSecureFile(filePath: string, content: string): Promise<void> {
-    return writeMaybeEncryptedFile(filePath, content, this.resolveWriteKey(), {}, this.baseDir);
+  private writeStorageSecureFile(filePath: string, content: string | Buffer): Promise<void> {
+    return writeMaybeEncryptedFile(filePath, content, this.resolveWriteKey(), {}, this.baseDir)
+      .then(() => this.notifyCatalogWrite());
+  }
+  private writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
+    return writeMaybeEncryptedFileFromChunks(filePath, chunks, this.resolveWriteKey(), {}, this.baseDir)
+      .then(() => this.notifyCatalogWrite());
   }
 
   private assertManagedStoragePath(filePath: string, method: string): string {
@@ -2929,18 +2927,18 @@ export class StorageManager {
 
   async writeOfflineSyncFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFile");
-    await writeMaybeEncryptedFile(target, content, this.resolveWriteKey(), {}, this.baseDir);
+    await this.writeStorageSecureFile(target, content);
     await this.invalidateAfterOfflineSyncMutation(target);
   }
 
   async writeOfflineSyncStagingFile(filePath: string, content: Buffer): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncStagingFile");
-    await writeMaybeEncryptedFile(target, content, this.resolveWriteKey(), {}, this.baseDir);
+    await this.writeStorageSecureFile(target, content);
   }
 
   async writeOfflineSyncFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
     const target = this.assertManagedStoragePath(filePath, "storage.writeOfflineSyncFileChunks");
-    await writeMaybeEncryptedFileFromChunks(target, chunks, this.resolveWriteKey(), {}, this.baseDir);
+    await this.writeStorageSecureFileChunks(target, chunks);
     await this.invalidateAfterOfflineSyncMutation(target);
   }
 
@@ -3005,12 +3003,14 @@ export class StorageManager {
         if (isEncryptedFile(await readFile(filePath))) {
           const existing = await this.readStorageSecureFile(filePath);
           await writeMaybeEncryptedFile(filePath, `${existing}${content}`, null, {}, this.baseDir);
+          this.notifyCatalogWrite();
           return;
         }
       } catch (err) {
         if (!isErrnoCode(err, "ENOENT")) throw err;
       }
       await appendFile(filePath, content, "utf-8");
+      this.notifyCatalogWrite();
       return;
     }
 
@@ -3021,6 +3021,7 @@ export class StorageManager {
       if (!isErrnoCode(err, "ENOENT")) throw err;
     }
     await writeMaybeEncryptedFile(filePath, `${existing}${content}`, writeKey, {}, this.baseDir);
+    this.notifyCatalogWrite();
   }
   private get stateDir(): string {
     return path.join(this.baseDir, "state");
@@ -3465,7 +3466,7 @@ export class StorageManager {
     const filePath = await this.resolveCategoryWritePath(category, id, today);
 
     await this.snapshotBeforeWrite(filePath, "write");
-    await writeMaybeEncryptedFile(filePath, fileContent, this.resolveWriteKey(), {}, this.baseDir);
+    await this.writeStorageSecureFile(filePath, fileContent);
     this.invalidateAllMemoriesCache();
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeMemory", {
       memoryId: id,
@@ -3638,7 +3639,7 @@ export class StorageManager {
       return "";
     }
     const filePath = path.join(dir, `${id}.md`);
-    await writeMaybeEncryptedFile(filePath, `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`, this.resolveWriteKey(), {}, this.baseDir);
+    await this.writeStorageSecureFile(filePath, `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`);
     const actor =
       typeof options.actor === "string" && options.actor.length > 0
         ? options.actor
@@ -3876,7 +3877,7 @@ export class StorageManager {
   async writeProfile(content: string): Promise<void> {
     await this.ensureDirectories();
     await this.snapshotBeforeWrite(this.profilePath, "consolidation");
-    await writeMaybeEncryptedFile(this.profilePath, content, this.resolveWriteKey(), {}, this.baseDir);
+    await this.writeStorageSecureFile(this.profilePath, content);
     log.debug("updated profile.md");
   }
 
@@ -4601,10 +4602,9 @@ export class StorageManager {
 
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {
     const fileContent = `${serializeFrontmatter(memory.frontmatter)}\n\n${memory.content}\n`;
-    // writeMaybeEncryptedFile handles atomic temp→rename internally and
-    // calls mkdir on the parent directory — no need to duplicate here.
     await writeMaybeEncryptedFile(targetPath, fileContent, this.resolveWriteKey(), {}, this.baseDir);
     this.invalidateAllMemoriesCache();
+    this.notifyCatalogWrite();
   }
 
   async moveMemoryToPath(memory: MemoryFile, targetPath: string): Promise<void> {
@@ -4694,7 +4694,7 @@ export class StorageManager {
       const destPath = path.join(destDir, path.basename(memory.path));
 
       // Write to archive location first (encrypted if applicable), then remove original.
-      await writeMaybeEncryptedFile(destPath, fileContent, this.resolveWriteKey(), {}, this.baseDir);
+      await this.writeStorageSecureFile(destPath, fileContent);
       await unlink(memory.path);
       this.invalidateAllMemoriesCache();
       await this.appendGeneratedMemoryLifecycleEventFailOpen(
@@ -4851,7 +4851,7 @@ export class StorageManager {
       log.warn(`updated memory content sanitized for ${id}; violations=${sanitized.violations.join(", ")}`);
     }
     const fileContent = `${serializeFrontmatter(updated)}\n\n${sanitized.text}\n`;
-    await writeMaybeEncryptedFile(memory.path, fileContent, this.resolveWriteKey(), {}, this.baseDir);
+    await this.writeStorageSecureFile(memory.path, fileContent);
     this.invalidateAllMemoriesCache();
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.updateMemory", {
       memoryId: id,
@@ -4886,7 +4886,7 @@ export class StorageManager {
     const afterStatus = updated.status ?? "active";
 
     const fileContent = `${serializeFrontmatter(updated)}\n\n${memory.content}\n`;
-    await writeMaybeEncryptedFile(memory.path, fileContent, this.resolveWriteKey(), {}, this.baseDir);
+    await this.writeStorageSecureFile(memory.path, fileContent);
     this.invalidateAllMemoriesCache();
     // If the target file lives in cold/, bump the cold-version sentinel so
     // other processes detect the change on their next readAllColdMemories()
@@ -5826,7 +5826,7 @@ export class StorageManager {
     const content = `---\n${Object.entries(frontmatter).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join("\n")}\n---\n\n${question}\n\n**Context:** ${context}\n`;
 
     const filePath = path.join(this.questionsDir, `${id}.md`);
-    await writeFile(filePath, content, "utf-8");
+    await this.writeStorageSecureFile(filePath, content);
 
     log.debug(`wrote question ${id} to ${filePath}`);
     this.invalidateQuestionsCache();
@@ -7080,7 +7080,7 @@ export class StorageManager {
     const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${oldMemory.content}\n`;
 
     try {
-      await writeMaybeEncryptedFile(oldMemory.path, fileContent, this.resolveWriteKey(), {}, this.baseDir);
+      await this.writeStorageSecureFile(oldMemory.path, fileContent);
       await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.supersedeMemory", {
         memoryId: oldMemoryId,
         eventType: "superseded",

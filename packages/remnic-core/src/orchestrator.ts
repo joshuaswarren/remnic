@@ -2682,7 +2682,7 @@ export class Orchestrator {
         this.rememberNamespaceStorageDirHint(namespace, storageDir);
         return this.namespaceCatalog.registerResolved(namespace, storageDir);
       },
-    });
+    }, this.namespaceCatalog);
     this.namespaceSearchRouter = new NamespaceSearchRouter(
       config,
       this.storageRouter,
@@ -2691,6 +2691,8 @@ export class Orchestrator {
     // Propagate the inline-attribution template so the storage layer can strip
     // citations from legacy facts during the hash-index rebuild path.
     this.storage.citationTemplate = config.inlineSourceAttributionFormat;
+    // #1522: bind the post-write catalog touch at the storage chokepoint.
+    if (config.defaultNamespace) this.storageRouter.bindCatalogWriteHook(this.storage, config.defaultNamespace);
     // Wire page-level versioning (issue #371)
     this.storage.setVersioningConfig({
       enabled: config.versioningEnabled,
@@ -4479,11 +4481,7 @@ export class Orchestrator {
           // failures where the canonical memory was written but a later archive
           // step throws and the cluster catch continues (codex NY-dK).
           // Best-effort; namespace decoded from the storage dir since this path
-          // has no routed namespace name.
-          this.markCatalogWrite(
-            this.namespaceFromStorageDir(targetStorage.dir),
-            targetStorage.dir,
-          );
+          // #1522: catalog touch handled at the storage chokepoint.
         }
       }
     }
@@ -7992,7 +7990,7 @@ export class Orchestrator {
       recallResultLimit > 0 &&
       !options.abortSignal?.aborted
     ) {
-      for (const ns of recallNamespaces) this.markCatalogRead(ns);
+      for (const ns of recallNamespaces) this.storageRouter.recordRead(ns);
     }
 
     // 0. Shared context (v4.0, optional)
@@ -14200,7 +14198,6 @@ export class Orchestrator {
               );
             }
           }
-          this.markCatalogWrite(target.namespace, targetStorage.dir);
           trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false });
           await this.indexPersistedMemory(targetStorage, promotedId);
           trackBehaviorSignals(
@@ -14391,17 +14388,16 @@ export class Orchestrator {
                   useCallerTimestamp: true,
                 });
                 // Catalog touch (issue #1499 — codex P2 NElSf): this dedup branch
-                // returns WITHOUT reaching the post-write `markCatalogWrite` below,
+                // returns WITHOUT the post-write catalog touch (now at the storage chokepoint #1522),
                 // but `applyTemporalSupersession` mutated the shared namespace
                 // (it rewrote frontmatter to retire stale shared facts). When any
                 // ids were actually superseded, the shared namespace changed, so we
                 // must record the write — otherwise the shared record's
                 // `lastWriteAt` stays stale and `writtenSince` maintenance / QMD
                 // fanout skips the namespace after a supersession-only update.
-                // Best-effort and failure-tolerant (markCatalogWrite swallows
+                // Best-effort and failure-tolerant (the storage chokepoint swallows
                 // errors); only touch when work happened to avoid spurious writes.
                 if (hashDedupSupersession.supersededIds.length > 0) {
-                  this.markCatalogWrite(this.config.sharedNamespace, sharedStorage.dir);
                 }
                 // Active matching fact exists — normal short-circuit is safe.
                 return;
@@ -14505,7 +14501,6 @@ export class Orchestrator {
         // the same promotion pass. The hot-path source-namespace touch uses a
         // different storage dir, so this does not double-count the source.
         // Best-effort and failure-tolerant — it must never crash the promotion.
-        this.markCatalogWrite(this.config.sharedNamespace, sharedStorage.dir);
         trackPersistedId(sharedStorage, promotedId, {
           includeReturnedIds: false,
         });
@@ -15358,7 +15353,6 @@ export class Orchestrator {
             // failure still surfaces the partially durable parent/chunk files to
             // catalog-driven `writtenSince` maintenance. The final touch below
             // still refreshes `lastWriteAt` after later durable writes on success.
-            this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
           }
 
           if (routedRuleId) {
@@ -15502,7 +15496,6 @@ export class Orchestrator {
             // promotion, optional artifact writes, and graph-edge writes — so
             // `lastWriteAt` cannot precede later file changes on successful
             // completion. Use the KNOWN routed name, not a dir-decoded guess.
-            this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
           }
           trackBehaviorSignals(
             targetStorage,
@@ -15732,13 +15725,12 @@ export class Orchestrator {
         // The `finally` preserves the write touch when post-write indexing or
         // promotion fails after the canonical memory is already durable. Use the
         // KNOWN routed name, not a dir-decoded guess (NCQI0).
-        this.markCatalogWrite(targetNamespaceName, targetStorage.dir);
       }
     }
 
     // Tracks whether THIS extraction persisted any durable, non-fact output to the
     // BASE namespace's storage (entity / relationship / profile / question). The
-    // per-fact `markCatalogWrite` only fires inside the fact write loop, so a
+    // per-fact catalog touch (storage chokepoint #1522) only fires inside the fact write loop, so a
     // fact-less extraction that still persists durable data must record exactly one
     // base-namespace catalog touch after all writes complete (NHZEZ, codex P2).
     let durableNonFactWritten = false;
@@ -15748,7 +15740,6 @@ export class Orchestrator {
         baseNamespace && baseNamespace.length > 0
           ? baseNamespace
           : this.namespaceFromStorageDir(storage.dir);
-      this.markCatalogWrite(baseTouchNamespace, storage.dir);
     };
     const recordDurableNonFactWrite = () => {
       durableNonFactWritten = true;
@@ -15863,7 +15854,7 @@ export class Orchestrator {
     }
 
     // Catalog touch for durable NON-FACT outputs (NHZEZ / NIIly, codex P2). The
-    // per-fact `markCatalogWrite` above only fires inside the fact write loop, so
+    // per-fact catalog touch (storage chokepoint #1522) above only fires inside the fact write loop, so
     // an extraction that persists ONLY entities, relationships, profile updates,
     // questions, or an identity reflection (no facts) would record durable data to
     // the BASE namespace's storage without ever touching the catalog — leaving that
@@ -15874,7 +15865,7 @@ export class Orchestrator {
     // KNOWN base namespace name, not a dir-decoded guess (NCQI0). One touch per
     // namespace per extraction — `markWrite` is idempotent, so if the fact path
     // already touched the base namespace this only refreshes `lastWriteAt`.
-    // Best-effort and failure-tolerant (markCatalogWrite swallows errors).
+    // Best-effort and failure-tolerant (storage chokepoint #1522 swallows errors).
     if (durableNonFactWritten) {
       touchBaseNonFactNamespace();
     }
@@ -16612,12 +16603,7 @@ export class Orchestrator {
     // rewrote the store still refreshes `lastWriteAt` (rule #25). The default
     // namespace is always configured/cataloged; `markWrite` is idempotent so this
     // only refreshes recency. Best-effort and failure-tolerant.
-    if (memoryItemMutated) {
-      this.markCatalogWrite(
-        this.namespaceFromStorageDir(this.storage.dir),
-        this.storage.dir,
-      );
-    }
+    // #1522: catalog touch handled at the storage chokepoint.
 
     log.info("consolidation complete");
     return { memoriesProcessed: allMemories.length, merged, invalidated };
@@ -17070,7 +17056,6 @@ export class Orchestrator {
     const lifecycleCorpus = await storage.readAllMemories();
     // Record the catalog write when the pass rewrote any frontmatter (codex NR-tS).
     if ((await this.runLifecyclePolicyPass(lifecycleCorpus, storage)) > 0) {
-      this.markCatalogWrite(this.namespaceFromStorageDir(storage.dir), storage.dir);
     }
     return { memoriesAssessed: lifecycleCorpus.length };
   }
@@ -17355,10 +17340,7 @@ export class Orchestrator {
       // summary and then rewrites source-memory archive status, bypassing the
       // extraction write path. Record the touch after both mutations complete so
       // `lastWriteAt` covers the final archived-state write.
-      this.markCatalogWrite(
-        this.namespaceFromStorageDir(this.storage.dir),
-        this.storage.dir,
-      );
+      // #1522: catalog touch handled at the storage chokepoint.
 
       log.info(
         `created summary ${summary.id} from ${batch.length} memories, archived ${archived}`,
@@ -17469,11 +17451,10 @@ export class Orchestrator {
       // a namespace whose sole mutation in the pass is identity consolidation would
       // otherwise keep a stale `lastWriteAt`, making `listNamespaces({ writtenSince })`
       // and catalog-recency consumers miss the write. Best-effort and
-      // failure-tolerant (`markCatalogWrite` swallows errors, never crashing the
+      // failure-tolerant (the storage chokepoint (#1522) swallows errors, never crashing the
       // consolidation; gotcha #13, rule #40). No double-count with the consolidated
       // touch above: that one is gated on `memoryItemMutated` (which identity
       // consolidation does not set), and `markWrite` is idempotent regardless.
-      this.markCatalogWrite(namespace, storage.dir);
       log.info(
         `IDENTITY(${namespace}) consolidated: ${identityContent.length} → ${newContent.length} chars, ${result.learnedPatterns.length} patterns`,
       );
@@ -19917,24 +19898,13 @@ export class Orchestrator {
     return dirName;
   }
 
-  /**
-   * Record a namespace write in the catalog (issue #1499). Best-effort and
-   * failure-tolerant: a catalog write error MUST NOT crash the primary memory
-   * write (CLAUDE.md gotcha #13, rule #40). Fire-and-forget by design.
-   */
-  private markCatalogWrite(namespace: string, storageDir?: string): void {
-    if (!this.namespaceCatalog.enabled) return;
-    this.rememberNamespaceStorageDirHint(namespace, storageDir);
-    void this.namespaceCatalog
-      .markWrite(namespace, { discoveredBy: "write", storageDir })
-      .catch(() => undefined);
-  }
+  // #1522: catalog touch methods removed — touches now happen at the storage chokepoint.
 
   /**
    * Public best-effort catalog write touch (issue #1499). User-facing explicit
    * captures (`memory_store`) and review-queue approvals persist via
    * `persistExplicitCapture()` → `storage.writeMemory()`, which bypasses the
-   * extraction write path that calls `markCatalogWrite`. Without this their
+   * extraction write path that owns the catalog touch. Without this their
    * namespaces never record `lastWriteAt`, so the catalog under-reports write
    * recency (round 5, codex P2). Fire-and-forget and failure-tolerant — a
    * catalog error must never affect the explicit write (gotcha #13, rule #40).
@@ -19944,20 +19914,9 @@ export class Orchestrator {
    * default rather than skipping it (round 6, codex P2 — default `memory_store`
    * and inline-note writes were missing from `writtenSince`/maintenance).
    */
-  recordCatalogWrite(namespace?: string, storageDir?: string): void {
-    const ns = namespace && namespace.trim().length > 0 ? namespace : this.config.defaultNamespace;
-    if (!ns) return;
-    this.markCatalogWrite(ns, storageDir);
-  }
 
-  /** Record a namespace read in the catalog. Best-effort, failure-tolerant. */
-  private markCatalogRead(namespace: string, storageDir?: string): void {
-    if (!this.namespaceCatalog.enabled) return;
-    this.rememberNamespaceStorageDirHint(namespace, storageDir);
-    void this.namespaceCatalog
-      .markRead(namespace, { discoveredBy: "read", storageDir })
-      .catch(() => undefined);
-  }
+
+  // markCatalogRead removed — use storageRouter.recordRead() instead (#1522).
 
   private async readAllMemoriesForNamespaces(
     namespaces: string[],
