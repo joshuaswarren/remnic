@@ -4,7 +4,10 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": [
-      "ES2022"
+      // ES2024.Promise adds the `Promise.withResolvers` type (Node 20+ ships
+      // it at runtime; this only widens the type lib, not the emit target).
+      "ES2022",
+      "ES2024.Promise"
     ],
     "rootDir": ".",
     "strict": true,

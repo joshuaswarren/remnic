@@ -1,0 +1,425 @@
+// ---------------------------------------------------------------------------
+// Shared serialized-mutation utilities for TOCTOU hotspots (issue #1524).
+//
+// Two complementary primitives that the namespace catalog (`queueCritical` +
+// `withHeldCatalogLock`), the storage router's resolve-hook serialization, and
+// the summary-snapshot writer each re-implement today:
+//
+//   1. `serializeMutations(key, task)` — keyed IN-PROCESS async serialization
+//      that recovers after a rejection (CLAUDE.md rule #40). One failed task
+//      never poisons the tasks queued behind it; the failed task's error is
+//      still surfaced to ITS caller.
+//
+//   2. `withHeldFileLock(lockPath, opts, task)` — a held CROSS-PROCESS file
+//      lock with replacement-safe stale breaking (the NG7Bg invariant from
+//      #1506 round 28) and ownership-checked release.
+//
+// This is the UTILITY module only. Per-issue PR split: one PR for the utility
+// + tests (this file), then one PR per adoption hotspot (catalog, router
+// provenance, summary snapshot). No adoptions live here.
+// ---------------------------------------------------------------------------
+
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, stat, unlink, utimes } from "node:fs/promises";
+import path from "node:path";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 1. serializeMutations — keyed async serialization with rejection recovery
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One entry in the per-key serialization map. `tail` is the recovered promise
+ * the next queued task chains off of; it never rejects (both settle handlers
+ * swallow), so a prior task's failure can never break subsequent ones.
+ */
+interface MutationChainEntry {
+  tail: Promise<void>;
+}
+
+/**
+ * Instance-scoped keyed serializer. Holds the per-key chain map so that all
+ * tasks queued under the same key on the SAME serializer run strictly in order.
+ *
+ * The map is instance-scoped (not module-level) so tests can construct a fresh
+ * serializer per case and avoid cross-test contamination, and so adopters that
+ * want isolation (e.g. one serializer per storage root) can have it. The free
+ * {@link serializeMutations} export delegates to a single shared default
+ * instance for callers that want process-wide serialization.
+ */
+export class MutationSerializer {
+  private readonly chains = new Map<string, MutationChainEntry>();
+
+  /**
+   * Run `task` strictly after every other task already queued under `key` on
+   * this serializer has settled.
+   *
+   * Rejection recovery (rule #40, mirroring the catalog's `queueCritical`):
+   * if a prior task rejects, later tasks STILL RUN, while the rejecting task's
+   * error is surfaced to ITS OWN caller. Concretely, the recovered tail is
+   * `run.then(noop, noop)` — never a bare `.then(fn)`, which would let one
+   * failure kill every queued task behind it.
+   *
+   * No unbounded growth: when a chain's last task settles and no newer task
+   * chained onto it, its entry is deleted (the storage router's
+   * `inFlightResolved` marker-then-clear discipline).
+   */
+  serialize<T>(key: string, task: () => Promise<T>): Promise<T> {
+    if (typeof key !== "string" || key.length === 0) {
+      throw new TypeError("MutationSerializer.serialize: key must be a non-empty string");
+    }
+    if (typeof task !== "function") {
+      throw new TypeError("MutationSerializer.serialize: task must be a function returning a promise");
+    }
+
+    let entry = this.chains.get(key);
+    if (!entry) {
+      entry = { tail: Promise.resolve() };
+      this.chains.set(key, entry);
+    }
+
+    // Chain this task off the prior tail. `tail.then(task)` runs task only once
+    // the previous task has settled, preserving read-modify-write ordering.
+    const run = entry.tail.then(task);
+
+    // Recover the tail after a rejection so a failed task never poisons later
+    // ones. Both handlers swallow; `run` still carries the original resolution
+    // (or rejection) to THIS caller. This is the line a naive `.then(fn)`
+    // implementation omits — see the "naive poison chain" prove-fail test.
+    const recovered = run.then(settleNoop, settleNoop);
+    entry.tail = recovered;
+
+    // Self-cleaning: once our recovered tail settles, if no newer task chained
+    // onto us the entry still points at `recovered` and is safe to delete. A
+    // concurrent `serialize()` call enqueues synchronously and would have
+    // replaced `entry.tail` BEFORE this microtask runs, so the identity check
+    // is race-free (no newer task's entry can be wrongly removed).
+    //
+    // `recovered` cannot reject in correct operation (both handlers above
+    // swallow) and the cleanup body cannot throw — but we attach a rejection
+    // handler anyway so that IF the recovery invariant is ever broken, the
+    // failure surfaces as a behavioral assertion (skipped tasks) rather than an
+    // unhandled-rejection storm that masks which task failed. The handler is a
+    // no-op: cleanup only runs on fulfillment.
+    void recovered.then(
+      () => {
+        if (entry && entry.tail === recovered) {
+          this.chains.delete(key);
+        }
+      },
+      () => undefined,
+    );
+
+    return run;
+  }
+
+  /**
+   * Test-only: the number of keys with a not-yet-cleaned chain. Used to assert
+   * the no-unbounded-growth invariant. Not part of the public contract.
+   */
+  pendingKeysForTest(): number {
+    return this.chains.size;
+  }
+}
+
+/**
+ * Recovery handler shared by both settle arms. Named (not inline
+ * `() => undefined`) so the chain assignment stays self-documenting in stack
+ * traces and the review-patterns poison-chain check can see the chain is
+ * recovered, not bare `.then(fn)`.
+ */
+function settleNoop(): void {
+  /* swallow — the original resolution/rejection is carried by `run` */
+}
+
+/**
+ * Process-wide default serializer backing the free {@link serializeMutations}
+ * export. Lazy so it is only created when first used (tests that construct
+ * their own `MutationSerializer` pay nothing).
+ */
+let defaultSerializer: MutationSerializer | undefined;
+
+/**
+ * Free-function entry point (issue #1524 signature). Serializes `task` against
+ * every other task queued under `key` across the whole process, via a shared
+ * default {@link MutationSerializer}. For isolated/testable serialization,
+ * construct a `MutationSerializer` directly.
+ */
+export function serializeMutations<T>(key: string, task: () => Promise<T>): Promise<T> {
+  if (!defaultSerializer) defaultSerializer = new MutationSerializer();
+  return defaultSerializer.serialize(key, task);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2. withHeldFileLock — cross-process held file lock with stale breaking
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Options for {@link withHeldFileLock}. */
+export interface HeldFileLockOptions {
+  /**
+   * A lock whose mtime is older than this (in ms) is treated as a crashed
+   * holder and broken. Required — there is no safe default, since the right
+   * value depends on how long the guarded critical section can legitimately
+   * run.
+   */
+  readonly staleMs: number;
+  /**
+   * Bounded acquisition: give up trying to acquire a busy lock after this long
+   * (ms) and invoke `task(false)` best-effort WITHOUT holding the lock, rather
+   * than blocking forever or crashing the primary op. Default 5000ms (matches
+   * the namespace catalog's `REBUILD_LOCK_MAX_WAIT_MS`).
+   */
+  readonly maxWaitMs?: number;
+  /**
+   * Poll interval (ms) while waiting for a busy lock to clear. Default 50ms.
+   */
+  readonly pollMs?: number;
+  /**
+   * While WE hold the lock, refresh its mtime on this cadence (ms) so a
+   * legitimately long task is not mistaken for a crashed holder and broken out
+   * from under. Default `floor(staleMs / 3)` (at least 100ms), mirroring the
+   * catalog heartbeat ratio. Must be comfortably below `staleMs`.
+   */
+  readonly heartbeatMs?: number;
+  /**
+   * Test seam (NG7Bg, #1506 round 28): fires AFTER a lock is judged stale and
+   * BEFORE the re-verify + unlink, simulating a replacement lock being created
+   * in the race window. No-op in production.
+   */
+  readonly onBeforeBreakStaleUnlinkForTest?: () => Promise<void> | void;
+  /**
+   * Best-effort hook for non-fatal lock warnings (heartbeat refresh failure,
+   * release-time ownership check failure). Never throws into the caller. If
+   * omitted, warnings are swallowed (the lock is advisory; release/heartbeat
+   * failures must never crash the guarded op).
+   */
+  readonly onLockWarning?: (message: string, err: unknown) => void;
+}
+
+/** Default bounded acquisition wait, mirroring the catalog. */
+const DEFAULT_MAX_WAIT_MS = 5_000;
+/** Default busy-lock poll interval, mirroring the catalog. */
+const DEFAULT_POLL_MS = 50;
+/** Floor for the derived heartbeat cadence. */
+const MIN_HEARTBEAT_MS = 100;
+
+/** Internal handle for a lock we successfully acquired. */
+interface HeldLock {
+  readonly path: string;
+  readonly ownerId: string;
+}
+
+/**
+ * Run `task` under an exclusive on-disk lock at `lockPath`.
+ *
+ * Cross-process mutex via `open(lockPath, "wx")` (atomic exclusive create).
+ * While held, a heartbeat timer refreshes the lock's mtime so a legitimately
+ * long task is not mistaken for a crashed holder and broken out from under. A
+ * lock older than `opts.staleMs` is treated as stale and broken — but
+ * REPLACEMENT-SAFE (NG7Bg): we capture the stale lock's identity (full content
+ * line: `<pid> <owner-uuid> <iso>`) when judging it stale, then RE-READ and
+ * RE-STAT immediately before `unlink`, deleting only if byte-identical AND
+ * still stale. A replacement lock created in the window has a different owner
+ * id / timestamp, so its content differs and is left untouched.
+ *
+ * `task` receives `acquired: boolean` — `true` when we hold the lock, `false`
+ * when acquisition timed out (best-effort). The signature takes
+ * `(acquired) => Promise<T>` rather than the issue's sketched `() => Promise<T>`
+ * so this can be the SINGLE lock home (issue: "do NOT leave two lock
+ * implementations; pick one home"): the catalog's touch path needs to DROP on
+ * timeout, which requires knowing whether the lock was acquired. A caller that
+ * ignores the flag is still assignable (`() => Promise<T>` ⊆
+ * `(acquired: boolean) => Promise<T>` in TypeScript).
+ *
+ * Release is ownership-checked: we only `unlink` a lock whose content still
+ * identifies THIS acquirer (same owner id), so a replacement created after we
+ * stopped heartbeating is never destroyed — mirroring the catalog's
+ * `rebuildLockHeldBySelf`.
+ *
+ * ADOPTION NOTE: lock only the brief final read-merge-write window, never a
+ * long scan — a scan-length lock makes concurrent writers time out and
+ * silently drop work (catalog round 5, codex/cursor P2).
+ */
+export async function withHeldFileLock<T>(
+  lockPath: string,
+  opts: HeldFileLockOptions,
+  task: (acquired: boolean) => Promise<T>,
+): Promise<T> {
+  if (typeof lockPath !== "string" || lockPath.length === 0) {
+    throw new TypeError("withHeldFileLock: lockPath must be a non-empty string");
+  }
+  if (typeof opts?.staleMs !== "number" || !Number.isFinite(opts.staleMs) || opts.staleMs <= 0) {
+    throw new TypeError("withHeldFileLock: opts.staleMs must be a positive finite number");
+  }
+
+  const maxWaitMs = opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+  const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
+  const heartbeatMs = opts.heartbeatMs ?? Math.max(MIN_HEARTBEAT_MS, Math.floor(opts.staleMs / 3));
+  if (heartbeatMs >= opts.staleMs) {
+    throw new TypeError(
+      `withHeldFileLock: heartbeatMs (${heartbeatMs}) must be below staleMs (${opts.staleMs}) ` +
+        "so at least one heartbeat lands per stale window",
+    );
+  }
+  const warn = opts.onLockWarning ?? (() => undefined);
+
+  // Per-call owner identity. Two withHeldFileLock calls in the SAME process
+  // get different ids, so neither mistakes the other's lock for its own
+  // (stronger than the catalog's per-instance id, which is what we want for a
+  // stateless utility).
+  const ownerId = randomUUID();
+  const lockDir = path.dirname(lockPath);
+
+  const held = await acquireLock(lockPath, lockDir, ownerId, opts, maxWaitMs, pollMs);
+  if (!held) {
+    // Best-effort: run the task WITHOUT the lock. The caller decides what to
+    // do (the catalog touch path will drop its append); we never crash the
+    // primary op on contention.
+    return task(false);
+  }
+
+  // Heartbeat: while WE hold the lock, refresh its mtime so age-based stale
+  // detection sees an active holder and does not break us out from under
+  // (catalog round 5). Failures are swallowed (advisory lock); the timer is
+  // always cleared in the finally.
+  const heartbeat = setInterval(() => {
+    utimes(held.path, new Date(), new Date()).catch((err: unknown) => {
+      warn("withHeldFileLock heartbeat refresh failed", err);
+    });
+  }, heartbeatMs);
+  // Don't keep the event loop alive solely for the heartbeat.
+  heartbeat.unref?.();
+  try {
+    return await task(true);
+  } finally {
+    clearInterval(heartbeat);
+    await releaseLock(held, warn);
+  }
+}
+
+/**
+ * Atomically create the lock file, looping until acquired/stale-broken/timeout.
+ * Returns the held-lock handle on success, or `undefined` on bounded-timeout.
+ * Unexpected FS errors proceed best-effort (return undefined) rather than
+ * crashing the guarded op, matching the catalog.
+ */
+async function acquireLock(
+  lockPath: string,
+  lockDir: string,
+  ownerId: string,
+  opts: HeldFileLockOptions,
+  maxWaitMs: number,
+  pollMs: number,
+): Promise<HeldLock | undefined> {
+  await mkdir(lockDir, { recursive: true });
+  const deadline = Date.now() + maxWaitMs;
+  for (;;) {
+    try {
+      const handle = await open(lockPath, "wx");
+      try {
+        await handle.writeFile(`${process.pid} ${ownerId} ${new Date().toISOString()}\n`, "utf8");
+      } catch {
+        // The exclusive create already gave us the lock; ignore write failures.
+      } finally {
+        await handle.close();
+      }
+      return { path: lockPath, ownerId };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException | undefined)?.code !== "EEXIST") {
+        // Unexpected FS error — proceed best-effort without the lock.
+        return undefined;
+      }
+      // Lock exists: break it if stale, then poll. breakStaleLock is
+      // replacement-safe (NG7Bg) and never throws.
+      await breakStaleLock(lockPath, opts.staleMs, opts.onBeforeBreakStaleUnlinkForTest);
+      if (Date.now() >= deadline) return undefined;
+      await sleep(pollMs);
+    }
+  }
+}
+
+/**
+ * Replacement-safe stale-lock breaking (NG7Bg, #1506 round 28). Capture the
+ * lock's identity when judging it stale, then RE-READ and RE-STAT immediately
+ * before `unlink`, deleting only if byte-identical AND still stale. A
+ * replacement lock created in the window has different content and is left
+ * untouched. Best-effort: any mismatch/vanish skips the break.
+ */
+async function breakStaleLock(
+  lockPath: string,
+  staleMs: number,
+  onBeforeBreakStaleUnlinkForTest: (() => Promise<void> | void) | undefined,
+): Promise<void> {
+  let staleIdentity: string;
+  try {
+    const info = await stat(lockPath);
+    if (Date.now() - info.mtimeMs <= staleMs) {
+      // Not stale (a live holder's heartbeat keeps it fresh) — leave it.
+      return;
+    }
+    staleIdentity = await readFile(lockPath, "utf8");
+  } catch {
+    // Lock vanished (released by holder) or stat/read failed — nothing to do.
+    return;
+  }
+  // Test seam: simulate a replacement lock being created in the race window
+  // between the staleness judgment and the unlink. No-op in production.
+  if (onBeforeBreakStaleUnlinkForTest) {
+    await onBeforeBreakStaleUnlinkForTest();
+  }
+  try {
+    // Re-validate immediately before unlinking: the lock must still carry the
+    // SAME identity AND still be stale.
+    const current = await readFile(lockPath, "utf8");
+    if (current !== staleIdentity) return; // replaced — leave the fresh lock
+    const recheck = await stat(lockPath);
+    if (Date.now() - recheck.mtimeMs <= staleMs) return; // heartbeat refreshed it
+    await unlink(lockPath);
+  } catch {
+    // The lock changed/vanished between checks — another process handled it.
+  }
+}
+
+/**
+ * Release the lock ONLY if its content still identifies THIS acquirer (same
+ * owner id). If this task paused long enough that another process treated our
+ * lock as stale, unlinked it, and acquired a REPLACEMENT, an unconditional
+ * unlink here would delete that other holder's active lock — recreating the
+ * lost-update race the mutex prevents (catalog round 6, codex P2 — NCzT6).
+ */
+async function releaseLock(
+  held: HeldLock,
+  warn: (message: string, err: unknown) => void,
+): Promise<void> {
+  try {
+    if (!(await lockHeldBySelf(held))) return;
+    await unlink(held.path);
+  } catch (err) {
+    // Best-effort release; a stale lock will be broken on the next acquire.
+    warn("withHeldFileLock release failed", err);
+  }
+}
+
+/**
+ * Whether the lock file at `held.path` was written by THIS acquirer (same owner
+ * id). Reads the content and matches the `<pid> <owner-uuid>` prefix; the iso
+ * timestamp varies so it is not part of the identity check.
+ */
+async function lockHeldBySelf(held: HeldLock): Promise<boolean> {
+  try {
+    const body = await readFile(held.path, "utf8");
+    const parts = body.trim().split(/\s+/);
+    const fileOwner = parts[1];
+    return typeof fileOwner === "string" && fileOwner === held.ownerId;
+  } catch {
+    return false;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  // NOT unref'd: this polls inside an awaited acquire loop, so the caller's
+  // await chain keeps the loop alive; unref would let Node exit mid-poll when
+  // nothing else is pending (the heartbeat interval IS unref'd separately).
+  setTimeout(resolve, ms);
+  return promise;
+}
