@@ -504,12 +504,17 @@ async function breakStaleLock(
         // the third contender's lock intact (codex P2 review).
         try {
           await link(trashPath, lockPath);
+          // link succeeded — remove the redundant trash hard link. The lock
+          // now lives only at lockPath.
+          await unlink(trashPath).catch(() => undefined);
         } catch {
-          // lockPath already exists (a third contender acquired it) — do NOT
-          // overwrite. The moved file is an orphan in trash, not at lockPath,
-          // so it does not block anyone.
+          // lockPath already exists (a third contender acquired it). Do NOT
+          // unlink the moved file — it may be a LIVE lock whose holder is
+          // still in its critical section. Destroying it would leave the
+          // holder running with no visible lock, breaking mutual exclusion
+          // (codex P2). Leave it in trash as a breadcrumb; it is not at
+          // lockPath so it does not block other contenders.
         }
-        await unlink(trashPath).catch(() => undefined);
       } else {
         // Content matches — but verify the moved file is STILL stale. The
         // original holder may have resumed and heartbeated between our
@@ -520,11 +525,11 @@ async function breakStaleLock(
           // Mtime was refreshed — the holder resumed. Restore the lock.
           try {
             await link(trashPath, lockPath);
+            await unlink(trashPath).catch(() => undefined);
           } catch {
-            // lockPath already exists — another contender acquired it. Leave
-            // the moved file in trash as an orphan.
+            // lockPath already exists — another contender acquired it. Do NOT
+            // unlink the moved file (it may be a live lock). Leave it in trash.
           }
-          await unlink(trashPath).catch(() => undefined);
         } else {
           // Still stale — we broke the right lock. Clean up the trash.
           await unlink(trashPath).catch(() => undefined);
@@ -541,18 +546,44 @@ async function breakStaleLock(
 
 /**
  * Release the lock ONLY if its content still identifies THIS acquirer (same
- * owner id). If this task paused long enough that another process treated our
- * lock as stale, unlinked it, and acquired a REPLACEMENT, an unconditional
- * unlink here would delete that other holder's active lock — recreating the
- * lost-update race the mutex prevents (catalog round 6, codex P2 — NCzT6).
+ * owner id). Uses an atomic rename+verify to tie the ownership check to the
+ * deletion: a bare readFile-then-unlink leaves a window where a contender can
+ * break our stale lock and create a replacement before our unlink runs,
+ * deleting the fresh replacement (codex P2). The rename is POSIX-atomic;
+ * after moving, we verify the content still carries our ownerId before
+ * cleaning up the trash. If the moved file is NOT ours (a replacement was
+ * created in the window), we restore it via link (non-overwriting).
  */
 async function releaseLock(
   held: HeldLock,
   warn: (message: string, err: unknown) => void,
 ): Promise<void> {
   try {
-    if (!(await lockHeldBySelf(held))) return;
-    await unlink(held.path);
+    // Atomic release: rename first, then verify ownership on the moved file.
+    const trashPath = `${held.path}.releasing.${process.pid}.${Date.now()}`;
+    await rename(held.path, trashPath);
+    try {
+      const moved = await readFile(trashPath, "utf8");
+      if (moved.includes(held.ownerId)) {
+        // Still our lock — safe to delete.
+        await unlink(trashPath).catch(() => undefined);
+      } else {
+        // Not ours: a contender broke our stale lock and created a replacement
+        // between our last heartbeat and this rename. Restore it via link
+        // (non-overwriting — if lockPath already has a newer lock, leave it).
+        try {
+          await link(trashPath, held.path);
+        } catch {
+          // lockPath already exists — a newer holder is active. Leave the
+          // moved file in trash rather than destroying a live lock (codex P2).
+          return;
+        }
+        await unlink(trashPath).catch(() => undefined);
+      }
+    } catch {
+      // Could not read the moved file — clean up best-effort.
+      await unlink(trashPath).catch(() => undefined);
+    }
   } catch (err) {
     // Best-effort release; a stale lock will be broken on the next acquire.
     warn("withHeldFileLock release failed", err);
