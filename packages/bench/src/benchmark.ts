@@ -221,19 +221,21 @@ export async function runBenchmark(
         cache,
       });
       judgeCacheCounters = primary.counters;
-      // Preserve the adapter's prototype (round-4 OS7CFz): a bare
-      // object-spread only copies own enumerable properties, so a
-      // class instance with prototype methods (or non-enumerable
-      // members) loses `store`/`recall`/`search`/`reset`/`destroy`.
-      // Spread own enumerable properties onto a fresh object whose
-      // prototype matches the original adapter, then overwrite `judge`.
-      baseSystemInner = Object.assign(
-        Object.create(Object.getPrototypeOf(options.system)),
-        options.system,
-        { judge: primary.judge },
-      );
+      // Install the cached judge on the ORIGINAL adapter instance
+      // rather than cloning it (round-4 OTEYU): a class-style
+      // BenchMemoryAdapter uses #private fields and/or non-enumerable
+      // own state that only exist on the receiver. Cloning via
+      // Object.create+Object.assign preserves the prototype but not
+      // the receiver's private slots, so methods like `recall()` or
+      // `destroy()` would throw at runtime even though the unwrapped
+      // adapter worked. The benchmark harness receives the same
+      // adapter instance, only the `judge` slot is swapped for the
+      // cached wrapper. Direct property assignment is enough because
+      // `BenchJudge` is a method-bag interface — no class hierarchy
+      // gates the field.
+      options.system.judge = primary.judge;
+      baseSystemInner = options.system;
     }
-    // AMA-Bench cross judge: only wrap when a cross-judge provider config
     // identifies it. Without provider config, leave the cross judge
     // untouched so unidentified closure-based judges cannot collide.
     if (willWrapCross) {

@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type { BenchJudgeResult } from "../adapters/types.ts";
+import type { BenchJudge, BenchJudgeResult, BenchMemoryAdapter, Message, SearchResult } from "../adapters/types.ts";
 import { JudgeCache, runJudgeWithCache, stableStringify } from "./judge-cache.ts";
 
 async function withTempDir<T>(
@@ -738,26 +738,40 @@ test("(r) scoreBinaryPrompt preserves the underlying judge receiver (PR #1591 ro
   });
 });
 
-test("(s) cache-wrapping preserves BenchMemoryAdapter prototype (PR #1591 round-4 OS7CFz)", async () => {
+test("(s) cache-wrapping preserves BenchMemoryAdapter instance, prototype, and private slots (PR #1591 round-4 OS7CFz + OTEYU)", async () => {
   await withTempDir(async (dir) => {
     const cache = new JudgeCache({ dir });
-    // A class-style adapter where every method (including store,
-    // recall, search, reset, destroy) lives on the prototype, not on
-    // the instance. A naive {...system, judge: cached} spread only
-    // copies own enumerable properties, so prototype methods vanish
-    // and the benchmark runner fails when it calls them. The
-    // benchmark.ts wrap site must preserve the prototype.
-    class ClassAdapter {
+    // Class-style adapter using a #private field that lives only on
+    // the receiver instance. Round-4 OS7CFz fixed prototype
+    // preservation; OTEYU fixed receiver preservation. The combined
+    // fix mutates the original instance's `judge` slot in place so
+    // the same receiver (with its private slots) is reused.
+    class ClassAdapter implements BenchMemoryAdapter {
       readonly marker = "class-adapter-marker";
-      async store(): Promise<void> {}
-      async recall(): Promise<string> {
-        return "from-class-adapter";
+      #secret: string;
+      constructor(secret: string) {
+        this.#secret = secret;
       }
-      async search(): Promise<Array<{ id: string; score: number; preview: string }>> {
+      async store(_sessionId: string, _messages: Message[]): Promise<void> {
+        // Touch the private slot so the receiver-preservation test
+        // would fail if the wrap site cloned the adapter (the private
+        // slot wouldn't initialize on a fresh receiver).
+        void this.#secret;
+      }
+      async recall(
+        _sessionId: string,
+        _query: string,
+      ): Promise<string> {
+        return `from-class-adapter:${this.#secret}`;
+      }
+      async search(
+        _query: string,
+        _limit: number,
+      ): Promise<SearchResult[]> {
         return [];
       }
-      async reset(): Promise<void> {}
-      async getStats(): Promise<{
+      async reset(_sessionId?: string): Promise<void> {}
+      async getStats(_sessionId?: string): Promise<{
         totalMessages: number;
         totalSummaryNodes: number;
         maxDepth: number;
@@ -765,41 +779,42 @@ test("(s) cache-wrapping preserves BenchMemoryAdapter prototype (PR #1591 round-
         return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
       }
       async destroy(): Promise<void> {}
+      judge!: BenchJudge;
       async score(): Promise<number> {
         return 0;
       }
       async scoreWithMetrics(): Promise<BenchJudgeResult> {
-        return sampleResult;
+        return {
+          score: this.#secret.length,
+          tokens: { input: 1, output: 1 },
+          latencyMs: 0,
+          model: "class-judge",
+        };
       }
     }
-    const adapter = new ClassAdapter();
-    // Simulate the benchmark.ts wrap site inline so we don't pull in
-    // the whole runBenchmark surface here.
+    const adapter = new ClassAdapter("private-token");
+    // Mirror the benchmark.ts wrap site (round-4 OTEYU): mutate the
+    // original instance's `judge` slot in place.
     const cached = runJudgeWithCache({
       judge: adapter,
       cache,
       keyExtras: { benchmarkId: "locomo" },
     });
-    const wrappedSystem = Object.assign(
-      Object.create(Object.getPrototypeOf(adapter)),
-      adapter,
-      { judge: cached },
-    );
-    // Every prototype method must remain callable.
-    await wrappedSystem.store();
-    const recalled = await wrappedSystem.recall();
-    assert.equal(recalled, "from-class-adapter");
-    const results = await wrappedSystem.search();
+    (adapter as BenchMemoryAdapter).judge = cached;
+    const wrappedSystem = adapter as BenchMemoryAdapter;
+    await wrappedSystem.store("sess-1", []);
+    const recalled = await wrappedSystem.recall("sess-1", "query");
+    assert.equal(recalled, "from-class-adapter:private-token");
+    const results = await wrappedSystem.search("query", 10);
     assert.deepEqual(results, []);
-    await wrappedSystem.reset();
-    await wrappedSystem.getStats();
+    await wrappedSystem.reset("sess-1");
+    await wrappedSystem.getStats("sess-1");
     await wrappedSystem.destroy();
-    // The wrapped judge must be the cached wrapper.
-    assert.notEqual(wrappedSystem.judge, adapter, "wrapped judge should be the cached wrapper");
     // The cached wrapper must still route to the underlying class
-    // instance so the instance methods on `judge` (here, a class
-    // method via prototype) stay bound.
-    const verdict = await wrappedSystem.judge.scoreWithMetrics!("q", "p", "e");
-    assert.equal(verdict.score, sampleResult.score);
+    // instance so its #private field stays accessible.
+    const verdict = await wrappedSystem.judge!.scoreWithMetrics!("q", "p", "e");
+    assert.equal(verdict.score, "private-token".length);
+    // Identity: the same receiver instance is passed downstream.
+    assert.equal(wrappedSystem, adapter, "wrap site must not clone the adapter");
   });
 });
