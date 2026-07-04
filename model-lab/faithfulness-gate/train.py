@@ -201,17 +201,33 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     rows = load_jsonl(data_path)
-    features = featurize(rows)
-    dataset = Dataset.from_list(features)
+    # Split the *raw* rows first so the held-out gold keeps the original
+    # (factText, quote, context, label) shape eval.py scores against. The
+    # Trainer's train/eval datasets are featurized + tokenized views below.
+    raw_dataset = Dataset.from_list(rows)
+    split = raw_dataset.train_test_split(test_size=0.1, seed=hyperparams.seed)
+
+    # Persist the held-out split so the documented flow (generate -> train ->
+    # eval) works: eval.py defaults to <data-dir>/faithfulness-heldout.jsonl,
+    # which nothing else writes. train.py owns this file.
+    heldout_path = args.data_dir / "faithfulness-heldout.jsonl"
+    heldout_path.parent.mkdir(parents=True, exist_ok=True)
+    with heldout_path.open("w", encoding="utf-8") as handle:
+        for example in split["test"]:
+            handle.write(json.dumps({
+                "factText": example["factText"],
+                "quote": example["quote"],
+                "context": example.get("context", ""),
+                "label": example["label"],
+            }, sort_keys=True, ensure_ascii=False) + "\n")
 
     tokenizer = AutoTokenizer.from_pretrained(hyperparams.base_model)
 
     def tokenize(batch: dict[str, Any]) -> dict[str, Any]:
         return tokenizer(batch["text"], truncation=True, max_length=hyperparams.max_length)
 
-    tokenized = dataset.map(tokenize, batched=True)
-
-    split = tokenized.train_test_split(test_size=0.1, seed=hyperparams.seed)
+    train_tokenized = Dataset.from_list(featurize(list(split["train"]))).map(tokenize, batched=True)
+    test_tokenized = Dataset.from_list(featurize(list(split["test"]))).map(tokenize, batched=True)
     model = AutoModelForSequenceClassification.from_pretrained(
         hyperparams.base_model,
         num_labels=len(LABELS),
@@ -247,8 +263,8 @@ def main(argv: list[str] | None = None) -> int:
     trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=split["train"],
-        eval_dataset=split["test"],
+        train_dataset=train_tokenized,
+        eval_dataset=test_tokenized,
         # transformers 5.x API: ``processing_class`` (``tokenizer`` was removed
         # in 5.0). compute_metrics backs ``metric_for_best_model='f1'``.
         processing_class=tokenizer,

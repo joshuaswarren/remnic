@@ -106,8 +106,9 @@ def main(argv: list[str] | None = None) -> int:
     if not held_out_path.exists():
         raise SystemExit(
             f"held-out gold file not found at {held_out_path}.\n"
-            "  generate a held-out split with generate-data.py (different seed) "
-            "or split it off at train time."
+            "  train.py writes this file (<data-dir>/faithfulness-heldout.jsonl) "
+            "as a side effect of its 90/10 split; run train first, or pass "
+            "--held-out to point at a separately-produced gold JSONL."
         )
 
     rows = load_jsonl(held_out_path)

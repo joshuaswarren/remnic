@@ -24,6 +24,11 @@ torch==2.6.0
 transformers==5.3.0
 datasets==3.6.0
 huggingface-hub==1.3.0  # transformers 5.3.0 requires huggingface-hub>=1.3.0
+# Trainer runtime deps the pinned base model + Trainer need (review round 2):
+#   sentencepiece — microsoft/deberta-v3-large SentencePiece tokenizer.
+#   accelerate    — Trainer / TrainingArguments device management.
+sentencepiece==0.2.1  # >=0.2.1: GHSA-38vq-g6vr-w8wf
+accelerate==1.14.0
 
 # --- Fine-tuning stack (uncomment in PR2 when first LoRA/causal run lands) -
 # trl==0.9.6

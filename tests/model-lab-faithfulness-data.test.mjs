@@ -84,7 +84,7 @@ test(
     assert.equal(byName["paraphrase-preserve"].actual, "entailed");
     assert.equal(byName["entity-swap-contradict"].actual, "contradicted");
     assert.equal(byName["negation-flip-contradict"].actual, "contradicted");
-    assert.equal(byName["negation-flip-insert-contradict"].actual, "contradicted");
+    assert.equal(byName["negation-flip-affirmative-contradict"].actual, "contradicted");
     assert.equal(byName["date-shift-contradict"].actual, "contradicted");
     assert.equal(byName["quantity-change-contradict"].actual, "contradicted");
     assert.equal(byName["unrelated-quote-unsupported"].actual, "unsupported");

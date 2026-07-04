@@ -68,8 +68,10 @@ class SeedTriple:
         entities: ``{canonical: swap}`` pairs for ``entity_swap``.
         paraphrase: Meaning-preserving rewrite of ``fact_text`` for the
             ``paraphrase`` entailed stream (``None`` ⇒ skip paraphrase).
-        negation_phrase: A word/phrase whose insertion flips polarity
-            (``negation_flip``). ``None`` ⇒ skip.
+        negated_text: A grammatical, hand-written negation of ``fact_text``
+            for the ``negation_flip`` contradicted stream (``None`` ⇒ skip).
+            Hand-written so the contradiction is real English, not a malformed
+            string the model could learn as an artifact.
         date_phrase / date_shifted: A date token and its contradictory
             replacement. ``None`` ⇒ skip.
         quantity_phrase / quantity_shifted: A quantity token and its
@@ -82,7 +84,7 @@ class SeedTriple:
     context: str
     entities: dict[str, str] | None = None
     paraphrase: str | None = None
-    negation_phrase: str | None = None
+    negated_text: str | None = None
     date_phrase: str | None = None
     date_shifted: str | None = None
     quantity_phrase: str | None = None
@@ -133,26 +135,16 @@ def entity_swap(triple: SeedTriple) -> Optional[FaithfulnessRecord]:
 
 
 def negation_flip(triple: SeedTriple) -> Optional[FaithfulnessRecord]:
-    """Toggle a negation phrase ⇒ contradicted.
+    """Emit the hand-written negation of ``fact_text`` ⇒ contradicted.
 
-    Insertion if the fact is affirmative; removal if already negated (the
-    fixture's ``fact_text`` would then carry ``negation_phrase``).
+    The negated text is supplied per-fixture (``negated_text``) so the
+    contradiction is grammatical English — not a mechanical word insertion
+    that yields malformed strings like "We not migrated...", which a model
+    could learn as a string artifact rather than a faithfulness signal.
     """
-    if not triple.negation_phrase:
+    if not triple.negated_text:
         return None
-    phrase = triple.negation_phrase
-    if phrase in triple.fact_text:
-        flipped = triple.fact_text.replace(phrase, "", 1)
-    else:
-        # Insert after the first word boundary — keeps the sentence readable
-        # and guarantees a meaning change for the selfcheck.
-        parts = triple.fact_text.split(maxsplit=1)
-        flipped = f"{parts[0]} {phrase}{' ' + parts[1] if len(parts) > 1 else ''}"
-    # Collapse accidental double spaces left by a mid-phrase removal
-    # (e.g. stripping "not" from "does not") so the sentence stays clean.
-    while "  " in flipped:
-        flipped = flipped.replace("  ", " ")
-    return _record(triple, flipped, triple.quote, "contradicted", "negation_flip")
+    return _record(triple, triple.negated_text, triple.quote, "contradicted", "negation_flip")
 
 
 def date_shift(triple: SeedTriple) -> Optional[FaithfulnessRecord]:
@@ -218,7 +210,7 @@ SEED_TRIPLES: tuple[SeedTriple, ...] = (
         context="The team discussed the database move during the retro.",
         entities={"MySQL": "PostgreSQL"},
         paraphrase="The database was switched over to MySQL in March of 2023.",
-        negation_phrase="not",
+        negated_text="We did not migrate to MySQL in March 2023.",
         date_phrase="March 2023",
         date_shifted="March 2024",
         quantity_phrase=None,
@@ -231,7 +223,7 @@ SEED_TRIPLES: tuple[SeedTriple, ...] = (
         context="Headcount came up in the planning meeting.",
         entities={"platform": "infra"},
         paraphrase="There are three engineers on the platform team.",
-        negation_phrase="not",
+        negated_text="The platform team does not have three engineers.",
         date_phrase=None,
         date_shifted=None,
         quantity_phrase="three",
@@ -244,7 +236,7 @@ SEED_TRIPLES: tuple[SeedTriple, ...] = (
         context="The release manager confirmed the weekly schedule.",
         entities={"Tuesday": "Friday"},
         paraphrase="We ship releases on a weekly Tuesday cadence.",
-        negation_phrase="never",
+        negated_text="Releases do not happen every Tuesday.",
         date_phrase=None,
         date_shifted=None,
         quantity_phrase=None,
@@ -257,7 +249,7 @@ SEED_TRIPLES: tuple[SeedTriple, ...] = (
         context="A teammate asked about after-hours coverage.",
         entities={"weekends": "holidays"},
         paraphrase="Weekends are excluded from the oncall rotation.",
-        negation_phrase="not",
+        negated_text="The oncall rotation includes weekends.",
         date_phrase=None,
         date_shifted=None,
         quantity_phrase=None,
@@ -270,7 +262,7 @@ SEED_TRIPLES: tuple[SeedTriple, ...] = (
         context="Legal flagged the upcoming renewal date.",
         entities=None,  # date fixture; entity_swap exercised by other fixtures
         paraphrase="Renewal for the vendor contract is dated January 2025.",
-        negation_phrase="not",
+        negated_text="The vendor contract does not renew in January 2025.",
         date_phrase="January 2025",
         date_shifted="January 2026",
         quantity_phrase=None,
@@ -283,7 +275,7 @@ SEED_TRIPLES: tuple[SeedTriple, ...] = (
         context="Rate limits were documented in the integration spec.",
         entities=None,
         paraphrase="Hourly API usage is capped at five thousand requests.",
-        negation_phrase="not",
+        negated_text="The API does not allow five thousand requests per hour.",
         date_phrase=None,
         date_shifted=None,
         quantity_phrase="five thousand",
@@ -317,9 +309,9 @@ SELFTEST_CASES: tuple[SelftestCase, ...] = (
     SelftestCase("entity-swap-contradict", "entity_swap", "release-cadence", "contradicted",
                  "swapping Tuesday→Friday contradicts the quote"),
     SelftestCase("negation-flip-contradict", "negation_flip", "oncall-rotation", "contradicted",
-                 "removing 'not' from a negated fact contradicts the quote"),
-    SelftestCase("negation-flip-insert-contradict", "negation_flip", "release-cadence", "contradicted",
-                 "inserting 'never' into an affirmative fact contradicts the quote"),
+                 "a grammatical negation of the fact contradicts the quote"),
+    SelftestCase("negation-flip-affirmative-contradict", "negation_flip", "release-cadence", "contradicted",
+                 "negating an affirmative fact with 'do not' contradicts the quote"),
     SelftestCase("date-shift-contradict", "date_shift", "vendor-contract", "contradicted",
                  "shifting the renewal year contradicts the quote"),
     SelftestCase("quantity-change-contradict", "quantity_change", "api-quota", "contradicted",
