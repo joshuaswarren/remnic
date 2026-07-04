@@ -133,6 +133,11 @@ const ENGRAM_MIGRATION_PROMISE = "__openclawEngramMigrationPromise";
 const CLI_REGISTERED_GUARD = "__openclawEngramCliRegistered";
 const SESSION_COMMANDS_REGISTERED_GUARD =
   "__openclawEngramSessionCommandsRegistered";
+// Issue #1550 round 3 (Cursor Bugbot Low): the activeRecall + memory-slot
+// prompt-injection overlap warning must fire ONCE per process, not once
+// per agent registry. Multi-agent gateways call `register()` per agent,
+// so without this guard the same warning was logged N times.
+const ACTIVE_RECALL_OVERLAP_WARNED = "__openclawEngramActiveRecallOverlapWarned";
 
 /**
  * Process-global count of Remnic plugin services whose `start()` has
@@ -662,9 +667,15 @@ function loadPluginEntryFromFile(pluginId?: string): Record<string, unknown> | u
 }
 
 function loadPluginConfigFromFile(pluginId?: string): Record<string, unknown> | undefined {
-  return loadPluginEntryFromFile(pluginId)?.config as
-    | Record<string, unknown>
-    | undefined;
+  // Normalize JSON null to undefined so the resolver's \`"key" in raw\` check
+  // never throws (Cursor Bugbot PR #1593 round 3). The loader's return type
+  // was previously unsafely cast — JSON \`"config": null\` parsed as null
+  // and the \`as Record<...> | undefined\` cast lied about it.
+  const entry = loadPluginEntryFromFile(pluginId);
+  const cfg = entry?.config;
+  if (cfg === null || cfg === undefined) return undefined;
+  if (typeof cfg !== "object" || Array.isArray(cfg)) return undefined;
+  return cfg as Record<string, unknown>;
 }
 
 function loadRawConfigFromFile(): Record<string, unknown> | undefined {
@@ -1322,11 +1333,43 @@ const pluginDefinition = {
     // Pass serviceId so shim installs prefer their own entry (#403).
     const fileConfig = loadPluginConfigFromFile(serviceId);
     const openclawFlushPlanProcessingEnabled = resolveOpenClawFlushPlanProcessingEnabledFromConfig(fileConfig, api.pluginConfig);
-    const cfg = parseConfig({
-      ...fileConfig, // File-backed fallback for runtimes that omit pluginConfig
-      ...api.pluginConfig, // Runtime/plugin-supplied config must win
-      gatewayConfig: api.config, // Pass gateway config for fallback AI
-    });
+    // Capture which keys the runtime layer (api.pluginConfig) explicitly
+    // set so the emit-legacy-tools resolvers can distinguish a deliberate
+    // runtime opt-out (e.g. api.pluginConfig.emitLegacyTools = false)
+    // from schema-default materialization, even when the runtime value
+    // matches the schema default (chatgpt-codex-connector P2, PR #1593
+    // round 7 on src/index.ts:1353).
+    // Round 8 (PR #1593): the `runtimeSet` argument is now always empty.
+    // The round-7 attempt to pass every key present in `api.pluginConfig`
+    // (chatgpt-codex-connector P2, round 7) was undone in round 8 because
+    // OpenClaw's loader runs `applyDefaults: true` before exposing
+    // `api.pluginConfig`, so the set of keys present there cannot reliably
+    // distinguish operator-authored values from schema-default materialization
+    // (chatgpt-codex-connector P1, round 8 on src/index.ts:1348). The
+    // resolver now relies solely on the `configValue !== SCHEMA_DEFAULT`
+    // comparison (round-4 contract). We keep the third arg in the
+    // `parseConfig` signature for API stability but it carries no signal.
+    const runtimeSet = new Set<string>();
+    const cfg = parseConfig(
+      {
+        ...fileConfig, // File-backed fallback for runtimes that omit pluginConfig
+        ...api.pluginConfig, // Runtime/plugin-supplied config must win
+        gatewayConfig: api.config, // Pass gateway config for fallback AI
+      },
+      // `rawOperatorConfig` distinguishes "operator wrote this key in
+      // openclaw.json" from "OpenClaw materialized a schema default into
+      // api.pluginConfig" — the resolvers use it to keep the sticky-legacy
+      // `emitLegacyTools` default reachable on upgraded installs where no
+      // operator override exists (#1550, Cursor Bugbot PR #1593).
+      //
+      // When `fileConfig` is missing entirely (no openclaw.json on disk),
+      // pass \`{}\` rather than undefined so the resolver treats the
+      // absence the same as "file layer present but authored nothing" —
+      // i.e. fall through to env / sticky-legacy instead of trusting a
+      // materialized schema default (Cursor Bugbot PR #1593 round 3).
+      fileConfig ?? {},
+      runtimeSet,
+    );
     cfg.providerApiKeyResolver = resolveOpenClawProviderApiKey;
     cfg.runtimeAuthForModelResolver = getOpenClawRuntimeAuthForModel;
     // Re-initialize with correct debug setting
@@ -3365,6 +3408,21 @@ const pluginDefinition = {
     let memoryPromptBuilder: ((params: { sessionKey?: string }) => string[] | null) | undefined;
 
     if (useMemoryPromptSection && api.registerMemoryPromptSection) {
+      // Issue #1550: memory-slot prompt injection is the primary recall path.
+      // activeRecall is a compat-only secondary pre-reply worker — running
+      // both means two blocking retrievals per turn, so make the overlap
+      // visible once at startup instead of letting operators assume
+      // activeRecall is required for injection.
+      if (cfg.activeRecallEnabled && !(globalThis as any)[ACTIVE_RECALL_OVERLAP_WARNED]) {
+        (globalThis as any)[ACTIVE_RECALL_OVERLAP_WARNED] = true;
+        log.warn(
+          "activeRecallEnabled=true while memory-slot prompt injection is active " +
+            "(registerMemoryPromptSection). Prompt injection does NOT require " +
+            "active recall; this runs a second blocking retrieval per turn. " +
+            "Disable activeRecallEnabled unless the secondary pre-reply summary " +
+            "block is intentional (issue #1550).",
+        );
+      }
       // Async pre-compute: run recall in before_prompt_build and cache result.
       // The hook receives both event and ctx — session identity is in ctx.
       (api.on as (
@@ -4842,8 +4900,13 @@ const pluginDefinition = {
       );
 
       // ---- Subagent lifecycle ----
+      // Migrated off the deprecated `subagent_spawning` hook (issue #1550).
+      // OpenClaw core now prepares thread-bound subagent bindings through
+      // channel session-binding adapters before `subagent_spawned` fires,
+      // so this hook is observation-only — routing is handled by the core
+      // session-binding adapters (no in-plugin routing logic).
       api.on(
-        "subagent_spawning",
+        "subagent_spawned",
         async (
           event: import("openclaw/plugin-sdk").PluginHookSubagentSpawningEvent &
             Record<string, unknown>,
@@ -4851,7 +4914,7 @@ const pluginDefinition = {
             Record<string, unknown>,
         ) => {
           log.debug(
-            `subagent_spawning: ${event.subagentId ?? "?"} purpose=${event.purpose ?? "?"}`,
+            `subagent_spawned: ${event.subagentId ?? "?"} purpose=${event.purpose ?? "?"} parent=${event.parentSessionKey ?? "?"}`,
           );
         },
       );

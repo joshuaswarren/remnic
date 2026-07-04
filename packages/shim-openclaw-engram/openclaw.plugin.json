@@ -1171,12 +1171,12 @@
       "respectBundledActiveMemoryToggle": {
         "type": "boolean",
         "default": true,
-        "description": "Honor the bundled active-memory session toggle file when resolving Remnic recall toggles."
+        "description": "Compat-only (issue #1550): honor the bundled active-memory session toggle file when resolving Remnic recall toggles. Modern OpenClaw memory-slot mode + registerMemoryPromptSection is the primary prompt-injection path; this knob only matters when explicitly chaining Remnic active recall into the bundled `active-memory` plugin."
       },
       "activeRecallEnabled": {
         "type": "boolean",
         "default": false,
-        "description": "Enable the OpenClaw active-recall context surface."
+        "description": "Compat-only (issue #1550): enables the Remnic-native active-recall pre-reply summary block. NOT required for OpenClaw prompt injection — when Remnic is the memory slot, prompt injection runs through registerMemoryPromptSection / memory capability promptBuilder. Enable only to layer a second blocking pre-reply retrieval; a startup warning is logged when both this and memory-slot prompt injection are on."
       },
       "activeRecallAgents": {
         "type": "array",
@@ -1343,7 +1343,7 @@
       "activeRecallAllowChainedActiveMemory": {
         "type": "boolean",
         "default": false,
-        "description": "Allow active recall to chain into the bundled active-memory surface."
+        "description": "Compat-only (issue #1550): allow the Remnic active-recall block to chain into the bundled active-memory surface. Redundant in modern OpenClaw memory-slot mode; only set true when intentionally layering Remnic + bundled active-memory for the same agent."
       },
       "codex": {
         "type": "object",
@@ -1602,8 +1602,8 @@
       },
       "emitLegacyTools": {
         "type": "boolean",
-        "default": true,
-        "description": "Advertise legacy engram_* / engram.* MCP tool aliases alongside the canonical remnic_* names (issue #1427). Default true for backward compatibility. Set false to halve the advertised tools/list surface (only remnic_* names); tools remain callable under both names. Also settable via REMNIC_EMIT_LEGACY_TOOLS."
+        "default": false,
+        "description": "Advertise legacy engram_* / engram.* MCP tool aliases alongside the canonical remnic_* names. Issue #1550: defaults to false on fresh installs (halving the advertised tools/list surface); when existing legacy connector entries are present on disk the default stays true so upgrades never silently break a configured legacy client. An explicit value always wins."
       },
       "citationsEnabled": {
         "type": "boolean",

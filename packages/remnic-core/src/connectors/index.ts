@@ -16,6 +16,8 @@ import { launchProcessSync } from "../runtime/child-process.js";
 import { mergeEnv, readEnvVar, resolveHomeDir } from "../runtime/env.js";
 import { expandTildePath } from "../utils/path.js";
 import { coerceInstallExtension } from "./coerce.js";
+import { getConnectorsDir, getRegistryPath } from "./paths.js";
+export { getConnectorsDir, getRegistryPath } from "./paths.js";
 
 // Native memory artifact materialization for Codex CLI (#378). Surfaced here
 // so downstream callers can `import { materializeForNamespace } from "@remnic/core/connectors"`.
@@ -556,7 +558,6 @@ const BUILTIN_CONNECTORS: ConnectorManifest[] = [
 
 // ── Registry management ───────────────────────────────────────────────────
 
-const REGISTRY_DIR_NAME = ".engram-connectors";
 const CONNECTOR_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function isValidConnectorId(connectorId: unknown): connectorId is string {
@@ -572,13 +573,6 @@ function isConnectorManifest(value: unknown): value is ConnectorManifest {
   );
 }
 
-export function getRegistryPath(): string {
-  const xdgConfigHome = readEnvVar("XDG_CONFIG_HOME");
-  const configDir = xdgConfigHome
-    ? path.join(xdgConfigHome, "engram")
-    : path.join(resolveHomeDir(), ".config", "engram");
-  return path.join(configDir, REGISTRY_DIR_NAME, "registry.json");
-}
 
 export function loadRegistry(): ConnectorRegistry {
   const regPath = getRegistryPath();
@@ -3058,13 +3052,6 @@ export function removeCodexMemoryExtension(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getConnectorsDir(): string {
-  const xdgConfigHome = readEnvVar("XDG_CONFIG_HOME");
-  const configDir = xdgConfigHome
-    ? path.join(xdgConfigHome, "engram")
-    : path.join(resolveHomeDir(), ".config", "engram");
-  return path.join(configDir, REGISTRY_DIR_NAME, "connectors");
-}
 
 // ── WeClone proxy config helpers ───────────────────────────────────────────
 //
