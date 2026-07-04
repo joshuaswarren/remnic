@@ -75,7 +75,10 @@ export interface RunCliResult {
 class CliExitSignal extends Error {
   readonly code: number;
   constructor(code: number) {
-    super(`remnic: process.exit(${code}) intercepted by runCli`);
+    // Empty message: command-level catches that log e.message produce no
+    // stderr pollution, matching the binary's immediate-exit behaviour.
+    // runCli identifies the signal via instanceof, not message content.
+    super();
     this.name = "CliExitSignal";
     this.code = code;
   }
@@ -152,6 +155,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   const originalCwd = process.cwd();
   const originalStdout = process.stdout;
   const originalStderr = process.stderr;
+  const originalArgv = process.argv;
   const originalConsoleLog = console.log;
   const originalConsoleError = console.error;
   const originalConsoleWarn = console.warn;
@@ -236,6 +240,10 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     // the host test process safe; resetting at entry keeps each runCli call
     // independent of the previous one.
     process.exitCode = 0;
+    // Override argv so commands that read process.argv directly (e.g.
+    // writeBenchReproManifestForPackageRun) see the invoked CLI args, not
+    // the test runner's parent argv.
+    process.argv = [originalArgv[0], originalArgv[1], ...argv];
 
     await main(argv);
     return {
@@ -272,6 +280,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     console.error = originalConsoleError;
     console.warn = originalConsoleWarn;
     console.info = originalConsoleInfo;
+    process.argv = originalArgv;
     for (const [key, prevValue, hadKey] of envBackups) {
       if (hadKey && typeof prevValue === "string") {
         process.env[key] = prevValue;
