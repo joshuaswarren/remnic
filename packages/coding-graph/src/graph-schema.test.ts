@@ -434,3 +434,46 @@ test("edges table has a destination-leading index for prune/cascade lookups (cha
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("node_attributes created on existing v1 stores (chatgpt-codex-connector P1: 'Create node_attributes for existing v1 stores')", async () => {
+  const dir = await tempDir();
+  try {
+    const db = openTempDb(dir, "v1-existing.sqlite");
+    applyCodingGraphSchema(db);
+    assert.equal(readSchemaVersion(db), 1);
+
+    // Simulate a PR1-era DB that predates the PR2 node_attributes table:
+    // drop it while leaving the meta schema_version=1 row in place.
+    db.prepare("DROP TABLE node_attributes").run();
+    const remaining = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='node_attributes'",
+        )
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+    assert.equal(remaining.length, 0, "precondition: node_attributes dropped");
+
+    // Re-apply the schema as a normal open() would. Because every DDL
+    // statement is CREATE TABLE IF NOT EXISTS and applyCodingGraphSchema
+    // runs createTables unconditionally, the additive table reappears
+    // on the existing v1 DB without a version bump.
+    applyCodingGraphSchema(db);
+    assert.equal(readSchemaVersion(db), 1, "version unchanged (additive)");
+    const recreated = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='node_attributes'",
+        )
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+    assert.equal(
+      recreated.length,
+      1,
+      "node_attributes recreated on existing v1 store via the unconditional createTables pass",
+    );
+    db.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

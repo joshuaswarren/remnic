@@ -360,7 +360,8 @@ export type SnippetFailureCode =
   | "ambiguous_name"
   | "repo_root_unset"
   | "read_failed"
-  | "invalid_query";
+  | "invalid_query"
+  | "store_closed";
 
 export type SnippetResult = SnippetSuccess | { ok: false; code: SnippetFailureCode };
 
@@ -1281,14 +1282,16 @@ export class GraphStore {
   /**
    * Pass 3 (PR2): upsert `node_attributes` rows for this file's
    * surviving nodes, derived from the IR's optional `exports` and
-   * `routes` arrays. Mirrors the edges-pass semantics:
-   *   - `exports == null` (omitted) → preserve existing flags
-   *     (PR1-era IR has no exports field; the file's prior flags
-   *     stay put so a re-ingest cannot accidentally wipe them).
+   * `routes` arrays. Per-field preservation semantics (mirrors the
+   * edges pass, generalized to two independent flags):
+   *   - `exports == null` (omitted) → preserve existing `is_exported`
+   *     flags untouched (PR1-era IR has no exports field). The
+   *     `is_route_handler` flag is rebuilt independently from
+   *     `routes` — the two columns do NOT interact.
    *   - `exports === []` (explicit empty) → wipe the file's
    *     `is_exported` flags (the caller is asserting "this file
    *     exports nothing").
-   *   - same rule for `routes`.
+   *   - same rule for `routes` / `is_route_handler`.
    *
    * A symbol is `is_exported=1` when its `name` matches an entry in
    * `ir.exports` (multiple symbols with the same name in one file all
@@ -1296,32 +1299,46 @@ export class GraphStore {
    * never silently picking one). A symbol is `is_route_handler=1`
    * when its `qualifiedName` equals a route's `handlerQualifiedName`.
    *
-   * Implementation: delete-then-insert per file (same shape as the
-   * edges pass) so changed exports/routes overwrite prior rows.
-   * Inserting is INSERT OR REPLACE keyed on `node_id` so two symbols
-   * in the same file sharing a name do not collide.
+   * Implementation: per-flag UPDATE, not a delete-then-insert (the
+   * original PR2 implementation wiped both flags whenever either field
+   * was present, so a re-ingest with only `exports` silently dropped
+   * `is_route_handler` — cursor Bugbot + chatgpt-codex-connector P2).
+   * The two flags live in the same row keyed by node_id; INSERT OR
+   * IGNORE ensures a row exists, then UPDATE-per-flag changes only
+   * the column the IR is asserting.
    */
   private upsertFileAttributes(ir: StoreFileIR, result: UpsertResult): void {
-    // Both fields omitted → nothing to assert. Preserve existing
-    // flags (PR1 baseline). Avoids touching the table at all so
-    // truly-no-op re-ingests stay zero-cost.
+    // Both fields omitted → nothing to assert. Preserve every flag
+    // (PR1 baseline). Avoids touching the table at all so truly-no-op
+    // re-ingests stay zero-cost.
     if (ir.exports == null && ir.routes == null) {
       return;
     }
 
-    // Build the set of node ids in this file that should carry each
-    // flag. Both maps are keyed by node id; the value is ignored
-    // (presence ⇒ flag set). Match by name for exports, by
-    // qualified_name for routes — the conventional surface each list
-    // carries.
-    const exportedNodeIds = new Set<string>();
-    const routeHandlerNodeIds = new Set<string>();
     const ownNodes = expectRows<{ id: string; name: string; qualified_name: string }>(
       this.db
         .prepare("SELECT id, name, qualified_name FROM nodes WHERE file_id = ?")
         .all(result.fileId),
       ["id", "name", "qualified_name"],
     );
+    const ownNodeIds = ownNodes.map((n) => n.id);
+    if (ownNodeIds.length === 0) {
+      return;
+    }
+
+    // Per-flag rebuild. The pattern is identical for each flag:
+    //   1. Ensure every node in this file has an attributes row
+    //      (default 0,0). INSERT OR IGNORE keeps any existing row.
+    //   2. If the IR field for this flag is present, wipe the column
+    //      for this file's nodes (so removed flags clear), then set
+    //      the column for nodes in the new set.
+    //   3. If the IR field is omitted, leave the column untouched.
+    const ensureRow = this.db.prepare(
+      `INSERT OR IGNORE INTO node_attributes (node_id, is_exported, is_route_handler)
+         VALUES (?, 0, 0)`,
+    );
+    for (const id of ownNodeIds) ensureRow.run(id);
+
     if (ir.exports != null) {
       const exportNames = new Set<string>();
       for (const ex of ir.exports) {
@@ -1329,10 +1346,23 @@ export class GraphStore {
           exportNames.add(ex.name);
         }
       }
+      const newExportedIds = new Set<string>();
       for (const n of ownNodes) {
-        if (exportNames.has(n.name)) exportedNodeIds.add(n.id);
+        if (exportNames.has(n.name)) newExportedIds.add(n.id);
       }
+      // Wipe is_exported for this file's nodes, chunked under the
+      // SQLite variable limit. The other column is untouched.
+      this.runChunkedUpdate(
+        `UPDATE node_attributes SET is_exported = 0 WHERE node_id IN (%PH%)`,
+        ownNodeIds,
+      );
+      // Set the flag for the new exported set.
+      const setExported = this.db.prepare(
+        `UPDATE node_attributes SET is_exported = 1 WHERE node_id = ?`,
+      );
+      for (const id of newExportedIds) setExported.run(id);
     }
+
     if (ir.routes != null) {
       const handlerQNames = new Set<string>();
       for (const r of ir.routes) {
@@ -1340,47 +1370,32 @@ export class GraphStore {
           handlerQNames.add(r.handlerQualifiedName);
         }
       }
+      const newRouteIds = new Set<string>();
       for (const n of ownNodes) {
-        if (handlerQNames.has(n.qualified_name)) routeHandlerNodeIds.add(n.id);
+        if (handlerQNames.has(n.qualified_name)) newRouteIds.add(n.id);
       }
+      this.runChunkedUpdate(
+        `UPDATE node_attributes SET is_route_handler = 0 WHERE node_id IN (%PH%)`,
+        ownNodeIds,
+      );
+      const setRoute = this.db.prepare(
+        `UPDATE node_attributes SET is_route_handler = 1 WHERE node_id = ?`,
+      );
+      for (const id of newRouteIds) setRoute.run(id);
     }
+  }
 
-    // Delete-then-insert per file: the prior rows for this file's
-    // nodes are wiped so changed exports overwrite. Without this, a
-    // re-ingest that drops an export would leave the old flag set,
-    // silently hiding a now-dead symbol from `deadCode()`. Chunked
-    // under the SQLite variable limit to handle large symbol tables.
-    const ownNodeIds = ownNodes.map((n) => n.id);
-    if (ownNodeIds.length > 0) {
-      for (let i = 0; i < ownNodeIds.length; i += SQLITE_VARIABLE_LIMIT) {
-        const chunk = ownNodeIds.slice(i, i + SQLITE_VARIABLE_LIMIT);
-        const placeholders = chunk.map(() => "?").join(", ");
-        this.db
-          .prepare(
-            `DELETE FROM node_attributes WHERE node_id IN (${placeholders})`,
-          )
-          .run(...chunk);
-      }
-    }
-
-    // Insert fresh rows for nodes carrying either flag. A node with
-    // neither flag set does not get a row at all — the deadCode LEFT
-    // JOIN COALESCEs the missing row to (0, 0).
-    const flagged = new Set<string>([...exportedNodeIds, ...routeHandlerNodeIds]);
-    if (flagged.size === 0) {
-      return;
-    }
-    const upsertAttr = this.db.prepare(
-      `INSERT INTO node_attributes (node_id, is_exported, is_route_handler)
-         VALUES (?, ?, ?)
-       ON CONFLICT(node_id) DO UPDATE SET
-         is_exported = excluded.is_exported,
-         is_route_handler = excluded.is_route_handler`,
-    );
-    for (const id of flagged) {
-      const isExported = exportedNodeIds.has(id) ? 1 : 0;
-      const isRoute = routeHandlerNodeIds.has(id) ? 1 : 0;
-      upsertAttr.run(id, isExported, isRoute);
+  /**
+   * Chunk a parameterized UPDATE-with-IN-list under SQLite's variable
+   * bind limit. The SQL template uses `%PH%` as a placeholder for the
+   * `?,?,…` list. Mirrors the chunking pattern PR1 uses for deletes.
+   */
+  private runChunkedUpdate(sqlTemplate: string, params: readonly string[]): void {
+    if (params.length === 0) return;
+    for (let i = 0; i < params.length; i += SQLITE_VARIABLE_LIMIT) {
+      const chunk = params.slice(i, i + SQLITE_VARIABLE_LIMIT);
+      const placeholders = chunk.map(() => "?").join(", ");
+      this.db.prepare(sqlTemplate.replace("%PH%", placeholders)).run(...chunk);
     }
   }
 
@@ -1411,7 +1426,19 @@ export class GraphStore {
         code: "invalid_query",
       };
     }
+    // Validate direction against the allowed set (rule 51 +
+    // chatgpt-codex-connector P2: 'Reject invalid traversal directions
+    // explicitly'). Without this a typo like "outbound" silently falls
+    // through none of the branches and returns only the start node,
+    // masquerading as a valid empty expansion.
     const direction: TraverseDirection = query.direction ?? "outgoing";
+    if (
+      direction !== "outgoing" &&
+      direction !== "incoming" &&
+      direction !== "both"
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
     // Resolve the start node. If `start` is a 64-char hex string, treat
     // it as a node id; otherwise resolve by qualified_name (ambiguous →
     // explicit rejection so the caller can pass an id).
@@ -1795,7 +1822,7 @@ export class GraphStore {
    * on-disk bytes.
    */
   async snippetFor(query: SnippetQuery): Promise<SnippetResult> {
-    if (this.closed) return { ok: false, code: "repo_root_unset" };
+    if (this.closed) return { ok: false, code: "store_closed" };
     if (
       typeof query.qualifiedName !== "string" ||
       query.qualifiedName.length === 0

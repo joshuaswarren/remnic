@@ -459,6 +459,28 @@ test("traverse: store_closed when the store is closed", async () => {
   }
 });
 
+test("traverse: invalid direction rejected with code 'invalid_query' (chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([cyclicFile]);
+    assert.equal(r.ok, true);
+
+    // A typo like "outbound" must NOT silently return only the start
+    // node — it must surface as invalid_query so the caller learns.
+    const out = store.traverse({
+      start: "cyc.a",
+      maxDepth: 3,
+      // @ts-expect-error — deliberately invalid direction at runtime
+      direction: "outbound",
+    });
+    assert.equal(out.ok, false);
+    if (out.ok) throw new Error("expected failure");
+    assert.equal(out.code, "invalid_query");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // searchGraph(): label / name / file patterns + degree filters + limit.
 // ──────────────────────────────────────────────────────────────────────────
@@ -769,6 +791,48 @@ test("deadCode: re-ingest that REMOVES an export re-classifies the symbol as dea
   }
 });
 
+test("deadCode: partial re-ingest preserves the omitted flag (cursor Bugbot + chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // First ingest: healthHandler is a route handler → not dead.
+    const r1 = await store.upsertFileBatch([routeHandlerFile]);
+    assert.equal(r1.ok, true);
+    const before = store.deadCode();
+    assert.equal(before.ok, true);
+    if (!before.ok) throw new Error("expected ok");
+    assert.deepEqual(
+      before.hits.map((h) => h.qualifiedName).sort(),
+      ["route.uncalledHelper"],
+      "healthHandler excluded as a route handler",
+    );
+
+    // Second ingest: provide ONLY exports (omitting routes). The
+    // route-handler flag MUST be preserved — the per-field semantics
+    // say an omitted field leaves existing flags untouched. The old
+    // delete-then-insert wiped both columns and re-classified
+    // healthHandler as dead.
+    const revised: StoreFileIR = {
+      path: routeHandlerFile.path,
+      language: routeHandlerFile.language,
+      contentHash: "h-route-v2",
+      symbols: routeHandlerFile.symbols,
+      exports: [], // explicitly no exports; routes OMITTED
+    };
+    const r2 = await store.upsertFileBatch([revised]);
+    assert.equal(r2.ok, true);
+    const after = store.deadCode();
+    assert.equal(after.ok, true);
+    if (!after.ok) throw new Error("expected ok");
+    assert.deepEqual(
+      after.hits.map((h) => h.qualifiedName).sort(),
+      ["route.uncalledHelper"],
+      "healthHandler STILL excluded — routes flag preserved across a partial re-ingest",
+    );
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
 test("deadCode: route handlers excluded via the named constant", async () => {
   const { store, dir } = await tempStore();
   try {
@@ -1004,5 +1068,32 @@ test("snippetFor: 'ambiguous_name' when qualifiedName exists in two files", asyn
     assert.equal(out.code, "ambiguous_name");
   } finally {
     await dispose(store, dir);
+  }
+});
+
+test("snippetFor: returns 'store_closed' when the store is closed (cursor Bugbot + chatgpt-codex-connector P2)", async () => {
+  const { store, dir, repoRoot } = await tempStore();
+  try {
+    const file: StoreFileIR = {
+      path: "src/closed.ts",
+      language: "typescript",
+      contentHash: "h-closed",
+      symbols: [sym("closed.fn", "fn", 0, 10)],
+    };
+    const r = await store.upsertFileBatch([file]);
+    await mkdir(path.dirname(path.join(repoRoot, "src/closed.ts")), {
+      recursive: true,
+    });
+    await writeFile(path.join(repoRoot, "src/closed.ts"), "function fn() {}\n");
+
+    await store.close();
+    const out = await store.snippetFor({ qualifiedName: "closed.fn" });
+    assert.equal(out.ok, false);
+    if (out.ok) throw new Error("expected failure");
+    // Must be store_closed (the store is closed), NOT repo_root_unset
+    // (repoRoot IS set) — callers need to distinguish the two.
+    assert.equal(out.code, "store_closed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

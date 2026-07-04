@@ -112,9 +112,19 @@ export function applyCodingGraphSchema(db: BetterSqlite3Database): void {
   );
   const currentVersion = meta ? parseInt(meta.value, 10) : 0;
 
-  if (currentVersion < CODING_GRAPH_SCHEMA_VERSION) {
-    createTables(db);
-  }
+  // Always re-run createTables on existing DBs — every statement is
+  // CREATE TABLE IF NOT EXISTS, so additive tables (the PR2
+  // `node_attributes` table) get created on existing v1 databases
+  // without a schema-version bump. A DB whose meta version is older
+  // than CODING_GRAPH_SCHEMA_VERSION also needs this (the original
+  // upgrade path), so the call is unconditional, not gated by
+  // currentVersion (chatgpt-codex-connector P1: 'Create
+  // node_attributes for existing v1 stores'). Future schema-breaking
+  // migrations (column drops / type changes) bump the version AND
+  // add a dedicated migration branch here; additive CREATE TABLE IF
+  // NOT EXISTS does not need that.
+  void currentVersion;
+  createTables(db);
 }
 
 function createTables(db: BetterSqlite3Database): void {
