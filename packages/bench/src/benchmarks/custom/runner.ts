@@ -7,7 +7,7 @@ import path from "node:path";
 import type { RunBenchmarkOptions, BenchmarkDefinition, BenchmarkResult, ResolvedRunBenchmarkOptions, TaskResult } from "../../types.js";
 import { answerBenchmarkQuestion } from "../../answering.js";
 import { aggregateTaskScores, exactMatch, f1Score, llmJudgeScoreDetailed, rougeL, timed } from "../../scorer.js";
-import { orchestrateBenchmarkRuns, resolveBenchmarkRunCount, wrapJudgeWithCache } from "../../benchmark.js";
+import { orchestrateBenchmarkRuns, resolveBenchmarkRunCount, createJudgeOverrideProxy, wrapJudgeWithCache } from "../../benchmark.js";
 import { JudgeCache } from "../../judges/judge-cache.js";
 import type { JudgeCacheCounters } from "../../judges/judge-cache.js";
 import { expandTildePath } from "@remnic/core";
@@ -59,21 +59,20 @@ export async function runCustomBenchmarkFile(
         provider: runOptions.judgeProvider ?? null,
         cache: new JudgeCache({ dir: cacheDir }),
       });
-      // PR #1591 round-8: try in-place mutation first (preserves `this`
-      // for class-based adapters with #private fields). Fall back to a
-      // shadow adapter when the property is frozen/non-writable.
+      // PR #1591 round-8 (round-9 update): try in-place mutation first
+      // (preserves `this` for class-based adapters with #private fields).
+      // When the property is frozen/getter-only the assignment throws, so
+      // fall back to a delegating Proxy (createJudgeOverrideProxy) that
+      // overrides only `judge` and binds every other method to the original
+      // adapter. Object.create would have changed `this` and broken private
+      // member access for read-only adapters (thread PRRT_kwDORJXyws6OVjxR,
+      // cursor bugbot) — the same defect fixed in runBenchmark round-9.
       let systemJudgeMutatedInPlace = false;
       try {
         runOptions.system.judge = wrapped.judge;
         systemJudgeMutatedInPlace = true;
       } catch {
-        runOptions.system = Object.create(runOptions.system);
-        Object.defineProperty(runOptions.system, "judge", {
-          value: wrapped.judge,
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        });
+        runOptions.system = createJudgeOverrideProxy(runOptions.system, wrapped.judge);
       }
       cacheCounters = wrapped.counters;
       const needRestore = systemJudgeMutatedInPlace;
