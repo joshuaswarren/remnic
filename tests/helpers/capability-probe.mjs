@@ -63,7 +63,12 @@ export function commandAvailable(tool) {
     return { ok: false, reason: "forced unavailable via REMNIC_FORCE_COMMAND_UNAVAILABLE" };
   }
   if (commandCache.has(tool)) return /** @type {{ok: boolean, reason?: string}} */ (commandCache.get(tool));
-  const probe = spawnSync("command", ["-v", tool], {
+  // Mirror the existing AMB integrations probe (`integrations/amb/check-remnic-run.mjs`,
+  // `integrations/amb/install-remnic-provider.test.mjs`) — invoke `command -v` via
+  // `sh -c` so shell builtins are honored on hosts where `command` is not on
+  // PATH (Linux CI). `command` is a bash/zsh builtin; `spawnSync("command", …)`
+  // with `shell: false` returns ENOENT there.
+  const probe = spawnSync("sh", ["-c", 'command -v "$1"', "sh", tool], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
   });
@@ -113,7 +118,12 @@ export function cleanWorkingTreeProbe() {
     dirtyTreeCached = { ok: false, reason: "forced dirty via REMNIC_FORCE_DIRTY_WORKING_TREE" };
     return dirtyTreeCached;
   }
-  const probe = spawnSync("git", ["-C", repoRoot, "status", "--porcelain"], {
+  // Match `scripts/bench/verify-amb-sota.mjs:gitStatusEntries` exactly —
+  // `--porcelain=v1 --untracked-files=all` — so the skip-with-reason guard
+  // agrees with the verifier on what "dirty" means. Without `--untracked-files=all`,
+  // a host with `status.showUntrackedFiles=no` would skip-with-reason locally
+  // while the verifier still rejects provenance.
+  const probe = spawnSync("git", ["-C", repoRoot, "status", "--porcelain=v1", "--untracked-files=all"], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
   });

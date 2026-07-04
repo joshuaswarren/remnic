@@ -3011,11 +3011,21 @@ test("AMB SOTA verifier compares Remnic result against external best", {
 async function initCleanGitRepo(repoDir: string): Promise<void> {
   await mkdir(repoDir, { recursive: true });
   runGit(repoDir, ["init"]);
+  // Override `commit.gpgsign` so the temp repo does not inherit the host's
+  // signing config (e.g. 1Password-backed GPG on developer machines). Without
+  // this override, `git commit --allow-empty` exits 128 when the host's signing
+  // agent is unavailable, masking real SOTA-verifier regressions with an
+  // environmental flake. The temp repo's commits are throwaway — signing would
+  // only attribute them, which is meaningless.
   runGit(repoDir, [
     "-c",
     "user.email=remnic-tests@example.invalid",
     "-c",
     "user.name=Remnic Tests",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "tag.gpgsign=false",
     "commit",
     "--allow-empty",
     "-m",

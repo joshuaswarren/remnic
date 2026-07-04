@@ -90,6 +90,12 @@ jobs:
       - name: Rebuild native modules
         run: pnpm rebuild better-sqlite3
 
+      # CI hard-requires capability tests (#1541) below, which in turn
+      # hard-requires `uv` for the AMB runner scripts. Install it on the
+      # ubuntu runner so the gate has the capability it demands.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Lint
         run: pnpm run lint
 
