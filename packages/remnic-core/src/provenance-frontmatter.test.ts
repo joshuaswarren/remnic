@@ -334,3 +334,30 @@ test("empty sources array does not emit a sources line", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("write-path validation drops invalid in-memory sources (review thread 4)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-writeval-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const id = await writeFactFile(storage, "Fact with mixed-validity sources.");
+
+    // One valid entry + one missing sessionKey + one missing observedAt.
+    await storage.updateMemoryFrontmatter(id, {
+      sources: [
+        { sessionKey: "s/1", observedAt: "2026-01-01T00:00:00Z", quote: "valid" },
+        { observedAt: "2026-01-01T00:00:00Z", quote: "no sessionKey" } as ProvenanceSource,
+        { sessionKey: "s/3", quote: "no observedAt" } as ProvenanceSource,
+      ],
+    });
+
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(written, "fact must survive the write");
+    assert.ok(written!.frontmatter.sources, "sources must survive with valid entries");
+    assert.equal(written!.frontmatter.sources!.length, 1, "only the valid entry survives");
+    assert.equal(written!.frontmatter.sources![0]!.quote, "valid");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

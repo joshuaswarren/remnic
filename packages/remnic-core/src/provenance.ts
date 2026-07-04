@@ -59,9 +59,14 @@ function canonicalProvenanceSource(src: ProvenanceSource): Record<string, unknow
  */
 export function serializeProvenanceFields(fm: MemoryFrontmatter, lines: string[]): void {
   if (fm.sources && fm.sources.length > 0) {
-    const canonical = fm.sources
-      .filter((src) => src && typeof src.quote === "string" && src.quote.length > 0)
-      .map(canonicalProvenanceSource);
+    // Validate each entry against the same schema used on read so invalid
+    // in-memory sources are dropped at write time, not silently lost on the
+    // next read (review thread 4 — write-path validation parity).
+    const canonical: Record<string, unknown>[] = [];
+    for (const src of fm.sources) {
+      const result = ProvenanceSourceSchema.safeParse(src);
+      if (result.success) canonical.push(canonicalProvenanceSource(result.data));
+    }
     if (canonical.length > 0) {
       lines.push(`sources: ${JSON.stringify(canonical)}`);
     }
