@@ -2786,6 +2786,16 @@
       "remnic-source": "./src/utility-telemetry.ts",
       "import": "./dist/utility-telemetry.js"
     },
+    "./utils/serialize-mutations": {
+      "types": "./dist/utils/serialize-mutations.d.ts",
+      "remnic-source": "./src/utils/serialize-mutations.ts",
+      "import": "./dist/utils/serialize-mutations.js"
+    },
+    "./utils/serialize-mutations.js": {
+      "types": "./dist/utils/serialize-mutations.d.ts",
+      "remnic-source": "./src/utils/serialize-mutations.ts",
+      "import": "./dist/utils/serialize-mutations.js"
+    },
     "./verified-recall": {
       "types": "./dist/verified-recall.d.ts",
       "remnic-source": "./src/verified-recall.ts",
