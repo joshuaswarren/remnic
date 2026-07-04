@@ -398,6 +398,41 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
       },
     },
     {
+      name: "writeMemoryFrontmatter",
+      kind: "memory",
+      // STATEFUL ENTRY: distinct from the ID-based updateMemoryFrontmatter —
+      // production callers invoke writeMemoryFrontmatter(memory, patch) directly
+      // (forget.ts, access-service.ts). setup creates the parent outside the
+      // measured window; the getMemoryById inside write is a READ (does not move
+      // lastWriteAt) so only writeMemoryFrontmatter is the measured catalog write.
+      // Without this entry an impl that touches the catalog in the ID-based
+      // wrapper but not this direct method would bypass #1522's fitness test.
+      setup: async (storage) => {
+        return storage.writeMemory(
+          "fact",
+          "contract-surface writeMemoryFrontmatter parent",
+          { tags: ["contract-surface"] },
+        );
+      },
+      write: async (storage, setupContext) => {
+        const id = setupContext as string;
+        const memory = await storage.getMemoryById(id);
+        if (!memory) {
+          throw new Error("writeMemoryFrontmatter setup memory not readable");
+        }
+        const ok = await storage.writeMemoryFrontmatter(memory, { confidence: 0.5 });
+        if (!ok) {
+          throw new Error("writeMemoryFrontmatter returned false for a just-written memory");
+        }
+        // Verify the OPERATION persisted: the patched confidence must round-trip.
+        const updated = await storage.getMemoryById(id);
+        if (!updated || updated.frontmatter.confidence !== 0.5) {
+          throw new Error("writeMemoryFrontmatter did not persist the frontmatter patch");
+        }
+        return id;
+      },
+    },
+    {
       name: "writeArtifact",
       kind: "artifact",
       write: async (storage) => {

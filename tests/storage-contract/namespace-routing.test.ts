@@ -55,12 +55,16 @@ test("namespace routing: a named (non-default) namespace lands under <memoryDir>
     const storage = await router.storageFor("project-origin-abcd1234");
     // Path-boundary check: a sibling like <memoryDir>/namespaces-evil would
     // satisfy a naive startsWith("<memoryDir>/namespaces") but is OUTSIDE the
-    // namespaces/ directory. path.relative returns ".." only for paths outside
-    // the root, so this catches the prefix-collision bug a startsWith misses.
+    // namespaces/ directory; the root <memoryDir>/namespaces itself would leave
+    // path.relative empty, masking a regression where every named namespace
+    // collapses onto the root. Require a NON-EMPTY child segment that does not
+    // escape the root — closes both the prefix-collision and the root-collision
+    // holes.
     const namespacesRoot = path.join(memoryDir, "namespaces");
+    const childSegment = path.relative(namespacesRoot, storage.dir);
     assert.ok(
-      !path.relative(namespacesRoot, storage.dir).startsWith(".."),
-      `named namespace must resolve under <memoryDir>/namespaces/ — got ${storage.dir}`,
+      childSegment !== "" && !childSegment.startsWith(".."),
+      `named namespace must resolve to a child of <memoryDir>/namespaces/ (not the root itself, not a sibling) — got ${storage.dir}`,
     );
     assert.notEqual(storage.dir, memoryDir, "named namespace must NOT collapse onto the default root");
   });
