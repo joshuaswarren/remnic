@@ -4,9 +4,13 @@
  * `main()` (in `./index.ts`) is the real dispatcher but it writes directly
  * to `process.stdout` / `process.stderr` and calls `process.exit`, which
  * makes contract testing impossible without spawning a child process per
- * case. `runCli` is the thin wrapper that lets tests (and any future
- * embedded consumer) invoke the CLI in-process and observe the captured
- * stdout / stderr / exitCode.
+ * case. `runCli` is the thin wrapper that lets tests invoke the CLI
+ * in-process and observe the captured stdout / stderr / exitCode.
+ *
+ * Build surface: this module is NOT included in the published package
+ * (tsup builds only src/index.ts). It is a test-local helper consumed via
+ * tsx from source. Phase B may promote it to a public entry point when
+ * the registrar table needs an embeddable surface.
  *
  * The wrapper is intentionally minimal: it does NOT re-implement parsing,
  * dispatch, or validation — those still live behind `main()` so behaviour
