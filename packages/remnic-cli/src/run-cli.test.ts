@@ -222,3 +222,41 @@ test("runCli's swapped process.stdout / process.stderr are accepted by child_pro
   assert.equal(probeRan, true, "probe never ran — daemon bogus-action wrote no stdout");
   assert.deepEqual(errors, [], `child spawn under runCli failed: ${JSON.stringify(errors)}`);
 });
+
+test("runCli captures @remnic/core logger output (CONSOLE_LOGGER late-binds console.*)", async () => {
+  // Regression for the #1613 review thread on logger pre-binding
+  // (PRRT_kwDORJXyws6OXb9H): @remnic/core's default CONSOLE_LOGGER
+  // backend must late-bind console.* so that runCli's console swap
+  // routes log.info/warn/error through the capture buffer. With the old
+  // pre-bound form (console.warn.bind(console)), a command that called
+  // initLogger() pinned the logger to the original console methods
+  // before runCli could swap them, so log.warn / log.info output
+  // escaped RunCliResult and polluted the test runner's real stderr.
+  const { log, initLogger } = await import("@remnic/core");
+  // initLogger() with no args pins _backend to CONSOLE_LOGGER. Under
+  // late-binding this resolves console.* at call time (picking up the
+  // swap); under the old pre-bound form it captured the originals.
+  initLogger();
+  const stderrChunks: string[] = [];
+  const result = await runCli(["daemon", "bogus-action"], {
+    stdout: {
+      write: (chunk: string) => {
+        // Emit a core-logger line from INSIDE the run — runCli has
+        // already swapped console.warn by the time the dispatcher
+        // writes its first stdout line, so late-binding routes log.warn
+        // through the swapped console.warn -> stderr sink. Under
+        // pre-binding the warn would escape to the real process.stderr.
+        log.warn("regression-probe: captured-via-late-bind");
+        return true;
+      },
+    },
+    stderr: {
+      write: (chunk: string) => { stderrChunks.push(chunk); return true; },
+    },
+  });
+  const captured = stderrChunks.join("");
+  assert.ok(
+    captured.includes("regression-probe: captured-via-late-bind"),
+    "core logger output escaped runCli's capture — CONSOLE_LOGGER must late-bind console.* (no .bind(console) in logger.ts)",
+  );
+});
