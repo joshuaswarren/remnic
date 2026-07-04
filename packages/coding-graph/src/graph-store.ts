@@ -37,7 +37,7 @@
  * underlying error internally and returns the code only.
  */
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 
 import {
@@ -76,6 +76,8 @@ export type {
 import type {
   FileIR,
   SymbolIR,
+  ExportIR,
+  RouteIR,
   CodingGraphLanguage,
 } from "@remnic/core/coding/coding-graph-types";
 
@@ -119,9 +121,17 @@ export interface EdgeIR {
  * Store input — the subset of @remnic/core's `FileIR` the store reads,
  * plus the store-specific `edges` extension. A core `FileIR` (from
  * `ParseResult.ir`) is structurally assignable here: all required fields
- * (path, language, contentHash, symbols) match by name and readonly-ness.
- * PR2 callers pass `{ ...parseResult.ir, edges }` (or the bare IR when
- * edges are absent) with zero casts or field-name translation.
+ * (path, language, contentHash, symbols, imports, exports, callSites,
+ * routes) match by name and readonly-ness. PR2 callers pass
+ * `{ ...parseResult.ir, edges }` (or the bare IR when edges are absent)
+ * with zero casts or field-name translation.
+ *
+ * PR2 adds optional `exports` and `routes` consumption: when present,
+ * the write pipeline marks matching nodes in `node_attributes` so the
+ * `deadCode()` query can exclude them via the
+ * {@link DEAD_CODE_EXCLUSION} constant. Both fields are optional because
+ * a PR1-era caller (or a JSON-IR caller that strips them) still ingests
+ * cleanly — the dead-code query simply sees no exclusion flags.
  */
 export interface StoreFileIR {
   readonly path: string;
@@ -130,6 +140,24 @@ export interface StoreFileIR {
   readonly symbols: readonly SymbolIR[];
   /** Store-specific edges derived from the IR by the caller. */
   readonly edges?: readonly EdgeIR[];
+  /**
+   * Per-file export list (mirrors core FileIR.exports). When present,
+   * the write pipeline marks every node in this file whose `name`
+   * matches an ExportIR.name as `is_exported=1` in `node_attributes`.
+   * Name-matching is the conventional pattern: a parser that emits a
+   * `export const foo` declaration also emits a SymbolIR named `foo`
+   * (or omits it if foo is a non-symbol like a plain variable); the
+   * dead-code query then excludes surviving exported symbols.
+   */
+  readonly exports?: readonly ExportIR[];
+  /**
+   * Per-file HTTP route declarations (mirrors core FileIR.routes). When
+   * present, the write pipeline marks the node whose `qualifiedName`
+   * equals `route.handlerQualifiedName` as `is_route_handler=1` in
+   * `node_attributes`. Route handlers are reachable from HTTP traffic
+   * regardless of whether any other indexed node CALLS them.
+   */
+  readonly routes?: readonly RouteIR[];
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -166,6 +194,305 @@ export interface UpsertSuccess {
 export type UpsertBatchResult = UpsertSuccess | GraphStoreFailure;
 
 // ──────────────────────────────────────────────────────────────────────────
+// PR2 read primitives — query / result types (issue #1552 steps 4–5).
+// Tagged failures share the {@link GraphStoreFailureCode} set so callers
+// can use one switch over every store surface.
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Direction of traversal relative to the edge's src→dst orientation. */
+export type TraverseDirection = "outgoing" | "incoming" | "both";
+
+/**
+ * Iterative frontier BFS over the edges table. Cycle-safe via a JS
+ * visited set keyed by node id; predictable memory regardless of graph
+ * shape (recursive CTEs are the documented fallback if benchmarks ever
+ * justify them — issue #1552 design section).
+ */
+export interface TraverseQuery {
+  /**
+   * Start node. Accepts either a node id or a qualified name — the
+   * store resolves a qualified name to its deterministic id via the
+   * same `(qualifiedName, filePath, label)` identity used at ingest
+   * time. When the qualified name is ambiguous (declared in more than
+   * one file), the query is rejected with `code: "ambiguous_start"`
+   * so the caller can pass an explicit node id instead.
+   */
+  start: string;
+  /** Default `"outgoing"`. */
+  direction?: TraverseDirection;
+  /**
+   * Edge types to follow (e.g. `["CALLS", "USES_TYPE"]`). When omitted
+   * or empty, every edge type in the table is followed. Unknown edge
+   * types simply contribute no rows — the query is not rejected
+   * because the schema places no CHECK constraint on `edges.type`.
+   */
+  edgeTypes?: readonly string[];
+  /**
+   * Maximum BFS depth. Half-open: a node at depth == maxDepth IS
+   * included; a node at depth maxDepth+1 is NOT (rule 35). The start
+   * node itself sits at depth 0 and is always included in the result
+   * set when it exists. A maxDepth of 0 returns just the start node.
+   * MUST be a non-negative integer — invalid values are rejected with
+   * `code: "invalid_query"` rather than silently clamped (rule 51).
+   */
+  maxDepth: number;
+}
+
+export interface TraverseHit {
+  nodeId: string;
+  qualifiedName: string;
+  name: string;
+  label: string;
+  /** BFS depth from the start node (start = 0). */
+  depth: number;
+}
+
+export type TraverseResult =
+  | { ok: true; hits: TraverseHit[] }
+  | ({ ok: false } & GraphStoreFailure)
+  | { ok: false; code: "unknown_start" | "ambiguous_start" | "invalid_query" };
+
+/**
+ * Structured node search. All filters are AND-combined; every filter
+ * is optional so the bare query `{}` returns the whole graph (capped
+ * by `limit`). Patterns use SQLite `LIKE` semantics — `%` matches any
+ * run, `_` matches one character — applied case-insensitively via
+ * `LIKE ... COLLATE NOCASE`. Patterns are parameter-bound, never
+ * string-interpolated, so a `%`/`_` in user input cannot inject SQL.
+ */
+export interface SearchQuery {
+  /** Filter by node label (the symbol kind, e.g. `"function"`). */
+  label?: string;
+  /** LIKE pattern on `nodes.name` (case-insensitive). */
+  namePattern?: string;
+  /** LIKE pattern on `files.path` (case-insensitive). */
+  filePattern?: string;
+  /**
+   * Inclusive lower bound on total degree (in + out edge count).
+   * Combined with {@link degreeMax} for a half-open? — no, inclusive
+   * on both ends by convention since degree is an integer count, not
+   * a span (rule 35 covers byte/time spans, not integer ranges).
+   */
+  degreeMin?: number;
+  /** Inclusive upper bound on total degree. */
+  degreeMax?: number;
+  /**
+   * Cap on returned rows. Default 100; clamped to [0, 1000]. A
+   * `limit: 0` returns an empty `hits` array (rule 27 — guard the
+   * slice/LIMIT against the zero case).
+   */
+  limit?: number;
+}
+
+export interface SearchHit {
+  nodeId: string;
+  qualifiedName: string;
+  name: string;
+  label: string;
+  filePath: string;
+  /** Total in + out edge count for this node. */
+  degree: number;
+}
+
+export type SearchResult =
+  | { ok: true; hits: SearchHit[] }
+  | ({ ok: false } & GraphStoreFailure)
+  | { ok: false; code: "invalid_query" };
+
+/** Aggregate counts over the whole graph — single round-trip. */
+export interface SchemaStats {
+  files: number;
+  nodes: number;
+  edges: number;
+  /** Node count grouped by `label` (symbol kind). */
+  nodesByLabel: Record<string, number>;
+  /** Edge count grouped by `type`. */
+  edgesByType: Record<string, number>;
+}
+
+export type SchemaStatsResult =
+  | { ok: true; stats: SchemaStats }
+  | ({ ok: false } & GraphStoreFailure);
+
+export interface DeadCodeHit {
+  nodeId: string;
+  qualifiedName: string;
+  name: string;
+  label: string;
+  filePath: string;
+}
+
+export type DeadCodeResult =
+  | { ok: true; hits: DeadCodeHit[] }
+  | ({ ok: false } & GraphStoreFailure);
+
+/**
+ * Read a symbol's source span from disk. The store NEVER persists file
+ * contents (privacy + DB size — issue #1552 design); `snippetFor`
+ * resolves the node's `files.path` against {@link GraphStoreOptions.repoRoot}
+ * and slices `[span_start, span_end)` from the on-disk bytes.
+ */
+export interface SnippetQuery {
+  qualifiedName: string;
+  /**
+   * Optional lines of context to include before and after the span
+   * (default 0 — exact span only). Context is line-aligned: the slice
+   * expands to the nearest line boundary at each end.
+   */
+  contextLines?: number;
+}
+
+export interface SnippetSuccess {
+  ok: true;
+  qualifiedName: string;
+  filePath: string;
+  /** Absolute path the bytes were read from (`repoRoot/files.path`). */
+  absolutePath: string;
+  startByte: number;
+  endByte: number;
+  /** The decoded source slice (UTF-8). */
+  text: string;
+  lang: string;
+}
+
+export type SnippetFailureCode =
+  | "not_found"
+  | "ambiguous_name"
+  | "repo_root_unset"
+  | "read_failed"
+  | "invalid_query";
+
+export type SnippetResult = SnippetSuccess | { ok: false; code: SnippetFailureCode };
+
+// ──────────────────────────────────────────────────────────────────────────
+// PR2 dead-code exclusion — explicit named constant (rule 53 analog).
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * The single source of truth for what `deadCode()` EXCLUDES from the
+ * candidate set. Anything matched by these patterns or flags is treated
+ * as a non-dead surface even when it has zero inbound call/usage edges.
+ *
+ * This constant exists so the exclusion criteria are NAMED, DOCUMENTED,
+ * and auditable in one place — not scattered across ad-hoc `WHERE`
+ * clauses (rule 53 analog). Adding a new exclusion category means
+ * extending this constant plus the matching `node_attributes` column;
+ * the query then picks both up automatically.
+ *
+ * Categories:
+ *   - {@link INBOUND_USAGE_EDGE_TYPES} — an inbound edge of any of these
+ *     types disqualifies a node from being dead.
+ *   - {@link TEST_PATH_PATTERNS} — a node whose `files.path` matches is
+ *     in a test file; tests can call into private code without the
+ *     production graph seeing the edge.
+ *   - {@link ENTRY_POINT_PATH_PATTERNS} — process entry points (index,
+ *     main, cli, bin/); these are reachable from outside the graph.
+ *   - {@link EXCLUDED_ATTRIBUTE_FLAGS} — per-node flags stored in
+ *     `node_attributes` (set at write time from FileIR.exports /
+ *     FileIR.routes); `is_exported` and `is_route_handler`.
+ */
+export const DEAD_CODE_EXCLUSION = {
+  /**
+   * Edge types that — when pointing INTO a node — count as "this node
+   * is used". Mirrors the issue's `CALLS/USAGE` wording plus the four
+   * call-flavored edge types in the wider coding-graph vocabulary.
+   */
+  INBOUND_USAGE_EDGE_TYPES: [
+    "CALLS",
+    "USES_TYPE",
+    "ASYNC_CALLS",
+    "HTTP_CALLS",
+    "DATA_FLOWS",
+  ] as const,
+  /**
+   * File-path regexes identifying test files. Matched against
+   * `files.path` (repo-relative, forward slashes).
+   */
+  TEST_PATH_PATTERNS: [
+    /\.test\.[cm]?[tj]sx?$/,
+    /\.spec\.[cm]?[tj]sx?$/,
+    /(^|\/)__tests__\//,
+    /(^|\/)__mocks__\//,
+    /(^|\/)tests?\//,
+    /(^|\/)test\//,
+  ] as const,
+  /**
+   * File-path regexes identifying entry points (reachable from
+   * outside the indexed code). Matched against `files.path`. Kept
+   * deliberately narrow — `server.ts` / `app.ts` are intentionally
+   * NOT treated as entry points because they are common module
+   * names that may also contain dead helpers. The conservative
+   * direction is to report a symbol as dead rather than hide it.
+   */
+  ENTRY_POINT_PATH_PATTERNS: [
+    /(^|\/)index\.[cm]?[tj]sx?$/,
+    /(^|\/)main\.[cm]?[tj]sx?$/,
+    /(^|\/)cli\.[cm]?[tj]sx?$/,
+    /(^|\/)bin\//,
+    /(^|\/)src\/bin\//,
+  ] as const,
+  /**
+   * Columns on `node_attributes` whose value being `1` excludes the
+   * node. Names mirror the schema so a future column add is a one-line
+   * constant extension + a query clause (no scattered edits).
+   */
+  EXCLUDED_ATTRIBUTE_FLAGS: ["is_exported", "is_route_handler"] as const,
+} as const;
+
+/**
+ * @returns true iff `filePath` matches any pattern in
+ * {@link DEAD_CODE_EXCLUSION.TEST_PATH_PATTERNS} or
+ * {@link DEAD_CODE_EXCLUSION.ENTRY_POINT_PATH_PATTERNS}.
+ */
+function isExcludedByPath(filePath: string): boolean {
+  for (const re of DEAD_CODE_EXCLUSION.TEST_PATH_PATTERNS) {
+    if (re.test(filePath)) return true;
+  }
+  for (const re of DEAD_CODE_EXCLUSION.ENTRY_POINT_PATH_PATTERNS) {
+    if (re.test(filePath)) return true;
+  }
+  return false;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Internal: SQL variable-limit chunking (PR1 pattern — keep under 32766).
+// ──────────────────────────────────────────────────────────────────────────
+
+/** SQLite variable bind limit for the bundled better-sqlite3 native build. */
+const SQLITE_VARIABLE_LIMIT = 32_766;
+
+/**
+ * Run a parameterized `IN (?, ?, …)` query in chunks small enough to
+ * stay under SQLite's variable bind limit. The caller provides the
+ * statement prefix/suffix with a single `%PH%` placeholder where the
+ * `?,?,…` list goes; this helper substitutes the chunked placeholders
+ * and runs `.run(...)` per chunk, aggregating the returned rows.
+ *
+ * Mirrors the chunking pattern PR1 already uses inside
+ * `pruneFileNodes` (the FTS rowid deletes) and `upsertFileEdges` (the
+ * stale-edge tuple deletes). The reviews already hardened this class
+ * against `too many SQL variables` failures.
+ */
+function chunkedInQuery(
+  db: BetterSqlite3Database,
+  sqlTemplate: string,
+  params: readonly (string | number)[],
+): unknown[] {
+  const out: unknown[] = [];
+  if (params.length === 0) return out;
+  for (let i = 0; i < params.length; i += SQLITE_VARIABLE_LIMIT) {
+    const chunk = params.slice(i, i + SQLITE_VARIABLE_LIMIT);
+    const placeholders = chunk.map(() => "?").join(", ");
+    const sql = sqlTemplate.replace("%PH%", placeholders);
+    const rows = db.prepare(sql).all(...chunk);
+    if (Array.isArray(rows)) {
+      for (const r of rows) out.push(r);
+    }
+  }
+  return out;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Internal: write-queue (rule 40).
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -200,6 +527,15 @@ class WriteQueue {
 export interface GraphStoreOptions {
   /** Absolute path to the SQLite file. The caller resolves the namespace. */
   dbPath: string;
+  /**
+   * Optional absolute path to the repo root. When set, `snippetFor()`
+   * resolves a node's repo-relative `files.path` against this root to
+   * read its source span from disk. When unset, `snippetFor()` returns
+   * `code: "repo_root_unset"` for every call. The store NEVER persists
+   * file contents (privacy + DB size — issue #1552 design); this is
+   * the only path the read-side uses.
+   */
+  repoRoot?: string;
 }
 
 /**
@@ -209,6 +545,7 @@ export interface GraphStoreOptions {
 export class GraphStore {
   private readonly db: BetterSqlite3Database;
   private readonly queue = new WriteQueue();
+  private readonly repoRoot: string | undefined;
   private closed = false;
   private closing = false;
   // Shared drain-and-close promise so a second close() called while the
@@ -217,21 +554,38 @@ export class GraphStore {
   // in-progress close').
   private closePromise: Promise<void> | undefined;
 
-  private constructor(db: BetterSqlite3Database) {
+  private constructor(db: BetterSqlite3Database, repoRoot: string | undefined) {
     this.db = db;
+    // Validate at open() so the failure mode is a thrown, name-specific
+    // error at construction — never a silent `code: "repo_root_unset"`
+    // cascade on the first snippetFor() call after a long ingest. The
+    // caller may still pass `undefined` (the PR1 default); they just
+    // cannot pass a relative path that would silently slice the wrong
+    // file (rule 11 — no path assembly at call sites).
+    this.repoRoot = repoRoot;
   }
 
   /**
    * Open a store at the given dbPath. Creates parent directories and
    * applies the schema (idempotent — also handles upgrade). The dbPath
-   * is the canonical namespace path passed in by the caller — this PR
    * does no namespace resolution.
    */
   static async open(options: GraphStoreOptions): Promise<GraphStore> {
-    const { dbPath } = options;
+    const { dbPath, repoRoot } = options;
     if (!path.isAbsolute(dbPath)) {
       throw new Error(
         `graph-store: dbPath must be absolute; received ${JSON.stringify(dbPath)}`,
+      );
+    }
+    // Validate repoRoot up-front (rule 11). When provided it MUST be
+    // absolute — a relative repoRoot would silently resolve against
+    // the process CWD and `snippetFor()` would slice the wrong file
+    // (or a non-existent one) without a clear failure shape. The
+    // PR1 baseline keeps `repoRoot` optional so existing callers that
+    // do not need snippets continue to open() with just `{ dbPath }`.
+    if (repoRoot !== undefined && !path.isAbsolute(repoRoot)) {
+      throw new Error(
+        `graph-store: repoRoot must be absolute when provided; received ${JSON.stringify(repoRoot)}`,
       );
     }
     await mkdir(path.dirname(dbPath), { recursive: true });
@@ -245,10 +599,11 @@ export class GraphStore {
     // `edges` table relies on `ON DELETE CASCADE` from `nodes(id)` to
     // drop owned edges when a file's prior nodes are pruned; without
     // this pragma the cascade silently no-ops and edges accumulate as
-    // orphans (cursor + codex review).
+    // orphans (cursor + codex review). PR2's `node_attributes` table
+    // also relies on this cascade so attribute rows die with their node.
     db.pragma("foreign_keys = ON");
     applyCodingGraphSchema(db);
-    return new GraphStore(db);
+    return new GraphStore(db, repoRoot);
   }
 
   /**
@@ -435,6 +790,19 @@ export class GraphStore {
           const ir = irs[i]!;
           const result = results[i]!;
           this.upsertFileEdges(ir, result);
+        }
+        // Pass 3 (PR2): every file's node_attributes rows
+        // (`is_exported`, `is_route_handler`). Derived from the IR's
+        // optional `exports` and `routes` arrays. Runs after the prune
+        // so attribute rows for nodes that survived into this batch
+        // are written against the final node set. Cascade-delete on
+        // `nodes(id)` already cleaned up rows for pruned nodes during
+        // pass 1b; this pass only inserts new / updates existing rows
+        // for surviving nodes.
+        for (let i = 0; i < irs.length; i += 1) {
+          const ir = irs[i]!;
+          const result = results[i]!;
+          this.upsertFileAttributes(ir, result);
         }
       });
       tx(files);
@@ -908,6 +1276,659 @@ export class GraphStore {
       edgeCount += r.changes;
     }
     result.edgeCount = edgeCount;
+  }
+
+  /**
+   * Pass 3 (PR2): upsert `node_attributes` rows for this file's
+   * surviving nodes, derived from the IR's optional `exports` and
+   * `routes` arrays. Mirrors the edges-pass semantics:
+   *   - `exports == null` (omitted) → preserve existing flags
+   *     (PR1-era IR has no exports field; the file's prior flags
+   *     stay put so a re-ingest cannot accidentally wipe them).
+   *   - `exports === []` (explicit empty) → wipe the file's
+   *     `is_exported` flags (the caller is asserting "this file
+   *     exports nothing").
+   *   - same rule for `routes`.
+   *
+   * A symbol is `is_exported=1` when its `name` matches an entry in
+   * `ir.exports` (multiple symbols with the same name in one file all
+   * get the flag — the dead-code query treats this conservatively,
+   * never silently picking one). A symbol is `is_route_handler=1`
+   * when its `qualifiedName` equals a route's `handlerQualifiedName`.
+   *
+   * Implementation: delete-then-insert per file (same shape as the
+   * edges pass) so changed exports/routes overwrite prior rows.
+   * Inserting is INSERT OR REPLACE keyed on `node_id` so two symbols
+   * in the same file sharing a name do not collide.
+   */
+  private upsertFileAttributes(ir: StoreFileIR, result: UpsertResult): void {
+    // Both fields omitted → nothing to assert. Preserve existing
+    // flags (PR1 baseline). Avoids touching the table at all so
+    // truly-no-op re-ingests stay zero-cost.
+    if (ir.exports == null && ir.routes == null) {
+      return;
+    }
+
+    // Build the set of node ids in this file that should carry each
+    // flag. Both maps are keyed by node id; the value is ignored
+    // (presence ⇒ flag set). Match by name for exports, by
+    // qualified_name for routes — the conventional surface each list
+    // carries.
+    const exportedNodeIds = new Set<string>();
+    const routeHandlerNodeIds = new Set<string>();
+    const ownNodes = expectRows<{ id: string; name: string; qualified_name: string }>(
+      this.db
+        .prepare("SELECT id, name, qualified_name FROM nodes WHERE file_id = ?")
+        .all(result.fileId),
+      ["id", "name", "qualified_name"],
+    );
+    if (ir.exports != null) {
+      const exportNames = new Set<string>();
+      for (const ex of ir.exports) {
+        if (ex && typeof ex.name === "string" && ex.name.length > 0) {
+          exportNames.add(ex.name);
+        }
+      }
+      for (const n of ownNodes) {
+        if (exportNames.has(n.name)) exportedNodeIds.add(n.id);
+      }
+    }
+    if (ir.routes != null) {
+      const handlerQNames = new Set<string>();
+      for (const r of ir.routes) {
+        if (r && typeof r.handlerQualifiedName === "string" && r.handlerQualifiedName.length > 0) {
+          handlerQNames.add(r.handlerQualifiedName);
+        }
+      }
+      for (const n of ownNodes) {
+        if (handlerQNames.has(n.qualified_name)) routeHandlerNodeIds.add(n.id);
+      }
+    }
+
+    // Delete-then-insert per file: the prior rows for this file's
+    // nodes are wiped so changed exports overwrite. Without this, a
+    // re-ingest that drops an export would leave the old flag set,
+    // silently hiding a now-dead symbol from `deadCode()`. Chunked
+    // under the SQLite variable limit to handle large symbol tables.
+    const ownNodeIds = ownNodes.map((n) => n.id);
+    if (ownNodeIds.length > 0) {
+      for (let i = 0; i < ownNodeIds.length; i += SQLITE_VARIABLE_LIMIT) {
+        const chunk = ownNodeIds.slice(i, i + SQLITE_VARIABLE_LIMIT);
+        const placeholders = chunk.map(() => "?").join(", ");
+        this.db
+          .prepare(
+            `DELETE FROM node_attributes WHERE node_id IN (${placeholders})`,
+          )
+          .run(...chunk);
+      }
+    }
+
+    // Insert fresh rows for nodes carrying either flag. A node with
+    // neither flag set does not get a row at all — the deadCode LEFT
+    // JOIN COALESCEs the missing row to (0, 0).
+    const flagged = new Set<string>([...exportedNodeIds, ...routeHandlerNodeIds]);
+    if (flagged.size === 0) {
+      return;
+    }
+    const upsertAttr = this.db.prepare(
+      `INSERT INTO node_attributes (node_id, is_exported, is_route_handler)
+         VALUES (?, ?, ?)
+       ON CONFLICT(node_id) DO UPDATE SET
+         is_exported = excluded.is_exported,
+         is_route_handler = excluded.is_route_handler`,
+    );
+    for (const id of flagged) {
+      const isExported = exportedNodeIds.has(id) ? 1 : 0;
+      const isRoute = routeHandlerNodeIds.has(id) ? 1 : 0;
+      upsertAttr.run(id, isExported, isRoute);
+    }
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // PR2 read primitives (issue #1552 steps 4–5).
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Iterative frontier BFS over the edges table. Cycle-safe via a JS
+   * visited set keyed by node id; depth-capped by {@link TraverseQuery.maxDepth}
+   * (half-open — depth==maxDepth is INCLUDED, maxDepth+1 is NOT — rule 35).
+   * The start node is always included at depth 0 when it exists.
+   *
+   * Reads the edges table via a single prepared statement per
+   * direction; the frontier expands level-by-level so memory is
+   * bounded by the visited set's size, not the recursion depth.
+   */
+  traverse(query: TraverseQuery): TraverseResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
+    // Validate maxDepth up-front (rule 51: surface what's wrong).
+    if (
+      typeof query.maxDepth !== "number" ||
+      !Number.isInteger(query.maxDepth) ||
+      query.maxDepth < 0
+    ) {
+      return {
+        ok: false,
+        code: "invalid_query",
+      };
+    }
+    const direction: TraverseDirection = query.direction ?? "outgoing";
+    // Resolve the start node. If `start` is a 64-char hex string, treat
+    // it as a node id; otherwise resolve by qualified_name (ambiguous →
+    // explicit rejection so the caller can pass an id).
+    let startId: string;
+    const rows = expectRows<{ id: string }>(
+      this.db
+        .prepare("SELECT id FROM nodes WHERE id = ? OR qualified_name = ?")
+        .all(query.start, query.start),
+      ["id"],
+    );
+    if (rows.length === 0) {
+      return { ok: false, code: "unknown_start" };
+    }
+    if (rows.length > 1) {
+      // Multiple rows mean the start resolved to more than one node —
+      // either the same id matching twice (impossible — PRIMARY KEY)
+      // or a qualified_name declared in multiple files. Reject so the
+      // caller passes an explicit node id.
+      return { ok: false, code: "ambiguous_start" };
+    }
+    startId = rows[0]!.id;
+
+    // BFS. Edge-type filter is bound into the prepared statement via
+    // IN (?, ?, ...) — empty list means "all types" (no WHERE clause
+    // on type). The edge-type list is small (≤ ~25) so chunking is
+    // unnecessary here, but we still parameterize so user input
+    // cannot inject SQL.
+    const edgeTypes = query.edgeTypes ?? [];
+    const typeClause =
+      edgeTypes.length > 0
+        ? `AND type IN (${edgeTypes.map(() => "?").join(", ")})`
+        : "";
+    const outgoingStmt = this.db.prepare(
+      `SELECT dst AS neighbor, src AS via_id FROM edges WHERE src = ? ${typeClause}`,
+    );
+    const incomingStmt = this.db.prepare(
+      `SELECT src AS neighbor, dst AS via_id FROM edges WHERE dst = ? ${typeClause}`,
+    );
+
+    const visited = new Set<string>([startId]);
+    const hits: TraverseHit[] = [];
+    const startRow = expectRow<{
+      id: string;
+      qualified_name: string;
+      name: string;
+      label: string;
+    }>(
+      this.db
+        .prepare(
+          "SELECT id, qualified_name, name, label FROM nodes WHERE id = ?",
+        )
+        .get(startId),
+      ["id", "qualified_name", "name", "label"],
+    );
+    if (!startRow) {
+      // Race: the node vanished between the resolve and the read.
+      // Treat as unknown rather than crash.
+      return { ok: false, code: "unknown_start" };
+    }
+    hits.push({
+      nodeId: startRow.id,
+      qualifiedName: startRow.qualified_name,
+      name: startRow.name,
+      label: startRow.label,
+      depth: 0,
+    });
+
+    // maxDepth === 0 → just the start node (half-open: depth 0 is
+    // included, depth 1 is not).
+    if (query.maxDepth === 0) {
+      return { ok: true, hits };
+    }
+
+    let frontier: string[] = [startId];
+    for (let depth = 1; depth <= query.maxDepth; depth += 1) {
+      const nextFrontier: string[] = [];
+      for (const nodeId of frontier) {
+        const params = [nodeId, ...edgeTypes];
+        const outRows =
+          direction === "outgoing" || direction === "both"
+            ? expectRows<{ neighbor: string }>(
+                outgoingStmt.all(...params),
+                ["neighbor"],
+              )
+            : [];
+        const inRows =
+          direction === "incoming" || direction === "both"
+            ? expectRows<{ neighbor: string }>(
+                incomingStmt.all(...params),
+                ["neighbor"],
+              )
+            : [];
+        for (const r of [...outRows, ...inRows]) {
+          const neighbor = r.neighbor;
+          // Cycle safety: a node already in `visited` is not re-added.
+          // This also handles self-edges (src == dst): the start is in
+          // visited, so a self-loop on it never re-expands the frontier.
+          if (visited.has(neighbor)) continue;
+          visited.add(neighbor);
+          nextFrontier.push(neighbor);
+          const hitRow = expectRow<{
+            id: string;
+            qualified_name: string;
+            name: string;
+            label: string;
+          }>(
+            this.db
+              .prepare(
+                "SELECT id, qualified_name, name, label FROM nodes WHERE id = ?",
+              )
+              .get(neighbor),
+            ["id", "qualified_name", "name", "label"],
+          );
+          if (hitRow) {
+            hits.push({
+              nodeId: hitRow.id,
+              qualifiedName: hitRow.qualified_name,
+              name: hitRow.name,
+              label: hitRow.label,
+              depth,
+            });
+          }
+        }
+      }
+      if (nextFrontier.length === 0) break;
+      frontier = nextFrontier;
+    }
+    return { ok: true, hits };
+  }
+
+  /**
+   * Structured node search. All filters are AND-combined; patterns use
+   * SQLite LIKE (case-insensitive via COLLATE NOCASE). Patterns and
+   * limits are parameter-bound, never string-interpolated, so user
+   * input cannot inject SQL.
+   */
+  searchGraph(query: SearchQuery): SearchResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
+    // Validate numeric inputs (rule 51). NaN / negative / non-integer
+    // limits are rejected, not silently clamped, so callers learn what
+    // they passed.
+    if (
+      (query.degreeMin !== undefined &&
+        (typeof query.degreeMin !== "number" ||
+          !Number.isInteger(query.degreeMin) ||
+          query.degreeMin < 0)) ||
+      (query.degreeMax !== undefined &&
+        (typeof query.degreeMax !== "number" ||
+          !Number.isInteger(query.degreeMax) ||
+          query.degreeMax < 0))
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    if (
+      query.degreeMin !== undefined &&
+      query.degreeMax !== undefined &&
+      query.degreeMin > query.degreeMax
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    const rawLimit = query.limit ?? 100;
+    if (
+      typeof rawLimit !== "number" ||
+      !Number.isInteger(rawLimit) ||
+      rawLimit < 0
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    // Clamp to [0, MAX_SEARCH_LIMIT]. A `limit: 0` returns an empty
+    // hits array (rule 27 — guard the slice/LIMIT against zero).
+    const MAX_SEARCH_LIMIT = 1000;
+    const limit = Math.min(rawLimit, MAX_SEARCH_LIMIT);
+
+    // Build a single parameterized query. The degree subquery counts
+    // inbound + outbound edges per node; the WHERE clause AND-combines
+    // every present filter; the LIMIT is bound last. LIKE patterns are
+    // bound as-is so SQLite interprets `%` and `_`.
+    const params: (string | number)[] = [];
+    const where: string[] = [];
+    if (query.label !== undefined && query.label.length > 0) {
+      where.push("n.label = ?");
+      params.push(query.label);
+    }
+    if (query.namePattern !== undefined && query.namePattern.length > 0) {
+      where.push("n.name LIKE ? COLLATE NOCASE");
+      params.push(query.namePattern);
+    }
+    if (query.filePattern !== undefined && query.filePattern.length > 0) {
+      where.push("f.path LIKE ? COLLATE NOCASE");
+      params.push(query.filePattern);
+    }
+    // Degree filter on the computed subquery. We re-emit the COUNT
+    // subquery in the WHERE clause rather than using HAVING — SQLite
+    // requires HAVING to be paired with GROUP BY, and this query has
+    // no GROUP BY (each row is one node). The correlated subquery is
+    // evaluated per-row; SQLite's planner caches it cheaply for the
+    // graph sizes we target (issue #1552 scale targets).
+    if (query.degreeMin !== undefined) {
+      where.push(
+        "(SELECT COUNT(*) FROM edges e WHERE e.src = n.id OR e.dst = n.id) >= ?",
+      );
+      params.push(query.degreeMin);
+    }
+    if (query.degreeMax !== undefined) {
+      where.push(
+        "(SELECT COUNT(*) FROM edges e WHERE e.src = n.id OR e.dst = n.id) <= ?",
+      );
+      params.push(query.degreeMax);
+    }
+
+    params.push(limit);
+    const sql = `SELECT n.id AS node_id, n.qualified_name, n.name, n.label,
+                        f.path AS file_path,
+                        (SELECT COUNT(*) FROM edges e WHERE e.src = n.id OR e.dst = n.id) AS degree
+                   FROM nodes n
+                   JOIN files f ON n.file_id = f.id
+                  ${where.length > 0 ? "WHERE " + where.join(" AND ") : ""}
+                  ORDER BY degree DESC, n.qualified_name ASC
+                  LIMIT ?`;
+    const rows = expectRows<{
+      node_id: string;
+      qualified_name: string;
+      name: string;
+      label: string;
+      file_path: string;
+      degree: number;
+    }>(this.db.prepare(sql).all(...params), [
+      "node_id",
+      "qualified_name",
+      "name",
+      "label",
+      "file_path",
+      "degree",
+    ]);
+    const hits: SearchHit[] = rows.map((r) => ({
+      nodeId: r.node_id,
+      qualifiedName: r.qualified_name,
+      name: r.name,
+      label: r.label,
+      filePath: r.file_path,
+      degree: r.degree,
+    }));
+    return { ok: true, hits };
+  }
+
+  /**
+   * Aggregate counts over the whole graph. Single round-trip: one
+   * scalar per metric, two GROUP BY queries for the by-label /
+   * by-type histograms.
+   */
+  schemaStats(): SchemaStatsResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
+    try {
+      const fileCount = expectRow<{ c: number }>(
+        this.db.prepare("SELECT COUNT(*) AS c FROM files").get(),
+        ["c"],
+      );
+      const nodeCount = expectRow<{ c: number }>(
+        this.db.prepare("SELECT COUNT(*) AS c FROM nodes").get(),
+        ["c"],
+      );
+      const edgeCount = expectRow<{ c: number }>(
+        this.db.prepare("SELECT COUNT(*) AS c FROM edges").get(),
+        ["c"],
+      );
+      const labelRows = expectRows<{ label: string; c: number }>(
+        this.db
+          .prepare(
+            "SELECT label, COUNT(*) AS c FROM nodes GROUP BY label ORDER BY label",
+          )
+          .all(),
+        ["label", "c"],
+      );
+      const typeRows = expectRows<{ type: string; c: number }>(
+        this.db
+          .prepare(
+            "SELECT type, COUNT(*) AS c FROM edges GROUP BY type ORDER BY type",
+          )
+          .all(),
+        ["type", "c"],
+      );
+      const nodesByLabel: Record<string, number> = {};
+      for (const r of labelRows) nodesByLabel[r.label] = r.c;
+      const edgesByType: Record<string, number> = {};
+      for (const r of typeRows) edgesByType[r.type] = r.c;
+      return {
+        ok: true,
+        stats: {
+          files: fileCount?.c ?? 0,
+          nodes: nodeCount?.c ?? 0,
+          edges: edgeCount?.c ?? 0,
+          nodesByLabel,
+          edgesByType,
+        },
+      };
+    } catch (error) {
+      logWriteFailure(error);
+      const failure = classifyError(error);
+      return failure as unknown as SchemaStatsResult;
+    }
+  }
+
+  /**
+   * Dead-code candidates: nodes with zero inbound
+   * {@link DEAD_CODE_EXCLUSION.INBOUND_USAGE_EDGE_TYPES} edges, excluding
+   * nodes whose `node_attributes` row marks them exported / route-handler
+   * AND nodes whose file path matches the test / entry-point patterns
+   * in {@link DEAD_CODE_EXCLUSION}.
+   *
+   * The exclusion criteria live in the named constant — not in
+   * ad-hoc WHERE clauses (rule 53 analog). The stored flags come from
+   * the write pipeline's `upsertFileAttributes` pass, which the IR's
+   * `exports` and `routes` arrays feed.
+   */
+  deadCode(): DeadCodeResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
+    try {
+      // The inbound-usage edge-type list comes from the named
+      // constant; bind it as a parameterized IN (...) so the criteria
+      // are auditable in one place and a future edge-type add is a
+      // one-line constant extension.
+      const usageTypes = DEAD_CODE_EXCLUSION.INBOUND_USAGE_EDGE_TYPES;
+      const typePlaceholders = usageTypes.map(() => "?").join(", ");
+      // LEFT JOIN node_attributes so a missing row reads as (0, 0).
+      // COALESCE is belt-and-braces — the LEFT JOIN already produces
+      // NULL for missing rows, and `NULL OR ...` would surface NULL
+      // in the WHERE; explicit COALESCE collapses NULL → 0.
+      const sql = `SELECT n.id AS node_id, n.qualified_name, n.name, n.label,
+                          f.path AS file_path
+                     FROM nodes n
+                     JOIN files f ON n.file_id = f.id
+                     LEFT JOIN node_attributes a ON a.node_id = n.id
+                    WHERE NOT EXISTS (
+                       SELECT 1 FROM edges e
+                        WHERE e.dst = n.id
+                          AND e.type IN (${typePlaceholders})
+                     )
+                      AND COALESCE(a.is_exported, 0) = 0
+                      AND COALESCE(a.is_route_handler, 0) = 0
+                    ORDER BY n.qualified_name ASC`;
+      const rows = expectRows<{
+        node_id: string;
+        qualified_name: string;
+        name: string;
+        label: string;
+        file_path: string;
+      }>(this.db.prepare(sql).all(...usageTypes), [
+        "node_id",
+        "qualified_name",
+        "name",
+        "label",
+        "file_path",
+      ]);
+      // Apply path-based exclusions in JS — SQLite's regex support is
+      // opt-in and inconsistent across builds; doing it here keeps the
+      // exclusion logic entirely in the named constant.
+      const hits: DeadCodeHit[] = [];
+      for (const r of rows) {
+        if (isExcludedByPath(r.file_path)) continue;
+        hits.push({
+          nodeId: r.node_id,
+          qualifiedName: r.qualified_name,
+          name: r.name,
+          label: r.label,
+          filePath: r.file_path,
+        });
+      }
+      return { ok: true, hits };
+    } catch (error) {
+      logWriteFailure(error);
+      const failure = classifyError(error);
+      return failure as unknown as DeadCodeResult;
+    }
+  }
+
+  /**
+   * Read a symbol's source span from disk. The store NEVER persists
+   * file contents (privacy + DB size — issue #1552 design); this
+   * method resolves `files.path` against {@link GraphStoreOptions.repoRoot}
+   * and slices the half-open `[startByte, endByte)` span from the
+   * on-disk bytes.
+   */
+  async snippetFor(query: SnippetQuery): Promise<SnippetResult> {
+    if (this.closed) return { ok: false, code: "repo_root_unset" };
+    if (
+      typeof query.qualifiedName !== "string" ||
+      query.qualifiedName.length === 0
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    if (this.repoRoot === undefined) {
+      return { ok: false, code: "repo_root_unset" };
+    }
+    // Resolve the node. A qualified_name might match multiple nodes
+    // (declared in multiple files); ambiguous matches are rejected so
+    // the caller can pass a node id via a future extension or include
+    // the file in the same batch.
+    const rows = expectRows<{
+      id: string;
+      qualified_name: string;
+      file_path: string;
+      span_start: number;
+      span_end: number;
+      lang: string;
+    }>(
+      this.db
+        .prepare(
+          `SELECT n.id, n.qualified_name, n.span_start, n.span_end, n.lang,
+                  f.path AS file_path
+             FROM nodes n JOIN files f ON n.file_id = f.id
+            WHERE n.qualified_name = ?`,
+        )
+        .all(query.qualifiedName),
+      ["id", "qualified_name", "file_path", "span_start", "span_end", "lang"],
+    );
+    if (rows.length === 0) return { ok: false, code: "not_found" };
+    if (rows.length > 1) return { ok: false, code: "ambiguous_name" };
+    const node = rows[0]!;
+    const absolutePath = path.resolve(this.repoRoot, node.file_path);
+    // Read the file from disk and slice the span. readFile is the
+    // single fs call — no streaming, no mmap, just one allocation per
+    // request. The store caches nothing; the caller may.
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(absolutePath);
+    } catch (error) {
+      logWriteFailure(error);
+      return { ok: false, code: "read_failed" };
+    }
+    // Half-open [startByte, endByte). Guard endByte ≤ buffer.length
+    // so a stale span after a file edit does not throw OutOfRange.
+    const start = Math.max(0, node.span_start);
+    const end = Math.min(bytes.length, node.span_end);
+    if (start > end) {
+      // The file shrank below the span — return an empty snippet
+      // rather than throw; the caller can decide whether to re-ingest.
+      return {
+        ok: true,
+        qualifiedName: node.qualified_name,
+        filePath: node.file_path,
+        absolutePath,
+        startByte: node.span_start,
+        endByte: node.span_end,
+        text: "",
+        lang: node.lang,
+      };
+    }
+    let text = bytes.subarray(start, end).toString("utf8");
+    // Optional context lines (line-aligned expansion). contextLines
+    // is bounded to a sane cap so a caller cannot ask for megabytes
+    // of surrounding code.
+    const ctx = query.contextLines ?? 0;
+    if (ctx > 0) {
+      const MAX_CTX = 200;
+      const contextLines = Math.min(Math.max(0, Math.floor(ctx)), MAX_CTX);
+      if (contextLines > 0) {
+        // Line-aligned expansion. For contextLines=N we include the N
+        // full lines preceding the span's line and the N full lines
+        // following the span's line. Walk backward from `start`,
+        // skipping (contextLines) line-end newlines, then walk to the
+        // start of the (contextLines+1)th line back; walk forward
+        // from `end` symmetrically.
+        //
+        // The first newline we hit going backward is the END of the
+        // span's own line, NOT a context line — so we need to count
+        // `contextLines` newlines after that boundary to find where
+        // the context region begins. Concrete example for N=1:
+        //   "...line one\nline two\n..."  with span starting at "line two"
+        //   walking back from start of "line two", we hit \n (end of
+        //   "line one"). The line "line one" IS the context. Its start
+        //   is one further newline back (or buffer start).
+        let lineStart = start;
+        // Move lineStart to the beginning of the line containing `start`.
+        while (lineStart > 0 && bytes[lineStart - 1] !== 0x0a) {
+          lineStart -= 1;
+        }
+        // For each of contextLines, jump past the newline at
+        // lineStart - 1 and walk to the previous line's start.
+        for (let i = 0; i < contextLines && lineStart > 0; i += 1) {
+          // Step past the newline ending the prior line.
+          lineStart -= 1;
+          // Walk to the start of THAT line.
+          while (lineStart > 0 && bytes[lineStart - 1] !== 0x0a) {
+            lineStart -= 1;
+          }
+        }
+        let lineEnd = end;
+        // Move lineEnd to the end of the line containing `end`
+        // (inclusive of the trailing newline if present).
+        while (lineEnd < bytes.length && bytes[lineEnd] !== 0x0a) {
+          lineEnd += 1;
+        }
+        if (lineEnd < bytes.length && bytes[lineEnd] === 0x0a) {
+          lineEnd += 1;
+        }
+        // For each of contextLines, advance past one more line.
+        for (let i = 0; i < contextLines && lineEnd < bytes.length; i += 1) {
+          while (lineEnd < bytes.length && bytes[lineEnd] !== 0x0a) {
+            lineEnd += 1;
+          }
+          if (lineEnd < bytes.length && bytes[lineEnd] === 0x0a) {
+            lineEnd += 1;
+          }
+        }
+        text = bytes.subarray(lineStart, lineEnd).toString("utf8");
+      }
+    }
+    return {
+      ok: true,
+      qualifiedName: node.qualified_name,
+      filePath: node.file_path,
+      absolutePath,
+      startByte: node.span_start,
+      endByte: node.span_end,
+      text,
+      lang: node.lang,
+    };
   }
 }
 

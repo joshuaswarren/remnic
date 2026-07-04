@@ -4,6 +4,13 @@
  * Issue #1552 PR1 (Track B, Phase 1). The schema + write pipeline only;
  * traversal, search, dead-code and the openCypher subset land in PR2/PR3.
  *
+ * PR2 additive table (`node_attributes`): tracks per-node exclusion flags
+ * consumed by `deadCode()` — `is_exported`, `is_route_handler`. Added in
+ * PR2 (issue #1552 step 5) as a SEPARATE table rather than ALTER TABLE on
+ * `nodes`, so existing v1 databases gain the table via the same
+ * `CREATE TABLE IF NOT EXISTS` pass without a schema-version bump or a
+ * migration (rule 23 — additive, characterized before moving).
+ *
  * Design anchors:
  *   - `packages/remnic-core/src/lcm/schema.ts` (versioning + pragmas) —
  *     copied VERBATIM for the WAL / busy_timeout / synchronous pragmas and
@@ -162,18 +169,39 @@ function createTables(db: BetterSqlite3Database): void {
     -- lookups').
     CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);
   `);
-  // FTS5 hit → node id reverse map. Contentless FTS5 does NOT store
-  // column values, so a rowid returned by `MATCH` cannot be joined
-  // back to `nodes` via the `id UNINDEXED` column (it reads NULL).
-  // This table is the only place the mapping lives: a single
-  // integer key (the FTS rowid, derived deterministically from the
-  // node id) plus the node id, kept in lockstep with `nodes_fts`
-  // by the write pipeline (chatgpt-codex-connector P2: 'Preserve a
-  // node key for FTS hits'). UNIQUE on node_id so re-ingesting the
-  // same node updates the row in place rather than producing a
-  // second mapping row.
+  // PR2 (issue #1552 step 5): per-node exclusion flags consumed by
+  // `GraphStore.deadCode()`. Kept in a SEPARATE table rather than an
+  // ALTER TABLE on `nodes` so existing v1 databases gain the table via
+  // the same `CREATE TABLE IF NOT EXISTS` pass without a schema-version
+  // bump or a data migration (rule 23 — additive, characterized before
+  // moving). ON DELETE CASCADE on `nodes(id)` keeps the table in lockstep
+  // with node lifetimes; the foreign_keys=ON pragma set in
+  // `GraphStore.open()` enforces it.
   //
-  // Created BEFORE the nodes_fts rebuild so the migration path can
+  // `is_exported`: 1 when the symbol's `name` matches an entry in the
+  //   FileIR's `exports` list (matched per-file at write time). The
+  //   dead-code query treats exported symbols as not-dead even with
+  //   zero inbound CALLS/USES_TYPE edges — they form the package's
+  //   public surface and may be called by external consumers the graph
+  //   cannot see.
+  // `is_route_handler`: 1 when the symbol's `qualified_name` matches a
+  //   route's `handlerQualifiedName` in the FileIR's `routes` list.
+  //   Route handlers are reachable from HTTP requests regardless of
+  //   whether any other node CALLS them inside the indexed codebase.
+  //
+  // Both columns are NOT NULL with CHECK IN (0,1): a missing row means
+  // "neither flag set" (the LEFT JOIN in deadCode() COALESCEs to 0).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS node_attributes (
+      node_id           TEXT PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+      is_exported       INTEGER NOT NULL CHECK (is_exported IN (0, 1)),
+      is_route_handler  INTEGER NOT NULL CHECK (is_route_handler IN (0, 1))
+    );
+    CREATE INDEX IF NOT EXISTS idx_node_attributes_exported
+      ON node_attributes(is_exported) WHERE is_exported = 1;
+    CREATE INDEX IF NOT EXISTS idx_node_attributes_route
+      ON node_attributes(is_route_handler) WHERE is_route_handler = 1;
+  `);
   // repopulate both tables in lockstep without ordering concerns.
   db.exec(`
     CREATE TABLE IF NOT EXISTS fts_index (
