@@ -156,7 +156,12 @@ function isStrictIsoTimestamp(s: string): boolean {
   // Date.UTC normalizes overflow (Feb 30 -> Mar 2); a component round-trip
   // catches what Date.parse silently accepts.
   const d = new Date(Date.UTC(y, mo - 1, da, h, mi, se));
+  // The component round-trip validates wall-clock overflow (Feb 30 -> Mar 2);
+  // Date.parse additionally rejects impossible timezone offsets such as
+  // +99:99, which the regex accepts but the runtime treats as NaN
+  // (codex thread OXQ0e).
   return (
+    !Number.isNaN(Date.parse(s)) &&
     d.getUTCFullYear() === y &&
     d.getUTCMonth() === mo - 1 &&
     d.getUTCDate() === da &&

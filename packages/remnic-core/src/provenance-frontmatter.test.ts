@@ -568,3 +568,29 @@ test("write-path drops source with overflow-normalized ISO timestamp (review rou
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("write-path drops source with impossible timezone offset (review round 6b)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-badoffset-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const id = await writeFactFile(storage, "Fact with impossible offset.");
+
+    await storage.updateMemoryFrontmatter(id, {
+      sources: [
+        // +99:99 matches the offset regex but Date.parse returns NaN — the
+        // strict check must reject it so downstream Date.parse never sees NaN.
+        { sessionKey: "s/1", observedAt: "2026-01-01T00:00:00+99:99", quote: "badopt" },
+        { sessionKey: "s/2", observedAt: "2026-01-01T00:00:00+05:30", quote: "realoffset" },
+      ],
+    });
+
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(written);
+    assert.equal(written!.frontmatter.sources!.length, 1, "impossible offset dropped, real offset kept");
+    assert.equal(written!.frontmatter.sources![0]!.quote, "realoffset");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
