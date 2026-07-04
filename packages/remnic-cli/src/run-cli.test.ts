@@ -23,15 +23,30 @@ import fs from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { after, before, test } from "node:test";
 
 import { runCli } from "./run-cli.js";
 
-// Every command we exercise here must exit cleanly without spawning
-// background services or booting an orchestrator. The dispatcher's first
-// action for non-`migrate` commands is `await migrateFromEngram()`, which
-// is a no-op against an empty HOME — so individual tests that need an
-// isolated HOME set it explicitly inside the test body.
+// Isolate HOME for the entire file so the dispatcher's migrateFromEngram()
+// (which runs for every non-migrate command) is a no-op against an empty
+// temp directory rather than the developer's real ~/.engram or ~/.remnic.
+let tempHome = "";
+let originalHome: string | undefined;
+
+before(async () => {
+  originalHome = process.env.HOME;
+  tempHome = await mkdtemp(path.join(os.tmpdir(), "remnic-test-home-"));
+  process.env.HOME = tempHome;
+});
+
+after(async () => {
+  if (originalHome === undefined) {
+    process.env.HOME = undefined;
+  } else {
+    process.env.HOME = originalHome;
+  }
+  await rm(tempHome, { recursive: true, force: true });
+});
 
 test("runCli captures stdout written via console.log", async () => {
   // `remnic status` against an empty temp HOME reports the server is

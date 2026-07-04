@@ -24,6 +24,13 @@
  * isolate module-scope env derivatives (HOME-dependent paths, etc.) should
  * use `spawnSync(process.execPath, ...)` instead.
  *
+ * Limitation: the intercepted `process.exit` throws a `CliExitSignal` to
+ * unwind the stack. Commands with broad try/catch around their exit calls
+ * catch this signal before `runCli` does. The signal's message is empty to
+ * minimise stderr pollution, but a catch that calls `console.error(err.message)`
+ * still emits a blank line. Tests needing byte-exact stderr on such error
+ * paths should use subprocess invocation.
+ *
  * Phase B of #1532 will move handlers behind a registrar table; until then
  * this harness is what gives the contract suite a stable surface to assert
  * against without booting the whole CLI as a subprocess.
