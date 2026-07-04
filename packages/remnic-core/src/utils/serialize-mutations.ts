@@ -465,7 +465,10 @@ async function acquireLock(
       // replacement-safe (NG7Bg) and never throws.
       await breakStaleLock(lockPath, opts.staleMs, opts.onBeforeBreakStaleUnlinkForTest);
       if (Date.now() >= deadline) return undefined;
-      await sleep(pollMs);
+      // Cap the sleep to the remaining budget so a large pollMs cannot block
+      // acquisition far past maxWaitMs (e.g. maxWaitMs=1000, pollMs=60000
+      // would otherwise block ~60s instead of 1s — codex P2).
+      await sleep(Math.min(pollMs, deadline - Date.now()));
     }
   }
 }

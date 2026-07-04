@@ -667,6 +667,43 @@ test("withHeldFileLock accepts a finite positive maxWaitMs that bounds acquisiti
   }
 });
 
+test("acquire caps the poll sleep to the remaining maxWaitMs budget (codex P2)", async () => {
+  // When pollMs > remaining budget, the sleep must be capped so acquisition
+  // does not block far past maxWaitMs. Real platform clock (Date.now); a real
+  // delay is the only way to measure elapsed wall time.
+  const dir = await mkTmpDir();
+  try {
+    const lockPath = path.join(dir, "large-poll.lock");
+    // Pre-create a FRESH lock (not stale) so the breaker will not break it
+    // and the acquire must time out.
+    const fresh = `${888888} 11111111-1111-4000-8000-111111111111 ${new Date().toISOString()}\n`;
+    await writeFile(lockPath, fresh, "utf8");
+    await utimes(lockPath, new Date(), new Date());
+
+    const maxWaitMs = 200;
+    const pollMs = 60_000; // would block ~60s without the cap
+    const start = Date.now();
+    let observedAcquired = true; // expect false
+    await withHeldFileLock(
+      lockPath,
+      { staleMs: 5_000, maxWaitMs, pollMs },
+      async (acquired) => {
+        observedAcquired = acquired;
+      },
+    );
+    const elapsed = Date.now() - start;
+    assert.equal(observedAcquired, false, "timed out without acquiring");
+    // The elapsed time must be well under pollMs (60s) — capped to the budget.
+    // Allow generous margin for FS + scheduling overhead.
+    assert.ok(
+      elapsed < 5_000,
+      `acquire respected the maxWaitMs budget despite large pollMs (elapsed=${elapsed}ms; expected < 5000ms)`,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("withHeldFileLock rejects a heartbeatMs >= staleMs", async () => {
   const dir = await mkTmpDir();
   try {
