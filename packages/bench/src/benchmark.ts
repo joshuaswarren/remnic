@@ -161,8 +161,9 @@ export async function runBenchmark(
   const originalCrossJudge = options.amaBenchCrossJudge;
   let judgeCacheCounters: JudgeCacheCounters | undefined;
   // Issue #1573 PR1: optionally route judge calls through a content-keyed
-  // cache. Wrap before createTimeoutGuardedAdapter so timeout-phase
-  // enforcement still applies to underlying model calls on cache misses.
+  // cache. PR #1591 round-7 (OUv-n): the cache wraps the judge AFTER
+  // createTimeoutGuardedAdapter, so a cache hit costs no phase budget and
+  // a miss still hands the underlying judge its full phase timeout.
   // When noJudgeCache is set, no judge is wired, or no cache directory can
   // be derived (neither judgeCacheDir nor outputDir), the system judge is
   // left untouched — preserving the byte-identical baseline.
@@ -181,8 +182,8 @@ export async function runBenchmark(
   let primaryDrainPendingWrites: (() => Promise<void>) | undefined;
   let crossDrainPendingWrites: (() => Promise<void>) | undefined;
   // Issue #1573 PR1: optionally route judge calls through a content-keyed
-  // cache. Wrap before createTimeoutGuardedAdapter so timeout-phase
-  // enforcement still applies to underlying model calls on cache misses.
+  // cache. PR #1591 round-7 (OUv-n): the cache wraps the phase-timeout-
+  // guarded judge, so cache reads run outside benchmarkPhaseTimeoutMs.
   // PR #1591 P2 (round-3 follow-up, reviewer chatgpt-codex-connector):
   // when no `judgeProvider` config is supplied we cannot identify the
   // judge by model/baseUrl — two factory-created judges with identical
@@ -197,81 +198,54 @@ export async function runBenchmark(
   // (no primary judge) but a configured cross judge exists, still wire
   // the cache for the cross judge path. The primary-judge check only
   // skips primary wrapping, not the shared cache / cross-judge path.
-  const baseSystem: BenchMemoryAdapter = (() => {
+  // PR #1591 round-7 (OUv-n + OUy_y): compute the cache wiring WITHOUT
+  // mutating the caller's adapter. The judge wrapping is applied later,
+  // AFTER createTimeoutGuardedAdapter and inside the run try/finally, so:
+  //  - the cache sits OUTSIDE the phase-timeout guard (a slow cache read
+  //    no longer consumes benchmarkPhaseTimeoutMs — the judge keeps its
+  //    full phase budget on a miss);
+  //  - a throw in any setup step (createTimeoutGuardedAdapter rejecting
+  //    an invalid timeout, ingestion-adapter construction) cannot leave a
+  //    cached wrapper installed on a reused adapter, because the mutation
+  //    lives inside the try whose finally restores the original judge.
+  // In guarded mode `system` is a fresh object returned by
+  // createTimeoutGuardedAdapter, so swapping its `.judge` never reaches
+  // `options.system` and the restore is a harmless no-op; in non-guarded
+  // mode `system === options.system`, so the restore is required and is
+  // now guaranteed to run.
+  const cacheWiring = (() => {
     if (options.noJudgeCache) {
-      return options.system;
+      return undefined;
     }
-    // Determine whether cache wrapping is in play at all. If neither
-    // the primary nor the cross judge will be wrapped, fall back to
-    // the byte-identical baseline.
     const willWrapPrimary = options.system.judge !== undefined
       && (options.judgeProvider ?? null) !== null;
     const willWrapCross = options.amaBenchCrossJudge !== undefined
       && (options.amaBenchCrossJudgeProvider ?? null) !== null;
     if (!willWrapPrimary && !willWrapCross) {
-      return options.system;
+      return undefined;
     }
     // An explicit judgeCacheDir enables caching on its own — programmatic
     // callers do not need outputDir for the flag to work (PR #1591, Low).
     // PR #1591 (round-3 cursor bugbot): Node's path.resolve does not
     // expand a leading `~`; resolve it manually so programmatic callers
-    // (the CLI already expands via shell) can pass `~/bench-cache` and
+    // (the CLI already expands via shell) can pass `~/bench-cache`.
     const cacheDir = options.judgeCacheDir
       ? path.resolve(expandTildePath(options.judgeCacheDir))
       : options.outputDir
         ? path.join(path.resolve(expandTildePath(options.outputDir)), "judge-cache")
         : undefined;
     if (cacheDir === undefined) {
-      return options.system;
+      return undefined;
     }
-    const cache = new JudgeCache({ dir: cacheDir });
-    let baseSystemInner: BenchMemoryAdapter = options.system;
-    if (willWrapPrimary) {
-      const primary = wrapJudgeWithCache({
-        role: "primary",
-        judge: options.system.judge!,
-        benchmarkId,
-        datasetVersion: definition.meta.version,
-        amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
-        provider: options.judgeProvider ?? null,
-        cache,
-      });
-      judgeCacheCounters = primary.counters;
-      primaryDrainPendingWrites = primary.drainPendingWrites;
-      // BenchMemoryAdapter uses #private fields and/or non-enumerable
-      // own state that only exist on the receiver. Cloning via
-      // Object.create+Object.assign preserves the prototype but not
-      // the receiver's private slots, so methods like `recall()` or
-      // `destroy()` would throw at runtime even though the unwrapped
-      // adapter worked. The benchmark harness receives the same
-      // adapter instance, only the `judge` slot is swapped for the
-      // cached wrapper. Direct property assignment is enough because
-      // `BenchJudge` is a method-bag interface — no class hierarchy
-      // gates the field.
-      options.system.judge = primary.judge;
-    }
-    // AMA-Bench cross judge: only wrap when a cross-judge provider config
-    // identifies it. Without provider config, leave the cross judge
-    // untouched so unidentified closure-based judges cannot collide.
-    if (willWrapCross) {
-      const wrapped = wrapJudgeWithCache({
-        role: "cross",
-        judge: options.amaBenchCrossJudge!,
-        benchmarkId,
-        datasetVersion: definition.meta.version,
-        amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
-        provider: options.amaBenchCrossJudgeProvider ?? null,
-        cache,
-      });
-      cachedCrossJudge = wrapped.judge;
-      crossJudgeCacheCounters = wrapped.counters;
-      crossDrainPendingWrites = wrapped.drainPendingWrites;
-    }
-    return baseSystemInner;
+    return {
+      cache: new JudgeCache({ dir: cacheDir }),
+      willWrapPrimary,
+      willWrapCross,
+    };
   })();
-  const system = !shouldGuardSystem
-    ? baseSystem
-    : createTimeoutGuardedAdapter(baseSystem, {
+  const system: BenchMemoryAdapter = !shouldGuardSystem
+    ? options.system
+    : createTimeoutGuardedAdapter(options.system, {
         benchmarkId,
         ...(timeoutMs !== undefined ? { timeoutMs } : {}),
         ...(options.drainTimeoutMs !== undefined
@@ -315,6 +289,49 @@ export async function runBenchmark(
   let result: BenchmarkResult;
 
   try {
+    // PR #1591 round-7 (OUv-n + OUy_y): apply the judge-cache wrapping
+    // here — after every setup step that can throw has succeeded, and on
+    // `system.judge` (the phase-timeout-guarded judge in guarded mode)
+    // rather than on `options.system.judge`. Wrapping in this order puts
+    // the cache OUTSIDE the phase-timeout guard, so a cache hit returns
+    // before any phase budget is consumed and a cache miss still hands
+    // the underlying judge its full benchmarkPhaseTimeoutMs. In guarded
+    // mode `system` is a fresh object so this never mutates the caller's
+    // adapter; in non-guarded mode `system === options.system` and the
+    // finally below restores the original judge.
+    if (cacheWiring?.willWrapPrimary && system.judge !== undefined) {
+      const primary = wrapJudgeWithCache({
+        role: "primary",
+        judge: system.judge,
+        benchmarkId,
+        datasetVersion: definition.meta.version,
+        amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
+        provider: options.judgeProvider ?? null,
+        cache: cacheWiring.cache,
+      });
+      judgeCacheCounters = primary.counters;
+      primaryDrainPendingWrites = primary.drainPendingWrites;
+      system.judge = primary.judge;
+    }
+    // AMA-Bench cross judge: only wrap when a cross-judge provider config
+    // identifies it. Without provider config, leave the cross judge
+    // untouched so unidentified closure-based judges cannot collide. The
+    // cached cross judge is handed to the runner via the run-args override
+    // below; `options.amaBenchCrossJudge` itself is never mutated.
+    if (cacheWiring?.willWrapCross) {
+      const wrapped = wrapJudgeWithCache({
+        role: "cross",
+        judge: options.amaBenchCrossJudge!,
+        benchmarkId,
+        datasetVersion: definition.meta.version,
+        amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
+        provider: options.amaBenchCrossJudgeProvider ?? null,
+        cache: cacheWiring.cache,
+      });
+      cachedCrossJudge = wrapped.judge;
+      crossJudgeCacheCounters = wrapped.counters;
+      crossDrainPendingWrites = wrapped.drainPendingWrites;
+    }
     result = await registeredBenchmark.run({
       ...options,
       system,
