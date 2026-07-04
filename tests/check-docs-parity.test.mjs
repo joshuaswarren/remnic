@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -369,6 +369,38 @@ test("commands registered in remnic-core/src/cli.ts via .command() are recognize
         "```bash",
         "remnic recall",
         "remnic tier",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+// Regression: Commander lets required/optional args live INSIDE the command
+// string, e.g. cmd.command("memory-timeline <memoryId>"). Before the
+// arg-placeholder fix, the registration regex demanded the closing quote
+// immediately after the name, so three real top-level commands
+// (memory-timeline, review-disposition, consolidate-undo) were dropped from
+// the registered set and a doc of `remnic memory-timeline` would
+// false-positive as drift (codex P2 thread PR #1601).
+test("a core command registered with a required arg is recognized", () => {
+  withFixture((root) => {
+    // Register a top-level command whose declaration carries a <arg> placeholder.
+    appendFileSync(
+      path.join(root, "packages", "remnic-core", "src", "cli.ts"),
+      'cmd.command("memory-timeline <memoryId>").description("Read timeline").action(async () => {});\n',
+    );
+    // Document it as a real `remnic` invocation in a fenced block.
+    writeFileSync(
+      path.join(root, "docs", "timeline.md"),
+      [
+        "# Timeline",
+        "",
+        "```bash",
+        "remnic memory-timeline fact-123",
         "```",
         "",
       ].join("\n"),

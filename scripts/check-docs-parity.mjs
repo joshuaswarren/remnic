@@ -320,7 +320,17 @@ const QUOTED_MEMBER_RE = /"([A-Za-z][A-Za-z0-9:_-]*)"/g;
 // other sub-commander variables. The `\bcmd\b` word boundary is
 // case-sensitive, so it matches the variable `cmd` but not `tierCmd`,
 // `namespacesCmd`, `secureStoreCmd`, etc. (those use a capital `C`).
-const CORE_TOP_LEVEL_RE = /\bcmd\b\s*\.\s*command\(\s*"([A-Za-z][A-Za-z0-9:_-]*)"\s*\)/g;
+//
+// Commander allows required/optional args INSIDE the command string, e.g.
+// `cmd.command("memory-timeline <memoryId>")` or
+// `cmd.command("consolidate-undo <target>")`. The capture group stops at the
+// first whitespace so only the command NAME is recorded; the optional
+// `(?:\s+[<\[][^"]*)?` then absorbs any ` <arg>` / ` [arg]` placeholders
+// before the closing quote. Without this, three real top-level commands
+// (memory-timeline, review-disposition, consolidate-undo) were silently
+// dropped from the registered set, and any future doc of
+// `remnic memory-timeline` would false-positive as drift (codex P2 thread PR #1601).
+const CORE_TOP_LEVEL_RE = /\bcmd\b\s*\.\s*command\(\s*"([A-Za-z][A-Za-z0-9:_-]*)(?:\s+[<\[][^"]*)?"\s*\)/g;
 
 /**
  * Collect the set of registered top-level command names from both CLI files.
