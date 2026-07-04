@@ -173,3 +173,52 @@ test("runCli routes custom stdout/stderr sinks instead of the default buffer", a
 test("runCli rejects non-array argv with a TypeError", async () => {
   await assert.rejects(() => runCli(undefined as unknown as string[]), /argv must be an array/);
 });
+
+test("runCli's swapped process.stdout / process.stderr are accepted by child_process stdio", async () => {
+  // Regression for the #1613 review thread on run-cli.ts:194. Commands
+  // that pass process.stdout / process.stderr into child_process stdio
+  // (e.g. `bench datasets download --json` redirects the dataset script's
+  // stdout to parent stderr via ["inherit", process.stderr, "inherit"])
+  // must not fail with "The argument 'stdio' is invalid" when invoked
+  // through runCli. Node's child_process only honours a stream-typed
+  // stdio entry when it carries a numeric .fd; the fakes runCli installs
+  // must therefore expose .fd (1 / 2) so they're accepted as stdio
+  // targets, routing the child's output to the real underlying fd.
+  //
+  // We probe from inside a custom stdout sink: runCli has already swapped
+  // process.stdout AND process.stderr to the fakes by the time the
+  // dispatcher writes its first line, so the spawns inside the sink see
+  // the fakes. Using process.execPath keeps the probe hermetic (no shell,
+  // no network, no external script).
+  const childProcess = await import("node:child_process");
+  const errors: string[] = [];
+  let probeRan = false;
+  const probeStdout = {
+    write: (chunk: string) => {
+      if (!probeRan) {
+        probeRan = true;
+        // Mirror the exact stdio shape `bench datasets download --json`
+        // uses: ["inherit", <parent stream>, "inherit"]. Probe both
+        // process.stderr (the production path) and process.stdout (for
+        // symmetry — any future command passing stdout hits the same
+        // validation).
+        for (const stream of [process.stderr, process.stdout]) {
+          try {
+            childProcess.execFileSync(process.execPath, ["-e", "process.exit(0)"], {
+              stdio: ["inherit", stream, "inherit"],
+            });
+          } catch (err) {
+            errors.push((err as Error).message.split("\n")[0]);
+          }
+        }
+      }
+      return true;
+    },
+  };
+  // `daemon bogus-action` prints a usage line to stdout via console.log,
+  // which routes through runCli's swapped console.log -> stdout sink,
+  // triggering our probe on the first write.
+  await runCli(["daemon", "bogus-action"], { stdout: probeStdout });
+  assert.equal(probeRan, true, "probe never ran — daemon bogus-action wrote no stdout");
+  assert.deepEqual(errors, [], `child spawn under runCli failed: ${JSON.stringify(errors)}`);
+});

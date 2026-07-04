@@ -177,16 +177,30 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     ? Object.entries(options.env).map(([key, value]) => [key, process.env[key], key in process.env])
     : [];
 
-  // Build minimal Writable replacements. We only need `.write()` for the
-  // CLI's output paths; Node's Console checks for `.write` on its bound
-  // streams, so a callable object is enough.
+  // Build minimal Writable replacements. We need `.write()` for the CLI's
+  // output paths (Node's Console checks for `.write` on its bound streams)
+  // AND `.fd` so commands that hand process.stdout / process.stderr to
+  // child_process stdio are accepted (see the note on fakeStdout below).
+  // Expose the real process fd (1 for stdout, 2 for stderr) on the fake
+  // stream so commands that pass process.stdout / process.stderr into
+  // child_process stdio (e.g. `bench datasets download --json` redirects
+  // the dataset script's stdout to parent stderr) are accepted by Node.
+  // Node's child_process only honours a stream-typed stdio entry when it
+  // carries a numeric .fd; without one it throws "The argument 'stdio' is
+  // invalid". The fd routes the child's output to the real underlying fd
+  // (the test runner's stdout/stderr), matching the real binary's
+  // behaviour — the captured buffer still records everything the CLI
+  // itself writes via console.* / process.stdout.write, just not the
+  // child's direct fd writes, which is exactly what contract tests need.
   const fakeStdout = {
+    fd: 1,
     write: (chunk: unknown) => {
       stdout.write(typeof chunk === "string" ? chunk : String(chunk));
       return true;
     },
   };
   const fakeStderr = {
+    fd: 2,
     write: (chunk: unknown) => {
       stderr.write(typeof chunk === "string" ? chunk : String(chunk));
       return true;
