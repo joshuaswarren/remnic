@@ -60,7 +60,11 @@ test("surface catalog: every entry's write() persists against a fresh store", as
   const surface = enumeratePublicWriteSurface();
   for (const entry of surface) {
     await withScratchStorage(`surface-${entry.name}`, async (storage) => {
-      const result = await entry.write(storage);
+      // `write` and OUTSIDE any catalog-touch window. Calling setup then write
+      // mirrors how #1522's fitness test will consume the surface, and keeps
+      // this persistence contract test honest about which call persisted.
+      const setupContext = entry.setup ? await entry.setup(storage) : undefined;
+      const result = await entry.write(storage, setupContext);
       // writeEntity returns "" on invalid input but our contract-body input
       // is always valid, so every entry must return a non-empty id/path.
       assert.ok(

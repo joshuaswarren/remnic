@@ -263,11 +263,23 @@ export interface PublicWriteSurfaceEntry {
   /** Storage sub-surface exercised. */
   kind: PublicWriteKind;
   /**
-   * Perform the write against `storage`. Returns the persisted id/path or `""`
-   * for a documented no-op. MUST not depend on prior state beyond an empty
-   * store having had `ensureDirectories()` called.
+   * Optional fixture setup run BEFORE the measured `write`, OUTSIDE any
+   * lastWriteAt / catalog-touch measurement window. Use this for STATEFUL
+   * entries whose operation under test needs a pre-existing record (e.g.
+   * updateMemoryFrontmatter needs a memory to patch). Returns a context value
+   * forwarded to `write` as its second argument. Consumers MUST call `setup`
+   * (when present) before `write` and MUST NOT count the setup call towards
+   * the measured catalog-touch — only `write` is the measured operation.
    */
-  write: (storage: StorageManager) => Promise<string>;
+  setup?: (storage: StorageManager) => Promise<unknown>;
+  /**
+   * The MEASURED write operation against `storage`. Returns the persisted
+   * id/path or `""` for a documented no-op. `setupContext` is the value
+   * returned by `setup` (undefined when the entry has no setup). MUST NOT
+   * depend on prior state beyond an empty store having had
+   * `ensureDirectories()` called (plus whatever `setup` created).
+   */
+  write: (storage: StorageManager, setupContext?: unknown) => Promise<string>;
 }
 
 /**
@@ -317,16 +329,19 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
     {
       name: "updateMemoryFrontmatter",
       kind: "memory",
-      // STATEFUL ENTRY: performs setup (writeMemory) THEN the operation under
-      // test (updateMemoryFrontmatter). #1522's catalog-touch consumer must
-      // baseline its lastWriteAt/catalog snapshot AFTER the setup write so the
-      // measurement is attributable to updateMemoryFrontmatter, not setup.
-      write: async (storage) => {
-        const id = await storage.writeMemory(
+      // STATEFUL ENTRY: `setup` creates the parent record OUTSIDE the measured
+      // window so #1522's catalog-touch consumer attributes lastWriteAt movement
+      // to updateMemoryFrontmatter alone, never to the setup writeMemory. The
+      // `write` callback receives the parent id as setupContext.
+      setup: async (storage) => {
+        return storage.writeMemory(
           "fact",
           "contract-surface frontmatter parent",
           { tags: ["contract-surface"] },
         );
+      },
+      write: async (storage, setupContext) => {
+        const id = setupContext as string;
         const ok = await storage.updateMemoryFrontmatter(id, { confidence: 0.5 });
         if (!ok) {
           throw new Error("updateMemoryFrontmatter returned false for a just-written memory");
@@ -411,12 +426,18 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
     {
       name: "writeChunk",
       kind: "chunk",
-      write: async (storage) => {
-        const parentId = await storage.writeMemory(
+      // STATEFUL ENTRY: `setup` creates the parent memory OUTSIDE the measured
+      // window so #1522's catalog-touch consumer attributes lastWriteAt movement
+      // to writeChunk alone, never to the setup writeMemory.
+      setup: async (storage) => {
+        return storage.writeMemory(
           "fact",
           "contract-surface chunk parent",
           { tags: ["contract-surface"] },
         );
+      },
+      write: async (storage, setupContext) => {
+        const parentId = setupContext as string;
         // Return the CHUNK id (`${parentId}-chunk-0`), not the parent id, so
         // the catalog fitness test observes the chunk write — a regression
         // that drops the chunk while the parent persists would otherwise pass
