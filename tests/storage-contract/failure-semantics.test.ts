@@ -26,9 +26,9 @@ import { mkdir, writeFile, chmod } from "node:fs/promises";
 
 import { StorageManager } from "../../packages/remnic-core/src/storage.js";
 
-import { withScratchStorage, withScratchDir, setDirReadOnly, setDirReadWrite } from "./helpers.js";
+import { withScratchStorage, withScratchDir, setDirReadOnly, setDirReadWrite, PERM_FAULT_INJECTION_AVAILABLE } from "./helpers.js";
 
-const SKIP_PERM = process.platform === "win32";
+const SKIP_PERM = !PERM_FAULT_INJECTION_AVAILABLE;
 
 test("failure semantics: readAllMemories on a fresh empty store returns [] (empty, not error)", async () => {
   await withScratchStorage("fail-empty-store", async (storage) => {

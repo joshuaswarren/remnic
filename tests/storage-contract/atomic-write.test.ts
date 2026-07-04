@@ -16,9 +16,9 @@ import path from "node:path";
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 
 import { writeMaybeEncryptedFile } from "../../packages/remnic-core/src/secure-store/secure-fs.js";
-import { withScratchDir, withScratchStorage, setDirReadOnly, setDirReadWrite } from "./helpers.js";
+import { withScratchDir, withScratchStorage, setDirReadOnly, setDirReadWrite, PERM_FAULT_INJECTION_AVAILABLE } from "./helpers.js";
 
-const SKIP_ATOMIC = process.platform === "win32";
+const SKIP_ATOMIC = !PERM_FAULT_INJECTION_AVAILABLE;
 
 test("atomic-write (rule 54): writeMaybeEncryptedFile uses temp-then-rename — original survives a failed rename", { skip: SKIP_ATOMIC }, async () => {
   await withScratchDir("atomic-primitive", async (dir) => {

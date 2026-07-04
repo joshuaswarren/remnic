@@ -360,18 +360,35 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
 }
 
 // ---------------------------------------------------------------------------
-// chmod helper for atomic-write failure injection (rule 54)
+// Permission fault-injection predicate + chmod helpers (rule 54)
 // ---------------------------------------------------------------------------
+
+/**
+ * `true` only when chmod-based fault injection meaningfully denies access:
+ * a POSIX platform where the test process is NOT uid 0. Root bypasses Unix
+ * mode bits, so `chmod(0o500)`/`chmod(0o000)` would still let writes/reads
+ * succeed and the atomicity / failure-semantics assertions would fail
+ * spuriously — common in Docker-based CI that runs as root. Tests that depend
+ * on chmod-driven failures gate themselves on this predicate (see
+ * `SKIP_ATOMIC` in atomic-write.test.ts and `SKIP_PERM` in
+ * failure-semantics.test.ts) rather than on `platform === "win32"` alone.
+ */
+export const PERM_FAULT_INJECTION_AVAILABLE: boolean =
+  process.platform !== "win32" &&
+  typeof process.getuid === "function" &&
+  process.getuid() !== 0;
 
 /**
  * Sync chmod scoped to a scratch path we just created. Used by the atomicity
  * test to make a parent dir read-only so `writeMaybeEncryptedFile`'s temp
  * write inside it fails — proving the temp-then-rename contract leaves the
  * original file intact when the write is rejected (rule 54: never
- * delete-before-write). No-op on Windows where the test is skipped.
+ * delete-before-write). No-op on Windows and when running as root (where mode
+ * bits cannot deny the owner access; tests relying on the lock skip via
+ * `PERM_FAULT_INJECTION_AVAILABLE`).
  */
 export function setDirReadOnly(targetPath: string): void {
-  if (process.platform === "win32") return;
+  if (!PERM_FAULT_INJECTION_AVAILABLE) return;
   // 0o500 = r-x for owner; the dir already exists, we own it.
   chmodSync(targetPath, 0o500);
 }
@@ -379,5 +396,6 @@ export function setDirReadOnly(targetPath: string): void {
 /** Restore full owner perms after `setDirReadOnly`. */
 export function setDirReadWrite(targetPath: string): void {
   if (process.platform === "win32") return;
+  if (typeof process.getuid === "function" && process.getuid() === 0) return;
   chmodSync(targetPath, 0o700);
 }
