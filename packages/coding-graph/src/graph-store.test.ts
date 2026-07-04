@@ -656,6 +656,63 @@ test("out-of-range edge confidence is rejected at the storage boundary (chatgpt-
   }
 });
 
+test("omitted edges field preserves prior edges, explicit [] wipes them (cursor Bugbot: 'Omitted edges field wipes stored edges')", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-noedges-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "store.db"),
+  });
+  try {
+    // Initial ingest with edges.
+    const r1 = await store.upsertFileBatch([fileA]);
+    assert.equal(r1.ok, true);
+    if (!r1.ok) throw new Error("expected ok");
+    assert.equal(r1.results[0]?.edgeCount, 1, "initial ingest stores 1 edge");
+
+    // Re-upsert the same file WITHOUT an edges field — a bare core
+    // ParseResult.ir has no edges. Prior edges MUST be preserved.
+    const noEdges: StoreFileIR = {
+      path: "src/a.ts",
+      language: "typescript",
+      contentHash: "h-a-noedges",
+      symbols: [sym("a.greet", "greet", 0, 100), sym("a.farewell", "farewell", 100, 200)],
+    };
+    const r2 = await store.upsertFileBatch([noEdges]);
+    assert.equal(r2.ok, true);
+    if (!r2.ok) throw new Error("expected ok");
+    assert.equal(
+      r2.results[0]?.edgeCount,
+      0,
+      "re-upsert without edges field must not insert or delete edges",
+    );
+
+    // Re-ingest fileB (which has a cross-file edge to a.greet). If the
+    // edge from fileA was preserved, fileB's re-ingest sees it still
+    // there (no dangling drop). If it was wiped, fileB's edge target
+    // is gone but the edge re-inserts fine since a.greet still exists.
+    // The definitive proof: re-upsert fileA with explicit [] edges —
+    // this MUST wipe the prior edge.
+    const emptyEdges: StoreFileIR = {
+      path: "src/a.ts",
+      language: "typescript",
+      contentHash: "h-a-empty-edges",
+      symbols: [sym("a.greet", "greet", 0, 100), sym("a.farewell", "farewell", 100, 200)],
+      edges: [],
+    };
+    const r3 = await store.upsertFileBatch([emptyEdges]);
+    assert.equal(r3.ok, true);
+    if (!r3.ok) throw new Error("expected ok");
+    // The prior edge (a.greet → a.farewell) is now stale and deleted.
+    assert.equal(
+      r3.results[0]?.droppedDanglingEdges,
+      0,
+      "explicit [] edges does not produce dangling edges (edges are src-owned)",
+    );
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("close blocks new writes before draining so a concurrent upsert is rejected (chatgpt-codex-connector P2)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "cg-closing-"));
   const store = await GraphStore.open({

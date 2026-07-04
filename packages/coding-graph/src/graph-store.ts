@@ -592,6 +592,15 @@ export class GraphStore {
    * kept stale edges across re-ingests).
    */
   private upsertFileEdges(ir: StoreFileIR, result: UpsertResult): void {
+    // If edges are not provided (undefined), preserve prior edges rather
+    // than treating a missing field as an empty assertion set. A bare
+    // core ParseResult.ir (which has no edges field) re-upsert must NOT
+    // wipe previously stored edges. An explicit empty array [] DOES
+    // assert "no edges" and deletes all prior src-owned edges
+    // (cursor Bugbot: 'Omitted edges field wipes stored edges').
+    if (ir.edges === undefined) {
+      return;
+    }
     // Build the set of edges the IR is asserting for this file. The
     // SRC of each edge MUST belong to this file (it is resolved from
     // the per-file `qualifiedNameToId` map only — no DB fallback);
