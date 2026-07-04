@@ -17,28 +17,20 @@ import {
   CATEGORY_DIR_MAP,
   categoryDirName,
 } from "../../packages/remnic-core/src/utils/category-dir.js";
-import type { MemoryCategory } from "../../packages/remnic-core/src/types.js";
-import { withScratchStorage } from "./helpers.js";
+import { ALL_MEMORY_CATEGORIES, withScratchStorage } from "./helpers.js";
 
 /**
- * The categories `StorageManager.writeMemory` accepts. `entity` resolves to the
- * `facts/` fallback (no dedicated dir per `categoryDirName`); entity FILES live
- * under `entities/` via `writeEntity`, which has its own round-trip test.
+ * The categories `StorageManager.writeMemory` accepts, derived from the single
+ * fail-closed `ALL_MEMORY_CATEGORIES` list in helpers.ts (which itself is
+ * `satisfies Record<MemoryCategory, unknown>`-guarded). `entity` resolves to
+ * the `facts/` fallback (no dedicated dir per `categoryDirName`); entity FILES
+ * live under `entities/` via `writeEntity`, which has its own round-trip test
+ * below — so it is excluded here. Deriving (not hand-copying) means adding a
+ * `MemoryCategory` flows into this write→read→list→delete contract
+ * automatically rather than silently skipping it until someone remembers to
+ * edit a second list.
  */
-const WRITE_CATEGORIES: MemoryCategory[] = [
-  "fact",
-  "preference",
-  "decision",
-  "correction",
-  "commitment",
-  "moment",
-  "principle",
-  "relationship",
-  "rule",
-  "skill",
-  "procedure",
-  "reasoning_trace",
-];
+const WRITE_CATEGORIES = ALL_MEMORY_CATEGORIES.filter((c) => c !== "entity");
 
 test("round-trip: ALL_CATEGORY_DIRS is the single category-dir source of truth (no hardcoded copy)", () => {
   // Rule 53's cousin: if a new category dir lands in CATEGORY_DIR_MAP but not

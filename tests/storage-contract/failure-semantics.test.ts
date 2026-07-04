@@ -22,7 +22,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { mkdir, writeFile, chmod } from "node:fs/promises";
+import { mkdir, rm, writeFile, chmod } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 
 import { StorageManager } from "../../packages/remnic-core/src/storage.js";
@@ -74,7 +74,7 @@ test("failure semantics: SecureStoreLockedError is NEVER swallowed by readMemory
   // store (key -> null) and prove readMemoryByPath re-throws
   // SecureStoreLockedError instead of swallowing it to null — which would
   // masquerade as an empty store and cause silent data loss.
-  await withScratchStorage("fail-locked-rethrow", async (storage, dir) => {
+  await withScratchStorage("fail-locked-rethrow", async (storage) => {
     const key = randomBytes(32);
     storage.setSecureStoreKey(key, true);
     const id = await storage.writeMemory(
@@ -82,8 +82,17 @@ test("failure semantics: SecureStoreLockedError is NEVER swallowed by readMemory
       "encrypted body — must not silently vanish",
       { confidence: 0.9 },
     );
-    const today = new Date().toISOString().slice(0, 10);
-    const file = path.join(dir, "facts", today, `${id}.md`);
+    // Capture the file's ACTUAL on-disk path from the written memory record
+    // rather than reconstructing it from a second `new Date()`. writeMemory
+    // derives its own `today` internally; if the test crosses UTC midnight
+    // between the write and a clock-derived path lookup, readMemoryByPath
+    // would read a missing file and return null, failing the locked-store
+    // rethrow assertion for timing rather than a real regression.
+    const written = await storage.getMemoryById(id);
+    if (!written) {
+      throw new Error("setup writeMemory did not produce a readable memory");
+    }
+    const file = written.path;
 
     // Lock the store: key -> null. Reads of the encrypted file must throw.
     storage.setSecureStoreKey(null, false);
@@ -97,10 +106,23 @@ test("failure semantics: SecureStoreLockedError is NEVER swallowed by readMemory
 
 test("failure semantics: a write to a read-only dir throws (does not silently no-op)", { skip: SKIP_PERM }, async () => {
   await withScratchStorage("fail-write-readonly", async (storage) => {
-    const today = new Date().toISOString().slice(0, 10);
-    const factsToday = path.join(storage.dir, "facts", today);
-    await mkdir(factsToday, { recursive: true });
-    setDirReadOnly(factsToday);
+    // Lock the STABLE `facts` parent, not a day-specific child. writeMemory
+    // derives its own `today` internally; if the test crosses UTC midnight
+    // between deriving `today` here and the write, a day-child lock would let
+    // the write succeed in the new (unlocked) day dir and `assert.rejects`
+    // would fail for timing, not a regression. `facts/` is stable and
+    // clock-independent, so locking it forces writeMemory's internal day-dir
+    // creation (ensureDirectories → mkdir(facts/<today>)) to fail regardless
+    // of which day it picks.
+    //
+    // Caveat: withScratchStorage's ensureDirectories() pre-creates today's
+    // facts/<today>/ day dir at construction time, which would let the write
+    // succeed even with facts/ locked (the day dir already exists). Remove
+    // and recreate facts/ empty first so the lock actually bites.
+    const factsDir = path.join(storage.dir, "facts");
+    await rm(factsDir, { recursive: true, force: true });
+    await mkdir(factsDir, { recursive: true });
+    setDirReadOnly(factsDir);
     try {
       await assert.rejects(
         () => storage.writeMemory("fact", "must not persist", { confidence: 0.9 }),
@@ -108,7 +130,7 @@ test("failure semantics: a write to a read-only dir throws (does not silently no
         "write to a read-only dir must throw, not silently drop",
       );
     } finally {
-      setDirReadWrite(factsToday);
+      setDirReadWrite(factsDir);
     }
   });
 });
