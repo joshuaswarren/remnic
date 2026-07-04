@@ -311,23 +311,20 @@ export async function runBenchmark(
       });
       judgeCacheCounters = primary.counters;
       primaryDrainPendingWrites = primary.drainPendingWrites;
-      // PR #1591 round-8: try in-place mutation first — it preserves
-      // `this` for class-based adapters with #private fields (Object.create
-      // would change `this` and break private member access). Fall back to
-      // a shadow adapter only when the property is frozen/non-writable.
+      // PR #1591 round-8 (round-9 update): try in-place mutation first —
+      // it preserves `this` for class-based adapters with #private fields.
+      // When `judge` is frozen/getter-only the assignment throws, so fall
+      // back to a delegating Proxy (createJudgeOverrideProxy) that overrides
+      // only `judge` and binds every other method to the original adapter.
+      // The earlier Object.create fallback changed `this` and broke private
+      // member access for read-only adapters (thread PRRT_kwDORJXyws6OVfx5).
       try {
         system.judge = primary.judge;
         // Only the non-guarded path (system === options.system) mutates
         // the caller's adapter and needs a restore in the finally.
         systemJudgeMutatedInPlace = system === options.system;
       } catch {
-        system = Object.create(system);
-        Object.defineProperty(system, "judge", {
-          value: primary.judge,
-          writable: true,
-          enumerable: true,
-          configurable: true,
-        });
+        system = createJudgeOverrideProxy(system, primary.judge);
       }
     }
     // AMA-Bench cross judge: only wrap when a cross-judge provider config
@@ -478,6 +475,37 @@ export function wrapJudgeWithCache(args: {
     counters: wrapped.counters,
     drainPendingWrites: wrapped.drainPendingWrites,
   };
+}
+/**
+ * Build a delegating adapter that overrides ONLY `judge` while forwarding
+ * every other access to `adapter`, binding any returned function to
+ * `adapter` so a call binds `this` to the original. Used by runBenchmark
+ * when `adapter.judge` is non-writable (frozen / getter-only) so the cached
+ * judge can be installed for the run without mutating the caller's object.
+ *
+ * Unlike `Object.create(adapter)`, this preserves the original receiver for
+ * inherited methods: class-based adapters that hold #private fields or
+ * non-enumerable instance state keep working because method bodies see the
+ * real instance, not a shadow prototype (PR #1591 round-9, thread
+ * PRRT_kwDORJXyws6OVfx5). The Proxy leaves the caller's adapter untouched,
+ * so no finally-restore is required for this path.
+ */
+export function createJudgeOverrideProxy(
+  adapter: BenchMemoryAdapter,
+  judge: BenchJudge,
+): BenchMemoryAdapter {
+  return new Proxy(adapter, {
+    get(target, prop: string | symbol) {
+      if (prop === "judge") {
+        return judge;
+      }
+      // Resolve against `target` as the receiver so prototype getters and
+      // private-field accessors observe the original instance, then bind
+      // any method so a subsequent call also runs with `this === target`.
+      const value = Reflect.get(target, prop, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as BenchMemoryAdapter;
 }
 
 function benchmarkDefinition(id: string): BenchmarkDefinition {

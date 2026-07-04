@@ -21,7 +21,7 @@ import test from "node:test";
 
 import type { BenchJudge, BenchJudgeResult, BenchMemoryAdapter, Message, SearchResult } from "../adapters/types.ts";
 import { JudgeCache, runJudgeWithCache, stableStringify } from "./judge-cache.ts";
-import { runBenchmark } from "../benchmark.ts";
+import { createJudgeOverrideProxy, runBenchmark } from "../benchmark.ts";
 
 async function withTempDir<T>(
   body: (dir: string) => Promise<T>,
@@ -1169,4 +1169,128 @@ test("(z) cache key is collision-resistant against delimiter injection (PR #1591
   // Sanity: identical inputs still produce identical keys.
   const key3 = cache.computeKey(sampleKeyParts({ datasetVersion: "v1", questionId: "a|b" }));
   assert.equal(key1, key3, "identical inputs must produce identical keys");
+});
+
+// --- (aa) delegating proxy preserves receivers (PR #1591 round-9) -------
+
+test("(aa) createJudgeOverrideProxy preserves #private field receivers for read-only judge adapters (PR #1591 round-9)", async () => {
+  // The open thread PRRT_kwDORJXyws6OVfx5: when judge caching is enabled
+  // for a class-style adapter whose `judge` property is getter-only /
+  // frozen, the in-place mutation throws and the old Object.create shadow
+  // ran adapter methods with the shadow as `this`, so `this.#data` threw.
+  // createJudgeOverrideProxy must override ONLY `judge` and bind every
+  // other method to the original instance so private state resolves.
+  const stubJudge = {
+    async score() {
+      return 0.5;
+    },
+  } as unknown as BenchJudge;
+
+  class PrivateAdapter {
+    #data: string;
+    constructor(data: string) {
+      this.#data = data;
+    }
+    async store(): Promise<void> {}
+    async recall(): Promise<string> {
+      // Throws TypeError ("which has only a getter" style) only if `this`
+      // is a real PrivateAdapter instance holding the #data slot. A shadow
+      // created via Object.create would make this throw instead.
+      return this.#data;
+    }
+    async search() {
+      return [];
+    }
+    async reset(): Promise<void> {}
+    async getStats() {
+      return { sessionCount: 0, totalMemories: 0 };
+    }
+    async destroy(): Promise<void> {}
+    // getter-only judge => `system.judge = cached` throws in strict mode,
+    // forcing runBenchmark onto the proxy fallback path.
+    get judge(): BenchJudge {
+      return stubJudge;
+    }
+  }
+
+  const adapter = new PrivateAdapter("secret-private") as unknown as BenchMemoryAdapter;
+  const proxy = createJudgeOverrideProxy(adapter, stubJudge);
+
+  // `judge` is overridden with the cached judge on the proxy only.
+  assert.equal(proxy.judge, stubJudge, "proxy must surface the override judge");
+  assert.equal(adapter.judge, stubJudge, "original adapter must be untouched");
+
+  // Method calls preserve `this` === the original adapter, so the
+  // #private field resolves instead of throwing.
+  const recalled = await proxy.recall("s1", "q");
+  assert.equal(
+    recalled,
+    "secret-private",
+    "#private field must be reachable through the proxy (receiver preserved)",
+  );
+
+  // Identity / prototype chain still report the real class — the proxy is
+  // transparent to `instanceof` and getPrototypeOf.
+  assert.ok(proxy instanceof PrivateAdapter, "proxy must keep the real prototype chain");
+});
+
+// --- (ab) runBenchmark: class adapter + getter-only judge + caching -------
+
+test("(ab) runBenchmark runs a class adapter with a getter-only judge and caching on (PR #1591 round-9)", async () => {
+  // End-to-end repro of the thread scenario: a class-based adapter with a
+  // #private field AND a getter-only judge, with judge caching enabled.
+  // The in-place mutation throws (getter-only), so runBenchmark must fall
+  // back to createJudgeOverrideProxy and complete the run without touching
+  // the caller's adapter.
+  const cacheDir = await mkdtemp(path.join(tmpdir(), "bench-class-readonly-judge-"));
+  try {
+    const stubJudge = {
+      async score() {
+        return 0.5;
+      },
+      async scoreWithMetrics() {
+        return { score: 0.5, tokens: { input: 1, output: 1 }, latencyMs: 1, model: "stub" };
+      },
+    } as unknown as BenchJudge;
+
+    class PrivateAdapter {
+      #data: string;
+      constructor(data: string) {
+        this.#data = data;
+      }
+      async store(): Promise<void> {}
+      async recall(): Promise<string> {
+        return this.#data;
+      }
+      async search() {
+        return [];
+      }
+      async reset(): Promise<void> {}
+      async getStats() {
+        return { sessionCount: 0, totalMemories: 0 };
+      }
+      async destroy(): Promise<void> {}
+      get judge(): BenchJudge {
+        return stubJudge;
+      }
+    }
+
+    const adapter = new PrivateAdapter("private-data") as unknown as BenchMemoryAdapter;
+
+    const result = await runBenchmark("buffer-surprise-trigger", {
+      mode: "quick",
+      system: adapter,
+      judgeCacheDir: cacheDir,
+      judgeProvider: { provider: "openai" as const, model: "stub-judge" },
+    });
+
+    assert.ok(result, "runBenchmark should complete without throwing on a getter-only judge class adapter");
+    assert.equal(
+      adapter.judge,
+      stubJudge,
+      "caller's getter-only judge must not be mutated",
+    );
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
 });
