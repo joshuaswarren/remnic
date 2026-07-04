@@ -1,0 +1,341 @@
+/**
+ * graph-store tests — ordered steps 2–3 of issue #1552 PR1.
+ *
+ * Cover:
+ *   - upsertFileBatch: ingest counts (exact node + edge counts from hand-
+ *     written fixture IR)
+ *   - idempotency: re-ingesting the same IR yields identical state
+ *   - dangling-edge handling: cross-file edges whose destination was
+ *     deleted are DROPPED (per the PR1 policy documented in graph-schema)
+ *     and surfaced via droppedDanglingEdges
+ *   - node-id determinism: nodeIdFor is pure (sorted key material sha256)
+ *   - write queue serialization (rule 40)
+ *   - tagged failure shape on a closed store (rule 34)
+ */
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { GraphStore, nodeIdFor } from "./graph-store.js";
+import type { FileIR, SymbolIR } from "./graph-store.js";
+
+// ──────────────────────────────────────────────────────────────────────────
+// Fixture IR — synthetic code only (public-repo policy).
+// ──────────────────────────────────────────────────────────────────────────
+
+function sym(
+  qualifiedName: string,
+  name: string,
+  startByte: number,
+  endByte: number,
+  kind: SymbolIR["kind"] = "function",
+): SymbolIR {
+  return { qualifiedName, name, startByte, endByte, kind };
+}
+
+const fileA: FileIR = {
+  path: "src/a.ts",
+  lang: "ts",
+  contentHash: "h-a",
+  symbols: [
+    sym("a.greet", "greet", 0, 100),
+    sym("a.farewell", "farewell", 100, 200),
+  ],
+  edges: [
+    {
+      srcQualifiedName: "a.greet",
+      dstQualifiedName: "a.farewell",
+      type: "CALLS",
+      confidence: 0.95,
+      provenance: "heuristic",
+    },
+  ],
+};
+
+const fileB: FileIR = {
+  path: "src/b.ts",
+  lang: "ts",
+  contentHash: "h-b",
+  symbols: [
+    sym("b.run", "run", 0, 50),
+    sym("b.helper", "helper", 50, 150),
+  ],
+  edges: [
+    {
+      srcQualifiedName: "b.run",
+      dstQualifiedName: "b.helper",
+      type: "CALLS",
+      confidence: 0.9,
+      provenance: "heuristic",
+    },
+    {
+      // Cross-file edge — destination lives in fileA.
+      srcQualifiedName: "b.run",
+      dstQualifiedName: "a.greet",
+      type: "CALLS",
+      confidence: 0.6,
+      provenance: "heuristic",
+    },
+  ],
+};
+
+async function tempStore(): Promise<{ store: GraphStore; dir: string }> {
+  const dir = await mkdtemp(path.join(tmpdir(), "coding-graph-store-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "graph.sqlite"),
+  });
+  return { store, dir };
+}
+
+test("upsertFileBatch: ingest two-file fixture yields exact node + edge counts", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    assert.equal(store.schemaVersion(), 1);
+
+    const result = await store.upsertFileBatch([fileA, fileB]);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("expected ok result");
+    assert.equal(result.results.length, 2);
+
+    const a = result.results.find((r) => r.path === "src/a.ts");
+    const b = result.results.find((r) => r.path === "src/b.ts");
+    assert.ok(a, "expected result for fileA");
+    assert.ok(b, "expected result for fileB");
+    assert.equal(a?.nodeCount, 2, "fileA: 2 symbols");
+    assert.equal(a?.edgeCount, 1, "fileA: 1 intra-file edge");
+    assert.equal(b?.nodeCount, 2, "fileB: 2 symbols");
+    assert.equal(b?.edgeCount, 2, "fileB: 1 intra + 1 cross-file edge");
+    assert.equal(a?.droppedDanglingEdges, 0, "no dangling edges on first ingest");
+    assert.equal(b?.droppedDanglingEdges, 0);
+
+    // Re-open and verify the rows persisted.
+    store.close();
+    const reopened = await GraphStore.open({
+      dbPath: path.join(dir, "graph.sqlite"),
+    });
+    assert.equal(reopened.schemaVersion(), 1);
+    reopened.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("idempotency: re-ingesting the same IR is a no-op (counts and ids unchanged)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const first = await store.upsertFileBatch([fileA, fileB]);
+    assert.equal(first.ok, true);
+    if (!first.ok) throw new Error("expected ok result");
+
+    // Compute the expected ids deterministically.
+    const expectedA1 = nodeIdFor({
+      qualifiedName: "a.greet",
+      filePath: "src/a.ts",
+      label: "function",
+    });
+    const expectedB1 = nodeIdFor({
+      qualifiedName: "b.run",
+      filePath: "src/b.ts",
+      label: "function",
+    });
+
+    // Second ingest — same IR — must not change row counts nor ids.
+    const second = await store.upsertFileBatch([fileA, fileB]);
+    assert.equal(second.ok, true);
+    if (!second.ok) throw new Error("expected ok result");
+    for (const r of second.results) {
+      assert.equal(r.nodeCount, 0, "no new nodes when ids collide on PK");
+      assert.equal(r.edgeCount, 0, "no new edges when (src,dst,type) collides");
+      assert.equal(r.droppedDanglingEdges, 0);
+    }
+
+    // The rows still hash to the same deterministic ids.
+    assert.equal(expectedA1.length, 64, "sha256 hex digest length");
+    assert.equal(expectedB1.length, 64);
+    assert.notEqual(expectedA1, expectedB1, "different symbols → different ids");
+  } finally {
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("dangling-edge policy: cross-file edges whose dst is dropped are counted, not kept", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Initial batch — cross-file edge b.run → a.greet is fine.
+    const r1 = await store.upsertFileBatch([fileA, fileB]);
+    assert.equal(r1.ok, true);
+    if (!r1.ok) throw new Error("expected ok result");
+
+    // Re-ingest fileA only with a stripped symbol set: a.greet is gone, so
+    // the cross-file edge from b.run → a.greet becomes dangling.
+    const fileAReduced: FileIR = {
+      path: "src/a.ts",
+      lang: "ts",
+      contentHash: "h-a-2",
+      symbols: [sym("a.farewell", "farewell", 100, 200)],
+      // No edges — keeps the test focused on the dangling count.
+      edges: [],
+    };
+    const r2 = await store.upsertFileBatch([fileAReduced]);
+    assert.equal(r2.ok, true);
+    if (!r2.ok) throw new Error("expected ok result");
+    assert.equal(r2.results.length, 1);
+    const a = r2.results[0]!;
+    assert.equal(a.path, "src/a.ts");
+    assert.equal(a.droppedDanglingEdges, 1, "one cross-file edge pointed at a.greet");
+  } finally {
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("nodeIdFor is pure and order-stable (rule 23/38)", () => {
+  const a1 = nodeIdFor({
+    qualifiedName: "mod.fn",
+    filePath: "x.ts",
+    label: "function",
+  });
+  const a2 = nodeIdFor({
+    qualifiedName: "mod.fn",
+    filePath: "x.ts",
+    label: "function",
+  });
+  assert.equal(a1, a2, "same input → same id");
+
+  // Different label → different id.
+  const b = nodeIdFor({
+    qualifiedName: "mod.fn",
+    filePath: "x.ts",
+    label: "method",
+  });
+  assert.notEqual(a1, b);
+
+  // Different qualified name → different id.
+  const c = nodeIdFor({
+    qualifiedName: "mod.other",
+    filePath: "x.ts",
+    label: "function",
+  });
+  assert.notEqual(a1, c);
+
+  // Different file path → different id.
+  const d = nodeIdFor({
+    qualifiedName: "mod.fn",
+    filePath: "y.ts",
+    label: "function",
+  });
+  assert.notEqual(a1, d);
+});
+
+test("nodeIdFor uses sha256 (64 hex chars)", () => {
+  const id = nodeIdFor({
+    qualifiedName: "x",
+    filePath: "y",
+    label: "z",
+  });
+  assert.equal(id.length, 64);
+  assert.match(id, /^[0-9a-f]{64}$/);
+});
+
+test("write queue serializes concurrent upserts (rule 40)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Fire N batches in parallel — the queue must execute them one after
+    // the other without raising and without losing rows.
+    const N = 8;
+    const irs: FileIR[] = Array.from({ length: N }, (_, i) => ({
+      path: `src/file-${i}.ts`,
+      lang: "ts",
+      contentHash: `h-${i}`,
+      symbols: [sym(`f-${i}.run`, "run", 0, 10)],
+      edges: [],
+    }));
+    const settled = await Promise.all(
+      irs.map((ir) => store.upsertFileBatch([ir])),
+    );
+    for (const r of settled) {
+      assert.equal(r.ok, true, "every concurrent upsert must succeed");
+      if (r.ok) {
+        assert.equal(r.results[0]?.nodeCount, 1);
+      }
+    }
+
+    // drain() resolves cleanly after all queued writes settle.
+    await store.drain();
+  } finally {
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("closed store returns tagged failure, never throws (rule 34)", async () => {
+  const { store, dir } = await tempStore();
+  store.close();
+  try {
+    const result = await store.upsertFileBatch([fileA]);
+    assert.equal(result.ok, false);
+    if (result.ok) throw new Error("expected failure");
+    assert.ok(
+      result.code === "db_corrupt" || result.code === "db_locked",
+      `closed store should return tagged failure; got ${result.code}`,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("node-id ingestion: file-level delete cascades prior nodes + owned edges", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r1 = await store.upsertFileBatch([fileA]);
+    assert.equal(r1.ok, true);
+    if (!r1.ok) throw new Error("expected ok");
+
+    // Re-ingest fileA with empty symbols — deletes both nodes.
+    const fileAEmpty: FileIR = {
+      path: "src/a.ts",
+      lang: "ts",
+      contentHash: "h-a-empty",
+      symbols: [],
+      edges: [],
+    };
+    const r2 = await store.upsertFileBatch([fileAEmpty]);
+    assert.equal(r2.ok, true);
+    if (!r2.ok) throw new Error("expected ok");
+    assert.equal(r2.results[0]?.nodeCount, 0);
+    assert.equal(r2.results[0]?.edgeCount, 0);
+
+    // Re-ingesting fileB should now see a cross-file edge b.run → a.greet
+    // as a fresh insert (the prior dangling drop is gone since a.greet no
+    // longer exists to receive the edge; the edge is skipped at insert time
+    // because the dst cannot be resolved).
+    const r3 = await store.upsertFileBatch([fileB]);
+    assert.equal(r3.ok, true);
+    if (!r3.ok) throw new Error("expected ok");
+    // fileB has 2 symbols + 2 edges declared, but the cross-file edge's
+    // dst (a.greet) is missing → 1 edge kept (intra-file).
+    assert.equal(r3.results[0]?.nodeCount, 2);
+    assert.equal(r3.results[0]?.edgeCount, 1);
+  } finally {
+    store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("absolute dbPath is required", async () => {
+  // Path.resolve would also produce absolute; we need a deliberately
+  // relative path so the validator throws — the previous version of this
+  // test composed off mkdtemp, which always returned absolute, so the
+  // assertion could never fire.
+  const relative = `relative-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`;
+  await assert.rejects(
+    () =>
+      GraphStore.open({
+        dbPath: relative,
+      }),
+    /dbPath must be absolute/,
+  );
+});

@@ -1,0 +1,59 @@
+{
+  "name": "@remnic/coding-graph",
+  "version": "9.3.670",
+  "description": "SQLite knowledge-graph store for the Remnic coding-memory track \u2014 versioned schema and write pipeline (issue #1552 PR1).",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "remnic-source": "./src/index.ts",
+      "import": "./dist/index.js"
+    },
+    "./graph-schema": {
+      "types": "./dist/graph-schema.d.ts",
+      "remnic-source": "./src/graph-schema.ts",
+      "import": "./dist/graph-schema.js"
+    },
+    "./graph-store": {
+      "types": "./dist/graph-store.d.ts",
+      "remnic-source": "./src/graph-store.ts",
+      "import": "./dist/graph-store.js"
+    }
+  },
+  "files": [
+    "src",
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --dts",
+    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
+    "check-types": "tsc --noEmit",
+    "test": "tsx --test 'src/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@remnic/core": "workspace:*"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.7.0",
+    "tsx": "^4.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joshuaswarren/remnic.git",
+    "directory": "packages/coding-graph"
+  },
+  "keywords": [
+    "remnic",
+    "coding-graph",
+    "knowledge-graph",
+    "sqlite"
+  ]
+}
