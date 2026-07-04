@@ -24,7 +24,7 @@ export type BenchDatasetAction = "download" | "status";
 export type BenchExportFormat = "json" | "csv" | "html";
 export type BenchProviderAction = "discover";
 export type BenchPublishTarget = "remnic-ai";
-export type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain";
+export type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain" | "local-lab";
 export type BenchModelSource = "plugin" | "gateway";
 export type BenchRunAction = "list" | "show" | "delete";
 export type AmaBenchJudgeProtocol = "default" | "recommended";
@@ -113,6 +113,11 @@ export interface ParsedBenchArgs {
   noJudgeCache?: boolean;
   /** Issue #1573 PR1: override the judge-result cache directory. */
   judgeCacheDir?: string;
+  /**
+   * Issue #1573 PR2: path to a local-lab manifest JSON file. Required when
+   * `runtimeProfile` / `matrixProfiles` includes `"local-lab"`.
+   */
+  localLabManifestPath?: string;
 }
 
 export interface BenchWorkItem {
@@ -195,7 +200,8 @@ function isBenchRuntimeProfile(value: string): value is BenchRuntimeProfile {
   return (
     value === "baseline" ||
     value === "real" ||
-    value === "openclaw-chain"
+    value === "openclaw-chain" ||
+    value === "local-lab"
   );
 }
 
@@ -209,12 +215,12 @@ function parseBenchRuntimeProfile(
 
   if (flagName === "--runtime-profile") {
     throw new Error(
-      'ERROR: --runtime-profile must be "baseline", "real", or "openclaw-chain".',
+      'ERROR: --runtime-profile must be "baseline", "real", "openclaw-chain", or "local-lab".',
     );
   }
 
   throw new Error(
-    'ERROR: --matrix must contain only "baseline", "real", or "openclaw-chain".',
+    'ERROR: --matrix must contain only "baseline", "real", "openclaw-chain", or "local-lab".',
   );
 }
 
@@ -329,6 +335,7 @@ const BENCH_VALUE_FLAGS = Object.freeze([
   "--ama-bench-cross-judge-base-url",
   "--ama-bench-cross-judge-api-key",
   "--ama-bench-cross-judge-codex-reasoning-effort",
+  "--local-lab-manifest",
 ] as const);
 
 const BENCH_BOOLEAN_FLAGS = Object.freeze([
@@ -409,6 +416,7 @@ const RUN_VALUE_FLAGS = Object.freeze([
   "--ama-bench-cross-judge-base-url",
   "--ama-bench-cross-judge-api-key",
   "--ama-bench-cross-judge-codex-reasoning-effort",
+  "--local-lab-manifest",
 ] as const satisfies readonly BenchValueFlag[]);
 
 const RUN_BOOLEAN_FLAGS = Object.freeze([
@@ -724,6 +732,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   // resolves tildes + relative paths identically to other filesystem flags
   // (datasetDir, resultsDir, baselinesDir).
   const judgeCacheDirRaw = readBenchOptionValue(args, "--judge-cache-dir");
+  const localLabManifestRaw = readBenchOptionValue(args, "--local-lab-manifest");
   const max429WaitRaw = readBenchOptionValue(args, "--max-429-wait");
   const amaBenchJudgeProtocolRaw = readBenchOptionValue(args, "--ama-bench-judge-protocol");
   const amaBenchCrossJudgeProviderRaw = readBenchOptionValue(args, "--ama-bench-cross-judge-provider");
@@ -750,7 +759,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       .filter((value) => value.length > 0);
     if (candidates.length === 0) {
       throw new Error(
-        'ERROR: --matrix must contain one or more of "baseline", "real", or "openclaw-chain".',
+        'ERROR: --matrix must contain one or more of "baseline", "real", "openclaw-chain", or "local-lab".',
       );
     }
     matrixProfiles = candidates.map((candidate) =>
@@ -1291,6 +1300,9 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     // Issue #1573 PR1: surface judge-cache flags into the runner options.
     noJudgeCache: args.includes("--no-judge-cache"),
     judgeCacheDir: judgeCacheDirRaw ? path.resolve(expandTilde(judgeCacheDirRaw)) : undefined,
+    localLabManifestPath: localLabManifestRaw
+      ? path.resolve(expandTilde(localLabManifestRaw))
+      : undefined,
     max429WaitMs,
     disableThinking: args.includes("--disable-thinking"),
     amaBenchJudgeProtocol,
