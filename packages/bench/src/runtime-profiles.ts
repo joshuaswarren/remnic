@@ -810,6 +810,8 @@ function asProviderFactoryConfig(config: ProviderConfig): ProviderFactoryConfig 
     ...(config.retryOptions ? { retryOptions: config.retryOptions } : {}),
     ...(config.disableThinking ? { disableThinking: config.disableThinking } : {}),
     ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
+    ...(config.temperature !== undefined ? { temperature: config.temperature } : {}),
+    ...(config.seed !== undefined ? { seed: config.seed } : {}),
     ...(config.responderContextBudgetChars !== undefined
       ? { responderContextBudgetChars: config.responderContextBudgetChars }
       : {}),

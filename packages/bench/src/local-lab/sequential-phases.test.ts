@@ -176,6 +176,58 @@ test("runSequentialPhases emits a hand-off between phases on different endpoints
   );
 });
 
+test("runSequentialPhases synthesizes a default hand-off note when the manifest omits it (cursor review: #1573 PR2)", async () => {
+  // Build a manifest with NO notes — the hook must still receive a non-undefined
+  // synthesized instruction (formatHandoffNote), not undefined.
+  const m = parseLocalLabManifest({
+    profile: "local-lab",
+    responder: {
+      provider: "openai-compatible",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      model: "qwen3:14b",
+      ctx: 16384,
+      temperature: 0,
+      seed: 1573,
+    },
+    judge: {
+      provider: "ollama",
+      baseUrl: "http://127.0.0.1:11434",
+      model: "gemma3:27b",
+      ctx: 16384,
+      temperature: 0,
+      seed: 1573,
+    },
+    phases: "sequential",
+  });
+  const stub = makeStubPreflight([m.responder.model, m.judge.model]);
+  const handoffs: Array<{ note: string | undefined }> = [];
+
+  const phases: LocalLabPhase[] = [
+    { name: "responder", role: m.responder, execute: async () => undefined },
+    { name: "judge", role: m.judge, execute: async () => undefined },
+  ];
+
+  await runSequentialPhases(m, phases, {
+    preflight: stub.preflightOptions,
+    hooks: {
+      onPhaseHandoff: (_from, _to, note) => {
+        handoffs.push({ note });
+      },
+    },
+  });
+
+  assert.equal(handoffs.length, 1);
+  assert.ok(
+    typeof handoffs[0].note === "string" && handoffs[0].note!.length > 0,
+    "hook must receive a non-empty synthesized note, not undefined",
+  );
+  assert.match(
+    handoffs[0].note!,
+    /stop responder endpoint, start judge endpoint/,
+    "synthesized note names both phases",
+  );
+});
+
 test("runSequentialPhases suppresses the hand-off when both phases share an endpoint (Ollama hot-swap)", async () => {
   const m = manifest({ sameEndpoint: true });
   const stub = makeStubPreflight([m.responder.model, m.judge.model]);

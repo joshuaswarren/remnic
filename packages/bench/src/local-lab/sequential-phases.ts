@@ -126,7 +126,12 @@ export async function runSequentialPhases<T>(
       const previous = phases[index - 1];
       const sameEndpoint = phase.role.baseUrl === previous.role.baseUrl;
       if (!sameEndpoint) {
-        const note = readHandoffNote(manifest, previous.name, phase.name);
+        const manifestNote = readHandoffNote(manifest, previous.name, phase.name);
+        const note = formatHandoffNote(
+          { name: previous.name, role: previous.role },
+          descriptor,
+          manifestNote,
+        );
         options.hooks?.onPhaseHandoff?.(
           { name: previous.name, role: previous.role },
           descriptor,
