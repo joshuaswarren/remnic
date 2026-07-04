@@ -1336,9 +1336,16 @@ export class EngramAccessHttpServer {
       // Migrated through the access boundary (issue #1525/#1548): the
       // registry entry owns schema validation and service dispatch. HTTP
       // resolves the request principal; the boundary re-validates the
-      // cleaned envelope. No write-quota hook — decision records are not
-      // rate-limited writes.
+      // cleaned envelope. record/supersede persist decision memories, so they
+      // are gated by the same 30/min write quota as /engram/v1/memories,
+      // suggestions, and observe; list/get are pure reads and stay uncounted
+      // (review P2: apply write quotas to decision writes).
       const body = await this.readJsonBody(req);
+      const isWriteSubcommand =
+        body.subcommand === "record" || body.subcommand === "supersede";
+      if (isWriteSubcommand) {
+        this.ensureWriteRateLimitAvailable();
+      }
       const op = getOperation("coding_decision");
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: coding_decision");
@@ -1347,6 +1354,9 @@ export class EngramAccessHttpServer {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
+      if (isWriteSubcommand) {
+        this.recordWriteRateLimitHit();
+      }
       this.respondJson(res, 200, output.result);
       return;
     }

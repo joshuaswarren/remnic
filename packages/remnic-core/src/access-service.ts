@@ -1492,11 +1492,16 @@ export class EngramAccessService {
     const inputs = await this.resolveCodingScopeInputs(request);
     const { overlay, profilePlan, principal: resolvedPrincipal } = inputs;
     if (profilePlan) {
-      // The write layer is the namespace decisions are RECORDED under, and it
-      // is in profilePlan.readNamespaces by construction; read it back from
-      // there, gated by the read ACL (rule 42 — distinct from the write ACL).
+      // The write layer is the namespace decisions are RECORDED under. The
+      // WRITE path authorizes it through the profile plan (selectedLayer.
+      // writable AND readNamespaces.includes(writeNamespace)), NOT the raw
+      // namespace ACL, so the READ path must use the SAME profile-plan
+      // authorization. canReadNamespace only recognizes explicit policies
+      // plus default/shared namespaces, which would reject a profile-granted
+      // layer the same session just wrote through (review P2: scope-profile
+      // read authorization for decision reads; rule 42).
       const target = profilePlan.writeNamespace;
-      if (!canReadNamespace(resolvedPrincipal, target, this.orchestrator.config)) {
+      if (!profilePlan.readNamespaces.includes(target)) {
         throw new EngramAccessInputError(`namespace is not readable: ${target}`);
       }
       return target;
@@ -4476,8 +4481,6 @@ export class EngramAccessService {
         const storage = await this.orchestrator.getStorage(ns);
         return Object.assign(storage, { namespace: ns });
       },
-      recordCatalogWrite: (namespace, storageDir) =>
-        this.orchestrator.recordCatalogWrite(namespace, storageDir),
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
     });
   }

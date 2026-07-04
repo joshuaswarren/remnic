@@ -68,7 +68,10 @@ function makeMockService(
 ): { service: EngramAccessService; calls: DecisionSurfaceRequest[] } {
   const calls: DecisionSurfaceRequest[] = [];
   const service = {
-    codingDecision(req: DecisionSurfaceRequest): Promise<DecisionSurfaceResponse> {
+    codingDecision(
+      req: DecisionSurfaceRequest,
+      _authenticatedPrincipal?: string,
+    ): Promise<DecisionSurfaceResponse> {
       calls.push(req);
       return Promise.resolve(response);
     },

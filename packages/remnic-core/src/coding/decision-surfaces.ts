@@ -201,9 +201,10 @@ export interface DecisionSurfaceContext {
   readonly codingKnowledge: CodingKnowledgeConfig;
   getCodingContext(sessionKey: string): CodingContext | null;
   /** Resolve storage through the SAME namespace path as memory_store
-   *  (principal ACL + coding overlay + default fallback). */
+   *  (principal ACL + coding overlay + default fallback). The #1522 storage
+   *  chokepoint records the catalog write automatically on every
+   *  storage.writeMemory, so the handler does NOT touch the catalog itself. */
   resolveStorage(request: DecisionSurfaceRequest): Promise<DecisionSurfaceStorage>;
-  recordCatalogWrite(namespace: string, storageDir: string): void;
   /** Throw the surface-appropriate input-validation error. */
   throwInputError(message: string): never;
 }
@@ -352,7 +353,6 @@ async function decisionRecord(
     structuredAttributes: { decisionStatus: status },
     status: isActive ? undefined : "archived",
   });
-  ctx.recordCatalogWrite(storage.namespace, storage.dir);
   log.info(
     `access-write op=coding_decision/record memoryId=${memoryId} status=${status}`,
   );
@@ -409,6 +409,10 @@ async function decisionSupersede(
       confidence: 1.0,
       tags: ["decision-record"],
       source: "coding-decision",
+      // Mirror decisionRecord: persist structuredAttributes.decisionStatus on
+      // the replacement so list/get projection and QMD indexing see the
+      // authoritative marker (review: supersede omits decisionStatus attrs).
+      structuredAttributes: { decisionStatus: "accepted" },
     },
   );
   // Mark the old record superseded: set BOTH frontmatter.status (so
@@ -432,7 +436,6 @@ async function decisionSupersede(
       `coding_decision/supersede: replacement ${replacementId} written but old record ${targetId} status update failed — old record will still appear until retried: ${err instanceof Error ? err.message : String(err)}`,
     );
   }
-  ctx.recordCatalogWrite(storage.namespace, storage.dir);
   log.info(
     `access-write op=coding_decision/supersede superseded=${targetId} replacement=${replacementId}`,
   );
