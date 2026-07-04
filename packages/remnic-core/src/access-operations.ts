@@ -66,7 +66,10 @@ export const memoryGetOperation = defineOperation<MemoryGetInput, MemoryGetOutpu
 const memorySearchSchema = z.object({
   query: z.string().trim().min(1, "query is required").max(2048),
   namespace: z.string().trim().min(1).max(256).nullable().optional(),
-  maxResults: z.number().int().min(1).max(100).nullable().optional(),
+  // No upper cap: the pre-boundary MCP handler forwarded any finite number to
+  // memorySearch, and the QMD/search backends honor large limits. Capping at
+  // 100 would reject existing clients that request larger result sets.
+  maxResults: z.number().int().min(1).nullable().optional(),
   collection: z.string().trim().min(1).max(256).nullable().optional(),
 });
 
