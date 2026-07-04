@@ -14,6 +14,13 @@
  *    `undefined` on read so a malformed frontmatter never poisons
  *    downstream readers (rule 34 spirit — drop corrupt rather than poison).
  *  - Validation lives on the write path; this module only parses.
+ *  - Invariant (review round 5, cursor thread KQN): a `verified` or
+ *    `unverified` tag is NEVER persisted/read without surviving sources —
+ *    without excerpts the tag is indistinguishable from a grounded fact to
+ *    downstream faithfulness/correction/TrustScore surfaces. The invariant
+ *    is enforced symmetrically: `serializeProvenanceFields` (write) and
+ *    `reconcileProvenanceRead` (read) both downgrade the tag to `none`
+ *    when no source survives.
  */
 
 import { z } from "zod";
@@ -56,6 +63,13 @@ function canonicalProvenanceSource(src: ProvenanceSource): Record<string, unknow
  * order (rule 38) so the output is byte-stable. The `provenance` enum is
  * emitted bare (same style as `status`) — only the three documented values
  * are ever written.
+ *
+ * Verified-requires-evidence invariant (review round 5, cursor thread KQN):
+ * a `verified`/`unverified` tag is downgraded to `none` whenever no source
+ * survives write validation — whether sources were absent, an empty array,
+ * or all entries failed the schema. This covers all three failure shapes the
+ * earlier 3-branch logic left open (`{provenance:"verified"}`,
+ * `{sources:[],provenance:"verified"}`, `{sources:[invalid…],provenance:"verified"}`).
  */
 export function serializeProvenanceFields(fm: MemoryFrontmatter, lines: string[]): void {
   let hasValidSources = false;
@@ -73,12 +87,14 @@ export function serializeProvenanceFields(fm: MemoryFrontmatter, lines: string[]
       hasValidSources = true;
     }
   }
-  // Downgrade the provenance tag to "none" when sources were present but all
-  // failed validation — a verified/unverified tag without evidence is
-  // indistinguishable from a grounded fact downstream (review thread IPn).
-  const tag = hasValidSources ? fm.provenance
-    : fm.sources && fm.sources.length > 0 ? "none"
-    : fm.provenance;
+  // A verified/unverified tag requires surviving evidence; without it the
+  // tag is meaningless downstream (faithfulness/TrustScore cannot distinguish
+  // it from a grounded fact). Downgrade to "none" regardless of WHY no source
+  // survived (absent / empty / all-invalid) — single invariant, all cases.
+  const tag =
+    (fm.provenance === "verified" || fm.provenance === "unverified") && !hasValidSources
+      ? "none"
+      : fm.provenance;
   if (tag) {
     lines.push(`provenance: ${tag}`);
   }
@@ -100,6 +116,27 @@ export function parseProvenanceTag(
     return trimmed;
   }
   return undefined;
+}
+
+/**
+ * Enforce the verified-requires-evidence invariant on the READ path.
+ * `parseProvenanceTag` and `parseProvenanceSources` are independent (they
+ * parse separate frontmatter lines), so a hand-edited or imported memory may
+ * carry `provenance: verified` with no surviving `sources` — a corrupt line,
+ * an empty array, or all-invalid entries. Downgrade such a tag to `none` so
+ * the in-memory object never exposes an ungrounded "verified" fact
+ * (review round 5, cursor thread KQN — read-path parity with the write-path
+ * downgrade in `serializeProvenanceFields`). `none`/`undefined` tags pass
+ * through unchanged.
+ */
+export function reconcileProvenanceRead(
+  tag: "verified" | "unverified" | "none" | undefined,
+  sources: ProvenanceSource[] | undefined,
+): "verified" | "unverified" | "none" | undefined {
+  if ((tag === "verified" || tag === "unverified") && (!sources || sources.length === 0)) {
+    return "none";
+  }
+  return tag;
 }
 
 /**
@@ -160,6 +197,17 @@ export function parseProvenanceSources(raw: string | undefined): ProvenanceSourc
  * (rule 51).  Booleans coerce via `coerceBool` (rule 36); numeric cap clamps
  * at 1 (rule 28).  `REMNIC_PROVENANCE_ENABLED` / `ENGRAM_PROVENANCE_ENABLED`
  * are honored only when the `enabled` key is omitted (explicit config wins).
+ *
+ * Schema-default note (review rounds 1–3, settled): `provenance.enabled` has
+ * NO `"default"` in any plugin.json schema. OpenClaw's loader runs
+ * `applyDefaults: true` before exposing `api.pluginConfig` (src/index.ts:1345,
+ * PR #1593 round 8), so a schema default would be materialized into the
+ * merged config and mask the `REMNIC_`/`ENGRAM_` env override. The code-level
+ * default-on here (`return true` when `enabled` is omitted) supplies the
+ * default-on behavior without that materialization. This matches the
+ * emitLegacyTools/namespaceCatalogEnabled precedent, which omits the env
+ * override only after a raw-vs-effective split — overkill for a single
+ * boolean, so this field uses the simpler omit-the-default approach.
  */
 export function parseProvenanceConfig(raw: unknown): ProvenanceConfig {
   if (

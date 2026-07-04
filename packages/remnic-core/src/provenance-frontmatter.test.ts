@@ -433,3 +433,86 @@ test("write-path downgrades provenance tag to none when all sources dropped (rev
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("write-path downgrades verified tag when sources field is absent (review round 5)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-absent-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const id = await writeFactFile(storage, "Fact whose author set verified but supplied no sources.");
+
+    // verified tag with NO sources field at all — the earlier 3-branch logic
+    // kept the tag here (only all-invalid arrays downgraded).
+    await storage.updateMemoryFrontmatter(id, { provenance: "verified" });
+
+    const raw = await readFile(factFilePath(storage, id), "utf-8");
+    assert.ok(!/\nsources:/.test(raw), "no sources line written");
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(written);
+    assert.equal(written!.frontmatter.sources, undefined, "no sources present");
+    assert.equal(
+      written!.frontmatter.provenance,
+      "none",
+      "verified tag must downgrade to none without surviving sources",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("write-path downgrades verified tag when sources array is empty (review round 5)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-emptytag-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const id = await writeFactFile(storage, "Fact with verified tag and an empty sources array.");
+
+    // verified tag with sources: [] — fm.sources.length > 0 is false so the
+    // earlier "all-invalid" branch never ran and the tag persisted.
+    await storage.updateMemoryFrontmatter(id, { provenance: "verified", sources: [] });
+
+    const raw = await readFile(factFilePath(storage, id), "utf-8");
+    assert.ok(!/\nsources:/.test(raw), "empty sources array must not emit a line");
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(written);
+    assert.equal(written!.frontmatter.sources, undefined);
+    assert.equal(
+      written!.frontmatter.provenance,
+      "none",
+      "verified tag must downgrade to none when sources array is empty",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("read-path downgrades hand-edited verified tag with no sources line (review round 5)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-handedited-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    // Synthesize a hand-edited / imported memory: provenance: verified with
+    // no sources line at all. parseProvenanceTag and parseProvenanceSources
+    // are independent, so without the read-path reconcile this would round-trip
+    // as an ungrounded "verified" fact.
+    const id = await writeFactFile(
+      storage,
+      "Hand-edited memory claiming verification it cannot back.",
+      ["provenance: verified"],
+    );
+
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === id);
+    assert.ok(written);
+    assert.equal(written!.frontmatter.sources, undefined, "no sources line on disk");
+    assert.equal(
+      written!.frontmatter.provenance,
+      "none",
+      "read-path reconcile must downgrade verified to none without sources",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

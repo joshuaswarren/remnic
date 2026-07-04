@@ -9,7 +9,7 @@ import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
-import { serializeProvenanceFields, parseProvenanceSources, parseProvenanceTag } from "./provenance.js";
+import { serializeProvenanceFields, parseProvenanceSources, parseProvenanceTag, reconcileProvenanceRead } from "./provenance.js";
 import { createVersion as createPageVersion, type VersioningConfig, type VersionTrigger } from "./page-versioning.js";
 import { isValidTranscriptDate, WEARABLES_DIR_NAME } from "./wearables/day-store.js";
 import {
@@ -849,7 +849,7 @@ function parseFrontmatter(
       reinforcement_count: parseReinforcementCountField(fm.reinforcement_count),
       last_reinforced_at: fm.last_reinforced_at || undefined,
       sources: parseProvenanceSources(fm.sources),
-      provenance: parseProvenanceTag(fm.provenance),
+      provenance: reconcileProvenanceRead(parseProvenanceTag(fm.provenance), parseProvenanceSources(fm.sources)),
     },
     content,
   };
