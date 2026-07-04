@@ -297,8 +297,16 @@ export class GraphStore {
     await this.queue.drain();
   }
 
-  close(): void {
+  /**
+   * Close the SQLite handle after draining the write queue. A batch
+   * that has already been scheduled on the queue would otherwise run
+   * against a closed DB and surface as `db_corrupt` — the caller
+   * would stop trusting the store for unrelated reasons. Drain first,
+   * then close (cursor Bugbot #09be5784).
+   */
+  async close(): Promise<void> {
     if (this.closed) return;
+    await this.queue.drain();
     this.closed = true;
     this.db.close();
   }
@@ -714,23 +722,50 @@ function ftsRowidForNodeId(nodeId: string): bigint {
   return BigInt(`0x${nodeId.slice(0, 16)}`) & BigInt("0x7fffffffffffffff");
 }
 
- function resolveNodeId(
+/**
+ * Resolve a qualified_name to its deterministic node id.
+ *
+ * `inBatch` is the per-file map built from `nodes` rows owned by the
+ * edge's source file (the FileIR.path the edge came in on). The
+ * DB fallback is for cross-file edges whose src/dst lives in a
+ * DIFFERENT file (in the same batch or a prior batch). Node
+ * identity is the full `(qualifiedName, filePath, label)` triple
+ * (see `nodeIdFor`), so a qualified_name match alone is ambiguous
+ * when two files declare the same symbol. The fallback uses
+ * `ORDER BY file_id, id` to pick deterministically, but only when
+ * exactly one row matches — multiple matches return `undefined`
+ * and the edge is dropped at insert time (per the dangling-edge
+ * policy; the caller is responsible for the batch's canonical
+ * file set). This is the conservative call for a write pipeline
+ * whose caller knows the canonical file set on each batch
+ * (rule 11, 40 — chatgpt-codex-connector P2 + cursor Bugbot
+ * #1380bc89).
+ */
+function resolveNodeId(
   qualifiedName: string,
   inBatch: Map<string, string>,
   db: BetterSqlite3Database,
 ): string | undefined {
   const local = inBatch.get(qualifiedName);
   if (local) return local;
-  // Fall back to a DB lookup keyed by qualified_name. This is best-effort
-  // for cross-file edges — the destination must already be ingested in a
-  // prior batch.
-  const row = expectRow<{ id: string }>(
-    db.prepare("SELECT id FROM nodes WHERE qualified_name = ? LIMIT 1").get(qualifiedName),
-    ["id"],
+  const rows = expectRows<{ id: string; file_id: number }>(
+    db
+      .prepare(
+        "SELECT id, file_id FROM nodes WHERE qualified_name = ? ORDER BY file_id, id",
+      )
+      .all(qualifiedName),
+    ["id", "file_id"],
   );
-  return row?.id;
+  if (rows.length === 0) return undefined;
+  if (rows.length > 1) {
+    // Ambiguous — drop the edge rather than attach it to the wrong
+    // node. Callers needing disambiguation should include the target
+    // file in the same batch (the per-file map then wins) or extend
+    // EdgeIR with file identity material.
+    return undefined;
+  }
+  return rows[0]?.id;
 }
-
 // ──────────────────────────────────────────────────────────────────────────
 // Error classification — tag SQLITE_BUSY / SQLITE_CORRUPT into the failure
 // shape (rule 34). better-sqlite3 surfaces them as `SqliteError` with `.code`.
@@ -749,12 +784,12 @@ function classifyError(error: unknown): GraphStoreFailure {
   ) {
     return { ok: false, code: "db_corrupt" };
   }
-  // Anything else is an unexpected programming error — still tagged
-  // so the caller can distinguish from a thrown rejection. The
-  // message is intentionally NOT propagated; better-sqlite3 errors
-  // frequently include absolute filesystem paths and stack snippets
-  // that should never reach agents or HTTP surfaces (rule 11).
-  return { ok: false, code: "db_corrupt" };
+  // Non-SQLite errors are NOT disk corruption — they are validation
+  // failures (e.g. invalid edge provenance) or programming errors.
+  // Conflating them with `db_corrupt` would tell the caller to stop
+  // trusting the store for the wrong reason; re-throw so the caller
+  // sees the real error (chatgpt-codex-connector P2).
+  throw error instanceof Error ? error : new Error(String(error ?? ""));
 }
 
 function hasErrorCode(value: unknown): value is { code: string } {

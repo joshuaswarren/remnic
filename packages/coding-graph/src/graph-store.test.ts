@@ -111,12 +111,12 @@ test("upsertFileBatch: ingest two-file fixture yields exact node + edge counts",
     assert.equal(b?.droppedDanglingEdges, 0);
 
     // Re-open and verify the rows persisted.
-    store.close();
+    await store.close();
     const reopened = await GraphStore.open({
       dbPath: path.join(dir, "graph.sqlite"),
     });
     assert.equal(reopened.schemaVersion(), 1);
-    reopened.close();
+    await reopened.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -156,7 +156,7 @@ test("idempotency: re-ingesting the same IR is a no-op (counts and ids unchanged
     assert.equal(expectedB1.length, 64);
     assert.notEqual(expectedA1, expectedB1, "different symbols → different ids");
   } finally {
-    store.close();
+    await store.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -187,7 +187,7 @@ test("dangling-edge policy: cross-file edges whose dst is dropped are counted, n
     assert.equal(a.path, "src/a.ts");
     assert.equal(a.droppedDanglingEdges, 1, "one cross-file edge pointed at a.greet");
   } finally {
-    store.close();
+    await store.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
@@ -266,14 +266,14 @@ test("write queue serializes concurrent upserts (rule 40)", async () => {
     // drain() resolves cleanly after all queued writes settle.
     await store.drain();
   } finally {
-    store.close();
+    await store.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
 test("closed store returns tagged failure, never throws (rule 34)", async () => {
   const { store, dir } = await tempStore();
-  store.close();
+  await store.close();
   try {
     const result = await store.upsertFileBatch([fileA]);
     assert.equal(result.ok, false);
@@ -320,7 +320,7 @@ test("node-id ingestion: file-level delete cascades prior nodes + owned edges", 
     assert.equal(r3.results[0]?.nodeCount, 2);
     assert.equal(r3.results[0]?.edgeCount, 1);
   } finally {
-    store.close();
+    await store.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
