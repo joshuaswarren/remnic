@@ -1,0 +1,151 @@
+name: Check Unsticker
+
+# Self-heals two documented stuck states that block merges (#1608 postmortem):
+#
+# 1. `unresolved-review-threads` is a required check, but GitHub Actions has
+#    no workflow trigger for thread resolution (`pull_request_review_thread`
+#    is webhook-only). Resolving the last open thread therefore leaves the
+#    guard stuck on its previous failing run until an unrelated event or a
+#    manual rerun. This sweeper reruns the guard when its latest run failed
+#    but the PR now has zero unresolved (non-CodeQL) threads.
+#
+# 2. The AI Review Gate cancels superseded evaluations (per-PR concurrency).
+#    A burst of review events can leave the newest `ai-reviewers` run
+#    terminally cancelled, which the branch ruleset treats as non-passing.
+#    The sweeper reruns a terminally-cancelled gate run; re-evaluation is
+#    idempotent (passes iff reviewers are positive on the current head).
+#
+# Loop safety: the guard is only rerun when threads are verifiably resolved
+# (a rerun then passes), and the gate is only rerun from `cancelled` (a rerun
+# concludes success or failure, both terminal for this sweeper).
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: check-unsticker
+  cancel-in-progress: false
+
+jobs:
+  unstick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Rerun stuck required checks
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            const CODEQL_AUTHORS = new Set([
+              'github-advanced-security',
+              'github-advanced-security[bot]',
+              'github-code-scanning[bot]',
+            ]);
+
+            async function unresolvedThreadCount(pr) {
+              const query = `
+                query($owner: String!, $repo: String!, $pr: Int!, $after: String) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $pr) {
+                      reviewThreads(first: 100, after: $after) {
+                        pageInfo { hasNextPage endCursor }
+                        nodes {
+                          isResolved
+                          comments(first: 1) { nodes { author { login } } }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+              let count = 0;
+              let after = null;
+              for (;;) {
+                const result = await github.graphql(query, { owner, repo, pr, after });
+                const conn = result.repository.pullRequest.reviewThreads;
+                for (const thread of conn.nodes ?? []) {
+                  if (thread.isResolved !== false) continue;
+                  const author = thread.comments?.nodes?.[0]?.author?.login;
+                  if (author && CODEQL_AUTHORS.has(author)) continue;
+                  count += 1;
+                }
+                if (!conn.pageInfo?.hasNextPage) break;
+                after = conn.pageInfo.endCursor;
+              }
+              return count;
+            }
+
+            // Latest run of `workflowFile` on `headSha` attributable to
+            // `prNumber`, or null. Scoped to the workflow (not the whole
+            // repo) so busy SHAs cannot push the target run past the first
+            // page (cursor review on #1610), and filtered by the run's
+            // pull_requests association so sibling PRs sharing a head SHA
+            // are not cross-rerun (codex review on #1610). Runs with an
+            // empty pull_requests array cannot be attributed and are kept.
+            async function latestRunFor(workflowFile, headSha, prNumber) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: workflowFile,
+                head_sha: headSha,
+                per_page: 100,
+              });
+              const runs = (data.workflow_runs ?? [])
+                .filter((run) => {
+                  const prs = run.pull_requests ?? [];
+                  return prs.length === 0 || prs.some((pr) => pr.number === prNumber);
+                })
+                .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+              return runs[0] ?? null;
+            }
+
+            async function rerun(run, label) {
+              try {
+                await github.rest.actions.reRunWorkflow({ owner, repo, run_id: run.id });
+                core.notice(`${label}: reran run ${run.id} (${run.html_url})`);
+              } catch (error) {
+                // A run can become non-rerunnable (e.g. superseded or too old);
+                // surface it without failing the sweep for other PRs.
+                core.warning(`${label}: rerun of ${run.id} failed: ${error.message}`);
+              }
+            }
+
+            const pulls = await github.paginate(github.rest.pulls.list, {
+              owner,
+              repo,
+              state: 'open',
+              per_page: 100,
+            });
+
+            for (const pull of pulls) {
+              if (pull.draft) continue;
+              const headSha = pull.head.sha;
+              const label = `PR #${pull.number}`;
+
+              // Case 1: guard failed but threads are now resolved.
+              const guardRun = await latestRunFor('review-thread-guard.yml', headSha, pull.number);
+              if (guardRun && guardRun.status === 'completed' && guardRun.conclusion === 'failure') {
+                const unresolved = await unresolvedThreadCount(pull.number);
+                if (unresolved === 0) {
+                  await rerun(guardRun, `${label} review-thread guard`);
+                } else {
+                  core.info(`${label}: guard failing with ${unresolved} unresolved thread(s) — legitimate, skipping.`);
+                }
+              }
+
+              // Case 2: newest AI Review Gate run terminally cancelled.
+              const gateRun = await latestRunFor('ai-review-gate.yml', headSha, pull.number);
+              if (gateRun && gateRun.status === 'completed' && gateRun.conclusion === 'cancelled') {
+                await rerun(gateRun, `${label} ai-review gate`);
+              }
+            }
