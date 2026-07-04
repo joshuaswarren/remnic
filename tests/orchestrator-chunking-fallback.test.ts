@@ -233,8 +233,12 @@ test("chunked extraction records catalog touch after supersession, artifact, and
     events.push("graph");
   };
 
-  orchestrator.markCatalogWrite = () => {
+  const originalMarkWrite = orchestrator.namespaceCatalog.markWrite.bind(orchestrator.namespaceCatalog);
+  orchestrator.namespaceCatalog.markWrite = (
+    ...args: Parameters<typeof originalMarkWrite>
+  ) => {
     events.push("touch");
+    return originalMarkWrite(...args);
   };
 
   const longContent = Array.from(
@@ -264,16 +268,18 @@ test("chunked extraction records catalog touch after supersession, artifact, and
   const supersessionIndex = events.indexOf("supersession");
   const artifactIndex = events.indexOf("artifact");
   const graphIndex = events.indexOf("graph");
-  const touchIndex = events.lastIndexOf("touch");
+  const touchCount = events.filter((e) => e === "touch").length;
 
   assert.notEqual(firstChunkIndex, -1, "precondition: recursive chunking wrote chunks");
   assert.notEqual(supersessionIndex, -1, "precondition: temporal supersession rewrote old fact");
   assert.notEqual(artifactIndex, -1, "precondition: verbatim artifact was written");
   assert.notEqual(graphIndex, -1, "precondition: graph edge write was attempted");
-  assert.notEqual(touchIndex, -1, "precondition: final catalog touch was recorded");
+  // #1522: the catalog touch now fires at the storage chokepoint — every
+  // durable storage write (chunk, supersession, artifact) records a write
+  // touch automatically via the StorageManager's onCatalogWrite hook.
   assert.ok(
-    touchIndex > supersessionIndex && touchIndex > artifactIndex && touchIndex > graphIndex,
-    `catalog touch must follow supersession, artifact, and graph writes; saw ${events.join(" -> ")}`,
+    touchCount > 0,
+    `catalog write touch must fire via the storage chokepoint during chunked extraction; saw ${events.join(" -> ")}`,
   );
 });
 
@@ -297,8 +303,12 @@ test("chunked extraction records catalog touch when post-parent indexing fails",
     events.push("index");
     throw new Error("index boom");
   };
-  orchestrator.markCatalogWrite = () => {
+  const originalMarkWrite = orchestrator.namespaceCatalog.markWrite.bind(orchestrator.namespaceCatalog);
+  orchestrator.namespaceCatalog.markWrite = (
+    ...args: Parameters<typeof originalMarkWrite>
+  ) => {
     events.push("touch");
+    return originalMarkWrite(...args);
   };
 
   const longContent = Array.from(
@@ -322,11 +332,10 @@ test("chunked extraction records catalog touch when post-parent indexing fails",
   const firstChunkIndex = events.indexOf("chunk");
   const touchIndex = events.indexOf("touch");
   assert.notEqual(firstChunkIndex, -1, "precondition: chunk files were written");
-  assert.notEqual(touchIndex, -1, "catalog touch must run before the indexing error escapes");
-  assert.ok(
-    touchIndex > firstChunkIndex,
-    `catalog touch must follow durable chunk writes on failure; saw ${events.join(" -> ")}`,
-  );
+  // #1522: the catalog touch fires at the storage chokepoint during the chunk
+  // write, before post-parent indexing runs — so it is already recorded when
+  // the indexing error escapes.
+  assert.notEqual(touchIndex, -1, "catalog touch must fire before the indexing error escapes");
 });
 
 test("chunked extraction records catalog touch when a later chunk write fails", async () => {
@@ -351,8 +360,12 @@ test("chunked extraction records catalog touch when a later chunk write fails", 
     events.push("chunk-fail");
     throw new Error("later chunk failed");
   };
-  orchestrator.markCatalogWrite = () => {
+  const originalMarkWrite = orchestrator.namespaceCatalog.markWrite.bind(orchestrator.namespaceCatalog);
+  orchestrator.namespaceCatalog.markWrite = (
+    ...args: Parameters<typeof originalMarkWrite>
+  ) => {
     events.push("touch");
+    return originalMarkWrite(...args);
   };
 
   const longContent = Array.from(
@@ -378,9 +391,8 @@ test("chunked extraction records catalog touch when a later chunk write fails", 
   const touchIndex = events.indexOf("touch");
   assert.notEqual(chunkIndex, -1, "precondition: at least one chunk was durable");
   assert.notEqual(failureIndex, -1, "precondition: a later chunk write failed");
+  // #1522: the catalog touch fires at the storage chokepoint during the
+  // successful first chunk write, so it is recorded even when a later chunk
+  // write throws.
   assert.notEqual(touchIndex, -1, "partial chunk failure must still touch the catalog");
-  assert.ok(
-    touchIndex > failureIndex,
-    `catalog touch must run from the chunk-write finally after the failure; saw ${events.join(" -> ")}`,
-  );
 });
