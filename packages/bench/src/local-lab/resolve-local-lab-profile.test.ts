@@ -162,7 +162,7 @@ test("resolveLocalLabRole normalizes Ollama baseUrl to include /api (codex revie
   });
   assert.equal(trailingSlash.providerConfig.baseUrl, "http://127.0.0.1:11434/api");
 
-  // openai-compatible URLs are NOT given /api (they use /v1).
+  // openai-compatible URLs are normalized to include /v1.
   const openaiCompat = resolveLocalLabRole({
     provider: "openai-compatible",
     baseUrl: "http://127.0.0.1:8080/v1",
@@ -172,6 +172,17 @@ test("resolveLocalLabRole normalizes Ollama baseUrl to include /api (codex revie
     seed: 1,
   });
   assert.equal(openaiCompat.providerConfig.baseUrl, "http://127.0.0.1:8080/v1");
+
+  // Bare-host openai-compatible URLs get /v1 appended.
+  const openaiBare = resolveLocalLabRole({
+    provider: "openai-compatible",
+    baseUrl: "http://127.0.0.1:8080",
+    model: "qwen3:14b",
+    ctx: 16384,
+    temperature: 0,
+    seed: 1,
+  });
+  assert.equal(openaiBare.providerConfig.baseUrl, "http://127.0.0.1:8080/v1");
 });
 
 test("resolved ProviderConfig can be passed to the real provider factory contract (rule 33: shape parity)", () => {

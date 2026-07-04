@@ -94,8 +94,13 @@ export function resolveLocalLabRole(role: LocalLabRoleConfig): ResolvedLocalLabR
 
 /**
  * Normalize a manifest role's `baseUrl` for the provider that will consume it.
- * Strips a trailing slash, then ensures Ollama URLs carry the `/api` path
- * segment the native transport requires (`/api/generate`, `/api/tags`).
+ * Strips a trailing slash, then ensures:
+ *   - Ollama URLs carry the `/api` path segment (`/api/generate`, `/api/tags`)
+ *   - openai-compatible URLs carry the `/v1` path segment (`/v1/chat/completions`)
+ * This mirrors `discoveryEndpointFor` which already appends `/v1/models` and
+ * `/api/tags` for the bare-host forms, so endpoint-sameness comparisons in the
+ * CLI runner see consistent URLs regardless of whether the operator wrote
+ * `http://host:port` or `http://host:port/v1` (codex review, #1573 PR2).
  * Implemented without a regex so CodeQL does not flag manifest input as
  * uncontrolled pattern source.
  */
@@ -106,6 +111,9 @@ function normalizeRoleBaseUrl(
   const trimmed = rawBaseUrl.endsWith("/") ? rawBaseUrl.slice(0, -1) : rawBaseUrl;
   if (providerKind === "ollama" && !trimmed.endsWith("/api")) {
     return `${trimmed}/api`;
+  }
+  if (providerKind === "openai-compatible" && !trimmed.endsWith("/v1")) {
+    return `${trimmed}/v1`;
   }
   return trimmed;
 }

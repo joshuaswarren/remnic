@@ -1,8 +1,8 @@
 {
   "profile": "local-lab",
   "responder": {
-    "provider": "openai-compatible",
-    "baseUrl": "http://127.0.0.1:8080/v1",
+    "provider": "ollama",
+    "baseUrl": "http://127.0.0.1:11434",
     "model": "PLACEHOLDER-RESPONDER-MODEL",
     "quantization": "Q4_K_M",
     "ctx": 16384,
@@ -19,8 +19,8 @@
     "seed": 1573
   },
   "embedding": {
-    "provider": "openai-compatible",
-    "baseUrl": "http://127.0.0.1:8081/v1",
+    "provider": "ollama",
+    "baseUrl": "http://127.0.0.1:11434",
     "model": "PLACEHOLDER-EMBEDDING-MODEL",
     "ctx": 8192,
     "temperature": 0,
@@ -28,7 +28,7 @@
   },
   "phases": "sequential",
   "notes": {
-    "responderToJudgeHandoff": "Stop the responder server, then `ollama serve` and `ollama run PLACEHOLDER-JUDGE-MODEL` on the judge port. Resume the bench once `GET http://127.0.0.1:11434/api/tags` lists the judge model.",
+    "responderToJudgeHandoff": "Both responder and judge models run on the same Ollama instance (hot-swap). Ensure `ollama pull` has both PLACEHOLDER-RESPONDER-MODEL and PLACEHOLDER-JUDGE-MODEL before starting the bench.",
     "hardware": {
       "gpu": "NVIDIA RTX 3090",
       "vramGb": 24,
