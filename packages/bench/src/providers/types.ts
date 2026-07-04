@@ -43,6 +43,18 @@ export interface ProviderBaseConfig {
   /** Suppress thinking/reasoning tokens for thinking-capable models (Qwen 3.5, Gemma 4, DeepSeek). */
   disableThinking?: boolean;
   /**
+   * Sampling temperature pinned by a runtime profile manifest (e.g. local-lab
+   * pins 0 for reproducibility). Providers use this as the fallback when the
+   * per-call CompletionOpts does not override it.
+   */
+  temperature?: number;
+  /**
+   * Sampling seed pinned by a runtime profile manifest so reruns reproduce the
+   * same draws. Providers forward this to the backend on every completion call
+   * (Ollama options.seed, OpenAI-compatible top-level seed).
+   */
+  seed?: number;
+  /**
    * Optional answering-only memory-context budget. Benchmark artifacts keep the
    * full recalled text, but provider-backed responders may receive this compact
    * deterministic view to avoid transport-specific prompt stalls.

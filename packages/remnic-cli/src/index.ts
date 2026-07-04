@@ -223,6 +223,7 @@ import type {
   BenchmarkDefinition,
   BenchmarkResult,
   ComparisonResult,
+  ResolvedLocalLabProfile,
 } from "@remnic/bench";
 import { firstSuccessfulCandidate, firstSuccessfulResult } from "./service-candidates.js";
 import {
@@ -705,6 +706,22 @@ type PackageBenchModule = {
     tasks: number;
     errors: string[];
   }>;
+  /**
+   * Probe a single local-lab manifest role's endpoint before the benchmark
+   * starts (issue #1573 PR2). Returns ok=true on success or ok=false with
+   * a reason carrying the endpoint's actual model list on mismatch
+   * (rule 51). Wired into the run path so operators get a clear error up
+   * front instead of a mid-run failure.
+   */
+  preflightLocalLabRole?: (input: {
+    provider: string;
+    baseUrl: string;
+    model: string;
+    ctx: number;
+  }, options?: { fetchImpl?: unknown; timeoutMs?: number }) => Promise<
+    | { ok: true; expectedModel: string; discoveredModels: unknown[] }
+    | { ok: false; reason: string; expectedModel: string; discoveredModels?: unknown[] }
+  >;
 };
 
 interface TrainingExportOptions {
@@ -744,7 +761,7 @@ async function loadTrainingExportCoreRuntime(): Promise<CoreTrainingExportRuntim
   return (await import("@remnic/core")) as unknown as CoreTrainingExportRuntime;
 }
 
-type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain";
+type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain" | "local-lab";
 
 interface BenchProviderConfig {
   provider: string;
@@ -799,6 +816,12 @@ interface ResolveBenchRuntimeProfileOptions {
   drainTimeout?: number;
   max429WaitMs?: number;
   disableThinking?: boolean;
+  /**
+   * Path to a local-lab manifest JSON file (issue #1573 PR2). Required when
+   * `runtimeProfile: "local-lab"`. The manifest pins responder/judge/embedding
+   * to operator-hosted models with temperature=0 and a fixed seed.
+   */
+  localLabManifestPath?: string;
 }
 
 interface ResolvedBenchRuntimeProfile {
@@ -815,6 +838,12 @@ interface ResolvedBenchRuntimeProfile {
   systemProvider: BenchProviderConfig | null;
   judgeProvider: BenchProviderConfig | null;
   internalProvider: BenchProviderConfig | null;
+  /**
+   * Resolved local-lab profile (issue #1573 PR2). Present only when
+   * `runtimeProfile: "local-lab"`. Drives sequential phase scheduling +
+   * endpoint preflight in the bench runner.
+   */
+  localLab?: ResolvedLocalLabProfile;
 }
 
 interface BenchSummaryResult {
@@ -881,7 +910,7 @@ Commands:
 Options:
   --quick                  Run a lightweight quick pass (maps to --lightweight --limit 1)
   --all                    Run every published benchmark
-  --runtime-profile <baseline|real|openclaw-chain>
+  --runtime-profile <baseline|real|openclaw-chain|local-lab>
                            Choose the benchmark runtime profile
   --matrix <profiles>      Run a benchmark across a comma-separated profile matrix
   --dataset-dir <path>     Override the benchmark dataset directory for full runs
@@ -933,6 +962,8 @@ Options:
   --baselines-dir <path>   Override the named baseline directory
   --request-timeout <ms>   Provider request timeout in milliseconds
   --drain-timeout <ms>     Memory drain timeout in milliseconds (defaults to --request-timeout when unset)
+  --local-lab-manifest <path>
+                           Path to a local-lab manifest JSON file (required for --runtime-profile local-lab)
   --threshold <value>      Regression threshold for compare (default: 0.05)
   --trial-limit <n>        Cap scored LoCoMo or MemoryAgentBench QA trials for staged published runs
   --task-filter <pattern>  BEAM diagnostic filter; match task id, ability, or question text
@@ -1034,6 +1065,8 @@ export function buildBenchRuntimeProfileRequest(
     max429WaitMs: parsed.max429WaitMs,
     disableThinking: parsed.disableThinking,
     lcmObserveConcurrency: parsed.publishedIngestConcurrency,
+    localLabManifestPath:
+      runtimeProfile === "local-lab" ? parsed.localLabManifestPath : undefined,
   };
 }
 
@@ -1202,6 +1235,11 @@ async function runBenchViaFallback(
   if (runtimeProfile === "openclaw-chain") {
     throw new Error(
       'Fallback benchmark runner does not support --runtime-profile "openclaw-chain". Build/install @remnic/bench to use package-backed runtime profiles.',
+    );
+  }
+  if (runtimeProfile === "local-lab") {
+    throw new Error(
+      'Fallback benchmark runner does not support --runtime-profile "local-lab". Build/install @remnic/bench to use package-backed runtime profiles with local-lab manifests.',
     );
   }
   const unsupportedOptions = findUnsupportedFallbackBenchOptions(parsed);
@@ -2827,6 +2865,82 @@ async function loadPublishedPromotionHelpers() {
   };
 }
 
+/**
+ * Local-lab responder preflight gate (issue #1573 PR2, cursor review rounds 5-7).
+ * Probes ONLY the responder (first phase) endpoint before the benchmark starts
+ * so the operator gets a clear model-mismatch / endpoint-down error up front
+ * (rule 51: the failure reason carries the endpoint's actual model list) instead
+ * of a mid-run failure. The judge is intentionally NOT probed here: in the
+ * documented single-GPU swap flow the judge endpoint is not running at startup
+ * (the operator starts it after the responder phase), so probing it now would
+ * block the sequential run. The judge preflight belongs at the hand-off
+ * transition, which PR3 calibration wires via runSequentialPhases.
+ *
+ * Shared by runBenchViaPackage and runCustomBenchViaPackage so both run paths
+ * get the same up-front validation (cursor review round 7: custom runs were
+ * missing the gate).
+ */
+async function preflightLocalLabEndpointsIfNeeded(
+  benchModule: PackageBenchModule,
+  plan: PackageBenchExecutionPlan,
+): Promise<void> {
+  if (
+    plan.runtime.profile !== "local-lab" ||
+    !plan.runtime.localLab ||
+    !benchModule.preflightLocalLabRole
+  ) {
+    return;
+  }
+  const localLab = plan.runtime.localLab;
+  const preflightRole = benchModule.preflightLocalLabRole;
+
+  // 1. Preflight responder.
+  const responder = localLab.responder;
+  const responderResult = await preflightRole({
+    provider: responder.provider,
+    baseUrl: responder.baseUrl,
+    model: responder.model,
+    ctx: responder.ctx,
+  });
+  if (!responderResult.ok) {
+    throw new Error(
+      `local-lab responder endpoint preflight failed: ${responderResult.reason}`,
+    );
+  }
+
+  // 2. Judge endpoint check. When both roles share an endpoint (the common
+  //    Ollama hot-swap case), preflight the judge model too and proceed.
+  //    When they are on different endpoints, the published harness cannot
+  //    yet run sequential phases (answer-all-then-judge-all) — it executes
+  //    recall→answer→judge per trial, which requires both models to be
+  //    co-resident. Fail fast with an actionable message instead of silently
+  //    failing mid-benchmark after the first trial (codex P1 review, #1573 PR2).
+  //    Full sequential phase execution is PR3 calibration scope.
+  const judge = localLab.judge;
+  const stripSlash = (url: string) => (url.endsWith("/") ? url.slice(0, -1) : url);
+  const sameEndpoint =
+    stripSlash(responder.baseUrl) === stripSlash(judge.baseUrl);
+  if (!sameEndpoint) {
+    throw new Error(
+      "local-lab multi-endpoint sequential phase execution is not yet wired into the benchmark runner " +
+        "(PR3 calibration scope). The published harness runs recall→answer→judge per trial, which requires " +
+        "both models to be co-resident. Use a single-endpoint profile (both responder and judge models on one " +
+        "Ollama instance) or wait for PR3's runSequentialPhases integration.",
+    );
+  }
+  const judgeResult = await preflightRole({
+    provider: judge.provider,
+    baseUrl: judge.baseUrl,
+    model: judge.model,
+    ctx: judge.ctx,
+  });
+  if (!judgeResult.ok) {
+    throw new Error(
+      `local-lab judge endpoint preflight failed: ${judgeResult.reason}`,
+    );
+  }
+}
+
 async function runBenchViaPackage(
   parsed: ParsedBenchArgs,
   benchmarkId: string,
@@ -2855,6 +2969,10 @@ async function runBenchViaPackage(
   if (!plan) {
     return { ok: false };
   }
+
+  // local-lab endpoint preflight gate (issue #1573 PR2, review rounds 5-11).
+  // Shared with runCustomBenchViaPackage via preflightLocalLabEndpointsIfNeeded.
+  await preflightLocalLabEndpointsIfNeeded(benchModule, plan);
 
   const outputDir = parsed.resultsDir ?? resolveBenchOutputDir();
   const datasetDir = resolveBenchDatasetDir(
@@ -3189,6 +3307,7 @@ async function runCustomBenchViaPackage(parsed: ParsedBenchArgs): Promise<boolea
   const writtenPaths: string[] = [];
   const customBenchmarkIds: string[] = [];
   for (const plan of plans) {
+    await preflightLocalLabEndpointsIfNeeded(benchModule, plan);
     const system = await plan.createAdapter(plan.runtime.adapterOptions);
 
     try {

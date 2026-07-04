@@ -8,7 +8,7 @@ export type BenchmarkMode = "full" | "quick";
 export type BenchmarkTier = "published" | "remnic" | "custom";
 export type BenchmarkStatus = "ready" | "planned";
 export type BenchmarkCategory = "agentic" | "retrieval" | "conversational" | "ingestion";
-export type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain";
+export type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain" | "local-lab";
 export type AmaBenchJudgeProtocol = "default" | "recommended";
 /**
  * Built-in LLM providers supported by the bench harness.
@@ -43,6 +43,18 @@ export interface ProviderConfig {
   reasoningEffort?: BenchReasoningEffort;
   responderContextBudgetChars?: number;
   responderPromptBudgetChars?: number;
+  /**
+   * Sampling temperature forwarded from a runtime profile manifest (e.g. the
+   * local-lab manifest pins this to 0 for reproducibility). Optional; providers
+   * that do not read it ignore the value.
+   */
+  temperature?: number;
+  /**
+   * Sampling seed forwarded from a runtime profile manifest so local-lab runs
+   * are reproducible across invocations. Optional; providers that do not read
+   * it ignore the value.
+   */
+  seed?: number;
 }
 
 export interface TaskTokenUsage {
