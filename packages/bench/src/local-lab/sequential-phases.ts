@@ -116,8 +116,26 @@ export async function runSequentialPhases<T>(
       name: phase.name,
       role: phase.role,
     };
+    // 1. Hand-off BEFORE preflight when this phase lives on a different endpoint
+    //    than its predecessor. The operator must see the swap guidance before
+    //    the bench probes the (not-yet-started) next endpoint — otherwise a
+    //    not-yet-swapped judge endpoint throws LocalLabPreflightError before
+    //    the guidance ever prints (cursor review, issue #1573 PR2).
+    //    The first phase has no predecessor, so no hand-off fires.
+    if (index > 0) {
+      const previous = phases[index - 1];
+      const sameEndpoint = phase.role.baseUrl === previous.role.baseUrl;
+      if (!sameEndpoint) {
+        const note = readHandoffNote(manifest, previous.name, phase.name);
+        options.hooks?.onPhaseHandoff?.(
+          { name: previous.name, role: previous.role },
+          descriptor,
+          note,
+        );
+      }
+    }
 
-    // 1. Preflight — hard fail; surfaces the found model list to the operator.
+    // 2. Preflight — hard fail; surfaces the found model list to the operator.
     const preflight = await preflightLocalLabRole(
       {
         provider: phase.role.provider,
@@ -135,21 +153,6 @@ export async function runSequentialPhases<T>(
       });
     }
     options.hooks?.onPhasePreflight?.(preflight);
-
-    // 2. Hand-off BEFORE execute when the next phase lives elsewhere.
-    //    The first phase has no predecessor, so no hand-off fires.
-    if (index > 0) {
-      const previous = phases[index - 1];
-      const sameEndpoint = phase.role.baseUrl === previous.role.baseUrl;
-      if (!sameEndpoint) {
-        const note = readHandoffNote(manifest, previous.name, phase.name);
-        options.hooks?.onPhaseHandoff?.(
-          { name: previous.name, role: previous.role },
-          descriptor,
-          note,
-        );
-      }
-    }
 
     // 3. Execute — the runner supplies the actual phase work.
     options.hooks?.onPhaseStart?.(descriptor);

@@ -219,6 +219,45 @@ test("runSequentialPhases does NOT emit a hand-off before the first phase", asyn
   assert.equal(handoffs.length, 0);
 });
 
+test("runSequentialPhases emits the hand-off BEFORE the next phase's preflight (cursor review: #1573 PR2)", async () => {
+  // Regression: the hand-off must fire before the judge preflight so the
+  // operator sees the swap guidance even when the judge endpoint is not yet
+  // serving the manifest model. Previously preflight ran first and threw
+  // LocalLabPreflightError before the hand-off callback ever fired — so
+  // handoffs.length would be 0. Asserting handoffs.length === 1 here proves
+  // the hand-off preceded the (failing) judge preflight.
+  const m = manifest({ sameEndpoint: false });
+  // Judge model deliberately absent from the endpoint → judge preflight fails.
+  const stub = makeStubPreflight([m.responder.model]);
+  const handoffs: Array<{ from: string; to: string }> = [];
+
+  const phases: LocalLabPhase[] = [
+    { name: "responder", role: m.responder, execute: async () => undefined },
+    { name: "judge", role: m.judge, execute: async () => undefined },
+  ];
+
+  await assert.rejects(
+    runSequentialPhases(m, phases, {
+      preflight: stub.preflightOptions,
+      hooks: {
+        onPhaseHandoff: (from, to) => {
+          handoffs.push({ from: from.name, to: to.name });
+        },
+      },
+    }),
+    (e: unknown) => e instanceof LocalLabPreflightError,
+  );
+
+  // The hand-off fired before the judge preflight attempted + threw. Before
+  // the fix this would be 0 (preflight threw first, hand-off never reached).
+  assert.equal(handoffs.length, 1, "hand-off must fire before the failing judge preflight");
+  assert.equal(handoffs[0].from, "responder");
+  assert.equal(handoffs[0].to, "judge");
+  // Only the responder endpoint was probed (1 fetch); the judge preflight
+  // ran second and failed, but the hand-off preceded it.
+  assert.equal(stub.seen.length, 2, "both endpoints probed (responder pass, judge fail)");
+});
+
 test("runSequentialPhases hard-rejects when a phase preflight fails (no silent fallback)", async () => {
   const m = manifest();
   // Respondent's model is missing from the endpoint → its preflight fails.
