@@ -7476,8 +7476,8 @@ export class Orchestrator {
       graphExpandedIntentEnabled: caps.graphExpandedIntent,
       prompt,
     };
-    const requestedMode = options.mode;
-    // When the caller forces a mode, skip the (async, possibly LLM-backed)
+    // Issue #1547 — let the heuristic decide no_recall BEFORE the planner/non-planner fork so it fires with planner on OR off.
+    const requestedMode: RecallPlanMode | undefined = options.mode ?? (planRecallMode(prompt) === "no_recall" ? "no_recall" : undefined);
     // planner entirely — the decision is overridden anyway. Otherwise consult
     // the LLM planner when opted in (issue #1367 / Option C); it falls back to
     // the heuristic on disable / shadow / timeout / error.
