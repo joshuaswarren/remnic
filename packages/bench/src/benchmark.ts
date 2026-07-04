@@ -13,7 +13,7 @@ import {
   resolveBenchmarkProgressLogging,
 } from "./adapters/timeout-guard.js";
 import { createSyntheticEmailIngestionAdapter } from "./ingestion-adapters/synthetic-email-adapter.js";
-import type { BenchMemoryAdapter } from "./adapters/types.js";
+import type { BenchJudge, BenchMemoryAdapter } from "./adapters/types.js";
 import {
   JUDGE_CACHE_PROTOCOL_VERSION,
   JudgeCache,
@@ -33,6 +33,7 @@ import type {
   BenchmarkResult,
   BenchmarkSuiteResult,
   ExplainResult,
+  ProviderConfig,
   RecallMetrics,
   RegressionDetail,
   RegressionGateResult,
@@ -154,6 +155,12 @@ export async function runBenchmark(
   // When noJudgeCache is set, no judge is wired, or no cache directory can
   // be derived (neither judgeCacheDir nor outputDir), the system judge is
   // left untouched — preserving the byte-identical baseline.
+  // PR #1591 P2 (thread #10): AMA-Bench can run a separate cross judge
+  // (`options.amaBenchCrossJudge`) whose calls must hit the same content-
+  // keyed cache as the primary system judge. Build cache wiring once for
+  // any role so primary and cross judges can share the helper below.
+  let cachedCrossJudge: BenchJudge | undefined;
+  let crossJudgeCacheCounters: JudgeCacheCounters | undefined;
   const baseSystem: BenchMemoryAdapter = (() => {
     if (options.noJudgeCache || !options.system.judge) {
       return options.system;
@@ -168,46 +175,36 @@ export async function runBenchmark(
     if (cacheDir === undefined) {
       return options.system;
     }
-    const judgeProvider = options.judgeProvider ?? null;
-    const cached = runJudgeWithCache({
+    const cache = new JudgeCache({ dir: cacheDir });
+    const primary = wrapJudgeWithCache({
+      role: "primary",
       judge: options.system.judge,
-      cache: new JudgeCache({ dir: cacheDir }),
-      keyExtras: {
+      benchmarkId,
+      datasetVersion: definition.meta.version,
+      amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
+      provider: options.judgeProvider ?? null,
+      cache,
+    });
+    judgeCacheCounters = primary.counters;
+    // AMA-Bench cross judge: when supplied, route it through the same
+    // cache. The cross judge's cache key uses `role: "cross"` and a
+    // distinct `judgeModelId` (`unknown-cross-judge` when no provider
+    // config) so primary and cross-judge verdicts never collide on the
+    // same key.
+    if (options.amaBenchCrossJudge) {
+      const wrapped = wrapJudgeWithCache({
+        role: "cross",
+        judge: options.amaBenchCrossJudge,
         benchmarkId,
         datasetVersion: definition.meta.version,
-        // Protocol identity: bench judge protocol version + the selected
-        // judge protocol variant. Bumping JUDGE_CACHE_PROTOCOL_VERSION
-        // invalidates verdicts when judge prompt/parse semantics change, so
-        // different judge implementations never reuse each other's entries
-        // (PR #1591, High).
-        judgePromptHash: createHash("sha256")
-          .update(JUDGE_CACHE_PROTOCOL_VERSION)
-          .update("\u0001")
-          .update(options.amaBenchJudgeProtocol ?? "default")
-          .digest("hex"),
-        judgeModelId:
-          judgeProvider?.model !== undefined && judgeProvider.model.length > 0
-            ? judgeProvider.model
-            : "unknown-judge",
-        // Full judge configuration, deterministically serialized (sorted
-        // keys) so provider/base-url/retry/cross-judge changes all produce
-        // fresh cache keys.
-        judgeParamsHash: createHash("sha256")
-          .update(
-            stableStringify({
-              judgeProvider,
-              // BenchJudge is a function bag — serialize presence only; the
-              // provider config below carries the identifying configuration.
-              amaBenchCrossJudgeAttached: options.amaBenchCrossJudge !== undefined,
-              amaBenchCrossJudgeProvider:
-                options.amaBenchCrossJudgeProvider ?? null,
-            }),
-          )
-          .digest("hex"),
-      },
-    });
-    judgeCacheCounters = cached.counters;
-    return { ...options.system, judge: cached };
+        amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
+        provider: options.amaBenchCrossJudgeProvider ?? null,
+        cache,
+      });
+      cachedCrossJudge = wrapped.judge;
+      crossJudgeCacheCounters = wrapped.counters;
+    }
+    return { ...options.system, judge: primary.judge };
   })();
   const system = !shouldGuardSystem
     ? baseSystem
@@ -257,6 +254,12 @@ export async function runBenchmark(
     result = await registeredBenchmark.run({
       ...options,
       system,
+      // PR #1591 P2 (thread #10): when caching is on AND a cross judge is
+      // supplied, hand the cached cross judge to the runner so AMA-Bench
+      // cross-judge calls participate in the same content-keyed cache as
+      // the primary system judge. Without this override, the runner kept
+      // calling the unwrapped cross judge on every iteration.
+      ...(cachedCrossJudge ? { amaBenchCrossJudge: cachedCrossJudge } : {}),
       ...(ingestionAdapter ? { ingestionAdapter } : {}),
       mode: options.mode ?? "quick",
       benchmark: definition,
@@ -267,10 +270,97 @@ export async function runBenchmark(
 
   // Issue #1573 PR1: surface the judge-call counter on the run report so the
   // "judge model calls" line is observable (zero on a cached re-run).
+  // PR #1591 P2 (thread #10): when a cross judge was cached too, include
+  // its model calls so the counter reflects every judge the harness called.
   if (judgeCacheCounters !== undefined) {
-    result.cost.judgeModelCalls = judgeCacheCounters.modelCalls;
+    let totalModelCalls = judgeCacheCounters.modelCalls;
+    if (crossJudgeCacheCounters !== undefined) {
+      totalModelCalls += crossJudgeCacheCounters.modelCalls;
+    }
+    result.cost.judgeModelCalls = totalModelCalls;
   }
   return finalizeBenchmarkResultConfig(result, options);
+}
+
+/**
+ * Wrap a single judge (primary system judge or AMA-Bench cross judge) in
+ * {@link runJudgeWithCache} with a role-discriminated cache key so the two
+ * judge families can share one on-disk cache without colliding on the same
+ * key namespace (PR #1591 P2, thread #10).
+ */
+function wrapJudgeWithCache(args: {
+  role: "primary" | "cross";
+  judge: BenchJudge;
+  benchmarkId: string;
+  datasetVersion: string;
+  amaBenchJudgeProtocol: string;
+  provider: ProviderConfig | null;
+  cache: JudgeCache;
+}): { judge: BenchJudge; counters: JudgeCacheCounters } {
+
+  // PR #1591 P2 (thread #11): when the caller supplied a custom judge but
+  // no `judgeProvider` config, we have no identifying model/baseUrl/retry
+  // block to fold into the paramsHash. Without explicit identity, two
+  // different custom judges could share the `unknown-{role}-judge` key
+  // namespace and reuse each other's verdicts. Fingerprint the judge
+  // function(s) source when no provider is configured so distinct judges
+  // produce distinct cache keys.
+  const judgeIdentityFingerprint = (() => {
+    if (args.provider !== null) return undefined;
+    const sources: string[] = [];
+    for (const fn of [
+      args.judge.score,
+      args.judge.scoreWithMetrics,
+      args.judge.scoreBinaryPrompt,
+    ]) {
+      if (typeof fn === "function") {
+        sources.push(String(fn));
+      }
+    }
+    if (sources.length === 0) return undefined;
+    return createHash("sha256").update(sources.join("\u0001")).digest("hex");
+  })();
+  const crossJudgeIdSuffix = args.role === "cross" ? "-cross" : "";
+  const wrapped = runJudgeWithCache({
+    judge: args.judge,
+    cache: args.cache,
+    keyExtras: {
+      benchmarkId: `${args.benchmarkId}${crossJudgeIdSuffix}`,
+      datasetVersion: args.datasetVersion,
+      // Protocol identity: bench judge protocol version + the selected
+      // judge protocol variant, suffixed by role so primary vs cross
+      // differentiator is part of the prompt hash. Bumping
+      // JUDGE_CACHE_PROTOCOL_VERSION invalidates verdicts when judge
+      // prompt/parse semantics change (PR #1591, High).
+      judgePromptHash: createHash("sha256")
+        .update(JUDGE_CACHE_PROTOCOL_VERSION)
+        .update("\u0001")
+        .update(args.amaBenchJudgeProtocol)
+        .update("\u0001")
+        .update(args.role)
+        .digest("hex"),
+      judgeModelId:
+        args.provider?.model !== undefined && args.provider.model.length > 0
+          ? `${args.provider.model}${crossJudgeIdSuffix}`
+          : `unknown-${args.role}-judge`,
+      // Full judge configuration, deterministically serialized (sorted
+      // keys) so provider/base-url/retry changes produce fresh cache
+      // keys. `role` is included so primary and cross judges never
+      // share a paramsHash. `judgeIdentityFingerprint` covers the
+      // providerless path so two distinct custom judges cannot collide
+      // (PR #1591 P2, thread #11).
+      judgeParamsHash: createHash("sha256")
+        .update(
+          stableStringify({
+            role: args.role,
+            provider: args.provider,
+            judgeIdentityFingerprint: judgeIdentityFingerprint ?? null,
+          }),
+        )
+        .digest("hex"),
+    },
+  });
+  return { judge: wrapped as unknown as BenchJudge, counters: wrapped.counters };
 }
 
 function benchmarkDefinition(id: string): BenchmarkDefinition {

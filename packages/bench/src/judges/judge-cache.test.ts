@@ -479,3 +479,89 @@ test("(j) abort control forwards through cache misses to the underlying judge (P
     assert.deepEqual(seenControls, [control, control], "control must reach the underlying judge on both miss paths");
   });
 });
+
+test("(k) scoreBinaryPrompt is OMITTED from the wrapper when the underlying judge lacks it (PR #1591 P2, #9/#12)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    // Underlying judge implements only scoreWithMetrics; no scoreBinaryPrompt.
+    const wrapper = runJudgeWithCache({
+      judge: {
+        score: async (_q, _p, _e) => 0.5,
+        scoreWithMetrics: async () => sampleResult,
+      },
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    assert.equal(
+      "scoreBinaryPrompt" in wrapper,
+      false,
+      "wrapper must NOT advertise scoreBinaryPrompt when the underlying judge lacks it",
+    );
+    // Sanity: score() still works through the wrapper.
+    const v = await wrapper.score("q", "p", "e");
+    assert.equal(v, sampleResult.score);
+  });
+});
+
+test("(l) scoreBinaryPrompt ROUTES through the wrapper when the underlying judge supports it (PR #1591 P2, #9/#12)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    let seenPrompt: string | undefined;
+    const wrapper = runJudgeWithCache({
+      judge: {
+        score: async () => 0,
+        scoreWithMetrics: async () => sampleResult,
+        scoreBinaryPrompt: async (prompt) => {
+          seenPrompt = prompt;
+          return { ...sampleResult, score: 1 };
+        },
+      },
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    assert.equal(
+      "scoreBinaryPrompt" in wrapper,
+      true,
+      "wrapper must expose scoreBinaryPrompt when the underlying judge supports it",
+    );
+    const v = await wrapper.scoreBinaryPrompt!("yes-no prompt", undefined);
+    assert.equal(v.score, 1);
+    assert.equal(seenPrompt, "yes-no prompt");
+    // Second call should hit the cache and not re-invoke the underlying judge.
+    const v2 = await wrapper.scoreBinaryPrompt!("yes-no prompt", undefined);
+    assert.equal(v2.score, 1);
+    assert.equal(wrapper.counters.cacheHits, 1, "second identical binary prompt must be a cache hit");
+  });
+});
+
+test("(m) binary prompts of equal length but different text get distinct cache keys (regression for `binary:N` collision, PR #1591 P2, #9/#12)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    let calls = 0;
+    const wrapper = runJudgeWithCache({
+      judge: {
+        scoreWithMetrics: async () => sampleResult,
+        scoreBinaryPrompt: async (_prompt) => {
+          calls += 1;
+          return { ...sampleResult, score: calls };
+        },
+      },
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    // Both strings are length-7; on the old `binary:7` key they would collide.
+    await wrapper.scoreBinaryPrompt!("abcdefg");
+    await wrapper.scoreBinaryPrompt!("hijklmn");
+    assert.equal(
+      calls,
+      2,
+      "two different binary prompts of the same length must each invoke the underlying judge",
+    );
+    assert.equal(wrapper.counters.cacheMisses, 2);
+    assert.equal(wrapper.counters.cacheHits, 0);
+    // Re-running the first prompt now hits the cache.
+    await wrapper.scoreBinaryPrompt!("abcdefg");
+    assert.equal(calls, 2, "cached re-run must not re-invoke the underlying judge");
+    assert.equal(wrapper.counters.cacheHits, 1);
+  });
+});

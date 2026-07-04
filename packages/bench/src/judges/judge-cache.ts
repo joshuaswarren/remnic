@@ -371,44 +371,53 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
       return fresh;
     },
 
-    async scoreBinaryPrompt(
-      prompt: string,
-      control?: BenchPhaseControl,
-    ): Promise<BenchJudgeResult> {
-      if (!judge.scoreBinaryPrompt) {
-        const fallback: BenchJudgeResult = {
-          score: 0,
-          tokens: { input: 0, output: 0 },
-          latencyMs: 0,
-          model: keyExtras.judgeModelId ?? undefined,
-        };
-        return fallback;
-      }
-      const parts: JudgeCacheKeyParts = {
-        benchmarkId: keyExtras.benchmarkId ?? "unknown-benchmark",
-        datasetVersion: keyExtras.datasetVersion ?? "unknown-version",
-        questionId: `binary:${prompt.length}`,
-        answerText: prompt,
-        judgePromptHash: keyExtras.judgePromptHash ?? "unknown-prompt",
-        judgeModelId: keyExtras.judgeModelId ?? "unknown-judge",
-        judgeParamsHash: keyExtras.judgeParamsHash ?? "unknown-params",
-      };
-
-      if (cache) {
-        const hit = await cache.get(parts);
-        if (hit) {
-          counters.cacheHits += 1;
-          return hit.verdict;
-        }
-        counters.cacheMisses += 1;
-      }
-
-      const fresh = await judge.scoreBinaryPrompt(prompt, control);
-      counters.modelCalls += 1;
-      await putSafely(parts, fresh);
-      return fresh;
-    },
   };
+
+// `scoreBinaryPrompt` is optional on `BenchJudge`. The published harness
+// detects support via `if (!judge?.scoreBinaryPrompt)`, so the wrapper must
+// NOT add a method when the underlying judge lacks one — otherwise
+// binary-judge benchmarks score every binary item 0 instead of taking the
+// generic-judge path (PR #1591 P2, threads #9/#12).
+  if (typeof judge.scoreBinaryPrompt === "function") {
+    Object.defineProperty(wrapper, "scoreBinaryPrompt", {
+      configurable: true,
+      enumerable: true,
+      writable: false,
+      value: async function scoreBinaryPrompt(
+        prompt: string,
+        control?: BenchPhaseControl,
+      ): Promise<BenchJudgeResult> {
+        const parts: JudgeCacheKeyParts = {
+          benchmarkId: keyExtras.benchmarkId ?? "unknown-benchmark",
+          datasetVersion: keyExtras.datasetVersion ?? "unknown-version",
+          // Binary prompts are content-sensitive: two distinct prompts of
+          // the same character length would collide on the previous
+          // `binary:N` key, so key on a sha256 prefix of the prompt body.
+          questionId: `binary:${createHash("sha256")
+            .update(prompt)
+            .digest("hex")
+            .slice(0, 16)}`,
+          answerText: prompt,
+          judgePromptHash: keyExtras.judgePromptHash ?? "unknown-prompt",
+          judgeModelId: keyExtras.judgeModelId ?? "unknown-judge",
+          judgeParamsHash: keyExtras.judgeParamsHash ?? "unknown-params",
+        };
+        if (cache) {
+          const hit = await cache.get(parts);
+          if (hit) {
+            counters.cacheHits += 1;
+            return hit.verdict;
+          }
+          counters.cacheMisses += 1;
+        }
+        const underlying = judge.scoreBinaryPrompt!;
+        const fresh = await underlying(prompt, control);
+        counters.modelCalls += 1;
+        await putSafely(parts, fresh);
+        return fresh;
+      },
+    });
+  }
 
   return wrapper as BenchJudge & {
     counters: JudgeCacheCounters;
