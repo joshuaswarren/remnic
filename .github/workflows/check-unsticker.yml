@@ -37,7 +37,7 @@ concurrency:
 jobs:
   unstick:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - name: Rerun stuck required checks
         uses: actions/github-script@v7
@@ -85,28 +85,63 @@ jobs:
               return count;
             }
 
-            // Latest run of `workflowFile` on `headSha` attributable to
-            // `prNumber`, or null. Scoped to the workflow (not the whole
-            // repo) so busy SHAs cannot push the target run past the first
-            // page (cursor review on #1610), and filtered by the run's
-            // pull_requests association so sibling PRs sharing a head SHA
-            // are not cross-rerun (codex review on #1610). Runs with an
-            // empty pull_requests array cannot be attributed and are kept.
-            async function latestRunFor(workflowFile, headSha, prNumber) {
-              const { data } = await github.rest.actions.listWorkflowRuns({
+            // All runs of `workflowFile` on `headSha` attributable to
+            // `prNumber`. Scoped to the workflow (not the whole repo) so busy
+            // SHAs cannot push target runs past the first page (cursor review
+            // on #1610), and filtered by the run's pull_requests association
+            // so sibling PRs sharing a head SHA are not cross-rerun (codex
+            // review on #1610). Runs with an empty pull_requests array cannot
+            // be attributed and are kept.
+            async function runsFor(workflowFile, headSha, prNumber) {
+              const workflowRuns = await github.paginate(github.rest.actions.listWorkflowRuns, {
                 owner,
                 repo,
                 workflow_id: workflowFile,
                 head_sha: headSha,
                 per_page: 100,
               });
-              const runs = (data.workflow_runs ?? [])
+              return workflowRuns
                 .filter((run) => {
                   const prs = run.pull_requests ?? [];
                   return prs.length === 0 || prs.some((pr) => pr.number === prNumber);
                 })
-                .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-              return runs[0] ?? null;
+                .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+            }
+
+            const CURSOR_APP_SLUGS = new Set(['cursor-bugbot', 'cursor']);
+
+            // Positive Cursor CHECK on the head, judged by the LATEST run of
+            // each cursor check name (an older success never outranks a newer
+            // failure). This deliberately does NOT interpret reviews or
+            // comments: review/comment verdicts fire the gate workflow
+            // themselves (pull_request_review / pull_request_review_comment
+            // triggers), so they surface to the sweeper as a green gate suite
+            // on the head — the gate's own evaluation stays the single
+            // authority on verdict semantics. Only the check_run signal path
+            // needs separate detection here, because check_run-triggered gate
+            // runs execute in default-branch context and never create a green
+            // suite on the PR head.
+            async function hasPositiveCursorCheck(headSha) {
+              const checkRuns = await github.paginate(github.rest.checks.listForRef, {
+                owner,
+                repo,
+                ref: headSha,
+                per_page: 100,
+              });
+              const latestByName = new Map();
+              for (const checkRun of checkRuns) {
+                if (!CURSOR_APP_SLUGS.has(checkRun.app?.slug ?? '')) continue;
+                if (checkRun.status !== 'completed') continue;
+                const key = checkRun.name ?? 'unnamed';
+                const previous = latestByName.get(key);
+                const time = Date.parse(checkRun.completed_at ?? checkRun.started_at ?? '') || 0;
+                if (!previous || time >= previous.time) {
+                  latestByName.set(key, { time, conclusion: checkRun.conclusion ?? '' });
+                }
+              }
+              return [...latestByName.values()].some((entry) =>
+                ['success', 'neutral'].includes(entry.conclusion),
+              );
             }
 
             async function rerun(run, label) {
@@ -132,20 +167,65 @@ jobs:
               const headSha = pull.head.sha;
               const label = `PR #${pull.number}`;
 
-              // Case 1: guard failed but threads are now resolved.
-              const guardRun = await latestRunFor('review-thread-guard.yml', headSha, pull.number);
-              if (guardRun && guardRun.status === 'completed' && guardRun.conclusion === 'failure') {
+              // Case 1: guard suite(s) failed but threads are now resolved.
+              // The ruleset requires the latest attempt of EVERY suite on the
+              // head to pass, so ALL failed suites are rerun, not just the
+              // newest (#1610 postmortem). Guard runs have no concurrency
+              // group, so parallel reruns are safe.
+              const guardRuns = (await runsFor('review-thread-guard.yml', headSha, pull.number))
+                .filter((run) => run.status === 'completed' && run.conclusion === 'failure');
+              if (guardRuns.length > 0) {
                 const unresolved = await unresolvedThreadCount(pull.number);
                 if (unresolved === 0) {
-                  await rerun(guardRun, `${label} review-thread guard`);
+                  for (const run of guardRuns) {
+                    await rerun(run, `${label} review-thread guard`);
+                  }
                 } else {
                   core.info(`${label}: guard failing with ${unresolved} unresolved thread(s) — legitimate, skipping.`);
                 }
               }
 
-              // Case 2: newest AI Review Gate run terminally cancelled.
-              const gateRun = await latestRunFor('ai-review-gate.yml', headSha, pull.number);
-              if (gateRun && gateRun.status === 'completed' && gateRun.conclusion === 'cancelled') {
-                await rerun(gateRun, `${label} ai-review gate`);
+              // Case 2: stuck AI Review Gate suites. Gate reruns share a
+              // per-PR concurrency group with cancel-in-progress and a rerun
+              // can legitimately poll for minutes, so the sweeper NEVER
+              // waits in-sweep and NEVER reruns while any gate evaluation is
+              // live — one rerun per PR per sweep, converging on the cron
+              // cadence without ever cancelling an in-flight evaluation
+              // (cursor High / codex P2 on #1615).
+              const gateRuns = await runsFor('ai-review-gate.yml', headSha, pull.number);
+              const gateActive = gateRuns.some((run) => run.status !== 'completed');
+              if (gateActive) {
+                core.info(`${label}: a gate evaluation is already active — no gate reruns this sweep.`);
+                continue;
+              }
+              // Cancelled suites are always retryable (cancellation is not a
+              // verdict). Failed suites are retried while run_attempt <= 2 —
+              // up to two verdict-gated retries, because a premature retry of
+              // a CANCELLED suite can itself mint an attempt-2 failure before
+              // the reviewer speaks (codex review on #1615) — and only once
+              // the head demonstrably satisfies the gate: either a sibling
+              // gate suite already re-evaluated to green (covers
+              // review/comment-delivered verdicts, which trigger the gate),
+              // or the latest cursor check run on the head is positive
+              // (covers check-only verdicts, whose gate runs land on the
+              // default branch, not the PR head). The attempt bound prevents
+              // rerun loops on legitimately failing gates.
+              const cancelledGate = gateRuns.filter(
+                (run) => run.status === 'completed' && run.conclusion === 'cancelled',
+              );
+              const staleFailedGate = gateRuns.filter(
+                (run) => run.status === 'completed' && run.conclusion === 'failure' && run.run_attempt <= 2,
+              );
+              let target = cancelledGate[0] ?? null;
+              if (!target && staleFailedGate.length > 0) {
+                const greenSuiteExists = gateRuns.some(
+                  (run) => run.status === 'completed' && run.conclusion === 'success',
+                );
+                if (greenSuiteExists || (await hasPositiveCursorCheck(headSha))) {
+                  target = staleFailedGate[0];
+                }
+              }
+              if (target) {
+                await rerun(target, `${label} ai-review gate`);
               }
             }
