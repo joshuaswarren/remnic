@@ -104,13 +104,14 @@ def main(argv: list[str] | None = None) -> int:
             f"  train first: python model-lab/faithfulness-gate/train.py --version-tag {args.version_tag}"
         )
 
-    held_out_path = args.held_out or (args.data_dir / "faithfulness-heldout.jsonl")
+    held_out_path = args.held_out or (checkpoint / "faithfulness-heldout.jsonl")
     if not held_out_path.exists():
         raise SystemExit(
             f"held-out gold file not found at {held_out_path}.\n"
-            "  train.py writes this file (<data-dir>/faithfulness-heldout.jsonl) "
-            "as a side effect of its 90/10 split; run train first, or pass "
-            "--held-out to point at a separately-produced gold JSONL."
+            "  train.py writes this file next to the checkpoint "
+            "(<checkpoint>/faithfulness-heldout.jsonl, version-scoped so an "
+            "older checkpoint is never scored against a newer run's split); "
+            "run train first, or pass --held-out to point at a separate gold JSONL."
         )
 
     rows = load_jsonl(held_out_path)

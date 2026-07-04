@@ -208,19 +208,9 @@ def main(argv: list[str] | None = None) -> int:
     raw_dataset = Dataset.from_list(rows)
     split = raw_dataset.train_test_split(test_size=0.1, seed=hyperparams.seed)
 
-    # Persist the held-out split so the documented flow (generate -> train ->
-    # eval) works: eval.py defaults to <data-dir>/faithfulness-heldout.jsonl,
-    # which nothing else writes. train.py owns this file.
-    heldout_path = args.data_dir / "faithfulness-heldout.jsonl"
-    heldout_path.parent.mkdir(parents=True, exist_ok=True)
-    with heldout_path.open("w", encoding="utf-8") as handle:
-        for example in split["test"]:
-            handle.write(json.dumps({
-                "factText": example["factText"],
-                "quote": example["quote"],
-                "context": example.get("context", ""),
-                "label": example["label"],
-            }, sort_keys=True, ensure_ascii=False) + "\n")
+    # The held-out split is persisted under the run directory (out_dir, defined
+    # below) so each version-tagged checkpoint carries its own gold file — a
+    # second --version-tag or --seed run cannot overwrite an older split.
 
     tokenizer = AutoTokenizer.from_pretrained(hyperparams.base_model)
 
@@ -260,11 +250,24 @@ def main(argv: list[str] | None = None) -> int:
         data_seed=hyperparams.seed,
         use_cpu=not torch.cuda.is_available(),
     )
+    # Persist the held-out gold next to the checkpoint (version-scoped) so
+    # eval.py defaults to <checkpoint>/faithfulness-heldout.jsonl and an older
+    # checkpoint is never scored against a newer run's split.
+    heldout_path = out_dir / "faithfulness-heldout.jsonl"
+    with heldout_path.open("w", encoding="utf-8") as handle:
+        for example in split["test"]:
+            handle.write(json.dumps({
+                "factText": example["factText"],
+                "quote": example["quote"],
+                "context": example.get("context", ""),
+                "label": example["label"],
+            }, sort_keys=True, ensure_ascii=False) + "\n")
 
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_tokenized,
+        eval_dataset=test_tokenized,
         # transformers 5.x API: ``processing_class`` (``tokenizer`` was removed
         # in 5.0). compute_metrics backs ``metric_for_best_model='f1'``.
         # DataCollatorWithPadding pads per-batch (tokenize uses truncation
