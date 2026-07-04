@@ -123,7 +123,9 @@ jobs:
   # expression with 'ubuntu-latest'.
   tests:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
-    runs-on: ${{ (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) && 'remnic' || 'ubuntu-latest' }}
+    # remnic pool only for same-repo PRs and main-ref runs; workflow_dispatch
+    # on any other ref stays on hosted runners (codex P2 on #1608).
+    runs-on: ${{ ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')) && 'remnic' || 'ubuntu-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
