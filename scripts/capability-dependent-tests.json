@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "issue": "#1541",
+  "reason": "These test files declare an environment dependency (uv on PATH for the AMB runner scripts, clean working tree for SOTA provenance verification) and skip-with-reason when the dependency is missing. CI sets REMNIC_REQUIRE_CAPABILITY_TESTS=1 (wired in .github/workflows/ci.yml), which converts the skip into a hard failure. Tests use the helpers in tests/helpers/capability-probe.mjs (commandAvailable / skipUnlessCommand / cleanWorkingTreeProbe / skipUnlessCleanWorkingTree).",
+  "files": [
+    "integrations/amb/run-remnic-amb.test.mjs",
+    "tests/amb-integration.test.ts"
+  ]
+}

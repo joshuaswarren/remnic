@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.3.669",
+  "version": "9.3.671",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -715,6 +715,54 @@
             "type": "boolean",
             "default": true,
             "description": "When true (default), project-scoped sessions include the root/default namespace in read fallbacks so globally useful memories remain visible. Set to false for strict project isolation."
+          }
+        }
+      },
+      "codingKnowledge": {
+        "type": "object",
+        "additionalProperties": false,
+        "default": {},
+        "description": "Durable coding-knowledge surface — Track A of issue #1548. Master gate + per-feature switches for decision records, architecture card, session delta, and structural-context provider. Off by default so pre-feature byte-identical behaviour is preserved when disabled.",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master gate. Off (default) means no Track A surface fires and no new tools / briefing lines / state directories appear. On enables the switches below."
+          },
+          "decisionRecords": {
+            "type": "boolean",
+            "default": true,
+            "description": "Decision-record surfaces (list/record/supersede) + briefing titles of standing decisions. Effective only under the master gate."
+          },
+          "architectureCard": {
+            "type": "boolean",
+            "default": true,
+            "description": "Architecture-card build/refresh + briefing injection. Effective only under the master gate."
+          },
+          "sessionDelta": {
+            "type": "boolean",
+            "default": true,
+            "description": "Last-seen-head persistence + delta briefing line. Effective only under the master gate."
+          },
+          "architectureCardLlmSummary": {
+            "type": "boolean",
+            "default": false,
+            "description": "Opt-in LLM summary pass on the architecture card. Costs tokens; default off (rule 48). Effective only under the master and card gates."
+          },
+          "structuralProvider": {
+            "type": "string",
+            "enum": [
+              "none",
+              "subprocess",
+              "native"
+            ],
+            "default": "none",
+            "description": "Structural-context provider selection: \"none\" (default) keeps review-context file-path-only, \"subprocess\" shells out to structuralProviderCommand via execFile (argv array), \"native\" adapts the in-family engine when @remnic/coding-graph is installed."
+          },
+          "structuralProviderCommand": {
+            "type": "string",
+            "default": "",
+            "description": "Absolute path to the subprocess binary when structuralProvider = \"subprocess\". Empty string = no command configured. The consumer validates existence at boot (rule 24)."
           }
         }
       },

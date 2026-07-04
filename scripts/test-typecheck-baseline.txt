@@ -199,8 +199,8 @@ tests/amb-bridge.test.ts(943,9): TS7034
 tests/amb-bridge.test.ts(945,38): TS7006
 tests/amb-bridge.test.ts(981,20): TS7005
 tests/amb-compare.test.ts(14,8): TS7016
-tests/amb-integration.test.ts(718,25): TS2339
-tests/amb-integration.test.ts(719,25): TS2339
+tests/amb-integration.test.ts(721,25): TS2339
+tests/amb-integration.test.ts(722,25): TS2339
 tests/bench-ama-bench-runner.test.ts(120,16): TS2532
 tests/bench-amemgym-runner.test.ts(610,28): TS2339
 tests/bench-amemgym-runner.test.ts(611,33): TS2339

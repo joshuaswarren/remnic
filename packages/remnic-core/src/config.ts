@@ -40,7 +40,7 @@ import { expandTildePath } from "./utils/path.js";
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
 import { parseWearablesConfig } from "./wearables/config.js";
-
+import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
   ".openclaw",
@@ -2484,7 +2484,8 @@ export function parseConfig(raw: unknown): PluginConfig {
     heartbeat,
     slotBehavior,
     codexCompat,
-    // Hourly summaries
+    codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
+     // Hourly summaries
     hourlySummariesEnabled: cfg.hourlySummariesEnabled !== false, // default: true
     daySummaryEnabled: cfg.daySummaryEnabled !== false, // default: true
     hourlySummaryCronAutoRegister: cfg.hourlySummaryCronAutoRegister === true,

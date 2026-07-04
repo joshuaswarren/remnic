@@ -90,6 +90,12 @@ jobs:
       - name: Rebuild native modules
         run: pnpm rebuild better-sqlite3
 
+      # CI hard-requires capability tests (#1541) below, which in turn
+      # hard-requires `uv` for the AMB runner scripts. Install it on the
+      # ubuntu runner so the gate has the capability it demands.
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+
       - name: Lint
         run: pnpm run lint
 
@@ -108,6 +114,11 @@ jobs:
           # CI rebuilds the native binding above; skipping native-dependent
           # suites here would silently drop coverage (#1538).
           REMNIC_REQUIRE_NATIVE_TESTS: "1"
+          # CI treats environment-dependent capability tests as required
+          # (uv for AMB runner scripts, clean working tree for SOTA
+          # provenance — #1541). A missing tool or dirty tree fails the run
+          # locally instead of counting a silent skip.
+          REMNIC_REQUIRE_CAPABILITY_TESTS: "1"
 
       - name: Build
         run: pnpm run build
