@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { writeFile, rm } from "node:fs/promises";
 import test from "node:test";
 
 import {
   LOCAL_LAB_PROVIDER_KINDS,
+  loadLocalLabManifest,
   parseLocalLabManifest,
   type LocalLabManifest,
 } from "./manifest.ts";
@@ -173,5 +175,41 @@ test("parseLocalLabManifest rejects non-object root (rule 18: object-not-null)",
       /local-lab manifest must be a JSON object/,
       `expected rejection for ${JSON.stringify(bad)}`,
     );
+  }
+});
+
+test("loadLocalLabManifest read failure reports errno code, not raw error path diagnostics (cursor review: #1573 PR2)", async () => {
+  // Node readFile errors embed the absolute path + system diagnostics in
+  // error.message. The thrown error must use the stable errno code instead.
+  const missingPath = "/tmp/remnic-local-lab-manifest-nonexistent-" + Date.now() + ".json";
+  await assert.rejects(
+    () => loadLocalLabManifest(missingPath),
+    (error: Error) => {
+      assert.match(error.message, /could not be read \(ENOENT\)/);
+      // The absolute path appears once (as filePath) but must NOT be doubled
+      // by a raw Node message like "open '/tmp/...'".
+      const occurrences = error.message.split(missingPath).length - 1;
+      assert.equal(occurrences, 1, "filePath should appear exactly once, not echoed from raw error");
+      return true;
+    },
+  );
+});
+
+test("loadLocalLabManifest invalid JSON reports parse detail without path leakage", async () => {
+  const tmpPath = "/tmp/remnic-local-lab-manifest-badjson-" + Date.now() + ".json";
+  await writeFile(tmpPath, "{ not valid json }", "utf8");
+  try {
+    await assert.rejects(
+      () => loadLocalLabManifest(tmpPath),
+      (error: Error) => {
+        assert.match(error.message, /contains invalid JSON/);
+        // JSON.parse errors carry position info but not file-system paths,
+        // so the detail is safe to surface.
+        assert.match(error.message, /position \d+/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(tmpPath, { force: true });
   }
 });

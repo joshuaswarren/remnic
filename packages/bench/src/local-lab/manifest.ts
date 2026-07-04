@@ -127,14 +127,18 @@ export async function loadLocalLabManifest(
   try {
     text = await readFile(filePath, "utf8");
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`local-lab manifest at ${filePath} could not be read: ${detail}`);
+    // Do not echo raw error.message — Node read errors embed the absolute
+    // path and system diagnostics. Use the errno code (ENOENT, EACCES, …)
+    // which is stable and free of path leakage (cursor review, #1573 PR2).
+    const code = (error as NodeJS.ErrnoException)?.code ?? "EUNKNOWN";
+    throw new Error(`local-lab manifest at ${filePath} could not be read (${code})`);
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch (error) {
+    // JSON.parse errors carry a position hint but no file-system paths.
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(`local-lab manifest at ${filePath} contains invalid JSON: ${detail}`);
   }
