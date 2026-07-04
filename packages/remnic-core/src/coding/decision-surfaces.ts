@@ -256,14 +256,14 @@ async function decisionList(
   const records: DecisionSurfaceRecord[] = [];
   for (const m of memories) {
     if (m.frontmatter.category !== "decision") continue;
-    // Exclude lifecycle-retired memories so superseded/replaced records don't
-    // appear. Both "archived" (decision handler + supersede) and "superseded"
-    // (generic contradiction resolution via StorageManager.supersedeMemory) are
-    // inactive outer statuses — the decision-specific marker lives in
-    // structuredAttributes.decisionStatus (review: hide non-active frontmatter
-    // statuses from decisions).
+    // Exclude lifecycle-retired memories. Any outer frontmatter.status other
+    // than undefined/"active" (archived, superseded, forgotten, rejected,
+    // quarantined, pending_review) means the generic memory lifecycle has
+    // intervened — hide the decision until that resolves. The decision-specific
+    // lifecycle marker lives in structuredAttributes.decisionStatus (review:
+    // hide all non-active outer statuses from decisions).
     const memStatus = m.frontmatter.status;
-    if (memStatus === "archived" || memStatus === "superseded") continue;
+    if (memStatus && memStatus !== "active") continue;
     const parsed = safeParseDecisionRecord(m.content);
     if (!parsed) continue;
     const structStatus = m.frontmatter.structuredAttributes?.decisionStatus;
