@@ -1008,7 +1008,11 @@ function resolveMemoryOsPreset(value: unknown): MemoryOsPresetName | undefined {
   return MEMORY_OS_PRESET_ALIASES[normalized];
 }
 
-export function parseConfig(raw: unknown, rawOperatorConfig?: Record<string, unknown> | null): PluginConfig {
+export function parseConfig(
+  raw: unknown,
+  rawOperatorConfig?: Record<string, unknown> | null,
+  runtimeSet?: ReadonlySet<string>,
+): PluginConfig {
   const baseCfg =
     raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)
@@ -2982,7 +2986,7 @@ export function parseConfig(raw: unknown, rawOperatorConfig?: Record<string, unk
     // a PRESENT but unrecognized value ("flase", 2) is REJECTED rather than
     // silently defaulting to enabled (CLAUDE.md rule #51); default to enabled
     // only when the value is absent.
-    namespaceCatalogEnabled: resolveNamespaceCatalogEnabled(cfg.namespaceCatalogEnabled, rawOperatorConfig),
+    namespaceCatalogEnabled: resolveNamespaceCatalogEnabled(cfg.namespaceCatalogEnabled, rawOperatorConfig, runtimeSet),
     // NOTE: namespace identifiers are intentionally NOT sanitized here — the
     // codebase rejects unsafe namespaces at the point of use (see
     // codex-materialize-runner and NamespaceStorageRouter / resolveNamespaceDir),
@@ -4051,7 +4055,7 @@ export function parseConfig(raw: unknown, rawOperatorConfig?: Record<string, unk
     // Legacy MCP tool aliases opt-out (issue #1427). Config field wins; then
     // the REMNIC_/ENGRAM_ env var (gotcha #9); default true for back-compat.
     // Malformed values fail fast rather than silently defaulting (gotcha #51).
-    emitLegacyTools: resolveEmitLegacyTools(cfg.emitLegacyTools, rawOperatorConfig),
+    emitLegacyTools: resolveEmitLegacyTools(cfg.emitLegacyTools, rawOperatorConfig, runtimeSet),
     // Codex citation parity (issue #379)
     citationsEnabled: cfg.citationsEnabled === true,
     citationsAutoDetect: cfg.citationsAutoDetect !== false,

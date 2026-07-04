@@ -1333,6 +1333,20 @@ const pluginDefinition = {
     // Pass serviceId so shim installs prefer their own entry (#403).
     const fileConfig = loadPluginConfigFromFile(serviceId);
     const openclawFlushPlanProcessingEnabled = resolveOpenClawFlushPlanProcessingEnabledFromConfig(fileConfig, api.pluginConfig);
+    // Capture which keys the runtime layer (api.pluginConfig) explicitly
+    // set so the emit-legacy-tools resolvers can distinguish a deliberate
+    // runtime opt-out (e.g. api.pluginConfig.emitLegacyTools = false)
+    // from schema-default materialization, even when the runtime value
+    // matches the schema default (chatgpt-codex-connector P2, PR #1593
+    // round 7 on src/index.ts:1353).
+    const pluginConfigRecord = (api.pluginConfig ?? {}) as Record<string, unknown>;
+    const runtimeSet = new Set<string>(
+      Object.keys(pluginConfigRecord).filter(
+        (key) =>
+          pluginConfigRecord[key] !== undefined &&
+          pluginConfigRecord[key] !== null,
+      ),
+    );
     const cfg = parseConfig(
       {
         ...fileConfig, // File-backed fallback for runtimes that omit pluginConfig
@@ -1351,6 +1365,7 @@ const pluginDefinition = {
       // i.e. fall through to env / sticky-legacy instead of trusting a
       // materialized schema default (Cursor Bugbot PR #1593 round 3).
       fileConfig ?? {},
+      runtimeSet,
     );
     cfg.providerApiKeyResolver = resolveOpenClawProviderApiKey;
     cfg.runtimeAuthForModelResolver = getOpenClawRuntimeAuthForModel;

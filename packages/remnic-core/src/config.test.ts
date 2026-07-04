@@ -1752,3 +1752,57 @@ test("parseConfig null raw + runtime override honored (PR #1593 review round 5)"
     );
   });
 });
+
+
+test("parseConfig runtime-authored opt-out honored even when value matches schema default (PR #1593 review round 7)", () => {
+  // chatgpt-codex-connector P2 round 7: when the runtime layer
+  // (`api.pluginConfig`) explicitly sets `emitLegacyTools: false` and
+  // the file layer is empty (no openclaw.json), the previous resolver
+  // dropped the runtime opt-out — it treated `false` as schema-default
+  // materialization and fell through to env / sticky-legacy. The fix:
+  // parseConfig now takes a third arg `runtimeSet` (built in src/index.ts
+  // from the keys present in `api.pluginConfig`). When the key is in
+  // `runtimeSet`, the resolver trusts configValue even if it matches the
+  // schema default. Same hardening for namespaceCatalogEnabled.
+  withIsolatedConnectorsDir(true, () => {
+    // runtimeAuthored opt-out: file empty + runtime false + runtimeSet
+    // includes emitLegacyTools → resolver returns false (NOT sticky-true).
+    assert.equal(
+      parseConfig(
+        { emitLegacyTools: false },
+        {},
+        new Set(["emitLegacyTools"]),
+      ).emitLegacyTools,
+      false,
+      "runtime-authored false honored on upgraded install (NOT sticky-true)",
+    );
+    // Without runtimeSet (legacy single-arg call), behavior unchanged.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
+      true,
+      "without runtimeSet, schema default false falls through to sticky-true",
+    );
+    // Same for namespaceCatalogEnabled: runtimeAuthored false honored.
+    assert.equal(
+      parseConfig(
+        { namespaceCatalogEnabled: false },
+        {},
+        new Set(["namespaceCatalogEnabled"]),
+      ).namespaceCatalogEnabled,
+      false,
+      "runtime-authored false honored for namespaceCatalogEnabled",
+    );
+  });
+  withIsolatedConnectorsDir(false, () => {
+    // Fresh install: runtime opt-out still honored.
+    assert.equal(
+      parseConfig(
+        { emitLegacyTools: false },
+        {},
+        new Set(["emitLegacyTools"]),
+      ).emitLegacyTools,
+      false,
+      "runtime-authored false honored on fresh install too",
+    );
+  });
+});

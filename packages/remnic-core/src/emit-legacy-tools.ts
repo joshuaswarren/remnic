@@ -115,11 +115,18 @@ function coerceBooleanLikeOrThrow(label: string, value: unknown): boolean {
 export function resolveEmitLegacyTools(
   configValue: unknown,
   rawOperatorConfig: Record<string, unknown> | undefined | null,
+  runtimeSet?: ReadonlySet<string>,
 ): boolean {
   // Defensive null normalization — see file header for the rationale.
   if (rawOperatorConfig === null) rawOperatorConfig = {};
   // Schema default for `emitLegacyTools` is `false` (issue #1550).
   const SCHEMA_DEFAULT = false;
+  // Round 7 (PR #1593): `runtimeSet` carries the keys explicitly set in
+  // `api.pluginConfig` at runtime. A runtime-authored value cannot be
+  // mistaken for schema-default materialization even when it happens to
+  // match the schema default (chatgpt-codex-connector P2, round 7 on
+  // src/index.ts:1353).
+  const runtimeAuthored = runtimeSet?.has("emitLegacyTools") ?? false;
   if (rawOperatorConfig !== undefined) {
     if (configValue !== undefined && configValue !== null) {
       const rawValue = (rawOperatorConfig as Record<string, unknown>).emitLegacyTools;
@@ -127,7 +134,7 @@ export function resolveEmitLegacyTools(
         "emitLegacyTools" in rawOperatorConfig &&
         rawValue !== null &&
         rawValue !== undefined;
-      if (rawAuthored || configValue !== SCHEMA_DEFAULT) {
+      if (rawAuthored || runtimeAuthored || configValue !== SCHEMA_DEFAULT) {
         return coerceBooleanLikeOrThrow("emitLegacyTools", configValue);
       }
     } else if ("emitLegacyTools" in rawOperatorConfig) {
@@ -157,11 +164,15 @@ export function resolveEmitLegacyTools(
 export function resolveNamespaceCatalogEnabled(
   configValue: unknown,
   rawOperatorConfig: Record<string, unknown> | undefined | null,
+  runtimeSet?: ReadonlySet<string>,
 ): boolean {
   // Defensive null normalization — see file header for the rationale.
   if (rawOperatorConfig === null) rawOperatorConfig = {};
   // Schema default is `true` (the catalog is opt-out).
   const SCHEMA_DEFAULT = true;
+  // Round 7: runtime-authored keys cannot be mistaken for schema-default
+  // materialization even when they happen to match the schema default.
+  const runtimeAuthored = runtimeSet?.has("namespaceCatalogEnabled") ?? false;
   if (rawOperatorConfig !== undefined) {
     if (configValue !== undefined && configValue !== null) {
       const rawValue = (rawOperatorConfig as Record<string, unknown>)
@@ -170,7 +181,7 @@ export function resolveNamespaceCatalogEnabled(
         "namespaceCatalogEnabled" in rawOperatorConfig &&
         rawValue !== null &&
         rawValue !== undefined;
-      if (rawAuthored || configValue !== SCHEMA_DEFAULT) {
+      if (rawAuthored || runtimeAuthored || configValue !== SCHEMA_DEFAULT) {
         return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", configValue);
       }
     } else if ("namespaceCatalogEnabled" in rawOperatorConfig) {
