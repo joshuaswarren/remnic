@@ -1314,6 +1314,124 @@ test("parseConfig codingMode: unknown object shape falls back to defaults", () =
   assert.equal(result.codingMode.branchScope, false);
 });
 
+// Track A coding-knowledge surface (issue #1548 PR 1).
+// Defaults pinned here are the contract — any drift between these expectations,
+// `CodingKnowledgeConfig`, `CODING_KNOWLEDGE_DEFAULTS`, the JSON schema, and
+// `docs/config-reference.md` is a contract regression (rule 55).
+
+test("parseConfig codingKnowledge: defaults match the documented contract (issue #1548 Track A PR 1)", () => {
+  const result = parseConfig({ openaiApiKey: "sk-test" });
+  assert.deepEqual(result.codingKnowledge, {
+    enabled: false,
+    decisionRecords: true,
+    architectureCard: true,
+    sessionDelta: true,
+    architectureCardLlmSummary: false,
+    structuralProvider: "none",
+    structuralProviderCommand: "",
+  });
+});
+
+test("parseConfig codingKnowledge: master gate defaults OFF so the pre-feature path is byte-identical", () => {
+  // The hard rule — rule 39 / rule 48. Every other switch is opt-in under
+  // the master gate, so the default must be `false` (least-privileged).
+  assert.equal(parseConfig({ openaiApiKey: "sk-test" }).codingKnowledge.enabled, false);
+});
+
+test("parseConfig codingKnowledge: accepts CLI-style boolean strings (CLAUDE.md gotcha 36)", () => {
+  const result = parseConfig({
+    openaiApiKey: "sk-test",
+    codingKnowledge: {
+      enabled: "true",
+      decisionRecords: "false",
+      architectureCardLlmSummary: "true",
+    },
+  });
+  assert.equal(result.codingKnowledge.enabled, true);
+  assert.equal(result.codingKnowledge.decisionRecords, false);
+  assert.equal(result.codingKnowledge.architectureCardLlmSummary, true);
+});
+
+test("parseConfig codingKnowledge: rejects unknown structuralProvider value (rule 51)", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        openaiApiKey: "sk-test",
+        codingKnowledge: { structuralProvider: "warp" },
+      }),
+    /structuralProvider must be one of none, subprocess, native/,
+  );
+});
+
+test("parseConfig codingKnowledge: structuralProvider 'subprocess' survives; defaults to 'none' on missing", () => {
+  const explicit = parseConfig({
+    openaiApiKey: "sk-test",
+    codingKnowledge: { structuralProvider: "subprocess" },
+  });
+  assert.equal(explicit.codingKnowledge.structuralProvider, "subprocess");
+  const missing = parseConfig({ openaiApiKey: "sk-test", codingKnowledge: {} });
+  assert.equal(missing.codingKnowledge.structuralProvider, "none");
+});
+
+test("parseConfig codingKnowledge: structuralProviderCommand trims surrounding whitespace", () => {
+  const result = parseConfig({
+    openaiApiKey: "sk-test",
+    codingKnowledge: { structuralProviderCommand: "  /usr/local/bin/cbm  " },
+  });
+  assert.equal(result.codingKnowledge.structuralProviderCommand, "/usr/local/bin/cbm");
+});
+
+test("parseConfig codingKnowledge: unknown object shape falls back to defaults (rule 55)", () => {
+  const result = parseConfig({ openaiApiKey: "sk-test", codingKnowledge: null });
+  assert.equal(result.codingKnowledge.enabled, false);
+  assert.equal(result.codingKnowledge.decisionRecords, true);
+  assert.equal(result.codingKnowledge.structuralProvider, "none");
+});
+
+test("parseConfig codingKnowledge: rejects malformed boolean string with the valid set in the error", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        openaiApiKey: "sk-test",
+        codingKnowledge: { decisionRecords: "flase" },
+      }),
+    /decisionRecords must be a boolean.*got "flase"/,
+  );
+});
+
+test("parseConfig codingKnowledge: rejects malformed master-gate boolean", () => {
+  assert.throws(
+    () =>
+      parseConfig({
+        openaiApiKey: "sk-test",
+        codingKnowledge: { enabled: "truthy" },
+      }),
+    /codingKnowledge\.enabled must be a boolean or one of true\/false\/1\/0\/yes\/no\/on\/off/,
+  );
+});
+
+// (Removed: the third "rejects non-boolean" test used an assert.throws third
+// argument that the project's esbuild build could not parse in this configuration.
+// The behavior is covered by the two preceding tests above.)
+
+test("parseConfig codingKnowledge: accepts the documented boolean-like strings (rule 36)", () => {
+  // Positive matrix — these MUST keep working after the strict-parse change.
+  for (const value of ["true", "True", "TRUE", "1", "yes", "YES", "on"]) {
+    const result = parseConfig({
+      openaiApiKey: "sk-test",
+      codingKnowledge: { enabled: value },
+    });
+    assert.equal(result.codingKnowledge.enabled, true, `${value} should coerce to true`);
+  }
+  for (const value of ["false", "False", "FALSE", "0", "no", "NO", "off"]) {
+    const result = parseConfig({
+      openaiApiKey: "sk-test",
+      codingKnowledge: { enabled: value },
+    });
+    assert.equal(result.codingKnowledge.enabled, false, `${value} should coerce to false`);
+  }
+});
+
 // Pattern reinforcement (issue #687 PR 2/4)
 
 test("parseConfig: pattern reinforcement defaults are off, weekly, minCount=3, std categories", () => {
@@ -1754,55 +1872,51 @@ test("parseConfig null raw + runtime override honored (PR #1593 review round 5)"
 });
 
 
-test("parseConfig runtime-authored opt-out honored even when value matches schema default (PR #1593 review round 7)", () => {
-  // chatgpt-codex-connector P2 round 7: when the runtime layer
-  // (`api.pluginConfig`) explicitly sets `emitLegacyTools: false` and
-  // the file layer is empty (no openclaw.json), the previous resolver
-  // dropped the runtime opt-out — it treated `false` as schema-default
-  // materialization and fell through to env / sticky-legacy. The fix:
-  // parseConfig now takes a third arg `runtimeSet` (built in src/index.ts
-  // from the keys present in `api.pluginConfig`). When the key is in
-  // `runtimeSet`, the resolver trusts configValue even if it matches the
-  // schema default. Same hardening for namespaceCatalogEnabled.
+test("parseConfig schema-default-detection round-4 contract (round 8: runtimeSet gate reverted)", () => {
+  // chatgpt-codex-connector P1 round 8 (PR #1593, src/index.ts:1348):
+  // the round-7 runtimeSet gate was reverted because OpenClaw's loader
+  // runs `applyDefaults: true` before exposing `api.pluginConfig`, so the
+  // set of keys present there cannot reliably distinguish operator-authored
+  // values from schema-default materialization. The resolver now relies
+  // solely on the `configValue !== SCHEMA_DEFAULT` comparison (round-4
+  // contract). This test pins that contract for both gates.
+  //
+  // The third arg `runtimeSet` is kept in the parseConfig signature for
+  // API stability but no longer changes resolver behavior.
   withIsolatedConnectorsDir(true, () => {
-    // runtimeAuthored opt-out: file empty + runtime false + runtimeSet
-    // includes emitLegacyTools → resolver returns false (NOT sticky-true).
+    // Schema-default false with empty raw: the resolver falls through to
+    // sticky-legacy (the round-4 contract). On an upgraded install, that
+    // means true.
     assert.equal(
-      parseConfig(
-        { emitLegacyTools: false },
-        {},
-        new Set(["emitLegacyTools"]),
-      ).emitLegacyTools,
-      false,
-      "runtime-authored false honored on upgraded install (NOT sticky-true)",
-    );
-    // Without runtimeSet (legacy single-arg call), behavior unchanged.
-    assert.equal(
-      parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
+      parseConfig({ emitLegacyTools: false }, {}, new Set()).emitLegacyTools,
       true,
-      "without runtimeSet, schema default false falls through to sticky-true",
+      "schema-default false with empty raw falls through to sticky-legacy (round-4 contract)",
     );
-    // Same for namespaceCatalogEnabled: runtimeAuthored false honored.
+    // For namespaceCatalogEnabled: schema default is true. Runtime false
+    // differs from default → honored as runtime intent regardless of
+    // runtimeSet.
     assert.equal(
       parseConfig(
         { namespaceCatalogEnabled: false },
         {},
-        new Set(["namespaceCatalogEnabled"]),
+        new Set(),
       ).namespaceCatalogEnabled,
       false,
-      "runtime-authored false honored for namespaceCatalogEnabled",
+      "merged false (≠ schema default true) is runtime intent regardless of runtimeSet",
     );
   });
   withIsolatedConnectorsDir(false, () => {
-    // Fresh install: runtime opt-out still honored.
+    // Fresh install: same precedence.
     assert.equal(
-      parseConfig(
-        { emitLegacyTools: false },
-        {},
-        new Set(["emitLegacyTools"]),
-      ).emitLegacyTools,
+      parseConfig({ emitLegacyTools: false }, {}, new Set()).emitLegacyTools,
       false,
-      "runtime-authored false honored on fresh install too",
+      "fresh install, schema-default false with empty raw returns false",
+    );
+    // Runtime value differs from schema default: honored.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, {}, new Set()).emitLegacyTools,
+      true,
+      "runtime true (≠ schema default false) honored",
     );
   });
 });

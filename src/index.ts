@@ -1339,14 +1339,17 @@ const pluginDefinition = {
     // from schema-default materialization, even when the runtime value
     // matches the schema default (chatgpt-codex-connector P2, PR #1593
     // round 7 on src/index.ts:1353).
-    const pluginConfigRecord = (api.pluginConfig ?? {}) as Record<string, unknown>;
-    const runtimeSet = new Set<string>(
-      Object.keys(pluginConfigRecord).filter(
-        (key) =>
-          pluginConfigRecord[key] !== undefined &&
-          pluginConfigRecord[key] !== null,
-      ),
-    );
+    // Round 8 (PR #1593): the `runtimeSet` argument is now always empty.
+    // The round-7 attempt to pass every key present in `api.pluginConfig`
+    // (chatgpt-codex-connector P2, round 7) was undone in round 8 because
+    // OpenClaw's loader runs `applyDefaults: true` before exposing
+    // `api.pluginConfig`, so the set of keys present there cannot reliably
+    // distinguish operator-authored values from schema-default materialization
+    // (chatgpt-codex-connector P1, round 8 on src/index.ts:1348). The
+    // resolver now relies solely on the `configValue !== SCHEMA_DEFAULT`
+    // comparison (round-4 contract). We keep the third arg in the
+    // `parseConfig` signature for API stability but it carries no signal.
+    const runtimeSet = new Set<string>();
     const cfg = parseConfig(
       {
         ...fileConfig, // File-backed fallback for runtimes that omit pluginConfig

@@ -45,7 +45,7 @@ import {
   resolveNamespaceCatalogEnabled,
 } from "./emit-legacy-tools.js";
 import { parseWearablesConfig } from "./wearables/config.js";
-
+import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
   ".openclaw",
@@ -2440,7 +2440,8 @@ export function parseConfig(
     heartbeat,
     slotBehavior,
     codexCompat,
-    // Hourly summaries
+    codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
+     // Hourly summaries
     hourlySummariesEnabled: cfg.hourlySummariesEnabled !== false, // default: true
     daySummaryEnabled: cfg.daySummaryEnabled !== false, // default: true
     hourlySummaryCronAutoRegister: cfg.hourlySummaryCronAutoRegister === true,

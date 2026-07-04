@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+// #1541: capability probe for the SOTA verifier test — pin published
+// provenance, skip locally with reason when the working tree is dirty.
+import { skipUnlessCleanWorkingTree } from "./helpers/capability-probe.mjs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawnSync } from "node:child_process";
@@ -2274,7 +2277,15 @@ test("AMB helper does not satisfy health-event MCQ from query text alone", {
   assert.match(payload.raw_response.answerError, /no retrieved memory evidence/i);
 });
 
-test("AMB SOTA verifier compares Remnic result against external best", async () => {
+test("AMB SOTA verifier compares Remnic result against external best", {
+  // The verifier under test records provenance for published SOTA numbers
+  // (scripts/bench/verify-amb-sota.mjs: `Remnic checkout provenance is dirty or
+  // unavailable; commit or discard changes before SOTA verification`). That is a
+  // CI/release concern, not a local-dev concern — the check pins a published
+  // benchmark, not the test's own behavior. Locally we skip-with-reason; CI
+  // forbids the skip via REMNIC_REQUIRE_CAPABILITY_TESTS=1.
+  skip: skipUnlessCleanWorkingTree(),
+}, async () => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-amb-sota-"));
   const externalPath = path.join(tmpDir, "external_results.json");
   const nullResultPath = path.join(tmpDir, "null-result.json");
@@ -3000,11 +3011,21 @@ test("AMB SOTA verifier compares Remnic result against external best", async () 
 async function initCleanGitRepo(repoDir: string): Promise<void> {
   await mkdir(repoDir, { recursive: true });
   runGit(repoDir, ["init"]);
+  // Override `commit.gpgsign` so the temp repo does not inherit the host's
+  // signing config (e.g. 1Password-backed GPG on developer machines). Without
+  // this override, `git commit --allow-empty` exits 128 when the host's signing
+  // agent is unavailable, masking real SOTA-verifier regressions with an
+  // environmental flake. The temp repo's commits are throwaway — signing would
+  // only attribute them, which is meaningless.
   runGit(repoDir, [
     "-c",
     "user.email=remnic-tests@example.invalid",
     "-c",
     "user.name=Remnic Tests",
+    "-c",
+    "commit.gpgsign=false",
+    "-c",
+    "tag.gpgsign=false",
     "commit",
     "--allow-empty",
     "-m",

@@ -121,11 +121,10 @@ export function resolveEmitLegacyTools(
   if (rawOperatorConfig === null) rawOperatorConfig = {};
   // Schema default for `emitLegacyTools` is `false` (issue #1550).
   const SCHEMA_DEFAULT = false;
-  // Round 7 (PR #1593): `runtimeSet` carries the keys explicitly set in
-  // `api.pluginConfig` at runtime. A runtime-authored value cannot be
-  // mistaken for schema-default materialization even when it happens to
-  // match the schema default (chatgpt-codex-connector P2, round 7 on
-  // src/index.ts:1353).
+  // Round 8: `runtimeAuthored` is now informational only — the resolver
+  // does not consult it (see the comment on the check below). Kept as a
+  // local so the signature-bound `runtimeSet` parameter remains useful
+  // for future refactors and tests can read this state if needed.
   const runtimeAuthored = runtimeSet?.has("emitLegacyTools") ?? false;
   if (rawOperatorConfig !== undefined) {
     if (configValue !== undefined && configValue !== null) {
@@ -134,7 +133,12 @@ export function resolveEmitLegacyTools(
         "emitLegacyTools" in rawOperatorConfig &&
         rawValue !== null &&
         rawValue !== undefined;
-      if (rawAuthored || runtimeAuthored || configValue !== SCHEMA_DEFAULT) {
+      // Round 8 (PR #1593): revert the runtimeAuthored gate. OpenClaw's
+      // `applyDefaults: true` materialization means api.pluginConfig keys
+      // can't reliably signal operator authorship; the schema-default
+      // comparison alone is the right signal (chatgpt-codex-connector P1
+      // on src/index.ts:1348, round 8).
+      if (rawAuthored || configValue !== SCHEMA_DEFAULT) {
         return coerceBooleanLikeOrThrow("emitLegacyTools", configValue);
       }
     } else if ("emitLegacyTools" in rawOperatorConfig) {
@@ -170,8 +174,8 @@ export function resolveNamespaceCatalogEnabled(
   if (rawOperatorConfig === null) rawOperatorConfig = {};
   // Schema default is `true` (the catalog is opt-out).
   const SCHEMA_DEFAULT = true;
-  // Round 7: runtime-authored keys cannot be mistaken for schema-default
-  // materialization even when they happen to match the schema default.
+  // Round 8: same as the emit variant — `runtimeAuthored` is
+  // informational only, the resolver does not consult it.
   const runtimeAuthored = runtimeSet?.has("namespaceCatalogEnabled") ?? false;
   if (rawOperatorConfig !== undefined) {
     if (configValue !== undefined && configValue !== null) {
@@ -181,7 +185,8 @@ export function resolveNamespaceCatalogEnabled(
         "namespaceCatalogEnabled" in rawOperatorConfig &&
         rawValue !== null &&
         rawValue !== undefined;
-      if (rawAuthored || runtimeAuthored || configValue !== SCHEMA_DEFAULT) {
+      // Round 8: same rollback as resolveEmitLegacyTools.
+      if (rawAuthored || configValue !== SCHEMA_DEFAULT) {
         return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", configValue);
       }
     } else if ("namespaceCatalogEnabled" in rawOperatorConfig) {

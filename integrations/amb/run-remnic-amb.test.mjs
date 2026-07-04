@@ -5,9 +5,20 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { skipUnlessCommand } from "../../tests/helpers/capability-probe.mjs";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const runner = path.join(dirname, "run-remnic-amb.sh");
+
+// All four tests in this file exercise integrations/amb/run-remnic-amb.sh,
+// which calls `uv run python` to patch the AMB registry (after the #1541 PATH
+// fix). Guard the class so a host without `uv` skips with one reasoned
+// message instead of failing the fixture with exit 127. CI forbids this skip
+// via REMNIC_REQUIRE_CAPABILITY_TESTS=1 (see .github/workflows/ci.yml).
+const skipUnlessUv = skipUnlessCommand(
+  "uv",
+  "install uv: https://docs.astral.sh/uv/getting-started/installation/",
+);
 
 function makeAmbCheckout() {
   const root = mkdtempSync(path.join(tmpdir(), "remnic-amb-runner-"));
@@ -58,7 +69,9 @@ function runRunner(args, env = {}) {
   }
 }
 
-test("official judged runs fail before registering Remnic when Gemini credentials are absent", () => {
+test("official judged runs fail before registering Remnic when Gemini credentials are absent", {
+  skip: skipUnlessUv,
+}, () => {
   const root = makeAmbCheckout();
   const initPath = path.join(root, "src", "memory_bench", "memory", "__init__.py");
   const initialRegistry = readFileSync(initPath, "utf8");
@@ -81,7 +94,7 @@ test("official judged runs fail before registering Remnic when Gemini credential
   }
 });
 
-test("registers Remnic in compact AMB registry layouts", () => {
+test("registers Remnic in compact AMB registry layouts", { skip: skipUnlessUv }, () => {
   const root = makeAmbCheckout();
   const initPath = path.join(root, "src", "memory_bench", "memory", "__init__.py");
   const fakePnpmBin = makeFakePnpmBin(root);
@@ -117,7 +130,7 @@ test("registers Remnic in compact AMB registry layouts", () => {
   }
 });
 
-test("unsupported AMB modes fail before registering Remnic", () => {
+test("unsupported AMB modes fail before registering Remnic", { skip: skipUnlessUv }, () => {
   const root = makeAmbCheckout();
   const initPath = path.join(root, "src", "memory_bench", "memory", "__init__.py");
   const initialRegistry = readFileSync(initPath, "utf8");
@@ -138,7 +151,7 @@ test("unsupported AMB modes fail before registering Remnic", () => {
   }
 });
 
-test("current AMB agentic-rag mode fails before registering Remnic", () => {
+test("current AMB agentic-rag mode fails before registering Remnic", { skip: skipUnlessUv }, () => {
   const root = makeAmbCheckout();
   const initPath = path.join(root, "src", "memory_bench", "memory", "__init__.py");
   const initialRegistry = readFileSync(initPath, "utf8");
