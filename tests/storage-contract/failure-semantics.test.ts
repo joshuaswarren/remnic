@@ -23,8 +23,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { mkdir, writeFile, chmod } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 
 import { StorageManager } from "../../packages/remnic-core/src/storage.js";
+import { SecureStoreLockedError } from "../../packages/remnic-core/src/secure-store/secure-fs.js";
 
 import { withScratchStorage, withScratchDir, setDirReadOnly, setDirReadWrite, PERM_FAULT_INJECTION_AVAILABLE } from "./helpers.js";
 
@@ -66,21 +68,30 @@ test("failure semantics: readMemoryByPath on an unreadable file returns null (cu
   });
 });
 
-test("failure semantics: SecureStoreLockedError is NEVER swallowed by readMemoryByPath (re-thrown)", async () => {
-  // This is the one exception the outer catch re-throws (storage.ts:4560) —
-  // pin it so a refactor of the catch does not silently swallow a locked
-  // store (which would look like an empty store and cause subtle data loss).
-  // We assert the re-throw branch exists by reading the source contract: a
-  // non-SecureStoreLocked error returns null, but the locked error must
-  // throw. Verified via the missing-file path (which returns null) plus the
-  // type import — the re-throw is the documented contract.
+test("failure semantics: SecureStoreLockedError is NEVER swallowed by readMemoryByPath (re-thrown from a real encrypted file)", async () => {
+  // The one exception the outer catch re-throws (storage.ts:4560). Pin it with
+  // a REAL locked store: write a memory encrypted under a key, then lock the
+  // store (key -> null) and prove readMemoryByPath re-throws
+  // SecureStoreLockedError instead of swallowing it to null — which would
+  // masquerade as an empty store and cause silent data loss.
   await withScratchStorage("fail-locked-rethrow", async (storage, dir) => {
-    // Missing file → null (swallowed). A locked store would throw — that path
-    // is exercised by the secure-store suite; here we lock the invariant that
-    // the non-locked missing-file path returns null so the contrast is in the
-    // contract suite, not just the secure-store suite.
-    const result = await storage.readMemoryByPath(path.join(dir, "nope.md"));
-    assert.equal(result, null);
+    const key = randomBytes(32);
+    storage.setSecureStoreKey(key, true);
+    const id = await storage.writeMemory(
+      "fact",
+      "encrypted body — must not silently vanish",
+      { confidence: 0.9 },
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    const file = path.join(dir, "facts", today, `${id}.md`);
+
+    // Lock the store: key -> null. Reads of the encrypted file must throw.
+    storage.setSecureStoreKey(null, false);
+    await assert.rejects(
+      () => storage.readMemoryByPath(file),
+      (err: unknown) => err instanceof SecureStoreLockedError,
+      "readMemoryByPath must re-throw SecureStoreLockedError for a locked encrypted file, not swallow it to null",
+    );
   });
 });
 

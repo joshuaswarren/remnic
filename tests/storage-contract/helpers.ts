@@ -352,8 +352,11 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
           "contract-surface chunk parent",
           { tags: ["contract-surface"] },
         );
-        await storage.writeChunk(parentId, 0, 1, "fact", "contract-surface chunk body");
-        return parentId;
+        // Return the CHUNK id (`${parentId}-chunk-0`), not the parent id, so
+        // the catalog fitness test actually observes the chunk write — a
+        // regression that drops the chunk while the parent still persists
+        // would otherwise pass on a non-empty parent id.
+        return storage.writeChunk(parentId, 0, 1, "fact", "contract-surface chunk body");
       },
     },
   ];
