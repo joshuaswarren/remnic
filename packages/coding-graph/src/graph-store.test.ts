@@ -923,3 +923,109 @@ test("a second close() during an in-progress drain awaits it, not resolves early
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("invalid symbol spans are rejected before storing nodes (chatgpt-codex-connector P2: 'Reject invalid symbol spans before storing nodes')", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-badspan-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "store.db"),
+  });
+  try {
+    // Seed valid state so we can prove the guard throws BEFORE the
+    // transaction opens — a wipe would clear these nodes.
+    const seeded = await store.upsertFileBatch([fileA]);
+    assert.equal(seeded.ok, true, "seed ingest succeeds");
+    assert.equal(
+      seeded.ok && seeded.results[0]!.nodeCount,
+      2,
+      "fileA seeded with 2 symbol nodes",
+    );
+
+    // Each case targets a distinct branch of assertValidSymbolSpan.
+    // The `sym()` helper builds a well-formed symbol; the non-integer
+    // and missing-span cases bypass it to seed the malformed payload a
+    // JSON-deserializing or buggy caller would emit.
+    const cases: Array<{ label: string; sym: unknown; re: RegExp }> = [
+      { label: "startByte > endByte", sym: sym("a.bad", "bad", 100, 10), re: /startByte > endByte/ },
+      { label: "negative startByte", sym: sym("a.bad", "bad", -1, 10), re: /negative span/ },
+      { label: "negative endByte", sym: sym("a.bad", "bad", 0, -5), re: /negative span/ },
+      { label: "non-integer startByte", sym: { qualifiedName: "a.bad", name: "bad", kind: "function", span: { startByte: 1.5, endByte: 10 } }, re: /non-integer span/ },
+      { label: "NaN endByte", sym: { qualifiedName: "a.bad", name: "bad", kind: "function", span: { startByte: 0, endByte: Number.NaN } }, re: /non-integer span/ },
+      { label: "missing span object", sym: { qualifiedName: "a.bad", name: "bad", kind: "function" }, re: /no span/ },
+    ];
+    for (const { label, sym: badSym, re } of cases) {
+      const ir = { ...fileA, symbols: [badSym] } as unknown as StoreFileIR;
+      await assert.rejects(
+        store.upsertFileBatch([ir]),
+        re,
+        `${label}: invalid span must be rejected at the store boundary`,
+      );
+    }
+
+    // Guard throws before the transaction opens, so every rejected
+    // attempt left the seeded nodes intact — a re-ingest is a no-op
+    // (nodeCount 0). The pre-fix path would have bound the bad span and
+    // reported nodeCount 1.
+    const reingested = await store.upsertFileBatch([fileA]);
+    assert.equal(reingested.ok, true, "store accepts a valid ingest after the rejections");
+    assert.equal(
+      reingested.ok && reingested.results[0]!.nodeCount,
+      0,
+      "fileA re-ingest is a no-op — seeded nodes survived every rejected bad-span attempt",
+    );
+
+    // Boundary check: a zero-length half-open span [5, 5) is VALID
+    // (startByte <= endByte), so it must be accepted, not rejected.
+    const zeroSpan = await store.upsertFileBatch([
+      { ...fileA, symbols: [sym("a.zero", "zero", 5, 5)] },
+    ]);
+    assert.equal(zeroSpan.ok, true, "a zero-length span [5, 5) is a legal half-open span");
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("non-canonical file paths are rejected before persisting (chatgpt-codex-connector P2: 'Reject non-canonical file paths before persisting')", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-badpath-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "store.db"),
+  });
+  try {
+    const seeded = await store.upsertFileBatch([fileA]);
+    assert.equal(seeded.ok, true, "seed ingest succeeds");
+
+    // Each case is a distinct aliasing hazard: the same repo file
+    // rendered two ways would hash to two files rows + node ids and
+    // leave duplicates the canonical ingest cannot match or prune.
+    const cases: Array<{ label: string; path: string; re: RegExp }> = [
+      { label: "backslash separator", path: "src\\a.ts", re: /forward slashes/ },
+      { label: "leading ./", path: "./src/a.ts", re: /must be canonical/ },
+      { label: "leading ../", path: "../src/a.ts", re: /must be canonical/ },
+      { label: "absolute posix", path: "/src/a.ts", re: /must be repo-relative/ },
+      { label: ".. segment", path: "src/../a.ts", re: /must be canonical/ },
+      { label: "empty string", path: "", re: /non-empty string/ },
+    ];
+    for (const { label, path: badPath, re } of cases) {
+      const ir = { ...fileA, path: badPath } as StoreFileIR;
+      await assert.rejects(
+        store.upsertFileBatch([ir]),
+        re,
+        `${label}: non-canonical path must be rejected at the store boundary`,
+      );
+    }
+
+    // Canonical re-ingest is a no-op — the seeded file survived every
+    // rejected non-canonical attempt (the guard throws before the
+    // files row is touched).
+    const reingested = await store.upsertFileBatch([fileA]);
+    assert.equal(reingested.ok, true, "store accepts a canonical ingest after the rejections");
+    assert.equal(
+      reingested.ok && reingested.results[0]!.nodeCount,
+      0,
+      "fileA re-ingest is a no-op — the canonical seeded row survived every rejected non-canonical attempt",
+    );
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

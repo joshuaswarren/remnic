@@ -342,6 +342,17 @@ export class GraphStore {
     // corrupt edge pass').
     const seenPaths = new Set<string>();
     for (const ir of files) {
+      // Canonical-path check BEFORE the duplicate check: a caller that
+      // passes the same repo file as `./src/a.ts` in one ingest and
+      // `src/a.ts` in another (or uses backslashes / an absolute path)
+      // would persist two distinct files rows + node-id hashes and
+      // leave duplicate/stale symbols the later canonical ingest
+      // cannot match or prune. The FileIR contract requires
+      // repo-relative forward-slash paths; reject the violation at the
+      // store boundary rather than silently normalizing
+      // (chatgpt-codex-connector P2: 'Reject non-canonical file paths
+      // before persisting').
+      assertCanonicalFilePath(ir.path);
       if (seenPaths.has(ir.path)) {
         throw new Error(
           `graph-store: duplicate path '${ir.path}' in batch — each FileIR must have a unique path`,
@@ -365,6 +376,16 @@ export class GraphStore {
             symbolsField === null ? "null" : typeof symbolsField
           } — refusing to ingest to avoid wiping existing nodes`,
         );
+      }
+      // Span check: a malformed parser or JSON caller can emit
+      // startByte > endByte (or non-integer / negative spans); the
+      // values are bound directly into span_start/span_end and PR2
+      // snippet/search consumers will trust them as half-open byte
+      // offsets. Reject before insertion so bad IR cannot corrupt
+      // graph metadata (chatgpt-codex-connector P2: 'Reject invalid
+      // symbol spans before storing nodes').
+      for (const sym of symbolsField) {
+        assertValidSymbolSpan(sym, ir.path);
       }
     }
     try {
@@ -1011,4 +1032,106 @@ function logWriteFailure(error: unknown): void {
     "[coding-graph] write failure:",
     error instanceof Error ? error.message : String(error ?? ""),
   );
+}
+
+/**
+ * Reject non-canonical repo-relative paths at the store boundary. The
+ * FileIR contract requires forward-slash, repo-relative paths; a caller
+ * that emits `./src/a.ts`, backslashes, or an absolute path would hash
+ * to a distinct files row + node id and leave duplicate/stale symbols a
+ * later canonical ingest cannot match or prune
+ * (chatgpt-codex-connector P2: 'Reject non-canonical file paths before
+ * persisting').
+ */
+function assertCanonicalFilePath(filePath: unknown): void {
+  if (typeof filePath !== "string" || filePath.length === 0) {
+    throw new Error(
+      `graph-store: file path must be a non-empty string; received ${
+        filePath === null ? "null" : typeof filePath
+      }`,
+    );
+  }
+  // Windows separators — the contract mandates forward slashes.
+  if (filePath.includes("\\")) {
+    throw new Error(
+      `graph-store: file path '${filePath}' must use forward slashes (backslash rejected — FileIR contract requires repo-relative POSIX paths)`,
+    );
+  }
+  // Absolute POSIX path or a Windows drive root.
+  if (filePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(filePath)) {
+    throw new Error(
+      `graph-store: file path '${filePath}' must be repo-relative (absolute path rejected — FileIR contract requires repo-relative forward-slash paths)`,
+    );
+  }
+  // `.` / `..` segments alias a canonical path (`./src/a.ts` vs
+  // `src/a.ts`, or `src/../a.ts`) and would hash to a distinct files
+  // row + node id, leaving duplicates the canonical ingest cannot
+  // match or prune. Segment-based check avoids false positives on
+  // names like `a..b.ts`.
+  if (filePath.split("/").some((segment) => segment === "." || segment === "..")) {
+    throw new Error(
+      `graph-store: file path '${filePath}' must be canonical (no '.' or '..' segments — FileIR contract requires repo-relative forward-slash paths)`,
+    );
+  }
+}
+
+/**
+ * Reject malformed symbol spans before they are bound into span_start /
+ * span_end. The FileIR contract documents half-open byte spans
+ * `[startByte, endByte)`; a buggy parser or JSON caller can emit
+ * startByte > endByte or non-integer values, and PR2 snippet/search
+ * consumers will trust the offsets as-is, producing invalid source
+ * slices. Reject at the boundary rather than persisting corrupt metadata
+ * (chatgpt-codex-connector P2: 'Reject invalid symbol spans before
+ * storing nodes'). Narrowing is done with typeof/in guards (no casts) so
+ * the compiler verifies every access.
+ */
+function assertValidSymbolSpan(sym: unknown, filePath: string): void {
+  if (typeof sym !== "object" || sym === null) {
+    throw new Error(
+      `graph-store: file '${filePath}' has a non-object symbol; received ${
+        sym === null ? "null" : typeof sym
+      }`,
+    );
+  }
+  if (!("span" in sym)) {
+    throw new Error(
+      `graph-store: file '${filePath}' has a symbol with no span (FileIR contract requires startByte/endByte)`,
+    );
+  }
+  const span: unknown = sym.span;
+  if (
+    typeof span !== "object" ||
+    span === null ||
+    !("startByte" in span) ||
+    !("endByte" in span)
+  ) {
+    throw new Error(
+      `graph-store: file '${filePath}' has a symbol with a malformed span — expected { startByte, endByte }; received ${JSON.stringify(span)}`,
+    );
+  }
+  const startByte: unknown = span.startByte;
+  const endByte: unknown = span.endByte;
+  // typeof narrows unknown → number; Number.isInteger then rejects
+  // NaN/Infinity, which typeof === "number" admits.
+  if (
+    typeof startByte !== "number" ||
+    typeof endByte !== "number" ||
+    !Number.isInteger(startByte) ||
+    !Number.isInteger(endByte)
+  ) {
+    throw new Error(
+      `graph-store: file '${filePath}' has a symbol with a non-integer span [${JSON.stringify(startByte)}, ${JSON.stringify(endByte)}) — startByte and endByte must be finite integers`,
+    );
+  }
+  if (startByte < 0 || endByte < 0) {
+    throw new Error(
+      `graph-store: file '${filePath}' has a symbol with a negative span [${startByte}, ${endByte}) — byte offsets must be non-negative`,
+    );
+  }
+  if (startByte > endByte) {
+    throw new Error(
+      `graph-store: file '${filePath}' has a symbol with startByte > endByte [${startByte}, ${endByte}) — half-open spans require startByte <= endByte`,
+    );
+  }
 }

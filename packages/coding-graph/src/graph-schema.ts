@@ -152,6 +152,15 @@ function createTables(db: BetterSqlite3Database): void {
       provenance TEXT NOT NULL CHECK (provenance IN (${provenanceList})),
       UNIQUE (src, dst, type)
     );
+    -- Destination-leading index. The UNIQUE(src,dst,type) key is
+    -- src-leading, so pruneFileNodes()'s 'WHERE dst IN (...)' count and
+    -- the ON DELETE CASCADE that follows a node delete (SQLite must
+    -- locate child edges by 'dst') would otherwise scan the whole edges
+    -- table. A dst-leading index turns ordinary symbol deletion into an
+    -- index lookup instead of a full scan
+    -- (chatgpt-codex-connector P2: 'Add an index for edge destination
+    -- lookups').
+    CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);
   `);
   // FTS5 hit → node id reverse map. Contentless FTS5 does NOT store
   // column values, so a rowid returned by `MATCH` cannot be joined

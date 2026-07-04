@@ -416,3 +416,21 @@ test("FTS5 migration: old-schema nodes_fts (content=nodes, no contentless_delete
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("edges table has a destination-leading index for prune/cascade lookups (chatgpt-codex-connector P2: 'Add an index for edge destination lookups')", async () => {
+  const dir = await tempDir();
+  try {
+    const db = openTempDb(dir, "edges-idx.sqlite");
+    applyCodingGraphSchema(db);
+    const indexes = (
+      db.prepare("PRAGMA index_list('edges')").all() as { name: string }[]
+    ).map((r) => r.name);
+    assert.ok(
+      indexes.includes("idx_edges_dst"),
+      "edges must carry a dst-leading index (idx_edges_dst) so pruneFileNodes()'s WHERE dst IN (...) count and the ON DELETE CASCADE that follows a node delete resolve via an index lookup, not a full edges scan",
+    );
+    db.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
