@@ -1237,6 +1237,11 @@ async function runBenchViaFallback(
       'Fallback benchmark runner does not support --runtime-profile "openclaw-chain". Build/install @remnic/bench to use package-backed runtime profiles.',
     );
   }
+  if (runtimeProfile === "local-lab") {
+    throw new Error(
+      'Fallback benchmark runner does not support --runtime-profile "local-lab". Build/install @remnic/bench to use package-backed runtime profiles with local-lab manifests.',
+    );
+  }
   const unsupportedOptions = findUnsupportedFallbackBenchOptions(parsed);
   if (unsupportedOptions.length > 0) {
     throw new Error(
