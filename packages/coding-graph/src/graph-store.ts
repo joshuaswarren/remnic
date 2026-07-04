@@ -644,6 +644,14 @@ export class GraphStore {
     // IR re-asserts them — the prior-edge snapshot matches, the
     // insert is skipped, and the row is gone (cursor Bugbot #6a78cd0a).
     const seenKeys: string[] = [];
+    // Map each resolved key to its first edge so the insertion pass
+    // can look up metadata in O(1) instead of rescanning ir.edges
+    // and re-running resolveNodeId (with DB lookups) per key
+    // (chatgpt-codex-connector P2: 'Preserve resolved edge metadata
+    // instead of rescanning'). First-edge-wins dedupe policy
+    // (cursor Bugbot #28876d4c) is preserved by only setting on
+    // first occurrence.
+    const keyToEdge = new Map<string, EdgeIR>();
     for (const edge of ir.edges ?? []) {
       // Reject malformed edges up-front (rule 51: surface what is wrong).
       if (!isEdgeProvenance(edge.provenance)) {
@@ -676,6 +684,9 @@ export class GraphStore {
       const key = `${srcId}\u0000${dstId}\u0000${edge.type}`;
       assertedKeys.add(key);
       seenKeys.push(key);
+      if (!keyToEdge.has(key)) {
+        keyToEdge.set(key, edge);
+      }
     }
 
     // Pre-fetch the prior edges owned by this file (src in this file's
@@ -746,17 +757,11 @@ export class GraphStore {
     for (const key of seenKeys) {
       if (processedKeys.has(key)) continue;
       processedKeys.add(key);
+      const edge = keyToEdge.get(key);
+      if (!edge) continue;
       const parts = key.split("\u0000");
       const srcId = parts[0]!;
       const dstId = parts[1]!;
-      const edgeType = parts[2]!;
-      const edge = ir.edges!.find(
-        (e) =>
-          resolveNodeId(e.srcQualifiedName, qualifiedNameToId, this.db) === srcId &&
-          resolveNodeId(e.dstQualifiedName, qualifiedNameToId, this.db) === dstId &&
-          e.type === edgeType,
-      );
-      if (!edge) continue;
       const prior = priorByKey.get(key);
       if (
         prior &&
