@@ -3,11 +3,11 @@
  */
 
 import fs from "node:fs";
-import os from "node:os";
+
 import path from "node:path";
 import { createHash } from "node:crypto";
 
-import { EngramAccessService } from "@remnic/core";
+import { EngramAccessService, expandTildePath } from "@remnic/core";
 import {
   createTimeoutGuardedAdapter,
   createTimeoutGuardedIngestionAdapter,
@@ -199,11 +199,10 @@ export async function runBenchmark(
     // PR #1591 (round-3 cursor bugbot): Node's path.resolve does not
     // expand a leading `~`; resolve it manually so programmatic callers
     // (the CLI already expands via shell) can pass `~/bench-cache` and
-    // land in the user home directory instead of a literal `~/…` path.
     const cacheDir = options.judgeCacheDir
-      ? path.resolve(expandTilde(options.judgeCacheDir))
+      ? path.resolve(expandTildePath(options.judgeCacheDir))
       : options.outputDir
-        ? path.join(path.resolve(expandTilde(options.outputDir)), "judge-cache")
+        ? path.join(path.resolve(expandTildePath(options.outputDir)), "judge-cache")
         : undefined;
     if (cacheDir === undefined) {
       return options.system;
@@ -234,8 +233,8 @@ export async function runBenchmark(
       // `BenchJudge` is a method-bag interface — no class hierarchy
       // gates the field.
       options.system.judge = primary.judge;
-      baseSystemInner = options.system;
     }
+    // AMA-Bench cross judge: only wrap when a cross-judge provider config
     // identifies it. Without provider config, leave the cross judge
     // untouched so unidentified closure-based judges cannot collide.
     if (willWrapCross) {
@@ -334,20 +333,9 @@ export async function runBenchmark(
   return finalizeBenchmarkResultConfig(result, options);
 }
 
-/**
- * Expand a leading `~` (or `~user`) in a filesystem path to the user's
- * home directory. Node's `path.resolve` does not perform tilde expansion,
- * so a caller-supplied `~/bench-cache` would otherwise land at a literal
- * `~/…` path (PR #1591 round-3 cursor bugbot).
- */
-function expandTilde(input: string): string {
-  if (input !== "~" && !input.startsWith("~/") && !input.startsWith("~\\")) {
-    return input;
-  }
-  const home = os.homedir();
-  if (input === "~") return home;
-  return home + input.slice(1);
-}
+// Local expandTilde removed in PR #1591 round-5 OTGi5; expandTildePath
+// from @remnic/core is the canonical helper and prefers the HOME
+// environment variable when set, falling back to os.homedir().
 
 /**
  * Wrap a single judge (primary system judge or AMA-Bench cross judge) in
