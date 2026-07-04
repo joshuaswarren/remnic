@@ -16596,14 +16596,13 @@ export class Orchestrator {
     }
 
     // Consolidated catalog write touch (issue #1499 sweep; NIBOi + NIjwl). One
-    // touch covering EVERY durable namespace mutation this pass made — LLM
-    // profile/entity/memory-item actions AND cleanup-only maintenance (entity-file
-    // merges, expired-commitment / ledger-lifecycle / TTL cleanup, fact archival).
-    // Recorded here, after all mutation-producing steps, so a cleanup-only run that
-    // rewrote the store still refreshes `lastWriteAt` (rule #25). The default
-    // namespace is always configured/cataloged; `markWrite` is idempotent so this
-    // only refreshes recency. Best-effort and failure-tolerant.
-    // #1522: catalog touch handled at the storage chokepoint.
+    // belt-and-suspenders touch covering cleanup-only consolidation passes that
+    // may mutate the store via delete-only paths (entity-file merges, TTL
+    // cleanup) without triggering the storage chokepoint's post-write hook. The
+    // storage chokepoint (#1522) already fires for every explicit write method,
+    // so this is only needed for the rare cleanup-only case. `markWrite` is
+    // idempotent so this only refreshes recency. Best-effort and failure-tolerant.
+    this.storageRouter.recordWrite(this.config.defaultNamespace, this.storage.dir);
 
     log.info("consolidation complete");
     return { memoriesProcessed: allMemories.length, merged, invalidated };

@@ -417,6 +417,26 @@ export class NamespaceStorageRouter {
       .markRead(ns, { discoveredBy: "read", storageDir })
       .catch(() => undefined);
   }
+  /**
+   * Record a namespace write touch in the catalog (issue #1522). Best-effort
+   * and failure-tolerant. Used by consolidation/cleanup passes that may mutate
+   * the store via delete-only paths (e.g. entity-file merges, TTL cleanup) so
+   * the namespace's lastWriteAt stays fresh even when no explicit write went
+   * through the storage chokepoint. This is NOT a substitute for the chokepoint
+   * — it's a belt-and-suspenders for paths the chokepoint doesn't cover.
+   */
+  recordWrite(namespace: string, storageDir?: string): void {
+    if (!this.catalog) return;
+    const ns = normalizeNamespaceIdentity(namespace || this.config.defaultNamespace);
+    const touch = this.catalog
+      .markWrite(ns, { discoveredBy: "write", storageDir })
+      .catch(() => undefined);
+    this.pendingWriteTouches.add(touch);
+    void touch.then(
+      () => { this.pendingWriteTouches.delete(touch); },
+      () => { this.pendingWriteTouches.delete(touch); },
+    );
+  }
 
   /**
    * Resolve once every in-flight post-write catalog touch has settled (#1522).

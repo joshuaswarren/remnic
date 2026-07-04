@@ -5948,7 +5948,7 @@ export class StorageManager {
       /---\n\n/,
       `resolvedAt: "${new Date().toISOString()}"\n---\n\n`,
     );
-    await writeFile(q.filePath, raw, "utf-8");
+    await this.writeStorageSecureFile(q.filePath, raw);
     log.debug(`resolved question ${id}`);
     return true;
   }
