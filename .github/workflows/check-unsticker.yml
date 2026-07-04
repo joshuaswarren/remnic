@@ -199,9 +199,12 @@ jobs:
                 continue;
               }
               // Cancelled suites are always retryable (cancellation is not a
-              // verdict). Failed suites get ONE retry (run_attempt 1), and
-              // only once the head demonstrably satisfies the gate: either a
-              // sibling gate suite already re-evaluated to green (covers
+              // verdict). Failed suites are retried while run_attempt <= 2 —
+              // up to two verdict-gated retries, because a premature retry of
+              // a CANCELLED suite can itself mint an attempt-2 failure before
+              // the reviewer speaks (codex review on #1615) — and only once
+              // the head demonstrably satisfies the gate: either a sibling
+              // gate suite already re-evaluated to green (covers
               // review/comment-delivered verdicts, which trigger the gate),
               // or the latest cursor check run on the head is positive
               // (covers check-only verdicts, whose gate runs land on the
@@ -211,7 +214,7 @@ jobs:
                 (run) => run.status === 'completed' && run.conclusion === 'cancelled',
               );
               const staleFailedGate = gateRuns.filter(
-                (run) => run.status === 'completed' && run.conclusion === 'failure' && run.run_attempt === 1,
+                (run) => run.status === 'completed' && run.conclusion === 'failure' && run.run_attempt <= 2,
               );
               let target = cancelledGate[0] ?? null;
               if (!target && staleFailedGate.length > 0) {
