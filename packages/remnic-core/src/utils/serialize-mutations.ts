@@ -248,7 +248,10 @@ export async function withHeldFileLock<T>(
     throw new TypeError("withHeldFileLock: lockPath must be a non-empty string");
   }
   if (typeof opts?.staleMs !== "number" || !Number.isFinite(opts.staleMs) || opts.staleMs <= 0) {
-    throw new TypeError("withHeldFileLock: opts.staleMs must be a positive finite number");
+    throw new TypeError(
+      `withHeldFileLock: opts.staleMs must be a positive finite number ` +
+        `(valid range: > 0 ms, finite; got ${formatInvalidNumber(opts?.staleMs)}).`,
+    );
   }
 
   // Validate optional timings: a NaN/Infinity here is a real hazard (e.g.
@@ -266,7 +269,7 @@ export async function withHeldFileLock<T>(
   if (heartbeatMs >= opts.staleMs) {
     throw new TypeError(
       `withHeldFileLock: heartbeatMs (${heartbeatMs}) must be below staleMs (${opts.staleMs}) ` +
-        "so at least one heartbeat lands per stale window",
+        `(valid range: > 0 and < staleMs ms) so at least one heartbeat lands per stale window.`,
     );
   }
   const warn = opts.onLockWarning ?? (() => undefined);
@@ -321,10 +324,28 @@ function optionalPositiveMs(
   if (value === undefined) return fallback;
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     throw new TypeError(
-      `withHeldFileLock: opts.${name} must be a positive finite number when provided (got ${String(value)})`,
+      `withHeldFileLock: opts.${name} must be a positive finite number ` +
+        `(valid range: > 0 ms, finite; got ${formatInvalidNumber(value)}). ` +
+        `Omit the option to use the default of ${fallback} ms.`,
     );
   }
   return value;
+}
+
+/**
+ * Human-readable label for a rejected numeric input. Makes the error message
+ * immediately actionable for NaN/Infinity (which print as "NaN"/"Infinity" via
+ * String() but are easier to triage with an explicit sign), and surfaces the
+ * actual type for non-number values (defensive against config/env coercion).
+ */
+function formatInvalidNumber(value: unknown): string {
+  if (typeof value === "number") {
+    if (Number.isNaN(value)) return "NaN";
+    if (value === Infinity) return "+Infinity";
+    if (value === -Infinity) return "-Infinity";
+    return String(value);
+  }
+  return `${typeof value} ${JSON.stringify(value)}`;
 }
 
 /**
@@ -341,7 +362,15 @@ async function acquireLock(
   maxWaitMs: number,
   pollMs: number,
 ): Promise<HeldLock | undefined> {
-  await mkdir(lockDir, { recursive: true });
+  try {
+    await mkdir(lockDir, { recursive: true });
+  } catch {
+    // Lock-directory setup failure (e.g. an intermediate path is a file, or
+    // permissions deny mkdir) must NOT crash the guarded op — the advisory
+    // lock contract is best-effort. Return undefined so task(false) runs
+    // instead of rejecting (codex P2 review).
+    return undefined;
+  }
   const deadline = Date.now() + maxWaitMs;
   for (;;) {
     try {

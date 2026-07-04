@@ -655,3 +655,88 @@ test("heartbeat refresh keeps a long holder from being broken while another wait
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// withHeldFileLock — timing validation completeness (codex P2 round 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("withHeldFileLock rejects staleMs NaN/Infinity/negative with an error listing the valid range", async () => {
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 0]) {
+    await assert.rejects(
+      () => withHeldFileLock("/tmp/x.lock", { staleMs: bad }, async () => undefined),
+      (err: TypeError) => {
+        assert.ok(err.message.includes("staleMs"), `message names staleMs (got ${bad})`);
+        assert.ok(err.message.includes("valid range"), `message lists valid range (got ${bad})`);
+        assert.ok(err.message.includes("got "), `message shows the invalid value (got ${bad})`);
+        return true;
+      },
+      `staleMs=${bad} should be rejected`,
+    );
+  }
+});
+
+test("withHeldFileLock rejects non-number types for optional timings (defensive against config coercion)", async () => {
+  // A string "100" or boolean true would pass typeof checks in loose code but
+  // is a real hazard if it slips through from config/env coercion.
+  for (const bad of ["100", true, null, {}, []]) {
+    for (const opt of ["maxWaitMs", "pollMs", "heartbeatMs"] as const) {
+      await assert.rejects(
+        () =>
+          withHeldFileLock(
+            "/tmp/x.lock",
+            { staleMs: 1_000, [opt]: bad } as unknown as { staleMs: number },
+            async () => undefined,
+          ),
+        (err: TypeError) => {
+          assert.ok(err.message.includes(opt), `message names ${opt}`);
+          assert.ok(err.message.includes("valid range"), `message lists valid range for ${opt}=${JSON.stringify(bad)}`);
+          return true;
+        },
+        `${opt}=${JSON.stringify(bad)} should be rejected`,
+      );
+    }
+  }
+});
+
+test("withHeldFileLock timing errors describe the default fallback so callers can self-correct", async () => {
+  // The error must tell the caller what to do (omit the option to get the
+  // default), not just "must be positive finite". This is the difference
+  // between a debuggable config error and a silent clamp.
+  await assert.rejects(
+    () => withHeldFileLock("/tmp/x.lock", { staleMs: 1_000, maxWaitMs: NaN }, async () => undefined),
+    /maxWaitMs must be a positive finite number \(valid range:.*Omit the option to use the default of 5000 ms\./,
+  );
+  await assert.rejects(
+    () => withHeldFileLock("/tmp/x.lock", { staleMs: 1_000, pollMs: NaN }, async () => undefined),
+    /pollMs must be a positive finite number \(valid range:.*Omit the option to use the default of 50 ms\./,
+  );
+});
+
+test("withHeldFileLock runs task(false) best-effort when the lock directory cannot be created (advisory contract)", async () => {
+  // An intermediate path that is a FILE (not a directory) makes mkdir fail
+  // with ENOTDIR. The advisory lock contract requires this to fall through to
+  // task(false), NOT reject — otherwise a lock-setup problem crashes the
+  // primary guarded op (codex P2 review).
+  const dir = await mkTmpDir();
+  try {
+    // Create a regular file where the lock DIRECTORY would be created.
+    const blocker = path.join(dir, "blocker");
+    await writeFile(blocker, "not a directory", "utf8");
+    const lockPath = path.join(blocker, "nested.lock");
+
+    let acquired = true; // expect false
+    let ran = false;
+    await withHeldFileLock(
+      lockPath,
+      { staleMs: 5_000, maxWaitMs: 50 },
+      async (a) => {
+        acquired = a;
+        ran = true;
+      },
+    );
+    assert.equal(ran, true, "task ran despite lock-dir setup failure");
+    assert.equal(acquired, false, "task ran best-effort (acquired=false) without the lock");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
