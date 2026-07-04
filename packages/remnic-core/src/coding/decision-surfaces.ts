@@ -431,6 +431,11 @@ async function decisionSupersede(
   try {
     await storage.writeMemoryFrontmatter(oldMemory, {
       status: "archived",
+      // Refresh the updated timestamp so the archive/supersede lifecycle event
+      // and browse/maintenance sort key reflect when the decision was retired,
+      // not when it was originally recorded (review: set updated timestamp when
+      // retiring old decisions).
+      updated: new Date().toISOString(),
       structuredAttributes: {
         ...(oldMemory.frontmatter.structuredAttributes ?? {}),
         decisionStatus: "superseded",
