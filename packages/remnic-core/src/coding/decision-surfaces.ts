@@ -11,7 +11,7 @@
  * dependency on access-service.ts: validation errors are thrown via
  * `ctx.throwInputError`, which the service wires to EngramAccessInputError.
  */
-import type { CodingKnowledgeConfig, CodingContext, MemoryFile, MemoryFrontmatter } from "../types.js";
+import type { CodingKnowledgeConfig, CodingContext, MemoryFile, MemoryFrontmatter, MemoryStatus } from "../types.js";
 import {
   ACTIVE_DECISION_STATUSES,
   DEFAULT_DECISION_STATUS,
@@ -172,7 +172,18 @@ export interface DecisionSurfaceStorage {
   writeMemory(
     category: "decision",
     content: string,
-    options: { confidence?: number; tags?: string[]; source?: string },
+    options: {
+      confidence?: number;
+      tags?: string[];
+      source?: string;
+      /** Outer memory lifecycle status — set to "archived" for inactive
+       *  decisions so generic recall/search/maintenance exclude them
+       *  (review P2: persist inactive decision statuses in frontmatter). */
+      status?: MemoryStatus;
+      /** Decision-specific lifecycle marker, mirrored from the serialized
+       *  body so the list/get projection has one authoritative source. */
+      structuredAttributes?: Record<string, string>;
+    },
   ): Promise<string>;
   writeMemoryFrontmatter(
     memory: MemoryFile,
@@ -324,10 +335,22 @@ async function decisionRecord(
   };
   const content = serializeDecisionRecord(record);
   const storage = await ctx.resolveStorage(request);
+  const isActive = ACTIVE_DECISION_STATUSES.has(status);
   const memoryId = await storage.writeMemory("decision", content, {
     confidence: 1.0,
     tags: ["decision-record"],
     source: "coding-decision",
+    // Persist the decision lifecycle in BOTH places so generic
+    // recall/search/maintenance (which read frontmatter.status) and the
+    // decision list/get projection (which reads structuredAttributes) agree:
+    //   - structuredAttributes.decisionStatus is the authoritative decision
+    //     marker, mirrored from the serialized body (one source of truth);
+    //   - frontmatter.status is set to "archived" for inactive decisions
+    //     (rejected/superseded) so the outer memory pipeline excludes them
+    //     from the active corpus exactly like a supersede does (review P2:
+    //     persist inactive decision statuses in frontmatter).
+    structuredAttributes: { decisionStatus: status },
+    status: isActive ? undefined : "archived",
   });
   ctx.recordCatalogWrite(storage.namespace, storage.dir);
   log.info(
