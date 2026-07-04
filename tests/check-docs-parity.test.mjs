@@ -437,6 +437,60 @@ test("a nested child label in a sibling union type is NOT treated as top-level",
   });
 });
 
+// Regression: a no-op marker OUTSIDE a cmd<X> function (e.g. in main()'s
+// switch) must NOT inherit the stale funcKebab of an already-closed
+// function. Before the brace-depth fix, funcKebab persisted after the
+// function closed, mis-attributing the no-op (cursor review thread PR #1601).
+test("a no-op marker after a cmd function closes is not mis-attributed", () => {
+  withFixture((root) => {
+    const cliPath = path.join(root, "packages", "remnic-cli", "src", "index.ts");
+    let src = readFileSyncSafe(cliPath);
+    // Insert a no-op marker inside main()'s switch, AFTER cmdExtensions
+    // has closed. Without the brace-depth fix, this would be detected as
+    // "extensions init" (stale funcKebab) instead of bare "init".
+    const marker = '    case "init":\n      // no-op: not yet implemented\n      break;\n';
+    src = src.replace('    case "init":\n      break;', marker);
+    writeFileSync(cliPath, src);
+
+    const result = runParity(root);
+    // "init" is a real top-level command, so it MUST be in NO_OP_ALLOWLIST
+    // or the check fails. The key assertion: the detected path is "init"
+    // (bare, no stale func prefix), NOT "extensions init".
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /no-op handler "init" is not in NO_OP_ALLOWLIST/);
+    // The stale-path form must NOT appear.
+    assert.doesNotMatch(result.stderr, /extensions init/);
+  });
+});
+
+// Regression: a negated automation phrase ("does not automatically …") is
+// an honest disclaimer, not a stub-publisher claim. Before the negation
+// fix, the raw substring "automatically" was flagged regardless of context
+// (cursor review thread PR #1601).
+test("a negated automation phrase in a stub install section does NOT fail", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "docs", "plugins", "claude-code.md"),
+      [
+        "# Claude Code Plugin",
+        "",
+        "## Install",
+        "",
+        "The publisher is a stub — it does **not** automatically configure",
+        "anything. You must run each step manually.",
+        "",
+        "```bash",
+        "remnic init",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
 // ── Misc ────────────────────────────────────────────────────────────────────
 
 test("unknown arguments are rejected with usage", () => {

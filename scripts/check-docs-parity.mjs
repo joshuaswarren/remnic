@@ -86,8 +86,18 @@ const SKIPPED_DIR_NAMES = new Set([
 ]);
 
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
-// from inside fences to avoid prose false-positives like "remnic recall is
-// the command you use" (issue #1527 PR2 spec).
+// from inside fences — NOT from inline code spans (`remnic <cmd>`) in
+// prose, tables, or list items. Inline code in this repo references
+// multiple command surfaces that cannot be distinguished syntactically:
+// the CLI (`remnic space`), MCP tools (`remnic memory get`), OpenClaw
+// plugin session toggles (`remnic off`/`on`/`clear`/`flush`), and
+// planned features in design docs (`remnic chat`, `remnic restore`).
+// Scanning all inline code would flag the latter three as drift even
+// though they are legitimate non-CLI references. Fenced blocks are the
+// authoritative "this is a real command you can run" signal. (PR #1601
+// review: codex P2 asked to scan table examples; the false-positive
+// analysis across 25 inline-code sites showed this is unreliable
+// without semantic context — see commit message for the breakdown.)
 const FENCE_OPEN_RE = /^(\s*)(`{3,}|~{3,})/;
 // Match `remnic <subcommand>` anywhere in a fenced shell line, not just at
 // the start — handles both direct invocations (`remnic init`) and
@@ -405,12 +415,20 @@ function detectNoOpHandlers(cliFiles) {
     const lines = src.split("\n");
 
     // ── Pass 1: function-scoped case dispatch (remnic-cli style) ──────
+    // Tracks brace depth so funcKebab is cleared when the function's
+    // closing brace is reached. Without this, a no-op marker in a LATER
+    // function (e.g. main()'s top-level switch) would be mis-attributed
+    // to the stale funcKebab of an already-closed cmd<X> handler.
     let funcName = null; // current cmd<X> suffix, e.g. "Extensions"
     let funcKebab = null; // kebab form, e.g. "extensions"
     let currentCase = null;
+    let depth = 0; // running brace depth across the file
+    let funcDepth = null; // depth inside the current cmd<X> function body
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
+      const opens = (line.match(/{/g) || []).length;
+      const closes = (line.match(/}/g) || []).length;
 
       // Function entry — remember the cmd<Name> suffix for path building.
       const funcMatch = line.match(FUNC_RE);
@@ -418,6 +436,17 @@ function detectNoOpHandlers(cliFiles) {
         funcName = funcMatch[1];
         funcKebab = pascalToKebab(funcName);
         currentCase = null;
+        // The body opens at depth + opens (after this line's `{`s).
+        funcDepth = depth + opens;
+      }
+
+      depth += opens - closes;
+
+      // If we've closed back out of the cmd<X> function, clear its scope.
+      if (funcDepth !== null && depth < funcDepth) {
+        funcKebab = null;
+        currentCase = null;
+        funcDepth = null;
       }
 
       // Case label inside the function's switch.
@@ -526,10 +555,20 @@ function extractInstallSections(src) {
 function findAutomationPhases(text) {
   const lower = text.toLowerCase();
   const hits = [];
+  // Negation window: if a negator is the last word-like token within 40
+  // chars before the phrase, the claim is being DENIED, not asserted
+  // (e.g. "does not automatically …", "does **not** automatically …").
+  // The `[^a-z0-9]*$` tail allows markdown emphasis/punctuation between
+  // the negator and the phrase boundary. Such honest disclaimers must
+  // not trip the stub-honesty gate.
+  const NEGATOR_RE = /\b(no|not|never|don'?t|doesn'?t|won'?t|cannot|can'?t|neither|nor|without)\b[^a-z0-9]*$/;
   for (const phrase of STUB_AUTOMATION_PHRASES) {
     let idx = lower.indexOf(phrase);
     while (idx !== -1) {
-      hits.push({ phrase, idx });
+      const prefix = lower.slice(Math.max(0, idx - 40), idx);
+      if (!NEGATOR_RE.test(prefix)) {
+        hits.push({ phrase, idx });
+      }
       idx = lower.indexOf(phrase, idx + 1);
     }
   }

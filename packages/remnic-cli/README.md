@@ -36,7 +36,7 @@ remnic query "hello" --explain  # Test query with tier breakdown
 | `remnic dedup` | Find and merge duplicate memories |
 | `remnic sync` | Diff-aware sync with external sources |
 | `remnic offline prepare/sync/status/watch` | Use a local memory cache and sync with a remote Remnic daemon |
-| `remnic spaces` | Manage memory namespaces |
+| `remnic space` | Manage memory namespaces |
 | `remnic bench list` | List published benchmark packs |
 | `remnic bench datasets status/download` | Check or download local benchmark datasets |
 | `remnic bench runs list/show/delete` | Manage stored benchmark result files |
