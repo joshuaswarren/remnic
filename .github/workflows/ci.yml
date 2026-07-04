@@ -108,6 +108,9 @@ jobs:
       - name: Structural ratchets
         run: node scripts/check-ratchets.mjs
 
+      - name: Docs-code parity
+        run: node scripts/check-docs-parity.mjs
+
       - name: Tests
         run: pnpm test
         env:

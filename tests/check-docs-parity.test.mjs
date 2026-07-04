@@ -1,0 +1,418 @@
+// Docs-code parity check tests (issue #1527 PR2).
+//
+// Mirrors check-ratchets.test.mjs conventions: spawnSync the script with a
+// REMNIC_DOCS_PARITY_ROOT pointing at a synthetic fixture repo, assert exit
+// codes + stderr/stdout. Each gate has a prove-fail-before case: seed a
+// violation, show the script fails, then show the fix passes.
+
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+const SCRIPT = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "scripts",
+  "check-docs-parity.mjs",
+);
+
+function runParity(root) {
+  return spawnSync(process.execPath, [SCRIPT], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      REMNIC_DOCS_PARITY_ROOT: root,
+    },
+  });
+}
+
+/**
+ * Build a minimal fixture repo root. Every gate's fixture starts from this
+ * base so the "green" pieces (registered commands, honest stub publishers)
+ * are always present; each test then adds the specific violation it wants to
+ * exercise.
+ */
+function makeBaseFixture() {
+  const root = mkdtempSync(path.join(tmpdir(), "docs-parity-test-"));
+
+  // CLI: two files. remnic-cli has a case-based dispatch; cli.ts has
+  // commander-style registrations. Together they exercise both registration
+  // scanners.
+  const cliDir = path.join(root, "packages", "remnic-cli", "src");
+  mkdirSync(cliDir, { recursive: true });
+  writeFileSync(
+    path.join(cliDir, "index.ts"),
+    [
+      'type CommandName = "init" | "status" | "extensions" | "daemon";',
+      "",
+      "async function cmdExtensions(action: string, rest: string[]) {",
+      "  switch (action) {",
+      '    case "list":',
+      '      console.log("list");',
+      "      break;",
+      '    case "reload": {',
+      "      // No-op stub reserved for future caching",
+      '      console.log("Extension cache reloaded (no-op: caching not yet implemented).");',
+      "      break;",
+      "    }",
+      "    default:",
+      "      break;",
+      "  }",
+      "}",
+      "",
+      "async function main() {",
+      "  const [command, ...rest] = process.argv.slice(2);",
+      "  switch (command as CommandName) {",
+      '    case "init":',
+      "      break;",
+      '    case "extensions":',
+      "      await cmdExtensions(rest[0], rest.slice(1));",
+      "      break;",
+      "    default:",
+      "      break;",
+      "  }",
+      "}",
+      "",
+      "main();",
+    ].join("\n"),
+  );
+
+  const coreCliDir = path.join(root, "packages", "remnic-core", "src");
+  mkdirSync(coreCliDir, { recursive: true });
+  writeFileSync(
+    path.join(coreCliDir, "cli.ts"),
+    [
+      'const cmd = program.command("engram");',
+      'cmd.command("doctor").description("Run diagnostics").action(async () => {});',
+      'cmd.command("recall").description("Run recall").action(async () => {});',
+      'cmd.command("tier").description("Tier ops").action(async () => {});',
+    ].join("\n"),
+  );
+
+  // Stub publisher (claude-code): all-false capabilities.
+  const pubDir = path.join(root, "packages", "remnic-core", "src", "memory-extension");
+  mkdirSync(pubDir, { recursive: true });
+  // Stub publisher (claude-code): all-false capabilities.
+  writeFileSync(
+    path.join(pubDir, "claude-code-publisher.ts"),
+    [
+      "interface PublisherCapabilities {}",
+      'export class ClaudeCodeMemoryExtensionPublisher {',
+      '  readonly hostId = "claude-code";',
+      "  static readonly capabilities: PublisherCapabilities = {",
+      "    instructionsMd: false,",
+      "    skillsFolder: false,",
+      "    citationFormat: false,",
+      "    readPathTemplate: false,",
+      "  };",
+      "}",
+    ].join("\n"),
+  );
+
+  // Real publisher (codex): some-true capabilities — not gated.
+  writeFileSync(
+    path.join(pubDir, "codex-publisher.ts"),
+    [
+      "interface PublisherCapabilities {}",
+      'export class CodexMemoryExtensionPublisher {',
+      '  readonly hostId = "codex";',
+      "  static readonly capabilities: PublisherCapabilities = {",
+      "    instructionsMd: true,",
+      "    skillsFolder: false,",
+      "    citationFormat: true,",
+      "    readPathTemplate: true,",
+      "  };",
+      "}",
+    ].join("\n"),
+  );
+
+  // Honest stub-publisher doc (no automation claims in install section).
+  const pluginDocsDir = path.join(root, "docs", "plugins");
+  mkdirSync(pluginDocsDir, { recursive: true });
+  writeFileSync(
+    path.join(pluginDocsDir, "claude-code.md"),
+    [
+      "# Claude Code Plugin",
+      "",
+      "## Install",
+      "",
+      "Three manual steps. The publisher is a stub — nothing is written for you.",
+      "",
+      "```bash",
+      "remnic init",
+      "```",
+      "",
+      "## Runtime",
+      "",
+      "Once set up, memory works in Claude Code sessions.",
+      "",
+    ].join("\n"),
+  );
+
+  // A doc with a registered fenced invocation (green path).
+  const docsDir = path.join(root, "docs");
+  writeFileSync(
+    path.join(docsDir, "guide.md"),
+    [
+      "# Guide",
+      "",
+      "```bash",
+      "remnic status",
+      "remnic doctor",
+      "remnic extensions list",
+      "```",
+      "",
+      "Prose mention of remnic recall should not be checked (outside a fence).",
+      "",
+    ].join("\n"),
+  );
+
+  // Package README with a registered fenced invocation.
+  const pkgDir = path.join(root, "packages", "plugin-claude-code");
+  mkdirSync(pkgDir, { recursive: true });
+  writeFileSync(
+    path.join(pkgDir, "README.md"),
+    [
+      "# plugin-claude-code",
+      "",
+      "```bash",
+      "remnic init",
+      "```",
+      "",
+    ].join("\n"),
+  );
+
+  return root;
+}
+
+function withFixture(fn) {
+  const root = makeBaseFixture();
+  try {
+    fn(root);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// ── Green path ─────────────────────────────────────────────────────────────
+
+test("base fixture passes — all commands resolve, stub is honest, no-op tracked", () => {
+  withFixture((root) => {
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /\[docs-parity\] OK/);
+    assert.match(result.stdout, /4 documented command\(s\) resolve/);
+    assert.match(result.stdout, /1 no-op\(s\) tracked/);
+    assert.match(result.stdout, /1 stub publisher\(s\) honest/);
+  });
+});
+
+// ── Gate (a): nonexistent documented command ───────────────────────────────
+test("a documented command that is not registered fails the check", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "docs", "bogus.md"),
+      [
+        "# Bogus",
+        "",
+        "```bash",
+        "remnic nonexistent-command --flag",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /documented command "remnic nonexistent-command" is not registered/);
+    assert.match(result.stderr, /bogus\.md/);
+  });
+});
+
+test("prose mention of a bogus command outside a fenced block does NOT fail", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "docs", "prose.md"),
+      [
+        "# Prose",
+        "",
+        "You could try `remnic totally-bogus` but it does not exist.",
+        "",
+        "    remnic indented-but-not-fenced",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+// ── Gate (b): automation claim for stub publisher ──────────────────────────
+
+test("an automation phrase in a stub publisher's install section fails", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "docs", "plugins", "claude-code.md"),
+      [
+        "# Claude Code Plugin",
+        "",
+        "## Install",
+        "",
+        "The installer automatically configures everything for you.",
+        "",
+        "```bash",
+        "remnic init",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /stub publisher "claude-code"/);
+    assert.match(result.stderr, /automation phrase "automatically"/);
+  });
+});
+
+test("an automation phrase outside the install section does NOT fail", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "docs", "plugins", "claude-code.md"),
+      [
+        "# Claude Code Plugin",
+        "",
+        "## Install",
+        "",
+        "Manual only. The publisher is a stub.",
+        "",
+        "## Runtime",
+        "",
+        "Once installed, the daemon automatically recalls context.",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test("a real publisher (some-true capabilities) is NOT gated", () => {
+  withFixture((root) => {
+    // Codex has instructionsMd: true — it may claim automation.
+    writeFileSync(
+      path.join(root, "docs", "plugins", "codex.md"),
+      [
+        "# Codex Plugin",
+        "",
+        "## Install",
+        "",
+        "The installer automatically writes instructions.md and configures MCP.",
+        "",
+        "```bash",
+        "remnic init",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+// ── Gate (c): unlisted no-op ───────────────────────────────────────────────
+
+test("a no-op handler not in the allowlist fails the check", () => {
+  withFixture((root) => {
+    // Add a new no-op handler to the CLI that is NOT in NO_OP_ALLOWLIST.
+    const cliPath = path.join(root, "packages", "remnic-cli", "src", "index.ts");
+    const original = `async function main() {`;
+    const withExtra = `async function cmdSync(action: string) {\n  switch (action) {\n    case "watch":\n      // No-op stub: not yet implemented\n      break;\n    default:\n      break;\n  }\n}\n\n${original}`;
+    let src = readFileSyncSafe(cliPath);
+    src = src.replace(original, withExtra);
+    writeFileSync(cliPath, src);
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /no-op handler "sync watch" is not in NO_OP_ALLOWLIST/);
+  });
+});
+
+test("a no-op handler that IS in the allowlist passes", () => {
+  withFixture((root) => {
+    // The base fixture already has "extensions reload" as a no-op, and the
+    // script seeds it in NO_OP_ALLOWLIST. Verify it passes.
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /1 no-op\(s\) tracked/);
+  });
+});
+
+// ── Command discovery from both CLI files ──────────────────────────────────
+
+test("commands registered in remnic-core/src/cli.ts via .command() are recognized", () => {
+  withFixture((root) => {
+    // "doctor", "recall", "tier" come from cli.ts. Add them to a doc.
+    writeFileSync(
+      path.join(root, "docs", "core-commands.md"),
+      [
+        "# Core Commands",
+        "",
+        "```bash",
+        "remnic recall",
+        "remnic tier",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+// ── Misc ────────────────────────────────────────────────────────────────────
+
+test("unknown arguments are rejected with usage", () => {
+  withFixture((root) => {
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT, "--bogus"],
+      {
+        encoding: "utf8",
+        env: { ...process.env, REMNIC_DOCS_PARITY_ROOT: root },
+      },
+    );
+    assert.equal(result.status, 2);
+    assert.match(result.stderr, /unknown argument/);
+    assert.match(result.stderr, /--help/);
+  });
+});
+
+test("--help prints usage and exits 0", () => {
+  withFixture((root) => {
+    const result = spawnSync(
+      process.execPath,
+      [SCRIPT, "--help"],
+      {
+        encoding: "utf8",
+        env: { ...process.env, REMNIC_DOCS_PARITY_ROOT: root },
+      },
+    );
+    assert.equal(result.status, 0);
+    assert.match(result.stdout, /docs-code parity check/);
+    assert.match(result.stdout, /REMNIC_DOCS_PARITY_ROOT/);
+  });
+});
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function readFileSyncSafe(p) {
+  return readFileSync(p, "utf8");
+}
