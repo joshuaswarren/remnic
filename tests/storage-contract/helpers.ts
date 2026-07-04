@@ -14,7 +14,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, access } from "node:fs/promises";
 import { chmodSync } from "node:fs";
 
 import type { PluginConfig, MemoryCategory } from "../../packages/remnic-core/src/types.js";
@@ -293,15 +293,23 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
     "skill",
     "procedure",
     "reasoning_trace",
+    "entity",
   ];
   const memoryEntries: PublicWriteSurfaceEntry[] = memoryCategories.map((category) => ({
     name: `writeMemory(${category})`,
     kind: "memory",
-    write: (storage) =>
-      storage.writeMemory(category, `contract-surface-${category}-body`, {
+    write: async (storage) => {
+      const id = await storage.writeMemory(category, `contract-surface-${category}-body`, {
         confidence: 0.85,
         tags: ["contract-surface"],
-      }),
+      });
+      // Verify persistence by reading back — a regression that returns an id
+      // without writing (or writes the wrong path) must fail here.
+      if (!(await storage.getMemoryById(id))) {
+        throw new Error(`writeMemory(${category}) did not persist a readable memory`);
+      }
+      return id;
+    },
   }));
 
   return [
@@ -335,21 +343,37 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
     {
       name: "writeArtifact",
       kind: "artifact",
-      write: (storage) =>
-        storage.writeArtifact("contract-surface-artifact-body", {
+      write: async (storage) => {
+        const id = await storage.writeArtifact("contract-surface-artifact-body", {
           artifactType: "fact",
           tags: ["contract-surface"],
-        }),
+        });
+        // No public read-by-id for artifacts; verify the file landed on disk
+        // at artifacts/<day>/<id>.md so a regression that returns an id
+        // without writing fails the surface test.
+        const day = new Date().toISOString().slice(0, 10);
+        await access(path.join(storage.dir, "artifacts", day, `${id}.md`));
+        return id;
+      },
     },
     {
       name: "writeEntity",
       kind: "entity",
-      write: (storage) =>
-        storage.writeEntity(
+      write: async (storage) => {
+        const slug = await storage.writeEntity(
           `Contract Surface Entity ${Date.now()}`,
           "person",
           ["contract-surface entity fact"],
-        ),
+        );
+        // writeEntity returns a slug (not a memory id); verify it appears in
+        // readEntities() so a regression that returns a slug without writing
+        // fails the surface test.
+        const entities = await storage.readEntities();
+        if (!entities.includes(slug)) {
+          throw new Error("writeEntity did not persist a readable entity");
+        }
+        return slug;
+      },
     },
     {
       name: "writeProfile",
@@ -369,12 +393,20 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
     {
       name: "writeQuestion",
       kind: "question",
-      write: (storage) =>
-        storage.writeQuestion(
+      write: async (storage) => {
+        const id = await storage.writeQuestion(
           "<question>contract-surface question?</question>",
           "surface",
           1,
-        ),
+        );
+        // Verify the question is readable so a regression that returns an id
+        // without writing fails the surface test.
+        const questions = await storage.readQuestions();
+        if (!questions.some((q) => q.id === id)) {
+          throw new Error("writeQuestion did not persist a readable question");
+        }
+        return id;
+      },
     },
     {
       name: "writeChunk",
@@ -386,10 +418,14 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
           { tags: ["contract-surface"] },
         );
         // Return the CHUNK id (`${parentId}-chunk-0`), not the parent id, so
-        // the catalog fitness test actually observes the chunk write — a
-        // regression that drops the chunk while the parent still persists
-        // would otherwise pass on a non-empty parent id.
-        return storage.writeChunk(parentId, 0, 1, "fact", "contract-surface chunk body");
+        // the catalog fitness test observes the chunk write — a regression
+        // that drops the chunk while the parent persists would otherwise pass
+        // on a non-empty parent id. Verify the chunk is readable too.
+        const chunkId = await storage.writeChunk(parentId, 0, 1, "fact", "contract-surface chunk body");
+        if (!(await storage.getMemoryById(chunkId))) {
+          throw new Error("writeChunk did not persist a readable chunk memory");
+        }
+        return chunkId;
       },
     },
   ];

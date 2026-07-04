@@ -28,7 +28,7 @@ import { enumeratePublicWriteSurface, withScratchStorage } from "./helpers.js";
  * writeSummary — write outside the memory catalog and are intentionally NOT
  * catalogued here; they are a separate surface.
  */
-const EXPECTED_SURFACE_COUNT = 18; // 12 writeMemory categories + updateMemoryFrontmatter + artifact + entity + profile + question + chunk
+const EXPECTED_SURFACE_COUNT = 19; // 13 writeMemory categories (incl. entity) + updateMemoryFrontmatter + artifact + entity(writeEntity) + profile + question + chunk
 
 test("surface catalog: enumeratePublicWriteSurface returns the locked count", () => {
   const surface = enumeratePublicWriteSurface();
@@ -101,6 +101,7 @@ test("surface catalog: writeMemory entries cover EVERY MemoryCategory (no catego
     "skill",
     "procedure",
     "reasoning_trace",
+    "entity",
   ];
   for (const cat of expectedCategories) {
     assert.ok(coveredCategories.has(cat), `MemoryCategory "${cat}" has no writeMemory surface entry`);
