@@ -187,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
     from transformers import (  # type: ignore  # noqa: E402
         AutoModelForSequenceClassification,
         AutoTokenizer,
+        DataCollatorWithPadding,
         Trainer,
         TrainingArguments,
     )
@@ -264,11 +265,13 @@ def main(argv: list[str] | None = None) -> int:
         model=model,
         args=training_args,
         train_dataset=train_tokenized,
-        eval_dataset=test_tokenized,
         # transformers 5.x API: ``processing_class`` (``tokenizer`` was removed
         # in 5.0). compute_metrics backs ``metric_for_best_model='f1'``.
+        # DataCollatorWithPadding pads per-batch (tokenize uses truncation
+        # only) so variable-length input_ids stack into a batch tensor.
         processing_class=tokenizer,
         compute_metrics=compute_metrics,
+        data_collator=DataCollatorWithPadding(tokenizer=tokenizer),
     )
     trainer.train()
 
