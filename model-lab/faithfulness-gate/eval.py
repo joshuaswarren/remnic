@@ -61,7 +61,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def require_eval_deps() -> None:
     """Lazy-import the eval stack; exit(2) with an install hint if missing."""
     missing: list[str] = []
-    for module in ("torch", "transformers", "sklearn"):
+    for module in ("torch", "transformers"):
         try:
             __import__(module)
         except ImportError:

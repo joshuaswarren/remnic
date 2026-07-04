@@ -113,7 +113,7 @@ def require_training_deps() -> None:
     crash — exit code 2 distinguishes it from a normal run failure.
     """
     missing: list[str] = []
-    for module in ("torch", "transformers", "datasets", "sklearn"):
+    for module in ("torch", "transformers", "datasets"):
         try:
             __import__(module)
         except ImportError:
@@ -230,12 +230,12 @@ def main(argv: list[str] | None = None) -> int:
         warmup_ratio=hyperparams.warmup_ratio,
         weight_decay=hyperparams.weight_decay,
         label_smoothing_factor=hyperparams.label_smoothing,
-        # transformers 4.44.2 API: ``evaluation_strategy`` (renamed to
-        # ``eval_strategy`` only in 4.46). Reproducibility comes from ``seed``
-        # + ``data_seed``; ``deterministic``/``full_determinism`` is omitted to
-        # avoid torch deterministic-algorithm errors on some CUDA ops (the
-        # manifest captures exact versions for full reproduction).
-        evaluation_strategy="epoch",
+        # transformers 5.x API: ``eval_strategy`` (``evaluation_strategy`` was
+        # removed in 5.0). Reproducibility comes from ``seed`` + ``data_seed``;
+        # ``deterministic``/``full_determinism`` is omitted to avoid torch
+        # deterministic-algorithm errors on some CUDA ops (the manifest captures
+        # exact versions for full reproduction).
+        eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="f1",
@@ -249,9 +249,9 @@ def main(argv: list[str] | None = None) -> int:
         args=training_args,
         train_dataset=split["train"],
         eval_dataset=split["test"],
-        # transformers 4.44.2 API: ``tokenizer`` (renamed to ``processing_class``
-        # only in 4.46). compute_metrics backs ``metric_for_best_model='f1'``.
-        tokenizer=tokenizer,
+        # transformers 5.x API: ``processing_class`` (``tokenizer`` was removed
+        # in 5.0). compute_metrics backs ``metric_for_best_model='f1'``.
+        processing_class=tokenizer,
         compute_metrics=compute_metrics,
     )
     trainer.train()
