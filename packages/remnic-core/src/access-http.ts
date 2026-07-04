@@ -1331,6 +1331,25 @@ export class EngramAccessHttpServer {
       return;
     }
 
+    if (req.method === "POST" && pathname === "/engram/v1/coding/decisions") {
+      // Migrated through the access boundary (issue #1525/#1548): the
+      // registry entry owns schema validation and service dispatch. HTTP
+      // resolves the request principal; the boundary re-validates the
+      // cleaned envelope. No write-quota hook — decision records are not
+      // rate-limited writes.
+      const body = await this.readJsonBody(req);
+      const op = getOperation("coding_decision");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: coding_decision");
+      }
+      const output = (await op.run(body, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      })) as { result: unknown };
+      this.respondJson(res, 200, output.result);
+      return;
+    }
+
     if (req.method === "POST" && pathname === "/engram/v1/suggestions") {
       const body = await this.readValidatedBody(req, "suggestionSubmit");
       const request = {

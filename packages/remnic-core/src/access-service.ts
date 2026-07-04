@@ -13,6 +13,11 @@ import {
   projectTagProjectId,
   resolveCodingNamespaceOverlay,
 } from "./coding/coding-namespace.js";
+import {
+  handleCodingDecision,
+  type DecisionSurfaceRequest,
+  type DecisionSurfaceResponse,
+} from "./coding/decision-surfaces.js";
 import { WorkStorage } from "./work/storage.js";
 import {
   exportWorkBoardMarkdown,
@@ -4401,6 +4406,25 @@ export class EngramAccessService {
     };
   }
 
+  /**
+   * Thin delegate — handler logic in coding/decision-surfaces.ts (#1548 PR2).
+   * All three surfaces (MCP/HTTP/CLI) arrive here via the boundary operation.
+   */
+  async codingDecision(
+    request: DecisionSurfaceRequest,
+  ): Promise<DecisionSurfaceResponse> {
+    return handleCodingDecision(request, {
+      codingKnowledge: this.orchestrator.config.codingKnowledge,
+      codingMode: this.orchestrator.config.codingMode,
+      defaultNamespace: this.orchestrator.config.defaultNamespace,
+      getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
+      resolveReadableNamespace: (ns) => this.resolveReadableNamespace(ns),
+      getStorage: (ns) => this.orchestrator.getStorage(ns),
+      recordCatalogWrite: (dir) => this.orchestrator.recordCatalogWrite(dir, dir),
+      throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+    });
+  }
+
   async memoryBrowse(
     request: EngramAccessMemoryBrowseRequest = {},
   ): Promise<EngramAccessMemoryBrowseResponse> {
@@ -8274,3 +8298,4 @@ export class EngramAccessService {
     });
   }
 }
+

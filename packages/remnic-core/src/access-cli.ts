@@ -14,7 +14,7 @@ import "./access-operations.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
-type CommandName = "browse" | "store";
+type CommandName = "browse" | "store" | "decision";
 
 type ParsedArgs = {
   command: CommandName;
@@ -133,9 +133,9 @@ function writeCliOutput(text: string = ""): void {
 
 function usage(): string {
   return [
-    "Usage:",
     "  engram-access browse [options]",
     "  engram-access store [options]",
+    "  engram-access decision [options]",
     "",
     "Browse options:",
     "  --namespace <name>",
@@ -160,6 +160,19 @@ function usage(): string {
     "  --source-reason <text>",
     "  --idempotency-key <key>",
     "  --dry-run",
+    "",
+    "Decision options:",
+    "  --subcommand <list|get|record|supersede>",
+    "  --namespace <name>",
+    "  --session-key <key>",
+    "  --principal <principal>",
+    "  --id <id> (get/supersede)",
+    "  --title <title> (record/supersede)",
+    "  --status <proposed|accepted|superseded|rejected> (record)",
+    "  --context <text> (record/supersede)",
+    "  --decision <text> (record/supersede)",
+    "  --consequences <text> (record/supersede)",
+    "  --entity-ref <ref> (repeatable)",
   ].join("\n");
 }
 
@@ -194,8 +207,23 @@ const COMMAND_SPECS: Record<CommandName, CommandSpec> = {
     ]),
     flagOptions: new Set(["dry-run"]),
   },
+  decision: {
+    valueOptions: new Set([
+      "subcommand",
+      "namespace",
+      "session-key",
+      "principal",
+      "id",
+      "title",
+      "status",
+      "context",
+      "decision",
+      "consequences",
+      "entity-ref",
+    ]),
+    flagOptions: new Set(),
+  },
 };
-
 const BROWSE_SORT_VALUES = Object.freeze([
   "updated_desc",
   "updated_asc",
@@ -207,7 +235,7 @@ type BrowseSort = (typeof BROWSE_SORT_VALUES)[number];
 
 function parseArgs(argv: string[]): ParsedArgs {
   const [commandRaw, ...rest] = argv;
-  if (commandRaw !== "browse" && commandRaw !== "store") {
+  if (commandRaw !== "browse" && commandRaw !== "store" && commandRaw !== "decision") {
     throw new UsageError("unsupported-command");
   }
   const spec = COMMAND_SPECS[commandRaw];
@@ -466,6 +494,39 @@ function expandOptionalPath(value: string | undefined): string | undefined {
   return value === undefined ? undefined : expandTildePath(value);
 }
 
+/**
+ * Decision-record surface (issue #1548 Track A PR 2). Dispatches through the
+ * same `coding_decision` operation as the MCP tool and HTTP route — one
+ * validation boundary, three transports.
+ */
+async function runDecision(args: ParsedArgs, preferredId?: string): Promise<void> {
+  const subcommand = requireOption(args, "subcommand");
+  const { config, service } = buildRuntime(preferredId);
+  const op = getOperation("coding_decision");
+  if (!op) {
+    throw new Error("access-boundary: operation not registered: coding_decision");
+  }
+  const output = (await op.run(
+    {
+      subcommand,
+      namespace: getLastOption(args, "namespace"),
+      sessionKey: getLastOption(args, "session-key"),
+      id: getLastOption(args, "id"),
+      title: getLastOption(args, "title"),
+      status: getLastOption(args, "status"),
+      context: getLastOption(args, "context"),
+      decision: getLastOption(args, "decision"),
+      consequences: getLastOption(args, "consequences"),
+      entityRefs: getAllOptions(args, "entity-ref"),
+    },
+    {
+      service,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
+    },
+  )) as { result: unknown };
+  console.log(JSON.stringify(output.result, null, 2));
+}
+
 export async function main(
   argv: string[] = process.argv.slice(2),
   options: AccessCliOptions = {},
@@ -473,6 +534,10 @@ export async function main(
   const args = parseArgs(argv);
   if (args.command === "browse") {
     await runBrowse(args, options.preferredId);
+    return;
+  }
+  if (args.command === "decision") {
+    await runDecision(args, options.preferredId);
     return;
   }
   await runStore(args, options.preferredId);
