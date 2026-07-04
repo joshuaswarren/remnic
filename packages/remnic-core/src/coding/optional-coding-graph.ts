@@ -32,24 +32,29 @@
 //   dynamic-import result through the local shape (validated at runtime
 //   via a structural check, not via TS) so the base install compiles.
 //
-// Failure-mode policy (Bugbot P1/P2/P3 review iterations on #1588):
-//   - Missing optional package → install hint (loadCodingGraphEngineFactory throws).
-//   - Present-but-broken optional package (transitive dep missing,
-//     loader error, etc.) → underlying error rethrows on the
-//     loadFactory path (real diagnostic on a fresh attempt).
-//   - Probe / try* paths never throw; a broken install resolves to
-//     `null`/`false`. They use an in-flight promise slot so concurrent
-//     callers share the same import attempt.
-//   - Three cache slots, kept strictly separate:
-//     (a) `cachedLoadResult` — the resolved module after a SUCCESSFUL
-//         loadFactory call. Read by both loadFactory and tryLoad.
-//     (b) `inFlightProbe` — the Promise of the current (or most recent)
-//         probe attempt. Shared between concurrent probe callers.
-//     (c) (no "broken install" cache) — a probe failure is NOT cached
-//         into the loadFactory path; loadFactory ALWAYS re-attempts on
-//         a fresh call so users see the real diagnostic on broken
-//         installs, never a stale install hint (Cursor Bugbot P2 round
-//         3 + round 4).
+// Failure-mode policy:
+//   - Missing optional package → install hint (loadCodingGraphEngineFactory
+//     throws the canonical user-facing message).
+//   - Present-but-mismatched install (the optional package resolves to a
+//     module that does not satisfy the structural contract) →
+//     `module_load_failed` Error on the loadFactory path; probe paths
+//     return null with no throw (graceful degradation). User sees a
+//     real diagnostic telling them the install is broken — NOT the
+//     "npm install @remnic/coding-graph" install hint, which would
+//     mislead users into re-installing a package that is already there.
+//   - Present-but-broken install (transitive dep missing, loader
+//     fault, etc.) → underlying import error is rethrown on the
+//     loadFactory path; probe paths swallow and return null.
+//   - Three separate cache slots, kept strictly disjoint:
+//     (a) `cachedLoadResult` — successful-module cache, read by both
+//         loadFactory and tryLoad. Never populated on missing or
+//         broken installs (preserves the "users see the real
+//         diagnostic" invariant).
+//     (b) `inFlightProbe` — in-flight promise slot shared by concurrent
+//         probe callers; cleared once settled.
+//     (c) (No "absent result" cache.) loadFactory ALWAYS attempts a
+//         fresh import on a fresh call — never serves a stale
+//         decision from a previous attempt.
 
 import {
   CODING_GRAPH_ENGINE_VERSION,
@@ -85,25 +90,17 @@ interface LoadedCodingGraphModule {
   ) => CodingGraphEngine;
 }
 
-// ---------------------------------------------------------------------------
-// Cache slots — three, kept strictly separate.
-//
-// (a) `cachedLoadResult` — ONLY populated on a SUCCESSFUL loadFactory.
-//     Read on subsequent loadFactory AND tryLoad calls. Never set on
-//     a broken-install or missing-install path (Cursor Bugbot P2
-//     round 3: probe-poisoned-loader).
-//
-// (b) `inFlightProbe` — the Promise of an in-flight probe attempt.
-//     Concurrent probe callers await the same promise (Cursor Bugbot
-//     P2 round 4: concurrent-probe-race). Cleared once settled; a
-//     fresh probe after that starts a new import attempt.
-//
-// (c) (no "broken install" cache) — loadFactory ALWAYS re-attempts
-//     fresh imports so users see the real diagnostic on broken
-//     installs. Only the SUCCESS path is cached.
-// ---------------------------------------------------------------------------
-let cachedLoadResult: LoadedCodingGraphModule | null | undefined;
-let inFlightProbe: Promise<LoadedCodingGraphModule | null> | null = null;
+/**
+ * Outcome of a single import attempt. The probe path collapses
+ * "missing" and "incompatible" into `null` (graceful degradation);
+ * the loader path distinguishes the two so users get an accurate
+ * diagnostic instead of a misleading install hint on a broken install.
+ */
+type ImportAttemptOutcome =
+  | { readonly kind: "ok"; readonly module: LoadedCodingGraphModule }
+  | { readonly kind: "missing" }
+  | { readonly kind: "incompatible"; readonly actual: unknown }
+  | { readonly kind: "broken"; readonly cause: unknown };
 
 /**
  * Build the user-facing install hint message. Exported so tests can assert
@@ -119,6 +116,30 @@ export function buildCodingGraphInstallHint(): string {
     "Or add it to a project (pnpm / yarn):\n" +
     "  pnpm add @remnic/coding-graph\n" +
     "  yarn add @remnic/coding-graph\n"
+  );
+}
+
+function notInstalledError(): Error {
+  return new Error(buildCodingGraphInstallHint());
+}
+
+/**
+ * Build the present-but-incompatible diagnostic. The user has the
+ * package installed but it does not satisfy the structural contract;
+ * "npm install @remnic/coding-graph" would NOT help them (the package
+ * is already there). Tell them to reinstall or open an issue.
+ */
+function incompatibleModuleError(actual: unknown): Error {
+  const keys =
+    actual && typeof actual === "object"
+      ? Object.keys(actual).slice(0, 8).join(", ") || "(none)"
+      : typeof actual;
+  return new Error(
+    "`@remnic/coding-graph` is present but its module shape does not match " +
+      "the expected contract. The installed build may be stale, broken, or " +
+      "from an incompatible version. Try reinstalling it " +
+      "(`npm install --force @remnic/coding-graph`) or pinning to a known " +
+      `working version. Detected exports: ${keys}.`,
   );
 }
 
@@ -158,10 +179,6 @@ export function isSpecifierNotFoundErrorForCodingGraph(
   return boundaryRegex.test(message);
 }
 
-function notInstalledError(): Error {
-  return new Error(buildCodingGraphInstallHint());
-}
-
 /**
  * Narrow a dynamic import result to the local LoadedCodingGraphModule
  * shape via a runtime structural check (never inline-as casting).
@@ -181,15 +198,18 @@ function isLoadedCodingGraphModule(value: unknown): value is LoadedCodingGraphMo
 }
 
 /**
- * Imports the optional package and returns the resolved module, or null
- * if the package is missing (vs. broken — broken imports throw).
+ * Single import attempt. Returns a tagged-outcome object so callers
+ * can distinguish "not installed" from "incompatible build" from
+ * "broken transitive dep" — each gets its own diagnostic on the
+ * user-facing path.
  *
- * Never reads from the cache; the calling function decides whether to
- * consult the cache first.
+ * Never reads from any cache; the calling function decides whether
+ * to consult the success cache first.
  */
-async function tryImportCodingGraphModule(): Promise<LoadedCodingGraphModule | null> {
+async function tryImportCodingGraphModule(): Promise<ImportAttemptOutcome> {
   // The dynamic `import()` with a runtime-concatenated specifier is the
   // documented à-la-carte loader pattern. See file header.
+  let mod: unknown;
   try {
     // Cast through `unknown` is justified here: the dynamic import below
     // is the LOADING BOUNDARY between core (no compile-time dependency on
@@ -197,29 +217,34 @@ async function tryImportCodingGraphModule(): Promise<LoadedCodingGraphModule | n
     // package whose shape we have documented locally. We validate the
     // structural shape before using any of the cast fields, so the cast
     // asserts the boundary, not specific fields.
-    const mod = (await import(SPECIFIER)) as unknown;
-    if (!isLoadedCodingGraphModule(mod)) {
-      return null;
-    }
-    return mod;
+    mod = (await import(SPECIFIER)) as unknown;
   } catch (err) {
     if (isSpecifierNotFoundErrorForCodingGraph(err)) {
-      return null;
+      return { kind: "missing" };
     }
-    // Non-specifier error (broken transitive dep, loader fault, etc.) —
-    // rethrow so the user-facing loader path can surface the diagnostic.
-    throw err;
+    // Non-specifier error (broken transitive dep, loader fault, etc.)
+    // is wrapped so the loader can surface the diagnostic on a fresh
+    // attempt and the probe path can still swallow.
+    return { kind: "broken", cause: err };
   }
+  if (!isLoadedCodingGraphModule(mod)) {
+    return { kind: "incompatible", actual: mod };
+  }
+  return { kind: "ok", module: mod };
 }
 
 /**
  * Load `@remnic/coding-graph` if installed and return its
- * `createCodingGraphEngine` factory. Throws a user-facing install hint
- * when the package is absent. Reuses the cached success path so
- * repeated calls in the same process do not re-import. On success the
- * resolved module is cached and shared with the try* helpers; a broken
- * install never poisons the cache so each call attempts a fresh
- * import (Cursor Bugbot P3 round 5).
+ * `createCodingGraphEngine` factory. Throws a user-facing diagnostic
+ * that distinguishes three failure modes:
+ *   - missing    → install hint (canonical "npm install ..." message).
+ *   - incompatible → "package shape mismatch" diagnostic.
+ *   - broken     → rethrows the original import error.
+ *
+ * Reuses the cached success path so repeated calls in the same
+ * process do not re-import. On success the resolved module is cached
+ * and shared with the try* helpers; a failure never poisons the cache
+ * so each call attempts a fresh import.
  */
 export async function loadCodingGraphEngineFactory(): Promise<
   (options?: CreateCodingGraphEngineOptions) => CodingGraphEngine
@@ -236,12 +261,20 @@ export async function loadCodingGraphEngineFactory(): Promise<
   }
   // Fresh attempt — never inherited from a probe failure. Users see
   // the real diagnostic on broken installs.
-  const result = await tryImportCodingGraphModule();
-  if (!result) {
-    throw notInstalledError();
+  const outcome = await tryImportCodingGraphModule();
+  switch (outcome.kind) {
+    case "ok":
+      cachedLoadResult = outcome.module;
+      return outcome.module.createCodingGraphEngine;
+    case "missing":
+      throw notInstalledError();
+    case "incompatible":
+      throw incompatibleModuleError(outcome.actual);
+    case "broken":
+      throw outcome.cause instanceof Error
+        ? outcome.cause
+        : new Error(`@remnic/coding-graph failed to load: ${String(outcome.cause)}`);
   }
-  cachedLoadResult = result;
-  return result.createCodingGraphEngine;
 }
 
 /**
@@ -249,23 +282,26 @@ export async function loadCodingGraphEngineFactory(): Promise<
  * await the same in-flight import (Cursor Bugbot P2 round 4).
  * Successful results are also written into `cachedLoadResult` so a
  * SUBSEQUENT loadCodingGraphEngineFactory skips the import (the
- * success-cache fast path above).
+ * success-cache fast path above). All non-ok outcomes (missing,
+ * incompatible, broken) are collapsed to `null` so the probe stays
+ * boolean-safe for gate-off consumers.
  */
 function startProbeOnce(): Promise<LoadedCodingGraphModule | null> {
   if (inFlightProbe !== null) {
     return inFlightProbe;
   }
   const p = tryImportCodingGraphModule()
-    .then((mod) => {
-      if (mod !== null) {
-        cachedLoadResult = mod;
+    .then((outcome) => {
+      if (outcome.kind === "ok") {
+        cachedLoadResult = outcome.module;
+        return outcome.module;
       }
-      return mod as LoadedCodingGraphModule | null;
+      return null;
     })
     .catch(() => {
-      // Broken install — keep probe boolean-safe (returns null) and DO
-      // NOT touch cachedLoadResult. Loader can still re-attempt on a
-      // fresh call.
+      // Defensive: tryImportCodingGraphModule does not reject in
+      // practice (we wrap all throws), but a future refactor could
+      // regress it — keep the probe boolean-safe.
       return null as LoadedCodingGraphModule | null;
     });
   inFlightProbe = p;
@@ -280,12 +316,17 @@ function startProbeOnce(): Promise<LoadedCodingGraphModule | null> {
   return p;
 }
 
+// ---------------------------------------------------------------------------
+// Cache slots — see file header for the failure-mode policy that justifies
+// these being three separate slots.
+// ---------------------------------------------------------------------------
+let cachedLoadResult: LoadedCodingGraphModule | null | undefined;
+let inFlightProbe: Promise<LoadedCodingGraphModule | null> | null = null;
+
 /**
  * Return `true` only when `@remnic/coding-graph` is installed AND
- * importable. Returns `false` for either a missing package or a broken
- * install. Never throws — callers using this as a safe gate-off probe
- * do not need try/catch. Broken-install diagnostics surface through
- * `loadCodingGraphEngineFactory()` instead.
+ * importable in a usable shape. Returns `false` for missing, broken,
+ * or incompatible installs. Never throws.
  */
 export async function isCodingGraphInstalled(): Promise<boolean> {
   return (await tryLoadCodingGraphModule()) !== null;
@@ -293,10 +334,8 @@ export async function isCodingGraphInstalled(): Promise<boolean> {
 
 /**
  * Return the engine factory module if `@remnic/coding-graph` is
- * installed, or `null` if it is not. Use this for graceful-degradation
- * code paths. A malformed install resolves to `null` here without
- * throwing — broken-install reporting lives on
- * `loadCodingGraphEngineFactory()`.
+ * installed AND importable in a usable shape, or `null` otherwise.
+ * Use this for graceful-degradation code paths. Never throws.
  *
  * Uses an in-flight-promise slot so concurrent callers share the same
  * import attempt, then caches the successful result so subsequent
