@@ -254,7 +254,7 @@ test("resolveNamespaceCatalogEnabled: merged false (different from schema defaul
   );
 });
 
-test("resolveNamespaceCatalogEnabled: raw opt-out wins over merged true", () => {
+test("resolveNamespaceCatalogEnabled: runtime (merged) value wins over raw file value", () => {
   assert.equal(
     resolveNamespaceCatalogEnabled(true, { namespaceCatalogEnabled: false }),
     true,
