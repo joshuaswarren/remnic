@@ -307,6 +307,22 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
   return [
     ...memoryEntries,
     {
+      name: "updateMemoryFrontmatter",
+      kind: "memory",
+      write: async (storage) => {
+        const id = await storage.writeMemory(
+          "fact",
+          "contract-surface frontmatter parent",
+          { tags: ["contract-surface"] },
+        );
+        const ok = await storage.updateMemoryFrontmatter(id, { confidence: 0.5 });
+        if (!ok) {
+          throw new Error("updateMemoryFrontmatter returned false for a just-written memory");
+        }
+        return id;
+      },
+    },
+    {
       name: "writeArtifact",
       kind: "artifact",
       write: (storage) =>

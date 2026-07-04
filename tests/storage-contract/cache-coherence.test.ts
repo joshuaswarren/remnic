@@ -33,6 +33,32 @@ test("cache coherence: instance B (fresh, same dir) sees a memory written via in
   });
 });
 
+test("cache coherence: instance B with a primed empty cache sees A's later write (stale-empty invalidation)", async () => {
+  await withScratchDir("cache-stale-empty", async (dir) => {
+    const a = new StorageManager(dir);
+    await a.ensureDirectories();
+    const b = new StorageManager(dir);
+    await b.ensureDirectories();
+
+    // Prime B's cache with an EMPTY snapshot BEFORE A writes anything. The
+    // regression this guards: writeMemory stops invalidating an already-cached
+    // empty snapshot, so B would keep serving a stale [] after A writes.
+    const empty = await b.readAllMemories();
+    assert.equal(empty.length, 0, "store is empty before A writes");
+
+    // A writes — this must invalidate the baseDir-keyed cache so B does not
+    // serve the stale empty snapshot it just cached.
+    const id = await a.writeMemory("fact", "fact A writes after B primed empty", {
+      confidence: 0.9,
+    });
+
+    const seen = await b.getMemoryById(id);
+    assert.ok(seen, "B must see A's write despite having cached an empty snapshot first");
+    const all = await b.readAllMemories();
+    assert.equal(all.length, 1, "B readAllMemories must reflect A's write (stale-empty invalidation)");
+  });
+});
+
 test("cache coherence: invalidateMemory on A is reflected on a fresh B", async () => {
   await withScratchDir("cache-cross-invalidate", async (dir) => {
     const a = new StorageManager(dir);

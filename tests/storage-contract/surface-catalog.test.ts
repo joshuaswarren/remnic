@@ -17,20 +17,25 @@ import assert from "node:assert/strict";
 import { enumeratePublicWriteSurface, withScratchStorage } from "./helpers.js";
 
 /**
- * The LOCKED surface count. When a new public write entry point lands on
- * StorageManager, add it to `enumeratePublicWriteSurface` (helpers.ts) and
- * bump this number. A new write path that bypasses the enumerator silently
- * bypasses #1522's catalog-touch fitness check — this test makes that silent
- * bypass a loud failure.
+ * The LOCKED count of CATALOGUED memory-content write entry points — the
+ * surface #1522's catalog-touch fitness test guards. When a new memory write
+ * lands on StorageManager, add it to `enumeratePublicWriteSurface` (helpers.ts)
+ * and bump this number so a new write path cannot silently bypass #1522's
+ * fitness check.
+ *
+ * NOTE: this enumerates MEMORY-CONTENT writes (files under the memory store
+ * that #1522's chokepoint records). State/summary JSON writes — saveBuffer,
+ * writeSummary — write outside the memory catalog and are intentionally NOT
+ * catalogued here; they are a separate surface.
  */
-const EXPECTED_SURFACE_COUNT = 17; // 12 writeMemory categories + artifact + entity + profile + question + chunk
+const EXPECTED_SURFACE_COUNT = 18; // 12 writeMemory categories + updateMemoryFrontmatter + artifact + entity + profile + question + chunk
 
 test("surface catalog: enumeratePublicWriteSurface returns the locked count", () => {
   const surface = enumeratePublicWriteSurface();
   assert.equal(
     surface.length,
     EXPECTED_SURFACE_COUNT,
-    `public write surface drifted: expected ${EXPECTED_SURFACE_COUNT}, got ${surface.length}. ` +
+    `catalogued memory-content write surface drifted: expected ${EXPECTED_SURFACE_COUNT}, got ${surface.length}. ` +
       "Add the new write entry point to enumeratePublicWriteSurface in tests/storage-contract/helpers.ts " +
       "so #1522's catalog-touch fitness test covers it, then bump EXPECTED_SURFACE_COUNT.",
   );
@@ -68,7 +73,10 @@ test("surface catalog: every entry's write() persists against a fresh store", as
 
 test("surface catalog: writeMemory entries cover EVERY MemoryCategory (no category silently untested)", async () => {
   const surface = enumeratePublicWriteSurface();
-  const memoryEntries = surface.filter((e) => e.kind === "memory");
+  // Only the per-category `writeMemory(<category>)` entries assert category
+  // coverage — other memory-kind writes (e.g. updateMemoryFrontmatter) are
+  // not category writes and must not be forced into this shape.
+  const memoryEntries = surface.filter((e) => /^writeMemory\((.+)\)$/.test(e.name));
   const coveredCategories = new Set(
     memoryEntries.map((e) => {
       // name shape: "writeMemory(<category>)"

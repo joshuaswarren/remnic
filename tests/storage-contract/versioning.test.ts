@@ -95,6 +95,25 @@ test("versioning: disabled by default — writeMemory does NOT snapshot when no 
   });
 });
 
+test("versioning: disabled by default — an overwrite (two writeProfile calls) creates NO snapshot when no config is set", async () => {
+  await withScratchStorage("versioning-disabled-overwrite", async (storage, dir) => {
+    // No setVersioningConfig — versioning stays disabled. Two writeProfile
+    // calls hit the SAME path; if versioning were accidentally enabled by
+    // default, snapshotBeforeWrite would capture "first" on the second call.
+    // (writeMemory mints a fresh path and can never overwrite, so only an
+    // overwrite-in-place can detect an accidental default enablement.)
+    await storage.writeProfile("# Profile\n\nfirst\n");
+    const profilePath = path.join(storage.dir, "profile.md");
+    await storage.writeProfile("# Profile\n\nsecond\n");
+    const history = await listVersions(profilePath, enabledConfig(dir), dir);
+    assert.equal(
+      history.versions.length,
+      0,
+      "versioning must be disabled until setVersioningConfig is called — overwrite produced no snapshot",
+    );
+  });
+});
+
 test("versioning: createVersion is monotonic — versionIds increase 1, 2, 3, ...", async () => {
   await withScratchDir("versioning-monotonic", async (dir) => {
     const cfg = enabledConfig(dir);
