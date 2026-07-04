@@ -219,27 +219,21 @@ test("HTTP handler source routes match the catalog (static completeness)", () =>
     new URL("./access-http.ts", import.meta.url),
     "utf-8",
   );
+  const lines = httpSource.split("\n");
 
+  // --- Phase 1: pathname-level extraction (catches missing pathnames) -------
   const sourcePaths = new Set<string>();
 
-  // Strategy 1: pathname === "/engram/v1/..." (also captures /remnic/ aliases
-  // and bare /v1/ routes like /v1/citations/observed).
   for (const m of httpSource.matchAll(
     /pathname\s*===\s*"((?:\/engram|\/remnic|\/v1)\/[^"]+)"/g,
   )) {
     sourcePaths.add(m[1]!.replace(/^\/remnic\//, "/engram/"));
   }
-
-  // Strategy 2: pathname.startsWith("/engram/v1/.../")  — prefix route.
-  // The trailing / means a path segment follows → normalize to /:id.
   for (const m of httpSource.matchAll(
     /pathname\.startsWith\("((?:\/engram)\/v1\/[^"]+\/)"/g,
   )) {
     sourcePaths.add(m[1]!.replace(/\/$/, "") + "/:id");
   }
-
-  // Strategy 3: regex-literal routes — /^\/engram\/v1\/.../.exec(pathname)
-  // and pathname.match(/^\/engram\/v1\/.../).
   const normalizeRegexRoute = (src: string): string =>
     src.replace(/\\\//g, "/").replace(/\(\[\^\/\]\+\)/g, ":id");
   for (const m of httpSource.matchAll(/\/\^(.+?)\$\/g?\.(?:exec|test)\(pathname\)/g)) {
@@ -255,7 +249,6 @@ test("HTTP handler source routes match the catalog (static completeness)", () =>
     }
   }
 
-  // Filter out infrastructure routes that carry no user request envelope.
   const INFRA = [
     /^\/engram\/v1\/health$/,
     /^\/engram\/v1\/adapters$/,
@@ -268,17 +261,86 @@ test("HTTP handler source routes match the catalog (static completeness)", () =>
     .sort();
 
   const catalogPaths = new Set(HTTP_ROUTES.map((r) => r.pathname));
-
   const missingFromCatalog = servicePaths.filter(
     (p) => !catalogPaths.has(p),
   );
-
   assert.deepEqual(
     missingFromCatalog,
     [],
     `HTTP routes found in access-http.ts but missing from HTTP_ROUTES catalog.\n` +
       `Add each to access-surface-catalog.ts with operation: null (or migrate it).\n` +
       `Missing:\n${missingFromCatalog.map((p) => `  ${p}`).join("\n")}`,
+  );
+
+  // --- Phase 2: (method, pathname) tuple extraction (catches missing methods)
+  // For each exact-match route, scan backward up to 5 lines for the HTTP method.
+  // For dynamic routes, scan forward up to 40 lines for method checks inside the block.
+  const sourceTuples = new Set<string>();
+  const isServicePath = (p: string) =>
+    !INFRA.some((re) => re.test(p));
+
+  for (let i = 0; i < lines.length; i++) {
+    const pathMatch = lines[i]!.match(
+      /pathname\s*===\s*"((?:\/engram|\/remnic|\/v1)\/[^"]+)"/,
+    );
+    if (pathMatch) {
+      const pathname = pathMatch[1]!.replace(/^\/remnic\//, "/engram/");
+      if (!isServicePath(pathname)) continue;
+      // Scan backward for the method declaration.
+      for (let j = i; j >= Math.max(0, i - 5); j--) {
+        const mMatch = lines[j]!.match(/req\.method\s*===\s*"(\w+)"/);
+        if (mMatch) {
+          sourceTuples.add(`${mMatch[1]} ${pathname}`);
+          break;
+        }
+      }
+    }
+  }
+  // Dynamic routes: scan forward for method checks.
+  for (const m of httpSource.matchAll(
+    /(?:\/\^(.+?)\$\/g?\.(?:exec|test)\(pathname\)|pathname\.match\(\/\^(.+?)\$\/g?\)|pathname\.startsWith\("((?:\/engram)\/v1\/[^"]+)"\))/g,
+  )) {
+    const raw = m[1] ?? m[2] ?? m[3];
+    if (!raw) continue;
+    let pathname: string;
+    if (m[3]) {
+      pathname = m[3].replace(/\/$/, "") + "/:id";
+    } else {
+      pathname = normalizeRegexRoute(raw!);
+    }
+    if (!pathname.startsWith("/engram/v1/") || !isServicePath(pathname)) continue;
+    const matchIndex = httpSource.indexOf(m[0]);
+    const matchLine = httpSource.slice(0, matchIndex).split("\n").length;
+    // Scan forward for method checks inside the route block.
+    for (let j = matchLine; j < Math.min(lines.length, matchLine + 40); j++) {
+      // Stop at the next route block.
+      if (j > matchLine && /pathname\s*===\s*"|pathname\.startsWith\(|\/\^.*\$\/g?\.(?:exec|test)\(pathname\)|pathname\.match\(/.test(lines[j]!)) {
+        break;
+      }
+      const methodMatch = lines[j]!.match(/req\.method\s*===\s*"(\w+)"/);
+      if (methodMatch) {
+        sourceTuples.add(`${methodMatch[1]} ${pathname}`);
+      }
+      // Also handle negated checks: `req.method !== "GET"` → the route IS GET.
+      const negMethodMatch = lines[j]!.match(/req\.method\s*!==\s*"(\w+)"/);
+      if (negMethodMatch && j === matchLine) {
+        sourceTuples.add(`${negMethodMatch[1]} ${pathname}`);
+      }
+    }
+  }
+
+  const catalogTuples = new Set(
+    HTTP_ROUTES.map((r) => `${r.method} ${r.pathname}`),
+  );
+  const missingTuples = [...sourceTuples]
+    .filter((t) => !catalogTuples.has(t))
+    .sort();
+  assert.deepEqual(
+    missingTuples,
+    [],
+    `HTTP (method, pathname) tuples found in access-http.ts but missing from HTTP_ROUTES.\n` +
+      `Add each to access-surface-catalog.ts.\n` +
+      `Missing:\n${missingTuples.map((t) => `  ${t}`).join("\n")}`,
   );
 });
 
