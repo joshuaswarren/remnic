@@ -69,7 +69,7 @@ CLI binary providing:
 - `remnic token generate|list|revoke` — auth token management
 - `remnic init|status|query|doctor|config` — setup and diagnostics
 - `remnic onboard|curate|review|sync|dedup` — memory operations
-- `remnic spaces|tree|bench` — workspace and benchmarking
+- `remnic space|tree|bench` — workspace and benchmarking
 
 ### @remnic/plugin-openclaw
 

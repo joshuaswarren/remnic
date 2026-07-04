@@ -154,7 +154,7 @@ else
 fi
 ext_dir="$agent_dir/extensions/remnic"
 [ -f "$ext_dir/remnic.config.json" ] || {
-  echo "No remnic extension at $ext_dir — run: remnic connectors install omp" >&2
+  echo "Extension not installed at $ext_dir — run: remnic connectors install omp" >&2
   exit 1
 }
 cd "$ext_dir"

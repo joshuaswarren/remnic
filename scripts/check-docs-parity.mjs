@@ -1,0 +1,795 @@
+#!/usr/bin/env node
+/**
+ * Docs-code parity check (issue #1527 PR2, epic #1520).
+ *
+ * Fails when user-facing docs drift from the CLI or from host-publisher
+ * reality. Three gates, all pure static analysis (no daemon, no network —
+ * CI runs it cold, see #1518):
+ *
+ *   (a) Command existence — every `remnic <subcommand>` invocation extracted
+ *       from fenced code blocks in docs/ and every packages README.md must resolve
+ *       to a command registered in the CLI. Until #1532 ships a registrar
+ *       table, registration is discovered by grepping the command-definition
+ *       strings in packages/remnic-cli/src/index.ts (the `CommandName` union
+ *       and `case "..."` dispatch) and packages/remnic-core/src/cli.ts
+ *       (`.command("...")` calls). See TODO_REGISTRY below.
+ *
+ *   (b) Stub-honesty — a memory-extension publisher whose
+ *       `PublisherCapabilities` static declares no capabilities (all-false,
+ *       i.e. a stub) may not have install-section docs claiming automation
+ *       ("installs the plugin", "configures MCP", "automatically"). The
+ *       host→doc mapping is maintained in STUB_PUBLISHER_DOCS below. This is
+ *       the #1518 class: docs that promise an install the publisher cannot
+ *       deliver.
+ *
+ *   (c) No-op allowlist — a CLI handler that is a reserved no-op stub must be
+ *       explicitly listed in NO_OP_ALLOWLIST below WITH a tracking-issue
+ *       number. A silent unlisted no-op is exactly what #1518 hit
+ *       (`extensions reload`). The script detects no-op handlers by scanning
+ *       for the marker phrases that label them in the CLI source.
+ *
+ * Same conventions as check-ratchets.mjs: Node stdlib only, cross-platform,
+ * REMNIC_DOCS_PARITY_ROOT is a test seam (absolute path to a fake repo root).
+ * Wired into pr-preflight.sh and the CI quality job.
+ */
+
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
+import process from "node:process";
+import { fileURLToPath } from "node:url";
+
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ROOT = process.env.REMNIC_DOCS_PARITY_ROOT
+  ? path.resolve(process.env.REMNIC_DOCS_PARITY_ROOT)
+  : path.resolve(SCRIPT_DIR, "..");
+
+// TODO_REGISTRY (#1532): once the CLI registrar table lands, import it and
+// replace collectRegisteredCommands() with a direct lookup. The current
+// approach scans two CLI surfaces (see CLI_FILES below); #1532 unifies them
+// behind a single registrar that both the standalone binary and the plugin
+// runtime read from.
+
+// The `remnic` command surface spans TWO registration sites, and this gate
+// deliberately merges both — they are the same user-facing CLI:
+//
+//   1. Standalone binary (packages/remnic-cli/src/index.ts): dispatches via
+//      a `switch (command as CommandName)` on the `CommandName` type union.
+//      Covers init, status, query, daemon, bench, … (34 top-level commands).
+//
+//   2. Plugin-runtime commander (packages/remnic-core/src/cli.ts): the
+//      `registerCli` export registers a commander tree rooted at the `engram`
+//      parent (`const cmd = program.command("engram")`). Its top-level
+//      children — `secure-store`, `recall`, `tier`, `backup`, `patterns`, …
+//      — are the commands the OpenClaw gateway exposes and that the
+//      standalone binary wires case-by-case (some are not yet wired into
+//      the switch; that dispatch gap is a code-level issue tracked by #1532,
+//      not a docs-parity defect).
+//
+// Merging is required: 10 documented commands (secure-store, recall, tier,
+// backup, console, dreams, patterns, peer, purge, recall-explain) exist ONLY
+// in surface 2. Scoping the gate to surface 1 alone would flag all 10 as
+// drift, contradicting long-standing docs and the CLI's own error messages
+// (e.g. index.ts says "Run `remnic secure-store unlock` to decrypt"). The
+// gate verifies that a documented `remnic <cmd>` is REGISTERED in at least
+// one surface — not that every surface dispatches it.
+const CLI_FILES = [
+  "packages/remnic-cli/src/index.ts",
+  "packages/remnic-core/src/cli.ts",
+];
+
+const SKIPPED_DIR_NAMES = new Set([
+  "node_modules",
+  "dist",
+  ".git",
+  ".turbo",
+  "target",
+]);
+
+// Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
+// from inside fences — NOT from inline code spans (`remnic <cmd>`) in
+// prose, tables, or list items. Inline code in this repo references
+// multiple command surfaces that cannot be distinguished syntactically:
+// the CLI (`remnic space`), MCP tools (`remnic memory get`), OpenClaw
+// plugin session toggles (`remnic off`/`on`/`clear`/`flush`), and
+// planned features in design docs (`remnic chat`, `remnic restore`).
+// Scanning all inline code would flag the latter three as drift even
+// though they are legitimate non-CLI references. Fenced blocks are the
+// authoritative "this is a real command you can run" signal. (PR #1601
+// review: codex P2 asked to scan table examples; the false-positive
+// analysis across 25 inline-code sites showed this is unreliable
+// without semantic context — see commit message for the breakdown.)
+const FENCE_OPEN_RE = /^(\s*)(`{3,}|~{3,})/;
+// Match `remnic <subcommand>` anywhere in a fenced shell line, not just at
+// the start — handles both direct invocations (`remnic init`) and
+// package-manager wrappers (`pnpm --filter @remnic/cli exec remnic init`).
+// The `\b` ensures we don't match inside paths like `packages/remnic-cli`.
+const REMNIC_TOKEN_RE = /\bremnic\s+([A-Za-z][A-Za-z0-9:_-]*)/g;
+
+// Automation phrases a stub publisher cannot back. Scoped to install sections
+// only so that an honest runtime-behavior description ("once installed, the
+// daemon automatically recalls ...") is not a false positive — the gate is
+// about install-time claims, not runtime behaviour.
+const STUB_AUTOMATION_PHRASES = [
+  "installs the plugin",
+  "configures mcp",
+  "automatically",
+];
+
+// Section headings that describe the install flow. Phrases are checked only
+// within these sections.
+const INSTALL_HEADING_RE = /^#{1,6}\s*(install|installation|setup|quick\s*start|getting\s*started|prerequisites)\b/i;
+
+// No-op handler markers — the phrases the codebase uses to label a reserved
+// stub. If a handler body contains one of these AND the command is not in
+// NO_OP_ALLOWLIST, the check fails.
+const NO_OP_MARKER_RE = /\b(no-op stub|no-op:|not yet implemented|caching not yet implemented)\b/i;
+
+// Host ID → docs whose install sections are gated when the corresponding
+// publisher is a stub. Maintain the mapping here (issue #1527 PR2 spec:
+// "Maintain the host→doc mapping in the script").
+const STUB_PUBLISHER_DOCS = {
+  "claude-code": [
+    "docs/plugins/claude-code.md",
+    "packages/plugin-claude-code/README.md",
+  ],
+  hermes: [
+    "docs/plugins/hermes.md",
+    "packages/plugin-hermes/README.md",
+  ],
+};
+
+// Explicitly accepted no-op commands. Each entry MUST reference a tracking
+// issue explaining why the no-op is reserved. Seed: `extensions reload`
+// (issue #1518 — "caching not yet implemented").
+/** @type {Record<string, string>} */
+const NO_OP_ALLOWLIST = {
+  "extensions reload": "#1518",
+};
+
+// ── File walking ───────────────────────────────────────────────────────────
+
+function toPosix(p) {
+  return p.split(path.sep).join("/");
+}
+
+function isMarkdown(name) {
+  return name.endsWith(".md");
+}
+
+/** Recursively list .md files under dir, returning repo-relative posix paths. */
+function walkMarkdown(dir) {
+  const out = [];
+  if (!existsSync(dir)) return out;
+  const entries = readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isSymbolicLink()) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (!SKIPPED_DIR_NAMES.has(entry.name)) {
+        out.push(...walkMarkdown(full));
+      }
+    } else if (entry.isFile() && isMarkdown(entry.name)) {
+      out.push(full);
+    }
+  }
+  return out;
+}
+
+function collectDocFiles() {
+  const docsDir = path.join(ROOT, "docs");
+  const packagesDir = path.join(ROOT, "packages");
+  const files = [];
+
+  // docs/**.md
+  for (const f of walkMarkdown(docsDir)) {
+    files.push(toPosix(path.relative(ROOT, f)));
+  }
+  // Root README.md — the primary user-facing doc. Contains many fenced
+  // `remnic` examples (install, quick-start, connectors) that a docs/
+  // -only scan would miss (codex thread PR #1601).
+  const rootReadme = path.join(ROOT, "README.md");
+  if (existsSync(rootReadme) && statSync(rootReadme).isFile()) {
+    files.push("README.md");
+  }
+
+  // packages/*/README.md (top-level package readmes only)
+  if (existsSync(packagesDir)) {
+    for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const readme = path.join(packagesDir, entry.name, "README.md");
+      if (existsSync(readme) && statSync(readme).isFile()) {
+        files.push(toPosix(path.relative(ROOT, readme)));
+      }
+    }
+  }
+
+  // De-dup + sort for stable output.
+  return [...new Set(files)].sort();
+}
+
+// ── Fenced-block extraction ────────────────────────────────────────────────
+
+/**
+ * Iterate fenced code blocks in markdown source, calling back with the text
+ * inside each fence. Handles ``` and ~~~ fences and ignores fences nested
+ * inside blockquotes (the > ``` form) only when the fence markers don't line
+ * up — the common case in this repo is plain top-level fences.
+ *
+ * @param {string} src
+ * @returns {Array<{ text: string; startLine: number; lang: string }>}
+ */
+function extractFencedBlocks(src) {
+  const lines = src.split("\n");
+  const blocks = [];
+  let i = 0;
+  while (i < lines.length) {
+    const openMatch = lines[i].match(FENCE_OPEN_RE);
+    if (!openMatch) {
+      i++;
+      continue;
+    }
+    const indent = openMatch[1];
+    const marker = openMatch[2][0];
+    const markerLen = openMatch[2].length;
+    // Info string: the text after the fence marker (e.g. ```bash → "bash").
+    const infoStr = lines[i].slice(openMatch[0].length).trim().split(/\s+/)[0] ?? "";
+    const closeRe = new RegExp(`^${indent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(${marker}{${markerLen},})\\s*$`);
+    const startLine = i + 1; // 1-indexed line of the fence opener
+    const bodyLines = [];
+    i++;
+    while (i < lines.length) {
+      if (closeRe.test(lines[i])) {
+        i++;
+        break;
+      }
+      bodyLines.push(lines[i]);
+      i++;
+    }
+    blocks.push({ text: bodyLines.join("\n"), startLine, lang: infoStr });
+  }
+  return blocks;
+}
+
+/**
+ * Extract `remnic <subcommand>` invocations from fenced code blocks only.
+ * Returns a list of { file, line, subcommand, full } entries. `subcommand`
+ * is the first token after `remnic` (e.g. "connectors" from
+ * "remnic connectors install codex-cli"), because the parity check is against
+ * top-level command registration.
+ *
+ * @param {string} relPath
+ * @param {string} src
+ * @returns {Array<{ file: string; line: number; subcommand: string; full: string }>}
+ */
+function extractRemnicInvocations(relPath, src) {
+  const blocks = extractFencedBlocks(src);
+  const out = [];
+  // Only scan shell-like or untagged blocks. Fenced diagrams (mermaid),
+  // data formats (json, yaml, toml), and prose-like blocks (text, md)
+  // can mention `remnic <word>` without being a CLI invocation.
+  const SHELL_LANGS = new Set([
+    "",
+    "bash",
+    "sh",
+    "shell",
+    "shell-session",
+    "zsh",
+    "console",
+    "bat",
+    "powershell",
+    "ps1",
+  ]);
+  for (const block of blocks) {
+    if (!SHELL_LANGS.has(block.lang)) continue;
+    const lines = block.text.split("\n");
+    for (let j = 0; j < lines.length; j++) {
+      const raw = lines[j];
+      // Skip comment lines — `# remnic is the CLI` is not an invocation.
+      if (/^\s*#/.test(raw)) continue;
+      // Find all `remnic <subcommand>` occurrences in the line (handles
+      // wrapped invocations like `pnpm ... exec remnic init`).
+      REMNIC_TOKEN_RE.lastIndex = 0;
+      let m;
+      while ((m = REMNIC_TOKEN_RE.exec(raw)) !== null) {
+        const subcommand = m[1];
+        out.push({
+          file: relPath,
+          // +1 because startLine is the fence opener; the first body line
+          // is startLine+1. +j for the offset within the block.
+          line: block.startLine + 1 + j,
+          subcommand,
+          full: raw.trim(),
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// ── Registered-command discovery (TODO: replace with #1532 registrar) ─────
+
+// remnic-cli/src/index.ts: the authoritative top-level set is the
+// `CommandName` type union. We extract ONLY that one type declaration's
+// body (from `type CommandName =` to its terminating `;`) before
+// scanning — otherwise sibling unions in the same file
+// (`type DaemonAction = "start" | "stop" | "install" | …`,
+// `type TokenAction`, `type ReviewAction`, …) leak their members into
+// the registered set and mask drift like a `remnic install` docs typo.
+// We deliberately do NOT scan bare `case "X":` labels either — those
+// include nested subcommand arms inside `cmd<X>` handlers.
+const COMMAND_NAME_TYPE_RE = /type\s+CommandName\s*=\s*([\s\S]*?);/;
+const QUOTED_MEMBER_RE = /"([A-Za-z][A-Za-z0-9:_-]*)"/g;
+
+// remnic-core/src/cli.ts: the commander tree is rooted at `cmd` (the
+// `engram` parent, assigned once at
+// `const cmd = program.command("engram")`). Top-level subcommands are
+// registered as `cmd.command("X")` — NOT `tierCmd.command("X")` or
+// other sub-commander variables. The `\bcmd\b` word boundary is
+// case-sensitive, so it matches the variable `cmd` but not `tierCmd`,
+// `namespacesCmd`, `secureStoreCmd`, etc. (those use a capital `C`).
+//
+// Commander allows required/optional args INSIDE the command string, e.g.
+// `cmd.command("memory-timeline <memoryId>")` or
+// `cmd.command("consolidate-undo <target>")`. The capture group stops at the
+// first whitespace so only the command NAME is recorded; the optional
+// `(?:\s+[<\[][^"]*)?` then absorbs any ` <arg>` / ` [arg]` placeholders
+// before the closing quote. Without this, three real top-level commands
+// (memory-timeline, review-disposition, consolidate-undo) were silently
+// dropped from the registered set, and any future doc of
+// `remnic memory-timeline` would false-positive as drift (codex P2 thread PR #1601).
+const CORE_TOP_LEVEL_RE = /\bcmd\b\s*\.\s*command\(\s*"([A-Za-z][A-Za-z0-9:_-]*)(?:\s+[<\[][^"]*)?"\s*\)/g;
+
+/**
+ * Collect the set of registered top-level command names from both CLI files.
+ *
+ * CONTRACT — this gate verifies REGISTRATION, not DISPATCH. A documented
+ * `remnic <cmd>` passes if the command is registered in EITHER CLI surface
+ * (the standalone binary's `CommandName` union OR the core plugin-runtime
+ * commander tree). See the CLI_FILES comment above for why both are merged.
+ *
+ * For remnic-cli/src/index.ts, extracts the `type CommandName = …;` body
+ * and scans only that — the authoritative top-level set. Sibling union
+ * types in the same file are excluded so that `remnic install` (a docs
+ * typo) is not masked by `type DaemonAction = … | "install" | …`, and
+ * nested `case "install":` labels inside `cmdDaemon` are excluded too.
+ *
+ * For remnic-core/src/cli.ts, uses only `.command("X")` calls whose
+ * receiver is the `cmd` (engram parent) variable — grandchild commands
+ * like `tierCmd.command("list")` are excluded.
+ *
+ * @param {string[]} cliFiles — repo-relative posix paths
+ * @returns {Set<string>}
+ */
+function collectRegisteredCommands(cliFiles) {
+  const commands = new Set();
+  for (const rel of cliFiles) {
+    const abs = path.join(ROOT, ...rel.split("/"));
+    if (!existsSync(abs)) continue;
+    const src = readFileSync(abs, "utf8");
+    // remnic-cli: scope to the CommandName type body only.
+    const typeMatch = src.match(COMMAND_NAME_TYPE_RE);
+    if (typeMatch) {
+      const body = typeMatch[1];
+      QUOTED_MEMBER_RE.lastIndex = 0;
+      let m;
+      while ((m = QUOTED_MEMBER_RE.exec(body)) !== null) {
+        commands.add(m[1]);
+      }
+    }
+    // remnic-core: top-level cmd.command("X") registrations.
+    let m;
+    CORE_TOP_LEVEL_RE.lastIndex = 0;
+    while ((m = CORE_TOP_LEVEL_RE.exec(src)) !== null) {
+      commands.add(m[1]);
+    }
+  }
+  return commands;
+}
+
+// ── No-op handler detection ────────────────────────────────────────────────
+
+/**
+ * Scan CLI source for no-op handler markers and return the set of
+ * "command path" strings (e.g. "extensions reload") whose handler contains a
+ * no-op label.
+ *
+ * Two CLI styles are handled:
+ *  - remnic-cli/src/index.ts — `async function cmd<X>(...)` enclosing a
+ *    `switch` with `case "Y":` arms. The no-op path is `<kebab(X)> <Y>`.
+ *    When no function context is found, falls back to the bare case label.
+ *  - remnic-core/src/cli.ts — commander `.command()` registrations. The
+ *    path is built by resolving receiver variables
+ *    (`const tierCmd = cmd.command("tier"); tierCmd.command("list")` →
+ *    "tier list"), with the "engram" gateway-prefix root dropped.
+ *
+ * The detection is intentionally conservative: it only flags handlers that
+ * explicitly label themselves as no-ops (`No-op stub`, `no-op:`,
+ * `not yet implemented`). A genuinely empty handler without a marker is
+ * invisible to static analysis and is caught at review time.
+ *
+ * @param {string[]} cliFiles
+ * @returns {Set<string>} detected no-op command paths
+ */
+function detectNoOpHandlers(cliFiles) {
+  const detected = new Set();
+
+  const FUNC_RE = /(?:async\s+)?function\s+cmd([A-Z][A-Za-z0-9]*)\s*\(/;
+  const CASE_RE = /^\s*case\s+"([A-Za-z][A-Za-z0-9:_-]*)"\s*:/;
+
+  /** Convert a PascalCase function-name suffix to the CLI command name
+   *  (e.g. `Extensions` → `extensions`, `ConnectorsMarketplace` →
+   *  `connectors-marketplace`). */
+  function pascalToKebab(p) {
+    return p
+      .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+      .replace(/([A-Z]+)([A-Z][a-z])/g, "$1-$2")
+      .toLowerCase();
+  }
+
+  for (const rel of cliFiles) {
+    const abs = path.join(ROOT, ...rel.split("/"));
+    if (!existsSync(abs)) continue;
+    const src = readFileSync(abs, "utf8");
+    const lines = src.split("\n");
+
+    // ── Pass 1: function-scoped case dispatch (remnic-cli style) ──────
+    // Tracks brace depth so funcKebab is cleared when the function's
+    // closing brace is reached. Without this, a no-op marker in a LATER
+    // function (e.g. main()'s top-level switch) would be mis-attributed
+    // to the stale funcKebab of an already-closed cmd<X> handler.
+    let funcName = null; // current cmd<X> suffix, e.g. "Extensions"
+    let funcKebab = null; // kebab form, e.g. "extensions"
+    let currentCase = null;
+    let depth = 0; // running brace depth across the file
+    let funcDepth = null; // depth inside the current cmd<X> function body
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const opens = (line.match(/{/g) || []).length;
+      const closes = (line.match(/}/g) || []).length;
+
+      // Function entry — remember the cmd<Name> suffix for path building.
+      const funcMatch = line.match(FUNC_RE);
+      if (funcMatch) {
+        funcName = funcMatch[1];
+        funcKebab = pascalToKebab(funcName);
+        currentCase = null;
+        // The body opens at depth + opens (after this line's `{`s).
+        funcDepth = depth + opens;
+      }
+
+      depth += opens - closes;
+
+      // If we've closed back out of the cmd<X> function, clear its scope.
+      if (funcDepth !== null && depth < funcDepth) {
+        funcKebab = null;
+        currentCase = null;
+        funcDepth = null;
+      }
+
+      // Case label inside the function's switch.
+      const caseMatch = line.match(CASE_RE);
+      if (caseMatch) {
+        currentCase = caseMatch[1];
+      }
+
+      // No-op marker — attribute to the current scope.
+      if (NO_OP_MARKER_RE.test(line)) {
+        if (funcKebab && currentCase) {
+          detected.add(`${funcKebab} ${currentCase}`);
+        } else if (currentCase) {
+          detected.add(currentCase);
+        }
+      }
+    }
+
+    // ── Pass 2: commander-style `.command()` registrations (cli.ts) ───
+    // Resolve receiver variables to build correct parent→child paths. The
+    // cli.ts tree expresses nesting via receiver variables, and the
+    // receiver often sits on the line above the `.command()` call. The
+    // earlier rolling-chain heuristic kept "engram" as a permanent root
+    // and mis-attributed grandchildren (e.g. `tier list` → "engram
+    // list"), so an allowlist entry could miss a real stub (cursor
+    // thread PR #1601). The "engram" gateway-prefix root is dropped so
+    // paths match the allowlist format ("tier list", not "engram tier list").
+    /** @type {Map<string, string[]>} commander var → full path (incl. root) */
+    const varPath = new Map();
+    let prevReceiver = null; // receiver var on the prior line (multi-line chain)
+    let pendingAssign = null; // var assigned in a multi-line `const X = recv`
+    let currentCmdPath = null; // most recent .command() path (root dropped)
+
+    const dropRoot = (p) => (p.length > 0 && p[0] === "engram" ? p.slice(1) : p);
+    // Tolerate <arg>/[arg] placeholders inside the command string (same
+    // fix as CORE_TOP_LEVEL_RE on the registration side).
+    const PH = '(?:\\s+[<\\[][^"]*)?';
+    const RE_ASSIGN_INLINE = new RegExp(`(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*([A-Za-z_$][\\w$]*)\\s*\\.\\s*command\\(\\s*"([A-Za-z][A-Za-z0-9:_-]*)${PH}"\\s*\\)`);
+    const RE_CALL_INLINE = new RegExp(`(?:^|[^.\\w$])([A-Za-z_$][\\w$]*)\\s*\\.\\s*command\\(\\s*"([A-Za-z][A-Za-z0-9:_-]*)${PH}"\\s*\\)`);
+    const RE_TAIL = new RegExp(`^\\.\\s*command\\(\\s*"([A-Za-z][A-Za-z0-9:_-]*)${PH}"\\s*\\)`);
+    const RE_ASSIGN_HEAD = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)$/;
+    const RE_BARE_VAR = /^([A-Za-z_$][\w$]*)$/;
+
+    for (let i = 0; i < lines.length; i++) {
+      const stripped = lines[i].trim();
+
+      let receiver = null;
+      let leaf = null;
+      let assignVar = null;
+
+      const aInline = stripped.match(RE_ASSIGN_INLINE);
+      const cInline = !aInline ? stripped.match(RE_CALL_INLINE) : null;
+      const tail = !aInline && !cInline ? stripped.match(RE_TAIL) : null;
+
+      if (aInline) {
+        assignVar = aInline[1];
+        receiver = aInline[2];
+        leaf = aInline[3];
+      } else if (cInline) {
+        receiver = cInline[1];
+        leaf = cInline[2];
+      } else if (tail) {
+        leaf = tail[1];
+        receiver = prevReceiver;
+        assignVar = pendingAssign;
+      } else {
+        // Not a .command() line — record a pending receiver for a
+        // multi-line chain, or clear stale pending state.
+        const head = stripped.match(RE_ASSIGN_HEAD);
+        if (head) {
+          prevReceiver = head[2];
+          pendingAssign = head[1];
+        } else if (stripped.match(RE_BARE_VAR)) {
+          prevReceiver = stripped;
+          pendingAssign = null;
+        } else {
+          prevReceiver = null;
+          pendingAssign = null;
+        }
+      }
+
+      if (leaf !== null && receiver !== null) {
+        const parent = varPath.get(receiver) ?? [];
+        const full = [...parent, leaf];
+        if (assignVar) varPath.set(assignVar, full);
+        currentCmdPath = dropRoot(full);
+        prevReceiver = null;
+        pendingAssign = null;
+      }
+
+      if (NO_OP_MARKER_RE.test(lines[i]) && currentCmdPath && currentCmdPath.length > 0) {
+        detected.add(currentCmdPath.join(" "));
+      }
+    }
+  }
+  return detected;
+}
+
+// ── Stub-publisher capability scan ─────────────────────────────────────────
+
+const PUBLISHERS = [
+  "packages/remnic-core/src/memory-extension/claude-code-publisher.ts",
+  "packages/remnic-core/src/memory-extension/codex-publisher.ts",
+  "packages/remnic-core/src/memory-extension/hermes-publisher.ts",
+];
+
+// Extract the `static readonly capabilities = { ... }` object body, then
+// test each flag independently so stub detection is order-independent.
+// The earlier single-regex form required the four keys in a fixed
+// sequence, so reordering them (e.g. skillsFolder above instructionsMd)
+// silently disabled stub detection and the automation gate (codex P2
+// thread PR #1601).
+const CAPABILITIES_BLOCK_RE = /static\s+readonly\s+capabilities\s*:[\s\S]*?=\s*\{([\s\S]*?)\}/;
+const STUB_FLAG_KEYS = ["instructionsMd", "skillsFolder", "citationFormat", "readPathTemplate"];
+const HOST_ID_RE = /readonly\s+hostId\s*=\s*"([^"]+)"/;
+
+/**
+ * @returns {Map<string, { hostId: string; isStub: boolean; file: string }>}
+ */
+function collectPublishers() {
+  const out = new Map();
+  for (const rel of PUBLISHERS) {
+    const abs = path.join(ROOT, ...rel.split("/"));
+    if (!existsSync(abs)) continue;
+    const src = readFileSync(abs, "utf8");
+    const hostMatch = src.match(HOST_ID_RE);
+    if (!hostMatch) continue;
+    const hostId = hostMatch[1];
+    // A publisher is a stub when ALL four capability flags are false. Each
+    // flag is tested independently within the capability block so key
+    // order does not matter; a partial publisher (some true, some false)
+    // is not mis-flagged.
+    const blockMatch = src.match(CAPABILITIES_BLOCK_RE);
+    const body = blockMatch ? blockMatch[1] : "";
+    const allFalse = STUB_FLAG_KEYS.every((k) => new RegExp(`\\b${k}\\s*:\\s*false`).test(body));
+    out.set(hostId, { hostId, isStub: allFalse, file: rel });
+  }
+  return out;
+}
+
+// ── Install-section automation-phrase scan ─────────────────────────────────
+
+/**
+ * Extract the concatenated text of install sections from a markdown source.
+ * Sections are identified by INSTALL_HEADING_RE; the section extends from the
+ * heading to the next heading of the same or higher level (or EOF).
+ *
+ * @param {string} src
+ * @returns {Array<{ heading: string; text: string; startLine: number }>}
+ */
+function extractInstallSections(src) {
+  const lines = src.split("\n");
+  const sections = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!INSTALL_HEADING_RE.test(lines[i])) continue;
+    const headingMatch = lines[i].match(/^(#{1,6})/);
+    const level = headingMatch ? headingMatch[1].length : 1;
+    const heading = lines[i];
+    const startLine = i + 1;
+    const bodyLines = [];
+    i++;
+    while (i < lines.length) {
+      const nextHeading = lines[i].match(/^(#{1,6})\s/);
+      if (nextHeading && nextHeading[1].length <= level) break;
+      bodyLines.push(lines[i]);
+      i++;
+    }
+    sections.push({ heading, text: bodyLines.join("\n"), startLine });
+    i--; // compensate for outer loop's i++
+  }
+  return sections;
+}
+
+function findAutomationPhases(text) {
+  const lower = text.toLowerCase();
+  const hits = [];
+  // Negation window: if a negator is the last word-like token within 40
+  // chars before the phrase, the claim is being DENIED, not asserted
+  // (e.g. "does not automatically …", "does **not** automatically …").
+  // The `[^a-z0-9]*$` tail allows markdown emphasis/punctuation between
+  // the negator and the phrase boundary. Such honest disclaimers must
+  // not trip the stub-honesty gate.
+  const NEGATOR_RE = /\b(no|not|never|don'?t|doesn'?t|won'?t|cannot|can'?t|neither|nor|without)\b[^a-z0-9]*$/;
+  for (const phrase of STUB_AUTOMATION_PHRASES) {
+    let idx = lower.indexOf(phrase);
+    while (idx !== -1) {
+      const prefix = lower.slice(Math.max(0, idx - 40), idx);
+      if (!NEGATOR_RE.test(prefix)) {
+        hits.push({ phrase, idx });
+      }
+      idx = lower.indexOf(phrase, idx + 1);
+    }
+  }
+  return hits;
+}
+
+// ── Main ───────────────────────────────────────────────────────────────────
+
+function usage() {
+  return [
+    "Usage: node scripts/check-docs-parity.mjs [--help]",
+    "",
+    "  Static docs-code parity check (#1527 PR2). Verifies every",
+    "  `remnic <subcommand>` in docs fenced code blocks resolves to a",
+    "  registered CLI command; gates automation claims in stub-publisher",
+    "  install docs; rejects unlisted no-op commands. No flags beyond --help.",
+    "",
+    "  REMNIC_DOCS_PARITY_ROOT — test seam (absolute path to fake repo root).",
+  ].join("\n");
+}
+
+function fail(failures) {
+  console.error("[docs-parity] drift detected — docs and CLI are out of sync (#1527):");
+  for (const f of failures) {
+    console.error(`[docs-parity]   - ${f}`);
+  }
+  console.error(
+    "[docs-parity] fix the docs, the CLI, or — for a deliberate no-op — add to NO_OP_ALLOWLIST with a tracking issue.",
+  );
+  process.exit(1);
+}
+
+function main() {
+  const args = process.argv.slice(2);
+  const unknown = args.filter((a) => a !== "--help");
+  if (unknown.length > 0) {
+    console.error(`[docs-parity] ERROR: unknown argument(s): ${unknown.join(", ")}`);
+    console.error(usage());
+    process.exit(2);
+  }
+  if (args.includes("--help")) {
+    console.log(usage());
+    return;
+  }
+
+  const failures = [];
+
+  // (a) Command existence.
+  const registered = collectRegisteredCommands(CLI_FILES);
+  if (registered.size === 0) {
+    fail([
+      "no registered commands found — CLI_FILES resolved to nothing. " +
+        "Check that packages/remnic-cli/src/index.ts and packages/remnic-core/src/cli.ts exist under the scan root.",
+    ]);
+  }
+
+  const docFiles = collectDocFiles();
+  /** @type {Map<string, Array<{ file: string; line: number; subcommand: string; full: string }>>} */
+  const documented = new Map();
+  for (const rel of docFiles) {
+    const abs = path.join(ROOT, ...rel.split("/"));
+    const src = readFileSync(abs, "utf8");
+    const invocations = extractRemnicInvocations(rel, src);
+    for (const inv of invocations) {
+      const list = documented.get(inv.subcommand) ?? [];
+      list.push(inv);
+      documented.set(inv.subcommand, list);
+    }
+  }
+
+  for (const [subcommand, occs] of documented) {
+    if (registered.has(subcommand)) continue;
+    const first = occs[0];
+    failures.push(
+      `documented command "remnic ${subcommand}" is not registered in the CLI ` +
+        `(first occurrence: ${first.file}:${first.line}: \`${first.full}\`)`,
+    );
+  }
+
+  // (c) No-op allowlist. Detect no-op handlers in the CLI, then require every
+  // detected no-op to be in NO_OP_ALLOWLIST with a non-empty tracking issue.
+  const detectedNoOps = detectNoOpHandlers(CLI_FILES);
+  for (const cmd of detectedNoOps) {
+    if (!(cmd in NO_OP_ALLOWLIST)) {
+      failures.push(
+        `no-op handler "${cmd}" is not in NO_OP_ALLOWLIST — ` +
+          "add it with a tracking-issue number, or implement the handler",
+      );
+    }
+  }
+  for (const [cmd, issue] of Object.entries(NO_OP_ALLOWLIST)) {
+    if (!issue || !issue.trim()) {
+      failures.push(
+        `NO_OP_ALLOWLIST entry "${cmd}" is missing a tracking-issue reference`,
+      );
+    }
+  }
+
+  // (b) Stub-honesty. For each stub publisher, scan its mapped docs' install
+  // sections for automation phrases.
+  const publishers = collectPublishers();
+  for (const [hostId, info] of publishers) {
+    if (!info.isStub) continue;
+    const docs = STUB_PUBLISHER_DOCS[hostId] ?? [];
+    for (const rel of docs) {
+      const abs = path.join(ROOT, ...rel.split("/"));
+      if (!existsSync(abs)) continue;
+      const src = readFileSync(abs, "utf8");
+      const sections = extractInstallSections(src);
+      for (const section of sections) {
+        const hits = findAutomationPhases(section.text);
+        for (const hit of hits) {
+          failures.push(
+            `stub publisher "${hostId}" doc ${rel} (section "${section.heading.trim()}") ` +
+              `contains automation phrase "${hit.phrase}" — the publisher declares no capabilities`,
+          );
+        }
+      }
+    }
+  }
+
+  if (failures.length > 0) {
+    fail(failures);
+  }
+
+  // Summary for green runs.
+  const docCommands = [...documented.keys()].sort();
+  console.log(
+    `[docs-parity] OK — ${docCommands.length} documented command(s) resolve; ` +
+      `${detectedNoOps.size} no-op(s) tracked; ` +
+      `${[...publishers.values()].filter((p) => p.isStub).length} stub publisher(s) honest.`,
+  );
+  if (docCommands.length > 0) {
+    console.log(`[docs-parity]   commands: ${docCommands.join(", ")}`);
+  }
+}
+
+main();
