@@ -571,7 +571,14 @@ const PUBLISHERS = [
   "packages/remnic-core/src/memory-extension/hermes-publisher.ts",
 ];
 
-const CAPABILITIES_FALSE_RE = /static\s+readonly\s+capabilities\s*:[\s\S]*?instructionsMd:\s*false[\s\S]*?skillsFolder:\s*false[\s\S]*?citationFormat:\s*false[\s\S]*?readPathTemplate:\s*false/s;
+// Extract the `static readonly capabilities = { ... }` object body, then
+// test each flag independently so stub detection is order-independent.
+// The earlier single-regex form required the four keys in a fixed
+// sequence, so reordering them (e.g. skillsFolder above instructionsMd)
+// silently disabled stub detection and the automation gate (codex P2
+// thread PR #1601).
+const CAPABILITIES_BLOCK_RE = /static\s+readonly\s+capabilities\s*:[\s\S]*?=\s*\{([\s\S]*?)\}/;
+const STUB_FLAG_KEYS = ["instructionsMd", "skillsFolder", "citationFormat", "readPathTemplate"];
 const HOST_ID_RE = /readonly\s+hostId\s*=\s*"([^"]+)"/;
 
 /**
@@ -586,10 +593,13 @@ function collectPublishers() {
     const hostMatch = src.match(HOST_ID_RE);
     if (!hostMatch) continue;
     const hostId = hostMatch[1];
-    // A publisher is a stub when ALL four capability flags are false. We
-    // require the full all-false literal block so a partial publisher (some
-    // true, some false) is not mis-flagged.
-    const allFalse = CAPABILITIES_FALSE_RE.test(src);
+    // A publisher is a stub when ALL four capability flags are false. Each
+    // flag is tested independently within the capability block so key
+    // order does not matter; a partial publisher (some true, some false)
+    // is not mis-flagged.
+    const blockMatch = src.match(CAPABILITIES_BLOCK_RE);
+    const body = blockMatch ? blockMatch[1] : "";
+    const allFalse = STUB_FLAG_KEYS.every((k) => new RegExp(`\\b${k}\\s*:\\s*false`).test(body));
     out.set(hostId, { hostId, isStub: allFalse, file: rel });
   }
   return out;

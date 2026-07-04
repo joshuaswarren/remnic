@@ -328,6 +328,48 @@ test("a real publisher (some-true capabilities) is NOT gated", () => {
   });
 });
 
+// Regression: a stub publisher with the same all-false capabilities but
+// REORDERED keys must still be detected as a stub. Before the
+// order-independent fix, the single-sequence regex missed reordered keys
+// and the automation gate was silently skipped (codex P2 thread PR #1601).
+test("a stub publisher with reordered capability keys is still gated", () => {
+  withFixture((root) => {
+    // Rewrite claude-code publisher with all-false values in a DIFFERENT
+    // order than the default (skillsFolder first, instructionsMd third).
+    writeFileSync(
+      path.join(root, "packages", "remnic-core", "src", "memory-extension", "claude-code-publisher.ts"),
+      [
+        "interface PublisherCapabilities {}",
+        'export class ClaudeCodeMemoryExtensionPublisher {',
+        '  readonly hostId = "claude-code";',
+        "  static readonly capabilities: PublisherCapabilities = {",
+        "    skillsFolder: false,",
+        "    readPathTemplate: false,",
+        "    instructionsMd: false,",
+        "    citationFormat: false,",
+        "  };",
+        "}",
+      ].join("\n"),
+    );
+    // Add an automation phrase to the install section.
+    writeFileSync(
+      path.join(root, "docs", "plugins", "claude-code.md"),
+      [
+        "# Claude Code Plugin",
+        "",
+        "## Install",
+        "",
+        "The installer automatically configures everything.",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /stub publisher "claude-code".*automation phrase/);
+  });
+});
+
 // ── Gate (c): unlisted no-op ───────────────────────────────────────────────
 
 test("a no-op handler not in the allowlist fails the check", () => {
