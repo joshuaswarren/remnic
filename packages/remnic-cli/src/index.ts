@@ -2880,7 +2880,7 @@ async function loadPublishedPromotionHelpers() {
  * get the same up-front validation (cursor review round 7: custom runs were
  * missing the gate).
  */
-async function preflightLocalLabResponderIfNeeded(
+async function preflightLocalLabEndpointsIfNeeded(
   benchModule: PackageBenchModule,
   plan: PackageBenchExecutionPlan,
 ): Promise<void> {
@@ -2891,16 +2891,48 @@ async function preflightLocalLabResponderIfNeeded(
   ) {
     return;
   }
-  const responder = plan.runtime.localLab.responder;
-  const preflightResult = await benchModule.preflightLocalLabRole({
+  const localLab = plan.runtime.localLab;
+  const preflightRole = benchModule.preflightLocalLabRole;
+
+  // 1. Preflight responder.
+  const responder = localLab.responder;
+  const responderResult = await preflightRole({
     provider: responder.provider,
     baseUrl: responder.baseUrl,
     model: responder.model,
     ctx: responder.ctx,
   });
-  if (!preflightResult.ok) {
+  if (!responderResult.ok) {
     throw new Error(
-      `local-lab responder endpoint preflight failed: ${preflightResult.reason}`,
+      `local-lab responder endpoint preflight failed: ${responderResult.reason}`,
+    );
+  }
+
+  // 2. Emit hand-off + preflight judge when the judge lives on a different
+  //    endpoint (codex P1 review: single-GPU runs need the operator to swap
+  //    before the judge phase starts). Same-endpoint (Ollama hot-swap) skips
+  //    the hand-off.
+  const judge = localLab.judge;
+  const stripSlash = (url: string) => (url.endsWith("/") ? url.slice(0, -1) : url);
+  const sameEndpoint =
+    stripSlash(responder.baseUrl) === stripSlash(judge.baseUrl);
+  if (!sameEndpoint) {
+    const manifestNote = localLab.notes?.responderToJudgeHandoff;
+    const note =
+      manifestNote && manifestNote.trim().length > 0
+        ? manifestNote.trim()
+        : `stop responder endpoint, start judge endpoint at ${judge.baseUrl} serving model ${judge.model}, then resume the bench`;
+    console.log(`\n  [local-lab hand-off] ${note}\n`);
+  }
+  const judgeResult = await preflightRole({
+    provider: judge.provider,
+    baseUrl: judge.baseUrl,
+    model: judge.model,
+    ctx: judge.ctx,
+  });
+  if (!judgeResult.ok) {
+    throw new Error(
+      `local-lab judge endpoint preflight failed: ${judgeResult.reason}`,
     );
   }
 }
@@ -2934,9 +2966,9 @@ async function runBenchViaPackage(
     return { ok: false };
   }
 
-  // local-lab responder preflight gate (issue #1573 PR2, cursor review rounds 5-7).
-  // Shared with runCustomBenchViaPackage via preflightLocalLabResponderIfNeeded.
-  await preflightLocalLabResponderIfNeeded(benchModule, plan);
+  // local-lab endpoint preflight gate (issue #1573 PR2, review rounds 5-11).
+  // Shared with runCustomBenchViaPackage via preflightLocalLabEndpointsIfNeeded.
+  await preflightLocalLabEndpointsIfNeeded(benchModule, plan);
 
   const outputDir = parsed.resultsDir ?? resolveBenchOutputDir();
   const datasetDir = resolveBenchDatasetDir(
@@ -3271,7 +3303,7 @@ async function runCustomBenchViaPackage(parsed: ParsedBenchArgs): Promise<boolea
   const writtenPaths: string[] = [];
   const customBenchmarkIds: string[] = [];
   for (const plan of plans) {
-    await preflightLocalLabResponderIfNeeded(benchModule, plan);
+    await preflightLocalLabEndpointsIfNeeded(benchModule, plan);
     const system = await plan.createAdapter(plan.runtime.adapterOptions);
 
     try {
