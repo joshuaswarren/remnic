@@ -1046,3 +1046,56 @@ test("(w) inflight memory cache serves reads before disk write completes (PR #15
     assert.deepEqual(hit2.verdict, sampleResult);
   });
 });
+
+// --- (x) frozen adapter: caching path does not mutate the caller --------
+
+test("(x) runBenchmark does not mutate a frozen adapter when caching is enabled (PR #1591 round-8)", async () => {
+  const cacheDir = await mkdtemp(path.join(tmpdir(), "bench-frozen-judge-"));
+  try {
+    const stubJudge = {
+      async score() {
+        return 0.5;
+      },
+      async scoreWithMetrics() {
+        return { score: 0.5, tokens: { input: 1, output: 1 }, latencyMs: 1, model: "stub" };
+      },
+    } as unknown as BenchJudge;
+    const noopAdapter = {
+      async store() {},
+      async recall() {
+        return "";
+      },
+      async search() {
+        return [];
+      },
+      async reset() {},
+      async getStats() {
+        return { sessionCount: 0, totalMemories: 0 };
+      },
+      async destroy() {},
+      judge: stubJudge,
+    } as unknown as BenchMemoryAdapter;
+    // Freeze the adapter so any property assignment throws in strict mode.
+    Object.freeze(noopAdapter);
+
+    // Caching IS enabled (judgeProvider + judgeCacheDir). Before the fix,
+    // system.judge = primary.judge threw because the adapter was frozen.
+    // After the fix, the cached judge is installed on a shadow adapter
+    // (Object.create), so the frozen original is never touched.
+    const result = await runBenchmark("buffer-surprise-trigger", {
+      mode: "quick",
+      system: noopAdapter,
+      judgeCacheDir: cacheDir,
+      judgeProvider: { provider: "openai" as const, model: "stub-judge" },
+    });
+
+    assert.ok(result, "runBenchmark should complete without throwing on a frozen adapter");
+    assert.equal(
+      noopAdapter.judge,
+      stubJudge,
+      "frozen adapter's judge must not be mutated",
+    );
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});

@@ -157,7 +157,6 @@ export async function runBenchmark(
   // judge, so a second run reusing the same adapter (with noJudgeCache,
   // a different cacheDir, or different provider) would silently hit
   // the stale wrapper or wrap the wrapper.
-  const originalSystemJudge = options.system.judge;
   let judgeCacheCounters: JudgeCacheCounters | undefined;
   // Issue #1573 PR1: optionally route judge calls through a content-keyed
   // cache. PR #1591 round-7 (OUv-n): the cache wraps the judge AFTER
@@ -180,14 +179,6 @@ export async function runBenchmark(
   // doesn't miss still-pending entries.
   let primaryDrainPendingWrites: (() => Promise<void>) | undefined;
   let crossDrainPendingWrites: (() => Promise<void>) | undefined;
-  // PR #1591 round-8 (chatgpt-codex-connector thread): track whether
-  // the caller's adapter was actually mutated so the finally restore
-  // is a no-op when no cache wrapper was installed (noJudgeCache, no
-  // judgeProvider, or guarded mode where only the fresh `system`
-  // wrapper was mutated). A programmatic BenchMemoryAdapter can expose
-  // `judge` via a getter or be frozen; assigning back unconditionally
-  // throws in ESM strict mode after a successful run.
-  let mutatedOptionsSystemJudge = false;
   // Issue #1573 PR1: optionally route judge calls through a content-keyed
   // cache. PR #1591 round-7 (OUv-n): the cache wraps the phase-timeout-
   // guarded judge, so cache reads run outside benchmarkPhaseTimeoutMs.
@@ -250,7 +241,7 @@ export async function runBenchmark(
       willWrapCross,
     };
   })();
-  const system: BenchMemoryAdapter = !shouldGuardSystem
+  let system: BenchMemoryAdapter = !shouldGuardSystem
     ? options.system
     : createTimeoutGuardedAdapter(options.system, {
         benchmarkId,
@@ -318,11 +309,18 @@ export async function runBenchmark(
       });
       judgeCacheCounters = primary.counters;
       primaryDrainPendingWrites = primary.drainPendingWrites;
-      system.judge = primary.judge;
-      // Only the non-guarded path (system === options.system) mutates
-      // the caller's adapter; in guarded mode `system` is a fresh object
-      // returned by createTimeoutGuardedAdapter.
-      mutatedOptionsSystemJudge = system === options.system;
+      // PR #1591 round-8: install the cached judge on a SHADOW adapter
+      // (Object.create) so the caller's options.system is never
+      // mutated — frozen/getter-only judge properties are respected.
+      // The shadow inherits all adapter methods via the prototype
+      // chain; only `judge` is shadowed by a new own property.
+      system = Object.create(system);
+      Object.defineProperty(system, "judge", {
+        value: primary.judge,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
     }
     // AMA-Bench cross judge: only wrap when a cross-judge provider config
     // identifies it. Without provider config, leave the cross judge
@@ -364,19 +362,10 @@ export async function runBenchmark(
     try {
       await destroyOwnedIngestionAdapter();
     } finally {
-      // PR #1591 round-8: only restore when a cache wrapper was actually
-      // installed on the caller's adapter. Assigning back unconditionally
-      // throws on a getter/frozen `judge` property when no wrapping
-      // happened (noJudgeCache, no judgeProvider, or guarded mode where
-      // only the fresh `system` wrapper was mutated).
-      if (mutatedOptionsSystemJudge) {
-        options.system.judge = originalSystemJudge;
-      }
-      // PR #1591 round-8 (cursor + chatgpt-codex-connector threads):
-      // the cross-judge restore was removed — options.amaBenchCrossJudge
-      // is never mutated by runBenchmark (the cached cross judge is
-      // passed via the run-args spread, not written back to options),
-      // so the assignment was dead code that threw on frozen options.
+      // PR #1591 round-8: no judge restore needed — the cached judge
+      // is installed on a shadow adapter (Object.create), so the
+      // caller's options.system is never mutated. This also means
+      // frozen/getter-only adapters work correctly with caching.
     }
     // PR #1591 round-6 (OUojs / OUnib): drain all pending cache
     // writes before finalizing the report. Runs outside the phase
