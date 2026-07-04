@@ -47,6 +47,105 @@ test("parseConfig emitLegacyTools sticky-legacy default (issue #1550)", () => {
   });
 });
 
+test("parseConfig emitLegacyTools raw-vs-effective: schema default does not block sticky legacy (#1550, PR #1593 review)", () => {
+  // Cursor Bugbot + chatgpt-codex-connector both flagged the same class: the
+  // OpenClaw SDK materializes JSON-schema defaults into `api.pluginConfig`
+  // BEFORE `parseConfig` runs, so a fresh install would arrive with
+  // `emitLegacyTools: false` already populated even though the operator never
+  // wrote the key. The original resolver treated any present value as
+  // operator-set, which short-circuited the sticky-legacy fallback to
+  // `hasLegacyConnectorEntries()` and broke upgrades with legacy connector
+  // entries on disk. Fix: parseConfig now takes an optional `rawOperatorConfig`
+  // argument (sourced from `loadPluginConfigFromFile`, the pre-defaults
+  // operator file). Resolvers check `rawOperatorConfig` first — if the key is
+  // absent there, the present value is treated as a schema default and the
+  // env / sticky-legacy fallback chain runs.
+  withIsolatedConnectorsDir(false, () => {
+    // Fresh install + schema-default false in the merged config: sticky
+    // legacy path should still run and resolve to false.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
+      false,
+      "fresh install with schema-default false still resolves false",
+    );
+    // Explicit operator opt-out (rawOperatorConfig has the key): false wins.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, { emitLegacyTools: false })
+        .emitLegacyTools,
+      false,
+      "explicit operator opt-out via file is honored",
+    );
+    // Explicit operator opt-out via rawOperatorConfig with string coercion
+    // (gotcha #36: string "false" stays false).
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, { emitLegacyTools: "false" })
+        .emitLegacyTools,
+      false,
+      "raw operator wins even when merged value would have been true",
+    );
+  });
+  // Upgraded install with legacy connector JSON on disk: schema-default
+  // `false` in merged config MUST NOT mask the sticky-legacy fallback. This
+  // is the exact Cursor Bugbot scenario.
+  withIsolatedConnectorsDir(true, () => {
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
+      true,
+      "upgraded install with legacy connector JSON keeps aliases on",
+    );
+    // Raw operator opt-out still wins over the sticky evidence.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, { emitLegacyTools: false })
+        .emitLegacyTools,
+      false,
+      "raw operator opt-out overrides sticky-legacy",
+    );
+    // Raw operator opt-IN also wins.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, {}).emitLegacyTools,
+      true,
+      "raw merged true is operator-set even with empty raw",
+    );
+  });
+});
+
+test("parseConfig namespaceCatalogEnabled raw-vs-effective: schema-default hardening (#1550 class hardening)", () => {
+  // Same-class hardening as emitLegacyTools: if a future schema revision flips
+  // namespaceCatalogEnabled's default to `false`, the resolver must still let
+  // sticky / env / absent chains run unless the operator wrote the key. Today
+  // the schema default is `true`, so the bug doesn't manifest — but the helper
+  // now has the raw-vs-effective split, and this test pins the contract so a
+  // future schema flip can't reintroduce the bug class silently.
+  // Absent from both → default true.
+  assert.equal(
+    parseConfig({}, {}).namespaceCatalogEnabled,
+    true,
+    "absent from both raw and merged -> true",
+  );
+  // Schema-default false in merged, absent from raw → still treated as absent
+  // and resolves to true (today's behavior; would have flipped to false under
+  // the old resolver if the schema had `default: false`).
+  assert.equal(
+    parseConfig({ namespaceCatalogEnabled: false }, {}).namespaceCatalogEnabled,
+    true,
+    "merged false with empty raw treated as schema default, not operator opt-out",
+  );
+  // Raw operator opt-out wins over merged value (operator wrote false).
+  assert.equal(
+    parseConfig({ namespaceCatalogEnabled: true }, { namespaceCatalogEnabled: false })
+      .namespaceCatalogEnabled,
+    false,
+    "raw operator false wins over merged true",
+  );
+  // Raw operator opt-in wins over merged false.
+  assert.equal(
+    parseConfig({ namespaceCatalogEnabled: false }, { namespaceCatalogEnabled: true })
+      .namespaceCatalogEnabled,
+    true,
+    "raw operator true wins over merged false",
+  );
+});
+
 test("parseConfig emitLegacyTools coerces config/env (issue #1427)", () => {
   // Boolean + boolean-like string config values.
   assert.equal(parseConfig({ emitLegacyTools: false }).emitLegacyTools, false);

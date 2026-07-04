@@ -632,14 +632,41 @@ function coerceBooleanLikeOrThrow(label: string, value: unknown): boolean {
 
 /**
  * Resolve the `emitLegacyTools` opt-out (issue #1427, defaults revised in
- * #1550): config field wins, then the REMNIC_/ENGRAM_ env var, then a
- * sticky-legacy default — `true` only when existing legacy connector entries
- * are present on disk (`hasLegacyConnectorEntries`), `false` for fresh
- * installs, so upgrades never silently break a configured legacy client while
- * new installs get the halved canonical-only tools/list surface.
+ * #1550). Precedence: operator-set raw config, then merged (post-defaults)
+ * config, then the REMNIC_/ENGRAM_ env var, then a sticky-legacy default —
+ * `true` only when existing legacy connector entries are present on disk
+ * (`hasLegacyConnectorEntries`), `false` for fresh installs.
+ *
+ * `rawOperatorConfig` is the operator-supplied config block BEFORE the
+ * OpenClaw manifest layer applies schema defaults — i.e. the file-backed
+ * `loadPluginConfigFromFile` output. The OpenClaw SDK materializes schema
+ * defaults like `emitLegacyTools: false` into `api.pluginConfig` BEFORE
+ * `parseConfig` runs, so a fresh install would otherwise lose the
+ * sticky-legacy fallback (Cursor Bugbot on PR #1593, high severity). We
+ * distinguish "operator wrote this key" (raw present) from "schema default
+ * made it look set" (raw absent) by checking `rawOperatorConfig` first.
+ * The helper exists once and is reused by `resolveNamespaceCatalogEnabled`
+ * so future schema-default flips cannot reintroduce the bug (#1550 class
+ * hardening).
  */
-function resolveEmitLegacyTools(configValue: unknown): boolean {
-  if (configValue !== undefined && configValue !== null) {
+function resolveEmitLegacyTools(
+  configValue: unknown,
+  rawOperatorConfig: Record<string, unknown> | undefined,
+): boolean {
+  if (rawOperatorConfig !== undefined) {
+    // `fileConfig` reached parseConfig — operator authoring layer was
+    // available. If the operator wrote the key (even to `null`/`undefined`),
+    // honor it via coerceBooleanLikeOrThrow. If the operator did NOT write
+    // the key, ignore `configValue` entirely: that value is the OpenClaw
+    // schema-default materialization (e.g. `false` for fresh installs) and
+    // must not short-circuit the env / sticky-legacy chain.
+    if ("emitLegacyTools" in rawOperatorConfig) {
+      return coerceBooleanLikeOrThrow("emitLegacyTools", rawOperatorConfig.emitLegacyTools);
+    }
+  } else if (configValue !== undefined && configValue !== null) {
+    // Legacy caller (no rawOperatorConfig) — trust the merged value as
+    // before. This branch keeps every existing call site working without
+    // forcing them all to thread a raw config through.
     return coerceBooleanLikeOrThrow("emitLegacyTools", configValue);
   }
   const envRaw =
@@ -651,11 +678,23 @@ function resolveEmitLegacyTools(configValue: unknown): boolean {
 }
 
 /**
- * Resolve the `namespaceCatalogEnabled` opt-out (issue #1499). Boolean-like
- * values honored, malformed values rejected (rule #51), enabled when absent.
+ * Resolve the `namespaceCatalogEnabled` opt-out (issue #1499). Same
+ * raw-vs-effective split as `resolveEmitLegacyTools` — schema-default
+ * hardening at the helper level so adding a `false` default later cannot
+ * silently flip behavior on upgraded installs (#1550 class hardening).
  */
-function resolveNamespaceCatalogEnabled(configValue: unknown): boolean {
-  if (configValue !== undefined && configValue !== null) {
+function resolveNamespaceCatalogEnabled(
+  configValue: unknown,
+  rawOperatorConfig: Record<string, unknown> | undefined,
+): boolean {
+  if (rawOperatorConfig !== undefined) {
+    if ("namespaceCatalogEnabled" in rawOperatorConfig) {
+      return coerceBooleanLikeOrThrow(
+        "namespaceCatalogEnabled",
+        rawOperatorConfig.namespaceCatalogEnabled,
+      );
+    }
+  } else if (configValue !== undefined && configValue !== null) {
     return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", configValue);
   }
   return true;
@@ -1051,7 +1090,7 @@ function resolveMemoryOsPreset(value: unknown): MemoryOsPresetName | undefined {
   return MEMORY_OS_PRESET_ALIASES[normalized];
 }
 
-export function parseConfig(raw: unknown): PluginConfig {
+export function parseConfig(raw: unknown, rawOperatorConfig?: Record<string, unknown>): PluginConfig {
   const baseCfg =
     raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)
@@ -3025,7 +3064,7 @@ export function parseConfig(raw: unknown): PluginConfig {
     // a PRESENT but unrecognized value ("flase", 2) is REJECTED rather than
     // silently defaulting to enabled (CLAUDE.md rule #51); default to enabled
     // only when the value is absent.
-    namespaceCatalogEnabled: resolveNamespaceCatalogEnabled(cfg.namespaceCatalogEnabled),
+    namespaceCatalogEnabled: resolveNamespaceCatalogEnabled(cfg.namespaceCatalogEnabled, rawOperatorConfig),
     // NOTE: namespace identifiers are intentionally NOT sanitized here — the
     // codebase rejects unsafe namespaces at the point of use (see
     // codex-materialize-runner and NamespaceStorageRouter / resolveNamespaceDir),
@@ -4094,7 +4133,7 @@ export function parseConfig(raw: unknown): PluginConfig {
     // Legacy MCP tool aliases opt-out (issue #1427). Config field wins; then
     // the REMNIC_/ENGRAM_ env var (gotcha #9); default true for back-compat.
     // Malformed values fail fast rather than silently defaulting (gotcha #51).
-    emitLegacyTools: resolveEmitLegacyTools(cfg.emitLegacyTools),
+    emitLegacyTools: resolveEmitLegacyTools(cfg.emitLegacyTools, rawOperatorConfig),
     // Codex citation parity (issue #379)
     citationsEnabled: cfg.citationsEnabled === true,
     citationsAutoDetect: cfg.citationsAutoDetect !== false,

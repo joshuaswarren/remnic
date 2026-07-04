@@ -1322,11 +1322,19 @@ const pluginDefinition = {
     // Pass serviceId so shim installs prefer their own entry (#403).
     const fileConfig = loadPluginConfigFromFile(serviceId);
     const openclawFlushPlanProcessingEnabled = resolveOpenClawFlushPlanProcessingEnabledFromConfig(fileConfig, api.pluginConfig);
-    const cfg = parseConfig({
-      ...fileConfig, // File-backed fallback for runtimes that omit pluginConfig
-      ...api.pluginConfig, // Runtime/plugin-supplied config must win
-      gatewayConfig: api.config, // Pass gateway config for fallback AI
-    });
+    const cfg = parseConfig(
+      {
+        ...fileConfig, // File-backed fallback for runtimes that omit pluginConfig
+        ...api.pluginConfig, // Runtime/plugin-supplied config must win
+        gatewayConfig: api.config, // Pass gateway config for fallback AI
+      },
+      // `rawOperatorConfig` distinguishes "operator wrote this key in
+      // openclaw.json" from "OpenClaw materialized a schema default into
+      // api.pluginConfig" — the resolvers use it to keep the sticky-legacy
+      // `emitLegacyTools` default reachable on upgraded installs where no
+      // operator override exists (#1550, Cursor Bugbot PR #1593).
+      fileConfig,
+    );
     cfg.providerApiKeyResolver = resolveOpenClawProviderApiKey;
     cfg.runtimeAuthForModelResolver = getOpenClawRuntimeAuthForModel;
     // Re-initialize with correct debug setting
