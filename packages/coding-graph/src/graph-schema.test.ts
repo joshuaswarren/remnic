@@ -434,3 +434,108 @@ test("edges table has a destination-leading index for prune/cascade lookups (cha
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("node_attributes created on existing v1 stores (chatgpt-codex-connector P1: 'Create node_attributes for existing v1 stores')", async () => {
+  const dir = await tempDir();
+  try {
+    const db = openTempDb(dir, "v1-existing.sqlite");
+    applyCodingGraphSchema(db);
+    assert.equal(readSchemaVersion(db), 1);
+
+    // Simulate a PR1-era DB that predates the PR2 node_attributes table:
+    // drop it while leaving the meta schema_version=1 row in place.
+    db.prepare("DROP TABLE node_attributes").run();
+    const remaining = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='node_attributes'",
+        )
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+    assert.equal(remaining.length, 0, "precondition: node_attributes dropped");
+
+    // Re-apply the schema as a normal open() would. Because every DDL
+    // statement is CREATE TABLE IF NOT EXISTS and applyCodingGraphSchema
+    // runs createTables unconditionally, the additive table reappears
+    // on the existing v1 DB without a version bump.
+    applyCodingGraphSchema(db);
+    assert.equal(readSchemaVersion(db), 1, "version unchanged (additive)");
+    const recreated = (
+      db
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='node_attributes'",
+        )
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+    assert.equal(
+      recreated.length,
+      1,
+      "node_attributes recreated on existing v1 store via the unconditional createTables pass",
+    );
+    db.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a newer (future) schema_version DB is NOT downgraded by applyCodingGraphSchema (chatgpt-codex-connector P2: 'Preserve newer schema_version rows')", async () => {
+  const dir = await tempDir();
+  try {
+    const db = openTempDb(dir, "future-v2.sqlite");
+    // Apply once to get a normal v1 schema, then simulate a future
+    // version having upgraded the DB to v2 (a version this code does
+    // not understand).
+    applyCodingGraphSchema(db);
+    assert.equal(readSchemaVersion(db), CODING_GRAPH_SCHEMA_VERSION);
+    db.prepare(
+      "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+    ).run("2");
+    assert.equal(readSchemaVersion(db), 2, "precondition: future v2 marker");
+
+    // Re-open path: older code applies its additive DDL against the v2
+    // DB. The version marker must be PRESERVED (2), not silently
+    // rewritten down to CODING_GRAPH_SCHEMA_VERSION (1) — otherwise an
+    // incompatible future schema is hidden from a later upgrade.
+    applyCodingGraphSchema(db);
+    assert.equal(
+      readSchemaVersion(db),
+      2,
+      "a newer schema_version must not be downgraded to CODING_GRAPH_SCHEMA_VERSION",
+    );
+    db.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("applyCodingGraphSchema does NOT run createTables against a future-version DB (chatgpt-codex-connector P2: 'Skip destructive DDL for future schema versions')", async () => {
+  const dir = await tempDir();
+  try {
+    const db = openTempDb(dir, "future-v2-noddl.sqlite");
+    applyCodingGraphSchema(db);
+    // Simulate a future v2 schema whose node_attributes table was
+    // dropped/renamed by the newer version.
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)").run("2");
+    db.prepare("DROP TABLE node_attributes").run();
+
+    // Older code re-opens the v2 DB. createTables must NOT run — if it
+    // did, its additive pass would recreate node_attributes, mutating
+    // the newer schema. Assert the table stays gone AND the version
+    // stays 2.
+    applyCodingGraphSchema(db);
+    assert.equal(readSchemaVersion(db), 2, "future version preserved");
+    const remaining = (
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='node_attributes'")
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+    assert.equal(
+      remaining.length,
+      0,
+      "createTables must not run against a future-version DB (node_attributes should not reappear)",
+    );
+    db.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

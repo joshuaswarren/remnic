@@ -155,12 +155,13 @@ export type {
 };
 
 // ---------------------------------------------------------------------------
-// SQLite knowledge-graph store (#1552 PR1): versioned schema + write
-// pipeline. Re-exported from the package root so consumers can import
-// `import { GraphStore } from "@remnic/coding-graph"` (the subpath
-// exports `./graph-schema` and `./graph-store` remain available for
-// callers that want only one half). Only non-colliding store types are
-// re-exported here — see the file header's IR-type policy note.
+// SQLite knowledge-graph store (#1552 PR1 + PR2): versioned schema, write
+// pipeline, and PR2 read primitives (traverse / searchGraph / schemaStats /
+// deadCode / snippetFor). Re-exported from the package root so consumers
+// can import `import { GraphStore } from "@remnic/coding-graph"` (the
+// subpath exports `./graph-schema` and `./graph-store` remain available
+// for callers that want only one half). Only non-colliding store types
+// are re-exported here — see the file header's IR-type policy note.
 // ---------------------------------------------------------------------------
 
 export {
@@ -175,7 +176,10 @@ export {
 export {
   GraphStore,
   nodeIdFor,
+  DEAD_CODE_EXCLUSION,
   type ByteSpan,
+  type DeadCodeHit,
+  type DeadCodeResult,
   type EdgeIR,
   type ExportIR,
   type GraphStoreFailure,
@@ -183,8 +187,21 @@ export {
   type GraphStoreOptions,
   type ImportIR,
   type NodeIdInput,
+  type SchemaStats,
+  type SchemaStatsResult,
+  type SearchHit,
+  type SearchQuery,
+  type SearchResult,
+  type SnippetFailureCode,
+  type SnippetQuery,
+  type SnippetResult,
+  type SnippetSuccess,
   type StoreFileIR,
   type SymbolKind,
+  type TraverseDirection,
+  type TraverseHit,
+  type TraverseQuery,
+  type TraverseResult,
   type UpsertBatchResult,
   type UpsertResult,
   type UpsertSuccess,
