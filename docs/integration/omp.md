@@ -130,18 +130,32 @@ extension directory to a self-contained npm layout with a bare-specifier
 import:
 
 ```bash
-cd ~/.omp/agent/extensions/remnic
+cd "$(dirname "$(find ~/.omp -name remnic.config.json -path '*/extensions/remnic/*' | head -1)")"
 cat > index.ts <<'EOF'
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRemnicPiExtension } from "@remnic/plugin-pi";
 
-export default createRemnicPiExtension({
-  configPath: `${process.env.HOME}/.omp/agent/extensions/remnic/remnic.config.json`,
-});
+// Resolve remnic.config.json relative to this file so the extension keeps
+// working under profiles / custom agent dirs (OMP_PROFILE, PI_CONFIG_DIR,
+// PI_CODING_AGENT_DIR). When bundled, this file runs from dist-bundle/, so
+// also check one level up.
+const here = dirname(fileURLToPath(import.meta.url));
+const configPath = [
+  join(here, "remnic.config.json"),
+  join(here, "..", "remnic.config.json"),
+].find(existsSync);
+
+export default createRemnicPiExtension({ configPath });
 EOF
 npm init -y >/dev/null && npm install @remnic/plugin-pi
 ```
 
-(Keep your existing `remnic.config.json` — only `index.ts` is replaced.)
+(Keep your existing `remnic.config.json` — only `index.ts` is replaced. The
+relative lookup preserves the installer-written location instead of
+hard-coding `~/.omp/agent`, so profile-scoped installs keep their token and
+namespace.)
 
 Step 2: bundle:
 
