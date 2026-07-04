@@ -520,3 +520,59 @@ test("duplicate paths in one batch throw (cursor Bugbot: 'Duplicate paths corrup
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("duplicate (src,dst,type) edges keep first metadata, do not inflate edgeCount (cursor Bugbot #28876d4c)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-dupedge-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "store.db"),
+  });
+  try {
+    const fileDup: FileIR = {
+      path: "src/dup.ts",
+      language: "ts",
+      contentHash: "h-dup",
+      symbols: [sym("dup.caller", "caller", 0, 50), sym("dup.callee", "callee", 50, 100)],
+      edges: [
+        {
+          srcQualifiedName: "dup.caller",
+          dstQualifiedName: "dup.callee",
+          type: "CALLS",
+          confidence: 0.95,
+          provenance: "heuristic",
+        },
+        {
+          // Same (src, dst, type) — differing metadata. First edge wins;
+          // this duplicate must NOT inflate edgeCount to 2.
+          srcQualifiedName: "dup.caller",
+          dstQualifiedName: "dup.callee",
+          type: "CALLS",
+          confidence: 0.4,
+          provenance: "lsp",
+        },
+      ],
+    };
+    const r = await store.upsertFileBatch([fileDup]);
+    assert.equal(r.ok, true);
+    if (!r.ok) throw new Error("expected ok");
+    assert.equal(
+      r.results[0]?.edgeCount,
+      1,
+      "duplicate edge triples must dedupe to a single insert — edgeCount must not be inflated",
+    );
+
+    // Re-ingest the same file to prove the persisted edge kept the
+    // FIRST duplicate's metadata (confidence 0.95): a no-op re-upsert
+    // (changes=0) means the stored row matches the first edge exactly.
+    const r2 = await store.upsertFileBatch([fileDup]);
+    assert.equal(r2.ok, true);
+    if (!r2.ok) throw new Error("expected ok");
+    assert.equal(
+      r2.results[0]?.edgeCount,
+      0,
+      "re-ingest with identical first-edge metadata must be a no-op (changes=0)",
+    );
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

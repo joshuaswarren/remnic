@@ -705,7 +705,14 @@ export class GraphStore {
            provenance = excluded.provenance`,
     );
     let edgeCount = 0;
+    // Dedupe keys: a FileIR with two edges sharing `(src, dst, type)`
+    // (but differing confidence/provenance) is malformed input. First-edge
+    // metadata wins; later duplicates are skipped so they cannot inflate
+    // edgeCount via redundant re-upserts (cursor Bugbot #28876d4c).
+    const processedKeys = new Set<string>();
     for (const key of seenKeys) {
+      if (processedKeys.has(key)) continue;
+      processedKeys.add(key);
       const parts = key.split("\u0000");
       const srcId = parts[0]!;
       const dstId = parts[1]!;
