@@ -612,6 +612,39 @@ test("withHeldFileLock rejects NaN/Infinity/negative optional timings (not silen
   }
 });
 
+test("withHeldFileLock rejects timer-backed options above Node's setTimeout ceiling (codex P2)", async () => {
+  // Node's setTimeout/setInterval clamp delays > 2^31−1 to 1ms, turning a typo
+  // into tight polling or 1ms heartbeats. Reject at the validation boundary.
+  const over = 3_000_000_000; // > 2^31 − 1 (2_147_483_647)
+  await assert.rejects(
+    () => withHeldFileLock("/tmp/x.lock", { staleMs: 5_000, pollMs: over }, async () => undefined),
+    /pollMs .* exceeds the .* ceiling/,
+    "pollMs above the timer ceiling should be rejected",
+  );
+  await assert.rejects(
+    () => withHeldFileLock("/tmp/x.lock", { staleMs: 5_000, heartbeatMs: over }, async () => undefined),
+    /heartbeatMs .* exceeds the .* ceiling/,
+    "heartbeatMs above the timer ceiling should be rejected",
+  );
+  await assert.rejects(
+    () => withHeldFileLock("/tmp/x.lock", { staleMs: 5_000, maxWaitMs: over }, async () => undefined),
+    /maxWaitMs .* exceeds the .* ceiling/,
+    "maxWaitMs above the timer ceiling should be rejected",
+  );
+});
+
+test("withHeldFileLock rejects a derived heartbeatMs that exceeds the timer ceiling", async () => {
+  // When heartbeatMs is omitted, it is derived as floor(staleMs/3). A huge
+  // staleMs produces a derived heartbeat above the timer ceiling — reject it
+  // with an actionable message pointing to the explicit override.
+  const hugeStale = 7_000_000_000; // floor(/3) = 2_333_333_333 > 2_147_483_647
+  await assert.rejects(
+    () => withHeldFileLock("/tmp/x.lock", { staleMs: hugeStale }, async () => undefined),
+    /derived heartbeatMs .* exceeds Node's setTimeout ceiling/,
+    "derived heartbeatMs above the timer ceiling should be rejected",
+  );
+});
+
 test("withHeldFileLock accepts a finite positive maxWaitMs that bounds acquisition", async () => {
   const dir = await mkTmpDir();
   try {

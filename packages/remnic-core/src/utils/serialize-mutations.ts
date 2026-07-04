@@ -208,6 +208,11 @@ const DEFAULT_MAX_WAIT_MS = 5_000;
 const DEFAULT_POLL_MS = 50;
 /** Floor for the derived heartbeat cadence. */
 const MIN_HEARTBEAT_MS = 100;
+/** Node's setTimeout/setInterval 32-bit signed-int ceiling (2^31 − 1 ms ≈ 24.8
+ * days). Delays above this are silently clamped to 1ms by the Node timer, so
+ * timer-backed options (pollMs, heartbeatMs) must be rejected at this boundary
+ * (chatgpt-codex-connector P2). */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /** Internal handle for a lock we successfully acquired. */
 interface HeldLock {
@@ -266,17 +271,25 @@ export async function withHeldFileLock<T>(
   // the bounded acquire loop would wait forever instead of falling back to
   // best-effort). Reject invalid input rather than silently defaulting it
   // (codex P2 review). Omitting an option still picks its default.
-  const maxWaitMs = optionalPositiveMs(opts.maxWaitMs, "maxWaitMs", DEFAULT_MAX_WAIT_MS);
-  const pollMs = optionalPositiveMs(opts.pollMs, "pollMs", DEFAULT_POLL_MS);
+  const maxWaitMs = optionalPositiveMs(opts.maxWaitMs, "maxWaitMs", DEFAULT_MAX_WAIT_MS, MAX_TIMER_DELAY_MS);
+  const pollMs = optionalPositiveMs(opts.pollMs, "pollMs", DEFAULT_POLL_MS, MAX_TIMER_DELAY_MS);
   const heartbeatMs = optionalPositiveMs(
     opts.heartbeatMs,
     "heartbeatMs",
     Math.max(MIN_HEARTBEAT_MS, Math.floor(opts.staleMs / 3)),
+    MAX_TIMER_DELAY_MS,
   );
   if (heartbeatMs >= opts.staleMs) {
     throw new TypeError(
       `withHeldFileLock: heartbeatMs (${heartbeatMs}) must be below staleMs (${opts.staleMs}) ` +
         `(valid range: > 0 and < staleMs ms) so at least one heartbeat lands per stale window.`,
+    );
+  }
+  if (heartbeatMs > MAX_TIMER_DELAY_MS) {
+    throw new TypeError(
+      `withHeldFileLock: derived heartbeatMs (${heartbeatMs} = floor(staleMs/3)) exceeds ` +
+        `Node's setTimeout ceiling (${MAX_TIMER_DELAY_MS} ms). Use an explicit opts.heartbeatMs ` +
+        `at or below ${MAX_TIMER_DELAY_MS} ms.`,
     );
   }
   // Wrap the consumer's warning hook so a throwing callback never turns a
@@ -341,9 +354,12 @@ export async function withHeldFileLock<T>(
 
 /**
  * Resolve an optional millisecond timing option, REJECTING invalid values
- * (NaN, Infinity, non-positive) rather than silently defaulting them. A NaN or
- * Infinity maxWaitMs would make the bounded acquire loop wait forever
- * (`Date.now() + NaN` is NaN); a non-positive poll/heartbeat makes no sense.
+ * (NaN, Infinity, non-positive, or above `maxMs`) rather than silently defaulting
+ * them. A NaN or Infinity maxWaitMs would make the bounded acquire loop wait
+ * forever (`Date.now() + NaN` is NaN); a non-positive poll/heartbeat makes no
+ * sense. Timer-backed options (pollMs, heartbeatMs) are bounded to Node's
+ * setTimeout ceiling (`MAX_TIMER_DELAY_MS`): a value above 2^31−1 is silently
+ * clamped to 1ms by the timer, turning a typo into tight polling (codex P2).
  * Omitting the option (`undefined`) picks `fallback`. Non-number types are also
  * rejected (defensive against config/env coercion).
  */
@@ -351,6 +367,7 @@ function optionalPositiveMs(
   value: number | undefined,
   name: "maxWaitMs" | "pollMs" | "heartbeatMs",
   fallback: number,
+  maxMs: number,
 ): number {
   if (value === undefined) return fallback;
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
@@ -358,6 +375,13 @@ function optionalPositiveMs(
       `withHeldFileLock: opts.${name} must be a positive finite number ` +
         `(valid range: > 0 ms, finite; got ${formatInvalidNumber(value)}). ` +
         `Omit the option to use the default of ${fallback} ms.`,
+    );
+  }
+  if (value > maxMs) {
+    throw new TypeError(
+      `withHeldFileLock: opts.${name} (${value} ms) exceeds the ${maxMs} ms ` +
+        `ceiling (Node's setTimeout clamps larger delays to 1ms, turning a ` +
+        `typo into tight polling). Omit the option to use the default of ${fallback} ms.`,
     );
   }
   return value;
