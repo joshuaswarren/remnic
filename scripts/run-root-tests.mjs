@@ -39,6 +39,12 @@ const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const manifestPath = join(repoRoot, "scripts", "native-dependent-tests.json");
 const tsxBin = process.platform === "win32" ? "tsx.cmd" : "tsx";
 
+// Resolve tsx regardless of how this script was launched: `node scripts/…`
+// has no package-manager PATH injection (unlike `pnpm test`), so prepend the
+// workspace bin dir explicitly. Fixes `spawn tsx ENOENT` under bare node.
+const workspaceBinDir = join(repoRoot, "node_modules", ".bin");
+process.env.PATH = `${workspaceBinDir}${path.delimiter}${process.env.PATH ?? ""}`;
+
 process.env.NODE_OPTIONS = appendNodeOption(
   process.env.NODE_OPTIONS,
   "--conditions=remnic-source",
