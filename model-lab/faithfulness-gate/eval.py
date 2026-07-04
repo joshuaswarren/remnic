@@ -118,7 +118,9 @@ def main(argv: list[str] | None = None) -> int:
     model.eval()
 
     predictions: list[str] = []
-    id_to_label = {index: label for label in LABELS}  # relies on stable LABELS order
+    # Invert LABEL_TO_ID (label -> id) to (id -> label); matches the model's
+    # trained id2label. enumerate(LABELS) gives the canonical id ordering.
+    id_to_label = {label_id: label for label_id, label in enumerate(LABELS)}
     with torch.no_grad():
         for row in rows:
             text = " [SEP] ".join([row["factText"], row["quote"], row.get("context", "")])

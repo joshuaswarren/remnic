@@ -16,7 +16,7 @@ datasets==2.21.0
 
 # --- Encoder baseline stack (DeBERTa-v3-large, first choice per #1585) -----
 transformers==4.44.2
-torch==2.3.1
+torch==2.6.0  # >=2.6.0 required: patches GHSA-53q9-r3pm-6pq6 (torch.load weights_only RCE)
 sentence-transformers==3.0.1
 
 # --- Hub upload (PR2: weight publication) ----------------------------------

@@ -36,6 +36,7 @@ _MODEL_LAB_ROOT = Path(__file__).resolve().parents[1]
 if str(_MODEL_LAB_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODEL_LAB_ROOT))
 
+from common.eval_runner import macro_f1, per_class_metrics  # noqa: E402
 from common.jsonl_schema import LABEL_TO_ID, LABELS  # noqa: E402
 
 #: First-choice base (issue #1585): cheap, deterministic, ~1.6 GB serving.
@@ -151,9 +152,27 @@ def featurize(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             raise ValueError(f"row has unknown label {row['label']!r}")
         features.append({
             "text": " [SEP] ".join([row["factText"], row["quote"], row.get("context", "")]),
-            "label": LABEL_TO_ID[row["label"]],
+            # HF Trainer forwards dataset columns matching the model's forward
+            # signature; AutoModelForSequenceClassification expects "labels".
+            "labels": LABEL_TO_ID[row["label"]],
         })
     return features
+
+
+def compute_metrics(eval_pred: tuple[Any, Any]) -> dict[str, float]:
+    """Macro-F1 over the three labels — backs ``metric_for_best_model='f1'``.
+
+    The metric math is the shared ``common.eval_runner`` so the number that
+    selects the best checkpoint is computed by the same code as ``eval.py``
+    and the CI probe. numpy ships transitively with the torch install.
+    """
+    import numpy as np  # noqa: E402  (lazy; not a CI dep)
+
+    logits, label_ids = eval_pred
+    pred_ids = np.argmax(logits, axis=-1).tolist()
+    gold = [LABELS[index] for index in label_ids]
+    pred = [LABELS[index] for index in pred_ids]
+    return {"f1": macro_f1(per_class_metrics(gold, pred))}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -211,12 +230,17 @@ def main(argv: list[str] | None = None) -> int:
         warmup_ratio=hyperparams.warmup_ratio,
         weight_decay=hyperparams.weight_decay,
         label_smoothing_factor=hyperparams.label_smoothing,
-        eval_strategy="epoch",
+        # transformers 4.44.2 API: ``evaluation_strategy`` (renamed to
+        # ``eval_strategy`` only in 4.46). Reproducibility comes from ``seed``
+        # + ``data_seed``; ``deterministic``/``full_determinism`` is omitted to
+        # avoid torch deterministic-algorithm errors on some CUDA ops (the
+        # manifest captures exact versions for full reproduction).
+        evaluation_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="f1",
         seed=hyperparams.seed,
-        deterministic=True,
+        data_seed=hyperparams.seed,
         use_cpu=not torch.cuda.is_available(),
     )
 
@@ -225,9 +249,18 @@ def main(argv: list[str] | None = None) -> int:
         args=training_args,
         train_dataset=split["train"],
         eval_dataset=split["test"],
-        processing_class=tokenizer,
+        # transformers 4.44.2 API: ``tokenizer`` (renamed to ``processing_class``
+        # only in 4.46). compute_metrics backs ``metric_for_best_model='f1'``.
+        tokenizer=tokenizer,
+        compute_metrics=compute_metrics,
     )
     trainer.train()
+
+    # Persist a from_pretrained()-loadable model + tokenizer at the version root
+    # so eval.py's ``from_pretrained(str(checkpoint))`` resolves (Trainer only
+    # writes epoch checkpoints under <output_dir>/checkpoint-*, not the root).
+    trainer.save_model(str(out_dir))
+    tokenizer.save_pretrained(str(out_dir))
 
     # The manifest's hyperparams/hardware blocks are written here in PR2;
     # PR1 ships only the recipe + the pending manifest schema example.
