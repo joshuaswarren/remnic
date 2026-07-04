@@ -2908,21 +2908,25 @@ async function preflightLocalLabEndpointsIfNeeded(
     );
   }
 
-  // 2. Emit hand-off + preflight judge when the judge lives on a different
-  //    endpoint (codex P1 review: single-GPU runs need the operator to swap
-  //    before the judge phase starts). Same-endpoint (Ollama hot-swap) skips
-  //    the hand-off.
+  // 2. Judge endpoint check. When both roles share an endpoint (the common
+  //    Ollama hot-swap case), preflight the judge model too and proceed.
+  //    When they are on different endpoints, the published harness cannot
+  //    yet run sequential phases (answer-all-then-judge-all) — it executes
+  //    recall→answer→judge per trial, which requires both models to be
+  //    co-resident. Fail fast with an actionable message instead of silently
+  //    failing mid-benchmark after the first trial (codex P1 review, #1573 PR2).
+  //    Full sequential phase execution is PR3 calibration scope.
   const judge = localLab.judge;
   const stripSlash = (url: string) => (url.endsWith("/") ? url.slice(0, -1) : url);
   const sameEndpoint =
     stripSlash(responder.baseUrl) === stripSlash(judge.baseUrl);
   if (!sameEndpoint) {
-    const manifestNote = localLab.notes?.responderToJudgeHandoff;
-    const note =
-      manifestNote && manifestNote.trim().length > 0
-        ? manifestNote.trim()
-        : `stop responder endpoint, start judge endpoint at ${judge.baseUrl} serving model ${judge.model}, then resume the bench`;
-    console.log(`\n  [local-lab hand-off] ${note}\n`);
+    throw new Error(
+      "local-lab multi-endpoint sequential phase execution is not yet wired into the benchmark runner " +
+        "(PR3 calibration scope). The published harness runs recall→answer→judge per trial, which requires " +
+        "both models to be co-resident. Use a single-endpoint profile (both responder and judge models on one " +
+        "Ollama instance) or wait for PR3's runSequentialPhases integration.",
+    );
   }
   const judgeResult = await preflightRole({
     provider: judge.provider,
