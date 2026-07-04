@@ -153,6 +153,9 @@ importers:
 
   packages/coding-graph:
     dependencies:
+      better-sqlite3:
+        specifier: ^12.6.2
+        version: 12.8.0
       web-tree-sitter:
         specifier: ^0.25.0
         version: 0.25.10

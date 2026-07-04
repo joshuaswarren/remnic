@@ -330,6 +330,7 @@ import {
   recallNamespacesForPrincipal,
   resolvePrincipal,
 } from "./namespaces/principal.js";
+import { resolveScopePlan } from "./scopes/scope-plan.js";
 import {
   expandScopeProfileReadNamespaces,
   resolveScopeProfilePlan,
@@ -5776,7 +5777,8 @@ export class Orchestrator {
       options.principalOverride.length > 0
         ? options.principalOverride
         : resolvePrincipal(sessionKey, this.config);
-    if (this.config.namespacesEnabled && !principal) {
+    const namespacesEnabled = this.config.namespacesEnabled;
+    if (namespacesEnabled && !principal) {
       throw new Error("authentication required: namespaces are enabled and no principal was supplied");
     }
 
@@ -5868,6 +5870,7 @@ export class Orchestrator {
             options.namespace?.trim() || undefined,
             options.principalOverride,
             caps,
+            namespacesEnabled,
           );
         } catch (err) {
           log.debug(`direct-answer observation setup failed: ${err}`);
@@ -5937,62 +5940,27 @@ export class Orchestrator {
     namespaceOverride: string | undefined,
     principalOverride: string | undefined,
     caps: CapabilitySet,
+    namespacesEnabled: boolean,
   ): void {
     const expectedSnapshot = this.lastRecall.get(sessionKey);
     if (expectedSnapshot === null) return;
     if (expectedSnapshot.plannerMode === "no_recall") return;
 
-    const principal = principalOverride ?? resolvePrincipal(sessionKey, this.config);
-    // Coding-agent overlay (issue #569) is applied when the session has a
-    // coding context and there is no explicit namespaceOverride — mirrors
-    // the main recall path above.
-    const observationCodingOverlay =
-      namespaceOverride && canReadNamespace(principal, namespaceOverride, this.config)
-        ? null
-        : this.applyCodingRecallOverlay(sessionKey);
-    const observationPrincipalSelf = defaultNamespaceForPrincipal(principal, this.config);
-    const observationCodingSelf = observationCodingOverlay
-      ? combineNamespaces(observationPrincipalSelf, observationCodingOverlay.namespace)
-      : null;
-    const observationScopeProfilePlan =
-      namespaceOverride && canReadNamespace(principal, namespaceOverride, this.config)
-        ? null
-        : resolveScopeProfilePlan({
-            config: this.config,
-            principal,
-            codingContext: sessionKey
-              ? this.getCodingContextForSession(sessionKey)
-              : null,
-            codingOverlay: observationCodingOverlay,
-          });
-    let observationNamespaces: string[];
-    if (namespaceOverride && canReadNamespace(principal, namespaceOverride, this.config)) {
-      observationNamespaces = [namespaceOverride];
-    } else if (observationScopeProfilePlan) {
-      observationNamespaces = expandScopeProfileReadNamespaces({
-        profilePlan: observationScopeProfilePlan,
-        principalSelfNamespace: observationScopeProfilePlan.baseNamespace,
-        config: this.config,
-        principal,
-        codingOverlay: observationCodingOverlay,
-        legacyRecallNamespaces: recallNamespacesForPrincipal(principal, this.config),
-      });
-    } else if (observationCodingOverlay && observationCodingSelf) {
-      // Rule 42 / parity with the main recall path: substitute the self
-      // namespace within the principal's recall list rather than
-      // replacing the full list. Preserves shared and policy-include
-      // namespaces for direct-answer observation queries.
-      const base = recallNamespacesForPrincipal(principal, this.config);
-      const mapped = base.map((ns) =>
-        ns === observationPrincipalSelf ? observationCodingSelf : ns,
-      );
-      const fallbackNs = observationCodingOverlay.readFallbacks.map((fallback) =>
-        combineNamespaces(observationPrincipalSelf, fallback),
-      );
-      observationNamespaces = Array.from(new Set<string>([...mapped, ...fallbackNs]));
-    } else {
-      observationNamespaces = recallNamespacesForPrincipal(principal, this.config);
-    }
+    // Resolve the observation namespace set through the SAME ScopePlan resolver
+    // the main recall path uses (#1521). The observe path does NOT throw on an
+    // unreadable override (it falls through to the coding/legacy branches), so
+    // we skip the readability gate the recall path enforces.
+    const observationScopePlan = resolveScopePlan({
+      config: this.config,
+      sessionKey,
+      namespace: namespaceOverride,
+      principalOverride,
+      codingContext: sessionKey
+        ? this.getCodingContextForSession(sessionKey)
+        : null,
+      namespacesEnabled,
+    });
+    const observationNamespaces = observationScopePlan.readNamespaces;
     const observationQueryPolicy = buildRecallQueryPolicy(prompt, sessionKey, {
       cronRecallPolicyEnabled: this.config.cronRecallPolicyEnabled,
       cronRecallNormalizedQueryMaxChars:
@@ -7594,14 +7562,11 @@ export class Orchestrator {
         && options.principalOverride.length > 0
         ? options.principalOverride
         : resolvePrincipal(sessionKey, this.config);
-    if (this.config.namespacesEnabled && !principal) {
+    const namespacesEnabled = this.config.namespacesEnabled;
+    if (namespacesEnabled && !principal) {
       throw new Error("authentication required: namespaces are enabled and no principal was supplied");
     }
     const namespaceOverride = options.namespace?.trim() || undefined;
-    const readableRecallNamespaces = recallNamespacesForPrincipal(
-      principal,
-      this.config,
-    );
     if (
       namespaceOverride &&
       !canReadNamespace(principal, namespaceOverride, this.config)
@@ -7610,147 +7575,35 @@ export class Orchestrator {
         `namespace override is not readable: ${namespaceOverride}`,
       );
     }
-    // Recall path — overlay the coding-agent namespace (issue #569) when
-    // the session has a codingContext and `codingMode.projectScope` is true.
-    // Explicit `namespace` option still wins, preserving pre-#569 semantics.
+    // Resolve every namespace-bearing field through ONE ScopePlan (#1521): the
+    // read set, the LCM read keys, the coding overlay, and the scope-profile plan
+    // all come from a single pure resolver that delegates to the same helpers
+    // the inline code used. Parity snapshots in scope-plan.test.ts pin the
+    // outputs so this migration cannot change behavior.
     //
-    // Rule 42: the overlay substitutes the SELF namespace within the
-    // principal's recall list — it does NOT replace the full list. Shared
-    // and `includeInRecallByDefault` policy namespaces stay in the recall
-    // set so coding sessions continue to see team/shared memories. The
-    // overlay is combined with the principal base through `combineNamespaces`
-    // to preserve principal isolation (cross-tenant leakage guard).
-    const codingOverlay = namespaceOverride ? null : this.applyCodingRecallOverlay(sessionKey);
-    const principalSelfNamespace = defaultNamespaceForPrincipal(principal, this.config);
-    const codingSelfNamespace = codingOverlay
-      ? combineNamespaces(principalSelfNamespace, codingOverlay.namespace)
-      : null;
-    const scopeProfilePlan = namespaceOverride
-      ? null
-      : resolveScopeProfilePlan({
-          config: this.config,
-          principal,
-          codingContext: sessionKey
-            ? this.getCodingContextForSession(sessionKey)
-            : null,
-          codingOverlay,
-        });
-    const profileEffectiveNamespace = scopeProfilePlan?.writeNamespace || scopeProfilePlan?.readNamespaces[0];
-    const selfNamespace =
-      namespaceOverride ??
-      profileEffectiveNamespace ??
-      codingSelfNamespace ??
-      principalSelfNamespace;
-    let recallNamespaces: string[];
-    if (namespaceOverride) {
-      recallNamespaces = [namespaceOverride];
-    } else if (scopeProfilePlan) {
-      recallNamespaces = expandScopeProfileReadNamespaces({
-        profilePlan: scopeProfilePlan,
-        principalSelfNamespace: scopeProfilePlan.baseNamespace,
-        config: this.config,
-        principal,
-        codingOverlay,
-        legacyRecallNamespaces: readableRecallNamespaces,
-      });
-    } else if (codingOverlay && codingSelfNamespace) {
-      // Substitute the principal's self namespace with the coding-scoped
-      // one, and append any read fallbacks (branch→project, PR 3) combined
-      // with the principal base so principal isolation is preserved on
-      // fallback entries as well.
-      const mapped = readableRecallNamespaces.map((ns) =>
-        ns === principalSelfNamespace ? codingSelfNamespace : ns,
-      );
-      const fallbackNs = codingOverlay.readFallbacks.map((fallback) =>
-        combineNamespaces(principalSelfNamespace, fallback),
-      );
-      recallNamespaces = Array.from(new Set<string>([...mapped, ...fallbackNs]));
-    } else {
-      recallNamespaces = readableRecallNamespaces;
-    }
-    // Catalog touch (issue #1499): record reads against the recalled namespaces
-    // so the catalog reflects active read scopes. Best-effort, failure-tolerant.
-    // Round 3 (codex P2): gate behind the no_recall guard — when the planner
-    // selects `no_recall` retrieval is skipped entirely (see the early return at
-    // `recallMode === "no_recall"` below), so marking every readable namespace as
-    // read would falsely inflate `lastReadAt` / catalog recency.
-    // Round 4 (codex P2): also skip when the effective memory result limit is
-    // zero (`topK: 0`, a disabled/zero `memories` recall section, etc.). The QMD
-    // path explicitly returns before searching when `recallResultLimit <= 0`, so
-    // no namespace is actually read and the touch would be spurious.
-    // NOTE: the catalog read touch is recorded LATER, immediately after the
-    // Phase 1 `throwIfRecallAborted` gate (round 6, codex P2 / cursor Medium —
-    // NDXHa/NDmle), so it fires only once retrieval is actually about to run.
-    // Recording it here (recall entry) would set `lastReadAt` for recalls that
-    // are aborted, error out, or short-circuit before any QMD/filesystem read.
-
-    // Effective LCM read NAMESPACE SET (#1505 thread "Include coding fallback
-    // namespaces in LCM reads"). `observe` archives LCM / structured history
-    // under `${effectiveNamespace}:${sessionKey}` for whichever namespace was
-    // effective at write time. A branch-scoped session whose evidence was
-    // archived at project / root scope must still surface it, exactly as normal
-    // QMD/file recall does — QMD/file recall searches the primary overlay key AND
-    // `codingOverlay.readFallbacks` (project / root), NOT just the primary
-    // overlay key. The prior single `lcmReadSessionId` only targeted the primary
-    // overlay, so branch-scoped sessions missed fallback LCM evidence.
-    //
-    // READ-AUTHORIZATION (preserved from the prior round's
-    // `lcmReadNamespaceForSession` gate; rule 39 / 42 / 48): the coding-overlay
-    // namespace AND its fallbacks are `<principal>-project-*` sub-namespaces of
-    // the principal SELF base, authorized transitively by that base. They are
-    // included ONLY when the principal self base is in the readable recall set
-    // (`readableRecallNamespaces` — gated by `defaultRecallNamespaces.includes
-    // ("self")` AND `canReadNamespace`). When the self base is NOT readable (e.g.
-    // a write-only / self-omitted principal), the overlay rows are unauthorized
-    // for this reader, so the LCM read collapses to the default store — exactly
-    // what an unqualified, unauthorized recall resolves to — and NEVER searches a
-    // `<principal>-project-*` key (no cross-tenant read leak). This mirrors what
-    // the rest of recall surfaces for such a principal (its readable
-    // shared/policy namespaces have no per-session LCM key, so they contribute
-    // nothing here). `recallNamespaces` itself appends fallbacks unconditionally
-    // for QMD/file recall; the LCM read keys apply the stricter, self-base gate
-    // so the prior round's authorization invariant is preserved.
-    const codingOverlaySelfReadable =
-      codingOverlay !== null &&
-      (scopeProfilePlan
-        ? scopeProfilePlan.layers.some((layer) => layer.id === "userProject" && layer.readable)
-        : readableRecallNamespaces.includes(principalSelfNamespace));
-    let lcmReadNamespaces: string[];
-    if (namespaceOverride) {
-      // Explicit namespace already read-authorized above (canReadNamespace gate).
-      lcmReadNamespaces = [namespaceOverride];
-    } else if (scopeProfilePlan) {
-      // Scope profiles define a layered read stack; LCM-backed evidence uses the
-      // same namespace set as QMD/file recall so team/global/shared observations
-      // are not silently skipped.
-      lcmReadNamespaces = recallNamespaces;
-    } else if (codingOverlay && codingSelfNamespace && codingOverlaySelfReadable) {
-      // Self base readable → overlay rows authorized. Read the primary overlay
-      // key first, then each coding read fallback (project → root), combined with
-      // the principal base for isolation — the SAME ordered set QMD/file recall
-      // searches for this authorized coding session.
-      const fallbackNs = codingOverlay.readFallbacks.map((fallback) =>
-        combineNamespaces(principalSelfNamespace, fallback),
-      );
-      lcmReadNamespaces = [codingSelfNamespace, ...fallbackNs];
-    } else {
-      // No overlay, OR overlay present but self base unreadable → collapse to the
-      // default store (raw sessionKey), exactly as the prior round did. No
-      // `<principal>-project-*` overlay key is searched.
-      lcmReadNamespaces = [this.config.defaultNamespace];
-    }
-    // Map the ordered, read-authorized namespace set → ordered, deduped LCM read
-    // session_id set. Single-user / no-overlay recall passes a single-namespace
-    // set that collapses to the raw `sessionKey`, so this is `[sessionKey]` —
-    // byte-for-byte the pre-#1495 single-key behavior.
-    const lcmReadSessionIds =
-      scopeProfilePlan && !sessionKey
-        ? []
-        : lcmReadSessionIdsForNamespaces(
-            lcmReadNamespaces,
-            sessionKey,
-            this.config.defaultNamespace,
-          );
+    // Catalog read touch (issue #1499) is recorded LATER — after the Phase 1
+    // abort gate — so it fires only when retrieval actually runs, not for
+    // aborted / short-circuited recalls.
+    const scopePlan = resolveScopePlan({
+      config: this.config,
+      sessionKey,
+      namespace: options.namespace,
+      principalOverride:
+        typeof options.principalOverride === "string"
+          && options.principalOverride.length > 0
+          ? options.principalOverride
+          : undefined,
+      codingContext: sessionKey
+        ? this.getCodingContextForSession(sessionKey)
+        : null,
+      namespacesEnabled,
+    });
+    const {
+      readNamespaces: recallNamespaces,
+      baseNamespace: selfNamespace,
+      scopeProfilePlan,
+      lcmReadSessionIds,
+    } = scopePlan;
     // Query an LCM-backed read across the ordered read key set and return the
     // FIRST non-empty result (#1505 fallback-namespace unification). The primary
     // overlay key is tried first; if a branch-scoped session has no rows under its
