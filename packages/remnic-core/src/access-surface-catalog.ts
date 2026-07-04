@@ -185,6 +185,7 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "POST", pathname: "/engram/v1/trust-zones/demo-seed", operation: null },
   { method: "POST", pathname: "/v1/citations/observed", operation: null },
   { method: "GET", pathname: "/engram/v1/review/contradictions", operation: null },
+  { method: "GET", pathname: "/engram/v1/review/contradictions/:id", operation: null },
   { method: "POST", pathname: "/engram/v1/review/resolve", operation: null },
   { method: "GET", pathname: "/engram/v1/graph/snapshot", operation: null },
   { method: "POST", pathname: "/engram/v1/contradiction-scan", operation: null },

@@ -30,10 +30,14 @@ import type {
  * fell back to `typeof args.memoryId === "string" ? args.memoryId : ""`,
  * silently passing an empty id into the service). `namespace` is
  * `.nullable().optional()` because MCP clients send `null` (gotcha #2).
+ * `namespace` has no `.min(1)` because the pre-boundary handlers forwarded
+ * empty/whitespace strings, and `resolveNamespace` treats empty identically
+ * to absent (both trim to falsy → default namespace). Rejecting empty would
+ * break HTTP callers that send a bare `?namespace=` (Cursor review).
  */
 const memoryGetSchema = z.object({
   memoryId: z.string().trim().min(1, "memoryId is required").max(512),
-  namespace: z.string().trim().min(1).max(256).nullable().optional(),
+  namespace: z.string().trim().max(256).nullable().optional(),
 });
 
 export interface MemoryGetInput {
@@ -65,7 +69,7 @@ export const memoryGetOperation = defineOperation<MemoryGetInput, MemoryGetOutpu
 
 const memorySearchSchema = z.object({
   query: z.string().trim().min(1, "query is required").max(2048),
-  namespace: z.string().trim().min(1).max(256).nullable().optional(),
+  namespace: z.string().trim().max(256).nullable().optional(),
   // No upper cap: the pre-boundary MCP handler forwarded any finite number to
   // memorySearch, and the QMD/search backends honor large limits. Capping at
   // 100 would reject existing clients that request larger result sets.
