@@ -160,8 +160,8 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   const originalProcessExit = process.exit;
   const originalProcessExitCode = process.exitCode;
   const originalCwd = process.cwd();
-  const originalStdout = process.stdout;
-  const originalStderr = process.stderr;
+  const originalStdoutDescriptor = Object.getOwnPropertyDescriptor(process, "stdout");
+  const originalStderrDescriptor = Object.getOwnPropertyDescriptor(process, "stderr");
   const originalArgv = process.argv;
   const originalConsoleLog = console.log;
   const originalConsoleError = console.error;
@@ -281,8 +281,12 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   } finally {
     process.exit = originalProcessExit;
     process.chdir(originalCwd);
-    Object.defineProperty(process, "stdout", { value: originalStdout, configurable: true });
-    Object.defineProperty(process, "stderr", { value: originalStderr, configurable: true });
+    if (originalStdoutDescriptor) {
+      Object.defineProperty(process, "stdout", originalStdoutDescriptor);
+    }
+    if (originalStderrDescriptor) {
+      Object.defineProperty(process, "stderr", originalStderrDescriptor);
+    }
     console.log = originalConsoleLog;
     console.error = originalConsoleError;
     console.warn = originalConsoleWarn;
