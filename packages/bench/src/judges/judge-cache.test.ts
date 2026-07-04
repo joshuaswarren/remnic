@@ -1018,3 +1018,31 @@ test("(v) runBenchmark does not assign to a getter-only judge property when no c
     "getter-only judge property should still return the original stub",
   );
 });
+
+// --- (w) inflight memory cache: fire-and-forget writes (PR #1591 round-8) -
+
+test("(w) inflight memory cache serves reads before disk write completes (PR #1591 round-8, cursor thread)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    const parts = sampleKeyParts();
+    // Start the put but DON'T await it — the inflight entry is set
+    // synchronously, before the first await inside put(), so an immediate
+    // get() finds it even though the disk rename hasn't happened yet.
+    // This closes the gap flagged by cursor: between benchmark iterations,
+    // a fire-and-forget write from iteration N can still be pending when
+    // iteration N+1 reads the same key.
+    const putPromise = cache.put(parts, sampleResult);
+    const hit = await cache.get(parts);
+    assert.ok(hit?.cacheHit, "get must hit the inflight memory layer before disk write completes");
+    assert.deepEqual(hit.verdict, sampleResult);
+
+    // Now let the disk write finish.
+    await putPromise;
+
+    // After put settles, inflight is cleared but disk has the entry —
+    // a subsequent get still hits (now from disk).
+    const hit2 = await cache.get(parts);
+    assert.ok(hit2?.cacheHit, "get must hit disk after inflight is cleared");
+    assert.deepEqual(hit2.verdict, sampleResult);
+  });
+});

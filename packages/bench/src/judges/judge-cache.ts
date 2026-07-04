@@ -134,6 +134,15 @@ export class JudgeCache {
   // rename into place for the same key. Cached entries are read straight from
   // disk, so reads remain lock-free.
   private readonly writeQueues: Map<string, Promise<void>> = new Map();
+  // PR #1591 round-8 (cursor thread): in-memory layer for fire-and-forget
+  // writes. putSafely chains cache.put onto a pendingWrites promise
+  // without awaiting, so a second benchmark iteration can call get()
+  // before the disk rename lands. The inflight map is populated
+  // synchronously inside put() (before the first await) and cleared in
+  // the finally after the write settles — closing the gap without
+  // changing the byte-identical baseline (a fresh process has no
+  // inflight entries).
+  private readonly inflight: Map<string, CacheEnvelope> = new Map();
   private cachedDirExists = false;
 
   constructor(options: JudgeCacheOptions) {
@@ -166,6 +175,17 @@ export class JudgeCache {
    */
   async get(parts: JudgeCacheKeyParts): Promise<JudgeCacheHit | undefined> {
     const key = this.computeKey(parts);
+    // PR #1591 round-8: check the in-memory layer first — a
+    // fire-and-forget put may have stored the verdict here before
+    // the disk rename completed.
+    const inflightHit = this.inflight.get(key);
+    if (inflightHit !== undefined) {
+      return {
+        cacheHit: true,
+        verdict: inflightHit.verdict,
+        storedAt: inflightHit.storedAt,
+      };
+    }
     const filePath = this.entryPath(key);
     let raw: string;
     try {
@@ -189,8 +209,17 @@ export class JudgeCache {
    */
   async put(parts: JudgeCacheKeyParts, verdict: BenchJudgeResult): Promise<void> {
     const key = this.computeKey(parts);
+    const envelope: CacheEnvelope = {
+      storedAt: new Date().toISOString(),
+      key,
+      verdict,
+    };
+    // Populate the in-memory layer synchronously, before the first
+    // await, so concurrent readers in the same process see the
+    // verdict immediately even when the disk write is still pending.
+    this.inflight.set(key, envelope);
     const prior = this.writeQueues.get(key) ?? Promise.resolve();
-    const next = prior.then(() => this.writeOne(key, parts, verdict));
+    const next = prior.then(() => this.writeOne(key, envelope));
     // Track ONE settled-safe promise object so the finally-block identity
     // check can succeed; a fresh `.catch()` per comparison would never match
     // and the per-key entry would leak (PR #1591 review, Medium).
@@ -202,6 +231,12 @@ export class JudgeCache {
       if (this.writeQueues.get(key) === tracked) {
         this.writeQueues.delete(key);
       }
+      // Only clear our own inflight entry — a later put for the same
+      // key may have already overwritten it (mirrors the writeQueues
+      // identity check above).
+      if (this.inflight.get(key) === envelope) {
+        this.inflight.delete(key);
+      }
     }
   }
 
@@ -212,8 +247,7 @@ export class JudgeCache {
 
   private async writeOne(
     key: string,
-    parts: JudgeCacheKeyParts,
-    verdict: BenchJudgeResult,
+    envelope: CacheEnvelope,
   ): Promise<void> {
     if (!this.cachedDirExists) {
       await mkdir(this.dir, { recursive: true });
@@ -224,11 +258,6 @@ export class JudgeCache {
       this.dir,
       `.${key}.${randomBytes(6).toString("hex")}.tmp`,
     );
-    const envelope: CacheEnvelope = {
-      storedAt: new Date().toISOString(),
-      key,
-      verdict,
-    };
     await writeFile(tempPath, `${JSON.stringify(envelope)}\n`, "utf8");
     try {
       await rename(tempPath, filePath);
@@ -237,8 +266,6 @@ export class JudgeCache {
       await rm(tempPath, { force: true }).catch(() => undefined);
       throw error;
     }
-    // Silence unused-locals ts rule — keep `parts` for future debugging hooks.
-    void parts;
   }
 
   private entryPath(key: string): string {

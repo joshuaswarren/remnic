@@ -158,7 +158,6 @@ export async function runBenchmark(
   // a different cacheDir, or different provider) would silently hit
   // the stale wrapper or wrap the wrapper.
   const originalSystemJudge = options.system.judge;
-  const originalCrossJudge = options.amaBenchCrossJudge;
   let judgeCacheCounters: JudgeCacheCounters | undefined;
   // Issue #1573 PR1: optionally route judge calls through a content-keyed
   // cache. PR #1591 round-7 (OUv-n): the cache wraps the judge AFTER
@@ -373,9 +372,11 @@ export async function runBenchmark(
       if (mutatedOptionsSystemJudge) {
         options.system.judge = originalSystemJudge;
       }
-      if (originalCrossJudge !== undefined) {
-        options.amaBenchCrossJudge = originalCrossJudge;
-      }
+      // PR #1591 round-8 (cursor + chatgpt-codex-connector threads):
+      // the cross-judge restore was removed — options.amaBenchCrossJudge
+      // is never mutated by runBenchmark (the cached cross judge is
+      // passed via the run-args spread, not written back to options),
+      // so the assignment was dead code that threw on frozen options.
     }
     // PR #1591 round-6 (OUojs / OUnib): drain all pending cache
     // writes before finalizing the report. Runs outside the phase
