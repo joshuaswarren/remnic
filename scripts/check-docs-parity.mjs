@@ -184,6 +184,13 @@ function collectDocFiles() {
   for (const f of walkMarkdown(docsDir)) {
     files.push(toPosix(path.relative(ROOT, f)));
   }
+  // Root README.md — the primary user-facing doc. Contains many fenced
+  // `remnic` examples (install, quick-start, connectors) that a docs/
+  // -only scan would miss (codex thread PR #1601).
+  const rootReadme = path.join(ROOT, "README.md");
+  if (existsSync(rootReadme) && statSync(rootReadme).isFile()) {
+    files.push("README.md");
+  }
 
   // packages/*/README.md (top-level package readmes only)
   if (existsSync(packagesDir)) {

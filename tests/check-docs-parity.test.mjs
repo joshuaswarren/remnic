@@ -560,6 +560,30 @@ test("a commander subcommand no-op is attributed to the correct path", () => {
   });
 });
 
+// Regression: fenced commands in the root README.md must be scanned. Before
+// the fix, collectDocFiles() started at docs/ and added only packages/*/README.md,
+// so a typo in the primary user-facing README passed undetected (codex thread #1601).
+test("a bogus command in the root README fenced block is caught", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "README.md"),
+      [
+        "# Remnic",
+        "",
+        "```bash",
+        "remnic bogus-readme-cmd",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /documented command "remnic bogus-readme-cmd" is not registered/);
+    assert.match(result.stderr, /README\.md/);
+  });
+});
+
 // ── Misc ────────────────────────────────────────────────────────────────────
 
 test("unknown arguments are rejected with usage", () => {
