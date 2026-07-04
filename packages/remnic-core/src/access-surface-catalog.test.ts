@@ -218,25 +218,38 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
 
     if (pathname) {
       // Determine the HTTP method: same line first, then backward for
-      // exact-match routes, forward for dynamic routes.
-      let method: string | null = null;
-      const sameLine = line.match(/req\.method\s*===\s*"(\w+)"/);
-      if (sameLine) {
-        method = sameLine[1]!;
-      } else if (isExactMatch) {
+      // exact-match routes, forward for dynamic routes. Check both positive
+      // (===) and negated (!==) method patterns — `req.method !== "GET"` as
+      // a 405 guard means the route IS GET (review P2: require exact method
+      // keys; do not fall back to pathname-only when method is undetectable).
+      const detectMethod = (text: string): string | null => {
+        const pos = text.match(/req\.method\s*===\s*"(\w+)"/);
+        if (pos) return pos[1]!;
+        const neg = text.match(/req\.method\s*!==\s*"(\w+)"/);
+        if (neg) return neg[1]!;
+        return null;
+      };
+      let method = detectMethod(line);
+      if (!method && isExactMatch) {
         for (let j = i - 1; j >= Math.max(0, i - 5); j--) {
-          const bm = lines[j]!.match(/req\.method\s*===\s*"(\w+)"/);
-          if (bm) { method = bm[1]!; break; }
-        }
-      } else {
-        for (let j = i + 1; j < Math.min(lines.length, i + 5); j++) {
-          if (/pathname\s*===\s*"|\/\^.*\$\/g?\.(?:exec|test)\(pathname\)|pathname\.match\(/.test(lines[j]!)) break;
-          const fm = lines[j]!.match(/req\.method\s*===\s*"(\w+)"/);
-          if (fm) { method = fm[1]!; break; }
+          method = detectMethod(lines[j]!);
+          if (method) break;
         }
       }
-      currentKey = method ? `${method} ${pathname}` : pathname;
-      if (!routeOps.has(currentKey)) routeOps.set(currentKey, new Set<string>());
+      if (!method && !isExactMatch) {
+        for (let j = i + 1; j < Math.min(lines.length, i + 5); j++) {
+          if (/pathname\s*===\s*"|\/\^.*\$\/g?\.(?:exec|test)\(pathname\)|pathname\.match\(/.test(lines[j]!)) break;
+          method = detectMethod(lines[j]!);
+          if (method) break;
+        }
+      }
+      // If the method cannot be determined, the route block is ambiguous and
+      // must not be keyed — validateDispatchCoverage will flag any catalog
+      // entry claiming migration through it (no pathname-only fallback).
+      currentKey = method ? `${method} ${pathname}` : null;
+      if (currentKey && !routeOps.has(currentKey)) {
+        routeOps.set(currentKey, new Set<string>());
+      }
       continue;
     }
 
@@ -291,12 +304,12 @@ function validateDispatchCoverage(
   for (const entry of httpCatalog) {
     if (entry.operation === null) continue;
     // Method+path specific: the getOperation("…") call must be in THIS
-    // method's handler block for THIS pathname, not just anywhere in the
-    // file or in a different method's block for the same path. A pathname-
-    // only key would let a POST block's dispatch satisfy a GET catalog entry
-    // when they share a path (review P2: key dispatch by method and path).
+    // method's handler block for THIS pathname. No pathname-only fallback —
+    // if the extractor could not determine the method, the route block is
+    // ambiguous and the catalog entry must not be counted as migrated
+    // (review P2: require exact method keys; do not fall back).
     const routeKey = `${entry.method} ${entry.pathname}`;
-    const routeOps = httpRouteDispatch.get(routeKey) ?? httpRouteDispatch.get(entry.pathname);
+    const routeOps = httpRouteDispatch.get(routeKey);
     if (!routeOps || !routeOps.has(entry.operation)) {
       violations.push({
         kind: "http-no-dispatch",
