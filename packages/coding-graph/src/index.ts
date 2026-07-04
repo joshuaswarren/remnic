@@ -36,16 +36,17 @@
  *   is paid for once there (rule 23/38: do not invent a new pattern).
  *
  * IR-type re-export policy:
- *   graph-store.ts declares its own local `FileIR` and `SymbolIR`
- *   interfaces (structurally compatible with the #1551 contract types,
- *   but local to the store). To avoid a name collision at the package
- *   root — where `FileIR` and `SymbolIR` resolve to the @remnic/core
- *   contract types re-exported below — the store's local
- *   `FileIR`/`SymbolIR` are NOT re-exported from the root. Reach them
- *   via the `./graph-store` subpath:
- *     import { type FileIR } from "@remnic/coding-graph/graph-store";
- * Only store-specific types that do NOT collide with the contract surface
- * are re-exported from the root.
+ *   graph-store.ts imports the core IR contract types (`FileIR`,
+ *   `SymbolIR`, etc.) from `@remnic/core/coding/coding-graph-types`
+ *   and re-exports them so existing `import { type FileIR } from
+ *   "./graph-store.js"` call-sites continue to resolve. The store
+ *   does NOT redefine these types — it derives from the core contract
+ *   so PR2 callers can pass `ParseResult.ir` directly
+ *   (chatgpt-codex-connector P2: 'Derive store FileIR from the core
+ *   parser contract'). At the package root, `FileIR`/`SymbolIR`
+ *   resolve to the @remnic/core contract types re-exported below;
+ *   the store-specific `StoreFileIR` (FileIR + edges extension) and
+ *   `EdgeIR` are re-exported from the root via graph-store.
  */
 
 import {
@@ -175,12 +176,14 @@ export {
   GraphStore,
   nodeIdFor,
   type ByteSpan,
+  type EdgeIR,
   type ExportIR,
   type GraphStoreFailure,
   type GraphStoreFailureCode,
   type GraphStoreOptions,
   type ImportIR,
   type NodeIdInput,
+  type StoreFileIR,
   type SymbolKind,
   type UpsertBatchResult,
   type UpsertResult,

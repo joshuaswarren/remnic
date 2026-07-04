@@ -23,7 +23,7 @@ import {
   type BetterSqlite3Database,
 } from "@remnic/core/runtime/better-sqlite";
 import { GraphStore, nodeIdFor } from "./graph-store.js";
-import type { FileIR, SymbolIR } from "./graph-store.js";
+import type { StoreFileIR, SymbolIR } from "./graph-store.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Fixture IR — synthetic code only (public-repo policy).
@@ -39,9 +39,9 @@ function sym(
   return { qualifiedName, name, span: { startByte, endByte }, kind };
 }
 
-const fileA: FileIR = {
+const fileA: StoreFileIR = {
   path: "src/a.ts",
-  language: "ts",
+  language: "typescript",
   contentHash: "h-a",
   symbols: [
     sym("a.greet", "greet", 0, 100),
@@ -58,9 +58,9 @@ const fileA: FileIR = {
   ],
 };
 
-const fileB: FileIR = {
+const fileB: StoreFileIR = {
   path: "src/b.ts",
-  language: "ts",
+  language: "typescript",
   contentHash: "h-b",
   symbols: [
     sym("b.run", "run", 0, 50),
@@ -175,9 +175,9 @@ test("dangling-edge policy: cross-file edges whose dst is dropped are counted, n
 
     // Re-ingest fileA only with a stripped symbol set: a.greet is gone, so
     // the cross-file edge from b.run → a.greet becomes dangling.
-    const fileAReduced: FileIR = {
+    const fileAReduced: StoreFileIR = {
       path: "src/a.ts",
-      language: "ts",
+      language: "typescript",
       contentHash: "h-a-2",
       symbols: [sym("a.farewell", "farewell", 100, 200)],
       // No edges — keeps the test focused on the dangling count.
@@ -253,9 +253,9 @@ test("fts_index: prunes the mapping when a node is removed by re-ingest", async 
 
     // Re-ingest fileA with an empty symbol set — every node is
     // pruned, so every fts_index row must follow.
-    const empty: FileIR = {
+    const empty: StoreFileIR = {
       path: "src/a.ts",
-      language: "ts",
+      language: "typescript",
       contentHash: "h-a-empty",
       symbols: [],
       edges: [],
@@ -336,9 +336,9 @@ test("write queue serializes concurrent upserts (rule 40)", async () => {
     // Fire N batches in parallel — the queue must execute them one after
     // the other without raising and without losing rows.
     const N = 8;
-    const irs: FileIR[] = Array.from({ length: N }, (_, i) => ({
+    const irs: StoreFileIR[] = Array.from({ length: N }, (_, i) => ({
       path: `src/file-${i}.ts`,
-      language: "ts",
+      language: "typescript",
       contentHash: `h-${i}`,
       symbols: [sym(`f-${i}.run`, "run", 0, 10)],
       edges: [],
@@ -368,9 +368,10 @@ test("closed store returns tagged failure, never throws (rule 34)", async () => 
     const result = await store.upsertFileBatch([fileA]);
     assert.equal(result.ok, false);
     if (result.ok) throw new Error("expected failure");
-    assert.ok(
-      result.code === "db_corrupt" || result.code === "db_locked",
-      `closed store should return tagged failure; got ${result.code}`,
+    assert.equal(
+      result.code,
+      "store_closed",
+      `closed store should return "store_closed" lifecycle failure; got ${result.code}`,
     );
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -385,9 +386,9 @@ test("node-id ingestion: file-level delete cascades prior nodes + owned edges", 
     if (!r1.ok) throw new Error("expected ok");
 
     // Re-ingest fileA with empty symbols — deletes both nodes.
-    const fileAEmpty: FileIR = {
+    const fileAEmpty: StoreFileIR = {
       path: "src/a.ts",
-      language: "ts",
+      language: "typescript",
       contentHash: "h-a-empty",
       symbols: [],
       edges: [],
@@ -443,9 +444,9 @@ test("edge src validation: cross-file edge src is rejected, not cross-owned (cha
     // DROPPED: a FileIR may only assert edges whose src is a symbol
     // in the same file. Without this guard the edge would be silently
     // cross-owned by fileB and survive fileA re-ingests.
-    const fileAMalformedEdge: FileIR = {
+    const fileAMalformedEdge: StoreFileIR = {
       path: "src/a.ts",
-      language: "ts",
+      language: "typescript",
       contentHash: "h-a-malformed",
       symbols: [sym("a.greet", "greet", 0, 100)],
       edges: [
@@ -471,9 +472,9 @@ test("edge src validation: cross-file edge src is rejected, not cross-owned (cha
     // The store exposes no public query API yet, so we go through
     // the re-ingest path: re-ingest fileA with no edges and confirm
     // no cross-owned edge was left behind.
-    const fileAClean: FileIR = {
+    const fileAClean: StoreFileIR = {
       path: "src/a.ts",
-      language: "ts",
+      language: "typescript",
       contentHash: "h-a-clean",
       symbols: [sym("a.greet", "greet", 0, 100)],
       edges: [],
@@ -498,15 +499,15 @@ test("duplicate paths in one batch throw (cursor Bugbot: 'Duplicate paths corrup
     dbPath: path.join(dir, "store.db"),
   });
   try {
-    const fileA1: FileIR = {
+    const fileA1: StoreFileIR = {
       path: "src/a.ts",
-      language: "ts",
+      language: "typescript",
       contentHash: "h-a-1",
       symbols: [sym("a.greet", "greet", 0, 100)],
     };
-    const fileA2: FileIR = {
+    const fileA2: StoreFileIR = {
       path: "src/a.ts",
-      language: "ts",
+      language: "typescript",
       contentHash: "h-a-2",
       symbols: [sym("a.farewell", "farewell", 0, 100)],
     };
@@ -527,9 +528,9 @@ test("duplicate (src,dst,type) edges keep first metadata, do not inflate edgeCou
     dbPath: path.join(dir, "store.db"),
   });
   try {
-    const fileDup: FileIR = {
+    const fileDup: StoreFileIR = {
       path: "src/dup.ts",
-      language: "ts",
+      language: "typescript",
       contentHash: "h-dup",
       symbols: [sym("dup.caller", "caller", 0, 50), sym("dup.callee", "callee", 50, 100)],
       edges: [
@@ -586,9 +587,9 @@ test("ambiguous local qualified_name drops edges, does not silently pick one nod
     // Two symbols share qualifiedName "ambig.Foo" but have different
     // kinds (type vs function) → different node ids, same qualified_name.
     // Node identity is (qualifiedName, filePath, label=kind).
-    const fileAmbig: FileIR = {
+    const fileAmbig: StoreFileIR = {
       path: "src/ambig.ts",
-      language: "ts",
+      language: "typescript",
       contentHash: "h-ambig",
       symbols: [
         sym("ambig.Foo", "Foo", 0, 100, "type"),
@@ -621,6 +622,40 @@ test("ambiguous local qualified_name drops edges, does not silently pick one nod
   }
 });
 
+test("out-of-range edge confidence is rejected at the storage boundary (chatgpt-codex-connector P2)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-conf-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "store.db"),
+  });
+  try {
+    for (const badConfidence of [-0.1, 1.5, -1, 2, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const file: StoreFileIR = {
+        path: "src/conf.ts",
+        language: "typescript",
+        contentHash: "h-conf",
+        symbols: [sym("conf.caller", "caller", 0, 50), sym("conf.callee", "callee", 50, 100)],
+        edges: [
+          {
+            srcQualifiedName: "conf.caller",
+            dstQualifiedName: "conf.callee",
+            type: "CALLS",
+            confidence: badConfidence,
+            provenance: "heuristic",
+          },
+        ],
+      };
+      await assert.rejects(
+        store.upsertFileBatch([file]),
+        /out of range \[0, 1\]/,
+        `confidence ${badConfidence} must be rejected at the storage boundary`,
+      );
+    }
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("close blocks new writes before draining so a concurrent upsert is rejected (chatgpt-codex-connector P2)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "cg-closing-"));
   const store = await GraphStore.open({
@@ -639,8 +674,8 @@ test("close blocks new writes before draining so a concurrent upsert is rejected
     if (rejected.ok) throw new Error("expected rejected");
     assert.equal(
       rejected.code,
-      "db_corrupt",
-      "upsert during close-drain must be rejected, not run against a closing DB",
+      "store_closed",
+      "upsert during close-drain must return store_closed, not run against a closing DB",
     );
     // Let the pending write + close finish.
     await firstWrite;

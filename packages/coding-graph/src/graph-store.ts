@@ -54,19 +54,42 @@ import {
 } from "./graph-schema.js";
 
 import { expectRow, expectRows } from "./row-types.js";
-// ──────────────────────────────────────────────────────────────────────────
-// IR — minimal local type compatible with #1551's FileIR contract.
-// ──────────────────────────────────────────────────────────────────────────
+
+// Re-export the core IR contract types so existing imports from
+// `./graph-store.js` still resolve. The store no longer redefines these;
+// it derives from @remnic/core's contract so PR2 callers can pass
+// `ParseResult.ir` directly without field-name translation or casts
+// (chatgpt-codex-connector P2: 'Derive store FileIR from the core parser
+// contract'). Core owns the canonical types in
+// packages/remnic-core/src/coding/coding-graph-types.ts; this package
+// implements against them.
+export type {
+  FileIR,
+  SymbolIR,
+  ImportIR,
+  ExportIR,
+  CallSiteIR,
+  RouteIR,
+  CodingGraphLanguage,
+} from "@remnic/core/coding/coding-graph-types";
+
+import type {
+  FileIR,
+  SymbolIR,
+  CodingGraphLanguage,
+} from "@remnic/core/coding/coding-graph-types";
 
 /**
- * The half-open span `[startByte, endByte)` — issue #1551 / rule 35. PR1
- * does NOT interpret these; we persist them as-is for PR2's snippet reads.
+ * Half-open byte span `[startByte, endByte)` — matches @remnic/core's
+ * inline span type. Kept as a named alias for API consumers that import
+ * `ByteSpan` from the store subpath (issue #1551 / rule 35).
  */
-export interface ByteSpan {
-  startByte: number;
-  endByte: number;
-}
+export type ByteSpan = { readonly startByte: number; readonly endByte: number };
 
+/**
+ * Symbol kind union — matches @remnic/core's `SymbolIR["kind"]` exactly
+ * (core does not export this as a named type).
+ */
 export type SymbolKind =
   | "function"
   | "class"
@@ -74,66 +97,14 @@ export type SymbolKind =
   | "interface"
   | "enum"
   | "type"
-  | "module"
-  | "variable"
-  | "constant"
-  | "unknown";
-
-export interface SymbolIR {
-  kind: SymbolKind;
-  name: string;
-  qualifiedName: string;
-  /** Half-open span — matches @remnic/core's CodingGraphEngine contract. */
-  span: ByteSpan;
-  parentQualifiedName?: string;
-}
-
-export interface ImportIR {
-  source: string;
-  importedNames: string[];
-  span: ByteSpan;
-}
-
-export interface ExportIR {
-  name: string;
-  span: ByteSpan;
-}
-
-export interface CallSiteIR {
-  /** Best-effort callee-name candidates from the parser. */
-  calleeCandidates: string[];
-  span: ByteSpan;
-}
+  | "module";
 
 /**
- * Hand-written fixture IR. Field names align with issue #1551's
- * `FileIR` contract from @remnic/core (`language`, nested `span`):
- * `{path, language, contentHash, symbols[], imports[], exports[],
- * callSites[]}`. The parser from #1551 will produce richer entries
- * (routes, more metadata); the store ingests whichever subset is
- * present and ignores missing arrays as empty.
- *
- * `edges` is a store-specific extension: the graph-edge model derived
- * from callSites by the caller (PR1 carries pre-derived edges; PR2
- * adds an adapter if the parser emits raw callSites only).
+ * Store-specific edge — references nodes by `qualifiedName` so the store
+ * can resolve them against the same batch's symbol set plus the on-disk
+ * node table. PR1 only carries CALLS-style edges; PR2 adds the rest of
+ * #1552's edge types.
  */
-export interface FileIR {
-  path: string;
-  language: string;
-  contentHash: string;
-  symbols?: SymbolIR[];
-  imports?: ImportIR[];
-  exports?: ExportIR[];
-  callSites?: CallSiteIR[];
-  /**
-   * Edges derived from the IR. PR1 only carries CALLS-style edges; PR2
-   * adds the rest of #1552's edge types. Each edge references nodes by
-   * `qualifiedName` so the store can resolve them against the same
-   * batch's symbol set plus the on-disk node table.
-   */
-  edges?: EdgeIR[];
-}
-
 export interface EdgeIR {
   /** Qualified name of the source node (caller / definition site). */
   srcQualifiedName: string;
@@ -144,11 +115,28 @@ export interface EdgeIR {
   provenance: EdgeProvenance;
 }
 
+/**
+ * Store input — the subset of @remnic/core's `FileIR` the store reads,
+ * plus the store-specific `edges` extension. A core `FileIR` (from
+ * `ParseResult.ir`) is structurally assignable here: all required fields
+ * (path, language, contentHash, symbols) match by name and readonly-ness.
+ * PR2 callers pass `{ ...parseResult.ir, edges }` (or the bare IR when
+ * edges are absent) with zero casts or field-name translation.
+ */
+export interface StoreFileIR {
+  readonly path: string;
+  readonly language: CodingGraphLanguage;
+  readonly contentHash: string;
+  readonly symbols: readonly SymbolIR[];
+  /** Store-specific edges derived from the IR by the caller. */
+  readonly edges?: readonly EdgeIR[];
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Result shapes — tagged failures (rule 34).
 // ──────────────────────────────────────────────────────────────────────────
 
-export type GraphStoreFailureCode = "db_locked" | "db_corrupt";
+export type GraphStoreFailureCode = "db_locked" | "db_corrupt" | "store_closed";
 
 export interface GraphStoreFailure {
   ok: false;
@@ -290,11 +278,11 @@ export class GraphStore {
    *     `database disk image is malformed`; the caller must surface and
    *     stop trusting this DB.
    */
-  async upsertFileBatch(files: FileIR[]): Promise<UpsertBatchResult> {
+  async upsertFileBatch(files: StoreFileIR[]): Promise<UpsertBatchResult> {
     if (this.closed || this.closing) {
       return {
         ok: false,
-        code: "db_corrupt",
+        code: "store_closed",
       };
     }
     return this.queue.schedule(() => this.runUpsert(files));
@@ -327,7 +315,7 @@ export class GraphStore {
 
   // ────────────── private ──────────────
 
-  private async runUpsert(files: FileIR[]): Promise<UpsertBatchResult> {
+  private async runUpsert(files: StoreFileIR[]): Promise<UpsertBatchResult> {
     // Guard: duplicate paths in one batch silently corrupt the edge
     // pass — pass 2 deletes the first entry's edges when the second
     // entry's edge pass runs against the same file row. Fail loud so
@@ -354,7 +342,7 @@ export class GraphStore {
       // so changed confidence/provenance values overwrite. The two
       // passes together make the write pipeline order-independent for
       // cross-file edges (chatgpt-codex-connector P1/P2).
-      const tx = this.db.transaction((irs: FileIR[]) => {
+      const tx = this.db.transaction((irs: StoreFileIR[]) => {
         // Pass 1: every file's nodes. Returns the upsert result so we
         // can populate `results` and so pass 2 can read back
         // droppedDanglingEdges for logging.
@@ -386,7 +374,7 @@ export class GraphStore {
    * stale id — is correctly deleted. Counts the dangling edges that
    * fall out of the cascade so the caller can log the loss.
    */
-  private upsertFileNodes(ir: FileIR): UpsertResult {
+  private upsertFileNodes(ir: StoreFileIR): UpsertResult {
     // Upsert the file row first; the nodes table references files(id).
     const upsertFile = this.db.prepare(
       `INSERT INTO files (path, lang, content_hash)
@@ -603,7 +591,7 @@ export class GraphStore {
    * (chatgpt-codex-connector P1: ON CONFLICT DO NOTHING silently
    * kept stale edges across re-ingests).
    */
-  private upsertFileEdges(ir: FileIR, result: UpsertResult): void {
+  private upsertFileEdges(ir: StoreFileIR, result: UpsertResult): void {
     // Build the set of edges the IR is asserting for this file. The
     // SRC of each edge MUST belong to this file (it is resolved from
     // the per-file `qualifiedNameToId` map only — no DB fallback);
@@ -653,6 +641,15 @@ export class GraphStore {
       if (!isEdgeProvenance(edge.provenance)) {
         throw new Error(
           `graph-store: edge has invalid provenance ${JSON.stringify(edge.provenance)}`,
+        );
+      }
+      if (
+        !Number.isFinite(edge.confidence) ||
+        edge.confidence < 0 ||
+        edge.confidence > 1
+      ) {
+        throw new Error(
+          `graph-store: edge confidence ${edge.confidence} is out of range [0, 1] for edge ${edge.srcQualifiedName} → ${edge.dstQualifiedName}`,
         );
       }
       // SRC must be a symbol in THIS file — resolve from the per-file

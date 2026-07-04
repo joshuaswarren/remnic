@@ -148,7 +148,7 @@ function createTables(db: BetterSqlite3Database): void {
       src        TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
       dst        TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
       type       TEXT NOT NULL,
-      confidence REAL NOT NULL,
+      confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
       provenance TEXT NOT NULL CHECK (provenance IN (${provenanceList})),
       UNIQUE (src, dst, type)
     );
