@@ -25,13 +25,14 @@ import { fileURLToPath } from "node:url";
 
 import { appendNodeOption } from "./root-test-runner-env.mjs";
 import {
-  TEST_PATTERNS,
   chunkArgsByLength,
   expandTestPatterns,
   loadNativeManifest,
+  parseRunnerArgs,
   parseTapSummary,
   partitionNativeDependent,
   probeBetterSqlite3,
+  selectTestPatterns,
 } from "./root-test-runner-lib.mjs";
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -43,7 +44,22 @@ process.env.NODE_OPTIONS = appendNodeOption(
   "--conditions=remnic-source",
 );
 
-const { files, emptyPatterns } = expandTestPatterns(repoRoot);
+let selectedGroups;
+let selectedPatterns;
+try {
+  ({ groups: selectedGroups } = parseRunnerArgs(process.argv.slice(2)));
+  selectedPatterns = selectTestPatterns(selectedGroups);
+} catch (error) {
+  console.error(`[root-tests] ERROR: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+if (selectedGroups.length > 0) {
+  console.warn(
+    `[root-tests] running pattern group(s): ${selectedGroups.join(", ")} (${selectedPatterns.length} pattern(s))`,
+  );
+}
+
+const { files, emptyPatterns } = expandTestPatterns(repoRoot, selectedPatterns);
 if (emptyPatterns.length > 0) {
   console.error(
     `[root-tests] ERROR: test pattern(s) matched no files — coverage would be silently lost: ${emptyPatterns.join(", ")}`,
@@ -76,9 +92,17 @@ if (!probe.ok) {
   }
   const manifest = loadNativeManifest(manifestPath);
   const { run, excluded, stale } = partitionNativeDependent(files, manifest.files);
-  if (stale.length > 0) {
+  // Under --group sharding `files` is a subset of the tree, so manifest
+  // entries belonging to other groups are not stale — validate staleness
+  // against the full pattern expansion before failing.
+  let staleEntries = stale;
+  if (selectedGroups.length > 0 && stale.length > 0) {
+    const fullFiles = new Set(expandTestPatterns(repoRoot).files);
+    staleEntries = stale.filter((entry) => !fullFiles.has(entry));
+  }
+  if (staleEntries.length > 0) {
     console.error(
-      `[root-tests] ERROR: scripts/native-dependent-tests.json lists files that no longer exist: ${stale.join(", ")}. Update the manifest.`,
+      `[root-tests] ERROR: scripts/native-dependent-tests.json lists files that no longer exist: ${staleEntries.join(", ")}. Update the manifest.`,
     );
     process.exit(1);
   }
@@ -124,13 +148,13 @@ function runTsx(testArgs) {
 
 // Windows builds a single bounded command line per spawn, so hundreds of
 // explicit file arguments cannot ride one invocation. Healthy runs therefore
-// use the original six pattern arguments (tsx expands them internally, and
+// pass the selected pattern arguments (tsx expands them internally, and
 // expandTestPatterns above already proved none are vacuous); only exclusion
 // runs pass explicit relative paths, chunked under a conservative budget.
 const ARGV_CHAR_BUDGET = 6000;
 const runsArgs =
   filesToRun.length === files.length
-    ? [TEST_PATTERNS.map((pattern) => pattern.id)]
+    ? [selectedPatterns.map((pattern) => pattern.id)]
     : chunkArgsByLength(filesToRun, ARGV_CHAR_BUDGET);
 
 let totalFail = 0;

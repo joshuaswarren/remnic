@@ -59,6 +59,17 @@ Remnic is a local-first memory plugin (TypeScript monorepo, pnpm workspaces, ESM
 - **Shared mutable objects must not leak across sessions** — per-connection instances or deep-copy for `clientInfo` etc.
 - **Feature gates must be identical across all code paths** — if a gate covers the QMD path but not the fallback path, behavior diverges.
 
+### Packaging & docs-code contracts
+- **Optional packages stay optional at every layer** — `@remnic/bench`, `@remnic/export-weclone` load via computed-specifier dynamic imports (`await import("@remnic/" + "bench")`), are optional peer deps, and must NEVER appear in `noExternal` or as static imports in base install surfaces (CLI, core, plugin-openclaw).
+- **Documented behavior must be wired end-to-end** — a config property defined in the schema but never consumed in code is a bug; docs claiming "timeout applies to daemon calls" require the parameter to actually reach the client.
+- **Parsers track position during iteration** — `content.indexOf(line)` returns the FIRST occurrence; repeated lines make offsets wrong. Maintain a running offset.
+
+### CI workflows (`.github/workflows/`)
+- **Never silence quality gates** — no `|| true`, no `continue-on-error: true` on test/type/lint steps.
+- **Aggregator jobs must propagate failure** — a job that `needs:` others and gates a required status check must fail when any dependency is not `success` (skipped and cancelled count as failure).
+- **`concurrency.cancel-in-progress` must never cancel push-to-main runs** — only PR events are safe to supersede.
+- **Test shard definitions must partition, not sample** — the union of CI shards must equal the full suite; a pattern group that drops files silently loses coverage.
+
 ## Medium-Priority Checks
 
 - **Wrap external service calls in try-catch** — token generation, daemon probes, filesystem writes must not crash primary flows.
@@ -78,6 +89,7 @@ Remnic is a local-first memory plugin (TypeScript monorepo, pnpm workspaces, ESM
 - Test fixture data in `tests/fixtures/` — intentionally static.
 - Eval benchmark code in `evals/` — separate concern from core logic.
 - Docs formatting changes — only flag if they misrepresent behavior.
+- Previously reviewed, unchanged code — only flag issues introduced or made reachable by the current diff.
 
 ## Monorepo Structure
 

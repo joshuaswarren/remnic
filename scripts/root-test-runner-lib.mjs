@@ -26,6 +26,66 @@ export const TEST_PATTERNS = [
   { id: "integrations/amb/*.test.mjs", base: "integrations/amb", recursive: false, suffix: ".test.mjs" },
 ];
 
+/**
+ * Named pattern groups for CI test sharding (issue: CI wall-clock). Every
+ * TEST_PATTERNS id must belong to exactly one group — the companion test
+ * enforces the partition so a new pattern cannot silently escape sharded CI.
+ */
+export const TEST_PATTERN_GROUPS = Object.freeze({
+  root: ["tests/**/*.test.ts", "tests/**/*.test.mjs"],
+  packages: ["packages/*/src/**/*.test.ts", "packages/*/src/**/*.test.tsx"],
+  misc: ["dashboard/lib/*.test.ts", "integrations/amb/*.test.mjs"],
+});
+
+/**
+ * Resolve --group selections into TEST_PATTERNS entries.
+ * No groups selected → the full pattern list (unsharded behavior).
+ * Unknown group names are an error, never a silent no-op.
+ */
+export function selectTestPatterns(groupNames, patterns = TEST_PATTERNS) {
+  if (!Array.isArray(groupNames)) {
+    throw new Error("selectTestPatterns: groupNames must be an array");
+  }
+  if (groupNames.length === 0) return patterns;
+  const validGroups = Object.keys(TEST_PATTERN_GROUPS).join(", ");
+  const ids = new Set();
+  for (const name of groupNames) {
+    const groupIds = TEST_PATTERN_GROUPS[name];
+    if (!groupIds) {
+      throw new Error(`Unknown test group "${name}". Valid groups: ${validGroups}`);
+    }
+    for (const id of groupIds) ids.add(id);
+  }
+  const selected = patterns.filter((pattern) => ids.has(pattern.id));
+  if (selected.length === 0) {
+    throw new Error(`Test group selection [${groupNames.join(", ")}] matched no patterns.`);
+  }
+  return selected;
+}
+
+/**
+ * Parse root-test-runner CLI arguments. Only `--group <name>` (repeatable)
+ * is accepted; anything else is an error — invalid input is rejected, not
+ * silently reinterpreted as "run everything".
+ */
+export function parseRunnerArgs(argv) {
+  const groups = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--group") {
+      const value = argv[index + 1];
+      if (typeof value !== "string" || value.startsWith("--")) {
+        throw new Error("--group requires a group name argument");
+      }
+      if (!groups.includes(value)) groups.push(value);
+      index += 1;
+      continue;
+    }
+    throw new Error(`Unknown argument "${arg}". Usage: run-root-tests.mjs [--group <name>]...`);
+  }
+  return { groups };
+}
+
 const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
 
 function toPosix(relPath) {

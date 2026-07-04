@@ -11,6 +11,12 @@ permissions:
   contents: read
   pull-requests: read
 
+# A superseded push should not keep burning runners: cancel in-flight runs for
+# the same PR. Pushes to main are never cancelled.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   detect-risky-paths:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
@@ -67,10 +73,60 @@ jobs:
       - name: Entity hardening suite
         run: pnpm run test:entity-hardening
 
-  quality:
+  # Static analysis: no native binding, no build artifacts needed beyond the
+  # core build that check-types performs itself.
+  checks:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Typecheck
+        run: pnpm run check-types
+
+      - name: Review pattern check
+        run: bash scripts/check-review-patterns.sh
+
+      - name: Structural ratchets
+        run: node scripts/check-ratchets.mjs
+
+      - name: Docs-code parity
+        run: node scripts/check-docs-parity.mjs
+
+  # The root suite (895 files) sharded by pattern group so shards run in
+  # parallel. TEST_PATTERN_GROUPS in scripts/root-test-runner-lib.mjs is an
+  # exact partition of TEST_PATTERNS (enforced by test), so the union of the
+  # shards below is exactly the unsharded suite.
+  tests:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: root
+            groups: '--group root --group misc'
+          - shard: packages
+            groups: '--group packages'
+    name: tests (${{ matrix.shard }})
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -90,29 +146,18 @@ jobs:
       - name: Rebuild native modules
         run: pnpm rebuild better-sqlite3
 
-      # CI hard-requires capability tests (#1541) below, which in turn
-      # hard-requires `uv` for the AMB runner scripts. Install it on the
-      # ubuntu runner so the gate has the capability it demands.
+      - name: Build @remnic/core
+        run: pnpm --filter @remnic/core build
+
+      # CI hard-requires capability tests (#1541), which in turn hard-require
+      # `uv` for the AMB runner scripts. Install it on the runner so the gate
+      # has the capability it demands.
       - name: Setup uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Lint
-        run: pnpm run lint
-
-      - name: Typecheck
-        run: pnpm run check-types
-
-      - name: Review pattern check
-        run: bash scripts/check-review-patterns.sh
-
-      - name: Structural ratchets
-        run: node scripts/check-ratchets.mjs
-
-      - name: Docs-code parity
-        run: node scripts/check-docs-parity.mjs
 
       - name: Tests
-        run: pnpm test
+        run: node scripts/run-root-tests.mjs ${{ matrix.groups }}
         env:
           # CI rebuilds the native binding above; skipping native-dependent
           # suites here would silently drop coverage (#1538).
@@ -123,8 +168,53 @@ jobs:
           # locally instead of counting a silent skip.
           REMNIC_REQUIRE_CAPABILITY_TESTS: "1"
 
+  build-artifacts:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
       - name: Build
         run: pnpm run build
 
       - name: Release artifact smoke test
         run: node scripts/check-release-artifacts.mjs
+
+  # Aggregator that preserves the required status-check context `quality`
+  # (branch ruleset) while the real work runs in parallel jobs above. Fails
+  # unless every dependency succeeded — skipped/cancelled deps are failures,
+  # never silently accepted.
+  quality:
+    needs: [checks, tests, build-artifacts]
+    if: always() && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify all CI jobs succeeded
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS_JSON"
+          failed=$(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key')
+          if [ -n "$failed" ]; then
+            echo "::error::CI gate failed — non-success jobs: $failed"
+            exit 1
+          fi
+          echo "All CI jobs succeeded."

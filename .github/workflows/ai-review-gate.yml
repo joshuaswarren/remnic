@@ -16,6 +16,13 @@ permissions:
   issues: read
   pull-requests: read
 
+# Only the newest gate evaluation per PR matters: a fresh push, review, or
+# reviewer check_run supersedes any in-flight evaluation. check_run events
+# with no associated PR fall back to a unique group (they self-skip anyway).
+concurrency:
+  group: ai-review-gate-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   ai-reviewers:
     if: >-
@@ -25,11 +32,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Wait for AI reviewers to settle
-        run: |
-          echo "Waiting 3 minutes for AI reviewers to analyse the diff..."
-          sleep 180
-
       - name: Check AI review bot activity
         uses: actions/github-script@v7
         env:
@@ -324,103 +326,133 @@ jobs:
               return;
             }
 
-            const failures = [];
-            let evaluatedCount = 0;
+            async function evaluatePullRequests() {
+              const failures = [];
+              let evaluatedCount = 0;
+              let hasBlockers = false;
 
-            for (const pr of pullRequestNumbers) {
-              const pullRequest = await github.rest.pulls.get({
-                owner,
-                repo,
-                pull_number: pr,
-              });
-              if (pullRequest.data.draft) {
-                core.notice(`Skipping draft pull request #${pr}.`);
-                continue;
-              }
-              evaluatedCount += 1;
+              for (const pr of pullRequestNumbers) {
+                const pullRequest = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: pr,
+                });
+                if (pullRequest.data.draft) {
+                  core.notice(`Skipping draft pull request #${pr}.`);
+                  continue;
+                }
+                evaluatedCount += 1;
 
-              const reviews = await github.paginate(github.rest.pulls.listReviews, {
-                owner,
-                repo,
-                pull_number: pr,
-                per_page: 100,
-              });
+                const reviews = await github.paginate(github.rest.pulls.listReviews, {
+                  owner,
+                  repo,
+                  pull_number: pr,
+                  per_page: 100,
+                });
 
-              const issueComments = await github.paginate(github.rest.issues.listComments, {
-                owner,
-                repo,
-                issue_number: pr,
-                per_page: 100,
-              });
+                const issueComments = await github.paginate(github.rest.issues.listComments, {
+                  owner,
+                  repo,
+                  issue_number: pr,
+                  per_page: 100,
+                });
 
-              const prComments = await github.paginate(github.rest.pulls.listReviewComments, {
-                owner,
-                repo,
-                pull_number: pr,
-                per_page: 100,
-              });
+                const prComments = await github.paginate(github.rest.pulls.listReviewComments, {
+                  owner,
+                  repo,
+                  pull_number: pr,
+                  per_page: 100,
+                });
 
-              const headSha = pullRequest.data.head.sha;
-              const headCommit = headSha
-                ? await github.rest.repos.getCommit({
-                    owner,
-                    repo,
-                    ref: headSha,
-                  })
-                : null;
-              const headCommittedAt =
-                headCommit?.data?.commit?.committer?.date ??
-                headCommit?.data?.commit?.author?.date ??
-                null;
-              const checkRuns = headSha
-                ? await github.paginate(github.rest.checks.listForRef, {
-                    owner,
-                    repo,
-                    ref: headSha,
-                    per_page: 100,
-                  })
-                : [];
+                const headSha = pullRequest.data.head.sha;
+                const headCommit = headSha
+                  ? await github.rest.repos.getCommit({
+                      owner,
+                      repo,
+                      ref: headSha,
+                    })
+                  : null;
+                const headCommittedAt =
+                  headCommit?.data?.commit?.committer?.date ??
+                  headCommit?.data?.commit?.author?.date ??
+                  null;
+                const checkRuns = headSha
+                  ? await github.paginate(github.rest.checks.listForRef, {
+                      owner,
+                      repo,
+                      ref: headSha,
+                      per_page: 100,
+                    })
+                  : [];
 
-              const result = evaluateAiReviewGate({
-                groups,
-                headSha,
-                headCommittedAt,
-                reviews,
-                issueComments,
-                reviewComments: prComments,
-                checkRuns,
-              });
+                const result = evaluateAiReviewGate({
+                  groups,
+                  headSha,
+                  headCommittedAt,
+                  reviews,
+                  issueComments,
+                  reviewComments: prComments,
+                  checkRuns,
+                });
 
-              core.info(
-                `PR #${pr} positive current-head AI review activity from: ${
-                  result.present.map(p => `${p.alias}(${p.kind}:${p.state})`).join(', ') || 'none'
-                }`,
-              );
-
-              if (result.blockers.length > 0) {
                 core.info(
-                  `PR #${pr} blocking AI review activity: ${
-                    result.blockers.map(b => `${b.alias}(${b.state})`).join(', ')
+                  `PR #${pr} positive current-head AI review activity from: ${
+                    result.present.map(p => `${p.alias}(${p.kind}:${p.state})`).join(', ') || 'none'
                   }`,
                 );
+
+                if (result.blockers.length > 0) {
+                  core.info(
+                    `PR #${pr} blocking AI review activity: ${
+                      result.blockers.map(b => `${b.alias}(${b.state})`).join(', ')
+                    }`,
+                  );
+                  hasBlockers = true;
+                }
+
+                if (!result.ok) {
+                  failures.push({ pr, reason: result.reason });
+                  continue;
+                }
+
+                core.notice(`PR #${pr}: ${result.reason}`);
               }
 
-              if (!result.ok) {
-                failures.push({ pr, reason: result.reason });
-                continue;
-              }
-
-              core.notice(`PR #${pr}: ${result.reason}`);
+              return { failures, evaluatedCount, hasBlockers };
             }
 
-            if (failures.length > 0) {
-              core.setFailed(
-                `AI review gate failed for ${failures.map((failure) => `#${failure.pr}: ${failure.reason}`).join(' | ')}`,
+            // Poll instead of a fixed sleep: pass the moment every required
+            // reviewer has spoken on the current head. Explicit negative
+            // signals (blockers) fail immediately — a new push or review
+            // event re-fires this workflow and supersedes this run via the
+            // concurrency group, so waiting on a blocker buys nothing.
+            const POLL_INTERVAL_MS = 20_000;
+            const POLL_DEADLINE_MS = 7 * 60_000;
+            const startedAt = Date.now();
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            for (;;) {
+              const { failures, evaluatedCount, hasBlockers } = await evaluatePullRequests();
+
+              if (evaluatedCount === 0) {
+                core.setFailed('AI review gate did not evaluate any non-draft pull requests.');
+                return;
+              }
+
+              if (failures.length === 0) {
+                return;
+              }
+
+              const elapsedMs = Date.now() - startedAt;
+              if (hasBlockers || elapsedMs + POLL_INTERVAL_MS > POLL_DEADLINE_MS) {
+                core.setFailed(
+                  `AI review gate failed for ${failures.map((failure) => `#${failure.pr}: ${failure.reason}`).join(' | ')}`,
+                );
+                return;
+              }
+
+              core.info(
+                `AI review activity incomplete after ${Math.round(elapsedMs / 1000)}s — polling again in ${POLL_INTERVAL_MS / 1000}s.`,
               );
-              return;
-            }
-
-            if (evaluatedCount === 0) {
-              core.setFailed('AI review gate did not evaluate any non-draft pull requests.');
-              return;
+              await sleep(POLL_INTERVAL_MS);
             }

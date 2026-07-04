@@ -4,12 +4,16 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  TEST_PATTERNS,
+  TEST_PATTERN_GROUPS,
   chunkArgsByLength,
   expandTestPatterns,
   loadNativeManifest,
+  parseRunnerArgs,
   parseTapSummary,
   partitionNativeDependent,
   probeBetterSqlite3,
+  selectTestPatterns,
 } from "../scripts/root-test-runner-lib.mjs";
 
 function makeTree() {
@@ -148,4 +152,58 @@ test("probeBetterSqlite3 fails cleanly on a tree with no binding", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("TEST_PATTERN_GROUPS is an exact partition of TEST_PATTERNS", () => {
+  const grouped = Object.values(TEST_PATTERN_GROUPS).flat();
+  const groupedSet = new Set(grouped);
+  assert.equal(grouped.length, groupedSet.size, "a pattern id appears in more than one group");
+  assert.deepEqual(
+    [...groupedSet].sort(),
+    TEST_PATTERNS.map((pattern) => pattern.id).sort(),
+    "groups must cover every TEST_PATTERNS id and nothing else",
+  );
+});
+
+test("selectTestPatterns with no groups returns the full pattern list", () => {
+  assert.deepEqual(selectTestPatterns([]), TEST_PATTERNS);
+});
+
+test("selectTestPatterns filters to the requested groups only", () => {
+  const selected = selectTestPatterns(["packages"]);
+  assert.deepEqual(
+    selected.map((pattern) => pattern.id),
+    ["packages/*/src/**/*.test.ts", "packages/*/src/**/*.test.tsx"],
+  );
+  const combined = selectTestPatterns(["root", "misc"]);
+  assert.deepEqual(
+    combined.map((pattern) => pattern.id).sort(),
+    [
+      "dashboard/lib/*.test.ts",
+      "integrations/amb/*.test.mjs",
+      "tests/**/*.test.mjs",
+      "tests/**/*.test.ts",
+    ],
+  );
+});
+
+test("selectTestPatterns rejects unknown group names", () => {
+  assert.throws(() => selectTestPatterns(["nope"]), /Unknown test group "nope"/);
+  assert.throws(() => selectTestPatterns("root"), /must be an array/);
+});
+
+test("parseRunnerArgs parses repeatable --group and dedupes", () => {
+  assert.deepEqual(parseRunnerArgs([]), { groups: [] });
+  assert.deepEqual(parseRunnerArgs(["--group", "root"]), { groups: ["root"] });
+  assert.deepEqual(
+    parseRunnerArgs(["--group", "root", "--group", "misc", "--group", "root"]),
+    { groups: ["root", "misc"] },
+  );
+});
+
+test("parseRunnerArgs rejects unknown arguments and missing values", () => {
+  assert.throws(() => parseRunnerArgs(["--shard"]), /Unknown argument "--shard"/);
+  assert.throws(() => parseRunnerArgs(["root"]), /Unknown argument "root"/);
+  assert.throws(() => parseRunnerArgs(["--group"]), /requires a group name/);
+  assert.throws(() => parseRunnerArgs(["--group", "--group"]), /requires a group name/);
 });
