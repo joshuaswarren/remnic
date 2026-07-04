@@ -52,8 +52,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help="data directory holding the held-out gold JSONL")
     parser.add_argument("--held-out", type=Path,
                         help="held-out gold JSONL (default: <data-dir>/faithfulness-heldout.jsonl)")
-    parser.add_argument("--base-model", type=str, default="microsoft/deberta-v3-large",
-                        help="tokenizer/base id used at train time")
+    parser.add_argument("--base-model", type=str, default=None,
+                        help="tokenizer fallback id; by default the tokenizer is "
+                             "loaded from the checkpoint train.py saved (so the eval "
+                             "vocab always matches the trained model)")
     parser.add_argument("--max-length", type=int, default=256)
     return parser
 
@@ -114,7 +116,11 @@ def main(argv: list[str] | None = None) -> int:
     rows = load_jsonl(held_out_path)
     gold = [row["label"] for row in rows]
 
-    tokenizer = AutoTokenizer.from_pretrained(args.base_model)
+    # Load the tokenizer from the checkpoint train.py saved (it writes both
+    # model + tokenizer to the version root) so eval always scores with the
+    # vocab the model was trained on; --base-model is an explicit fallback.
+    tokenizer_src = args.base_model if args.base_model else str(checkpoint)
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_src)
     model = AutoModelForSequenceClassification.from_pretrained(str(checkpoint))
     model.eval()
 
