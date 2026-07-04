@@ -30,7 +30,7 @@
     "web-tree-sitter": "^0.25.0"
   },
   "peerDependencies": {
-    "@remnic/core": "^9.3.669"
+    "@remnic/core": "^9.3.671"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
