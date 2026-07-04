@@ -85,18 +85,26 @@ jobs:
               return count;
             }
 
-            // Latest workflow run for `workflowName` on `headSha`, or null.
-            // Any queued/in-progress run means the state is already being
-            // re-evaluated — report it so the caller skips the rerun.
-            async function latestRunFor(workflowName, headSha) {
-              const { data } = await github.rest.actions.listWorkflowRunsForRepo({
+            // Latest run of `workflowFile` on `headSha` attributable to
+            // `prNumber`, or null. Scoped to the workflow (not the whole
+            // repo) so busy SHAs cannot push the target run past the first
+            // page (cursor review on #1610), and filtered by the run's
+            // pull_requests association so sibling PRs sharing a head SHA
+            // are not cross-rerun (codex review on #1610). Runs with an
+            // empty pull_requests array cannot be attributed and are kept.
+            async function latestRunFor(workflowFile, headSha, prNumber) {
+              const { data } = await github.rest.actions.listWorkflowRuns({
                 owner,
                 repo,
+                workflow_id: workflowFile,
                 head_sha: headSha,
                 per_page: 100,
               });
               const runs = (data.workflow_runs ?? [])
-                .filter((run) => run.name === workflowName)
+                .filter((run) => {
+                  const prs = run.pull_requests ?? [];
+                  return prs.length === 0 || prs.some((pr) => pr.number === prNumber);
+                })
                 .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
               return runs[0] ?? null;
             }
@@ -125,7 +133,7 @@ jobs:
               const label = `PR #${pull.number}`;
 
               // Case 1: guard failed but threads are now resolved.
-              const guardRun = await latestRunFor('Review Thread Guard', headSha);
+              const guardRun = await latestRunFor('review-thread-guard.yml', headSha, pull.number);
               if (guardRun && guardRun.status === 'completed' && guardRun.conclusion === 'failure') {
                 const unresolved = await unresolvedThreadCount(pull.number);
                 if (unresolved === 0) {
@@ -136,7 +144,7 @@ jobs:
               }
 
               // Case 2: newest AI Review Gate run terminally cancelled.
-              const gateRun = await latestRunFor('AI Review Gate', headSha);
+              const gateRun = await latestRunFor('ai-review-gate.yml', headSha, pull.number);
               if (gateRun && gateRun.status === 'completed' && gateRun.conclusion === 'cancelled') {
                 await rerun(gateRun, `${label} ai-review gate`);
               }
