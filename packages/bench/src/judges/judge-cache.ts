@@ -299,6 +299,18 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
     }
   };
 
+  // Cache hits must NOT replay the original judge's latency/tokens —
+  // downstream harnesses sum those into per-task and run-level totals, so
+  // a cached re-run would otherwise look as expensive as the original
+  // judge pass while `judgeModelCalls` reads zero (PR #1591 round-3
+  // cursor bugbot, OS7QE). Return the stored score/model identity but
+  // zero the work-tracking fields so cache hits are observably free.
+  const cachedVerdict = (stored: BenchJudgeResult): BenchJudgeResult => ({
+    score: stored.score,
+    tokens: { input: 0, output: 0 },
+    latencyMs: 0,
+    ...(stored.model !== undefined ? { model: stored.model } : {}),
+  });
   const wrapper = {
     counters,
     cache,
@@ -339,7 +351,7 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
         const hit = await cache.get(parts);
         if (hit) {
           counters.cacheHits += 1;
-          return hit.verdict;
+          return cachedVerdict(hit.verdict);
         }
         counters.cacheMisses += 1;
       }
@@ -411,7 +423,7 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
           const hit = await cache.get(parts);
           if (hit) {
             counters.cacheHits += 1;
-            return hit.verdict;
+            return cachedVerdict(hit.verdict);
           }
           counters.cacheMisses += 1;
         }

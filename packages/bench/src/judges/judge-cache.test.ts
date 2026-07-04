@@ -609,3 +609,60 @@ test("(n) score-only fallback records real elapsed latency (PR #1591 P2 follow-u
     );
   });
 });
+
+test("(o) cache hits zero out latencyMs and tokens (PR #1591 round-3 OS7QE)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    const originalVerdict: BenchJudgeResult = {
+      score: 1,
+      tokens: { input: 100, output: 80 },
+      latencyMs: 1234,
+      model: "judge-mock",
+    };
+    const wrapper = runJudgeWithCache({
+      judge: {
+        scoreWithMetrics: async () => originalVerdict,
+      },
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    // First call: miss — full verdict returned.
+    const miss = await wrapper.scoreWithMetrics!("q", "p", "e");
+    assert.equal(miss.latencyMs, 1234);
+    assert.equal(miss.tokens.input, 100);
+    assert.equal(miss.tokens.output, 80);
+    // Second call: hit — latencyMs/tokens zeroed, score/model preserved.
+    const hit = await wrapper.scoreWithMetrics!("q", "p", "e");
+    assert.equal(hit.score, 1);
+    assert.equal(hit.latencyMs, 0, "cache hit must report zero latency");
+    assert.equal(hit.tokens.input, 0, "cache hit must report zero input tokens");
+    assert.equal(hit.tokens.output, 0, "cache hit must report zero output tokens");
+    assert.equal(hit.model, "judge-mock", "cache hit must preserve judge model identity");
+    assert.equal(wrapper.counters.cacheHits, 1);
+  });
+});
+
+test("(p) cache hits zero out binary-prompt latencyMs and tokens (PR #1591 round-3 OS7QE)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    const wrapper = runJudgeWithCache({
+      judge: {
+        scoreWithMetrics: async () => sampleResult,
+        scoreBinaryPrompt: async () => ({
+          score: 1,
+          tokens: { input: 50, output: 30 },
+          latencyMs: 999,
+          model: "judge-mock",
+        }),
+      },
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    await wrapper.scoreBinaryPrompt!("prompt-A");
+    const hit = await wrapper.scoreBinaryPrompt!("prompt-A");
+    assert.equal(hit.latencyMs, 0);
+    assert.equal(hit.tokens.input, 0);
+    assert.equal(hit.tokens.output, 0);
+    assert.equal(hit.model, "judge-mock");
+  });
+});

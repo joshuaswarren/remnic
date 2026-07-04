@@ -302,7 +302,11 @@ export async function runBenchmark(
   // wrapped, the cross-judge model calls must still be reported.
   const primaryCalls = judgeCacheCounters?.modelCalls ?? 0;
   const crossCalls = crossJudgeCacheCounters?.modelCalls ?? 0;
-  if (primaryCalls > 0 || crossCalls > 0) {
+  // PR #1591 (round-3 cursor bugbot, OS7QC): report `0` on a fully-cached
+  // re-run so the JSON observability contract holds — the field is
+  // written whenever any judge was wrapped (primary or cross), not just
+  // when at least one underlying model call actually fired.
+  if (judgeCacheCounters !== undefined || crossJudgeCacheCounters !== undefined) {
     result.cost.judgeModelCalls = primaryCalls + crossCalls;
   }
   return finalizeBenchmarkResultConfig(result, options);
