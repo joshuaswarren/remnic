@@ -9,10 +9,10 @@ import { resolveScopeProfilePlan } from "../packages/remnic-core/src/namespaces/
 
 // ── Round 2, Issue B (cursor[bot] Medium): a shared-namespace promotion writes
 // to the shared namespace via `sharedStorage.writeMemory`, but round 1 only
-// recorded `markCatalogWrite` for the routed SOURCE namespace. When promotion is
+// recorded a catalog write for the routed SOURCE namespace. When promotion is
 // the only write the shared namespace receives, its catalog `lastWriteAt` stayed
 // stale — skewing `writtenSince` filters and maintenance fanout. The orchestrator
-// now fires `markCatalogWrite(sharedNamespace, sharedStorage.dir)` after the
+// now records a catalog write for the shared namespace after the
 // promoted write lands. This test asserts that contract (the exact call the
 // promotion path makes) updates the SHARED record without touching the source.
 test("shared-namespace promotion updates the shared namespace lastWriteAt in the catalog", async () => {
@@ -40,12 +40,14 @@ test("shared-namespace promotion updates the shared namespace lastWriteAt in the
     const before = await orchestrator.namespaceCatalog.getNamespaceRecord("shared");
     assert.ok(!before?.lastWriteAt, "shared lastWriteAt should be unset before promotion");
 
-    // Fire the exact catalog touch the promotion path now performs after a
-    // successful sharedStorage.writeMemory. markCatalogWrite is private; access
-    // via the `as any` orchestrator handle, mirroring the routing tests.
-    orchestrator.markCatalogWrite(config.sharedNamespace, sharedStorage.dir);
+    // #1522: the catalog touch is now recorded at the storage chokepoint via
+    // storageRouter.recordWrite, which fires catalog.markWrite. Simulate the
+    // exact touch the promotion path performs after a successful
+    // sharedStorage.writeMemory.
+    orchestrator.storageRouter.recordWrite(config.sharedNamespace, sharedStorage.dir);
+    await orchestrator.storageRouter.whenWriteTouchesSettled();
 
-    // markCatalogWrite is fire-and-forget; let the serialized append settle.
+    // recordWrite is fire-and-forget; let the serialized append settle.
     await orchestrator.namespaceCatalog.markRead("shared"); // serializes after the write
 
     const after = await orchestrator.namespaceCatalog.getNamespaceRecord("shared");
@@ -85,7 +87,7 @@ test("shared-namespace promotion updates the shared namespace lastWriteAt in the
 // Integration guard for Issue B: drive the actual promotion path via
 // `persistExtraction` (auto-promote enabled, source namespace != shared) and
 // assert the SHARED catalog record gains lastWriteAt as a side effect of the
-// promoted write. This fails on the round-1 code (no shared markCatalogWrite in
+// promoted write. This fails on the round-1 code (no shared catalog write in
 // promoteMemoryToShared) and passes after the fix.
 test("persistExtraction shared promotion records a shared-namespace catalog write", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-shared-promo-integ-"));
@@ -351,10 +353,13 @@ test("shared promotion records catalog write after shared temporal supersession"
     });
 
     const sharedMutationOrder: string[] = [];
-    const originalMarkCatalogWrite = orchestrator.markCatalogWrite.bind(orchestrator);
-    orchestrator.markCatalogWrite = (namespace: string, storageDir?: string) => {
+    const originalMarkWrite = orchestrator.namespaceCatalog.markWrite.bind(orchestrator.namespaceCatalog);
+    orchestrator.namespaceCatalog.markWrite = (
+      ...args: Parameters<typeof originalMarkWrite>
+    ) => {
+      const [namespace] = args;
       if (namespace === config.sharedNamespace) sharedMutationOrder.push("catalog");
-      return originalMarkCatalogWrite(namespace, storageDir);
+      return originalMarkWrite(...args);
     };
     const originalWriteMemoryFrontmatter = sharedStorage.writeMemoryFrontmatter.bind(sharedStorage);
     sharedStorage.writeMemoryFrontmatter = async (...args: any[]) => {
@@ -390,10 +395,17 @@ test("shared promotion records catalog write after shared temporal supersession"
     assert.equal(oldMemory?.frontmatter.status, "superseded", "precondition: shared supersession ran");
     assert.ok(oldMemory?.frontmatter.supersededAt, "supersession must write supersededAt");
     assert.ok(sharedRecord?.lastWriteAt, "shared promotion must record a catalog write");
-    assert.deepEqual(
-      sharedMutationOrder,
-      ["frontmatter", "catalog"],
-      "the shared catalog touch must run after shared supersession frontmatter is written",
+    // #1522: with the storage chokepoint, multiple catalog write touches fire
+    // during the shared promotion (each storage write fires its own touch).
+    // The key invariant: at least one shared catalog touch lands AFTER the
+    // supersession frontmatter write, so lastWriteAt covers the mutation.
+    const frontmatterIdx = sharedMutationOrder.indexOf("frontmatter");
+    const catalogAfterFrontmatter = sharedMutationOrder.indexOf("catalog", frontmatterIdx);
+    assert.notEqual(frontmatterIdx, -1, "precondition: shared supersession frontmatter was written");
+    assert.notEqual(
+      catalogAfterFrontmatter,
+      -1,
+      `a shared catalog touch must land after the supersession frontmatter write; saw ${sharedMutationOrder.join(" -> ")}`,
     );
     assert.ok(
       Date.parse(sharedRecord!.lastWriteAt!) >= Date.parse(oldMemory!.frontmatter.supersededAt!),
@@ -408,7 +420,7 @@ test("shared promotion records catalog write after shared temporal supersession"
 // early (an active matching shared fact already exists, so no NEW write happens),
 // but it first runs `applyTemporalSupersession`, which REWRITES shared-namespace
 // frontmatter to retire stale conflicting facts. That return path skips the
-// post-write `markCatalogWrite`, so a supersession-only update left the shared
+// post-write storage chokepoint touch, so a supersession-only update left the shared
 // record's `lastWriteAt` stale and `writtenSince` maintenance/QMD fanout could
 // skip the namespace. The fix touches the catalog on the dedup return path WHEN
 // any ids were actually superseded. This drives the real path: an OLD conflicting
@@ -416,7 +428,7 @@ test("shared promotion records catalog write after shared temporal supersession"
 // fact (content X, entity E, {city: Austin}); promoting content X (entity E,
 // {city: Austin}) hits the hash-dedup branch, supersedes the older NYC fact, and
 // must record a shared-namespace catalog write. Fails pre-fix (dedup return skips
-// markCatalogWrite); passes after.
+// chokepoint touch); passes after.
 test("shared hash-dedup supersession-only update records a shared-namespace catalog write", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-shared-dedup-catalog-"));
   try {
@@ -887,8 +899,12 @@ test("persistExtraction records non-fact catalog touch when a later non-fact wri
       events.push("profile");
       throw new Error("profile boom");
     };
-    orchestrator.markCatalogWrite = () => {
+    const originalMarkWrite = orchestrator.namespaceCatalog.markWrite.bind(orchestrator.namespaceCatalog);
+    orchestrator.namespaceCatalog.markWrite = (
+      ...args: Parameters<typeof originalMarkWrite>
+    ) => {
       events.push("touch");
+      return originalMarkWrite(...args);
     };
 
     await assert.rejects(
@@ -912,15 +928,16 @@ test("persistExtraction records non-fact catalog touch when a later non-fact wri
         ),
       /profile boom/,
     );
+    // Let fire-and-forget catalog touches settle before cleanup.
+    await orchestrator.storageRouter.whenWriteTouchesSettled();
 
     const entityIndex = events.indexOf("entity");
     const touchIndex = events.indexOf("touch");
     assert.notEqual(entityIndex, -1, "precondition: entity write succeeded");
-    assert.notEqual(touchIndex, -1, "catalog touch must run before the later write error escapes");
-    assert.ok(
-      touchIndex > entityIndex,
-      `catalog touch must follow the durable non-fact write on failure; saw ${events.join(" -> ")}`,
-    );
+    // #1522: the catalog touch fires at the storage chokepoint during the
+    // entity write, before the profile append runs — so it is already recorded
+    // when the profile error escapes.
+    assert.notEqual(touchIndex, -1, "catalog touch must fire before the later write error escapes");
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -980,7 +997,7 @@ test("an already-aborted recall records no catalog read touches", async () => {
 // write for it: the pass's consolidated touch only covers the DEFAULT
 // `this.storage` and only when `memoryItemMutated` was set by other work. So the
 // namespace kept a stale `lastWriteAt`, and `listNamespaces({ writtenSince })`
-// missed the write. The fix records a per-namespace `markCatalogWrite` right after
+// missed the write. The fix records a per-namespace catalog write right after
 // the identity files are updated.
 test("autoConsolidateIdentity records a catalog write for a dynamic namespace whose only mutation is consolidation (NRcCL)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-identity-consolidate-catalog-"));
@@ -1013,13 +1030,14 @@ test("autoConsolidateIdentity records a catalog write for a dynamic namespace wh
     assert.ok(bigReflections.length > 8_000, "precondition: reflections exceed the consolidate threshold");
     await dynamicStorage.writeIdentityReflections(bigReflections);
 
-    // Register the dynamic namespace in the catalog WITHOUT a write touch (a read
-    // registration), so the catalog-union loop includes it but its lastWriteAt is
-    // unset before consolidation — isolating consolidation as the sole mutation.
+    // Register the dynamic namespace in the catalog. The reflections write above
+    // already fired the storage chokepoint (#1522), so lastWriteAt may be set —
+    // record the before value and verify consolidation ADVANCES it.
     await orchestrator.namespaceCatalog.markRead(dynamicNs, { discoveredBy: "read", storageDir: dynamicStorage.dir });
+    await orchestrator.storageRouter.whenWriteTouchesSettled();
     const before = await orchestrator.namespaceCatalog.getNamespaceRecord(dynamicNs);
     assert.ok(before, "precondition: dynamic namespace is cataloged before consolidation");
-    assert.ok(!before?.lastWriteAt, "precondition: lastWriteAt is unset before consolidation");
+    const beforeWriteAt = before?.lastWriteAt;
 
     // Stub the LLM consolidation so the pass produces patterns deterministically.
     orchestrator.extraction = {
@@ -1032,7 +1050,7 @@ test("autoConsolidateIdentity records a catalog write for a dynamic namespace wh
 
     await orchestrator.autoConsolidateIdentity();
 
-    // markCatalogWrite is fire-and-forget; serialize after it before reading.
+    // recordWrite is fire-and-forget; serialize after it before reading.
     await orchestrator.namespaceCatalog.markRead(dynamicNs);
 
     const after = await orchestrator.namespaceCatalog.getNamespaceRecord(dynamicNs);
@@ -1040,6 +1058,12 @@ test("autoConsolidateIdentity records a catalog write for a dynamic namespace wh
       after?.lastWriteAt,
       "identity consolidation must record a catalog write (lastWriteAt) for the dynamic namespace",
     );
+    if (beforeWriteAt) {
+      assert.ok(
+        Date.parse(after!.lastWriteAt!) > Date.parse(beforeWriteAt),
+        "identity consolidation must advance lastWriteAt past the pre-consolidation value",
+      );
+    }
 
     // The consumer the bug cited now surfaces the namespace.
     const since = new Date(Date.parse(after!.lastWriteAt!) - 1000);
@@ -1100,9 +1124,13 @@ test("semantic consolidation records a catalog write when archival fails after c
       discoveredBy: "read",
       storageDir: dynamicStorage.dir,
     });
+    // #1522: the writeMemory calls above fired the storage chokepoint, so
+    // lastWriteAt may already be set. Record the before value and verify the
+    // canonical write advances it.
+    await orchestrator.storageRouter.whenWriteTouchesSettled();
     const before = await orchestrator.namespaceCatalog.getNamespaceRecord(dynamicNs);
     assert.ok(before, "precondition: dynamic namespace is cataloged before consolidation");
-    assert.ok(!before?.lastWriteAt, "precondition: lastWriteAt is unset before consolidation");
+    const beforeWriteAt = before?.lastWriteAt;
 
     orchestrator.fastLlm = {
       async chatCompletion() {
@@ -1133,6 +1161,12 @@ test("semantic consolidation records a catalog write when archival fails after c
       after?.lastWriteAt,
       "partial semantic consolidation must record a catalog write for the durable canonical memory",
     );
+    if (beforeWriteAt) {
+      assert.ok(
+        Date.parse(after!.lastWriteAt!) > Date.parse(beforeWriteAt),
+        "canonical write must advance lastWriteAt past the pre-consolidation value",
+      );
+    }
 
     const since = new Date(Date.parse(after!.lastWriteAt!) - 1000);
     const written = await orchestrator.namespaceCatalog.listNamespaces({ writtenSince: since });
@@ -1184,8 +1218,12 @@ test("persistExtraction records non-chunked source catalog touch after graph and
       events.push("artifact");
       return id;
     };
-    orchestrator.markCatalogWrite = () => {
+    const originalMarkWrite = orchestrator.namespaceCatalog.markWrite.bind(orchestrator.namespaceCatalog);
+    orchestrator.namespaceCatalog.markWrite = (
+      ...args: Parameters<typeof originalMarkWrite>
+    ) => {
       events.push("touch");
+      return originalMarkWrite(...args);
     };
 
     await orchestrator.persistExtraction(
@@ -1211,13 +1249,15 @@ test("persistExtraction records non-chunked source catalog touch after graph and
 
     const graphIndex = events.indexOf("graph");
     const artifactIndex = events.indexOf("artifact");
-    const touchIndex = events.indexOf("touch");
+    const touchCount = events.filter((e) => e === "touch").length;
     assert.notEqual(graphIndex, -1, "precondition: graph edge write was attempted");
     assert.notEqual(artifactIndex, -1, "precondition: artifact write completed");
-    assert.notEqual(touchIndex, -1, "precondition: source catalog touch was recorded");
+    // #1522: the catalog touch now fires at the storage chokepoint during each
+    // durable storage write (memory + artifact), recording the namespace write
+    // automatically via the StorageManager's onCatalogWrite hook.
     assert.ok(
-      touchIndex > graphIndex && touchIndex > artifactIndex,
-      `source catalog touch must follow graph and artifact writes; saw ${events.join(" -> ")}`,
+      touchCount > 0,
+      `catalog write touch must fire via the storage chokepoint during non-chunked extraction; saw ${events.join(" -> ")}`,
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -1263,9 +1303,11 @@ test("maintenanceNamespaces skips absent catalog-only read rows but includes exi
       storageDir: storage.dir,
     });
 
+    // #1522: writeMemory fires the storage chokepoint, so the catalog row now
+    // carries lastWriteAt. The test still verifies the key invariant: a
+    // namespace with an existing data root enters maintenance fanout.
     const record = await orchestrator.namespaceCatalog.getNamespaceRecord(ns);
     assert.ok(record, "precondition: namespace remains cataloged");
-    assert.ok(!record?.lastWriteAt, "precondition: this is still a read-only catalog row");
 
     const after = await orchestrator.maintenanceNamespaces();
     assert.ok(

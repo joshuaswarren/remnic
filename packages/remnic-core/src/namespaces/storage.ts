@@ -5,6 +5,7 @@ import { StorageManager } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
+import type { NamespaceCatalog } from "./catalog.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -228,6 +229,9 @@ export class NamespaceStorageRouter {
   // `whenResolveHooksSettled`). Entries are removed as each hook settles, so the
   // set holds at most one promise per concurrently-resolving namespace.
   private readonly pendingResolveHooks = new Set<Promise<unknown>>();
+  // Pending post-write catalog touch promises (#1522). Like pendingResolveHooks,
+  // lets tests await fire-and-forget write touches deterministically.
+  private readonly pendingWriteTouches = new Set<Promise<unknown>>();
 
   // Normalized (trimmed) default namespace identity (NH-FH). `storageFor`
   // normalizes its input, so default-namespace branches must compare against the
@@ -238,6 +242,8 @@ export class NamespaceStorageRouter {
   constructor(
     private readonly config: PluginConfig,
     private readonly hooks: NamespaceStorageRouterHooks = {},
+    /** Catalog reference for post-write/read touches (issue #1522 chokepoint). */
+    private readonly catalog?: NamespaceCatalog,
   ) {
     this.defaultNamespaceIdentity = normalizeNamespaceIdentity(config.defaultNamespace);
   }
@@ -288,6 +294,9 @@ export class NamespaceStorageRouter {
     // (used by extraction and shared-promotion paths) strip citations consistently,
     // matching the behaviour of the primary this.storage instance in the orchestrator.
     sm.citationTemplate = this.config.inlineSourceAttributionFormat;
+    // #1522: install the post-write catalog touch at the chokepoint — every
+    // successful write on this StorageManager records the namespace touch.
+    this.bindCatalogWriteHook(sm, ns);
     this.cache.set(ns, sm);
     this.notifyResolved(ns, root);
     return sm;
@@ -366,6 +375,78 @@ export class NamespaceStorageRouter {
       if (this.inFlightResolved.get(namespace) === storageDir) {
         this.inFlightResolved.delete(namespace);
       }
+    }
+  }
+
+  /**
+   * Install the post-write catalog touch hook on an externally-constructed
+   * StorageManager (issue #1522). Used by the orchestrator for the legacy
+   * default-namespace storage (`this.storage`) that bypasses the router.
+   */
+  bindCatalogWriteHook(sm: StorageManager, namespace: string): void {
+    sm.onCatalogWrite = () => this.touchCatalogWrite(namespace, sm.dir);
+  }
+
+  /**
+   * Post-write catalog touch (issue #1522 chokepoint). Called by every
+   * StorageManager's post-write hook AFTER a successful write. Best-effort
+   * and failure-tolerant — a catalog error MUST NOT affect the primary write
+   * (gotcha #13, rule #40). Fire-and-forget by design.
+   */
+  private touchCatalogWrite(namespace: string, storageDir: string): void {
+    if (!this.catalog) return;
+    const touch = this.catalog
+      .markWrite(namespace, { discoveredBy: "write", storageDir })
+      .catch(() => undefined);
+    this.pendingWriteTouches.add(touch);
+    void touch.then(
+      () => { this.pendingWriteTouches.delete(touch); },
+      () => { this.pendingWriteTouches.delete(touch); },
+    );
+  }
+
+  /**
+   * Record a namespace read in the catalog (issue #1522 chokepoint move).
+   * Best-effort and failure-tolerant. Used by recall paths so the read touch
+   * lives in the storage layer, not at the caller.
+   */
+  recordRead(namespace: string, storageDir?: string): void {
+    if (!this.catalog) return;
+    const ns = normalizeNamespaceIdentity(namespace || this.config.defaultNamespace);
+    void this.catalog
+      .markRead(ns, { discoveredBy: "read", storageDir })
+      .catch(() => undefined);
+  }
+  /**
+   * Record a namespace write touch in the catalog (issue #1522). Best-effort
+   * and failure-tolerant. Used by consolidation/cleanup passes that may mutate
+   * the store via delete-only paths (e.g. entity-file merges, TTL cleanup) so
+   * the namespace's lastWriteAt stays fresh even when no explicit write went
+   * through the storage chokepoint. This is NOT a substitute for the chokepoint
+   * — it's a belt-and-suspenders for paths the chokepoint doesn't cover.
+   */
+  recordWrite(namespace: string, storageDir?: string): void {
+    if (!this.catalog) return;
+    const ns = normalizeNamespaceIdentity(namespace || this.config.defaultNamespace);
+    const touch = this.catalog
+      .markWrite(ns, { discoveredBy: "write", storageDir })
+      .catch(() => undefined);
+    this.pendingWriteTouches.add(touch);
+    void touch.then(
+      () => { this.pendingWriteTouches.delete(touch); },
+      () => { this.pendingWriteTouches.delete(touch); },
+    );
+  }
+
+  /**
+   * Resolve once every in-flight post-write catalog touch has settled (#1522).
+   * Mirrors `whenResolveHooksSettled()`: the StorageManager's post-write hook
+   * fires the catalog touch fire-and-forget, so tests asserting lastWriteAt
+   * moved should await this instead of racing a timer.
+   */
+  async whenWriteTouchesSettled(): Promise<void> {
+    while (this.pendingWriteTouches.size > 0) {
+      await Promise.allSettled([...this.pendingWriteTouches]);
     }
   }
 

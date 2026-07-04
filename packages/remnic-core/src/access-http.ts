@@ -1707,7 +1707,7 @@ export class EngramAccessHttpServer {
         // extraction write path. Record it so QMD maintenance / writtenSince
         // don't miss the write. Best-effort and failure-tolerant.
         onMergedMemoryWritten: (namespace, storageDir) => {
-          this.service.recordCatalogWrite(namespace, storageDir);
+          // #1522: catalog touch handled at the storage chokepoint.
         },
       });
       this.respondJson(res, 200, result);
