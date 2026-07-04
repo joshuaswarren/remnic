@@ -7,6 +7,6 @@ export default defineConfig({
   platform: "node",
   outDir: "dist",
   clean: true,
-  dts: false,
+  dts: true,
   external: [/@remnic\/core/, "better-sqlite3"],
 });

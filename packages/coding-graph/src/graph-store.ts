@@ -535,68 +535,12 @@ export class GraphStore {
    * kept stale edges across re-ingests).
    */
   private upsertFileEdges(ir: FileIR, result: UpsertResult): void {
-    // Pre-fetch prior edges for this file's nodes so we can skip a
-    // no-op re-upsert when the IR matches exactly (idempotency —
-    // `changes=0` is the contract). When confidence/provenance
-    // changed, the ON CONFLICT DO UPDATE branch rewrites the row and
-    // reports changes=1 (chatgpt-codex-connector P1). We do this
-    // BEFORE the delete below so the no-op check sees the original
-    // edge state, not the just-emptied one.
-    const priorEdges = expectRows<{
-      src: string;
-      dst: string;
-      type: string;
-      confidence: number;
-      provenance: string;
-    }>(
-      this.db
-        .prepare(
-          "SELECT src, dst, type, confidence, provenance FROM edges WHERE src IN (SELECT id FROM nodes WHERE file_id = ?)",
-        )
-        .all(result.fileId),
-      ["src", "dst", "type", "confidence", "provenance"],
-    );
-    const priorByKey = new Map<string, { confidence: number; provenance: string }>();
-    for (const p of priorEdges) {
-      priorByKey.set(`${p.src}\u0000${p.dst}\u0000${p.type}`, {
-        confidence: p.confidence,
-        provenance: p.provenance,
-      });
-    }
-
-    // Pre-fetch every node id owned by this file so we can delete
-    // their prior edges in one statement. The owned-node set comes
-    // from the just-completed pass 1 — the file row's id is
-    // guaranteed to match by then.
-    const ownedIds = expectRows<{ id: string }>(
-      this.db
-        .prepare("SELECT id FROM nodes WHERE file_id = ?")
-        .all(result.fileId),
-      ["id"],
-    ).map((row) => row.id);
-    if (ownedIds.length > 0) {
-      const placeholders = ownedIds.map(() => "?").join(", ");
-      // Delete any edge whose src is one of this file's nodes — the
-      // prior graph state for this file's slice. Owned-side edges
-      // are reconstructed by the insert below; cross-file edges that
-      // pass through these nodes will be re-inserted when the OTHER
-      // file's pass 2 runs, but only if that other file is in this
-      // batch (otherwise we have already lost them via the cascade
-      // and they will be re-inserted by the next batch that owns
-      // the cross-file side). To prevent accidentally deleting
-      // cross-file edges from OTHER files (which we are not
-      // re-ingesting here), restrict the delete to edges whose `src`
-      // is in this file's nodes — only the owner of the source
-      // re-asserts edges.
-      this.db
-        .prepare(`DELETE FROM edges WHERE src IN (${placeholders})`)
-        .run(...ownedIds);
-    }
-
-    // Map every seen qualified_name → its deterministic id. Pass 1
-    // already wrote these ids, so the DB is the source of truth —
-    // we look up by qualified_name (indexed) and let the lookup
-    // pull from the just-committed batch.
+    // Build the set of edges the IR is asserting for this file. We
+    // resolve qualified_name → deterministic id using the FULL nodes
+    // table (pass 1 has already populated every batch file's nodes,
+    // so cross-file edges resolve regardless of input order). Edges
+    // whose src/dst cannot resolve are dropped — the caller is
+    // responsible for the batch's canonical file set (rule 40).
     const qualifiedNameToId = new Map<string, string>();
     const ownSymbols = expectRows<{ id: string; qualified_name: string }>(
       this.db
@@ -608,14 +552,15 @@ export class GraphStore {
       qualifiedNameToId.set(row.qualified_name, row.id);
     }
 
-    const insertEdge = this.db.prepare(
-      `INSERT INTO edges (src, dst, type, confidence, provenance)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(src, dst, type) DO UPDATE SET
-           confidence = excluded.confidence,
-           provenance = excluded.provenance`,
-    );
-    let edgeCount = 0;
+    const assertedKeys = new Set<string>();
+    // Re-resolve each edge in the IR to its deterministic key so the
+    // delete below only drops edges that are NOT being re-asserted.
+    // Doing this BEFORE the delete is critical: deleting first then
+    // checking the no-op skip leaves cross-file edges (whose src is
+    // owned here but whose dst lives elsewhere) orphaned when the
+    // IR re-asserts them — the prior-edge snapshot matches, the
+    // insert is skipped, and the row is gone (cursor Bugbot #6a78cd0a).
+    const seenKeys: string[] = [];
     for (const edge of ir.edges ?? []) {
       // Reject malformed edges up-front (rule 51: surface what is wrong).
       if (!isEdgeProvenance(edge.provenance)) {
@@ -634,14 +579,86 @@ export class GraphStore {
         this.db,
       );
       if (!srcId || !dstId) continue;
-      const prior = priorByKey.get(`${srcId}\u0000${dstId}\u0000${edge.type}`);
+      const key = `${srcId}\u0000${dstId}\u0000${edge.type}`;
+      assertedKeys.add(key);
+      seenKeys.push(key);
+    }
+
+    // Pre-fetch the prior edges owned by this file (src in this file's
+    // nodes) so we can (a) skip the no-op re-upsert when confidence +
+    // provenance match exactly, and (b) compute the stale-edge delete
+    // set: prior src-owned edges that are NOT in the current IR's
+    // asserted keys.
+    const priorEdges = expectRows<{
+      src: string;
+      dst: string;
+      type: string;
+      confidence: number;
+      provenance: string;
+    }>(
+      this.db
+        .prepare(
+          "SELECT src, dst, type, confidence, provenance FROM edges WHERE src IN (SELECT id FROM nodes WHERE file_id = ?)",
+        )
+        .all(result.fileId),
+      ["src", "dst", "type", "confidence", "provenance"],
+    );
+    const priorByKey = new Map<string, { confidence: number; provenance: string }>();
+    const staleSrcDstTypes: Array<{ src: string; dst: string; type: string }> = [];
+    for (const p of priorEdges) {
+      const key = `${p.src}\u0000${p.dst}\u0000${p.type}`;
+      priorByKey.set(key, { confidence: p.confidence, provenance: p.provenance });
+      if (!assertedKeys.has(key)) {
+        staleSrcDstTypes.push({ src: p.src, dst: p.dst, type: p.type });
+      }
+    }
+
+    // Delete only the stale src-owned edges (prior-but-not-asserted).
+    // This preserves any cross-file edge that the current IR
+    // re-asserts, even when its dst lives in a file NOT in this
+    // batch — the row survives the delete and the no-op skip below
+    // keeps `changes` honest.
+    if (staleSrcDstTypes.length > 0) {
+      const placeholders = staleSrcDstTypes.map(() => "(?, ?, ?)").join(", ");
+      this.db
+        .prepare(
+          `DELETE FROM edges WHERE (src, dst, type) IN (${placeholders})`,
+        )
+        .run(
+          ...staleSrcDstTypes.flatMap((e) => [e.src, e.dst, e.type]),
+        );
+    }
+
+    const insertEdge = this.db.prepare(
+      `INSERT INTO edges (src, dst, type, confidence, provenance)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(src, dst, type) DO UPDATE SET
+           confidence = excluded.confidence,
+           provenance = excluded.provenance`,
+    );
+    let edgeCount = 0;
+    for (const key of seenKeys) {
+      const parts = key.split("\u0000");
+      const srcId = parts[0]!;
+      const dstId = parts[1]!;
+      const edgeType = parts[2]!;
+      const edge = ir.edges!.find(
+        (e) =>
+          resolveNodeId(e.srcQualifiedName, qualifiedNameToId, this.db) === srcId &&
+          resolveNodeId(e.dstQualifiedName, qualifiedNameToId, this.db) === dstId &&
+          e.type === edgeType,
+      );
+      if (!edge) continue;
+      const prior = priorByKey.get(key);
       if (
         prior &&
         prior.confidence === edge.confidence &&
         prior.provenance === edge.provenance
       ) {
         // Identical to the prior row — no INSERT/UPDATE needed, so
-        // `changes` stays 0 and the idempotency contract holds.
+        // `changes` stays 0 and the idempotency contract holds. The
+        // row still exists because the delete above only removed
+        // stale keys.
         continue;
       }
       const r = insertEdge.run(srcId, dstId, edge.type, edge.confidence, edge.provenance);

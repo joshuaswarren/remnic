@@ -31,7 +31,7 @@
     "provenance": true
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
+    "build": "tsup --config tsup.config.ts",
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "test": "tsx --test 'src/**/*.test.ts'"
