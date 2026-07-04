@@ -5,6 +5,8 @@ Remnic memory and context for [Pi Coding Agent](https://pi.dev).
 This package is the first-class Remnic extension for Pi. It uses Pi's extension hooks directly, so Remnic can recall context before a model call, observe useful session events after the turn, expose Remnic MCP tools inside Pi, and coordinate Pi compaction with Remnic's long-context memory archive.
 
 > **Oh My Pi (omp).** The [omp](https://omp.sh) fork preserves Pi's extension API, so this package's runtime extension runs there too. Install it with `remnic connectors install omp` (writes to `~/.omp/agent/extensions/remnic/`) via the `OmpMemoryExtensionPublisher`. See [docs/integration/omp.md](../../docs/integration/omp.md).
+>
+> ⚠️ **omp loader bug:** current omp builds (≥ v16.3.5 confirmed) cannot resolve this package's npm dependencies from the extension's `node_modules`, so the installed extension fails to load every session (`Cannot find module '@sinclair/typebox'`). Pre-bundle it with `bun build` as described in [docs/integration/omp.md → Known issue](../../docs/integration/omp.md#known-issue-omp-cannot-resolve-the-extensions-npm-dependencies).
 
 ## What It Does
 

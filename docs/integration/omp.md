@@ -98,6 +98,69 @@ remnic connectors install omp \
   --config namespace=work
 ```
 
+### Known issue: omp cannot resolve the extension's npm dependencies
+
+> **Status:** open omp loader bug, confirmed against omp v16.3.5
+> (macOS arm64 and Debian x64). Tracked for an installer-side fix in the
+> Remnic repo — see the `OmpMemoryExtensionPublisher` auto-bundle issue.
+
+omp's embedded runtime fails to resolve bare npm specifiers from the
+extension's `node_modules`, even though the packages are installed and a
+system `bun` resolves them fine from the same directory. Every session start
+logs (and the extension silently never loads):
+
+```text
+Failed to load extension: ResolveMessage: Cannot find module
+'@sinclair/typebox' from
+'~/.omp/agent/extensions/remnic/node_modules/@remnic/plugin-pi/dist/index.js'
+```
+
+omp's extension loader has a compat shim that rewrites bare
+`@sinclair/typebox` imports onto its host-bundled copy, but the rewrite does
+not reach files under the extension's `node_modules`, and plain resolution
+from those files fails inside omp's compiled binary.
+
+**Workaround — pre-bundle the extension so nothing resolves at runtime:**
+
+```bash
+cd ~/.omp/agent/extensions/remnic
+bun build index.ts --target=bun --outdir=dist-bundle
+```
+
+This inlines every dependency (only `node:` builtins stay external; native
+addons such as lancedb are emitted as sibling `.node` assets — which is why
+the bundle is **per-host** and must never be copied between machines). Then
+point omp at the bundle instead of `index.ts` by adding an `omp.extensions`
+manifest to the extension's `package.json` (omp prefers the manifest over
+`index.ts`):
+
+```json
+{
+  "omp": { "extensions": ["./dist-bundle/index.js"] },
+  "scripts": {
+    "postinstall": "bun build index.ts --target=bun --outdir=dist-bundle"
+  }
+}
+```
+
+The `postinstall` script keeps the bundle fresh across `npm install` /
+`npm update` of `@remnic/plugin-pi`. For extra safety you can make the
+manifest entry a small wrapper that compares the bundle's mtime against
+`node_modules/@remnic/plugin-pi/dist/index.js` and re-runs `bun build`
+before importing the bundle, so a stale bundle can never load silently.
+
+Verify with a throwaway session — there must be no `Failed to load
+extension` line for the remnic path:
+
+```bash
+omp -p --no-session "Reply with just: ok"
+grep "Failed to load extension" ~/.omp/logs/omp.$(date +%F).log
+```
+
+Until the bundle workaround is in place, Path 1 (the raw MCP entry with an
+`Authorization: Bearer` header) still works — only tool-gated access, no
+automatic recall/observe.
+
 ### Install location
 
 The connector writes into the same agent directory omp auto-discovers
