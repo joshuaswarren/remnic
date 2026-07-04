@@ -26,22 +26,28 @@ async function withTempDir<T>(
   body: (dir: string) => Promise<T>,
 ): Promise<T> {
   const dir = await mkdtemp(path.join(tmpdir(), "bench-judge-cache-"));
-  try {
-    return await body(dir);
-  } finally {
-    // macOS sometimes races ENOTEMPTY on recursive rm right after a
-    // rename-based atomic cache write — retry a few times before
-    // giving up so the suite isn't flaky on fast disks.
+  // Cleanup helper extracted from the finally block so a test
+  // assertion failure (or any other throw from `body`) is NOT
+  // swallowed by an early `return undefined` here. The original
+  // error always propagates; the retry loop only absorbs
+  // ENOTEMPTY races on macOS so the suite isn't flaky on fast
+  // disks (PR #1591 round-5 OTHls side-effect).
+  const cleanup = async (): Promise<void> => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       try {
         await rm(dir, { recursive: true, force: true });
-        return undefined as T;
+        return;
       } catch (err) {
         const code = (err as NodeJS.ErrnoException).code;
-        if (code !== "ENOTEMPTY" || attempt === 4) return undefined as T;
+        if (code !== "ENOTEMPTY" || attempt === 4) return;
         await new Promise<void>((resolve) => setTimeout(resolve, 25));
       }
     }
+  };
+  try {
+    return await body(dir);
+  } finally {
+    await cleanup();
   }
 }
 
@@ -394,6 +400,7 @@ test("f) cache enabled: identical input serves from cache after first miss", asy
 
     const q = "Q", predicted = "P", expected = "P";
     const a = await wrapper.scoreWithMetrics!(q, predicted, expected);
+    await drains(wrapper);
     const b = await wrapper.scoreWithMetrics!(q, predicted, expected);
     const c = await wrapper.scoreWithMetrics!(q, predicted, expected);
 
@@ -435,7 +442,9 @@ test("f) changing answer text causes a fresh judge call even with cache enabled"
     });
 
     await wrapper.scoreWithMetrics!("q", "alpha", "expected");
+    await drains(wrapper);
     await wrapper.scoreWithMetrics!("q", "alpha", "expected");
+    await drains(wrapper);
     await wrapper.scoreWithMetrics!("q", "beta", "expected");
 
     assert.equal(underlyingCalls, 2, "answer-text change must trigger one fresh model call");
@@ -520,6 +529,7 @@ test("(j) abort control forwards through cache misses to the underlying judge (P
     });
     const control = { signal: new AbortController().signal };
     await wrapper.scoreWithMetrics!("q", "p", "e", control);
+    await wrapper.scoreBinaryPrompt!("binary prompt", control);
     assert.deepEqual(seenControls, [control, control], "control must reach the underlying judge on both miss paths");
     await drains(wrapper);
   });
@@ -573,11 +583,14 @@ test("(l) scoreBinaryPrompt ROUTES through the wrapper when the underlying judge
     const v = await wrapper.scoreBinaryPrompt!("yes-no prompt", undefined);
     assert.equal(v.score, 1);
     assert.equal(seenPrompt, "yes-no prompt");
+    // Drain the fire-and-forget cache write (round-5 OTHls) so the
+    // second call sees the entry. Without this, race against the
+    // first call's pending write makes the read inconsistent.
+    await drains(wrapper);
     // Second call should hit the cache and not re-invoke the underlying judge.
     const v2 = await wrapper.scoreBinaryPrompt!("yes-no prompt", undefined);
     assert.equal(v2.score, 1);
     assert.equal(wrapper.counters.cacheHits, 1, "second identical binary prompt must be a cache hit");
-    await drains(wrapper);
   });
 });
 
@@ -599,7 +612,9 @@ test("(m) binary prompts of equal length but different text get distinct cache k
     });
     // Both strings are length-7; on the old `binary:7` key they would collide.
     await wrapper.scoreBinaryPrompt!("abcdefg");
+    await drains(wrapper);
     await wrapper.scoreBinaryPrompt!("hijklmn");
+    await drains(wrapper);
     assert.equal(
       calls,
       2,
@@ -673,6 +688,10 @@ test("(o) cache hits zero out latencyMs and tokens (PR #1591 round-3 OS7QE)", as
     assert.equal(miss.latencyMs, 1234);
     assert.equal(miss.tokens.input, 100);
     assert.equal(miss.tokens.output, 80);
+    // Drain the fire-and-forget write so the second read sees it
+    // (round-5 OTHls). Without this drain the read races the write
+    // and produces a spurious miss.
+    await drains(wrapper);
     // Second call: hit — latencyMs/tokens zeroed, score/model preserved.
     const hit = await wrapper.scoreWithMetrics!("q", "p", "e");
     assert.equal(hit.score, 1);
@@ -702,6 +721,7 @@ test("(p) cache hits zero out binary-prompt latencyMs and tokens (PR #1591 round
       keyExtras: { benchmarkId: "locomo" },
     });
     await wrapper.scoreBinaryPrompt!("prompt-A");
+    await drains(wrapper);
     const hit = await wrapper.scoreBinaryPrompt!("prompt-A");
     assert.equal(hit.latencyMs, 0);
     assert.equal(hit.tokens.input, 0);
