@@ -337,9 +337,12 @@ async function decisionSupersede(
   request: DecisionSurfaceRequest,
   ctx: DecisionSurfaceContext,
 ): Promise<DecisionSurfaceResponse> {
-  if (!request.id?.trim()) {
+  // The schema advertises `supersedesId` for MCP/HTTP clients that name it
+  // explicitly; treat it as an alias for `id` when `id` is absent (review P2).
+  const targetId = request.id?.trim() || request.supersedesId?.trim();
+  if (!targetId) {
     ctx.throwInputError(
-      "id is required for the 'supersede' subcommand (the record being superseded)",
+      "id (or supersedesId) is required for the 'supersede' subcommand (the record being superseded)",
     );
   }
   if (!request.title?.trim()) {
@@ -351,14 +354,14 @@ async function decisionSupersede(
     ctx.throwInputError("decision is required for the 'supersede' subcommand");
   }
   const storage = await ctx.resolveStorage(request);
-  const oldMemory = await storage.getMemoryById(request.id!);
+  const oldMemory = await storage.getMemoryById(targetId);
   if (!oldMemory || oldMemory.frontmatter.category !== "decision") {
-    ctx.throwInputError(`decision record not found: ${request.id}`);
+    ctx.throwInputError(`decision record not found: ${targetId}`);
   }
   const oldParsed = safeParseDecisionRecord(oldMemory.content);
   if (!oldParsed) {
     ctx.throwInputError(
-      `decision record is corrupted and cannot be superseded: ${request.id}`,
+      `decision record is corrupted and cannot be superseded: ${targetId}`,
     );
   }
   // Rule 25: write the replacement BEFORE mutating the old record's status.
@@ -370,7 +373,7 @@ async function decisionSupersede(
     decision: request.decision.trim(),
     consequences: request.consequences?.trim() ?? "",
     entityRefs: request.entityRefs ?? [],
-    supersedes: request.id,
+    supersedes: targetId,
   };
   const replacementContent = serializeDecisionRecord(replacement);
   const replacementId = await storage.writeMemory(
@@ -393,11 +396,11 @@ async function decisionSupersede(
   });
   ctx.recordCatalogWrite(storage.namespace, storage.dir);
   log.info(
-    `access-write op=coding_decision/supersede superseded=${request.id} replacement=${replacementId}`,
+    `access-write op=coding_decision/supersede superseded=${targetId} replacement=${replacementId}`,
   );
   return {
     subcommand: "supersede",
-    supersededMemoryId: request.id,
+    supersededMemoryId: targetId,
     replacementMemoryId: replacementId,
   };
 }

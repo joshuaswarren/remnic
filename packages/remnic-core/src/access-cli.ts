@@ -11,6 +11,7 @@ import { getOperation } from "./access-boundary.js";
 // Importing access-operations registers the pilot boundary operations as a
 // side effect; the store command dispatches through the registry (issue #1525).
 import "./access-operations.js";
+import { projectTagProjectId } from "./coding/coding-namespace.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
@@ -173,6 +174,8 @@ function usage(): string {
     "  --decision <text> (record/supersede)",
     "  --consequences <text> (record/supersede)",
     "  --entity-ref <ref> (repeatable)",
+    "  --project-tag <tag> (attach coding context for this invocation)",
+    "  --supersedes-id <id> (alias for --id on supersede)",
   ].join("\n");
 }
 
@@ -220,6 +223,8 @@ const COMMAND_SPECS: Record<CommandName, CommandSpec> = {
       "decision",
       "consequences",
       "entity-ref",
+      "project-tag",
+      "supersedes-id",
     ]),
     flagOptions: new Set(),
   },
@@ -502,6 +507,25 @@ function expandOptionalPath(value: string | undefined): string | undefined {
 async function runDecision(args: ParsedArgs, preferredId?: string): Promise<void> {
   const subcommand = requireOption(args, "subcommand");
   const { config, service } = buildRuntime(preferredId);
+  // The CLI creates a fresh Orchestrator per invocation, so the session
+  // coding-context map is empty. If --project-tag + --session-key are
+  // provided, attach a coding context BEFORE dispatching so the gate
+  // passes and project-scoped writes resolve to the right namespace
+  // (review P2).
+  const projectTag = getLastOption(args, "project-tag");
+  const sessionKey = getLastOption(args, "session-key");
+  if (projectTag && projectTag.trim().length > 0 && sessionKey && sessionKey.trim().length > 0) {
+    const projectId = projectTagProjectId(projectTag.trim());
+    service.setCodingContext({
+      sessionKey,
+      codingContext: {
+        projectId,
+        branch: null,
+        rootPath: projectId,
+        defaultBranch: null,
+      },
+    });
+  }
   const op = getOperation("coding_decision");
   if (!op) {
     throw new Error("access-boundary: operation not registered: coding_decision");
@@ -510,8 +534,9 @@ async function runDecision(args: ParsedArgs, preferredId?: string): Promise<void
     {
       subcommand,
       namespace: getLastOption(args, "namespace"),
-      sessionKey: getLastOption(args, "session-key"),
+      sessionKey,
       id: getLastOption(args, "id"),
+      supersedesId: getLastOption(args, "supersedes-id"),
       title: getLastOption(args, "title"),
       status: getLastOption(args, "status"),
       context: getLastOption(args, "context"),
