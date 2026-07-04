@@ -25,6 +25,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { openBetterSqlite3 } from "@remnic/core/runtime/better-sqlite";
+
 import {
   DEAD_CODE_EXCLUSION,
   GraphStore,
@@ -1189,5 +1191,160 @@ test("snippetFor: returns 'store_closed' when the store is closed (cursor Bugbot
     assert.equal(out.code, "store_closed");
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// deadCode(): self-edge must not count as inbound usage
+// (chatgpt-codex-connector P2: 'Ignore self-edges in dead-code
+// reachability').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("deadCode: a private recursive helper whose only edge is a self-call IS reported as dead", async () => {
+  // recurse.ts defines `run` whose only edge is run → run. Nothing
+  // outside reaches it, so it is dead code; the self-call must NOT
+  // count as external inbound usage.
+  const { store, dir } = await tempStore();
+  try {
+    const file: StoreFileIR = {
+      path: "src/recurse.ts",
+      language: "typescript",
+      contentHash: "h-recurse",
+      symbols: [sym("recurse.run", "run", 0, 10)],
+      edges: [edge("recurse.run", "recurse.run")],
+    };
+    const res = await store.upsertFileBatch([file]);
+    if (!res.ok) throw new Error(`expected ok upsert; got ${res.code}`);
+    const dead = store.deadCode();
+    if (!dead.ok) throw new Error(`expected ok deadCode; got ${dead.code}`);
+    const names = dead.hits.map((h) => h.name);
+    assert.ok(
+      names.includes("run"),
+      `self-only-recursive symbol must be reported as dead; got ${JSON.stringify(names)}`,
+    );
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// upsertFileBatch: malformed (non-array) exports / routes are rejected
+// at the boundary so they cannot wipe existing attribute flags
+// (chatgpt-codex-connector P2: 'Validate attribute arrays before
+// clearing flags').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("upsertFileBatch: non-array exports rejected before wiping flags", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const file = {
+      path: "src/bad.ts",
+      language: "typescript",
+      contentHash: "h-bad",
+      symbols: [sym("bad.fn", "fn", 0, 10)],
+      // A JSON caller bypassing types could pass a bare string; this
+      // is iterable char-by-char and would otherwise wipe flags.
+      exports: "publicApi",
+      edges: [],
+    } as unknown as StoreFileIR;
+    await assert.rejects(
+      store.upsertFileBatch([file]),
+      /exports must be an array when present/,
+      "a non-array exports field must be rejected, not silently wipe is_exported",
+    );
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("upsertFileBatch: non-array routes rejected before wiping flags", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const file = {
+      path: "src/badr.ts",
+      language: "typescript",
+      contentHash: "h-badr",
+      symbols: [sym("badr.fn", "fn", 0, 10)],
+      routes: "GET /x",
+      edges: [],
+    } as unknown as StoreFileIR;
+    await assert.rejects(
+      store.upsertFileBatch([file]),
+      /routes must be an array when present/,
+      "a non-array routes field must be rejected, not silently wipe is_route_handler",
+    );
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Read APIs honor the tagged-failure contract: an unexpected SQLite
+// error returns { ok:false, code:"db_error" } instead of throwing, so
+// callers that exhaustively switch on result.code never crash
+// (cursor Bugbot: 'Read APIs rethrow SQLite errors';
+// chatgpt-codex-connector P2: 'Return tagged failures from read
+// queries').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("read APIs return 'db_error' instead of throwing on an unexpected SQLite failure", async () => {
+  const { store, dir } = await tempStore();
+  const dbPath = path.join(dir, "graph.sqlite");
+  try {
+    const file: StoreFileIR = {
+      path: "src/n.ts",
+      language: "typescript",
+      contentHash: "h-n",
+      symbols: [sym("n.a", "a", 0, 10)],
+      edges: [],
+    };
+    const res = await store.upsertFileBatch([file]);
+    if (!res.ok) throw new Error(`expected ok upsert; got ${res.code}`);
+    // Sabotage: drop the edges table via a second connection so the
+    // next traverse() edges query fails with "no such table" — a
+    // non-lock, non-corrupt error that previously escaped as a throw.
+    const sabotage = openBetterSqlite3(dbPath);
+    sabotage.exec("DROP TABLE edges");
+    sabotage.close();
+    const out = store.traverse({ start: "n.a", maxDepth: 1 });
+    assert.equal(out.ok, false, "traverse must not throw on a DB error");
+    if (!out.ok) {
+      assert.equal(
+        out.code,
+        "db_error",
+        `unexpected SQLite error must map to db_error, not throw; got ${out.code}`,
+      );
+    }
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traverse: non-string start rejected with 'invalid_query' before binding (chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    for (const bad of [
+      42,
+      null,
+      undefined,
+      { name: "x" },
+      [1, 2],
+      "",
+    ] as unknown[]) {
+      const out = store.traverse({
+        start: bad as never,
+        maxDepth: 1,
+      });
+      assert.equal(out.ok, false, `non-string start ${JSON.stringify(bad)} must not succeed`);
+      if (!out.ok) {
+        assert.equal(
+          out.code,
+          "invalid_query",
+          `non-string start must return invalid_query, not ${out.code}`,
+        );
+      }
+    }
+  } finally {
+    await dispose(store, dir);
   }
 });

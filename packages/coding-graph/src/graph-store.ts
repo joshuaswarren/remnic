@@ -164,7 +164,7 @@ export interface StoreFileIR {
 // Result shapes — tagged failures (rule 34).
 // ──────────────────────────────────────────────────────────────────────────
 
-export type GraphStoreFailureCode = "db_locked" | "db_corrupt" | "store_closed";
+export type GraphStoreFailureCode = "db_locked" | "db_corrupt" | "db_error" | "store_closed";
 
 export interface GraphStoreFailure {
   ok: false;
@@ -361,7 +361,13 @@ export type SnippetFailureCode =
   | "repo_root_unset"
   | "read_failed"
   | "invalid_query"
-  | "store_closed";
+  | "store_closed"
+  // DB-level failures surface from the node-lookup catch path so the
+  // typed contract matches every code classifyReadError can return
+  // (cursor Bugbot: 'snippetFor omits store failure codes').
+  | "db_locked"
+  | "db_corrupt"
+  | "db_error";
 
 export type SnippetResult = SnippetSuccess | { ok: false; code: SnippetFailureCode };
 
@@ -742,6 +748,30 @@ export class GraphStore {
       // symbol spans before storing nodes').
       for (const sym of symbolsField) {
         assertValidSymbolSpan(sym, ir.path);
+      }
+      // Attribute arrays: `exports` and `routes` are optional, but
+      // when present MUST be arrays. A malformed non-array (e.g. a
+      // JSON caller passing `exports: "publicApi"`) is iterable as
+      // characters whose entries have no `.name`, so the per-flag
+      // rebuild in upsertFileAttributes would compute an empty set
+      // and then WIPE every is_exported / is_route_handler flag for
+      // the file — turning a single bad re-ingest into silent
+      // dead-code misclassification. Reject at the boundary like the
+      // symbols check above (chatgpt-codex-connector P2: 'Validate
+      // attribute arrays before clearing flags').
+      if (ir.exports != null && !Array.isArray(ir.exports)) {
+        throw new Error(
+          `graph-store: file '${ir.path}' exports must be an array when present; received ${
+            ir.exports === null ? "null" : typeof ir.exports
+          } — refusing to ingest to avoid wiping existing flags`,
+        );
+      }
+      if (ir.routes != null && !Array.isArray(ir.routes)) {
+        throw new Error(
+          `graph-store: file '${ir.path}' routes must be an array when present; received ${
+            ir.routes === null ? "null" : typeof ir.routes
+          } — refusing to ingest to avoid wiping existing flags`,
+        );
       }
     }
     try {
@@ -1451,6 +1481,19 @@ export class GraphStore {
     ) {
       return { ok: false, code: "invalid_query" };
     }
+    // Validate `start` is a non-empty string before it reaches the
+    // SQLite bind (rule 51 + chatgpt-codex-connector P2: 'Validate
+    // traverse start before binding it'). A JS/JSON caller passing an
+    // object/array survives the regex `.test()` coercion but then
+    // throws a non-SQLite TypeError at bind time; surface that as the
+    // precise `invalid_query` rather than letting it fall through to
+    // the generic db_error catch-all.
+    if (
+      typeof query.start !== "string" ||
+      query.start.length === 0
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
     // Wrap DB operations in try/catch so lock/corrupt errors return a
     // tagged failure instead of throwing (cursor Bugbot: 'SQLite errors
     // escape read APIs'). Same shape as schemaStats/deadCode.
@@ -1596,7 +1639,7 @@ export class GraphStore {
     return { ok: true, hits };
     } catch (error) {
       logWriteFailure(error);
-      return classifyError(error) as TraverseResult;
+      return classifyReadError(error) as TraverseResult;
     }
   }
 
@@ -1733,7 +1776,7 @@ export class GraphStore {
     return { ok: true, hits };
     } catch (error) {
       logWriteFailure(error);
-      return classifyError(error) as SearchResult;
+      return classifyReadError(error) as SearchResult;
     }
   }
 
@@ -1789,7 +1832,7 @@ export class GraphStore {
       };
     } catch (error) {
       logWriteFailure(error);
-      const failure = classifyError(error);
+      const failure = classifyReadError(error);
       return failure as unknown as SchemaStatsResult;
     }
   }
@@ -1819,6 +1862,13 @@ export class GraphStore {
       // COALESCE is belt-and-braces — the LEFT JOIN already produces
       // NULL for missing rows, and `NULL OR ...` would surface NULL
       // in the WHERE; explicit COALESCE collapses NULL → 0.
+      // Self-edges (e.src <> n.id) are excluded from inbound usage: a
+      // private recursive helper whose only edge is `fn → fn` is
+      // unreachable from the rest of the program, so the self-call
+      // must not count as external usage — otherwise deadCode() omits
+      // it and the unreferenced symbol stays invisible
+      // (chatgpt-codex-connector P2: 'Ignore self-edges in dead-code
+      // reachability').
       const sql = `SELECT n.id AS node_id, n.qualified_name, n.name, n.label,
                           f.path AS file_path
                      FROM nodes n
@@ -1827,6 +1877,7 @@ export class GraphStore {
                     WHERE NOT EXISTS (
                        SELECT 1 FROM edges e
                         WHERE e.dst = n.id
+                          AND e.src <> n.id
                           AND e.type IN (${typePlaceholders})
                      )
                       AND COALESCE(a.is_exported, 0) = 0
@@ -1862,7 +1913,7 @@ export class GraphStore {
       return { ok: true, hits };
     } catch (error) {
       logWriteFailure(error);
-      const failure = classifyError(error);
+      const failure = classifyReadError(error);
       return failure as unknown as DeadCodeResult;
     }
   }
@@ -1916,7 +1967,7 @@ export class GraphStore {
       );
     } catch (error) {
       logWriteFailure(error);
-      return classifyError(error) as unknown as SnippetResult;
+      return classifyReadError(error) as unknown as SnippetResult;
     }
     if (rows.length === 0) return { ok: false, code: "not_found" };
     if (rows.length > 1) return { ok: false, code: "ambiguous_name" };
@@ -2123,6 +2174,33 @@ function classifyError(error: unknown): GraphStoreFailure {
   // trusting the store for the wrong reason; re-throw so the caller
   // sees the real error (chatgpt-codex-connector P2).
   throw error instanceof Error ? error : new Error(String(error ?? ""));
+}
+
+/**
+ * Read-path error classifier. Unlike {@link classifyError} (write
+ * path), this is TOTAL — it never throws. Every unexpected error
+ * maps to a tagged `db_error` failure so the read APIs
+ * (`traverse`/`searchGraph`/`schemaStats`/`deadCode`/`snippetFor`)
+ * honor their advertised discriminated-union contract: a caller that
+ * exhaustively switches on `result.code` never observes a throw
+ * (cursor Bugbot: 'Read APIs rethrow SQLite errors';
+ * chatgpt-codex-connector P2: 'Return tagged failures from read
+ * queries'). The write path keeps {@link classifyError} because its
+ * validation throws (duplicate path, bad confidence, non-array
+ * symbols) are intentional fail-loud contract violations that
+ * callers and tests catch as rejections.
+ *
+ * `db_error` is deliberately distinct from `db_corrupt` so a generic
+ * failure does not signal the caller to stop trusting the DB
+ * (chatgpt-codex-connector P2: do not conflate unexpected errors
+ * with corruption).
+ */
+function classifyReadError(error: unknown): GraphStoreFailure {
+  try {
+    return classifyError(error);
+  } catch {
+    return { ok: false, code: "db_error" };
+  }
 }
 
 function hasErrorCode(value: unknown): value is { code: string } {
