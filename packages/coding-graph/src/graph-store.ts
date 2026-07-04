@@ -426,10 +426,10 @@ export class GraphStore {
           lang = excluded.lang`,
     );
     const insertFts = this.db.prepare(
-      `INSERT INTO nodes_fts (rowid, id, name, qualified_name) VALUES (?, ?, ?, ?)`,
+      `INSERT INTO nodes_fts (rowid, name, qualified_name) VALUES (?, ?, ?)`,
     );
-    const deleteFtsById = this.db.prepare(
-      `DELETE FROM nodes_fts WHERE id = ?`,
+    const deleteFtsByRowid = this.db.prepare(
+      `DELETE FROM nodes_fts WHERE rowid = ?`,
     );
     let nodeCount = 0;
     for (const [id, sym] of symbolByNodeId) {
@@ -447,10 +447,13 @@ export class GraphStore {
         // INSERT/UPDATE entirely so `changes` stays 0.
         continue;
       }
-      // Drop any prior FTS row for this id before the new INSERT, so a
-      // same-id re-upsert that changed name/qualified_name does not
-      // leave a stale searchable copy behind.
-      deleteFtsById.run(id);
+      // Drop any prior FTS row for this id before the new INSERT.
+      // Contentless FTS5 (`content=''`) does NOT store UNINDEXED
+      // column values, so the only reliable key is the deterministic
+      // rowid we derive from the node id hash (chatgpt-codex-connector
+      // P2: `WHERE id = ?` matches zero rows in contentless mode).
+      const ftsRowid = ftsRowidForNodeId(id);
+      deleteFtsByRowid.run(ftsRowid);
       insertNode.run(
         id,
         sym.kind,
@@ -461,13 +464,7 @@ export class GraphStore {
         sym.endByte,
         ir.lang,
       );
-      // FTS5 rowids are signed 64-bit integers. We derive a stable
-      // numeric key from the leading 16 hex chars of the node id (=
-      // 64 bits), then mask to the int64 range so SQLite accepts it.
-      // The hash is large enough that collisions across distinct node
-      // ids are negligible.
-      const ftsRowid = BigInt(`0x${id.slice(0, 16)}`) & BigInt("0x7fffffffffffffff");
-      insertFts.run(ftsRowid, id, sym.name, sym.qualifiedName);
+      insertFts.run(ftsRowid, sym.name, sym.qualifiedName);
       nodeCount += 1;
     }
 
@@ -506,14 +503,16 @@ export class GraphStore {
         )
         .run(...prunedNodeIds);
       // Clear FTS rows explicitly because the nodes_fts table is not
-      // linked by FK. The `id` column mirrors the deterministic node
-      // id, so the same id list is the right key.
+      // linked by FK. Contentless FTS5 does not store UNINDEXED
+      // columns, so the only reliable key is the deterministic rowid
+      // derived from the node id (chatgpt-codex-connector P2).
+      const ftsRowids = prunedNodeIds.map(ftsRowidForNodeId);
       const ftsPrune = this.db.prepare(
-        `DELETE FROM nodes_fts WHERE id IN (${prunedNodeIds
+        `DELETE FROM nodes_fts WHERE rowid IN (${ftsRowids
           .map(() => "?")
           .join(", ")})`,
       );
-      ftsPrune.run(...prunedNodeIds);
+      ftsPrune.run(...ftsRowids);
     }
 
     return {
@@ -700,7 +699,22 @@ export function nodeIdFor(input: NodeIdInput): string {
   return hash.digest("hex");
 }
 
-function resolveNodeId(
+/**
+ * FTS5 rowid derived from a deterministic node id. FTS5 rowids are
+ * signed 64-bit integers; we slice the leading 16 hex chars (= 64 bits)
+ * of the sha256 id and mask to the int64 positive range so SQLite
+ * accepts it. The full 64-bit space is large enough that collisions
+ * across distinct node ids are negligible. Contentless FTS5
+ * (`content=''`) does NOT store UNINDEXED column values, so the only
+ * reliable key into the virtual table is the rowid — the `id UNINDEXED`
+ * column exists only for human inspection via sqlite_master inspection,
+ * not for queries (chatgpt-codex-connector P2).
+ */
+function ftsRowidForNodeId(nodeId: string): bigint {
+  return BigInt(`0x${nodeId.slice(0, 16)}`) & BigInt("0x7fffffffffffffff");
+}
+
+ function resolveNodeId(
   qualifiedName: string,
   inBatch: Map<string, string>,
   db: BetterSqlite3Database,

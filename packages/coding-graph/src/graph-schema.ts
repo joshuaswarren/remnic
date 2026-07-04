@@ -136,15 +136,18 @@ function createTables(db: BetterSqlite3Database): void {
     );
   `);
   // FTS5 virtual table over node names + qualified_names for PR2's
-  // name search. Contentless (`content=''`) plus a hidden `id` column
-  // that mirrors the deterministic node id so the write pipeline can
-  // INSERT/DELETE rows explicitly. The `nodes` table remains the
-  // source-of-truth; FTS only carries the searchable text + the rowid
-  // pointer used by PR2's name search. No auto-triggers: the upsert
-  // path is the single source of FTS truth, and contentless mode
-  // avoids the "external content" requirement that FTS rows must
-  // reference a live row in `nodes` (which would break on the brief
-  // moment when a same-id re-upsert has deleted the prior node).
+  // name search. Contentless-delete mode (`content=''` plus
+  // `contentless_delete=1`, SQLite 3.43+) lets us run standard
+  // `DELETE` and `INSERT OR REPLACE` statements against the virtual
+  // table — the write pipeline's only requirement. The `id UNINDEXED`
+  // column mirrors the deterministic node id for human-readable
+  // inspection; the write pipeline's actual key is the rowid derived
+  // from the node-id hash (see `ftsRowidForNodeId` in graph-store.ts).
+  // No auto-triggers: the upsert path is the single source of FTS
+  // truth, and contentless mode avoids the "external content"
+  // requirement that FTS rows must reference a live row in `nodes`
+  // (which would break on the brief moment when a same-id re-upsert
+  // has deleted the prior node).
   const hasNodeFts = db
     .prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
@@ -157,6 +160,7 @@ function createTables(db: BetterSqlite3Database): void {
         qualified_name,
         id UNINDEXED,
         content='',
+        contentless_delete=1,
         tokenize='unicode61 remove_diacritics 2'
       );
     `);
