@@ -120,10 +120,32 @@ omp's extension loader has a compat shim that rewrites bare
 not reach files under the extension's `node_modules`, and plain resolution
 from those files fails inside omp's compiled binary.
 
-**Workaround — pre-bundle the extension so nothing resolves at runtime:**
+**Workaround — pre-bundle the extension so nothing resolves at runtime.**
+
+Step 1: the connector-generated `index.ts` imports `@remnic/plugin-pi` via a
+`file://` URL pointing at the global install (`renderWrapper()` in
+`packages/plugin-pi/src/publisher.ts`). Bun's bundler cannot resolve
+`file://` specifiers (`Could not resolve: "file://…"`), so first convert the
+extension directory to a self-contained npm layout with a bare-specifier
+import:
 
 ```bash
 cd ~/.omp/agent/extensions/remnic
+cat > index.ts <<'EOF'
+import { createRemnicPiExtension } from "@remnic/plugin-pi";
+
+export default createRemnicPiExtension({
+  configPath: `${process.env.HOME}/.omp/agent/extensions/remnic/remnic.config.json`,
+});
+EOF
+npm init -y >/dev/null && npm install @remnic/plugin-pi
+```
+
+(Keep your existing `remnic.config.json` — only `index.ts` is replaced.)
+
+Step 2: bundle:
+
+```bash
 bun build index.ts --target=bun --outdir=dist-bundle
 ```
 
