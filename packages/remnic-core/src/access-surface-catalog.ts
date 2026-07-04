@@ -191,6 +191,10 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "GET", pathname: "/engram/v1/graph/events", operation: null },
   { method: "GET", pathname: "/engram/v1/console/state", operation: null },
   { method: "GET", pathname: "/engram/v1/peers", operation: null },
+  { method: "GET", pathname: "/engram/v1/peers/:id/profile", operation: null },
+  { method: "GET", pathname: "/engram/v1/peers/:id", operation: null },
+  { method: "PUT", pathname: "/engram/v1/peers/:id", operation: null },
+  { method: "DELETE", pathname: "/engram/v1/peers/:id", operation: null },
   { method: "GET", pathname: "/engram/v1/dreams/status", operation: null },
   { method: "POST", pathname: "/engram/v1/dreams/run", operation: null },
 ];
