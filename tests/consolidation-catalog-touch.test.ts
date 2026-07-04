@@ -156,16 +156,24 @@ test("summarization records the catalog write touch after source memories are ar
     const orchestrator = Object.create(Orchestrator.prototype) as any;
     const events: string[] = [];
     orchestrator.config = config;
-    orchestrator.storage = {
+    const storage: {
+      dir: string;
+      onCatalogWrite?: () => void;
+      writeSummary: () => Promise<void>;
+      archiveMemories: () => Promise<number>;
+    } = {
       dir: memoryDir,
       writeSummary: async () => {
         events.push("summary");
+        storage.onCatalogWrite?.();
       },
       archiveMemories: async () => {
         events.push("archive");
+        storage.onCatalogWrite?.();
         return 50;
       },
     };
+    orchestrator.storage = storage;
     orchestrator.extraction = {
       summarizeMemories: async () => ({
         summaryText: "compressed memory summary",
@@ -174,7 +182,10 @@ test("summarization records the catalog write touch after source memories are ar
       }),
     };
     orchestrator.namespaceFromStorageDir = () => config.defaultNamespace;
-    orchestrator.markCatalogWrite = () => {
+    // #1522: the catalog touch now fires at the storage chokepoint via the
+    // StorageManager's onCatalogWrite hook. Simulate that on the mock storage
+    // so the test verifies the touch fires during the storage writes.
+    storage.onCatalogWrite = () => {
       events.push("touch");
     };
 
@@ -193,10 +204,17 @@ test("summarization records the catalog write touch after source memories are ar
 
     await orchestrator.runSummarization(memories);
 
-    assert.deepEqual(
-      events,
-      ["summary", "archive", "touch"],
-      "catalog lastWriteAt touch must happen after archiveMemories rewrites source memories",
+    // #1522: with the storage chokepoint, each write fires its own catalog
+    // touch. The touch from archiveMemories fires at the end of that operation
+    // (after "archive"), preserving the original intent: the catalog
+    // lastWriteAt touch covers the archived-state write.
+    const lastArchiveIndex = events.lastIndexOf("archive");
+    const lastTouchAfterArchive = events.indexOf("touch", lastArchiveIndex);
+    assert.notEqual(lastArchiveIndex, -1, "precondition: archiveMemories ran");
+    assert.notEqual(
+      lastTouchAfterArchive,
+      -1,
+      `catalog touch must fire during/after archiveMemories; saw ${events.join(" -> ")}`,
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

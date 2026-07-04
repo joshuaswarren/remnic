@@ -9000,7 +9000,7 @@ export function registerCli(
             // bypassing the extraction write path. Record it so QMD maintenance /
             // writtenSince don't miss the write. Best-effort and failure-tolerant.
             onMergedMemoryWritten: (namespace, storageDir) => {
-              orchestrator.recordCatalogWrite(namespace, storageDir);
+              // #1522: catalog touch handled at the storage chokepoint.
             },
           });
           console.log(result.message);
