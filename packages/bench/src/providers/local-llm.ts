@@ -111,8 +111,9 @@ class LocalLlmProvider implements LlmProvider {
                 : []),
               { role: "user", content: prompt },
             ],
-            temperature: opts.temperature,
+            temperature: opts.temperature ?? this.config.temperature,
             max_tokens: opts.maxTokens,
+            ...(this.config.seed !== undefined ? { seed: this.config.seed } : {}),
             ...(this.config.disableThinking &&
             isThinkingCompatibleBackend(this.normalizedBaseUrl())
               ? { chat_template_kwargs: { enable_thinking: false } }
