@@ -434,8 +434,12 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
         // thrown/timeout error must still register as an attempted
         // judge call so cost.judgeModelCalls reflects attempted traffic.
         counters.modelCalls += 1;
-        const underlying = judge.scoreBinaryPrompt!;
-        const fresh = await underlying(prompt, control);
+        // Call through member-access syntax so `this` (the judge) is
+        // preserved for implementations that rely on it (class methods
+        // and adapters that read instance state) — PR #1591 round-4
+        // cursor bugbot, OS_-h. Bypassing via a local copy would
+        // rebind `this` to `undefined` and break those implementations.
+        const fresh = await judge.scoreBinaryPrompt!(prompt, control);
         await putSafely(parts, fresh);
         return fresh;
       },

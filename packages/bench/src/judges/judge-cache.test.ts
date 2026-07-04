@@ -691,3 +691,49 @@ test("(q) modelCalls is incremented BEFORE the underlying judge await, even when
     assert.equal(binaryEntered, true, "scoreBinaryPrompt was actually invoked");
   });
 });
+
+test("(r) scoreBinaryPrompt preserves the underlying judge receiver (PR #1591 round-4 OS_-h)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    // A class instance whose scoreBinaryPrompt reads instance state via
+    // `this`. Pre-fix the wrapper copied the method into a local and
+    // invoked it unbound, breaking class-style judges.
+    class ClassJudge {
+      private readonly tag: string;
+      constructor(tag: string) {
+        this.tag = tag;
+      }
+      async scoreBinaryPrompt(_prompt: string): Promise<BenchJudgeResult> {
+        // Reading `this.tag` would throw if the wrapper rebinds `this`.
+        return {
+          score: this.tag === "expected-tag" ? 1 : 0,
+          tokens: { input: 1, output: 1 },
+          latencyMs: 0,
+          model: "class-judge",
+        };
+      }
+      async score(): Promise<number> {
+        return 0;
+      }
+      async scoreWithMetrics(): Promise<BenchJudgeResult> {
+        return {
+          score: this.tag === "expected-tag" ? 1 : 0,
+          tokens: { input: 1, output: 1 },
+          latencyMs: 0,
+          model: "class-judge",
+        };
+      }
+    }
+    const underlying = new ClassJudge("expected-tag");
+    const wrapper = runJudgeWithCache({
+      judge: underlying,
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    const verdict = await wrapper.scoreBinaryPrompt!("yes-no prompt");
+    // If `this` had been unbound, this.tag would be undefined and
+    // verdict.score would be 0; with the wrapper fixed, `this` is
+    // preserved and verdict.score === 1.
+    assert.equal(verdict.score, 1, "this must remain bound to the underlying judge instance");
+  });
+});
