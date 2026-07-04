@@ -130,7 +130,24 @@ extension directory to a self-contained npm layout with a bare-specifier
 import:
 
 ```bash
-cd "$(dirname "$(find ~/.omp -name remnic.config.json -path '*/extensions/remnic/*' | head -1)")"
+# Resolve the extension root the same way the installer does (see
+# "Install location" above): active profile wins, then PI_CODING_AGENT_DIR,
+# then the default agent dir.
+profile="${OMP_PROFILE:-${PI_PROFILE:-}}"
+config_root="$HOME/${PI_CONFIG_DIR:-.omp}"
+if [ -n "$profile" ]; then
+  agent_dir="$config_root/profiles/$profile/agent"
+elif [ -n "${PI_CODING_AGENT_DIR:-}" ]; then
+  agent_dir="$PI_CODING_AGENT_DIR"
+else
+  agent_dir="$config_root/agent"
+fi
+ext_dir="$agent_dir/extensions/remnic"
+[ -f "$ext_dir/remnic.config.json" ] || {
+  echo "No remnic extension at $ext_dir — run: remnic connectors install omp" >&2
+  exit 1
+}
+cd "$ext_dir"
 cat > index.ts <<'EOF'
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
