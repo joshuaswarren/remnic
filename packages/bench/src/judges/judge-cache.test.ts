@@ -21,6 +21,7 @@ import test from "node:test";
 
 import type { BenchJudge, BenchJudgeResult, BenchMemoryAdapter, Message, SearchResult } from "../adapters/types.ts";
 import { JudgeCache, runJudgeWithCache, stableStringify } from "./judge-cache.ts";
+import { runBenchmark } from "../benchmark.ts";
 
 async function withTempDir<T>(
   body: (dir: string) => Promise<T>,
@@ -962,4 +963,58 @@ test("(u) cache reads after an already-aborted signal still let the judge run (P
     assert.equal(wrapper.counters.cacheMisses, 1);
     assert.equal(wrapper.counters.cacheHits, 0);
   });
+});
+
+// --- (v) restore guard: getter-only judge property (PR #1591 round-8) -----
+
+test("(v) runBenchmark does not assign to a getter-only judge property when no cache is wired (PR #1591 round-8)", async () => {
+  // A programmatic BenchMemoryAdapter can expose `judge` via a getter or
+  // be frozen. When no cache wrapper is installed (no judgeProvider, no
+  // judgeCacheDir/outputDir, or noJudgeCache), the finally restore must
+  // be a no-op so a successful run does not throw during cleanup in ESM
+  // strict mode.  buffer-surprise-trigger does not exercise the system
+  // adapter's judge (it operates on SmartBuffer directly), so the run
+  // succeeds; the bug manifests in runBenchmark's finally block.
+  const noopAdapter = {
+    async store() {},
+    async recall() {
+      return "";
+    },
+    async search() {
+      return [];
+    },
+    async reset() {},
+    async getStats() {
+      return { sessionCount: 0, totalMemories: 0 };
+    },
+    async destroy() {},
+  } as unknown as BenchMemoryAdapter;
+  const stubJudge = { async score() { return 0.5; } } as unknown as BenchJudge;
+  // getter-only property — any assignment throws in strict mode.
+  Object.defineProperty(noopAdapter, "judge", {
+    get() {
+      return stubJudge;
+    },
+    set() {
+      throw new Error("judge property is read-only (getter-only)");
+    },
+    configurable: false,
+    enumerable: true,
+  });
+
+  // Before the round-8 fix, runBenchmark's finally block unconditionally
+  // assigned options.system.judge = originalSystemJudge, which threw.
+  // After the fix, the assignment is guarded by mutatedOptionsSystemJudge
+  // and skipped when no cache wrapper was installed.
+  const result = await runBenchmark("buffer-surprise-trigger", {
+    mode: "quick",
+    system: noopAdapter,
+  });
+
+  assert.ok(result, "runBenchmark should complete without throwing");
+  assert.equal(
+    noopAdapter.judge,
+    stubJudge,
+    "getter-only judge property should still return the original stub",
+  );
 });

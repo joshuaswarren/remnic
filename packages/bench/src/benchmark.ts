@@ -181,6 +181,14 @@ export async function runBenchmark(
   // doesn't miss still-pending entries.
   let primaryDrainPendingWrites: (() => Promise<void>) | undefined;
   let crossDrainPendingWrites: (() => Promise<void>) | undefined;
+  // PR #1591 round-8 (chatgpt-codex-connector thread): track whether
+  // the caller's adapter was actually mutated so the finally restore
+  // is a no-op when no cache wrapper was installed (noJudgeCache, no
+  // judgeProvider, or guarded mode where only the fresh `system`
+  // wrapper was mutated). A programmatic BenchMemoryAdapter can expose
+  // `judge` via a getter or be frozen; assigning back unconditionally
+  // throws in ESM strict mode after a successful run.
+  let mutatedOptionsSystemJudge = false;
   // Issue #1573 PR1: optionally route judge calls through a content-keyed
   // cache. PR #1591 round-7 (OUv-n): the cache wraps the phase-timeout-
   // guarded judge, so cache reads run outside benchmarkPhaseTimeoutMs.
@@ -312,6 +320,10 @@ export async function runBenchmark(
       judgeCacheCounters = primary.counters;
       primaryDrainPendingWrites = primary.drainPendingWrites;
       system.judge = primary.judge;
+      // Only the non-guarded path (system === options.system) mutates
+      // the caller's adapter; in guarded mode `system` is a fresh object
+      // returned by createTimeoutGuardedAdapter.
+      mutatedOptionsSystemJudge = system === options.system;
     }
     // AMA-Bench cross judge: only wrap when a cross-judge provider config
     // identifies it. Without provider config, leave the cross judge
@@ -353,7 +365,14 @@ export async function runBenchmark(
     try {
       await destroyOwnedIngestionAdapter();
     } finally {
-      options.system.judge = originalSystemJudge;
+      // PR #1591 round-8: only restore when a cache wrapper was actually
+      // installed on the caller's adapter. Assigning back unconditionally
+      // throws on a getter/frozen `judge` property when no wrapping
+      // happened (noJudgeCache, no judgeProvider, or guarded mode where
+      // only the fresh `system` wrapper was mutated).
+      if (mutatedOptionsSystemJudge) {
+        options.system.judge = originalSystemJudge;
+      }
       if (originalCrossJudge !== undefined) {
         options.amaBenchCrossJudge = originalCrossJudge;
       }
