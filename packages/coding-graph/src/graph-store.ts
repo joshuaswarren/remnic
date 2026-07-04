@@ -1451,6 +1451,10 @@ export class GraphStore {
     ) {
       return { ok: false, code: "invalid_query" };
     }
+    // Wrap DB operations in try/catch so lock/corrupt errors return a
+    // tagged failure instead of throwing (cursor Bugbot: 'SQLite errors
+    // escape read APIs'). Same shape as schemaStats/deadCode.
+    try {
     // Resolve the start node. If `start` is a 64-char lowercase hex
     // string (the nodeIdFor sha256 format), resolve ONLY by id — this
     // is the unambiguous path a caller uses after seeing an ambiguous
@@ -1590,6 +1594,10 @@ export class GraphStore {
       frontier = nextFrontier;
     }
     return { ok: true, hits };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyError(error) as TraverseResult;
+    }
   }
 
   /**
@@ -1650,6 +1658,9 @@ export class GraphStore {
       return { ok: false, code: "invalid_query" };
     }
 
+    // Wrap DB operations in try/catch (cursor Bugbot: 'SQLite errors
+    // escape read APIs'). Same shape as schemaStats/deadCode/traverse.
+    try {
     // Build a single parameterized query. The degree subquery counts
     // inbound + outbound edges per node; the WHERE clause AND-combines
     // every present filter; the LIMIT is bound last. LIKE patterns are
@@ -1720,6 +1731,10 @@ export class GraphStore {
       degree: r.degree,
     }));
     return { ok: true, hits };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyError(error) as SearchResult;
+    }
   }
 
   /**
@@ -1870,28 +1885,39 @@ export class GraphStore {
     if (this.repoRoot === undefined) {
       return { ok: false, code: "repo_root_unset" };
     }
-    // Resolve the node. A qualified_name might match multiple nodes
-    // (declared in multiple files); ambiguous matches are rejected so
-    // the caller can pass a node id via a future extension or include
-    // the file in the same batch.
-    const rows = expectRows<{
+    // Wrap the DB lookup in try/catch (cursor Bugbot: 'SQLite errors
+    // escape read APIs'). The file read below has its own catch.
+    let rows: {
       id: string;
       qualified_name: string;
       file_path: string;
       span_start: number;
       span_end: number;
       lang: string;
-    }>(
-      this.db
-        .prepare(
-          `SELECT n.id, n.qualified_name, n.span_start, n.span_end, n.lang,
-                  f.path AS file_path
-             FROM nodes n JOIN files f ON n.file_id = f.id
-            WHERE n.qualified_name = ?`,
-        )
-        .all(query.qualifiedName),
-      ["id", "qualified_name", "file_path", "span_start", "span_end", "lang"],
-    );
+    }[];
+    try {
+      rows = expectRows<{
+        id: string;
+        qualified_name: string;
+        file_path: string;
+        span_start: number;
+        span_end: number;
+        lang: string;
+      }>(
+        this.db
+          .prepare(
+            `SELECT n.id, n.qualified_name, n.span_start, n.span_end, n.lang,
+                    f.path AS file_path
+               FROM nodes n JOIN files f ON n.file_id = f.id
+              WHERE n.qualified_name = ?`,
+          )
+          .all(query.qualifiedName),
+        ["id", "qualified_name", "file_path", "span_start", "span_end", "lang"],
+      );
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyError(error) as unknown as SnippetResult;
+    }
     if (rows.length === 0) return { ok: false, code: "not_found" };
     if (rows.length > 1) return { ok: false, code: "ambiguous_name" };
     const node = rows[0]!;
