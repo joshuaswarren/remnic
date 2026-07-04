@@ -60,3 +60,11 @@ logs/
 *.tgz
 irc-debug.ts
 .subagents/
+
+# model-lab (issue #1585): git carries recipes + hashes, never blobs.
+# Datasets, training runs, weights, and LLM traces are all local-only.
+model-lab/**/data/
+model-lab/**/runs/
+model-lab/.venv/
+*.safetensors
+*.gguf
