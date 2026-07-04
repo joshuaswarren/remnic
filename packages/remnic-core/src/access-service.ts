@@ -4426,14 +4426,16 @@ export class EngramAccessService {
       codingKnowledge: this.orchestrator.config.codingKnowledge,
       getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
       resolveStorage: async (req) => {
-        const ns = this.resolveWritableNamespace(
-          req.namespace,
-          req.sessionKey,
+        const ns = await this.resolveCodingScopedWriteNamespace({
+          namespace: req.namespace,
+          sessionKey: req.sessionKey,
           authenticatedPrincipal,
-        );
-        return this.orchestrator.getStorage(ns);
+        });
+        const storage = await this.orchestrator.getStorage(ns);
+        return Object.assign(storage, { namespace: ns });
       },
-      recordCatalogWrite: (dir) => this.orchestrator.recordCatalogWrite(dir, dir),
+      recordCatalogWrite: (namespace, storageDir) =>
+        this.orchestrator.recordCatalogWrite(namespace, storageDir),
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
     });
   }

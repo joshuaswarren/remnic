@@ -165,6 +165,8 @@ export interface DecisionSurfaceRecord {
  */
 export interface DecisionSurfaceStorage {
   readonly dir: string;
+  /** The resolved namespace — used for catalog write recording. */
+  readonly namespace: string;
   readAllMemories(): Promise<readonly MemoryFile[]>;
   getMemoryById(id: string): Promise<MemoryFile | null>;
   writeMemory(
@@ -190,7 +192,7 @@ export interface DecisionSurfaceContext {
   /** Resolve storage through the SAME namespace path as memory_store
    *  (principal ACL + coding overlay + default fallback). */
   resolveStorage(request: DecisionSurfaceRequest): Promise<DecisionSurfaceStorage>;
-  recordCatalogWrite(dir: string): void;
+  recordCatalogWrite(namespace: string, storageDir: string): void;
   /** Throw the surface-appropriate input-validation error. */
   throwInputError(message: string): never;
 }
@@ -324,7 +326,7 @@ async function decisionRecord(
     tags: ["decision-record"],
     source: "coding-decision",
   });
-  ctx.recordCatalogWrite(storage.dir);
+  ctx.recordCatalogWrite(storage.namespace, storage.dir);
   log.info(
     `access-write op=coding_decision/record memoryId=${memoryId} status=${status}`,
   );
@@ -389,7 +391,7 @@ async function decisionSupersede(
       decisionStatus: "superseded",
     },
   });
-  ctx.recordCatalogWrite(storage.dir);
+  ctx.recordCatalogWrite(storage.namespace, storage.dir);
   log.info(
     `access-write op=coding_decision/supersede superseded=${request.id} replacement=${replacementId}`,
   );
