@@ -465,3 +465,52 @@ test("formatHandoffNote prefers the manifest note when authored", () => {
     /^stop responder endpoint, start judge endpoint at http:\/\/b serving model j/,
   );
 });
+
+test("runSequentialPhases treats trailing-slash URL variants as the same endpoint (cursor review: #1573 PR2)", async () => {
+  // Regression: endpoint sameness used raw baseUrl string equality, so
+  // http://host/v1 and http://host/v1/ were treated as different endpoints
+  // and triggered a spurious hand-off. Preflight's discoveryEndpointFor
+  // already normalizes a trailing slash; sameness must match that tolerance.
+  const m = parseLocalLabManifest({
+    profile: "local-lab",
+    responder: {
+      provider: "openai-compatible",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      model: "qwen3:14b",
+      ctx: 16384,
+      temperature: 0,
+      seed: 1573,
+    },
+    judge: {
+      provider: "openai-compatible",
+      baseUrl: "http://127.0.0.1:8080/v1/",
+      model: "gemma3:27b",
+      ctx: 16384,
+      temperature: 0,
+      seed: 1573,
+    },
+    phases: "sequential",
+  });
+  const stub = makeStubPreflight([m.responder.model, m.judge.model]);
+  const handoffs: unknown[] = [];
+
+  const phases: LocalLabPhase[] = [
+    { name: "responder", role: m.responder, execute: async () => undefined },
+    { name: "judge", role: m.judge, execute: async () => undefined },
+  ];
+
+  await runSequentialPhases(m, phases, {
+    preflight: stub.preflightOptions,
+    hooks: {
+      onPhaseHandoff: () => {
+        handoffs.push("fired");
+      },
+    },
+  });
+
+  assert.equal(
+    handoffs.length,
+    0,
+    "no hand-off when endpoints differ only by a trailing slash",
+  );
+});

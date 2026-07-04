@@ -113,6 +113,11 @@ export interface ParsedBenchArgs {
   noJudgeCache?: boolean;
   /** Issue #1573 PR1: override the judge-result cache directory. */
   judgeCacheDir?: string;
+  /**
+   * Issue #1573 PR2: path to a local-lab manifest JSON file. Required when
+   * `runtimeProfile` / `matrixProfiles` includes `"local-lab"`.
+   */
+  localLabManifestPath?: string;
 }
 
 export interface BenchWorkItem {
@@ -330,6 +335,7 @@ const BENCH_VALUE_FLAGS = Object.freeze([
   "--ama-bench-cross-judge-base-url",
   "--ama-bench-cross-judge-api-key",
   "--ama-bench-cross-judge-codex-reasoning-effort",
+  "--local-lab-manifest",
 ] as const);
 
 const BENCH_BOOLEAN_FLAGS = Object.freeze([
@@ -410,6 +416,7 @@ const RUN_VALUE_FLAGS = Object.freeze([
   "--ama-bench-cross-judge-base-url",
   "--ama-bench-cross-judge-api-key",
   "--ama-bench-cross-judge-codex-reasoning-effort",
+  "--local-lab-manifest",
 ] as const satisfies readonly BenchValueFlag[]);
 
 const RUN_BOOLEAN_FLAGS = Object.freeze([
@@ -725,6 +732,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   // resolves tildes + relative paths identically to other filesystem flags
   // (datasetDir, resultsDir, baselinesDir).
   const judgeCacheDirRaw = readBenchOptionValue(args, "--judge-cache-dir");
+  const localLabManifestRaw = readBenchOptionValue(args, "--local-lab-manifest");
   const max429WaitRaw = readBenchOptionValue(args, "--max-429-wait");
   const amaBenchJudgeProtocolRaw = readBenchOptionValue(args, "--ama-bench-judge-protocol");
   const amaBenchCrossJudgeProviderRaw = readBenchOptionValue(args, "--ama-bench-cross-judge-provider");
@@ -1292,6 +1300,9 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     // Issue #1573 PR1: surface judge-cache flags into the runner options.
     noJudgeCache: args.includes("--no-judge-cache"),
     judgeCacheDir: judgeCacheDirRaw ? path.resolve(expandTilde(judgeCacheDirRaw)) : undefined,
+    localLabManifestPath: localLabManifestRaw
+      ? path.resolve(expandTilde(localLabManifestRaw))
+      : undefined,
     max429WaitMs,
     disableThinking: args.includes("--disable-thinking"),
     amaBenchJudgeProtocol,

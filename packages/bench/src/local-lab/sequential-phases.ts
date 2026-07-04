@@ -94,6 +94,16 @@ export interface RunSequentialPhasesOptions {
 }
 
 /**
+ * Normalize a baseUrl for endpoint-sameness comparison. Strips trailing
+ * slashes so `…/v1` and `…/v1/` compare equal — matching the trailing-slash
+ * tolerance `discoveryEndpointFor` (preflight) already applies when composing
+ * discovery URLs (cursor review, issue #1573 PR2).
+ */
+function normalizeBaseUrlForSameness(baseUrl: string): string {
+  return baseUrl.replace(/\/+$/, "");
+}
+
+/**
  * Run a sequence of phases against the manifest's declared endpoints, with
  * preflight + hand-off enforcement between them. Resolves with each phase's
  * outcome in order, or rejects with a `LocalLabPreflightError`
@@ -124,7 +134,9 @@ export async function runSequentialPhases<T>(
     //    The first phase has no predecessor, so no hand-off fires.
     if (index > 0) {
       const previous = phases[index - 1];
-      const sameEndpoint = phase.role.baseUrl === previous.role.baseUrl;
+      const sameEndpoint =
+      normalizeBaseUrlForSameness(phase.role.baseUrl) ===
+      normalizeBaseUrlForSameness(previous.role.baseUrl);
       if (!sameEndpoint) {
         const manifestNote = readHandoffNote(manifest, previous.name, phase.name);
         const note = formatHandoffNote(

@@ -668,6 +668,42 @@ function sanitizeProviderConfig(config: ProviderConfig): ProviderConfig {
   };
 }
 
+/**
+ * Apply the runtime options that the manifest cannot express onto a
+ * local-lab ProviderConfig. The manifest pins provider/model/baseUrl/
+ * temperature/seed; the CLI/runtime flags (`--request-timeout`,
+ * `--max-429-wait`, `--disable-thinking`) layer on top so a local-lab run
+ * honours the same timeout + thinking-suppression contract as every other
+ * profile (cursor review, issue #1573 PR2).
+ *
+ * Returns the config unchanged when none of the three options are set, so
+ * the common case (manifest-only) stays free of empty retryOptions.
+ */
+function applyLocalLabRuntimeOptions(
+  config: ProviderConfig,
+  options: Pick<ResolveBenchRuntimeProfileOptions, "requestTimeout" | "max429WaitMs" | "disableThinking">,
+): ProviderConfig {
+  const requestTimeout = options.requestTimeout;
+  const max429WaitMs = options.max429WaitMs;
+  const disableThinking = options.disableThinking;
+  const hasRetry = requestTimeout != null || max429WaitMs != null;
+  if (!hasRetry && !disableThinking) {
+    return config;
+  }
+  return {
+    ...config,
+    ...(hasRetry
+      ? {
+          retryOptions: {
+            ...(requestTimeout != null ? { timeoutMs: requestTimeout } : {}),
+            ...(max429WaitMs != null ? { max429WaitMs } : {}),
+          },
+        }
+      : {}),
+    ...(disableThinking ? { disableThinking: true } : {}),
+  };
+}
+
 function registerCodexCliFallbackRunnerIfNeeded(config: ProviderConfig | null): void {
   if (!config || config.provider !== "codex-cli" || codexCliFallbackRegistered) {
     return;
@@ -889,11 +925,13 @@ async function resolveLocalLabRuntimeProfile(
   const drainTimeoutMs = normalizeDrainTimeoutMs(
     options.drainTimeout ?? options.requestTimeout,
   );
-  const systemProvider = sanitizeProviderConfig(
-    resolved.responder.providerConfig,
+  const systemProvider = applyLocalLabRuntimeOptions(
+    sanitizeProviderConfig(resolved.responder.providerConfig),
+    options,
   );
-  const judgeProvider = sanitizeProviderConfig(
-    resolved.judge.providerConfig,
+  const judgeProvider = applyLocalLabRuntimeOptions(
+    sanitizeProviderConfig(resolved.judge.providerConfig),
+    options,
   );
   const judgeFactoryConfig = judgeProvider
     ? asProviderFactoryConfig(judgeProvider)

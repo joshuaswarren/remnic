@@ -894,7 +894,7 @@ Commands:
 Options:
   --quick                  Run a lightweight quick pass (maps to --lightweight --limit 1)
   --all                    Run every published benchmark
-  --runtime-profile <baseline|real|openclaw-chain>
+  --runtime-profile <baseline|real|openclaw-chain|local-lab>
                            Choose the benchmark runtime profile
   --matrix <profiles>      Run a benchmark across a comma-separated profile matrix
   --dataset-dir <path>     Override the benchmark dataset directory for full runs
@@ -946,6 +946,8 @@ Options:
   --baselines-dir <path>   Override the named baseline directory
   --request-timeout <ms>   Provider request timeout in milliseconds
   --drain-timeout <ms>     Memory drain timeout in milliseconds (defaults to --request-timeout when unset)
+  --local-lab-manifest <path>
+                           Path to a local-lab manifest JSON file (required for --runtime-profile local-lab)
   --threshold <value>      Regression threshold for compare (default: 0.05)
   --trial-limit <n>        Cap scored LoCoMo or MemoryAgentBench QA trials for staged published runs
   --task-filter <pattern>  BEAM diagnostic filter; match task id, ability, or question text
@@ -1047,6 +1049,8 @@ export function buildBenchRuntimeProfileRequest(
     max429WaitMs: parsed.max429WaitMs,
     disableThinking: parsed.disableThinking,
     lcmObserveConcurrency: parsed.publishedIngestConcurrency,
+    localLabManifestPath:
+      runtimeProfile === "local-lab" ? parsed.localLabManifestPath : undefined,
   };
 }
 
