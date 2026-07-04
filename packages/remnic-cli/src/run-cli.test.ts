@@ -260,3 +260,26 @@ test("runCli captures @remnic/core logger output (CONSOLE_LOGGER late-binds cons
     "core logger output escaped runCli's capture — CONSOLE_LOGGER must late-bind console.* (no .bind(console) in logger.ts)",
   );
 });
+
+test("runCli rejects concurrent calls (process-global swap hazard)", async () => {
+  // Regression for the #1613 review thread on concurrent invocation
+  // (PRRT_kwDORJXyws6OXfNf): runCli swaps process-wide globals
+  // (process.stdout/stderr/exit/argv, console.*, cwd, env). Two
+  // concurrent calls would snapshot each other's fakes and restore in
+  // the wrong order. The re-entry guard makes that a loud failure.
+  //
+  // Start a runCli call — it sets activeRun = true and suspends at
+  // `await main(argv)`. Node's single-threaded event loop guarantees
+  // the second synchronous entry sees activeRun still true.
+  const first = runCli(["status"]);
+  await assert.rejects(
+    () => runCli(["status"]),
+    /another runCli call is in progress/,
+  );
+  // Let the first finish and clear the guard.
+  await first;
+  // After the first completes, a new call must succeed — the guard was
+  // cleared in finally.
+  const result = await runCli(["status"]);
+  assert.equal(result.exitCode, 0);
+});

@@ -137,9 +137,27 @@ function formatConsoleArgs(args: unknown[]): string {
 }
 
 /**
+ * Module-level re-entry guard. runCli swaps process-wide globals
+ * (`process.stdout` / `process.stderr` / `process.exit` / `process.argv`,
+ * `console.*`, cwd, env). Two concurrent invocations would snapshot each
+ * other's fakes and restore in the wrong order, attributing output to the
+ * wrong result and leaving subsequent writes captured by a stale fake. The
+ * guard makes that hazard a loud failure instead of silent corruption:
+ * the second concurrent caller gets a clear error pointing at the fix
+ * (await each runCli call before starting the next). Node's single-threaded
+ * event loop guarantees the guard check + set are atomic (no `await` between
+ * them), so there is no TOCTOU window.
+ */
+let activeRun = false;
+
+/**
  * Run the CLI dispatcher in-process and capture its IO + exit code without
  * spawning a child process or terminating the host. See `RunCliOptions`
  * for the overrides.
+ *
+ * **Not concurrent-safe**: runCli swaps process-wide globals and cannot be
+ * called while another runCli is in progress — the second call throws
+ * immediately. Await each call before starting the next.
  *
  * Behaviour contract (matches the `remnic` binary as closely as possible
  * without actually running the auto-run guard at the bottom of index.ts):
@@ -157,6 +175,16 @@ function formatConsoleArgs(args: unknown[]): string {
 export async function runCli(argv: string[], options: RunCliOptions = {}): Promise<RunCliResult> {
   if (!Array.isArray(argv)) {
     throw new TypeError("runCli: argv must be an array of strings");
+  }
+
+  if (activeRun) {
+    throw new Error(
+      "runCli: another runCli call is in progress. runCli swaps process-wide " +
+        "globals (process.stdout/stderr/exit/argv, console.*, cwd, env) and " +
+        "cannot run concurrently — the two calls would snapshot each other's " +
+        "fakes and restore in the wrong order. Await each runCli call before " +
+        "starting the next.",
+    );
   }
 
   const stdoutChunks: string[] = [];
@@ -234,6 +262,7 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
   // and restores whatever was already patched. Restoring an un-patched
   // global is a harmless no-op (re-sets the same value).
   try {
+    activeRun = true;
     process.exit = ((code?: number) => {
       // Mirrors Node's process.exit: an explicit numeric code wins, otherwise
       // fall back to whatever exitCode was set, then 0. We throw so that both
@@ -341,5 +370,6 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
     // the run's exitCode back to the host test runner.
     process.exitCode = originalProcessExitCode;
     exitSignal = null;
+    activeRun = false;
   }
 }
