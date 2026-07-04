@@ -525,52 +525,51 @@ export class GraphStore {
       .filter((id) => !seenNodeIds.has(id));
     let droppedDanglingEdges = 0;
     if (prunedNodeIds.length > 0) {
-      const placeholders = prunedNodeIds.map(() => "?").join(", ");
-      // Count dangling edges BEFORE deleting the nodes — the cascade
-      // will drop owned edges, so we need the pre-prune count.
+      // Use a temp table for the pruned-id set so IN / NOT IN queries
+      // don't hit SQLite's ~32766 variable bind limit for large
+      // prune sets (cursor Bugbot: 'Prune path exceeds SQL variable
+      // limit'). Each insert binds 1 param; the subquery-based
+      // count/delete bind zero.
+      this.db.exec(
+        "CREATE TEMP TABLE IF NOT EXISTS _pruned_ids (id TEXT NOT NULL PRIMARY KEY)",
+      );
+      const clearPruned = this.db.prepare("DELETE FROM _pruned_ids");
+      const insertPruned = this.db.prepare(
+        "INSERT OR IGNORE INTO _pruned_ids (id) VALUES (?)",
+      );
+      clearPruned.run();
+      const fillPruned = this.db.transaction((ids: readonly string[]) => {
+        for (const id of ids) insertPruned.run(id);
+      });
+      fillPruned(prunedNodeIds);
+      // Count dangling edges BEFORE the cascade: dst is a pruned
+      // node AND src is NOT a pruned node (edges between two pruned
+      // nodes are cascade-deleted, not "dangling").
       const dangling = expectRow<{ c: number }>(
         this.db
           .prepare(
             `SELECT COUNT(*) AS c FROM edges
-               WHERE dst IN (${placeholders})
-                 AND src NOT IN (${placeholders})`,
+               WHERE dst IN (SELECT id FROM _pruned_ids)
+                 AND src NOT IN (SELECT id FROM _pruned_ids)`,
           )
-          .get(...prunedNodeIds, ...prunedNodeIds),
+          .get(),
         ["c"],
       );
       droppedDanglingEdges = dangling?.c ?? 0;
-      // DELETE the stale nodes. `ON DELETE CASCADE` on `edges` then
-      // drops every edge whose src or dst is one of the pruned ids
-      // (the FK pragma is set in `open()`).
-      this.db
-        .prepare(
-          `DELETE FROM nodes WHERE id IN (${prunedNodeIds
-            .map(() => "?")
-            .join(", ")})`,
-        )
-        .run(...prunedNodeIds);
-      // Clear FTS rows explicitly because the nodes_fts table is not
-      // linked by FK. Contentless FTS5 does not store UNINDEXED
-      // columns, so the only reliable key is the deterministic rowid
-      // derived from the node id (chatgpt-codex-connector P2).
+      // DELETE stale nodes — ON DELETE CASCADE on edges drops every
+      // edge whose src or dst is pruned (FK pragma set in open()).
+      this.db.exec("DELETE FROM nodes WHERE id IN (SELECT id FROM _pruned_ids)");
+      clearPruned.run();
+      // FTS + fts_index cleanup: rowids are derived in JS (not SQL),
+      // so chunk the IN list to stay under the bind limit.
+      const SQLITE_VAR_LIMIT = 32_766;
       const ftsRowids = prunedNodeIds.map(ftsRowidForNodeId);
-      const ftsPrune = this.db.prepare(
-        `DELETE FROM nodes_fts WHERE rowid IN (${ftsRowids
-          .map(() => "?")
-          .join(", ")})`,
-      );
-      ftsPrune.run(...ftsRowids);
-      // Mirror the prune into the FTS → node id reverse map so a
-      // search hit for a pruned node returns no rows. fts_index is
-      // keyed by rowid (the same FTS rowid), so the same WHERE
-      // clause clears both tables in lockstep (chatgpt-codex-connector
-      // P2: 'Preserve a node key for FTS hits').
-      const ftsIndexPrune = this.db.prepare(
-        `DELETE FROM fts_index WHERE fts_rowid IN (${ftsRowids
-          .map(() => "?")
-          .join(", ")})`,
-      );
-      ftsIndexPrune.run(...ftsRowids);
+      for (let i = 0; i < ftsRowids.length; i += SQLITE_VAR_LIMIT) {
+        const chunk = ftsRowids.slice(i, i + SQLITE_VAR_LIMIT);
+        const ph = chunk.map(() => "?").join(", ");
+        this.db.prepare(`DELETE FROM nodes_fts WHERE rowid IN (${ph})`).run(...chunk);
+        this.db.prepare(`DELETE FROM fts_index WHERE fts_rowid IN (${ph})`).run(...chunk);
+      }
     }
 
     return {
