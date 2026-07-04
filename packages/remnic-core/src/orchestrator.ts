@@ -15636,6 +15636,7 @@ export class Orchestrator {
                   threadIdForExtraction ?? undefined,
                   threadEpisodeIdsForGraph,
                   graphContext.previousPersistedRelPath,
+                  graphCaps,
                 );
                 graphContext.previousPersistedRelPath = parentRelPath;
               } catch {
@@ -15828,6 +15829,7 @@ export class Orchestrator {
               threadIdForExtraction ?? undefined,
               threadEpisodeIdsForGraph,
               graphContext.previousPersistedRelPath,
+              graphCaps,
             );
             graphContext.previousPersistedRelPath = memoryRelPath;
           } catch {
