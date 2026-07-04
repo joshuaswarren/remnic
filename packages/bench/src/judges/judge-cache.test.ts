@@ -1154,3 +1154,19 @@ test("(y) runBenchmark preserves #private field access for class-based adapters 
     await rm(cacheDir, { recursive: true, force: true });
   }
 });
+
+// --- (z) cache key collision resistance (PR #1591 round-8) ---------------
+
+test("(z) cache key is collision-resistant against delimiter injection (PR #1591 round-8)", () => {
+  const cache = new JudgeCache({ dir: "/tmp/judge-cache-key-collision-test-only" });
+  // Under the old pipe-delimiter scheme, adjacent fields containing `|`
+  // produced the same byte stream: datasetVersion="v1" + questionId="a|b"
+  // hashed identically to datasetVersion="v1|a" + questionId="b".
+  const key1 = cache.computeKey(sampleKeyParts({ datasetVersion: "v1", questionId: "a|b" }));
+  const key2 = cache.computeKey(sampleKeyParts({ datasetVersion: "v1|a", questionId: "b" }));
+  assert.notEqual(key1, key2, "delimiter injection must not produce key collisions");
+
+  // Sanity: identical inputs still produce identical keys.
+  const key3 = cache.computeKey(sampleKeyParts({ datasetVersion: "v1", questionId: "a|b" }));
+  assert.equal(key1, key3, "identical inputs must produce identical keys");
+});

@@ -92,8 +92,6 @@ interface CacheEnvelope {
   verdict: BenchJudgeResult;
 }
 
-const PIPE_SEPARATOR = "|";
-
 /**
  * Version token folded into every cache key via the wiring's
  * `judgePromptHash`. Bump when judge prompt construction, rubric parsing, or
@@ -151,20 +149,21 @@ export class JudgeCache {
 
   /** Compute the sha256-hex key for a set of parts. Pure, sync, side-effect-free. */
   computeKey(parts: JudgeCacheKeyParts): string {
+    // PR #1591 round-8 (chatgpt-codex-connector P2): hash each field
+    // independently to a fixed 32-byte digest, then hash the
+    // concatenation. No delimiter is needed because each field
+    // contributes exactly 32 bytes — adjacent fields containing the
+    // old `|` delimiter can no longer produce the same byte stream.
+    const fieldDigest = (value: string): Buffer =>
+      createHash("sha256").update(value).digest();
     return createHash("sha256")
-      .update(parts.benchmarkId)
-      .update(PIPE_SEPARATOR)
-      .update(parts.datasetVersion)
-      .update(PIPE_SEPARATOR)
-      .update(parts.questionId)
-      .update(PIPE_SEPARATOR)
-      .update(createHash("sha256").update(parts.answerText).digest("hex"))
-      .update(PIPE_SEPARATOR)
-      .update(parts.judgePromptHash)
-      .update(PIPE_SEPARATOR)
-      .update(parts.judgeModelId)
-      .update(PIPE_SEPARATOR)
-      .update(parts.judgeParamsHash)
+      .update(fieldDigest(parts.benchmarkId))
+      .update(fieldDigest(parts.datasetVersion))
+      .update(fieldDigest(parts.questionId))
+      .update(fieldDigest(parts.answerText))
+      .update(fieldDigest(parts.judgePromptHash))
+      .update(fieldDigest(parts.judgeModelId))
+      .update(fieldDigest(parts.judgeParamsHash))
       .digest("hex");
   }
 
