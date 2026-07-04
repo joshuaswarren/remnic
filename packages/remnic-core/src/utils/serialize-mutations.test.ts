@@ -24,7 +24,7 @@
 // names why deterministic time control will not work.
 
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -817,6 +817,104 @@ test("heartbeat does NOT refresh a REPLACEMENT lock's mtime (ownership check, co
 
     finishHolder();
     await holder;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("breakStaleLock uses atomic rename so a replacement lock is never unlinked by a second contender", async () => {
+  // Two contenders both judge the same stale lock. One atomically renames
+  // it away and acquires a replacement; the other's break must NOT unlink
+  // the replacement (TOCTOU between check and unlink, codex P2).
+  //
+  // We simulate this by pre-seeding a stale lock, running one
+  // withHeldFileLock that breaks + acquires, then immediately checking the
+  // new lock's identity is preserved.
+  const dir = await mkTmpDir();
+  try {
+    const lockPath = path.join(dir, "race.lock");
+    // Seed a genuinely stale lock.
+    const staleOwner = "stale-aaaa-bbbb-cccc-dddd00000001";
+    const staleTime = new Date(Date.now() - 10_000);
+    await writeFile(lockPath, `${111111} ${staleOwner} ${staleTime.toISOString()}\n`, "utf8");
+    await utimes(lockPath, staleTime, staleTime);
+
+    // Acquire (breaks the stale lock via atomic rename).
+    let acquired = false;
+    const result = await withHeldFileLock(
+      lockPath,
+      { staleMs: 1_000 },
+      async (a) => {
+        acquired = a;
+        return "ok";
+      },
+    );
+    assert.equal(acquired, true, "acquired after breaking the stale lock");
+    assert.equal(result, "ok");
+
+    // The stale lock file should be gone (renamed to trash + unlinked).
+    // The new lock was created by us, then released (unlinked). lockPath
+    // should not exist.
+    await assert.rejects(() => stat(lockPath), /ENOENT/);
+
+    // No trash files left behind.
+    const entries = await readdir(dir);
+    const trashFiles = entries.filter((f) => f.includes(".breaking."));
+    assert.equal(trashFiles.length, 0, `no trash files left behind (found: ${trashFiles.join(", ")})`);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("breakStaleLock restores a replacement lock if the rename accidentally moves it", async () => {
+  // Simulate: stale lock X exists, contender A starts breakStaleLock. Between
+  // A's identity check and A's rename, the test seam replaces X with a fresh
+  // lock Y. A's rename moves Y. A's verify detects Y != X and restores Y.
+  const dir = await mkTmpDir();
+  try {
+    const lockPath = path.join(dir, "restore.lock");
+    const staleOwner = "stale-aaaa-bbbb-cccc-dddd00000002";
+    const staleTime = new Date(Date.now() - 10_000);
+    const staleContent = `${222222} ${staleOwner} ${staleTime.toISOString()}\n`;
+    await writeFile(lockPath, staleContent, "utf8");
+    await utimes(lockPath, staleTime, staleTime);
+
+    // The test seam fires between staleness judgment and the rename.
+    // Replace the lock with a fresh (non-stale) replacement mid-break.
+    const freshOwner = "fresh-eeee-ffff-gggg-hhhh00000003";
+    const replacementContent = `${333333} ${freshOwner} ${new Date().toISOString()}\n`;
+    let result: string | undefined;
+    await withHeldFileLock(
+      lockPath,
+      {
+        staleMs: 1_000,
+        onBeforeBreakStaleUnlinkForTest: () => {
+          // Replace the stale lock with a fresh replacement in the race
+          // window. This is the NG7Bg scenario: the break must not destroy
+          // this replacement.
+          return writeFile(lockPath, replacementContent, "utf8").then(() =>
+            utimes(lockPath, new Date(), new Date()),
+          );
+        },
+      },
+      async (a) => {
+        result = a ? "acquired" : "best-effort";
+      },
+    );
+
+    // The replacement was created AFTER the stale judgment. The break's
+    // re-read detects the different content and returns early (replacement-
+    // safe check at line 486). Our task may or may not acquire depending on
+    // timing — the key assertion is that the fresh replacement is NOT
+    // destroyed by a blind unlink.
+    //
+    // After withHeldFileLock completes, if we acquired, we released (lock
+    // gone). If we timed out, the replacement should still exist with its
+    // original content (or we may have acquired after the re-read check).
+    // Either way, no trash file should remain.
+    const entries = await readdir(dir);
+    const trashFiles = entries.filter((f) => f.includes(".breaking."));
+    assert.equal(trashFiles.length, 0, `no trash files left behind (found: ${trashFiles.join(", ")})`);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

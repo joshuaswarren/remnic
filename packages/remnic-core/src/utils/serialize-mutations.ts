@@ -20,7 +20,7 @@
 // ---------------------------------------------------------------------------
 
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, stat, unlink, utimes } from "node:fs/promises";
+import { mkdir, open, readFile, rename, stat, unlink, utimes } from "node:fs/promises";
 import path from "node:path";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -410,7 +410,15 @@ async function acquireLock(
         // acquisition failure so the caller runs best-effort instead.
         wroteMeta = false;
       } finally {
-        await handle.close();
+        try {
+          await handle.close();
+        } catch {
+          // close() can report a deferred I/O error (e.g. write that appeared
+          // to succeed but failed on flush). The lock file may be malformed —
+          // treat it as a metadata-write failure so the cleanup path unlinks
+          // the orphaned lock (codex P2 review).
+          wroteMeta = false;
+        }
       }
       if (!wroteMeta) {
         await unlink(lockPath).catch(() => undefined);
@@ -433,10 +441,21 @@ async function acquireLock(
 
 /**
  * Replacement-safe stale-lock breaking (NG7Bg, #1506 round 28). Capture the
- * lock's identity when judging it stale, then RE-READ and RE-STAT immediately
- * before `unlink`, deleting only if byte-identical AND still stale. A
- * replacement lock created in the window has different content and is left
- * untouched. Best-effort: any mismatch/vanish skips the break.
+ * lock's identity when judging it stale, then ATOMICALLY rename it to a unique
+ * trash path and verify the moved content matches. A replacement lock created
+ * in the race window is either left untouched (different identity at
+ * lockPath, so the rename moves the stale lock — not the replacement) or
+ * restored (if the rename accidentally moves a replacement, the verify
+ * detects the mismatch and renames it back).
+ *
+ * ATOMICITY (codex P2): `rename` is atomic on POSIX — only ONE contender can
+ * successfully rename a given file. This eliminates the TOCTOU between the
+ * identity/stat checks and the deletion that a bare `unlink` leaves open:
+ * without rename, contender A could verify identity X, pause, then unlink
+ * contender B's freshly acquired replacement Y. With rename, A moves whatever
+ * is at lockPath, then checks: if it is X, A broke the stale lock; if it is
+ * not X (a replacement appeared between A's last check and the rename), A
+ * restores it.
  */
 async function breakStaleLock(
   lockPath: string,
@@ -456,18 +475,40 @@ async function breakStaleLock(
     return;
   }
   // Test seam: simulate a replacement lock being created in the race window
-  // between the staleness judgment and the unlink. No-op in production.
+  // between the staleness judgment and the atomic break. No-op in production.
   if (onBeforeBreakStaleUnlinkForTest) {
     await onBeforeBreakStaleUnlinkForTest();
   }
   try {
-    // Re-validate immediately before unlinking: the lock must still carry the
+    // Re-validate immediately before breaking: the lock must still carry the
     // SAME identity AND still be stale.
     const current = await readFile(lockPath, "utf8");
     if (current !== staleIdentity) return; // replaced — leave the fresh lock
     const recheck = await stat(lockPath);
     if (Date.now() - recheck.mtimeMs <= staleMs) return; // heartbeat refreshed it
-    await unlink(lockPath);
+
+    // ATOMIC BREAK: rename is atomic on POSIX. Only one contender succeeds;
+    // others get ENOENT (the file is already gone). After the rename, verify
+    // the moved content: if it matches staleIdentity we broke the right lock;
+    // if it does not, a replacement appeared in the window and we restore it.
+    const trashPath = `${lockPath}.breaking.${process.pid}.${Date.now()}`;
+    await rename(lockPath, trashPath);
+    try {
+      const moved = await readFile(trashPath, "utf8");
+      if (moved === staleIdentity) {
+        // We moved the stale lock — clean up the trash.
+        await unlink(trashPath).catch(() => undefined);
+      } else {
+        // We accidentally moved a replacement lock (created between our last
+        // check and the rename). Restore it so the replacement holder's lock
+        // survives. Best-effort: if restore fails, the trash orphan is not at
+        // lockPath so it does not block other contenders.
+        await rename(trashPath, lockPath).catch(() => undefined);
+      }
+    } catch {
+      // Could not read the trash file — clean it up best-effort.
+      await unlink(trashPath).catch(() => undefined);
+    }
   } catch {
     // The lock changed/vanished between checks — another process handled it.
   }
