@@ -21,7 +21,7 @@ silent fallback).
 |`judge`|role|Scoring model. Runs in the judge phase after the responder.|
 |`embedding`|role?|Optional embedding model for retrieval indexing.|
 |`phases`|`"sequential"`|Phase scheduling mode. PR2 ships `sequential` only.|
-|`notes.responderToJudgeHandoff`|string?|Operator guidance printed between responder and judge phases when the two roles live on different endpoints.|
+|`notes.responderToJudgeHandoff`|string?|Operator guidance for multi-endpoint swaps. PR2 ships same-endpoint profiles only (multi-endpoint sequential execution is PR3 scope).|
 
 Each role has shape:
 
@@ -78,22 +78,26 @@ token** serving context. That value:
 `temperature: 0` and a fixed `seed: 1573` make reruns reproducible (the
 manifest parser rejects non-zero temperatures and missing seeds).
 
-The two endpoints (`http://127.0.0.1:8080/v1` responder,
-`http://127.0.0.1:11434` judge) live on different ports on purpose: on a
-single 3090 the operator must physically stop one server and start the
-other between phases. The bench detects that they differ and prints the
-`notes.responderToJudgeHandoff` operator guidance. To run both roles on
-one Ollama daemon instead, point both `baseUrl` fields at it and the
-bench proceeds silently between phases.
+The shipped profile pins all roles to a single Ollama endpoint
+(`http://127.0.0.1:11434`). On a single 3090 the operator runs one
+`ollama serve` instance and hot-swaps models between phases — no manual
+server restart is needed. **Multi-endpoint manifests** (responder and
+judge on different URLs) are not yet supported by the benchmark runner:
+the published harness executes recall→answer→judge per trial, which
+requires both models to be co-resident. Full sequential phase execution
+(answer-all-then-judge-all with an operator swap between) is tracked for
+PR3's calibration work.
 
 ## Using a profile
 
 Resolution goes through `resolveBenchRuntimeProfile` (see
 `packages/bench/src/runtime-profiles.ts`); the resolver turns each role
 into a `ProviderConfig` with `temperature` and `seed` forwarded verbatim.
-The sequential phase scheduler (`runSequentialPhases`) executes
-preflight → hand-off → execute for each phase. Neither layer manages
-model processes — that is the operator's responsibility.
+At run time, the CLI preflights both responder and judge endpoints before
+any trial starts. Neither layer manages model processes — that is the
+operator's responsibility. The sequential phase scheduler
+(`runSequentialPhases`) is implemented and tested but not yet wired into
+the benchmark trial loop (PR3 calibration scope).
 
 ```ts
 import {
