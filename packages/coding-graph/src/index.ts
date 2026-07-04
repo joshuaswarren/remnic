@@ -1,12 +1,19 @@
 /**
- * @remnic/coding-graph — symbol-extraction engine for codebase memory.
+ * @remnic/coding-graph — symbol-extraction engine + SQLite knowledge-graph
+ * store for codebase memory.
  *
  * À-la-carte optional companion of @remnic/core (CLAUDE.md rule 57).
  *
- * PR1 (#1551, step 1): the package and its build wiring exist. The engine
- * public surface is declared and the placeholder factory throws a tagged
- * `CodingGraphError("not_implemented", …)`. The real backend (web-tree-
- * sitter, per-language extractors, grammar manager) lands in PR2.
+ * This package unifies two PR1 surfaces:
+ *   - The web-tree-sitter engine scaffold (#1551 step 1): the package and
+ *     its build wiring exist; the engine public surface is declared and
+ *     the placeholder factory throws a tagged
+ *     `CodingGraphError("not_implemented", …)`. The real backend lands in
+ *     #1551 PR2.
+ *   - The SQLite knowledge-graph store (#1552 PR1): versioned schema + the
+ *     write pipeline (upsert/drop file batches, node-id derivation,
+ *     dangling-edge accounting). Traversal, search, dead-code, and the
+ *     openCypher subset land in #1552 PR2/PR3.
  *
  * Type-source direction:
  *   The contract types (CodingGraphEngine, FileIR, etc.) and the
@@ -22,6 +29,24 @@
  *   and `devDependencies: "workspace:*"` in its package.json, so the
  *   pnpm workspace link exists and the `import from "@remnic/core"`
  *   below resolves in development.
+ *
+ *   The store modules (graph-schema, graph-store, row-types) are local to
+ *   this package; they import `openBetterSqlite3` from
+ *   `@remnic/core/runtime/better-sqlite` so the native-binding lifecycle
+ *   is paid for once there (rule 23/38: do not invent a new pattern).
+ *
+ * IR-type re-export policy:
+ *   graph-store.ts imports the core IR contract types (`FileIR`,
+ *   `SymbolIR`, etc.) from `@remnic/core/coding/coding-graph-types`
+ *   and re-exports them so existing `import { type FileIR } from
+ *   "./graph-store.js"` call-sites continue to resolve. The store
+ *   does NOT redefine these types — it derives from the core contract
+ *   so PR2 callers can pass `ParseResult.ir` directly
+ *   (chatgpt-codex-connector P2: 'Derive store FileIR from the core
+ *   parser contract'). At the package root, `FileIR`/`SymbolIR`
+ *   resolve to the @remnic/core contract types re-exported below;
+ *   the store-specific `StoreFileIR` (FileIR + edges extension) and
+ *   `EdgeIR` are re-exported from the root via graph-store.
  */
 
 import {
@@ -128,3 +153,39 @@ export type {
   ParseResult,
   SymbolIR,
 };
+
+// ---------------------------------------------------------------------------
+// SQLite knowledge-graph store (#1552 PR1): versioned schema + write
+// pipeline. Re-exported from the package root so consumers can import
+// `import { GraphStore } from "@remnic/coding-graph"` (the subpath
+// exports `./graph-schema` and `./graph-store` remain available for
+// callers that want only one half). Only non-colliding store types are
+// re-exported here — see the file header's IR-type policy note.
+// ---------------------------------------------------------------------------
+
+export {
+  CODING_GRAPH_SCHEMA_VERSION,
+  EDGE_PROVENANCE_VALUES,
+  applyCodingGraphSchema,
+  readSchemaVersion,
+  isEdgeProvenance,
+  type EdgeProvenance,
+} from "./graph-schema.js";
+
+export {
+  GraphStore,
+  nodeIdFor,
+  type ByteSpan,
+  type EdgeIR,
+  type ExportIR,
+  type GraphStoreFailure,
+  type GraphStoreFailureCode,
+  type GraphStoreOptions,
+  type ImportIR,
+  type NodeIdInput,
+  type StoreFileIR,
+  type SymbolKind,
+  type UpsertBatchResult,
+  type UpsertResult,
+  type UpsertSuccess,
+} from "./graph-store.js";
