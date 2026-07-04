@@ -16,7 +16,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm, access } from "node:fs/promises";
+import { mkdtemp, rm, readdir } from "node:fs/promises";
 import { chmodSync } from "node:fs";
 
 import type { PluginConfig, MemoryCategory } from "../../packages/remnic-core/src/types.js";
@@ -567,11 +567,16 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
           artifactType: "fact",
           tags: ["contract-surface"],
         });
-        // No public read-by-id for artifacts; verify the file landed on disk
-        // at artifacts/<day>/<id>.md so a regression that returns an id
-        // without writing fails the surface test.
-        const day = new Date().toISOString().slice(0, 10);
-        await access(path.join(storage.dir, "artifacts", day, `${id}.md`));
+        // No public read-by-id for artifacts; verify the file landed on disk.
+        // Scan artifacts/ for the just-written id rather than reconstructing
+        // the path from a separate new Date() — writeArtifact derives its own
+        // day internally, so a clock-derived path could miss across UTC
+        // midnight and a regression that returns an id without writing would
+        // pass spuriously.
+        const entries = await readdir(path.join(storage.dir, "artifacts"), { recursive: true });
+        if (!entries.some((e) => e.endsWith(`${id}.md`))) {
+          throw new Error("writeArtifact did not persist a readable artifact file");
+        }
         return id;
       },
     },

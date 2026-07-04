@@ -13,7 +13,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, rm, readFile, readdir, writeFile } from "node:fs/promises";
 
 import { writeMaybeEncryptedFile } from "../../packages/remnic-core/src/secure-store/secure-fs.js";
 import { withScratchDir, withScratchStorage, setDirReadOnly, setDirReadWrite, PERM_FAULT_INJECTION_AVAILABLE } from "./helpers.js";
@@ -97,11 +97,17 @@ test("atomic-write (rule 54): StorageManager.updateMemory against a locked paren
 
 test("atomic-write (rule 54): fresh write to a locked dir throws and writes nothing", { skip: SKIP_ATOMIC }, async () => {
   await withScratchStorage("atomic-fresh-write", async (storage) => {
-    // Lock the facts/<today> dir before the write so the temp file cannot land.
-    const today = new Date().toISOString().slice(0, 10);
-    const factsToday = path.join(storage.dir, "facts", today);
-    await mkdir(factsToday, { recursive: true });
-    setDirReadOnly(factsToday);
+    // Lock the STABLE facts/ parent, not a day-specific child. writeMemory
+    // derives its own `today` internally; if the test crosses UTC midnight
+    // between deriving `today` here and the write, a day-child lock would let
+    // the write succeed in the new (unlocked) day dir and the test would fail
+    // for timing, not a regression. withScratchStorage's ensureDirectories()
+    // pre-creates today's facts/<today>/ day dir, so remove+recreate facts/
+    // empty first to make the lock actually bite (clock-independent).
+    const factsDir = path.join(storage.dir, "facts");
+    await rm(factsDir, { recursive: true, force: true });
+    await mkdir(factsDir, { recursive: true });
+    setDirReadOnly(factsDir);
     try {
       await assert.rejects(
         () => storage.writeMemory("fact", "must not persist", { confidence: 0.9 }),
@@ -110,7 +116,7 @@ test("atomic-write (rule 54): fresh write to a locked dir throws and writes noth
       const all = await storage.readAllMemories();
       assert.equal(all.length, 0, "a failed atomic write must not leave a half-written memory");
     } finally {
-      setDirReadWrite(factsToday);
+      setDirReadWrite(factsDir);
     }
   });
 });
