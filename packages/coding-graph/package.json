@@ -1,7 +1,7 @@
 {
   "name": "@remnic/coding-graph",
-  "version": "9.3.670",
-  "description": "SQLite knowledge-graph store for the Remnic coding-memory track \u2014 versioned schema and write pipeline (issue #1552 PR1).",
+  "version": "9.3.672",
+  "description": "Web-tree-sitter powered symbol-extraction engine + SQLite knowledge-graph store for codebase memory (Tier 1: TypeScript, TSX, JavaScript, Python, Go, Rust, Java, C, C++, C#, Ruby, PHP, Kotlin, Swift, Bash). Optional companion of @remnic/core — install only when coding-graph features are needed.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,36 +24,50 @@
   },
   "files": [
     "src",
-    "dist"
+    "dist",
+    "grammars"
   ],
-  "publishConfig": {
-    "access": "public",
-    "provenance": true
-  },
   "scripts": {
     "build": "tsup --config tsup.config.ts",
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
-    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test 'src/**/*.test.ts'"
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test 'src/**/*.test.ts'",
+    "prepublishOnly": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "dependencies": {
-    "@remnic/core": "workspace:*"
+    "better-sqlite3": "^12.6.2",
+    "web-tree-sitter": "^0.25.0"
+  },
+  "peerDependencies": {
+    "@remnic/core": "^9.3.672"
   },
   "devDependencies": {
-    "tsup": "^8.0.0",
-    "typescript": "^5.7.0",
-    "tsx": "^4.0.0"
+    "@remnic/core": "workspace:*",
+    "@types/node": "^22.10.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/joshuaswarren/remnic.git",
+    "url": "https://github.com/joshuaswarren/remnic.git",
     "directory": "packages/coding-graph"
   },
   "keywords": [
     "remnic",
+    "memory",
+    "codebase",
     "coding-graph",
     "knowledge-graph",
-    "sqlite"
+    "sqlite",
+    "tree-sitter",
+    "wasm",
+    "symbols",
+    "extraction"
   ]
 }

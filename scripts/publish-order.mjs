@@ -5,6 +5,53 @@ import { pathToFileURL } from "node:url";
 
 const dependencyFields = ["dependencies", "optionalDependencies", "peerDependencies"];
 
+// Compute the names of dependencies that *require* the dependency to be
+// published first. Optional peer deps are excluded because they are
+// declared optional via peerDependenciesMeta — any version of either peer
+// can be installed at any time, so they do not constrain publish ordering.
+// (Issue #1551 PR1 added a mutual optional peer between @remnic/core and
+// @remnic/coding-graph; without this carve-out the resolver would
+// incorrectly report a cycle.)
+//
+// Returns both `all` (every dependency name across the three fields) and
+// `required` (the same minus entries declared optional in peerDependenciesMeta).
+// Today only `required` is used by the resolver; `all` is kept for callers
+// that need the unfiltered view.
+function packageDepNames(manifest) {
+  const all = new Set();
+  const required = new Set();
+  const meta =
+    manifest.peerDependenciesMeta &&
+    typeof manifest.peerDependenciesMeta === "object" &&
+    !Array.isArray(manifest.peerDependenciesMeta)
+      ? manifest.peerDependenciesMeta
+      : undefined;
+
+  for (const field of dependencyFields) {
+    const values = manifest[field];
+    if (!values || typeof values !== "object" || Array.isArray(values)) {
+      continue;
+    }
+    for (const name of Object.keys(values)) {
+      all.add(name);
+      if (
+        field === "peerDependencies" &&
+        meta &&
+        meta[name] &&
+        meta[name].optional === true
+      ) {
+        continue;
+      }
+      required.add(name);
+    }
+  }
+  return { all, required };
+}
+
+function packageDeps(manifest) {
+  return packageDepNames(manifest).all;
+}
+
 function readOptionValue(argv, index, optionName) {
   const value = argv[index + 1];
   if (value === undefined || value === "" || value === "--" || value.startsWith("--")) {
@@ -52,20 +99,6 @@ function normalizeRelativePath(filePath) {
   return filePath.split(path.sep).join("/");
 }
 
-function packageDeps(manifest) {
-  const deps = new Set();
-  for (const field of dependencyFields) {
-    const values = manifest[field];
-    if (!values || typeof values !== "object" || Array.isArray(values)) {
-      continue;
-    }
-    for (const name of Object.keys(values)) {
-      deps.add(name);
-    }
-  }
-  return deps;
-}
-
 export async function discoverWorkspacePackages(repoRoot) {
   const packagesRoot = path.join(repoRoot, "packages");
   const entries = await readdir(packagesRoot, { withFileTypes: true });
@@ -89,11 +122,13 @@ export async function discoverWorkspacePackages(repoRoot) {
     if (!manifest.name) {
       throw new Error(`${relativeDir}/package.json is missing a package name`);
     }
+    const { all, required } = packageDepNames(manifest);
     packages.push({
       dir: relativeDir,
       name: manifest.name,
       private: manifest.private === true,
-      deps: packageDeps(manifest),
+      deps: all,
+      requiredDeps: required,
     });
   }
 
@@ -112,7 +147,7 @@ export function resolvePublishOrder(packages) {
   const indegree = new Map(publicPackages.map((pkg) => [pkg.dir, 0]));
 
   for (const pkg of publicPackages) {
-    for (const depName of pkg.deps) {
+    for (const depName of pkg.requiredDeps ?? pkg.deps) {
       const dep = byName.get(depName);
       if (!dep) {
         continue;
@@ -183,7 +218,7 @@ export function validatePublishOrder(publicPackages, order) {
   const position = new Map(order.map((dir, index) => [dir, index]));
   const byName = new Map(publicPackages.map((pkg) => [pkg.name, pkg]));
   for (const pkg of publicPackages) {
-    for (const depName of pkg.deps) {
+    for (const depName of pkg.requiredDeps ?? pkg.deps) {
       const dep = byName.get(depName);
       if (!dep) {
         continue;
