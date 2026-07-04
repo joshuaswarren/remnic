@@ -35,6 +35,26 @@
  * still emits a blank line. Tests needing byte-exact stderr on such error
  * paths should use subprocess invocation.
  *
+ * Limitation: child-process stdio is an OS-level fd redirection, not a
+ * JavaScript-stream operation. When a handler passes `process.stderr` (or
+ * `process.stdout`) into `child_process` stdio — e.g. `bench datasets
+ * download --json` uses `["inherit", process.stderr, "inherit"]` to keep
+ * the dataset script's progress off the JSON-bearing stdout — Node resolves
+ * the stream to its `.fd` and dup2's the child's output directly to that
+ * fd. The fake stream's `.write` is never called for that output, so it
+ * is NOT captured in `RunCliResult.stderr`/`stdout`; it lands on the test
+ * runner's real fd 2 / fd 1 instead. This matches the real binary (where
+ * the same output lands on the terminal's stderr) and is correct for
+ * contract testing: the capture buffer records everything the CLI itself
+ * emits via `console.*` / `process.stdout.write` / `process.stderr.write`
+ * (including CLI-authored error lines like "dataset download script not
+ * found"), and only the EXTERNAL child's progress — which is script- and
+ * environment-dependent and must not be byte-asserted — bypasses the
+ * buffer. TAP protocol travels on stdout; the production path only
+ * redirects to stderr, so TAP output is unaffected. Tests that need to
+ * assert on a child-process-emitted payload should stub the spawn or use
+ * subprocess invocation.
+ *
  * Phase B of #1532 will move handlers behind a registrar table; until then
  * this harness is what gives the contract suite a stable surface to assert
  * against without booting the whole CLI as a subprocess.
