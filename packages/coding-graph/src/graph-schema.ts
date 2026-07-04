@@ -135,12 +135,16 @@ function createTables(db: BetterSqlite3Database): void {
       UNIQUE (src, dst, type)
     );
   `);
-
   // FTS5 virtual table over node names + qualified_names for PR2's
-  // name search. `content=nodes` keeps the index lean — the source-of-truth
-  // row lives in `nodes` and FTS rebuilds via the auto-managed triggers.
-  // We do NOT wire triggers here; Phase A writes go through the structured
-  // `upsertFileBatch` which repopulates FTS in the same transaction.
+  // name search. Contentless (`content=''`) plus a hidden `id` column
+  // that mirrors the deterministic node id so the write pipeline can
+  // INSERT/DELETE rows explicitly. The `nodes` table remains the
+  // source-of-truth; FTS only carries the searchable text + the rowid
+  // pointer used by PR2's name search. No auto-triggers: the upsert
+  // path is the single source of FTS truth, and contentless mode
+  // avoids the "external content" requirement that FTS rows must
+  // reference a live row in `nodes` (which would break on the brief
+  // moment when a same-id re-upsert has deleted the prior node).
   const hasNodeFts = db
     .prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
@@ -151,13 +155,12 @@ function createTables(db: BetterSqlite3Database): void {
       CREATE VIRTUAL TABLE nodes_fts USING fts5(
         name,
         qualified_name,
-        content=nodes,
-        content_rowid=rowid,
+        id UNINDEXED,
+        content='',
         tokenize='unicode61 remove_diacritics 2'
       );
     `);
   }
-
   // Upsert meta version. INSERT OR REPLACE so the upgrade path can rewrite
   // the row in place (rule 23 — one canonical form for the version value).
   db.prepare(

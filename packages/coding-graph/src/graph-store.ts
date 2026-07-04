@@ -1,6 +1,6 @@
 /**
- * Coding-graph write pipeline — single-batch, single-transaction delete +
- * reinsert per file. PR1 scope (issue #1552):
+ * Coding-graph write pipeline — two-pass single-batch single-transaction
+ * delete + reinsert per file. PR1 scope (issue #1552):
  *
  *   - Node ids are sha256 over SORTED key material (qualified name, file
  *     path, label) — rule 23/38; the same hash MUST be computed identically
@@ -18,10 +18,23 @@
  *     NOT add namespace resolution; rule 42 keeps it that way until PR2
  *     wires the namespace layer.
  *
+ * Two-pass ingestion (per `upsertFileBatch`):
+ *   1. Every file in the batch is upserted (file row + node row per
+ *      symbol). FTS5 is kept in lockstep via explicit DELETE/INSERT on
+ *      the contentless `nodes_fts` table (the write pipeline is the
+ *      single source of FTS truth — no auto-triggers).
+ *   2. Edges are resolved against the FULL batch's node map (already in
+ *      the DB after pass 1) so cross-file edges are order-independent.
+ *      Stale edges for files in this batch are deleted first so changed
+ *      confidence/provenance values overwrite prior rows.
+ *
  * Tagged failure shapes (rule 34): the open + write paths return a
  * discriminated union. Success: `{ok:true, results: UpsertResult[]}`. Failure:
- * `{ok:false, code:"db_locked"|"db_corrupt", message?: string}`. The shape
- * mirrors `SearchDegradation` in `@remnic/core/search/port` (issue #1536).
+ * `{ok:false, code:"db_locked"|"db_corrupt"}` — no message is exposed
+ * to callers because `error.message` from better-sqlite3 frequently
+ * contains absolute filesystem paths and stack snippets that should
+ * never reach agents or HTTP surfaces (rule 11). The store logs the
+ * underlying error internally and returns the code only.
  */
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
@@ -38,7 +51,6 @@ import {
   readSchemaVersion,
   type EdgeProvenance,
 } from "./graph-schema.js";
-
 
 import { expectRow, expectRows } from "./row-types.js";
 // ──────────────────────────────────────────────────────────────────────────
@@ -134,7 +146,6 @@ export type GraphStoreFailureCode = "db_locked" | "db_corrupt";
 export interface GraphStoreFailure {
   ok: false;
   code: GraphStoreFailureCode;
-  message?: string;
 }
 
 export interface UpsertResult {
@@ -162,11 +173,6 @@ export type UpsertBatchResult = UpsertSuccess | GraphStoreFailure;
 // ──────────────────────────────────────────────────────────────────────────
 // Internal: write-queue (rule 40).
 // ──────────────────────────────────────────────────────────────────────────
-
-interface QueueEntry {
-  run: () => Promise<UpsertBatchResult>;
-  resolve: (value: UpsertBatchResult) => void;
-}
 
 /**
  * Per-instance FIFO. A second call to `upsertFileBatch` enqueues and the
@@ -234,6 +240,12 @@ export class GraphStore {
     db.pragma("journal_mode = WAL");
     db.pragma("busy_timeout = 5000");
     db.pragma("synchronous = NORMAL");
+    // SQLite defaults to foreign_keys=OFF per-connection. The graph's
+    // `edges` table relies on `ON DELETE CASCADE` from `nodes(id)` to
+    // drop owned edges when a file's prior nodes are pruned; without
+    // this pragma the cascade silently no-ops and edges accumulate as
+    // orphans (cursor + codex review).
+    db.pragma("foreign_keys = ON");
     applyCodingGraphSchema(db);
     return new GraphStore(db);
   }
@@ -255,6 +267,13 @@ export class GraphStore {
    * (idempotency — node ids are deterministic so the second pass collides
    * on PRIMARY KEY).
    *
+   * Two-pass ordering: pass 1 upserts every file's nodes (so FTS stays
+   * in sync and cross-file edge targets exist by the time pass 2 runs),
+   * pass 2 resolves edges against the full batch's node map and deletes
+   * prior edges owned by these files so changed confidence/provenance
+   * values overwrite (chatgpt-codex-connector P1 + cursor medium + PR1
+   * design anchor in graph-schema).
+   *
    * Tagging:
    *   - `{ok:true, results}` — every file's counts.
    *   - `{ok:false, code:"db_locked"}` — busy_timeout elapsed; caller may
@@ -268,7 +287,6 @@ export class GraphStore {
       return {
         ok: false,
         code: "db_corrupt",
-        message: "graph-store: store is closed",
       };
     }
     return this.queue.schedule(() => this.runUpsert(files));
@@ -289,33 +307,50 @@ export class GraphStore {
 
   private async runUpsert(files: FileIR[]): Promise<UpsertBatchResult> {
     try {
-      // Snapshot every pre-existing node id so upsertOne can extend the
-      // set as it inserts new nodes for this batch — qualified_name
-      const knownNodeIds = new Set<string>(
-        expectRows<{ id: string }>(
-          this.db.prepare("SELECT id FROM nodes").all(),
-          ["id"],
-        ).map((row) => row.id),
-      );
-
       const results: UpsertResult[] = [];
 
       // Single transaction for the whole batch — atomic, faster than
       // per-file BEGIN/COMMIT, and rule 34 mandates "never partial-write
-      // a coding graph".
+      // a coding graph". Two passes: pass 1 upserts every file's nodes
+      // (so FTS stays in sync and cross-file edge targets exist by the
+      // time pass 2 runs), pass 2 resolves edges against the full
+      // batch's node map and deletes prior edges owned by these files
+      // so changed confidence/provenance values overwrite. The two
+      // passes together make the write pipeline order-independent for
+      // cross-file edges (chatgpt-codex-connector P1/P2).
       const tx = this.db.transaction((irs: FileIR[]) => {
+        // Pass 1: every file's nodes. Returns the upsert result so we
+        // can populate `results` and so pass 2 can read back
+        // droppedDanglingEdges for logging.
         for (const ir of irs) {
-          results.push(this.upsertOne(ir, knownNodeIds));
+          results.push(this.upsertFileNodes(ir));
+        }
+        // Pass 2: every file's edges. Resolves against the full DB
+        // (which already contains every node from this batch plus
+        // every node from prior batches).
+        for (let i = 0; i < irs.length; i += 1) {
+          const ir = irs[i]!;
+          const result = results[i]!;
+          this.upsertFileEdges(ir, result);
         }
       });
       tx(files);
       return { ok: true, results };
     } catch (error) {
+      logWriteFailure(error);
       return classifyError(error);
     }
   }
 
-  private upsertOne(ir: FileIR, knownNodeIds: Set<string>): UpsertResult {
+  /**
+   * Pass 1: upsert the file row and every symbol node, refreshing the
+   * contentless `nodes_fts` index in lockstep. Prune by deterministic
+   * id (NOT qualified_name) so a symbol whose kind changes gets a new
+   * id and the OLD row — which still has the same qualified_name but a
+   * stale id — is correctly deleted. Counts the dangling edges that
+   * fall out of the cascade so the caller can log the loss.
+   */
+  private upsertFileNodes(ir: FileIR): UpsertResult {
     // Upsert the file row first; the nodes table references files(id).
     const upsertFile = this.db.prepare(
       `INSERT INTO files (path, lang, content_hash)
@@ -335,54 +370,26 @@ export class GraphStore {
       );
     }
     const fileId = fileRow.id;
-    // Snapshot the qualified_names in THIS batch BEFORE we read the
-    // prior node set — we use it to determine which owned nodes will
-    // actually be pruned. With the UPSERT-then-prune pipeline, an
-    // unchanged re-ingest leaves every prior node in place, so the
-    // dangling-edge count must be zero (no node is deleted → no edge
-    // is dropped).
-    const seenQualifiedNames = new Set<string>(
-      (ir.symbols ?? []).map((s) => s.qualifiedName),
-    );
-    // Map every seen qualified_name → its deterministic node id so we
-    // can compute the surviving set below.
-    const seenNodeIds = new Set<string>(
-      (ir.symbols ?? []).map((s) =>
-        nodeIdFor({
-          qualifiedName: s.qualifiedName,
-          filePath: ir.path,
-          label: s.kind,
-        }),
-      ),
-    );
-    const ownedNodeIds = expectRows<{ id: string }>(
-      this.db.prepare("SELECT id FROM nodes WHERE file_id = ?").all(fileId),
-      ["id"],
-    ).map((row) => row.id);
-    const prunedNodeIds = ownedNodeIds.filter((id) => !seenNodeIds.has(id));
-    let droppedDanglingEdges = 0;
-    if (prunedNodeIds.length > 0) {
-      const placeholders = prunedNodeIds.map(() => "?").join(", ");
-      const dangling = expectRow<{ c: number }>(
-        this.db
-          .prepare(
-            `SELECT COUNT(*) AS c FROM edges
-               WHERE dst IN (${placeholders})
-                 AND src NOT IN (${placeholders})`,
-          )
-          .get(...prunedNodeIds, ...prunedNodeIds),
-        ["c"],
-      );
-      droppedDanglingEdges = dangling?.c ?? 0;
+
+    // Build the seen id set FIRST (every symbol → its deterministic id)
+    // so the prune step is order-stable and never deletes an id we
+    // are about to (re)insert. Determinism is non-negotiable — see
+    // nodeIdFor for the canonical form.
+    const seenNodeIds = new Set<string>();
+    const symbolByNodeId = new Map<string, SymbolIR>();
+    for (const sym of ir.symbols ?? []) {
+      const id = nodeIdFor({
+        qualifiedName: sym.qualifiedName,
+        filePath: ir.path,
+        label: sym.kind,
+      });
+      seenNodeIds.add(id);
+      symbolByNodeId.set(id, sym);
     }
 
-    // SELECT existing nodes for this file once, then UPSERT per symbol.
-    // The exact equality check (id + label + name + qualified_name + file_id
-    // + spans + lang) lets us count `changes` honestly: a re-ingest of
-    // unchanged symbols is a true no-op (changes=0), matching the
-    // idempotency contract test. A new symbol gets a clean INSERT
-    // (changes=1). A changed symbol hits ON CONFLICT DO UPDATE and
-    // also reports changes=1.
+    // Snapshot the prior nodes owned by this file so we can (a) skip
+    // true no-op UPSERTs to keep `changes` honest, and (b) count
+    // dangling edges the prune step will cascade.
     const existingNodes = expectRows<{
       id: string;
       label: string;
@@ -403,6 +410,7 @@ export class GraphStore {
       ["id", "label", "name", "qualified_name", "file_id", "span_start", "span_end", "lang"],
     );
     const existingById = new Map(existingNodes.map((n) => [n.id, n]));
+
     const insertNode = this.db.prepare(
       `INSERT INTO nodes (
           id, label, name, qualified_name,
@@ -417,13 +425,14 @@ export class GraphStore {
           span_end = excluded.span_end,
           lang = excluded.lang`,
     );
+    const insertFts = this.db.prepare(
+      `INSERT INTO nodes_fts (rowid, id, name, qualified_name) VALUES (?, ?, ?, ?)`,
+    );
+    const deleteFtsById = this.db.prepare(
+      `DELETE FROM nodes_fts WHERE id = ?`,
+    );
     let nodeCount = 0;
-    for (const sym of ir.symbols ?? []) {
-      const id = nodeIdFor({
-        qualifiedName: sym.qualifiedName,
-        filePath: ir.path,
-        label: sym.kind,
-      });
+    for (const [id, sym] of symbolByNodeId) {
       const prior = existingById.get(id);
       if (
         prior &&
@@ -436,9 +445,12 @@ export class GraphStore {
       ) {
         // Truly a no-op — the row already matches the IR. Skip the
         // INSERT/UPDATE entirely so `changes` stays 0.
-        knownNodeIds.add(id);
         continue;
       }
+      // Drop any prior FTS row for this id before the new INSERT, so a
+      // same-id re-upsert that changed name/qualified_name does not
+      // leave a stale searchable copy behind.
+      deleteFtsById.run(id);
       insertNode.run(
         id,
         sym.kind,
@@ -449,63 +461,161 @@ export class GraphStore {
         sym.endByte,
         ir.lang,
       );
-      knownNodeIds.add(id);
+      // FTS5 rowids are signed 64-bit integers. We derive a stable
+      // numeric key from the leading 16 hex chars of the node id (=
+      // 64 bits), then mask to the int64 range so SQLite accepts it.
+      // The hash is large enough that collisions across distinct node
+      // ids are negligible.
+      const ftsRowid = BigInt(`0x${id.slice(0, 16)}`) & BigInt("0x7fffffffffffffff");
+      insertFts.run(ftsRowid, id, sym.name, sym.qualifiedName);
       nodeCount += 1;
     }
-    // Prune nodes that disappeared from this file's IR. The dangling
-    // edge counter already ran against the pre-prune state so cross-file
-    // edge drops are accounted for.
-    if (seenQualifiedNames.size > 0) {
-      const placeholders = Array.from(seenQualifiedNames, () => "?").join(", ");
+
+    // Prune by id (NOT qualified_name). A symbol whose kind changed
+    // keeps the same qualifiedName but has a new node id; the old
+    // id's row must be deleted to keep the file's symbol set honest.
+    // We do this AFTER the upserts so any same-id re-upsert above is
+    // preserved.
+    const prunedNodeIds = existingNodes
+      .map((n) => n.id)
+      .filter((id) => !seenNodeIds.has(id));
+    let droppedDanglingEdges = 0;
+    if (prunedNodeIds.length > 0) {
+      const placeholders = prunedNodeIds.map(() => "?").join(", ");
+      // Count dangling edges BEFORE deleting the nodes — the cascade
+      // will drop owned edges, so we need the pre-prune count.
+      const dangling = expectRow<{ c: number }>(
+        this.db
+          .prepare(
+            `SELECT COUNT(*) AS c FROM edges
+               WHERE dst IN (${placeholders})
+                 AND src NOT IN (${placeholders})`,
+          )
+          .get(...prunedNodeIds, ...prunedNodeIds),
+        ["c"],
+      );
+      droppedDanglingEdges = dangling?.c ?? 0;
+      // DELETE the stale nodes. `ON DELETE CASCADE` on `edges` then
+      // drops every edge whose src or dst is one of the pruned ids
+      // (the FK pragma is set in `open()`).
       this.db
         .prepare(
-          `DELETE FROM nodes
-             WHERE file_id = ?
-               AND qualified_name NOT IN (${placeholders})`,
+          `DELETE FROM nodes WHERE id IN (${prunedNodeIds
+            .map(() => "?")
+            .join(", ")})`,
         )
-        .run(fileId, ...seenQualifiedNames);
-    } else {
-      this.db.prepare("DELETE FROM nodes WHERE file_id = ?").run(fileId);
+        .run(...prunedNodeIds);
+      // Clear FTS rows explicitly because the nodes_fts table is not
+      // linked by FK. The `id` column mirrors the deterministic node
+      // id, so the same id list is the right key.
+      const ftsPrune = this.db.prepare(
+        `DELETE FROM nodes_fts WHERE id IN (${prunedNodeIds
+          .map(() => "?")
+          .join(", ")})`,
+      );
+      ftsPrune.run(...prunedNodeIds);
     }
-    // Re-insert edges. dst may not exist yet in the DB (cross-file edges
-    // where the destination belongs to ANOTHER file in the same batch).
-    // We insert optimistically and let FK enforcement fail loudly — the
-    // dangling-edge POLICY is "drop at delete time", not "drop at insert
-    // time". For unresolved cross-file references, callers SHOULD either
-    // include the target file in the same batch, or filter the IR. We
-    // skip edges whose `src`/`dst` we cannot resolve in the known-node
-    // set so we don't trigger FK violations.
+
+    return {
+      path: ir.path,
+      fileId,
+      nodeCount,
+      edgeCount: 0,
+      droppedDanglingEdges,
+    };
+  }
+
+  /**
+   * Pass 2: re-insert edges for one file. Runs AFTER every file's
+   * nodes are in place (the full batch is committed to nodes) so
+   * cross-file edges resolve regardless of input order. Stale edges
+   * for nodes owned by this file are deleted first so a changed
+   * `confidence` or `provenance` actually overwrites the prior row
+   * (chatgpt-codex-connector P1: ON CONFLICT DO NOTHING silently
+   * kept stale edges across re-ingests).
+   */
+  private upsertFileEdges(ir: FileIR, result: UpsertResult): void {
+    // Pre-fetch prior edges for this file's nodes so we can skip a
+    // no-op re-upsert when the IR matches exactly (idempotency —
+    // `changes=0` is the contract). When confidence/provenance
+    // changed, the ON CONFLICT DO UPDATE branch rewrites the row and
+    // reports changes=1 (chatgpt-codex-connector P1). We do this
+    // BEFORE the delete below so the no-op check sees the original
+    // edge state, not the just-emptied one.
+    const priorEdges = expectRows<{
+      src: string;
+      dst: string;
+      type: string;
+      confidence: number;
+      provenance: string;
+    }>(
+      this.db
+        .prepare(
+          "SELECT src, dst, type, confidence, provenance FROM edges WHERE src IN (SELECT id FROM nodes WHERE file_id = ?)",
+        )
+        .all(result.fileId),
+      ["src", "dst", "type", "confidence", "provenance"],
+    );
+    const priorByKey = new Map<string, { confidence: number; provenance: string }>();
+    for (const p of priorEdges) {
+      priorByKey.set(`${p.src}\u0000${p.dst}\u0000${p.type}`, {
+        confidence: p.confidence,
+        provenance: p.provenance,
+      });
+    }
+
+    // Pre-fetch every node id owned by this file so we can delete
+    // their prior edges in one statement. The owned-node set comes
+    // from the just-completed pass 1 — the file row's id is
+    // guaranteed to match by then.
+    const ownedIds = expectRows<{ id: string }>(
+      this.db
+        .prepare("SELECT id FROM nodes WHERE file_id = ?")
+        .all(result.fileId),
+      ["id"],
+    ).map((row) => row.id);
+    if (ownedIds.length > 0) {
+      const placeholders = ownedIds.map(() => "?").join(", ");
+      // Delete any edge whose src is one of this file's nodes — the
+      // prior graph state for this file's slice. Owned-side edges
+      // are reconstructed by the insert below; cross-file edges that
+      // pass through these nodes will be re-inserted when the OTHER
+      // file's pass 2 runs, but only if that other file is in this
+      // batch (otherwise we have already lost them via the cascade
+      // and they will be re-inserted by the next batch that owns
+      // the cross-file side). To prevent accidentally deleting
+      // cross-file edges from OTHER files (which we are not
+      // re-ingesting here), restrict the delete to edges whose `src`
+      // is in this file's nodes — only the owner of the source
+      // re-asserts edges.
+      this.db
+        .prepare(`DELETE FROM edges WHERE src IN (${placeholders})`)
+        .run(...ownedIds);
+    }
+
+    // Map every seen qualified_name → its deterministic id. Pass 1
+    // already wrote these ids, so the DB is the source of truth —
+    // we look up by qualified_name (indexed) and let the lookup
+    // pull from the just-committed batch.
+    const qualifiedNameToId = new Map<string, string>();
+    const ownSymbols = expectRows<{ id: string; qualified_name: string }>(
+      this.db
+        .prepare("SELECT id, qualified_name FROM nodes WHERE file_id = ?")
+        .all(result.fileId),
+      ["id", "qualified_name"],
+    );
+    for (const row of ownSymbols) {
+      qualifiedNameToId.set(row.qualified_name, row.id);
+    }
+
     const insertEdge = this.db.prepare(
       `INSERT INTO edges (src, dst, type, confidence, provenance)
          VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(src, dst, type) DO NOTHING`,
+         ON CONFLICT(src, dst, type) DO UPDATE SET
+           confidence = excluded.confidence,
+           provenance = excluded.provenance`,
     );
     let edgeCount = 0;
-    const qualifiedNameToId = new Map<string, string>();
-    for (const sym of ir.symbols ?? []) {
-      qualifiedNameToId.set(
-        sym.qualifiedName,
-        nodeIdFor({
-          qualifiedName: sym.qualifiedName,
-          filePath: ir.path,
-          label: sym.kind,
-        }),
-      );
-    }
-    // Snapshot qualified_name → id for every node already on disk so
-    // cross-file edges whose destination was ingested in a prior batch
-    // resolve without an extra SELECT per edge. The index on
-    // qualified_name keeps each lookup O(log n).
-    const existing = expectRows<{ id: string; qualified_name: string }>(
-      this.db.prepare("SELECT id, qualified_name FROM nodes").all(),
-      ["id", "qualified_name"],
-    );
-    for (const row of existing) {
-      if (!qualifiedNameToId.has(row.qualified_name)) {
-        qualifiedNameToId.set(row.qualified_name, row.id);
-      }
-    }
-
     for (const edge of ir.edges ?? []) {
       // Reject malformed edges up-front (rule 51: surface what is wrong).
       if (!isEdgeProvenance(edge.provenance)) {
@@ -524,17 +634,20 @@ export class GraphStore {
         this.db,
       );
       if (!srcId || !dstId) continue;
-      const result = insertEdge.run(srcId, dstId, edge.type, edge.confidence, edge.provenance);
-      edgeCount += result.changes;
+      const prior = priorByKey.get(`${srcId}\u0000${dstId}\u0000${edge.type}`);
+      if (
+        prior &&
+        prior.confidence === edge.confidence &&
+        prior.provenance === edge.provenance
+      ) {
+        // Identical to the prior row — no INSERT/UPDATE needed, so
+        // `changes` stays 0 and the idempotency contract holds.
+        continue;
+      }
+      const r = insertEdge.run(srcId, dstId, edge.type, edge.confidence, edge.provenance);
+      edgeCount += r.changes;
     }
-
-    return {
-      path: ir.path,
-      fileId,
-      nodeCount,
-      edgeCount,
-      droppedDanglingEdges,
-    };
+    result.edgeCount = edgeCount;
   }
 }
 
@@ -593,29 +706,43 @@ function resolveNodeId(
 // ──────────────────────────────────────────────────────────────────────────
 
 function classifyError(error: unknown): GraphStoreFailure {
-  const message =
-    error instanceof Error ? error.message : String(error ?? "");
   const code = hasErrorCode(error) ? error.code : "";
   if (code === "SQLITE_BUSY" || code === "SQLITE_LOCKED") {
-    return { ok: false, code: "db_locked", message };
+    return { ok: false, code: "db_locked" };
   }
+  const msg = error instanceof Error ? error.message : String(error ?? "");
   if (
     code === "SQLITE_CORRUPT" ||
     code === "SQLITE_NOTADB" ||
-    message.includes("database disk image is malformed")
+    msg.includes("database disk image is malformed")
   ) {
-    return { ok: false, code: "db_corrupt", message };
+    return { ok: false, code: "db_corrupt" };
   }
-  // Anything else is an unexpected programming error — surface the message
-  // but still tag it so the caller can distinguish from a thrown rejection.
-  return { ok: false, code: "db_corrupt", message };
+  // Anything else is an unexpected programming error — still tagged
+  // so the caller can distinguish from a thrown rejection. The
+  // message is intentionally NOT propagated; better-sqlite3 errors
+  // frequently include absolute filesystem paths and stack snippets
+  // that should never reach agents or HTTP surfaces (rule 11).
+  return { ok: false, code: "db_corrupt" };
 }
 
 function hasErrorCode(value: unknown): value is { code: string } {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "code" in value &&
-    typeof (value as { code: unknown }).code === "string"
+  if (typeof value !== "object" || value === null) return false;
+  if (!("code" in value)) return false;
+  const codeValue: unknown = (value as Record<string, unknown>)["code"];
+  return typeof codeValue === "string";
+}
+
+/**
+ * Internal log for write failures. Never exposed to callers — the
+ * public failure union only carries the code, so absolute paths
+ * from `error.message` cannot leak into agents, HTTP responses, or
+ * MCP tool results (rule 11).
+ */
+function logWriteFailure(error: unknown): void {
+  // eslint-disable-next-line no-console
+  console.error(
+    "[coding-graph] write failure:",
+    error instanceof Error ? error.message : String(error ?? ""),
   );
 }
