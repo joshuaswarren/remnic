@@ -503,7 +503,7 @@ test("HTTP handler source routes match the catalog (static completeness)", () =>
       pathname = normalizeRegexRoute(raw!);
     }
     if (!pathname.startsWith("/engram/v1/") || !isServicePath(pathname)) continue;
-    const matchIndex = httpSource.indexOf(m[0]);
+    const matchIndex = m.index!;
     const matchLine = httpSource.slice(0, matchIndex).split("\n").length;
     // Scan forward for method checks inside the route block.
     for (let j = matchLine; j < Math.min(lines.length, matchLine + 40); j++) {
