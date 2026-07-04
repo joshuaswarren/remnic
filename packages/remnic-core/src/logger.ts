@@ -15,11 +15,20 @@ const NOOP_LOGGER: LoggerBackend = {
 let _backend: LoggerBackend = NOOP_LOGGER;
 let _debug = false;
 
+// Late-bind console.* rather than capturing references at module import
+// time. In production this is behaviour-identical to the pre-bound
+// `.bind(console)` form — `console.info(msg, ...)` resolves `this` to
+// `console` whether called directly or via an arrow wrapper — but it lets
+// harnesses that swap console methods (e.g. runCli in @remnic/cli) route
+// logger output through their capture sinks. With the old pre-bound form,
+// any command that called initLogger() pinned the logger to the original
+// console methods before the harness could swap them, so log.warn /
+// log.info output escaped the capture buffer.
 const CONSOLE_LOGGER: LoggerBackend = {
-  info: console.info.bind(console),
-  warn: console.warn.bind(console),
-  error: console.error.bind(console),
-  debug: console.debug.bind(console),
+  info: (msg, ...args) => console.info(msg, ...args),
+  warn: (msg, ...args) => console.warn(msg, ...args),
+  error: (msg, ...args) => console.error(msg, ...args),
+  debug: (msg, ...args) => console.debug(msg, ...args),
 };
 
 export function initLogger(backend?: LoggerBackend, debug?: boolean): void {
