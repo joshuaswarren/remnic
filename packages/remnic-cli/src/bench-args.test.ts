@@ -1012,3 +1012,13 @@ test("parseBenchArgs leaves localLabManifestPath undefined when --local-lab-mani
   const parsed = parseBenchArgs(["run", "locomo", "--runtime-profile", "baseline"]);
   assert.equal(parsed.localLabManifestPath, undefined);
 });
+
+test("parseBenchArgs --matrix empty error lists local-lab alongside the other profiles (cursor review: #1573 PR2 round 5)", () => {
+  // Regression: the empty-matrix error named only baseline/real/openclaw-chain
+  // even though parseBenchRuntimeProfile accepts local-lab, so the message was
+  // an outdated allow-list.
+  assert.throws(
+    () => parseBenchArgs(["run", "locomo", "--matrix", " , , "]),
+    /local-lab/,
+  );
+});

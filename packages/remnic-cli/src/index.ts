@@ -706,6 +706,22 @@ type PackageBenchModule = {
     tasks: number;
     errors: string[];
   }>;
+  /**
+   * Probe a single local-lab manifest role's endpoint before the benchmark
+   * starts (issue #1573 PR2). Returns ok=true on success or ok=false with
+   * a reason carrying the endpoint's actual model list on mismatch
+   * (rule 51). Wired into the run path so operators get a clear error up
+   * front instead of a mid-run failure.
+   */
+  preflightLocalLabRole?: (input: {
+    provider: string;
+    baseUrl: string;
+    model: string;
+    ctx: number;
+  }, options?: { fetchImpl?: unknown; timeoutMs?: number }) => Promise<
+    | { ok: true; expectedModel: string; discoveredModels: unknown[] }
+    | { ok: false; reason: string; expectedModel: string; discoveredModels?: unknown[] }
+  >;
 };
 
 interface TrainingExportOptions {
@@ -2871,6 +2887,38 @@ async function runBenchViaPackage(
   const [plan] = plans;
   if (!plan) {
     return { ok: false };
+  }
+
+  // local-lab endpoint preflight gate (issue #1573 PR2, cursor review round 5):
+  // probe each manifest role's endpoint before the benchmark starts so the
+  // operator gets a clear model-mismatch / endpoint-down error up front
+  // (rule 51: surface the endpoint's actual model list) instead of a mid-run
+  // failure. Full sequential phase scheduling (runSequentialPhases with
+  // responder->judge hand-off) lands in PR3 calibration; this gate delivers
+  // the preflight half of the local-lab run contract now.
+  if (
+    plan.runtime.profile === "local-lab" &&
+    plan.runtime.localLab &&
+    benchModule.preflightLocalLabRole
+  ) {
+    const ll = plan.runtime.localLab;
+    const roles: Array<[string, { provider: string; baseUrl: string; model: string; ctx: number }]> = [
+      ["responder", ll.responder],
+      ["judge", ll.judge],
+    ];
+    for (const [roleName, role] of roles) {
+      const preflightResult = await benchModule.preflightLocalLabRole({
+        provider: role.provider,
+        baseUrl: role.baseUrl,
+        model: role.model,
+        ctx: role.ctx,
+      });
+      if (!preflightResult.ok) {
+        throw new Error(
+          `local-lab ${roleName} endpoint preflight failed: ${preflightResult.reason}`,
+        );
+      }
+    }
   }
 
   const outputDir = parsed.resultsDir ?? resolveBenchOutputDir();

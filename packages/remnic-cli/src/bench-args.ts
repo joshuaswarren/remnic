@@ -759,7 +759,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       .filter((value) => value.length > 0);
     if (candidates.length === 0) {
       throw new Error(
-        'ERROR: --matrix must contain one or more of "baseline", "real", or "openclaw-chain".',
+        'ERROR: --matrix must contain one or more of "baseline", "real", "openclaw-chain", or "local-lab".',
       );
     }
     matrixProfiles = candidates.map((candidate) =>
