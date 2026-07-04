@@ -1,0 +1,44 @@
+name: Runner Smoke
+
+# Manual health check for the self-hosted `remnic` runner pool (jarvis LXCs).
+# Verifies a runner can check out, install deps, build the native binding,
+# and run a real test file — the same capabilities the CI tests job needs.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: remnic
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Runner facts
+        run: |
+          echo "host: $(hostname)"
+          echo "cpus: $(nproc)"
+          free -h | head -2
+          df -h / | tail -1
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12.0'
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Rebuild native modules
+        run: pnpm rebuild better-sqlite3
+
+      - name: Test-runner lib suite
+        run: pnpm exec tsx --test tests/root-test-runner-lib.test.mjs
