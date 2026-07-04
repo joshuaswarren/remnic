@@ -114,30 +114,28 @@ export function applyCodingGraphSchema(db: BetterSqlite3Database): void {
   );
   const currentVersion = meta ? parseInt(meta.value, 10) : 0;
 
-  // Always re-run createTables on existing DBs — every statement is
-  // CREATE TABLE IF NOT EXISTS, so additive tables (the PR2
-  // `node_attributes` table) get created on existing v1 databases
-  // without a schema-version bump. A DB whose meta version is older
-  // than CODING_GRAPH_SCHEMA_VERSION also needs this (the original
-  // upgrade path), so the DDL call is unconditional
-  // (chatgpt-codex-connector P1: 'Create node_attributes for existing
-  // v1 stores').
-  createTables(db);
-  // Advance the version marker only when the on-disk version is at or
-  // below this code's version. A NEWER DB (opened by older code after a
-  // downgrade, or by a parallel install) must NOT have its version
-  // silently rewritten down to CODING_GRAPH_SCHEMA_VERSION — that would
-  // hide an incompatible future schema and confuse a later upgrade to
-  // that version. The additive CREATE TABLE IF NOT EXISTS above is safe
-  // regardless; only the version write is gated
-  // (chatgpt-codex-connector P2: 'Preserve newer schema_version rows
-  // when applying additive DDL'). Future schema-breaking migrations
-  // (column drops / type changes) bump CODING_GRAPH_SCHEMA_VERSION AND
-  // add a dedicated migration branch gated on `currentVersion` here;
-  // additive CREATE TABLE IF NOT EXISTS does not need that.
-  if (currentVersion <= CODING_GRAPH_SCHEMA_VERSION) {
-    writeSchemaVersion(db, CODING_GRAPH_SCHEMA_VERSION);
+  // Only run createTables when the on-disk version is at or below this
+  // code's version. For an AT-OR-BELOW DB (fresh-ish v0/v1) the pass is
+  // additive: every core statement is CREATE TABLE IF NOT EXISTS, so the
+  // PR2 `node_attributes` table appears on existing v1 databases without
+  // a version bump (chatgpt-codex-connector P1: 'Create node_attributes
+  // for existing v1 stores'), and a v0 DB is upgraded.
+  //
+  // A NEWER DB (currentVersion > CODING_GRAPH_SCHEMA_VERSION — older
+  // code opening a future-version DB after a downgrade, or a parallel
+  // install) must be left UNTOUCHED: createTables is NOT purely
+  // additive because its FTS migration drops + recreates `nodes_fts`
+  // when the stored CREATE SQL lacks `contentless_delete=1`. Running
+  // that against a future schema that legitimately changed or removed
+  // that table would mutate the newer schema while preserving its
+  // version marker — silent corruption. Skip createTables AND the
+  // version write for newer DBs (chatgpt-codex-connector P2: 'Skip
+  // destructive DDL for future schema versions').
+  if (currentVersion > CODING_GRAPH_SCHEMA_VERSION) {
+    return;
   }
+  createTables(db);
+  writeSchemaVersion(db, CODING_GRAPH_SCHEMA_VERSION);
 }
 
 function createTables(db: BetterSqlite3Database): void {

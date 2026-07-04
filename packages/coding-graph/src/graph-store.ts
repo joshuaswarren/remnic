@@ -1495,10 +1495,13 @@ export class GraphStore {
     }
     // Validate direction against the allowed set (rule 51 +
     // chatgpt-codex-connector P2: 'Reject invalid traversal directions
-    // explicitly'). Without this a typo like "outbound" silently falls
-    // through none of the branches and returns only the start node,
-    // masquerading as a valid empty expansion.
-    const direction: TraverseDirection = query.direction ?? "outgoing";
+    // explicitly'). Default ONLY on `undefined` — a `null` from a
+    // JSON/tool caller is a malformed value, not an absent one, so the
+    // `??` operator (which treats null as nullish) would silently turn
+    // it into "outgoing" and mask the bad input. Reject null explicitly
+    // (chatgpt-codex-connector P2: 'Reject null traversal directions').
+    const direction: TraverseDirection =
+      query.direction === undefined ? "outgoing" : query.direction;
     if (
       direction !== "outgoing" &&
       direction !== "incoming" &&

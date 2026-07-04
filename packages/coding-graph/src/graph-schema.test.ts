@@ -507,3 +507,35 @@ test("a newer (future) schema_version DB is NOT downgraded by applyCodingGraphSc
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("applyCodingGraphSchema does NOT run createTables against a future-version DB (chatgpt-codex-connector P2: 'Skip destructive DDL for future schema versions')", async () => {
+  const dir = await tempDir();
+  try {
+    const db = openTempDb(dir, "future-v2-noddl.sqlite");
+    applyCodingGraphSchema(db);
+    // Simulate a future v2 schema whose node_attributes table was
+    // dropped/renamed by the newer version.
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)").run("2");
+    db.prepare("DROP TABLE node_attributes").run();
+
+    // Older code re-opens the v2 DB. createTables must NOT run — if it
+    // did, its additive pass would recreate node_attributes, mutating
+    // the newer schema. Assert the table stays gone AND the version
+    // stays 2.
+    applyCodingGraphSchema(db);
+    assert.equal(readSchemaVersion(db), 2, "future version preserved");
+    const remaining = (
+      db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='node_attributes'")
+        .all() as { name: string }[]
+    ).map((r) => r.name);
+    assert.equal(
+      remaining.length,
+      0,
+      "createTables must not run against a future-version DB (node_attributes should not reappear)",
+    );
+    db.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
