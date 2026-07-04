@@ -1920,3 +1920,105 @@ test("parseConfig schema-default-detection round-4 contract (round 8: runtimeSet
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1575 PR 1 — provenance config block: defaults + coercion.
+//
+// The characterization test pins the documented defaults table from the issue
+// so a future edit to the parsing defaults is caught here rather than in a
+// downstream extraction test. Env-var reads are isolated so the REMNIC_/
+// ENGRAM_ override path is exercised deterministically.
+// ---------------------------------------------------------------------------
+
+test("parseConfig provenance defaults deep-equal the documented table (issue #1575)", () => {
+  const prevEnabled = process.env.REMNIC_PROVENANCE_ENABLED;
+  const prevEngram = process.env.ENGRAM_PROVENANCE_ENABLED;
+  delete process.env.REMNIC_PROVENANCE_ENABLED;
+  delete process.env.ENGRAM_PROVENANCE_ENABLED;
+  try {
+    const result = parseConfig({ openaiApiKey: "sk-test" });
+    assert.deepEqual(result.provenance, {
+      enabled: true,
+      maxQuoteChars: 300,
+      requireSpans: false,
+    });
+  } finally {
+    if (prevEnabled !== undefined) process.env.REMNIC_PROVENANCE_ENABLED = prevEnabled;
+    if (prevEngram !== undefined) process.env.ENGRAM_PROVENANCE_ENABLED = prevEngram;
+  }
+});
+
+test("parseConfig provenance.enabled coerces boolean-like strings and rejects garbage (issue #1575)", () => {
+  for (const v of [true, "true", "1", "yes", "on"] as const) {
+    const result = parseConfig({ provenance: { enabled: v } });
+    assert.equal(result.provenance.enabled, true, `enabled ${JSON.stringify(v)} -> true`);
+  }
+  for (const v of [false, "false", "0", "no", "off"] as const) {
+    const result = parseConfig({ provenance: { enabled: v } });
+    assert.equal(result.provenance.enabled, false, `enabled ${JSON.stringify(v)} -> false`);
+  }
+  assert.throws(
+    () => parseConfig({ provenance: { enabled: "definitely" } }),
+    /provenance\.enabled/,
+  );
+});
+
+test("parseConfig provenance.maxQuoteChars clamps to a positive integer (issue #1575)", () => {
+  assert.equal(parseConfig({ provenance: { maxQuoteChars: 500 } }).provenance.maxQuoteChars, 500);
+  // String coercion (CLI --config style).
+  assert.equal(parseConfig({ provenance: { maxQuoteChars: "150" } }).provenance.maxQuoteChars, 150);
+  // Non-positive / garbage falls back to the documented default, never 0.
+  assert.equal(parseConfig({ provenance: { maxQuoteChars: 0 } }).provenance.maxQuoteChars, 300);
+  assert.equal(parseConfig({ provenance: { maxQuoteChars: -5 } }).provenance.maxQuoteChars, 300);
+  assert.equal(parseConfig({ provenance: { maxQuoteChars: "garbage" } }).provenance.maxQuoteChars, 300);
+});
+
+test("parseConfig provenance.requireSpans defaults false and coerces (issue #1575)", () => {
+  assert.equal(parseConfig({}).provenance.requireSpans, false);
+  assert.equal(parseConfig({ provenance: { requireSpans: true } }).provenance.requireSpans, true);
+  assert.equal(parseConfig({ provenance: { requireSpans: "true" } }).provenance.requireSpans, true);
+  assert.equal(parseConfig({ provenance: { requireSpans: "no" } }).provenance.requireSpans, false);
+});
+
+test("parseConfig provenance non-object shape rejects loudly (issue #1575)", () => {
+  for (const v of [false, null, "true", 0, []] as unknown[]) {
+    assert.throws(
+      () => parseConfig({ provenance: v } as Record<string, unknown>),
+      /provenance must be an object/,
+    );
+  }
+});
+
+test("parseConfig provenance.enabled honors REMNIC_/ENGRAM_ env fallback (issue #1575)", () => {
+  const prevR = process.env.REMNIC_PROVENANCE_ENABLED;
+  const prevE = process.env.ENGRAM_PROVENANCE_ENABLED;
+  delete process.env.REMNIC_PROVENANCE_ENABLED;
+  delete process.env.ENGRAM_PROVENANCE_ENABLED;
+  try {
+    process.env.ENGRAM_PROVENANCE_ENABLED = "off";
+    assert.equal(parseConfig({}).provenance.enabled, false, "ENGRAM_ fallback flips to false");
+    delete process.env.ENGRAM_PROVENANCE_ENABLED;
+    process.env.REMNIC_PROVENANCE_ENABLED = "yes";
+    assert.equal(parseConfig({}).provenance.enabled, true, "REMNIC_ takes precedence");
+    process.env.ENGRAM_PROVENANCE_ENABLED = "off";
+    assert.equal(
+      parseConfig({}).provenance.enabled,
+      true,
+      "REMNIC_ wins over ENGRAM_ when both set",
+    );
+    delete process.env.REMNIC_PROVENANCE_ENABLED;
+    delete process.env.ENGRAM_PROVENANCE_ENABLED;
+    // Explicit config wins over env.
+    process.env.REMNIC_PROVENANCE_ENABLED = "off";
+    assert.equal(
+      parseConfig({ provenance: { enabled: true } }).provenance.enabled,
+      true,
+      "explicit config beats env",
+    );
+  } finally {
+    if (prevR !== undefined) process.env.REMNIC_PROVENANCE_ENABLED = prevR;
+    else delete process.env.REMNIC_PROVENANCE_ENABLED;
+    if (prevE !== undefined) process.env.ENGRAM_PROVENANCE_ENABLED = prevE;
+    else delete process.env.ENGRAM_PROVENANCE_ENABLED;
+  }
+});

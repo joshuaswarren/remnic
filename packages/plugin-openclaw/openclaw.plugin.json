@@ -3648,6 +3648,29 @@
         "default": "[Source: agent={agent}, session={sessionId}, ts={ts}]",
         "description": "Template used when inline source attribution is enabled."
       },
+      "provenance": {
+        "type": "object",
+        "description": "Claim-level provenance spans (issue #1575). When enabled, extracted facts carry verbatim source-utterance excerpts plus a coarse strength tag (verified/unverified/none) consumed by the faithfulness gate, correction UX, tombstone matching, and TrustScore.",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true,
+            "description": "Emit provenance spans on new extractions. Off = pre-feature extraction prompt/output, byte-identical (rule 39)."
+          },
+          "maxQuoteChars": {
+            "type": "integer",
+            "default": 300,
+            "minimum": 1,
+            "description": "Maximum characters stored per quote; longer quotes truncate at a word boundary with an ellipsis marker. Never stores the whole turn."
+          },
+          "requireSpans": {
+            "type": "boolean",
+            "default": false,
+            "description": "When true, facts whose quote cannot be located are routed to pending_review instead of active. Stays false until #1576 lands and the bench shows the gate is safe (rule 48)."
+          }
+        }
+      },
       "extractionMinUserTurns": {
         "type": "number",
         "default": 1,

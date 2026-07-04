@@ -9,6 +9,7 @@ import { assertPathInsideRoot } from "./utils/path-containment.js";
 import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
+import { serializeProvenanceFields, parseProvenanceSources, parseProvenanceTag } from "./provenance.js";
 import { createVersion as createPageVersion, type VersioningConfig, type VersionTrigger } from "./page-versioning.js";
 import { isValidTranscriptDate, WEARABLES_DIR_NAME } from "./wearables/day-store.js";
 import {
@@ -440,6 +441,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
   if (fm.last_reinforced_at) {
     lines.push(`last_reinforced_at: ${fm.last_reinforced_at}`);
   }
+  serializeProvenanceFields(fm, lines);
   lines.push("---");
   return lines.join("\n");
 }
@@ -843,13 +845,11 @@ function parseFrontmatter(
       // PR; no code produces these fields yet.
       derived_from,
       derived_via,
-      // Pattern-reinforcement metadata (issue #687 PR 2/4).  Parse
-      // permissively: invalid values (negative, non-integer, blank
-      // ISO-strings) are dropped to undefined so a corrupt frontmatter
-      // never poisons downstream scoring.  Validation lives on the
-      // write path in serializeFrontmatter.
+      // Pattern-reinforcement metadata (issue #687 PR 2/4) — drop corrupt values on read (rule 34).
       reinforcement_count: parseReinforcementCountField(fm.reinforcement_count),
       last_reinforced_at: fm.last_reinforced_at || undefined,
+      sources: parseProvenanceSources(fm.sources),
+      provenance: parseProvenanceTag(fm.provenance),
     },
     content,
   };

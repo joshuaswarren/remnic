@@ -388,6 +388,29 @@ export interface ProceduralConfig {
 }
 
 /**
+ * Claim-level provenance spans (issue #1575). Controls whether extracted
+ * facts carry verbatim source-utterance excerpts and the strength tag that
+ * downstream features (faithfulness gate #1576, correction UX #1580/#1583,
+ * tombstone matching #1579, TrustScore #1577) consume.
+ *
+ * PR 1 parses the block + schema only; the extraction prompt and validator
+ * land in PR 2. When `enabled` is false, extraction prompt/output are
+ * byte-identical to pre-feature behavior (rule 39).
+ */
+export interface ProvenanceConfig {
+  /** Emit provenance spans on new extractions. Default true. */
+  enabled: boolean;
+  /** Maximum characters stored per quote; longer quotes truncate at a word boundary. Default 300. */
+  maxQuoteChars: number;
+  /**
+   * When true, facts whose quote cannot be located are routed to
+   * `pending_review` instead of `active`. Stays false until #1576 lands and
+   * the bench shows the gate is safe (rule 48).
+   */
+  requireSpans: boolean;
+}
+
+/**
  * Coding-agent mode config (issue #569).
  *
  * When the connector provides a `CodingContext` (see below), Remnic overlays
@@ -951,6 +974,12 @@ export interface PluginConfig {
    */
   dreamsPhases: DreamsPhasesConfig;
   procedural: ProceduralConfig;
+  /**
+   * Claim-level provenance spans (issue #1575). Parsed from the
+   * `provenance` config block; see `ProvenanceConfig` for the documented
+   * defaults. PR 1 parses + persists only; extraction wiring lands in PR 2.
+   */
+  provenance: ProvenanceConfig;
   /**
    * Wearable transcript ingestion (Limitless / Bee / Omi connectors).
    * Disabled by default; see docs/wearables.md.
@@ -2514,6 +2543,28 @@ export interface MemoryFrontmatter {
    * is absent.
    */
   last_reinforced_at?: string;
+  // Claim-level provenance spans (issue #1575).
+  //
+  // Verbatim source-utterance excerpts that ground each extracted fact, plus
+  // a coarse `provenance` tag recording whether the span was located in the
+  // buffered turn text. Absent on legacy memories written before #1575;
+  // readers MUST treat both `undefined` (legacy) and `provenance: "none"`
+  // uniformly — never crash, never drop the fact (rule 34 spirit).
+  //
+  // `charStart` / `charEnd` are best-effort debugging aids — consumers MUST
+  // tolerate their absence (turn text is not persisted forever). The span
+  // interval is half-open [charStart, charEnd) per rule 35.
+  //
+  // PR 1 wires only the schema + storage round-trip — no extraction prompt,
+  // validator, or read surfaces yet.
+  /** Literal source-utterance excerpts backing this fact (issue #1575). */
+  sources?: ProvenanceSource[];
+  /**
+   * Coarse provenance strength: `"verified"` (span located in source text),
+   * `"unverified"` (span present but not locatable), or `"none"` (no span
+   * recorded). Readers treat absent as `"none"` for legacy memories.
+   */
+  provenance?: "verified" | "unverified" | "none";
 }
 
 /** Memory link relationship types */
@@ -2525,6 +2576,31 @@ export interface MemoryLink {
   linkType: MemoryLinkType;
   strength: number;
   reason?: string;
+}
+
+/**
+ * A verbatim source-utterance excerpt that grounds an extracted fact
+ * (issue #1575). Emitted by the PR 2 extraction validator; round-tripped
+ * through storage in PR 1.
+ *
+ * `quote` is the only strictly-required field — without it the entry is
+ * meaningless and is dropped on read. `charStart` / `charEnd` are
+ * best-effort offsets within the buffered turn text at write time and
+ * form a half-open interval [charStart, charEnd) (rule 35).
+ */
+export interface ProvenanceSource {
+  /** Session key of the source turn (e.g. `project/<name>/<ts>`). */
+  sessionKey: string;
+  /** Host-supplied turn identifier, when one was provided. */
+  turnId?: string;
+  /** ISO 8601 timestamp of the source turn. */
+  observedAt: string;
+  /** Verbatim utterance excerpt, capped at `provenance.maxQuoteChars`. */
+  quote: string;
+  /** Offset within the buffered turn text where the quote begins, when located. */
+  charStart?: number;
+  /** Half-open end offset within the buffered turn text (rule 35). */
+  charEnd?: number;
 }
 
 // Conversation Threading (Phase 3B)
