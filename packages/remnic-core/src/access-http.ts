@@ -315,6 +315,7 @@ export class EngramAccessHttpServer {
       citationsEnabled: options.citationsEnabled,
       citationsAutoDetect: options.citationsAutoDetect,
       emitLegacyTools: options.emitLegacyTools,
+      codingDecisionVisible: this.service.decisionRecordSurfaceVisible,
     });
   }
 

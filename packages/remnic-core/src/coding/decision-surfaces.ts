@@ -11,7 +11,7 @@
  * dependency on access-service.ts: validation errors are thrown via
  * `ctx.throwInputError`, which the service wires to EngramAccessInputError.
  */
-import type { CodingKnowledgeConfig, CodingContext, CodingModeConfig, MemoryFile, MemoryFrontmatter } from "../types.js";
+import type { CodingKnowledgeConfig, CodingContext, MemoryFile, MemoryFrontmatter } from "../types.js";
 import {
   ACTIVE_DECISION_STATUSES,
   DEFAULT_DECISION_STATUS,
@@ -21,7 +21,6 @@ import {
   type DecisionRecord,
   type DecisionStatus,
 } from "./decision-records.js";
-import { resolveCodingNamespaceOverlay } from "./coding-namespace.js";
 import { log } from "../logger.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -187,11 +186,10 @@ export interface DecisionSurfaceStorage {
  */
 export interface DecisionSurfaceContext {
   readonly codingKnowledge: CodingKnowledgeConfig;
-  readonly codingMode: CodingModeConfig | undefined;
-  readonly defaultNamespace: string | undefined;
   getCodingContext(sessionKey: string): CodingContext | null;
-  resolveReadableNamespace(namespace?: string): string;
-  getStorage(namespace: string | undefined): Promise<DecisionSurfaceStorage>;
+  /** Resolve storage through the SAME namespace path as memory_store
+   *  (principal ACL + coding overlay + default fallback). */
+  resolveStorage(request: DecisionSurfaceRequest): Promise<DecisionSurfaceStorage>;
   recordCatalogWrite(dir: string): void;
   /** Throw the surface-appropriate input-validation error. */
   throwInputError(message: string): never;
@@ -239,7 +237,7 @@ async function decisionList(
   request: DecisionSurfaceRequest,
   ctx: DecisionSurfaceContext,
 ): Promise<DecisionSurfaceResponse> {
-  const storage = await resolveStorage(request, ctx);
+  const storage = await ctx.resolveStorage(request);
   const memories = await storage.readAllMemories();
   const records: DecisionSurfaceRecord[] = [];
   for (const m of memories) {
@@ -269,7 +267,7 @@ async function decisionGet(
   if (!request.id?.trim()) {
     ctx.throwInputError("id is required for the 'get' subcommand");
   }
-  const storage = await resolveStorage(request, ctx);
+  const storage = await ctx.resolveStorage(request);
   const memory = await storage.getMemoryById(request.id!);
   if (!memory || memory.frontmatter.category !== "decision") {
     return { subcommand: "get", found: false };
@@ -320,7 +318,7 @@ async function decisionRecord(
     entityRefs: request.entityRefs ?? [],
   };
   const content = serializeDecisionRecord(record);
-  const storage = await resolveStorage(request, ctx);
+  const storage = await ctx.resolveStorage(request);
   const memoryId = await storage.writeMemory("decision", content, {
     confidence: 1.0,
     tags: ["decision-record"],
@@ -350,7 +348,7 @@ async function decisionSupersede(
   if (!request.decision?.trim()) {
     ctx.throwInputError("decision is required for the 'supersede' subcommand");
   }
-  const storage = await resolveStorage(request, ctx);
+  const storage = await ctx.resolveStorage(request);
   const oldMemory = await storage.getMemoryById(request.id!);
   if (!oldMemory || oldMemory.frontmatter.category !== "decision") {
     ctx.throwInputError(`decision record not found: ${request.id}`);
@@ -400,35 +398,6 @@ async function decisionSupersede(
     supersededMemoryId: request.id,
     replacementMemoryId: replacementId,
   };
-}
-
-/**
- * Resolve the storage for a decision request. Explicit namespace wins; else
- * the coding-namespace overlay; else the default namespace. Mirrors the
- * `memory_store` precedence (rule 42).
- */
-async function resolveStorage(
-  request: DecisionSurfaceRequest,
-  ctx: DecisionSurfaceContext,
-): Promise<DecisionSurfaceStorage> {
-  const explicitNamespace = request.namespace?.trim() || undefined;
-  if (explicitNamespace) {
-    const resolved = ctx.resolveReadableNamespace(explicitNamespace);
-    return ctx.getStorage(resolved);
-  }
-  const codingContext = request.sessionKey
-    ? ctx.getCodingContext(request.sessionKey)
-    : null;
-  if (!ctx.codingMode) {
-    return ctx.getStorage(ctx.defaultNamespace);
-  }
-  const overlay = resolveCodingNamespaceOverlay(
-    codingContext,
-    ctx.codingMode,
-    ctx.defaultNamespace,
-  );
-  const resolved = overlay?.namespace ?? ctx.defaultNamespace;
-  return ctx.getStorage(resolved);
 }
 
 // ──────────────────────────────────────────────────────────────────────────

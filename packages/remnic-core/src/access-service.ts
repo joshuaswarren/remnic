@@ -4406,20 +4406,33 @@ export class EngramAccessService {
     };
   }
 
+  /** Whether the coding_decision tool should appear in tools/list (rule 39). */
+  get decisionRecordSurfaceVisible(): boolean {
+    return this.orchestrator.config.codingKnowledge?.enabled === true
+      && this.orchestrator.config.codingKnowledge?.decisionRecords === true;
+  }
   /**
    * Thin delegate — handler logic in coding/decision-surfaces.ts (#1548 PR2).
    * All three surfaces (MCP/HTTP/CLI) arrive here via the boundary operation.
+   * Namespace resolution uses the SAME path as memory_store (principal ACL +
+   * coding overlay + default fallback) so decision records land in the same
+   * storage root.
    */
   async codingDecision(
     request: DecisionSurfaceRequest,
+    authenticatedPrincipal?: string,
   ): Promise<DecisionSurfaceResponse> {
     return handleCodingDecision(request, {
       codingKnowledge: this.orchestrator.config.codingKnowledge,
-      codingMode: this.orchestrator.config.codingMode,
-      defaultNamespace: this.orchestrator.config.defaultNamespace,
       getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
-      resolveReadableNamespace: (ns) => this.resolveReadableNamespace(ns),
-      getStorage: (ns) => this.orchestrator.getStorage(ns),
+      resolveStorage: async (req) => {
+        const ns = this.resolveWritableNamespace(
+          req.namespace,
+          req.sessionKey,
+          authenticatedPrincipal,
+        );
+        return this.orchestrator.getStorage(ns);
+      },
       recordCatalogWrite: (dir) => this.orchestrator.recordCatalogWrite(dir, dir),
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
     });

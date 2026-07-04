@@ -184,7 +184,7 @@ export const codingDecisionOperation = defineOperation<
     "List, get, record, or supersede decision records in the session's coding namespace (issue #1548 Track A).",
   schema: codingDecisionSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codingDecision(input);
+    const result = await ctx.service.codingDecision(input, ctx.authenticatedPrincipal);
     return { result };
   },
 });
