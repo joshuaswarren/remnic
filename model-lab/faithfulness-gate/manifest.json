@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": [
+    "Faithfulness-gate reproducibility manifest (issue #1585).",
+    "PR1 ships this file as the SCHEMA EXAMPLE only: every eval/weight field",
+    "is null/pending because no model has been trained yet. PR2 fills the real",
+    "values when the encoder baseline is trained and published. Rule 55",
+    "(#1520): no fabricated numbers — the eval block is explicitly empty until",
+    "a real run produces it. The committed manifest is the ONLY artifact that",
+    "lives in git; datasets, weights, and LLM traces are gitignored."
+  ],
+  "task": "faithfulness-gate",
+  "schemaVersion": 1,
+  "status": "pending-training",
+  "contract": {
+    "inputFields": ["factText", "quote", "context"],
+    "outputLabels": ["entailed", "contradicted", "unsupported"],
+    "source": "FaithfulnessCheckInput (issue #1576)"
+  },
+  "baseModel": null,
+  "dataRecipe": {
+    "generatorPath": "model-lab/faithfulness-gate/generate-data.py",
+    "generatorGitSha": null,
+    "seed": 1337,
+    "sources": ["synthetic-perturbation"],
+    "counts": {
+      "entailed": null,
+      "contradicted": null,
+      "unsupported": null,
+      "total": null
+    },
+    "datasetSha256": null,
+    "$comment": "Counts/hash are filled by PR2 from a real generate-data run; PR1 leaves them null because no canonical training dataset is committed (data is gitignored)."
+  },
+  "hyperparams": null,
+  "trainedAt": null,
+  "hardware": null,
+  "eval": {
+    "heldOut": null,
+    "downstream": null,
+    "$comment": "NOT YET RUN. PR2 trains the encoder baseline and fills heldOut (macro/per-class F1); the downstream number comes from the #1574 LoCoMo adversarial-category ablation. Rule 55 forbids fabricating either."
+  },
+  "artifact": {
+    "hfRepo": null,
+    "revision": null,
+    "quantizations": null,
+    "$comment": "Weights publish to the operator's HF account in PR2 (common/hf_push.py); git carries recipes and hashes, never blobs."
+  },
+  "policyCompliance": {
+    "targetMaxParamsB": 4,
+    "actualParamsB": null,
+    "escapeHatchUsed": false,
+    "$comment": "Issue #1585 policy: target models <=4B for this classification task. 8B LoRA is an escape hatch requiring written justification here."
+  }
+}

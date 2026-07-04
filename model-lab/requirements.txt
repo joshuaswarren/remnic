@@ -1,0 +1,29 @@
+# Model-lab training stack (issue #1585).
+#
+# Version-pinned for reproducibility — a manifest that can't reproduce its
+# own eval numbers is a bug (issue #1585 pitfall). These pins are the
+# starting set for PR2's encoder baseline; PR2 captures the EXACT versions
+# used for a real train run into the manifest's hyperparams/hardware blocks.
+#
+# IMPORTANT: this file is NOT needed for CI. The seeded data generator
+# (generate-data.py) and its selfcheck/determinism tests are stdlib-only and
+# run on plain `python3` with no `pip install`. This file only matters on
+# the lab GPU box, for train.py / eval.py.
+
+# --- CPU-side data + metrics (lightweight) ---------------------------------
+scikit-learn==1.5.1
+datasets==2.21.0
+
+# --- Encoder baseline stack (DeBERTa-v3-large, first choice per #1585) -----
+transformers==4.44.2
+torch==2.3.1
+sentence-transformers==3.0.1
+
+# --- Hub upload (PR2: weight publication) ----------------------------------
+huggingface-hub==0.24.6
+
+# --- Fine-tuning stack (uncomment in PR2 when first LoRA/causal run lands) -
+# trl==0.9.6
+# peft==0.12.0
+# accelerate==0.33.0
+# bitsandbytes==0.43.3   # QLoRA 4-bit base + paged optimizer (≤14B policy ceiling)
