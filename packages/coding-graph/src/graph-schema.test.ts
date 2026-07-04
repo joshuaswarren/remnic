@@ -477,3 +477,33 @@ test("node_attributes created on existing v1 stores (chatgpt-codex-connector P1:
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a newer (future) schema_version DB is NOT downgraded by applyCodingGraphSchema (chatgpt-codex-connector P2: 'Preserve newer schema_version rows')", async () => {
+  const dir = await tempDir();
+  try {
+    const db = openTempDb(dir, "future-v2.sqlite");
+    // Apply once to get a normal v1 schema, then simulate a future
+    // version having upgraded the DB to v2 (a version this code does
+    // not understand).
+    applyCodingGraphSchema(db);
+    assert.equal(readSchemaVersion(db), CODING_GRAPH_SCHEMA_VERSION);
+    db.prepare(
+      "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+    ).run("2");
+    assert.equal(readSchemaVersion(db), 2, "precondition: future v2 marker");
+
+    // Re-open path: older code applies its additive DDL against the v2
+    // DB. The version marker must be PRESERVED (2), not silently
+    // rewritten down to CODING_GRAPH_SCHEMA_VERSION (1) — otherwise an
+    // incompatible future schema is hidden from a later upgrade.
+    applyCodingGraphSchema(db);
+    assert.equal(
+      readSchemaVersion(db),
+      2,
+      "a newer schema_version must not be downgraded to CODING_GRAPH_SCHEMA_VERSION",
+    );
+    db.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

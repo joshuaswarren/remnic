@@ -100,7 +100,9 @@ export function applyCodingGraphSchema(db: BetterSqlite3Database): void {
   );
 
   if (!versionRow) {
+    // Fresh DB — create every table and stamp the current version.
     createTables(db);
+    writeSchemaVersion(db, CODING_GRAPH_SCHEMA_VERSION);
     return;
   }
 
@@ -117,14 +119,25 @@ export function applyCodingGraphSchema(db: BetterSqlite3Database): void {
   // `node_attributes` table) get created on existing v1 databases
   // without a schema-version bump. A DB whose meta version is older
   // than CODING_GRAPH_SCHEMA_VERSION also needs this (the original
-  // upgrade path), so the call is unconditional, not gated by
-  // currentVersion (chatgpt-codex-connector P1: 'Create
-  // node_attributes for existing v1 stores'). Future schema-breaking
-  // migrations (column drops / type changes) bump the version AND
-  // add a dedicated migration branch here; additive CREATE TABLE IF
-  // NOT EXISTS does not need that.
-  void currentVersion;
+  // upgrade path), so the DDL call is unconditional
+  // (chatgpt-codex-connector P1: 'Create node_attributes for existing
+  // v1 stores').
   createTables(db);
+  // Advance the version marker only when the on-disk version is at or
+  // below this code's version. A NEWER DB (opened by older code after a
+  // downgrade, or by a parallel install) must NOT have its version
+  // silently rewritten down to CODING_GRAPH_SCHEMA_VERSION — that would
+  // hide an incompatible future schema and confuse a later upgrade to
+  // that version. The additive CREATE TABLE IF NOT EXISTS above is safe
+  // regardless; only the version write is gated
+  // (chatgpt-codex-connector P2: 'Preserve newer schema_version rows
+  // when applying additive DDL'). Future schema-breaking migrations
+  // (column drops / type changes) bump CODING_GRAPH_SCHEMA_VERSION AND
+  // add a dedicated migration branch gated on `currentVersion` here;
+  // additive CREATE TABLE IF NOT EXISTS does not need that.
+  if (currentVersion <= CODING_GRAPH_SCHEMA_VERSION) {
+    writeSchemaVersion(db, CODING_GRAPH_SCHEMA_VERSION);
+  }
 }
 
 function createTables(db: BetterSqlite3Database): void {
@@ -286,11 +299,25 @@ function createTables(db: BetterSqlite3Database): void {
       }
     }
   }
-  // Upsert meta version. INSERT OR REPLACE so the upgrade path can rewrite
-  // the row in place (rule 23 — one canonical form for the version value).
+  // NOTE: the schema_version marker is written by the caller
+  // (applyCodingGraphSchema / writeSchemaVersion), NOT here. createTables
+  // only owns additive DDL; the version-write concern (never downgrade a
+  // newer DB) lives at the apply layer where currentVersion is known.
+}
+
+/**
+ * Stamp the schema_version meta row. INSERT OR REPLACE so the upgrade
+ * path can rewrite the row in place (rule 23 — one canonical form).
+ * Callers MUST gate this on `currentVersion <= CODING_GRAPH_SCHEMA_VERSION`
+ * to avoid downgrading a newer DB.
+ */
+function writeSchemaVersion(
+  db: BetterSqlite3Database,
+  version: number,
+): void {
   db.prepare(
     "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
-  ).run(String(CODING_GRAPH_SCHEMA_VERSION));
+  ).run(String(version));
 }
 
 /**
