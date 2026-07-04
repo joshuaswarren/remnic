@@ -33,7 +33,8 @@ import { expandTildePath } from "./utils/path.js";
 export type OperationName =
   | "memory_get"
   | "memory_search"
-  | "memory_store";
+  | "memory_store"
+  | "coding_decision";
 
 // ---------------------------------------------------------------------------
 // Operation context — what every handler receives

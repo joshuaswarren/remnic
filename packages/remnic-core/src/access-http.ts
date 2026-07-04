@@ -315,6 +315,7 @@ export class EngramAccessHttpServer {
       citationsEnabled: options.citationsEnabled,
       citationsAutoDetect: options.citationsAutoDetect,
       emitLegacyTools: options.emitLegacyTools,
+      codingDecisionVisible: this.service.decisionRecordSurfaceVisible,
     });
   }
 
@@ -1331,6 +1332,35 @@ export class EngramAccessHttpServer {
       return;
     }
 
+    if (req.method === "POST" && pathname === "/engram/v1/coding/decisions") {
+      // Migrated through the access boundary (issue #1525/#1548): the
+      // registry entry owns schema validation and service dispatch. HTTP
+      // resolves the request principal; the boundary re-validates the
+      // cleaned envelope. record/supersede persist decision memories, so they
+      // are gated by the same 30/min write quota as /engram/v1/memories,
+      // suggestions, and observe; list/get are pure reads and stay uncounted
+      // (review P2: apply write quotas to decision writes).
+      const body = await this.readJsonBody(req);
+      const isWriteSubcommand =
+        body.subcommand === "record" || body.subcommand === "supersede";
+      if (isWriteSubcommand) {
+        this.ensureWriteRateLimitAvailable();
+      }
+      const op = getOperation("coding_decision");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: coding_decision");
+      }
+      const output = (await op.run(body, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      })) as { result: unknown };
+      if (isWriteSubcommand) {
+        this.recordWriteRateLimitHit();
+      }
+      this.respondJson(res, 200, output.result);
+      return;
+    }
+
     if (req.method === "POST" && pathname === "/engram/v1/suggestions") {
       const body = await this.readValidatedBody(req, "suggestionSubmit");
       const request = {
@@ -2183,6 +2213,13 @@ export class EngramAccessHttpServer {
       typeof toolArgs === "object" &&
       !Array.isArray(toolArgs) &&
       (toolArgs as { dryRun?: unknown }).dryRun === true;
+    const codingDecisionWrite =
+      (toolName === "engram.coding_decision" || toolName === "remnic.coding_decision") &&
+      toolArgs !== null &&
+      typeof toolArgs === "object" &&
+      !Array.isArray(toolArgs) &&
+      ((toolArgs as { subcommand?: unknown }).subcommand === "record" ||
+        (toolArgs as { subcommand?: unknown }).subcommand === "supersede");
     const isMcpWrite =
       request.method === "tools/call" &&
       (
@@ -2210,7 +2247,8 @@ export class EngramAccessHttpServer {
             toolName === "engram.memory_action_apply" ||
             toolName === "remnic.memory_action_apply"
           )
-        )
+        ) ||
+        codingDecisionWrite
       );
     if (isMcpWrite) {
       this.ensureWriteRateLimitAvailable();

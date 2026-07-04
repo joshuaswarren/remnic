@@ -2800,6 +2800,7 @@ export async function runAccessMcpServeCliCommand(
     new EngramMcpServer(service, {
       principal: options.principal,
       emitLegacyTools: options.emitLegacyTools,
+      codingDecisionVisible: service.decisionRecordSurfaceVisible,
     });
   await server.runStdio(options.stdin ?? process.stdin, options.stdout ?? process.stdout);
   return { ok: true };

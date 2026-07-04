@@ -11,10 +11,11 @@ import { getOperation } from "./access-boundary.js";
 // Importing access-operations registers the pilot boundary operations as a
 // side effect; the store command dispatches through the registry (issue #1525).
 import "./access-operations.js";
+import { projectTagProjectId } from "./coding/coding-namespace.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
-type CommandName = "browse" | "store";
+type CommandName = "browse" | "store" | "decision";
 
 type ParsedArgs = {
   command: CommandName;
@@ -133,9 +134,9 @@ function writeCliOutput(text: string = ""): void {
 
 function usage(): string {
   return [
-    "Usage:",
     "  engram-access browse [options]",
     "  engram-access store [options]",
+    "  engram-access decision [options]",
     "",
     "Browse options:",
     "  --namespace <name>",
@@ -160,6 +161,21 @@ function usage(): string {
     "  --source-reason <text>",
     "  --idempotency-key <key>",
     "  --dry-run",
+    "",
+    "Decision options:",
+    "  --subcommand <list|get|record|supersede>",
+    "  --namespace <name>",
+    "  --session-key <key>",
+    "  --principal <principal>",
+    "  --id <id> (get/supersede)",
+    "  --title <title> (record/supersede)",
+    "  --status <proposed|accepted|superseded|rejected> (record)",
+    "  --context <text> (record/supersede)",
+    "  --decision <text> (record/supersede)",
+    "  --consequences <text> (record/supersede)",
+    "  --entity-ref <ref> (repeatable)",
+    "  --project-tag <tag> (attach coding context for this invocation)",
+    "  --supersedes-id <id> (alias for --id on supersede)",
   ].join("\n");
 }
 
@@ -194,8 +210,25 @@ const COMMAND_SPECS: Record<CommandName, CommandSpec> = {
     ]),
     flagOptions: new Set(["dry-run"]),
   },
+  decision: {
+    valueOptions: new Set([
+      "subcommand",
+      "namespace",
+      "session-key",
+      "principal",
+      "id",
+      "title",
+      "status",
+      "context",
+      "decision",
+      "consequences",
+      "entity-ref",
+      "project-tag",
+      "supersedes-id",
+    ]),
+    flagOptions: new Set(),
+  },
 };
-
 const BROWSE_SORT_VALUES = Object.freeze([
   "updated_desc",
   "updated_asc",
@@ -207,7 +240,7 @@ type BrowseSort = (typeof BROWSE_SORT_VALUES)[number];
 
 function parseArgs(argv: string[]): ParsedArgs {
   const [commandRaw, ...rest] = argv;
-  if (commandRaw !== "browse" && commandRaw !== "store") {
+  if (commandRaw !== "browse" && commandRaw !== "store" && commandRaw !== "decision") {
     throw new UsageError("unsupported-command");
   }
   const spec = COMMAND_SPECS[commandRaw];
@@ -466,6 +499,59 @@ function expandOptionalPath(value: string | undefined): string | undefined {
   return value === undefined ? undefined : expandTildePath(value);
 }
 
+/**
+ * Decision-record surface (issue #1548 Track A PR 2). Dispatches through the
+ * same `coding_decision` operation as the MCP tool and HTTP route — one
+ * validation boundary, three transports.
+ */
+async function runDecision(args: ParsedArgs, preferredId?: string): Promise<void> {
+  const subcommand = requireOption(args, "subcommand");
+  const { config, service } = buildRuntime(preferredId);
+  // The CLI creates a fresh Orchestrator per invocation, so the session
+  // coding-context map is empty. If --project-tag + --session-key are
+  // provided, attach a coding context BEFORE dispatching so the gate
+  // passes and project-scoped writes resolve to the right namespace
+  // (review P2).
+  const projectTag = getLastOption(args, "project-tag");
+  const sessionKey = getLastOption(args, "session-key");
+  if (projectTag && projectTag.trim().length > 0 && sessionKey && sessionKey.trim().length > 0) {
+    const projectId = projectTagProjectId(projectTag.trim());
+    service.setCodingContext({
+      sessionKey,
+      codingContext: {
+        projectId,
+        branch: null,
+        rootPath: projectId,
+        defaultBranch: null,
+      },
+    });
+  }
+  const op = getOperation("coding_decision");
+  if (!op) {
+    throw new Error("access-boundary: operation not registered: coding_decision");
+  }
+  const output = (await op.run(
+    {
+      subcommand,
+      namespace: getLastOption(args, "namespace"),
+      sessionKey,
+      id: getLastOption(args, "id"),
+      supersedesId: getLastOption(args, "supersedes-id"),
+      title: getLastOption(args, "title"),
+      status: getLastOption(args, "status"),
+      context: getLastOption(args, "context"),
+      decision: getLastOption(args, "decision"),
+      consequences: getLastOption(args, "consequences"),
+      entityRefs: getAllOptions(args, "entity-ref"),
+    },
+    {
+      service,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
+    },
+  )) as { result: unknown };
+  console.log(JSON.stringify(output.result, null, 2));
+}
+
 export async function main(
   argv: string[] = process.argv.slice(2),
   options: AccessCliOptions = {},
@@ -473,6 +559,10 @@ export async function main(
   const args = parseArgs(argv);
   if (args.command === "browse") {
     await runBrowse(args, options.preferredId);
+    return;
+  }
+  if (args.command === "decision") {
+    await runDecision(args, options.preferredId);
     return;
   }
   await runStore(args, options.preferredId);

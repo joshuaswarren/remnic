@@ -109,6 +109,7 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.memory_get": "memory_get",
   "engram.memory_search": "memory_search",
   "engram.memory_store": "memory_store",
+  "engram.coding_decision": "coding_decision",
 };
 
 function resolveChatGptInspectorRecallSessionKey(
@@ -304,7 +305,9 @@ export class EngramMcpServer {
    */
   private initSessionIds = new Map<string, string>();
 
-  /** Whether oai-mem-citation guidance is explicitly enabled via config. */
+  /**
+   * Whether oai-mem-citation guidance is explicitly enabled via config.
+   */
   private readonly citationsEnabled: boolean;
   /** Whether to auto-enable citations for Codex adapter connections. */
   private readonly citationsAutoDetect: boolean;
@@ -314,6 +317,13 @@ export class EngramMcpServer {
    * set false to halve the advertised `tools/list` surface.
    */
   private readonly emitLegacyTools: boolean;
+  /**
+   * Whether the `coding_decision` tool should appear in `tools/list`. Gated on
+   * `codingKnowledge.enabled && codingKnowledge.decisionRecords` (issue #1548
+   * Track A PR 2, rule 39). When false the tools array is byte-identical to
+   * pre-feature.
+   */
+  private readonly codingDecisionVisible: boolean;
 
   constructor(
     private readonly service: EngramAccessService,
@@ -322,11 +332,13 @@ export class EngramMcpServer {
       citationsEnabled?: boolean;
       citationsAutoDetect?: boolean;
       emitLegacyTools?: boolean;
+      codingDecisionVisible?: boolean;
     } = {},
   ) {
     this.citationsEnabled = options.citationsEnabled === true;
     this.citationsAutoDetect = options.citationsAutoDetect !== false;
     this.emitLegacyTools = options.emitLegacyTools !== false;
+    this.codingDecisionVisible = options.codingDecisionVisible === true;
     this.authenticatedPrincipal =
       options.principal?.trim() ||
       readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() ||
@@ -1946,6 +1958,47 @@ export class EngramMcpServer {
         },
       },
     ].flatMap((tool) => withToolAliases(tool, this.emitLegacyTools));
+    if (this.codingDecisionVisible) {
+      const codingDecisionTools = withToolAliases(
+        {
+          name: "engram.coding_decision",
+          description:
+            "List, get, record, or supersede decision records in the session's coding namespace (issue #1548 Track A). Subcommands: list, get, record, supersede.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              subcommand: {
+                type: "string",
+                enum: ["list", "get", "record", "supersede"],
+                description: "Which decision-record operation to run.",
+              },
+              sessionKey: { type: "string", description: "Session identifier whose coding context scopes the operation." },
+              namespace: { type: "string", description: "Optional explicit namespace (overrides coding-context overlay)." },
+              id: { type: "string", description: "Decision record id (required for get and supersede)." },
+              title: { type: "string", description: "Decision title (required for record and supersede)." },
+              status: {
+                type: "string",
+                enum: ["proposed", "accepted", "superseded", "rejected"],
+                description: "Decision status (record only; defaults to proposed).",
+              },
+              context: { type: "string", description: "Context/background for the decision." },
+              decision: { type: "string", description: "The decision itself (required for record and supersede)." },
+              consequences: { type: "string", description: "Consequences of the decision." },
+              entityRefs: {
+                type: "array",
+                items: { type: "string" },
+                description: "Entity references the decision relates to.",
+              },
+              supersedesId: { type: "string", description: "Id of the record this decision supersedes (supersede only)." },
+            },
+            required: ["subcommand"],
+            additionalProperties: false,
+          },
+        },
+        this.emitLegacyTools,
+      );
+      this.tools = [...this.tools, ...codingDecisionTools];
+    }
   }
 
   /** Get clientInfo for a specific MCP session. Returns undefined for non-MCP requests. */
