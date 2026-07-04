@@ -17,6 +17,7 @@
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { EngramMcpServer } from "./access-mcp.js";
@@ -196,6 +197,88 @@ test("MCP tools/list matches the catalog exactly (no untracked handlers)", async
     violations,
     [],
     `surface/catalog drift detected — either update access-surface-catalog.ts or migrate the new handler:\n${formatViolations(violations)}`,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// HTTP source-completeness — static extraction from access-http.ts
+// ---------------------------------------------------------------------------
+
+/**
+ * The MCP surface has a live coverage test (tools/list). HTTP has no
+ * equivalent introspection endpoint — routes are scattered if-branches in
+ * EngramAccessHttpServer.handle. This test statically extracts route
+ * patterns from the source and compares against HTTP_ROUTES so a new
+ * service-invoking route cannot land without a catalog entry.
+ *
+ * Infrastructure routes (health, adapters, admin console, UI assets, MCP
+ * delegate) are excluded — they carry no user-validated request envelope.
+ */
+test("HTTP handler source routes match the catalog (static completeness)", () => {
+  const httpSource = readFileSync(
+    new URL("./access-http.ts", import.meta.url),
+    "utf-8",
+  );
+
+  const sourcePaths = new Set<string>();
+
+  // Strategy 1: pathname === "/engram/v1/..." (also captures /remnic/ aliases
+  // and bare /v1/ routes like /v1/citations/observed).
+  for (const m of httpSource.matchAll(
+    /pathname\s*===\s*"((?:\/engram|\/remnic|\/v1)\/[^"]+)"/g,
+  )) {
+    sourcePaths.add(m[1]!.replace(/^\/remnic\//, "/engram/"));
+  }
+
+  // Strategy 2: pathname.startsWith("/engram/v1/.../")  — prefix route.
+  // The trailing / means a path segment follows → normalize to /:id.
+  for (const m of httpSource.matchAll(
+    /pathname\.startsWith\("((?:\/engram)\/v1\/[^"]+\/)"/g,
+  )) {
+    sourcePaths.add(m[1]!.replace(/\/$/, "") + "/:id");
+  }
+
+  // Strategy 3: regex-literal routes — /^\/engram\/v1\/.../.exec(pathname)
+  // and pathname.match(/^\/engram\/v1\/.../).
+  const normalizeRegexRoute = (src: string): string =>
+    src.replace(/\\\//g, "/").replace(/\(\[\^\/\]\+\)/g, ":id");
+  for (const m of httpSource.matchAll(/\/\^(.+?)\$\/g?\.(?:exec|test)\(pathname\)/g)) {
+    const normalized = normalizeRegexRoute(m[1]!);
+    if (normalized.startsWith("/engram/v1/") || normalized.startsWith("/v1/")) {
+      sourcePaths.add(normalized);
+    }
+  }
+  for (const m of httpSource.matchAll(/pathname\.match\(\/\^(.+?)\$\/g?\)/g)) {
+    const normalized = normalizeRegexRoute(m[1]!);
+    if (normalized.startsWith("/engram/v1/") || normalized.startsWith("/v1/")) {
+      sourcePaths.add(normalized);
+    }
+  }
+
+  // Filter out infrastructure routes that carry no user request envelope.
+  const INFRA = [
+    /^\/engram\/v1\/health$/,
+    /^\/engram\/v1\/adapters$/,
+    /^\/engram\/v1\/admin\//,
+    /^\/engram\/ui/,
+    /^\/mcp$/,
+  ];
+  const servicePaths = [...sourcePaths]
+    .filter((p) => !INFRA.some((re) => re.test(p)))
+    .sort();
+
+  const catalogPaths = new Set(HTTP_ROUTES.map((r) => r.pathname));
+
+  const missingFromCatalog = servicePaths.filter(
+    (p) => !catalogPaths.has(p),
+  );
+
+  assert.deepEqual(
+    missingFromCatalog,
+    [],
+    `HTTP routes found in access-http.ts but missing from HTTP_ROUTES catalog.\n` +
+      `Add each to access-surface-catalog.ts with operation: null (or migrate it).\n` +
+      `Missing:\n${missingFromCatalog.map((p) => `  ${p}`).join("\n")}`,
   );
 });
 
