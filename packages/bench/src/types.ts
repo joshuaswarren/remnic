@@ -159,6 +159,13 @@ export interface BenchmarkResult {
     estimatedCostUsd: number;
     totalLatencyMs: number;
     meanQueryLatencyMs: number;
+    /**
+     * Number of underlying judge model calls actually issued. When a content-
+     * keyed judge-result cache is enabled (#1573 PR1) and answers are
+     * unchanged, this equals the number of cache misses. Re-runs after the
+     * first put perform zero new judge model calls.
+     */
+    judgeModelCalls?: number;
   };
   results: {
     tasks: TaskResult[];
@@ -218,6 +225,18 @@ export interface RunBenchmarkOptions {
   amaBenchJudgeProtocol?: AmaBenchJudgeProtocol;
   amaBenchCrossJudge?: import("./adapters/types.js").BenchJudge;
   amaBenchCrossJudgeProvider?: ProviderConfig | null;
+  /**
+   * Force-disable the content-keyed judge-result cache (#1573 PR1). When
+   * true, every judge call reaches the underlying model regardless of
+   * whether `judgeCacheDir` is set. CLI flag: `--no-judge-cache`.
+   */
+  noJudgeCache?: boolean;
+  /**
+   * Override the on-disk directory used to persist judge verdicts. Defaults
+   * to `<outputDir>/judge-cache` when outputDir is supplied; ignored when
+   * `noJudgeCache` is true. The directory is created on demand.
+   */
+  judgeCacheDir?: string;
   /** Called after each task completes for progress logging and partial result tracking. */
   onTaskComplete?: (task: TaskResult, completedCount: number, totalCount?: number) => void;
 }

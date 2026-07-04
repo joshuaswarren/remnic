@@ -1,0 +1,79 @@
+# model-lab
+
+Reproducible recipes to generate training data, fine-tune, evaluate, and serve the two small classification models Remnic's extraction pipeline consumes — the **faithfulness gate** (issue #1576 / #1585) and **correction-intent** detector (#1581 / #1585). Everything reproduces from manifests; **no datasets or weights are ever committed to this repo** (git carries recipes and hashes, never blobs).
+
+This is **not** an npm workspace package. It is a standalone Python tree that follows the repo's Python standards (3.12+, typed, `requirements.txt` / `setup.sh` local to `model-lab/`). The npm build/test pipeline never touches it; the **only** CI hook is the seeded data generator's determinism test (pure CPU, small N).
+
+## What lives here
+
+```
+model-lab/
+  README.md                       this file
+  requirements.txt                version-pinned GPU training stack (PR2 onward)
+  setup.sh                        bootstrap a venv on the lab box
+  common/                         shared, stdlib-only helpers
+    seeding.py                    deterministic RNG + sha256 + JSONL writer
+    jsonl_schema.py               FaithfulnessRecord + validators (the #1576 contract)
+    eval_runner.py                per-class / macro F1 (identical math in CI and on GPU)
+    hf_push.py                    HF Hub upload — STUB, lands in PR2 (honestly labeled)
+  faithfulness-gate/
+    generate-data.py              synthetic perturbation generator (the CI-tested piece)
+    perturbations.py              pure perturbation primitives + the selfcheck case table
+    train.py                      encoder-baseline training recipe (GPU + deps at runtime)
+    eval.py                       held-out eval recipe; emits the manifest eval block
+    harvest-shadow-logs.py        shadow-log harvest — STUB; waits for #1576 shadow mode
+    manifest.json                 THE reproducibility artifact (schema example in PR1)
+```
+
+`correction-intent/` is **not** in this PR — it lands in PR3.
+
+## Hardware envelope (sets the model-size policy)
+
+| Operation | RTX 3090 (24 GB, Ampere — bf16 yes, FP8 no) |
+|---|---|
+| Encoder classifier fine-tune (DeBERTa-v3-large class, ~0.4B) | Trivial: full fine-tune, minutes–1h |
+| Full fine-tune, causal LM | ≤ ~1.5B comfortably |
+| LoRA (bf16 base) | ≤ ~8B |
+| QLoRA (4-bit base + paged optimizer) | ≤ ~14B (bs 1–2 + grad-accum); ~30B-class technically possible but too slow to iterate — out of policy |
+| Inference serving (Ollama / vLLM, 4-bit) | ~14B dense or ~30B-class MoE, one model at a time |
+
+**Policy: target models ≤ 4B for these two tasks** — they are classification, not generation, so small models + good data win. An 8B LoRA is an escape hatch if evals demand it. Anything larger needs a written justification in the manifest's `policyCompliance` block.
+
+## Quickstart
+
+### CI / data generation (no GPU, no `pip install`)
+
+```bash
+# Self-test every perturbation against hand-written cases:
+python model-lab/faithfulness-gate/generate-data.py --selfcheck
+
+# Generate a seeded dataset (same seed → same sha256):
+python model-lab/faithfulness-gate/generate-data.py --seed 1337 --out /tmp/faith --yes
+# → DATASET_SHA256=<hex>  (stdout, machine-parseable)
+```
+
+The determinism contract — *same seed → byte-identical dataset → identical sha256* — is asserted by `tests/model-lab-faithfulness-data.test.mjs`, which shells out to `generate-data.py` and is capability-guarded on `python3` via `tests/helpers/capability-probe.mjs` (skip-with-reason locally; `REMNIC_REQUIRE_CAPABILITY_TESTS=1` forbids skipping in CI).
+
+### Lab box (GPU + deps)
+
+```bash
+bash model-lab/setup.sh
+source model-lab/.venv/bin/activate
+
+python model-lab/faithfulness-gate/generate-data.py --seed 1337 --yes   # → faithfulness-gate/data/
+python model-lab/faithfulness-gate/train.py   --version-tag v1          # → model-lab/runs/faithfulness-gate/v1/
+python model-lab/faithfulness-gate/eval.py    --version-tag v1          # → manifest eval block
+```
+
+`train.py` / `eval.py` lazy-import the GPU stack so `--help` works on a bare machine; the training entry point exits with code 2 and an install hint if `torch`/`transformers` are missing. **They never run in CI.**
+
+## Reproducibility model
+
+* **git carries recipes + hashes, never blobs.** `model-lab/**/data/`, `model-lab/**/runs/`, `*.safetensors`, `*.gguf` are gitignored.
+* **The manifest is the only committed artifact for a trained model.** `manifest.json` carries `{task, baseModel, dataRecipe: {seed, datasetSha256, …}, hyperparams, hardware, eval, artifact}`. PR1 ships it as the **schema example** with every eval/weight field explicitly `null`/`pending` (rule 55: no fabricated numbers); PR2 fills the real values.
+* **The sha256 is the reproducibility check.** Re-running `generate-data.py --seed <s>` must reproduce `datasetSha256`; the manifest records it so a future operator can verify the dataset they regenerated matches the one a model was trained on.
+
+## Privacy + consent
+
+* The **harvest stream** (teacher labels from #1576 shadow mode) is opt-in, local-only, and documented. `harvest-shadow-logs.py` requires an explicit `--i-consent-local-data` flag and prints exactly what it will read. It is a **stub in PR1** — harvest waits for #1576 shadow mode.
+* Teacher-model outputs ("LLM traces") live under the gitignored data dir like everything else.
