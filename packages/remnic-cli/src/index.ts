@@ -2860,6 +2860,46 @@ async function loadPublishedPromotionHelpers() {
   };
 }
 
+/**
+ * Local-lab responder preflight gate (issue #1573 PR2, cursor review rounds 5-7).
+ * Probes ONLY the responder (first phase) endpoint before the benchmark starts
+ * so the operator gets a clear model-mismatch / endpoint-down error up front
+ * (rule 51: the failure reason carries the endpoint's actual model list) instead
+ * of a mid-run failure. The judge is intentionally NOT probed here: in the
+ * documented single-GPU swap flow the judge endpoint is not running at startup
+ * (the operator starts it after the responder phase), so probing it now would
+ * block the sequential run. The judge preflight belongs at the hand-off
+ * transition, which PR3 calibration wires via runSequentialPhases.
+ *
+ * Shared by runBenchViaPackage and runCustomBenchViaPackage so both run paths
+ * get the same up-front validation (cursor review round 7: custom runs were
+ * missing the gate).
+ */
+async function preflightLocalLabResponderIfNeeded(
+  benchModule: PackageBenchModule,
+  plan: PackageBenchExecutionPlan,
+): Promise<void> {
+  if (
+    plan.runtime.profile !== "local-lab" ||
+    !plan.runtime.localLab ||
+    !benchModule.preflightLocalLabRole
+  ) {
+    return;
+  }
+  const responder = plan.runtime.localLab.responder;
+  const preflightResult = await benchModule.preflightLocalLabRole({
+    provider: responder.provider,
+    baseUrl: responder.baseUrl,
+    model: responder.model,
+    ctx: responder.ctx,
+  });
+  if (!preflightResult.ok) {
+    throw new Error(
+      `local-lab responder endpoint preflight failed: ${preflightResult.reason}`,
+    );
+  }
+}
+
 async function runBenchViaPackage(
   parsed: ParsedBenchArgs,
   benchmarkId: string,
@@ -2889,34 +2929,9 @@ async function runBenchViaPackage(
     return { ok: false };
   }
 
-  // local-lab endpoint preflight gate (issue #1573 PR2, cursor review rounds 5-6):
-  // probe ONLY the responder (first phase) endpoint before the benchmark
-  // starts, so the operator gets a clear model-mismatch / endpoint-down
-  // error up front (rule 51: surface the endpoint's actual model list)
-  // instead of a mid-run failure. The judge is intentionally NOT probed
-  // here: in the documented single-GPU swap flow (responder + judge on
-  // different baseUrls) the judge endpoint is not running at startup — the
-  // operator starts it after the responder phase. Preflighting it now
-  // would block the sequential run. The judge preflight belongs at the
-  // hand-off transition, which PR3 calibration wires via runSequentialPhases.
-  if (
-    plan.runtime.profile === "local-lab" &&
-    plan.runtime.localLab &&
-    benchModule.preflightLocalLabRole
-  ) {
-    const responder = plan.runtime.localLab.responder;
-    const preflightResult = await benchModule.preflightLocalLabRole({
-      provider: responder.provider,
-      baseUrl: responder.baseUrl,
-      model: responder.model,
-      ctx: responder.ctx,
-    });
-    if (!preflightResult.ok) {
-      throw new Error(
-        `local-lab responder endpoint preflight failed: ${preflightResult.reason}`,
-      );
-    }
-  }
+  // local-lab responder preflight gate (issue #1573 PR2, cursor review rounds 5-7).
+  // Shared with runCustomBenchViaPackage via preflightLocalLabResponderIfNeeded.
+  await preflightLocalLabResponderIfNeeded(benchModule, plan);
 
   const outputDir = parsed.resultsDir ?? resolveBenchOutputDir();
   const datasetDir = resolveBenchDatasetDir(
@@ -3251,6 +3266,7 @@ async function runCustomBenchViaPackage(parsed: ParsedBenchArgs): Promise<boolea
   const writtenPaths: string[] = [];
   const customBenchmarkIds: string[] = [];
   for (const plan of plans) {
+    await preflightLocalLabResponderIfNeeded(benchModule, plan);
     const system = await plan.createAdapter(plan.runtime.adapterOptions);
 
     try {
