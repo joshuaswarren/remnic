@@ -37,7 +37,7 @@ concurrency:
 jobs:
   unstick:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 12
     steps:
       - name: Rerun stuck required checks
         uses: actions/github-script@v7
@@ -85,14 +85,19 @@ jobs:
               return count;
             }
 
-            // Latest run of `workflowFile` on `headSha` attributable to
-            // `prNumber`, or null. Scoped to the workflow (not the whole
-            // repo) so busy SHAs cannot push the target run past the first
-            // page (cursor review on #1610), and filtered by the run's
-            // pull_requests association so sibling PRs sharing a head SHA
-            // are not cross-rerun (codex review on #1610). Runs with an
-            // empty pull_requests array cannot be attributed and are kept.
-            async function latestRunFor(workflowFile, headSha, prNumber) {
+            // All completed runs of `workflowFile` on `headSha` attributable
+            // to `prNumber` with a conclusion in `conclusions`. Scoped to the
+            // workflow (not the whole repo) so busy SHAs cannot push target
+            // runs past the first page (cursor review on #1610), and filtered
+            // by the run's pull_requests association so sibling PRs sharing a
+            // head SHA are not cross-rerun (codex review on #1610). Runs with
+            // an empty pull_requests array cannot be attributed and are kept.
+            //
+            // ALL matching suites matter, not just the newest: the branch
+            // ruleset requires the latest attempt of EVERY check suite on the
+            // head to pass, so one lingering cancelled/failed suite blocks the
+            // merge even when a newer run is green (#1610 postmortem).
+            async function stuckRunsFor(workflowFile, headSha, prNumber, conclusions) {
               const { data } = await github.rest.actions.listWorkflowRuns({
                 owner,
                 repo,
@@ -100,13 +105,24 @@ jobs:
                 head_sha: headSha,
                 per_page: 100,
               });
-              const runs = (data.workflow_runs ?? [])
+              return (data.workflow_runs ?? [])
                 .filter((run) => {
                   const prs = run.pull_requests ?? [];
                   return prs.length === 0 || prs.some((pr) => pr.number === prNumber);
                 })
-                .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-              return runs[0] ?? null;
+                .filter((run) => run.status === 'completed' && conclusions.includes(run.conclusion))
+                .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at));
+            }
+
+            async function waitForRun(runId, timeoutMs) {
+              const startedAt = Date.now();
+              const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+              while (Date.now() - startedAt < timeoutMs) {
+                await sleep(10_000);
+                const { data } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: runId });
+                if (data.status === 'completed') return data.conclusion;
+              }
+              return null;
             }
 
             async function rerun(run, label) {
@@ -132,20 +148,34 @@ jobs:
               const headSha = pull.head.sha;
               const label = `PR #${pull.number}`;
 
-              // Case 1: guard failed but threads are now resolved.
-              const guardRun = await latestRunFor('review-thread-guard.yml', headSha, pull.number);
-              if (guardRun && guardRun.status === 'completed' && guardRun.conclusion === 'failure') {
+              // Case 1: guard suite(s) failed but threads are now resolved.
+              // Guard runs have no concurrency group, so all can be rerun at
+              // once.
+              const guardRuns = await stuckRunsFor('review-thread-guard.yml', headSha, pull.number, ['failure']);
+              if (guardRuns.length > 0) {
                 const unresolved = await unresolvedThreadCount(pull.number);
                 if (unresolved === 0) {
-                  await rerun(guardRun, `${label} review-thread guard`);
+                  for (const run of guardRuns) {
+                    await rerun(run, `${label} review-thread guard`);
+                  }
                 } else {
                   core.info(`${label}: guard failing with ${unresolved} unresolved thread(s) — legitimate, skipping.`);
                 }
               }
 
-              // Case 2: newest AI Review Gate run terminally cancelled.
-              const gateRun = await latestRunFor('ai-review-gate.yml', headSha, pull.number);
-              if (gateRun && gateRun.status === 'completed' && gateRun.conclusion === 'cancelled') {
-                await rerun(gateRun, `${label} ai-review gate`);
+              // Case 2: terminally cancelled AI Review Gate suite(s). Gate
+              // reruns share a per-PR concurrency group with
+              // cancel-in-progress, so firing them concurrently would just
+              // re-cancel each other — rerun serially, waiting for each to
+              // conclude (a positive-verdict re-evaluation exits in seconds).
+              // Cap the serial work per sweep; the 5-minute cadence converges
+              // any remainder on the next pass.
+              const gateRuns = await stuckRunsFor('ai-review-gate.yml', headSha, pull.number, ['cancelled']);
+              const GATE_RERUNS_PER_SWEEP = 5;
+              for (const run of gateRuns.slice(0, GATE_RERUNS_PER_SWEEP)) {
+                await rerun(run, `${label} ai-review gate`);
+                const conclusion = await waitForRun(run.id, 90_000);
+                core.info(`${label}: gate rerun ${run.id} concluded ${conclusion ?? 'timeout — continuing next sweep'}`);
+                if (conclusion === null) break;
               }
             }
