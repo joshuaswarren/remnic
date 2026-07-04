@@ -1099,3 +1099,58 @@ test("(x) runBenchmark does not mutate a frozen adapter when caching is enabled 
     await rm(cacheDir, { recursive: true, force: true });
   }
 });
+
+// --- (y) class-based adapter: private fields survive caching ------------
+
+test("(y) runBenchmark preserves #private field access for class-based adapters (PR #1591 round-8)", async () => {
+  const cacheDir = await mkdtemp(path.join(tmpdir(), "bench-class-judge-"));
+  try {
+    const stubJudge = {
+      async score() {
+        return 0.5;
+      },
+      async scoreWithMetrics() {
+        return { score: 0.5, tokens: { input: 1, output: 1 }, latencyMs: 1, model: "stub" };
+      },
+    } as unknown as BenchJudge;
+
+    // A class-based adapter with a #private field. If the harness uses
+    // Object.create to shadow `judge`, methods run with the shadow as
+    // `this`, and `this.#data` throws. The try-mutation-fallback mutates
+    // in place first (judge is writable on a class instance), preserving
+    // the original `this` and private field access.
+    class ClassAdapter {
+      #data: string;
+      constructor(data: string) {
+        this.#data = data;
+      }
+      async store() {}
+      async recall() {
+        return this.#data;
+      }
+      async search() {
+        return [];
+      }
+      async reset() {}
+      async getStats() {
+        return { sessionCount: 0, totalMemories: 0 };
+      }
+      async destroy() {}
+      judge: BenchJudge = stubJudge;
+    }
+
+    const adapter = new ClassAdapter("private-data") as unknown as BenchMemoryAdapter;
+
+    const result = await runBenchmark("buffer-surprise-trigger", {
+      mode: "quick",
+      system: adapter,
+      judgeCacheDir: cacheDir,
+      judgeProvider: { provider: "openai" as const, model: "stub-judge" },
+    });
+
+    assert.ok(result, "runBenchmark should complete without throwing");
+    assert.equal(adapter.judge, stubJudge, "original adapter judge should be restored after run");
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});

@@ -49,28 +49,38 @@ export async function runCustomBenchmarkFile(
         ? path.join(path.resolve(expandTildePath(runOptions.outputDir)), "judge-cache")
         : undefined;
     if (cacheDir !== undefined) {
+      const originalJudge = runOptions.system.judge;
       const wrapped = wrapJudgeWithCache({
         role: "primary",
-        judge: runOptions.system.judge,
+        judge: originalJudge,
         benchmarkId: benchmark.id,
         datasetVersion: benchmark.meta.version,
         amaBenchJudgeProtocol: runOptions.amaBenchJudgeProtocol ?? "default",
         provider: runOptions.judgeProvider ?? null,
         cache: new JudgeCache({ dir: cacheDir }),
       });
-      // PR #1591 round-8: install the cached judge on a SHADOW adapter
-      // so the caller's adapter is never mutated — frozen/getter-only
-      // judge properties are respected. The shadow inherits all adapter
-      // methods via the prototype chain.
-      runOptions.system = Object.create(runOptions.system);
-      Object.defineProperty(runOptions.system, "judge", {
-        value: wrapped.judge,
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
+      // PR #1591 round-8: try in-place mutation first (preserves `this`
+      // for class-based adapters with #private fields). Fall back to a
+      // shadow adapter when the property is frozen/non-writable.
+      let systemJudgeMutatedInPlace = false;
+      try {
+        runOptions.system.judge = wrapped.judge;
+        systemJudgeMutatedInPlace = true;
+      } catch {
+        runOptions.system = Object.create(runOptions.system);
+        Object.defineProperty(runOptions.system, "judge", {
+          value: wrapped.judge,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
       cacheCounters = wrapped.counters;
+      const needRestore = systemJudgeMutatedInPlace;
       cacheRestore = async () => {
+        if (needRestore) {
+          runOptions.system.judge = originalJudge;
+        }
         await wrapped.drainPendingWrites();
       };
     }

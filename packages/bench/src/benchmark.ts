@@ -157,6 +157,8 @@ export async function runBenchmark(
   // judge, so a second run reusing the same adapter (with noJudgeCache,
   // a different cacheDir, or different provider) would silently hit
   // the stale wrapper or wrap the wrapper.
+  const originalSystemJudge = options.system.judge;
+  let systemJudgeMutatedInPlace = false;
   let judgeCacheCounters: JudgeCacheCounters | undefined;
   // Issue #1573 PR1: optionally route judge calls through a content-keyed
   // cache. PR #1591 round-7 (OUv-n): the cache wraps the judge AFTER
@@ -309,18 +311,24 @@ export async function runBenchmark(
       });
       judgeCacheCounters = primary.counters;
       primaryDrainPendingWrites = primary.drainPendingWrites;
-      // PR #1591 round-8: install the cached judge on a SHADOW adapter
-      // (Object.create) so the caller's options.system is never
-      // mutated — frozen/getter-only judge properties are respected.
-      // The shadow inherits all adapter methods via the prototype
-      // chain; only `judge` is shadowed by a new own property.
-      system = Object.create(system);
-      Object.defineProperty(system, "judge", {
-        value: primary.judge,
-        writable: true,
-        enumerable: true,
-        configurable: true,
-      });
+      // PR #1591 round-8: try in-place mutation first — it preserves
+      // `this` for class-based adapters with #private fields (Object.create
+      // would change `this` and break private member access). Fall back to
+      // a shadow adapter only when the property is frozen/non-writable.
+      try {
+        system.judge = primary.judge;
+        // Only the non-guarded path (system === options.system) mutates
+        // the caller's adapter and needs a restore in the finally.
+        systemJudgeMutatedInPlace = system === options.system;
+      } catch {
+        system = Object.create(system);
+        Object.defineProperty(system, "judge", {
+          value: primary.judge,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      }
     }
     // AMA-Bench cross judge: only wrap when a cross-judge provider config
     // identifies it. Without provider config, leave the cross judge
@@ -362,10 +370,14 @@ export async function runBenchmark(
     try {
       await destroyOwnedIngestionAdapter();
     } finally {
-      // PR #1591 round-8: no judge restore needed — the cached judge
-      // is installed on a shadow adapter (Object.create), so the
-      // caller's options.system is never mutated. This also means
-      // frozen/getter-only adapters work correctly with caching.
+      // PR #1591 round-8: only restore when in-place mutation
+      // succeeded on the caller's adapter (non-guarded mode with
+      // a writable judge property). Shadow adapters and guarded
+      // mode never mutate the caller's adapter, so no restore is
+      // needed — frozen/getter-only properties are never assigned.
+      if (systemJudgeMutatedInPlace) {
+        options.system.judge = originalSystemJudge;
+      }
     }
     // PR #1591 round-6 (OUojs / OUnib): drain all pending cache
     // writes before finalizing the report. Runs outside the phase
