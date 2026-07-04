@@ -92,6 +92,10 @@ Rollout (follows existing conventions in `homelab-infra`):
 
 - Repo → Settings → Actions: set fork-PR workflow approval to
   **"Require approval for all outside collaborators"**.
+- `runs-on` expression gate in `ci.yml`: the `remnic` pool only serves pushes
+  and same-repo PRs; fork PRs run on GitHub-hosted runners even after a
+  maintainer approves their workflows. External code never executes on
+  homelab hardware.
 - Dedicated remnic runner CTs only. **Never** share runners between remnic
   (public) and Deckard/client repos (private) — a malicious fork PR on the
   public repo must have nothing to steal. No secrets on the runner beyond
