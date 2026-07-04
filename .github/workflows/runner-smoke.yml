@@ -12,6 +12,10 @@ permissions:
 
 jobs:
   smoke:
+    # Self-hosted safety: manual dispatch can target any ref, so pin this
+    # workflow to main — the pool only ever executes reviewed, merged code
+    # (codex review on #1608). Branch health-checks belong on hosted runners.
+    if: github.ref == 'refs/heads/main'
     runs-on: remnic
     timeout-minutes: 15
     steps:

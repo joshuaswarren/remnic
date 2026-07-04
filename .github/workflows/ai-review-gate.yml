@@ -16,19 +16,21 @@ permissions:
   issues: read
   pull-requests: read
 
-# Only the newest gate evaluation per PR matters: a fresh push, review, or
-# reviewer check_run supersedes any in-flight evaluation. check_run events
-# with no associated PR fall back to a unique group (they self-skip anyway).
-concurrency:
-  group: ai-review-gate-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.run_id }}
-  cancel-in-progress: true
-
 jobs:
   ai-reviewers:
     if: >-
       (github.event_name == 'check_run' &&
         contains(fromJSON('["cursor-bugbot","cursor"]'), github.event.check_run.app.slug)) ||
       (github.event_name != 'check_run' && github.event.pull_request.draft == false)
+    # Only the newest gate evaluation per PR matters: a fresh push, review, or
+    # reviewer check_run supersedes an in-flight evaluation. Concurrency lives
+    # at JOB level so check_run completions from unrelated apps (CI, CodeQL,
+    # ...) — whose job is skipped by the `if` above — can never cancel a live
+    # polling evaluation (cursor review on #1608). check_run events with no
+    # associated PR fall back to a unique group (they self-skip anyway).
+    concurrency:
+      group: ai-review-gate-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.run_id }}
+      cancel-in-progress: true
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
