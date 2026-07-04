@@ -3204,6 +3204,8 @@ async function runCustomBenchViaPackage(parsed: ParsedBenchArgs): Promise<boolea
         internalProvider: plan.runtime.internalProvider,
         remnicConfig: plan.runtime.effectiveRemnicConfig,
         system,
+        ...(parsed.noJudgeCache ? { noJudgeCache: true } : {}),
+        ...(parsed.judgeCacheDir ? { judgeCacheDir: parsed.judgeCacheDir } : {}),
       });
       result.config.remnicConfig = plan.runtime.remnicConfig;
       result.config.internalProvider = plan.runtime.internalProvider;

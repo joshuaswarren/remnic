@@ -401,7 +401,7 @@ export async function runBenchmark(
  * judge families can share one on-disk cache without colliding on the same
  * key namespace (PR #1591 P2, thread #10).
  */
-function wrapJudgeWithCache(args: {
+export function wrapJudgeWithCache(args: {
   role: "primary" | "cross";
   judge: BenchJudge;
   benchmarkId: string;

@@ -341,3 +341,77 @@ test("custom benchmark full mode honors requested iterations", async () => {
     await rm(tempDir, { recursive: true, force: true });
   }
 });
+
+test("custom llm_judge benchmark honors judgeCacheDir across runs (PR #1591 round-7 OU-so)", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-custom-cache-"));
+  const benchmarkPath = path.join(tempDir, "cache.yaml");
+  const cacheDir = path.join(tempDir, "judge-cache");
+  try {
+    await writeFile(
+      benchmarkPath,
+      [
+        "name: Custom Cache",
+        "scoring: llm_judge",
+        "tasks:",
+        "  - question: What happened?",
+        "    expected: It happened.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let judgeCalls = 0;
+    const originalJudge = {
+      async score() {
+        return 0.75;
+      },
+      async scoreWithMetrics() {
+        judgeCalls += 1;
+        return { score: 0.75, tokens: { input: 12, output: 4 }, latencyMs: 50, model: "judge-model" };
+      },
+    };
+    const makeSystem = () => ({
+      async store() {},
+      async recall() {
+        return "";
+      },
+      async search() {
+        return [{ turnIndex: 0, role: "assistant", snippet: "It happened.", sessionId: "s1" }];
+      },
+      async reset() {},
+      async getStats() {
+        return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+      },
+      async destroy() {},
+      judge: originalJudge,
+    });
+    const judgeProvider = { provider: "openai" as const, model: "judge-model" };
+
+    // Run 1: cache miss — the underlying judge is invoked once and the verdict
+    // is persisted (the runner drains fire-and-forget writes on return).
+    const system1 = makeSystem();
+    const r1 = await runCustomBenchmarkFile(benchmarkPath, {
+      mode: "quick",
+      judgeCacheDir: cacheDir,
+      judgeProvider,
+      system: system1,
+    });
+    assert.equal(judgeCalls, 1, "first run must call the underlying judge once");
+    assert.equal(r1.cost.judgeModelCalls, 1, "first run reports one judge model call");
+    assert.equal(system1.judge, originalJudge, "caller judge restored after run 1");
+
+    // Run 2: cache hit — the judge is NOT invoked; the cached verdict is served.
+    const system2 = makeSystem();
+    const r2 = await runCustomBenchmarkFile(benchmarkPath, {
+      mode: "quick",
+      judgeCacheDir: cacheDir,
+      judgeProvider,
+      system: system2,
+    });
+    assert.equal(judgeCalls, 1, "second run must serve from cache without calling the judge");
+    assert.equal(r2.cost.judgeModelCalls, 0, "cached run reports zero judge model calls");
+    assert.equal(system2.judge, originalJudge, "caller judge restored after run 2");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});

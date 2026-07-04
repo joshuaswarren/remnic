@@ -7,7 +7,10 @@ import path from "node:path";
 import type { RunBenchmarkOptions, BenchmarkDefinition, BenchmarkResult, ResolvedRunBenchmarkOptions, TaskResult } from "../../types.js";
 import { answerBenchmarkQuestion } from "../../answering.js";
 import { aggregateTaskScores, exactMatch, f1Score, llmJudgeScoreDetailed, rougeL, timed } from "../../scorer.js";
-import { orchestrateBenchmarkRuns, resolveBenchmarkRunCount } from "../../benchmark.js";
+import { orchestrateBenchmarkRuns, resolveBenchmarkRunCount, wrapJudgeWithCache } from "../../benchmark.js";
+import { JudgeCache } from "../../judges/judge-cache.js";
+import type { JudgeCacheCounters } from "../../judges/judge-cache.js";
+import { expandTildePath } from "@remnic/core";
 import { finalizeBenchmarkResultConfig } from "../../result-config.js";
 import { getGitSha, getRemnicVersion } from "../../reporter.js";
 import { loadCustomBenchmarkFile } from "./loader.js";
@@ -19,11 +22,64 @@ export async function runCustomBenchmarkFile(
 ): Promise<BenchmarkResult> {
   const spec = await loadCustomBenchmarkFile(filePath);
   const benchmark = createCustomBenchmarkDefinition(spec, filePath);
-  return runCustomBenchmark(spec, {
+  const runOptions = {
     ...options,
     mode: options.mode ?? "quick",
     benchmark,
-  });
+  };
+
+  // PR #1591 round-7 (OU-so): wire the judge cache into the custom
+  // benchmark path so --judge-cache-dir / --no-judge-cache are honored for
+  // llm_judge custom benchmarks instead of silently ignored. Mirrors
+  // runBenchmark's primary-judge wiring; the custom path has no phase-timeout
+  // guard, so the cache simply wraps the system judge before scoring. The
+  // restore+drain run in a finally so a thrown run never leaves the caller's
+  // adapter holding a cache wrapper.
+  let cacheRestore: (() => Promise<void>) | undefined;
+  let cacheCounters: JudgeCacheCounters | undefined;
+  if (
+    spec.scoring === "llm_judge"
+    && runOptions.system.judge !== undefined
+    && !runOptions.noJudgeCache
+    && (runOptions.judgeProvider ?? null) !== null
+  ) {
+    const cacheDir = runOptions.judgeCacheDir
+      ? path.resolve(expandTildePath(runOptions.judgeCacheDir))
+      : runOptions.outputDir
+        ? path.join(path.resolve(expandTildePath(runOptions.outputDir)), "judge-cache")
+        : undefined;
+    if (cacheDir !== undefined) {
+      const originalJudge = runOptions.system.judge;
+      const wrapped = wrapJudgeWithCache({
+        role: "primary",
+        judge: originalJudge,
+        benchmarkId: benchmark.id,
+        datasetVersion: benchmark.meta.version,
+        amaBenchJudgeProtocol: runOptions.amaBenchJudgeProtocol ?? "default",
+        provider: runOptions.judgeProvider ?? null,
+        cache: new JudgeCache({ dir: cacheDir }),
+      });
+      runOptions.system.judge = wrapped.judge;
+      cacheCounters = wrapped.counters;
+      cacheRestore = async () => {
+        runOptions.system.judge = originalJudge;
+        await wrapped.drainPendingWrites();
+      };
+    }
+  }
+
+  let result: BenchmarkResult;
+  try {
+    result = await runCustomBenchmark(spec, runOptions);
+  } finally {
+    if (cacheRestore) {
+      await cacheRestore();
+    }
+  }
+  if (cacheCounters) {
+    result.cost.judgeModelCalls = cacheCounters.modelCalls;
+  }
+  return result;
 }
 
 async function runCustomBenchmark(
