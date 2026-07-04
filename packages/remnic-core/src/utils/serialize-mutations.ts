@@ -346,12 +346,22 @@ async function acquireLock(
   for (;;) {
     try {
       const handle = await open(lockPath, "wx");
+      let wroteMeta = true;
       try {
         await handle.writeFile(`${process.pid} ${ownerId} ${new Date().toISOString()}\n`, "utf8");
       } catch {
-        // The exclusive create already gave us the lock; ignore write failures.
+        // The metadata write failed; the lock file may be empty or partial.
+        // Our ownership check on release would NOT find this ownerId, leaving
+        // a malformed lock that lingers until stale and blocks other callers
+        // out of the mutex (codex P2). Undo our exclusive create and report
+        // acquisition failure so the caller runs best-effort instead.
+        wroteMeta = false;
       } finally {
         await handle.close();
+      }
+      if (!wroteMeta) {
+        await unlink(lockPath).catch(() => undefined);
+        return undefined;
       }
       return { path: lockPath, ownerId };
     } catch (err) {

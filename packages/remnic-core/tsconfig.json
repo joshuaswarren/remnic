@@ -1,9 +1,6 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    // ES2024.Promise adds the `Promise.withResolvers` type (used by
-    // utils/serialize-mutations.ts). Runtime is Node 20+, which already ships
-    // it; this only widens the type lib, not the emit target.
     "lib": ["ES2022", "ES2024.Promise"],
     "module": "ESNext",
     "moduleResolution": "bundler",
