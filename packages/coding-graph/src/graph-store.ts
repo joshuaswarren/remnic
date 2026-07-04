@@ -321,6 +321,20 @@ export class GraphStore {
   // ────────────── private ──────────────
 
   private async runUpsert(files: FileIR[]): Promise<UpsertBatchResult> {
+    // Guard: duplicate paths in one batch silently corrupt the edge
+    // pass — pass 2 deletes the first entry's edges when the second
+    // entry's edge pass runs against the same file row. Fail loud so
+    // the caller fixes the input (cursor Bugbot: 'Duplicate paths
+    // corrupt edge pass').
+    const seenPaths = new Set<string>();
+    for (const ir of files) {
+      if (seenPaths.has(ir.path)) {
+        throw new Error(
+          `graph-store: duplicate path '${ir.path}' in batch — each FileIR must have a unique path`,
+        );
+      }
+      seenPaths.add(ir.path);
+    }
     try {
       const results: UpsertResult[] = [];
 

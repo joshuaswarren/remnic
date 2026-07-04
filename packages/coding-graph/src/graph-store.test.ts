@@ -491,3 +491,32 @@ test("edge src validation: cross-file edge src is rejected, not cross-owned (cha
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("duplicate paths in one batch throw (cursor Bugbot: 'Duplicate paths corrupt edge pass')", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-dup-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "store.db"),
+  });
+  try {
+    const fileA1: FileIR = {
+      path: "src/a.ts",
+      language: "ts",
+      contentHash: "h-a-1",
+      symbols: [sym("a.greet", "greet", 0, 100)],
+    };
+    const fileA2: FileIR = {
+      path: "src/a.ts",
+      language: "ts",
+      contentHash: "h-a-2",
+      symbols: [sym("a.farewell", "farewell", 0, 100)],
+    };
+    await assert.rejects(
+      store.upsertFileBatch([fileA1, fileA2]),
+      /duplicate path 'src\/a\.ts' in batch/,
+      "duplicate paths in one batch must throw, not silently corrupt the edge pass",
+    );
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
