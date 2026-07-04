@@ -523,6 +523,43 @@ test("a negated automation phrase in a stub install section does NOT fail", () =
   });
 });
 
+// Regression: a no-op marker inside a commander subcommand's action must be
+// attributed to the correct parent→child path ("ops list"), NOT to the
+// "engram" gateway root. Before the receiver-variable fix, the rolling
+// chain kept "engram" as a permanent root and reported "engram list", so
+// an allowlist entry for the real stub would never match (cursor thread #1601).
+test("a commander subcommand no-op is attributed to the correct path", () => {
+  withFixture((root) => {
+    // Mirror cli.ts's multi-line receiver-variable style:
+    //   const opsCmd = cmd
+    //     .command("ops");
+    //   opsCmd
+    //     .command("list")
+    //     .action(async () => { /* no-op: not yet implemented */ });
+    appendFileSync(
+      path.join(root, "packages", "remnic-core", "src", "cli.ts"),
+      [
+        "",
+        'const opsCmd = cmd',
+        '  .command("ops");',
+        "opsCmd",
+        '  .command("list")',
+        '  .description("List ops")',
+        "  .action(async () => {",
+        "    // no-op: not yet implemented",
+        "  });",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    // MUST be "ops list", never "engram list".
+    assert.match(result.stderr, /no-op handler "ops list" is not in NO_OP_ALLOWLIST/);
+    assert.doesNotMatch(result.stderr, /no-op handler "engram list"/);
+  });
+});
+
 // ── Misc ────────────────────────────────────────────────────────────────────
 
 test("unknown arguments are rejected with usage", () => {

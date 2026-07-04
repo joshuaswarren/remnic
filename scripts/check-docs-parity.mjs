@@ -390,8 +390,10 @@ function collectRegisteredCommands(cliFiles) {
  *  - remnic-cli/src/index.ts — `async function cmd<X>(...)` enclosing a
  *    `switch` with `case "Y":` arms. The no-op path is `<kebab(X)> <Y>`.
  *    When no function context is found, falls back to the bare case label.
- *  - remnic-core/src/cli.ts — commander `.command("parent")` chained with
- *    `.command("child")`. The path is the chain joined with spaces.
+ *  - remnic-core/src/cli.ts — commander `.command()` registrations. The
+ *    path is built by resolving receiver variables
+ *    (`const tierCmd = cmd.command("tier"); tierCmd.command("list")` →
+ *    "tier list"), with the "engram" gateway-prefix root dropped.
  *
  * The detection is intentionally conservative: it only flags handlers that
  * explicitly label themselves as no-ops (`No-op stub`, `no-op:`,
@@ -406,7 +408,6 @@ function detectNoOpHandlers(cliFiles) {
 
   const FUNC_RE = /(?:async\s+)?function\s+cmd([A-Z][A-Za-z0-9]*)\s*\(/;
   const CASE_RE = /^\s*case\s+"([A-Za-z][A-Za-z0-9:_-]*)"\s*:/;
-  const COMMANDER_RE = /\.\s*command\(\s*"([A-Za-z][A-Za-z0-9:_-]*)"\s*\)/;
 
   /** Convert a PascalCase function-name suffix to the CLI command name
    *  (e.g. `Extensions` → `extensions`, `ConnectorsMarketplace` →
@@ -475,22 +476,80 @@ function detectNoOpHandlers(cliFiles) {
       }
     }
 
-    // ── Pass 2: commander-style `.command("X")` chains (cli.ts style) ─
-    const cmdChain = [];
+    // ── Pass 2: commander-style `.command()` registrations (cli.ts) ───
+    // Resolve receiver variables to build correct parent→child paths. The
+    // cli.ts tree expresses nesting via receiver variables, and the
+    // receiver often sits on the line above the `.command()` call. The
+    // earlier rolling-chain heuristic kept "engram" as a permanent root
+    // and mis-attributed grandchildren (e.g. `tier list` → "engram
+    // list"), so an allowlist entry could miss a real stub (cursor
+    // thread PR #1601). The "engram" gateway-prefix root is dropped so
+    // paths match the allowlist format ("tier list", not "engram tier list").
+    /** @type {Map<string, string[]>} commander var → full path (incl. root) */
+    const varPath = new Map();
+    let prevReceiver = null; // receiver var on the prior line (multi-line chain)
+    let pendingAssign = null; // var assigned in a multi-line `const X = recv`
+    let currentCmdPath = null; // most recent .command() path (root dropped)
+
+    const dropRoot = (p) => (p.length > 0 && p[0] === "engram" ? p.slice(1) : p);
+    // Tolerate <arg>/[arg] placeholders inside the command string (same
+    // fix as CORE_TOP_LEVEL_RE on the registration side).
+    const PH = '(?:\\s+[<\\[][^"]*)?';
+    const RE_ASSIGN_INLINE = new RegExp(`(?:const|let|var)\\s+([A-Za-z_$][\\w$]*)\\s*=\\s*([A-Za-z_$][\\w$]*)\\s*\\.\\s*command\\(\\s*"([A-Za-z][A-Za-z0-9:_-]*)${PH}"\\s*\\)`);
+    const RE_CALL_INLINE = new RegExp(`(?:^|[^.\\w$])([A-Za-z_$][\\w$]*)\\s*\\.\\s*command\\(\\s*"([A-Za-z][A-Za-z0-9:_-]*)${PH}"\\s*\\)`);
+    const RE_TAIL = new RegExp(`^\\.\\s*command\\(\\s*"([A-Za-z][A-Za-z0-9:_-]*)${PH}"\\s*\\)`);
+    const RE_ASSIGN_HEAD = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)$/;
+    const RE_BARE_VAR = /^([A-Za-z_$][\w$]*)$/;
+
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const cmdMatch = line.match(COMMANDER_RE);
-      if (cmdMatch) {
-        const name = cmdMatch[1];
-        // Sibling commands pop the chain: a new .command() on the same
-        // object replaces the leaf. We keep the chain at length <= 2
-        // (parent + child), matching every use in cli.ts.
-        if (cmdChain.length >= 2) cmdChain.pop();
-        cmdChain.push(name);
-        continue;
+      const stripped = lines[i].trim();
+
+      let receiver = null;
+      let leaf = null;
+      let assignVar = null;
+
+      const aInline = stripped.match(RE_ASSIGN_INLINE);
+      const cInline = !aInline ? stripped.match(RE_CALL_INLINE) : null;
+      const tail = !aInline && !cInline ? stripped.match(RE_TAIL) : null;
+
+      if (aInline) {
+        assignVar = aInline[1];
+        receiver = aInline[2];
+        leaf = aInline[3];
+      } else if (cInline) {
+        receiver = cInline[1];
+        leaf = cInline[2];
+      } else if (tail) {
+        leaf = tail[1];
+        receiver = prevReceiver;
+        assignVar = pendingAssign;
+      } else {
+        // Not a .command() line — record a pending receiver for a
+        // multi-line chain, or clear stale pending state.
+        const head = stripped.match(RE_ASSIGN_HEAD);
+        if (head) {
+          prevReceiver = head[2];
+          pendingAssign = head[1];
+        } else if (stripped.match(RE_BARE_VAR)) {
+          prevReceiver = stripped;
+          pendingAssign = null;
+        } else {
+          prevReceiver = null;
+          pendingAssign = null;
+        }
       }
-      if (NO_OP_MARKER_RE.test(line) && cmdChain.length > 0) {
-        detected.add(cmdChain.join(" "));
+
+      if (leaf !== null && receiver !== null) {
+        const parent = varPath.get(receiver) ?? [];
+        const full = [...parent, leaf];
+        if (assignVar) varPath.set(assignVar, full);
+        currentCmdPath = dropRoot(full);
+        prevReceiver = null;
+        pendingAssign = null;
+      }
+
+      if (NO_OP_MARKER_RE.test(lines[i]) && currentCmdPath && currentCmdPath.length > 0) {
+        detected.add(currentCmdPath.join(" "));
       }
     }
   }
