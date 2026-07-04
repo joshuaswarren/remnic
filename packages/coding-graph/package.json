@@ -1,7 +1,7 @@
 {
   "name": "@remnic/coding-graph",
   "version": "9.3.669",
-  "description": "Web-tree-sitter powered symbol-extraction engine for codebase memory (Tier 1: TypeScript, TSX, JavaScript, Python, Go, Rust, Java, C, C++, C#, Ruby, PHP, Kotlin, Swift, Bash). Optional companion of @remnic/core — install only when coding-graph features are needed.",
+  "description": "Web-tree-sitter powered symbol-extraction engine for codebase memory (Tier 1: TypeScript, TSX, JavaScript, Python, Go, Rust, Java, C, C++, C#, Ruby, PHP, Kotlin, Swift, Bash). Optional companion of @remnic/core \u2014 install only when coding-graph features are needed.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,6 +17,7 @@
   ],
   "scripts": {
     "build": "tsup --config tsup.config.ts",
+    "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
     "test": "tsx --test 'src/**/*.test.ts'",
     "prepublishOnly": "npm run build"
