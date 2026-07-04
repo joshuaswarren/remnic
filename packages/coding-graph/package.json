@@ -34,7 +34,7 @@
     "build": "tsup --config tsup.config.ts",
     "precheck-types": "node ../../scripts/ensure-bench-build-deps.mjs",
     "check-types": "tsc --noEmit",
-    "test": "tsx --test 'src/**/*.test.ts'"
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {
     "@remnic/core": "workspace:*"

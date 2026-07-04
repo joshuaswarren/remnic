@@ -439,6 +439,22 @@ export class GraphStore {
     const deleteFtsByRowid = this.db.prepare(
       `DELETE FROM nodes_fts WHERE rowid = ?`,
     );
+    // fts_index: maps FTS rowid → node id so PR2's search can JOIN
+    // hits back to `nodes`. Contentless FTS5 does NOT store column
+    // values, so the `id UNINDEXED` column reads NULL on every
+    // MATCH — this table is the only reverse-mapping the read path
+    // has (chatgpt-codex-connector P2: 'Preserve a node key for
+    // FTS hits'). UNIQUE(node_id) lets the upsert use INSERT OR
+    // REPLACE so a same-node re-upsert (the common no-op path)
+    // keeps a single mapping row.
+    const upsertFtsIndex = this.db.prepare(
+      `INSERT INTO fts_index (fts_rowid, node_id) VALUES (?, ?)
+         ON CONFLICT(node_id) DO UPDATE SET
+           fts_rowid = excluded.fts_rowid`,
+    );
+    const deleteFtsIndexByRowid = this.db.prepare(
+      `DELETE FROM fts_index WHERE fts_rowid = ?`,
+    );
     let nodeCount = 0;
     for (const [id, sym] of symbolByNodeId) {
       const prior = existingById.get(id);
@@ -462,6 +478,12 @@ export class GraphStore {
       // P2: `WHERE id = ?` matches zero rows in contentless mode).
       const ftsRowid = ftsRowidForNodeId(id);
       deleteFtsByRowid.run(ftsRowid);
+      // Mirror the delete into the FTS → node id reverse map so a
+      // re-upsert does not collide on the UNIQUE(fts_rowid) PK when
+      // the same rowid previously pointed at a different node id
+      // (chatgpt-codex-connector P2: 'Preserve a node key for
+      // FTS hits').
+      deleteFtsIndexByRowid.run(ftsRowid);
       insertNode.run(
         id,
         sym.kind,
@@ -473,6 +495,7 @@ export class GraphStore {
         ir.lang,
       );
       insertFts.run(ftsRowid, sym.name, sym.qualifiedName);
+      upsertFtsIndex.run(ftsRowid, id);
       nodeCount += 1;
     }
 
@@ -521,6 +544,17 @@ export class GraphStore {
           .join(", ")})`,
       );
       ftsPrune.run(...ftsRowids);
+      // Mirror the prune into the FTS → node id reverse map so a
+      // search hit for a pruned node returns no rows. fts_index is
+      // keyed by rowid (the same FTS rowid), so the same WHERE
+      // clause clears both tables in lockstep (chatgpt-codex-connector
+      // P2: 'Preserve a node key for FTS hits').
+      const ftsIndexPrune = this.db.prepare(
+        `DELETE FROM fts_index WHERE fts_rowid IN (${ftsRowids
+          .map(() => "?")
+          .join(", ")})`,
+      );
+      ftsIndexPrune.run(...ftsRowids);
     }
 
     return {

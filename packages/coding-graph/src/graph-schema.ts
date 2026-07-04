@@ -165,6 +165,30 @@ function createTables(db: BetterSqlite3Database): void {
       );
     `);
   }
+  // FTS5 hit → node id reverse map. Contentless FTS5 does NOT store
+  // column values, so a rowid returned by `MATCH` cannot be joined
+  // back to `nodes` via the `id UNINDEXED` column (it reads NULL).
+  // This table is the only place the mapping lives: a single
+  // integer key (the FTS rowid, derived deterministically from the
+  // node id) plus the node id, kept in lockstep with `nodes_fts`
+  // by the write pipeline (chatgpt-codex-connector P2: 'Preserve a
+  // node key for FTS hits'). UNIQUE on node_id so re-ingesting the
+  // same node updates the row in place rather than producing a
+  // second mapping row.
+  const hasFtsIndex = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='fts_index'",
+    )
+    .get();
+  if (!hasFtsIndex) {
+    db.exec(`
+      CREATE TABLE fts_index (
+        fts_rowid INTEGER PRIMARY KEY,
+        node_id   TEXT NOT NULL UNIQUE
+      );
+      CREATE INDEX idx_fts_index_node ON fts_index(node_id);
+    `);
+  }
   // Upsert meta version. INSERT OR REPLACE so the upgrade path can rewrite
   // the row in place (rule 23 — one canonical form for the version value).
   db.prepare(

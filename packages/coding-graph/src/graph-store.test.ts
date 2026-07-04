@@ -18,6 +18,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import {
+  openBetterSqlite3,
+  type BetterSqlite3Database,
+} from "@remnic/core/runtime/better-sqlite";
 import { GraphStore, nodeIdFor } from "./graph-store.js";
 import type { FileIR, SymbolIR } from "./graph-store.js";
 
@@ -188,6 +192,92 @@ test("dangling-edge policy: cross-file edges whose dst is dropped are counted, n
     assert.equal(a.droppedDanglingEdges, 1, "one cross-file edge pointed at a.greet");
   } finally {
     await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("fts_index: maps FTS rowid → node id so PR2 can JOIN hits back to nodes", async () => {
+  const { store, dir } = await tempStore();
+  let peekDb: BetterSqlite3Database | undefined;
+  try {
+    const r = await store.upsertFileBatch([fileA]);
+    assert.equal(r.ok, true);
+    if (!r.ok) throw new Error("expected ok");
+
+    // Re-open the same file with a raw connection (after the store
+    // closed its transaction) to peek at the fts_index mapping.
+    await store.close();
+    peekDb = openBetterSqlite3(path.join(dir, "graph.sqlite"));
+
+    // Hit nodes_fts with the symbol name and JOIN to fts_index to
+    // recover the node id — exactly the read path PR2 will use.
+    type FtsHit = { node_id: string };
+    const hits: FtsHit[] = peekDb
+      .prepare(
+        `SELECT fts_index.node_id AS node_id
+           FROM nodes_fts
+           JOIN fts_index ON fts_index.fts_rowid = nodes_fts.rowid
+          WHERE nodes_fts MATCH ?`,
+      )
+      .all("greet") as FtsHit[];
+    assert.equal(hits.length, 1, "one MATCH hit for 'greet'");
+    const expected = nodeIdFor({
+      qualifiedName: "a.greet",
+      filePath: "src/a.ts",
+      label: "function",
+    });
+    assert.equal(hits[0]?.node_id, expected);
+
+    // The forward mapping (node id → fts_rowid) is the deterministic
+    // hash slice used by the write path. Verify it round-trips.
+    type IndexRow = { fts_rowid: number };
+    const fwd: IndexRow[] = peekDb
+      .prepare(
+        "SELECT fts_rowid FROM fts_index WHERE node_id = ?",
+      )
+      .all(expected) as IndexRow[];
+    assert.equal(fwd.length, 1);
+  } finally {
+    peekDb?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("fts_index: prunes the mapping when a node is removed by re-ingest", async () => {
+  const { store, dir } = await tempStore();
+  let peekDb: BetterSqlite3Database | undefined;
+  try {
+    const r1 = await store.upsertFileBatch([fileA]);
+    assert.equal(r1.ok, true);
+    if (!r1.ok) throw new Error("expected ok");
+
+    // Re-ingest fileA with an empty symbol set — every node is
+    // pruned, so every fts_index row must follow.
+    const empty: FileIR = {
+      path: "src/a.ts",
+      lang: "ts",
+      contentHash: "h-a-empty",
+      symbols: [],
+      edges: [],
+    };
+    const r2 = await store.upsertFileBatch([empty]);
+    assert.equal(r2.ok, true);
+    if (!r2.ok) throw new Error("expected ok");
+
+    await store.close();
+    peekDb = openBetterSqlite3(path.join(dir, "graph.sqlite"));
+
+    type CountRow = { c: number };
+    const ftsCount: CountRow[] = peekDb
+      .prepare("SELECT COUNT(*) AS c FROM nodes_fts")
+      .all() as CountRow[];
+    const idxCount: CountRow[] = peekDb
+      .prepare("SELECT COUNT(*) AS c FROM fts_index")
+      .all() as CountRow[];
+    assert.equal(ftsCount[0]?.c, 0, "no FTS rows survive the prune");
+    assert.equal(idxCount[0]?.c, 0, "no fts_index rows survive the prune");
+  } finally {
+    peekDb?.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
