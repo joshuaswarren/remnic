@@ -115,9 +115,10 @@ export async function preflightLocalLabRole(
       reason: `preflight request to ${endpoint} failed: ${detail}`,
     };
   }
-  if (timer) clearTimeout(timer);
+
 
   if (!response.ok) {
+    if (timer) clearTimeout(timer);
     return {
       ok: false,
       provider: input.provider,
@@ -134,6 +135,7 @@ export async function preflightLocalLabRole(
     parsed = await response.json();
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
+    if (timer) clearTimeout(timer);
     return {
       ok: false,
       provider: input.provider,
@@ -144,6 +146,7 @@ export async function preflightLocalLabRole(
       reason: `endpoint ${endpoint} returned non-JSON body: ${detail}`,
     };
   }
+  if (timer) clearTimeout(timer);
 
   const foundModels = extractDiscoveredModels(input.provider, parsed);
   const matched = foundModels.find((model) => model.id === input.model);

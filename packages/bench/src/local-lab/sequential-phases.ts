@@ -95,11 +95,17 @@ export interface RunSequentialPhasesOptions {
 
 /**
  * Normalize a baseUrl for endpoint-sameness comparison. Strips a single
- * trailing slash so `…/v1` and `…/v1/` compare equal — exactly matching the
- * one-slash trim `discoveryEndpointFor` (preflight) applies before composing
- * discovery URLs (cursor review, issue #1573 PR2). Implemented without a
- * regex so CodeQL's polynomial-backtracking heuristic does not flag manifest
- * baseUrls as uncontrolled regex input.
+ * trailing slash so `…/v1` and `…/v1/` compare equal. This is a
+ * conservative trailing-slash-only comparison — it does NOT canonicalize
+ * provider-specific suffixes (`/v1`, `/api`), so a manifest that mixes
+ * `http://host` and `http://host/v1` for the same OpenAI-compatible endpoint
+ * will spuriously emit a hand-off. That is safe (a redundant swap prompt
+ * is harmless); a false negative (missed hand-off) would not be. For full
+ * suffix canonicalization, `resolveLocalLabRole` already normalizes Ollama
+ * URLs to include `/api` at resolution time, so manifests that use the
+ * documented sample URLs compare correctly (kilo review, issue #1573 PR2).
+ * Implemented without a regex so CodeQL's polynomial-backtracking heuristic
+ * does not flag manifest baseUrls as uncontrolled regex input.
  */
 function normalizeBaseUrlForSameness(baseUrl: string): string {
   return baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;

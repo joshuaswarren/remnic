@@ -100,7 +100,7 @@ import {
   loadLocalLabManifest,
   resolveLocalLabProfile,
   runSequentialPhases,
-} from "@remnic/bench/local-lab";
+} from "@remnic/bench";
 
 const manifest = await loadLocalLabManifest("packages/bench/profiles/local-lab-3090.json");
 const profile = resolveLocalLabProfile(manifest);
