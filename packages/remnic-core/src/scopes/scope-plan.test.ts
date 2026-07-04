@@ -76,8 +76,10 @@ function codingContext(projectId: string, branch: string | null = null): CodingC
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: default namespace, no coding context → [default]", () => {
+  const config = baseConfig();
   const plan = resolveScopePlan({
-    config: baseConfig(),
+    config,
+    namespacesEnabled: config.namespacesEnabled,
     sessionKey: "sess-1",
   });
 
@@ -105,6 +107,7 @@ test("scope-plan: explicit readable namespace override wins", () => {
   } as Partial<PluginConfig>);
   const plan = resolveScopePlan({
     config,
+    namespacesEnabled: config.namespacesEnabled,
     sessionKey: "sess-1",
     namespace: "team-data",
   });
@@ -130,6 +133,7 @@ test("scope-plan: coding overlay (project scope) substitutes self base", () => {
   const ctx = codingContext("myproj");
   const plan = resolveScopePlan({
     config,
+    namespacesEnabled: config.namespacesEnabled,
     sessionKey: "alice:sess-1",
     codingContext: ctx,
   });
@@ -163,6 +167,7 @@ test("scope-plan: coding overlay (branch scope) appends project + root fallbacks
   const ctx = codingContext("myproj", "feature-x");
   const plan = resolveScopePlan({
     config,
+    namespacesEnabled: config.namespacesEnabled,
     sessionKey: "alice:sess-1",
     codingContext: ctx,
   });
@@ -183,8 +188,10 @@ test("scope-plan: coding overlay (branch scope) appends project + root fallbacks
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: no session key → principal undefined, default namespace", () => {
+  const config = baseConfig();
   const plan = resolveScopePlan({
-    config: baseConfig(),
+    config,
+    namespacesEnabled: config.namespacesEnabled,
   });
 
   assert.equal(plan.principal, undefined);
@@ -201,8 +208,10 @@ test("scope-plan: no session key → principal undefined, default namespace", ()
 // ──────────────────────────────────────────────────────────────────────────
 
 test("scope-plan: legacy agent:* session key resolves principal via heuristic", () => {
+  const config = baseConfig();
   const plan = resolveScopePlan({
-    config: baseConfig(),
+    config,
+    namespacesEnabled: config.namespacesEnabled,
     sessionKey: "agent:bot-1:slack:chan-1",
   });
 
@@ -223,6 +232,7 @@ test("scope-plan: namespacesEnabled false collapses to default store", () => {
   const config = baseConfig({ namespacesEnabled: false } as Partial<PluginConfig>);
   const plan = resolveScopePlan({
     config,
+    namespacesEnabled: config.namespacesEnabled,
     sessionKey: "sess-1",
     codingContext: codingContext("myproj"),
   });
@@ -250,6 +260,7 @@ test("scope-plan: projectScope false → no overlay even with coding context", (
   );
   const plan = resolveScopePlan({
     config,
+    namespacesEnabled: config.namespacesEnabled,
     sessionKey: "alice:sess-1",
     codingContext: codingContext("myproj"),
   });
@@ -269,6 +280,7 @@ test("scope-plan: unreadable namespace override falls through to coding/legacy",
   const config = withSelfPolicy(baseConfig(), "alice");
   const plan = resolveScopePlan({
     config,
+    namespacesEnabled: config.namespacesEnabled,
     sessionKey: "alice:sess-1",
     namespace: "restricted",
     codingContext: codingContext("myproj"),
@@ -295,6 +307,7 @@ test("scope-plan: self not in defaultRecallNamespaces → LCM collapses to defau
   );
   const plan = resolveScopePlan({
     config,
+    namespacesEnabled: config.namespacesEnabled,
     sessionKey: "alice:sess-1",
     codingContext: codingContext("myproj"),
   });
@@ -313,7 +326,7 @@ test("scope-plan: self not in defaultRecallNamespaces → LCM collapses to defau
 test("scope-plan: resolver is pure — identical inputs produce identical plans", () => {
   const config = withSelfPolicy(baseConfig(), "alice");
   const ctx = codingContext("myproj");
-  const opts = { config, sessionKey: "alice:sess-1", codingContext: ctx } as const;
+  const opts = { config, namespacesEnabled: config.namespacesEnabled, sessionKey: "alice:sess-1", codingContext: ctx } as const;
 
   const a = resolveScopePlan(opts);
   const b = resolveScopePlan(opts);
@@ -334,6 +347,7 @@ test("scope-plan: LCM session ids match lcmSessionKeyForNamespace encoding", () 
   const config = withSelfPolicy(baseConfig(), "alice");
   const plan = resolveScopePlan({
     config,
+    namespacesEnabled: config.namespacesEnabled,
     sessionKey: "alice:sess-1",
     codingContext: codingContext("myproj"),
   });

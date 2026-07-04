@@ -159,6 +159,12 @@ export interface ResolveScopePlanOptions {
    * reaches back into orchestrator state.
    */
   readonly codingContext?: CodingContext | null;
+  /**
+   * Whether namespace routing is enabled. Callers that have already read the
+   * namespaces-enabled flag pass it here so the resolver does NOT re-read it
+   * (keeps the scattered-read ratchet from growing, #1523).
+   */
+  readonly namespacesEnabled: boolean;
 }
 
 /**
@@ -194,9 +200,12 @@ export function resolveScopePlan(options: ResolveScopePlanOptions): ScopePlan {
   // The orchestrator's `applyCodingRecallOverlay` gates on `namespacesEnabled`
   // (returning null when disabled), so the resolver must too — otherwise
   // single-store mode would produce apparent route separation with no actual
-  // storage isolation (false-isolation trap, rule 39).
+  // storage isolation (false-isolation trap, rule 39). The caller passes the
+  // pre-read flag so the resolver does not add a scattered `config.*Enabled`
+  // read (ratchet, #1523).
+  const namespacesEnabled = options.namespacesEnabled;
   const codingOverlay: CodingNamespaceOverlay | null =
-    namespaceOverrideReadable || !config.namespacesEnabled
+    namespaceOverrideReadable || !namespacesEnabled
       ? null
       : resolveCodingNamespaceOverlay(
           options.codingContext ?? null,

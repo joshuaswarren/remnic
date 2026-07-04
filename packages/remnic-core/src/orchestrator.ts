@@ -5771,7 +5771,8 @@ export class Orchestrator {
       options.principalOverride.length > 0
         ? options.principalOverride
         : resolvePrincipal(sessionKey, this.config);
-    if (this.config.namespacesEnabled && !principal) {
+    const namespacesEnabled = this.config.namespacesEnabled;
+    if (namespacesEnabled && !principal) {
       throw new Error("authentication required: namespaces are enabled and no principal was supplied");
     }
 
@@ -5863,6 +5864,7 @@ export class Orchestrator {
             options.namespace?.trim() || undefined,
             options.principalOverride,
             caps,
+            namespacesEnabled,
           );
         } catch (err) {
           log.debug(`direct-answer observation setup failed: ${err}`);
@@ -5932,6 +5934,7 @@ export class Orchestrator {
     namespaceOverride: string | undefined,
     principalOverride: string | undefined,
     caps: CapabilitySet,
+    namespacesEnabled: boolean,
   ): void {
     const expectedSnapshot = this.lastRecall.get(sessionKey);
     if (expectedSnapshot === null) return;
@@ -5949,6 +5952,7 @@ export class Orchestrator {
       codingContext: sessionKey
         ? this.getCodingContextForSession(sessionKey)
         : null,
+      namespacesEnabled,
     });
     const observationNamespaces = observationScopePlan.readNamespaces;
     const observationQueryPolicy = buildRecallQueryPolicy(prompt, sessionKey, {
@@ -7551,7 +7555,8 @@ export class Orchestrator {
         && options.principalOverride.length > 0
         ? options.principalOverride
         : resolvePrincipal(sessionKey, this.config);
-    if (this.config.namespacesEnabled && !principal) {
+    const namespacesEnabled = this.config.namespacesEnabled;
+    if (namespacesEnabled && !principal) {
       throw new Error("authentication required: namespaces are enabled and no principal was supplied");
     }
     const namespaceOverride = options.namespace?.trim() || undefined;
@@ -7584,6 +7589,7 @@ export class Orchestrator {
       codingContext: sessionKey
         ? this.getCodingContextForSession(sessionKey)
         : null,
+      namespacesEnabled,
     });
     const {
       readNamespaces: recallNamespaces,
