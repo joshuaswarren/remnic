@@ -47,6 +47,7 @@ import {
 
 import {
   applyCodingGraphSchema,
+  ftsRowidForNodeId,
   isEdgeProvenance,
   readSchemaVersion,
   type EdgeProvenance,
@@ -576,11 +577,15 @@ export class GraphStore {
    * kept stale edges across re-ingests).
    */
   private upsertFileEdges(ir: FileIR, result: UpsertResult): void {
-    // Build the set of edges the IR is asserting for this file. We
-    // resolve qualified_name → deterministic id using the FULL nodes
-    // table (pass 1 has already populated every batch file's nodes,
-    // so cross-file edges resolve regardless of input order). Edges
-    // whose src/dst cannot resolve are dropped — the caller is
+    // Build the set of edges the IR is asserting for this file. The
+    // SRC of each edge MUST belong to this file (it is resolved from
+    // the per-file `qualifiedNameToId` map only — no DB fallback);
+    // a FileIR that asserts an edge whose src is absent from this
+    // file but present elsewhere is malformed and the edge is dropped
+    // so it cannot be silently cross-owned. The DST may be cross-file
+    // and uses the full-DB fallback (chatgpt-codex-connector P2:
+    // 'Require edge sources to belong to the ingested file'). Edges
+    // whose dst cannot resolve are also dropped — the caller is
     // responsible for the batch's canonical file set (rule 40).
     const qualifiedNameToId = new Map<string, string>();
     const ownSymbols = expectRows<{ id: string; qualified_name: string }>(
@@ -609,17 +614,19 @@ export class GraphStore {
           `graph-store: edge has invalid provenance ${JSON.stringify(edge.provenance)}`,
         );
       }
-      const srcId = resolveNodeId(
-        edge.srcQualifiedName,
-        qualifiedNameToId,
-        this.db,
-      );
+      // SRC must be a symbol in THIS file — resolve from the per-file
+      // map only. A FileIR whose edge src lives in another file is
+      // malformed; dropping it prevents cross-owned edges that survive
+      // re-ingest (chatgpt-codex-connector P2).
+      const srcId = qualifiedNameToId.get(edge.srcQualifiedName);
+      if (!srcId) continue;
+      // DST may be cross-file — use the full-DB fallback.
       const dstId = resolveNodeId(
         edge.dstQualifiedName,
         qualifiedNameToId,
         this.db,
       );
-      if (!srcId || !dstId) continue;
+      if (!dstId) continue;
       const key = `${srcId}\u0000${dstId}\u0000${edge.type}`;
       assertedKeys.add(key);
       seenKeys.push(key);
@@ -739,21 +746,6 @@ export function nodeIdFor(input: NodeIdInput): string {
     hash.update(`${v.length}:${v}:`);
   }
   return hash.digest("hex");
-}
-
-/**
- * FTS5 rowid derived from a deterministic node id. FTS5 rowids are
- * signed 64-bit integers; we slice the leading 16 hex chars (= 64 bits)
- * of the sha256 id and mask to the int64 positive range so SQLite
- * accepts it. The full 64-bit space is large enough that collisions
- * across distinct node ids are negligible. Contentless FTS5
- * (`content=''`) does NOT store UNINDEXED column values, so the only
- * reliable key into the virtual table is the rowid — the `id UNINDEXED`
- * column exists only for human inspection via sqlite_master inspection,
- * not for queries (chatgpt-codex-connector P2).
- */
-function ftsRowidForNodeId(nodeId: string): bigint {
-  return BigInt(`0x${nodeId.slice(0, 16)}`) & BigInt("0x7fffffffffffffff");
 }
 
 /**

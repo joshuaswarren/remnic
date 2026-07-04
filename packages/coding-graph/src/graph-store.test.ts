@@ -429,3 +429,65 @@ test("absolute dbPath is required", async () => {
     /dbPath must be absolute/,
   );
 });
+
+test("edge src validation: cross-file edge src is rejected, not cross-owned (chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Seed fileB first so b.run exists in the DB.
+    const r1 = await store.upsertFileBatch([fileB]);
+    assert.equal(r1.ok, true);
+    if (!r1.ok) throw new Error("expected ok");
+
+    // Ingest fileA with an edge whose srcQualifiedName is "b.run" —
+    // a symbol that lives in fileB, NOT fileA. The edge must be
+    // DROPPED: a FileIR may only assert edges whose src is a symbol
+    // in the same file. Without this guard the edge would be silently
+    // cross-owned by fileB and survive fileA re-ingests.
+    const fileAMalformedEdge: FileIR = {
+      path: "src/a.ts",
+      lang: "ts",
+      contentHash: "h-a-malformed",
+      symbols: [sym("a.greet", "greet", 0, 100)],
+      edges: [
+        {
+          srcQualifiedName: "b.run",
+          dstQualifiedName: "a.greet",
+          type: "CALLS",
+          confidence: 0.5,
+          provenance: "heuristic",
+        },
+      ],
+    };
+    const r2 = await store.upsertFileBatch([fileAMalformedEdge]);
+    assert.equal(r2.ok, true);
+    if (!r2.ok) throw new Error("expected ok");
+    assert.equal(
+      r2.results[0]?.edgeCount,
+      0,
+      "cross-file edge src must be rejected — no edges inserted",
+    );
+
+    // Verify no edge exists in the DB at all for this assertion.
+    // The store exposes no public query API yet, so we go through
+    // the re-ingest path: re-ingest fileA with no edges and confirm
+    // no cross-owned edge was left behind.
+    const fileAClean: FileIR = {
+      path: "src/a.ts",
+      lang: "ts",
+      contentHash: "h-a-clean",
+      symbols: [sym("a.greet", "greet", 0, 100)],
+      edges: [],
+    };
+    const r3 = await store.upsertFileBatch([fileAClean]);
+    assert.equal(r3.ok, true);
+    if (!r3.ok) throw new Error("expected ok");
+    // If the cross-owned edge had been created, re-ingesting fileA
+    // (which only deletes edges whose src is in fileA) would leave
+    // it behind. But since the edge was never created, there is
+    // nothing to clean up — edgeCount is 0.
+    assert.equal(r3.results[0]?.edgeCount, 0);
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

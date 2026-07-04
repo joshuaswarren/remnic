@@ -31,9 +31,27 @@
  */
 import type { BetterSqlite3Database } from "@remnic/core/runtime/better-sqlite";
 
+import { expectRow, expectRows } from "./row-types.js";
 
-import { expectRow } from "./row-types.js";
 export const CODING_GRAPH_SCHEMA_VERSION = 1;
+
+/**
+ * FTS5 rowid derived from a deterministic node id. FTS5 rowids are
+ * signed 64-bit integers; we slice the leading 16 hex chars (= 64 bits)
+ * of the sha256 id and mask to the int64 positive range so SQLite
+ * accepts it. The full 64-bit space is large enough that collisions
+ * across distinct node ids are negligible. Contentless FTS5
+ * (`content=''`) does NOT store UNINDEXED column values, so the only
+ * reliable key into the virtual table is the rowid.
+ *
+ * Lives in graph-schema (not graph-store) so the schema migration path
+ * can rebuild FTS rows from existing `nodes` without importing the
+ * store module (which would create a circular dependency — graph-store
+ * imports graph-schema).
+ */
+export function ftsRowidForNodeId(nodeId: string): bigint {
+  return BigInt(`0x${nodeId.slice(0, 16)}`) & BigInt("0x7fffffffffffffff");
+}
 
 /**
  * Provenance enum for edges — mirrors #1552's `heuristic|lsp|trace|semantic`
@@ -135,36 +153,6 @@ function createTables(db: BetterSqlite3Database): void {
       UNIQUE (src, dst, type)
     );
   `);
-  // FTS5 virtual table over node names + qualified_names for PR2's
-  // name search. Contentless-delete mode (`content=''` plus
-  // `contentless_delete=1`, SQLite 3.43+) lets us run standard
-  // `DELETE` and `INSERT OR REPLACE` statements against the virtual
-  // table — the write pipeline's only requirement. The `id UNINDEXED`
-  // column mirrors the deterministic node id for human-readable
-  // inspection; the write pipeline's actual key is the rowid derived
-  // from the node-id hash (see `ftsRowidForNodeId` in graph-store.ts).
-  // No auto-triggers: the upsert path is the single source of FTS
-  // truth, and contentless mode avoids the "external content"
-  // requirement that FTS rows must reference a live row in `nodes`
-  // (which would break on the brief moment when a same-id re-upsert
-  // has deleted the prior node).
-  const hasNodeFts = db
-    .prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
-    )
-    .get();
-  if (!hasNodeFts) {
-    db.exec(`
-      CREATE VIRTUAL TABLE nodes_fts USING fts5(
-        name,
-        qualified_name,
-        id UNINDEXED,
-        content='',
-        contentless_delete=1,
-        tokenize='unicode61 remove_diacritics 2'
-      );
-    `);
-  }
   // FTS5 hit → node id reverse map. Contentless FTS5 does NOT store
   // column values, so a rowid returned by `MATCH` cannot be joined
   // back to `nodes` via the `id UNINDEXED` column (it reads NULL).
@@ -175,19 +163,81 @@ function createTables(db: BetterSqlite3Database): void {
   // node key for FTS hits'). UNIQUE on node_id so re-ingesting the
   // same node updates the row in place rather than producing a
   // second mapping row.
-  const hasFtsIndex = db
-    .prepare(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name='fts_index'",
-    )
-    .get();
-  if (!hasFtsIndex) {
+  //
+  // Created BEFORE the nodes_fts rebuild so the migration path can
+  // repopulate both tables in lockstep without ordering concerns.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fts_index (
+      fts_rowid INTEGER PRIMARY KEY,
+      node_id   TEXT NOT NULL UNIQUE
+    );
+    CREATE INDEX IF NOT EXISTS idx_fts_index_node ON fts_index(node_id);
+  `);
+  // FTS5 virtual table over node names + qualified_names for PR2's
+  // name search. Contentless-delete mode (`content=''` plus
+  // `contentless_delete=1`, SQLite 3.43+) lets us run standard
+  // `DELETE` and `INSERT OR REPLACE` statements against the virtual
+  // table — the write pipeline's only requirement. The `id UNINDEXED`
+  // column mirrors the deterministic node id for human-readable
+  // inspection; the write pipeline's actual key is the rowid derived
+  // from the node-id hash (see `ftsRowidForNodeId` below).
+  //
+  // Migration: databases created before the contentless-FTS5 fix have
+  // an OLD `nodes_fts` table whose CREATE SQL used `content=nodes`
+  // (external-content) and lacks `contentless_delete=1`. The write
+  // pipeline's `DELETE FROM nodes_fts WHERE rowid = ?` fails on such
+  // a table while the source `nodes` row still exists, throwing and
+  // aborting the whole batch (kilo WARNING: 'Contentless FTS5 assumes
+  // fresh schema — old databases are not migrated'). We detect this
+  // by inspecting sqlite_master for the `contentless_delete=1` token;
+  // if absent, we DROP + RECREATE the virtual table and rebuild its
+  // rows from the surviving `nodes` table so the index is immediately
+  // usable after migration (rule 23: characterize before moving).
+  const ftsCreateSql = expectRow<{ sql: string }>(
+    db
+      .prepare(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
+      )
+      .get(),
+    ["sql"],
+  );
+  const needsFtsRecreate =
+    !ftsCreateSql || !ftsCreateSql.sql.includes("contentless_delete=1");
+  if (needsFtsRecreate) {
+    db.exec("DROP TABLE IF EXISTS nodes_fts;");
     db.exec(`
-      CREATE TABLE fts_index (
-        fts_rowid INTEGER PRIMARY KEY,
-        node_id   TEXT NOT NULL UNIQUE
+      CREATE VIRTUAL TABLE nodes_fts USING fts5(
+        name,
+        qualified_name,
+        id UNINDEXED,
+        content='',
+        contentless_delete=1,
+        tokenize='unicode61 remove_diacritics 2'
       );
-      CREATE INDEX idx_fts_index_node ON fts_index(node_id);
     `);
+    // Rebuild FTS + fts_index from surviving nodes so both are populated
+    // after migration. Fresh databases have zero rows so this is a no-op.
+    const survivingNodes = expectRows<{
+      id: string;
+      name: string;
+      qualified_name: string;
+    }>(
+      db.prepare("SELECT id, name, qualified_name FROM nodes").all(),
+      ["id", "name", "qualified_name"],
+    );
+    if (survivingNodes.length > 0) {
+      const insertFts = db.prepare(
+        "INSERT INTO nodes_fts (rowid, name, qualified_name) VALUES (?, ?, ?)",
+      );
+      const upsertFtsIndex = db.prepare(
+        "INSERT OR REPLACE INTO fts_index (fts_rowid, node_id) VALUES (?, ?)",
+      );
+      for (const n of survivingNodes) {
+        const rowid = ftsRowidForNodeId(n.id);
+        insertFts.run(rowid, n.name, n.qualified_name);
+        upsertFtsIndex.run(rowid, n.id);
+      }
+    }
   }
   // Upsert meta version. INSERT OR REPLACE so the upgrade path can rewrite
   // the row in place (rule 23 — one canonical form for the version value).

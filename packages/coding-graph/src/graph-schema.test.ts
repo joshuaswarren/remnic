@@ -25,8 +25,11 @@ import {
   CODING_GRAPH_SCHEMA_VERSION,
   EDGE_PROVENANCE_VALUES,
   applyCodingGraphSchema,
+  ftsRowidForNodeId,
   readSchemaVersion,
 } from "./graph-schema.js";
+import { expectRow, expectRows } from "./row-types.js";
+import { nodeIdFor } from "./graph-store.js";
 
 async function tempDir(): Promise<string> {
   return mkdtemp(path.join(tmpdir(), "coding-graph-schema-"));
@@ -283,6 +286,132 @@ test("temp dir helper produces an empty directory", async () => {
     await writeFile(path.join(dir, "x"), "ok");
     await mkdir(path.join(dir, "nested"), { recursive: true });
     // Just exercising the FS to make sure the helper works.
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("FTS5 migration: old-schema nodes_fts (content=nodes, no contentless_delete) is dropped + recreated + rebuilt", async () => {
+  const dir = await tempDir();
+  // Valid deterministic node IDs (sha256 hex) — ftsRowidForNodeId
+  // requires hex input; using nodeIdFor mirrors real pipeline data.
+  const greetId = nodeIdFor({ qualifiedName: "a.greet", filePath: "a.ts", label: "function" });
+  const byeId = nodeIdFor({ qualifiedName: "a.bye", filePath: "a.ts", label: "function" });
+  try {
+    const db = openTempDb(dir, "fts-migrate.sqlite");
+
+    // Seed an OLD-schema database: meta + files + nodes + a nodes_fts
+    // created with external-content mode (content=nodes) and NO
+    // contentless_delete=1. This is the pre-fix schema shape that
+    // caused the write pipeline's DELETE FROM nodes_fts to throw.
+    db.exec(`
+      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE files (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT NOT NULL UNIQUE,
+        lang TEXT NOT NULL,
+        content_hash TEXT NOT NULL
+      );
+      CREATE TABLE nodes (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        name TEXT NOT NULL,
+        qualified_name TEXT NOT NULL,
+        file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+        span_start INTEGER NOT NULL,
+        span_end INTEGER NOT NULL,
+        lang TEXT NOT NULL
+      );
+      CREATE TABLE edges (
+        src TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        dst TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        confidence REAL NOT NULL,
+        provenance TEXT NOT NULL,
+        UNIQUE (src, dst, type)
+      );
+      CREATE VIRTUAL TABLE nodes_fts USING fts5(
+        name, qualified_name, content=nodes
+      );
+    `);
+    db.prepare(
+      "INSERT INTO meta (key, value) VALUES ('schema_version', ?)",
+    ).run("0");
+
+    // Insert a file + two nodes so the FTS rebuild has content to work with.
+    db.prepare(
+      "INSERT INTO files (path, lang, content_hash) VALUES (?, ?, ?)",
+    ).run("a.ts", "ts", "h1");
+    const fileRow = expectRow<{ id: number }>(
+      db.prepare("SELECT id FROM files WHERE path = ?").get("a.ts"),
+      ["id"],
+    );
+    if (!fileRow) throw new Error("seed file insert failed");
+    db.prepare(
+      "INSERT INTO nodes (id, label, name, qualified_name, file_id, span_start, span_end, lang) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(greetId, "function", "greet", "a.greet", fileRow.id, 0, 10, "ts");
+    db.prepare(
+      "INSERT INTO nodes (id, label, name, qualified_name, file_id, span_start, span_end, lang) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run(byeId, "function", "bye", "a.bye", fileRow.id, 10, 20, "ts");
+
+    // The old-schema FTS must exist before migration.
+    const oldSql = expectRow<{ sql: string }>(
+      db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
+      ).get(),
+      ["sql"],
+    );
+    assert.ok(oldSql, "pre-condition: old nodes_fts must exist");
+    assert.ok(
+      !oldSql!.sql.includes("contentless_delete=1"),
+      "pre-condition: old schema must lack contentless_delete=1",
+    );
+
+    // Run the migration.
+    applyCodingGraphSchema(db);
+    assert.equal(readSchemaVersion(db), CODING_GRAPH_SCHEMA_VERSION);
+
+    // The nodes_fts table now has contentless_delete=1.
+    const newSql = expectRow<{ sql: string }>(
+      db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='nodes_fts'",
+      ).get(),
+      ["sql"],
+    );
+    assert.ok(newSql, "post-migration: nodes_fts must still exist");
+    assert.ok(
+      newSql!.sql.includes("contentless_delete=1"),
+      "post-migration: nodes_fts CREATE must include contentless_delete=1",
+    );
+
+    // The FTS index was rebuilt from surviving nodes — both terms are
+    // searchable and map back via fts_index. (Note: SQLite returns the
+    // rowid as a JS number which loses precision at int64 magnitude, so
+    // we assert via the fts_index reverse map, not raw rowid equality.)
+    const ftsHits = expectRows<{ rowid: number }>(
+      db.prepare("SELECT rowid FROM nodes_fts WHERE nodes_fts MATCH 'greet'").all(),
+      ["rowid"],
+    );
+    assert.equal(ftsHits.length, 1, "greet must be in the rebuilt FTS");
+    const ftsIndexHits = expectRows<{ node_id: string }>(
+      db.prepare("SELECT node_id FROM fts_index WHERE fts_rowid = ?").all(
+        ftsRowidForNodeId(greetId),
+      ),
+      ["node_id"],
+    );
+    assert.equal(ftsIndexHits.length, 1, "fts_index must map the greet rowid");
+    assert.equal(ftsIndexHits[0]?.node_id, greetId, "fts_index must map back to the correct node id");
+
+    // The original failure mode: a DELETE against nodes_fts while the
+    // source nodes row still exists must NOT throw (contentless mode
+    // allows this; external-content mode rejects it).
+    assert.doesNotThrow(() => {
+      db.prepare("DELETE FROM nodes_fts WHERE rowid = ?").run(
+        ftsRowidForNodeId(greetId),
+      );
+    });
+
+    db.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
