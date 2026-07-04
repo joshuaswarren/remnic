@@ -620,3 +620,32 @@ test("ambiguous local qualified_name drops edges, does not silently pick one nod
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("close blocks new writes before draining so a concurrent upsert is rejected (chatgpt-codex-connector P2)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-closing-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "store.db"),
+  });
+  try {
+    // Schedule a write (pending on the queue).
+    const firstWrite = store.upsertFileBatch([fileA]);
+    // Start close() WITHOUT awaiting firstWrite. close() sets the
+    // closing flag synchronously before awaiting drain, so a write
+    // issued while drain is pending must be rejected, not scheduled
+    // onto a queue whose tail drain() already snapshotted.
+    const closeP = store.close();
+    const rejected = await store.upsertFileBatch([fileB]);
+    assert.equal(rejected.ok, false);
+    if (rejected.ok) throw new Error("expected rejected");
+    assert.equal(
+      rejected.code,
+      "db_corrupt",
+      "upsert during close-drain must be rejected, not run against a closing DB",
+    );
+    // Let the pending write + close finish.
+    await firstWrite;
+    await closeP;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

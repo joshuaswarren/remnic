@@ -222,6 +222,7 @@ export class GraphStore {
   private readonly db: BetterSqlite3Database;
   private readonly queue = new WriteQueue();
   private closed = false;
+  private closing = false;
 
   private constructor(db: BetterSqlite3Database) {
     this.db = db;
@@ -290,7 +291,7 @@ export class GraphStore {
    *     stop trusting this DB.
    */
   async upsertFileBatch(files: FileIR[]): Promise<UpsertBatchResult> {
-    if (this.closed) {
+    if (this.closed || this.closing) {
       return {
         ok: false,
         code: "db_corrupt",
@@ -312,7 +313,13 @@ export class GraphStore {
    * then close (cursor Bugbot #09be5784).
    */
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.closing) return;
+    // Block NEW writes before draining so a concurrent upsertFileBatch
+    // cannot schedule a write that runs after this drain's await captured
+    // the old tail. Without this flag, close() drains the queue snapshot,
+    // closes the handle, and the late-scheduled write hits a closed DB
+    // (chatgpt-codex-connector P2: 'Block new writes before draining').
+    this.closing = true;
     await this.queue.drain();
     this.closed = true;
     this.db.close();
