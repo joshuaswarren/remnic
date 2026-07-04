@@ -651,8 +651,17 @@ function coerceBooleanLikeOrThrow(label: string, value: unknown): boolean {
  */
 function resolveEmitLegacyTools(
   configValue: unknown,
-  rawOperatorConfig: Record<string, unknown> | undefined,
+  rawOperatorConfig: Record<string, unknown> | undefined | null,
 ): boolean {
+  // Defensive: a JSON null on disk in the operator config block surfaces as
+  // \`null\` here (the loader's previous \`as Record<...> | undefined\` cast
+  // hid this — the file loader now normalizes to \`undefined\`, but defensive
+  // null handling here keeps the resolver safe against any caller that
+  // passes null directly). Treat null as "file layer present but authored
+  // nothing" (i.e. \`{}\`) — so we consult env / sticky-legacy rather than
+  // trusting a materialized schema default (Cursor Bugbot + kilo-code-bot
+  // PR #1593 round 3).
+  if (rawOperatorConfig === null) rawOperatorConfig = {};
   // The OpenClaw schema default for `emitLegacyTools` is `false` (issue
   // #1550). When `rawOperatorConfig` is missing the key, the merged value
   // is the schema default UNLESS it differs from `false` — in which case
@@ -700,8 +709,12 @@ function resolveEmitLegacyTools(
  */
 function resolveNamespaceCatalogEnabled(
   configValue: unknown,
-  rawOperatorConfig: Record<string, unknown> | undefined,
+  rawOperatorConfig: Record<string, unknown> | undefined | null,
 ): boolean {
+  // Defensive null guard — see resolveEmitLegacyTools for the rationale
+  // (Cursor Bugbot PR #1593 round 3, kilo-code-bot P2). Treat null as
+  // \`{}\` so the schema-default-detection logic runs.
+  if (rawOperatorConfig === null) rawOperatorConfig = {};
   // Schema default is `true` (the catalog is opt-out). Same null-vs-schema-
   // default semantics as `resolveEmitLegacyTools` — see the comment there
   // for the full rationale. Class hardening so a future schema flip to
@@ -1114,7 +1127,7 @@ function resolveMemoryOsPreset(value: unknown): MemoryOsPresetName | undefined {
   return MEMORY_OS_PRESET_ALIASES[normalized];
 }
 
-export function parseConfig(raw: unknown, rawOperatorConfig?: Record<string, unknown>): PluginConfig {
+export function parseConfig(raw: unknown, rawOperatorConfig?: Record<string, unknown> | null): PluginConfig {
   const baseCfg =
     raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)

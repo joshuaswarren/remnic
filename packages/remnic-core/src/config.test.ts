@@ -203,6 +203,52 @@ test("parseConfig emitLegacyTools runtime true overrides schema default (PR #159
   });
 });
 
+test("parseConfig defensive null rawOperatorConfig (PR #1593 review round 3)", () => {
+  // Cursor Bugbot + kilo-code-bot round 3: a JSON `null` on disk for the
+  // operator config block surfaces as `null` at the second argument (the
+  // loader's `as Record | undefined` cast previously hid this). Both
+  // resolvers now normalize `null` to `{}` so the `"key" in raw` check
+  // never throws and the schema-default-detection logic still runs.
+  withIsolatedConnectorsDir(false, () => {
+    // null raw + emitLegacyTools merged schema-default false → sticky-legacy
+    // fallback (no throw).
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, null as unknown as Record<string, unknown>).emitLegacyTools,
+      false,
+      "null raw with emitLegacyTools merged schema default falls through to sticky-legacy",
+    );
+    // null raw + emitLegacyTools merged true (runtime intent) → honored.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, null as unknown as Record<string, unknown>).emitLegacyTools,
+      true,
+      "null raw with emitLegacyTools runtime true honored as operator intent",
+    );
+    // null raw + namespaceCatalogEnabled merged false → differs from schema
+    // default true → runtime intent → honored.
+    assert.equal(
+      parseConfig({ namespaceCatalogEnabled: false }, null as unknown as Record<string, unknown>).namespaceCatalogEnabled,
+      false,
+      "null raw with namespaceCatalogEnabled runtime false honored as operator intent",
+    );
+    // null raw + namespaceCatalogEnabled merged true (schema default) →
+    // equals schema default → fall through to return SCHEMA_DEFAULT.
+    assert.equal(
+      parseConfig({ namespaceCatalogEnabled: true }, null as unknown as Record<string, unknown>).namespaceCatalogEnabled,
+      true,
+      "null raw with namespaceCatalogEnabled schema default true preserved",
+    );
+  });
+  withIsolatedConnectorsDir(true, () => {
+    // null raw + emitLegacyTools merged false + legacy evidence →
+    // sticky-legacy returns true (upgraded install scenario).
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, null as unknown as Record<string, unknown>).emitLegacyTools,
+      true,
+      "null raw with legacy evidence keeps aliases on",
+    );
+  });
+});
+
 test("parseConfig emitLegacyTools coerces config/env (issue #1427)", () => {
   // Boolean + boolean-like string config values.
   assert.equal(parseConfig({ emitLegacyTools: false }).emitLegacyTools, false);

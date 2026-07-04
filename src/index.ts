@@ -133,6 +133,11 @@ const ENGRAM_MIGRATION_PROMISE = "__openclawEngramMigrationPromise";
 const CLI_REGISTERED_GUARD = "__openclawEngramCliRegistered";
 const SESSION_COMMANDS_REGISTERED_GUARD =
   "__openclawEngramSessionCommandsRegistered";
+// Issue #1550 round 3 (Cursor Bugbot Low): the activeRecall + memory-slot
+// prompt-injection overlap warning must fire ONCE per process, not once
+// per agent registry. Multi-agent gateways call `register()` per agent,
+// so without this guard the same warning was logged N times.
+const ACTIVE_RECALL_OVERLAP_WARNED = "__openclawEngramActiveRecallOverlapWarned";
 
 /**
  * Process-global count of Remnic plugin services whose `start()` has
@@ -662,9 +667,15 @@ function loadPluginEntryFromFile(pluginId?: string): Record<string, unknown> | u
 }
 
 function loadPluginConfigFromFile(pluginId?: string): Record<string, unknown> | undefined {
-  return loadPluginEntryFromFile(pluginId)?.config as
-    | Record<string, unknown>
-    | undefined;
+  // Normalize JSON null to undefined so the resolver's \`"key" in raw\` check
+  // never throws (Cursor Bugbot PR #1593 round 3). The loader's return type
+  // was previously unsafely cast — JSON \`"config": null\` parsed as null
+  // and the \`as Record<...> | undefined\` cast lied about it.
+  const entry = loadPluginEntryFromFile(pluginId);
+  const cfg = entry?.config;
+  if (cfg === null || cfg === undefined) return undefined;
+  if (typeof cfg !== "object" || Array.isArray(cfg)) return undefined;
+  return cfg as Record<string, unknown>;
 }
 
 function loadRawConfigFromFile(): Record<string, unknown> | undefined {
@@ -1333,7 +1344,13 @@ const pluginDefinition = {
       // api.pluginConfig" — the resolvers use it to keep the sticky-legacy
       // `emitLegacyTools` default reachable on upgraded installs where no
       // operator override exists (#1550, Cursor Bugbot PR #1593).
-      fileConfig,
+      //
+      // When `fileConfig` is missing entirely (no openclaw.json on disk),
+      // pass \`{}\` rather than undefined so the resolver treats the
+      // absence the same as "file layer present but authored nothing" —
+      // i.e. fall through to env / sticky-legacy instead of trusting a
+      // materialized schema default (Cursor Bugbot PR #1593 round 3).
+      fileConfig ?? {},
     );
     cfg.providerApiKeyResolver = resolveOpenClawProviderApiKey;
     cfg.runtimeAuthForModelResolver = getOpenClawRuntimeAuthForModel;
@@ -3378,7 +3395,8 @@ const pluginDefinition = {
       // both means two blocking retrievals per turn, so make the overlap
       // visible once at startup instead of letting operators assume
       // activeRecall is required for injection.
-      if (cfg.activeRecallEnabled) {
+      if (cfg.activeRecallEnabled && !(globalThis as any)[ACTIVE_RECALL_OVERLAP_WARNED]) {
+        (globalThis as any)[ACTIVE_RECALL_OVERLAP_WARNED] = true;
         log.warn(
           "activeRecallEnabled=true while memory-slot prompt injection is active " +
             "(registerMemoryPromptSection). Prompt injection does NOT require " +
