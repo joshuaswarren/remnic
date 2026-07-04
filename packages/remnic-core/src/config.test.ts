@@ -1,14 +1,257 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
 
-test("parseConfig emitLegacyTools defaults to true and coerces config/env (issue #1427)", () => {
-  // Default: legacy aliases on, for backward compatibility.
-  assert.equal(parseConfig({}).emitLegacyTools, true);
-  // `null` means "unset → use default", consistent with the repo convention for
-  // optional fields (e.g. taskModelChain: null → undefined). Not a hard error.
-  assert.equal(parseConfig({ emitLegacyTools: null }).emitLegacyTools, true);
+/**
+ * Run `body` with XDG_CONFIG_HOME pointing at a throwaway dir so the
+ * sticky-legacy `emitLegacyTools` default (#1550) never reads the real
+ * machine state. `withLegacyEntry` seeds one persisted connector file.
+ */
+function withIsolatedConnectorsDir<T>(
+  withLegacyEntry: boolean,
+  body: () => T,
+): T {
+  const prev = process.env.XDG_CONFIG_HOME;
+  const root = mkdtempSync(path.join(tmpdir(), "remnic-config-test-"));
+  process.env.XDG_CONFIG_HOME = root;
+  try {
+    if (withLegacyEntry) {
+      const dir = path.join(root, "engram", ".engram-connectors", "connectors");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(path.join(dir, "codex-cli.json"), "{}\n");
+    }
+    return body();
+  } finally {
+    if (prev === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = prev;
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+test("parseConfig emitLegacyTools sticky-legacy default (issue #1550)", () => {
+  // Fresh install (no legacy connector entries): canonical-only surface.
+  withIsolatedConnectorsDir(false, () => {
+    assert.equal(parseConfig({}).emitLegacyTools, false, "fresh install defaults false");
+    assert.equal(parseConfig({ emitLegacyTools: null }).emitLegacyTools, false);
+  });
+  // Existing install with a persisted legacy connector entry: aliases stay on.
+  withIsolatedConnectorsDir(true, () => {
+    assert.equal(parseConfig({}).emitLegacyTools, true, "legacy connector entry keeps aliases");
+    // Explicit opt-out still wins over the sticky evidence.
+    assert.equal(parseConfig({ emitLegacyTools: false }).emitLegacyTools, false);
+    assert.equal(parseConfig({ emitLegacyTools: "false" }).emitLegacyTools, false);
+  });
+});
+
+test("parseConfig emitLegacyTools raw-vs-effective: schema default does not block sticky legacy (#1550, PR #1593 review)", () => {
+  // Cursor Bugbot + chatgpt-codex-connector both flagged the same class: the
+  // OpenClaw SDK materializes JSON-schema defaults into `api.pluginConfig`
+  // BEFORE `parseConfig` runs, so a fresh install would arrive with
+  // `emitLegacyTools: false` already populated even though the operator never
+  // wrote the key. The original resolver treated any present value as
+  // operator-set, which short-circuited the sticky-legacy fallback to
+  // `hasLegacyConnectorEntries()` and broke upgrades with legacy connector
+  // entries on disk. Fix: parseConfig now takes an optional `rawOperatorConfig`
+  // argument (sourced from `loadPluginConfigFromFile`, the pre-defaults
+  // operator file). Resolvers check `rawOperatorConfig` first — if the key is
+  // absent there, the present value is treated as a schema default and the
+  // env / sticky-legacy fallback chain runs.
+  withIsolatedConnectorsDir(false, () => {
+    // Fresh install + schema-default false in the merged config: sticky
+    // legacy path should still run and resolve to false.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
+      false,
+      "fresh install with schema-default false still resolves false",
+    );
+    // Explicit operator opt-out (rawOperatorConfig has the key): false wins.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, { emitLegacyTools: false })
+        .emitLegacyTools,
+      false,
+      "explicit operator opt-out via file is honored",
+    );
+    // When raw author wrote a real value but the merged configValue
+    // disagrees, configValue wins (matches the runtime-over-file spread in
+    // src/index.ts — chatgpt-codex-connector P2, PR #1593 round 4).
+    // coerceBooleanLikeOrThrow normalizes string "false" to boolean false.
+    assert.equal(
+      parseConfig({ emitLegacyTools: "false" }, { emitLegacyTools: "true" })
+        .emitLegacyTools,
+      false,
+      "merged value wins over raw value (runtime-over-file precedence)",
+    );
+  });
+  // Upgraded install with legacy connector JSON on disk: schema-default
+  // `false` in merged config MUST NOT mask the sticky-legacy fallback. This
+  // is the exact Cursor Bugbot scenario.
+  withIsolatedConnectorsDir(true, () => {
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
+      true,
+      "upgraded install with legacy connector JSON keeps aliases on",
+    );
+    // Raw operator opt-out still wins over the sticky evidence.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, { emitLegacyTools: false })
+        .emitLegacyTools,
+      false,
+      "raw operator opt-out overrides sticky-legacy",
+    );
+    // Raw operator opt-IN also wins.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, {}).emitLegacyTools,
+      true,
+      "raw merged true is operator-set even with empty raw",
+    );
+  });
+});
+
+test("parseConfig namespaceCatalogEnabled raw-vs-effective: schema-default hardening (#1550 class hardening)", () => {
+  // Same-class hardening as emitLegacyTools: if a future schema revision flips
+  // namespaceCatalogEnabled's default to `false`, the resolver must still let
+  // the sticky / absent chain run unless the operator wrote the key. Today
+  // the schema default is `true`, so the bug doesn't manifest — but the helper
+  // now has the raw-vs-effective split, and this test pins the contract so a
+  // future schema flip can't reintroduce the bug class silently.
+  //
+  // Logic: when raw is missing the key, compare merged to the schema default
+  // (true). If merged equals the schema default, it's the materialized
+  // schema value — fall through to default. If merged differs (i.e. merged
+  // is `false`), it's runtime operator intent — honor it. Symmetric to
+  // resolveEmitLegacyTools, with the schema default inverted.
+  // Absent from both → schema default true (sticky chain returns true).
+  assert.equal(
+    parseConfig({}, {}).namespaceCatalogEnabled,
+    true,
+    "absent from both raw and merged -> true (schema default)",
+  );
+  // Merged `true` (schema default) with empty raw → fall through, return true.
+  assert.equal(
+    parseConfig({ namespaceCatalogEnabled: true }, {}).namespaceCatalogEnabled,
+    true,
+    "merged true (schema default) with empty raw falls through to default",
+  );
+  // Merged `false` (DIFFERENT from schema default) with empty raw → runtime
+  // opt-out intent — honor it, return false.
+  assert.equal(
+    parseConfig({ namespaceCatalogEnabled: false }, {}).namespaceCatalogEnabled,
+    false,
+    "merged false differs from schema default — runtime operator intent honored",
+  );
+  // Merged value wins over raw value when both are present — matches
+  // the runtime-over-file spread in src/index.ts.
+  assert.equal(
+    parseConfig({ namespaceCatalogEnabled: true }, { namespaceCatalogEnabled: false })
+      .namespaceCatalogEnabled,
+    true,
+    "merged true wins over raw false (runtime-over-file)",
+  );
+  assert.equal(
+    parseConfig({ namespaceCatalogEnabled: false }, { namespaceCatalogEnabled: true })
+      .namespaceCatalogEnabled,
+    false,
+    "merged false wins over raw true (runtime-over-file)",
+  );
+});
+
+test("parseConfig emitLegacyTools raw null is treated as absent (PR #1593 review round 2)", () => {
+  // Cursor Bugbot round 2: when raw has the key but its value is `null`
+  // (operator explicitly cleared it in openclaw.json), the old resolver
+  // threw via coerceBooleanLikeOrThrow. New behavior: treat null/undefined
+  // in raw as "absent" and fall through to merged / env / sticky-legacy.
+  withIsolatedConnectorsDir(false, () => {
+    // Fresh install: raw null + merged null + env absent + sticky false → false.
+    assert.equal(
+      parseConfig({ emitLegacyTools: null }, { emitLegacyTools: null }).emitLegacyTools,
+      false,
+      "fresh install with raw null resolves to false via sticky-legacy",
+    );
+    // Legacy install: raw null + sticky evidence → true.
+  });
+  withIsolatedConnectorsDir(true, () => {
+    assert.equal(
+      parseConfig({ emitLegacyTools: null }, { emitLegacyTools: null }).emitLegacyTools,
+      true,
+      "upgraded install with raw null resolves to true via sticky-legacy",
+    );
+  });
+});
+
+test("parseConfig emitLegacyTools runtime true overrides schema default (PR #1593 review round 2)", () => {
+  // Cursor Bugbot round 2: schema default is `false`. When raw is missing
+  // the key but merged carries `true` (runtime gateway set it), the old
+  // resolver dropped the runtime override as schema-default materialization.
+  // New behavior: if merged value differs from the schema default, treat
+  // it as runtime operator intent and honor it.
+  withIsolatedConnectorsDir(false, () => {
+    // Merged `true` with empty raw → runtime opt-in honored, even on a
+    // fresh install (no legacy connector entries).
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, {}).emitLegacyTools,
+      true,
+      "runtime true with empty raw treated as operator intent",
+    );
+    // Merged `false` (the schema default) with empty raw → sticky fallback.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
+      false,
+      "merged false (schema default) with empty raw falls through to sticky-legacy",
+    );
+  });
+});
+
+test("parseConfig defensive null rawOperatorConfig (PR #1593 review round 3)", () => {
+  // Cursor Bugbot + kilo-code-bot round 3: a JSON `null` on disk for the
+  // operator config block surfaces as `null` at the second argument (the
+  // loader's `as Record | undefined` cast previously hid this). Both
+  // resolvers now normalize `null` to `{}` so the `"key" in raw` check
+  // never throws and the schema-default-detection logic still runs.
+  withIsolatedConnectorsDir(false, () => {
+    // null raw + emitLegacyTools merged schema-default false → sticky-legacy
+    // fallback (no throw).
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, null as unknown as Record<string, unknown>).emitLegacyTools,
+      false,
+      "null raw with emitLegacyTools merged schema default falls through to sticky-legacy",
+    );
+    // null raw + emitLegacyTools merged true (runtime intent) → honored.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, null as unknown as Record<string, unknown>).emitLegacyTools,
+      true,
+      "null raw with emitLegacyTools runtime true honored as operator intent",
+    );
+    // null raw + namespaceCatalogEnabled merged false → differs from schema
+    // default true → runtime intent → honored.
+    assert.equal(
+      parseConfig({ namespaceCatalogEnabled: false }, null as unknown as Record<string, unknown>).namespaceCatalogEnabled,
+      false,
+      "null raw with namespaceCatalogEnabled runtime false honored as operator intent",
+    );
+    // null raw + namespaceCatalogEnabled merged true (schema default) →
+    // equals schema default → fall through to return SCHEMA_DEFAULT.
+    assert.equal(
+      parseConfig({ namespaceCatalogEnabled: true }, null as unknown as Record<string, unknown>).namespaceCatalogEnabled,
+      true,
+      "null raw with namespaceCatalogEnabled schema default true preserved",
+    );
+  });
+  withIsolatedConnectorsDir(true, () => {
+    // null raw + emitLegacyTools merged false + legacy evidence →
+    // sticky-legacy returns true (upgraded install scenario).
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, null as unknown as Record<string, unknown>).emitLegacyTools,
+      true,
+      "null raw with legacy evidence keeps aliases on",
+    );
+  });
+});
+
+test("parseConfig emitLegacyTools coerces config/env (issue #1427)", () => {
   // Boolean + boolean-like string config values.
   assert.equal(parseConfig({ emitLegacyTools: false }).emitLegacyTools, false);
   assert.equal(parseConfig({ emitLegacyTools: "false" }).emitLegacyTools, false);
@@ -26,6 +269,12 @@ test("parseConfig emitLegacyTools defaults to true and coerces config/env (issue
     delete process.env.REMNIC_EMIT_LEGACY_TOOLS;
     process.env.ENGRAM_EMIT_LEGACY_TOOLS = "false";
     assert.equal(parseConfig({}).emitLegacyTools, false, "ENGRAM_ env fallback disables");
+    // Env "true" also wins over the fresh-install default (#1550).
+    delete process.env.ENGRAM_EMIT_LEGACY_TOOLS;
+    process.env.REMNIC_EMIT_LEGACY_TOOLS = "true";
+    withIsolatedConnectorsDir(false, () => {
+      assert.equal(parseConfig({}).emitLegacyTools, true, "env true wins over fresh-install default");
+    });
   } finally {
     if (prevRemnic === undefined) delete process.env.REMNIC_EMIT_LEGACY_TOOLS;
     else process.env.REMNIC_EMIT_LEGACY_TOOLS = prevRemnic;
@@ -1517,4 +1766,157 @@ test("parseConfig rejects invalid maintenance namespace fanout values", () => {
     () => parseConfig({ maintenance: { namespaceLockStaleMs: 1.5 } }),
     /maintenance\.namespaceLockStaleMs must be a positive integer/,
   );
+});
+
+
+test("parseConfig runtime-over-file precedence (PR #1593 review round 4)", () => {
+  // chatgpt-codex-connector P2: src/index.ts calls parseConfig with
+  // { ...fileConfig, ...api.pluginConfig } where the spread means runtime
+  // overrides file. The resolver must honor configValue (the merged
+  // object) as authoritative when both raw and configValue are present.
+  // raw is consulted only to detect "operator authored" vs "schema-default
+  // materialization" — NOT to override configValue.
+  //
+  // Scenario: file says emitLegacyTools: false, runtime says
+  // api.pluginConfig.emitLegacyTools: true. The merged configValue is
+  // true; the resolver must honor the runtime override, not the file.
+  withIsolatedConnectorsDir(false, () => {
+    assert.equal(
+      parseConfig(
+        { emitLegacyTools: true }, // merged: runtime over file
+        { emitLegacyTools: false }, // file wrote false
+      ).emitLegacyTools,
+      true,
+      "runtime true overrides file false (rawOperatorConfig has the key)",
+    );
+    // Symmetric: file says true, runtime says false → merged false wins.
+    assert.equal(
+      parseConfig(
+        { emitLegacyTools: false },
+        { emitLegacyTools: true },
+      ).emitLegacyTools,
+      false,
+      "runtime false overrides file true",
+    );
+    // Same precedence for namespaceCatalogEnabled.
+    assert.equal(
+      parseConfig(
+        { namespaceCatalogEnabled: false }, // runtime override to false
+        { namespaceCatalogEnabled: true }, // file set true (schema default)
+      ).namespaceCatalogEnabled,
+      false,
+      "runtime false overrides file true for namespaceCatalogEnabled",
+    );
+  });
+  // Sticky-legacy still works: merged false (schema default), raw empty
+  // → fall through to env / sticky-legacy. With legacy connector JSON on
+  // disk → returns true (the upgraded install scenario).
+  withIsolatedConnectorsDir(true, () => {
+    assert.equal(
+      parseConfig(
+        { emitLegacyTools: false },
+        {}, // no file
+      ).emitLegacyTools,
+      true,
+      "merged false with empty raw falls through to sticky-legacy (upgraded install)",
+    );
+  });
+});
+
+
+test("parseConfig null raw + runtime override honored (PR #1593 review round 5)", () => {
+  // Cursor Bugbot + chatgpt-codex-connector P2 (round 5, flagged against
+  // round-3 commit ee58f92f/34316d5e): when raw has the key with a
+  // null/undefined value, the previous resolver skipped the merged
+  // configValue entirely. The round-4 rewrite (6c3ca83e) fixed this via
+  // the `configValue !== SCHEMA_DEFAULT` check — the resolver honors
+  // configValue whenever it differs from the schema default, regardless
+  // of whether raw authored the key.
+  //
+  // This test pins the contract so a future refactor cannot reintroduce
+  // the bug.
+  withIsolatedConnectorsDir(false, () => {
+    // emitLegacyTools: file has null, runtime sets true → honored.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, { emitLegacyTools: null }).emitLegacyTools,
+      true,
+      "null raw with runtime true overrides schema default false",
+    );
+    // emitLegacyTools: file has undefined, runtime sets true → honored.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, { emitLegacyTools: undefined }).emitLegacyTools,
+      true,
+      "undefined raw with runtime true overrides schema default false",
+    );
+    // emitLegacyTools: file absent (key not in raw), runtime sets true → honored.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, {}).emitLegacyTools,
+      true,
+      "absent raw with runtime true overrides schema default false",
+    );
+    // namespaceCatalogEnabled: file has null, runtime sets false → honored
+    // (differs from schema default true).
+    assert.equal(
+      parseConfig({ namespaceCatalogEnabled: false }, { namespaceCatalogEnabled: null }).namespaceCatalogEnabled,
+      false,
+      "null raw with runtime false overrides schema default true",
+    );
+    // Sticky-legacy still works: merged false (schema default), raw empty →
+    // fall through to sticky-legacy.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
+      false,
+      "schema-default false with empty raw falls through to sticky-legacy",
+    );
+  });
+});
+
+
+test("parseConfig schema-default-detection round-4 contract (round 8: runtimeSet gate reverted)", () => {
+  // chatgpt-codex-connector P1 round 8 (PR #1593, src/index.ts:1348):
+  // the round-7 runtimeSet gate was reverted because OpenClaw's loader
+  // runs `applyDefaults: true` before exposing `api.pluginConfig`, so the
+  // set of keys present there cannot reliably distinguish operator-authored
+  // values from schema-default materialization. The resolver now relies
+  // solely on the `configValue !== SCHEMA_DEFAULT` comparison (round-4
+  // contract). This test pins that contract for both gates.
+  //
+  // The third arg `runtimeSet` is kept in the parseConfig signature for
+  // API stability but no longer changes resolver behavior.
+  withIsolatedConnectorsDir(true, () => {
+    // Schema-default false with empty raw: the resolver falls through to
+    // sticky-legacy (the round-4 contract). On an upgraded install, that
+    // means true.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}, new Set()).emitLegacyTools,
+      true,
+      "schema-default false with empty raw falls through to sticky-legacy (round-4 contract)",
+    );
+    // For namespaceCatalogEnabled: schema default is true. Runtime false
+    // differs from default → honored as runtime intent regardless of
+    // runtimeSet.
+    assert.equal(
+      parseConfig(
+        { namespaceCatalogEnabled: false },
+        {},
+        new Set(),
+      ).namespaceCatalogEnabled,
+      false,
+      "merged false (≠ schema default true) is runtime intent regardless of runtimeSet",
+    );
+  });
+  withIsolatedConnectorsDir(false, () => {
+    // Fresh install: same precedence.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}, new Set()).emitLegacyTools,
+      false,
+      "fresh install, schema-default false with empty raw returns false",
+    );
+    // Runtime value differs from schema default: honored.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, {}, new Set()).emitLegacyTools,
+      true,
+      "runtime true (≠ schema default false) honored",
+    );
+  });
 });

@@ -39,6 +39,11 @@ import { expandTildePath } from "./utils/path.js";
 // lives in connectors/coerce.ts (a tiny, dependency-free module) so neither
 // config.ts → connectors/index.ts nor the reverse circular import arises.
 import { coerceBool, coerceInstallExtension, coerceNumber } from "./connectors/coerce.js";
+import { hasLegacyConnectorEntries } from "./connectors/paths.js";
+import {
+  resolveEmitLegacyTools,
+  resolveNamespaceCatalogEnabled,
+} from "./emit-legacy-tools.js";
 import { parseWearablesConfig } from "./wearables/config.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 const DEFAULT_MEMORY_DIR = path.join(
@@ -613,59 +618,6 @@ function coerceBooleanLike(value: unknown): boolean | undefined {
   return undefined;
 }
 
-/**
- * Resolve the `emitLegacyTools` opt-out (issue #1427): config field wins, then
- * the REMNIC_/ENGRAM_ env var, then default true. A *present-but-malformed*
- * value fails fast rather than silently re-enabling legacy aliases — this knob
- * controls the advertised MCP `tools/list` surface, so a typo like
- * `emitLegacyTools=fales` must not be misread as `true` (gotcha #51).
- */
-function resolveEmitLegacyTools(configValue: unknown): boolean {
-  const ACCEPTED = "true/false/1/0/yes/no/on/off";
-  if (configValue !== undefined && configValue !== null) {
-    const coerced = coerceBooleanLike(configValue);
-    if (coerced === undefined) {
-      throw new Error(
-        `emitLegacyTools must be a boolean-like value (${ACCEPTED}); got ${JSON.stringify(configValue)}`,
-      );
-    }
-    return coerced;
-  }
-  const envRaw =
-    readEnvVar("REMNIC_EMIT_LEGACY_TOOLS") ?? readEnvVar("ENGRAM_EMIT_LEGACY_TOOLS");
-  if (envRaw !== undefined) {
-    const coerced = coerceBooleanLike(envRaw);
-    if (coerced === undefined) {
-      throw new Error(
-        `REMNIC_EMIT_LEGACY_TOOLS must be a boolean-like value (${ACCEPTED}); got "${envRaw}"`,
-      );
-    }
-    return coerced;
-  }
-  return true;
-}
-
-/**
- * Resolve the `namespaceCatalogEnabled` opt-out (issue #1499). A boolean-like
- * value ("false"/"0"/"no"/"off" etc.) is honored; a PRESENT but unrecognized
- * value ("flase", 2) is REJECTED rather than silently defaulting to enabled
- * (CLAUDE.md rule #51 — reject invalid input instead of silently defaulting),
- * mirroring `resolveEmitLegacyTools`. Defaults to enabled only when absent.
- */
-function resolveNamespaceCatalogEnabled(configValue: unknown): boolean {
-  const ACCEPTED = "true/false/1/0/yes/no/on/off";
-  if (configValue !== undefined && configValue !== null) {
-    const coerced = coerceBooleanLike(configValue);
-    if (coerced === undefined) {
-      throw new Error(
-        `namespaceCatalogEnabled must be a boolean-like value (${ACCEPTED}); got ${JSON.stringify(configValue)}`,
-      );
-    }
-    return coerced;
-  }
-  return true;
-}
-
 function readNestedConfig(
   cfg: Record<string, unknown>,
   blockName: string,
@@ -1056,7 +1008,11 @@ function resolveMemoryOsPreset(value: unknown): MemoryOsPresetName | undefined {
   return MEMORY_OS_PRESET_ALIASES[normalized];
 }
 
-export function parseConfig(raw: unknown): PluginConfig {
+export function parseConfig(
+  raw: unknown,
+  rawOperatorConfig?: Record<string, unknown> | null,
+  runtimeSet?: ReadonlySet<string>,
+): PluginConfig {
   const baseCfg =
     raw && typeof raw === "object" && !Array.isArray(raw)
       ? (raw as Record<string, unknown>)
@@ -3031,7 +2987,7 @@ export function parseConfig(raw: unknown): PluginConfig {
     // a PRESENT but unrecognized value ("flase", 2) is REJECTED rather than
     // silently defaulting to enabled (CLAUDE.md rule #51); default to enabled
     // only when the value is absent.
-    namespaceCatalogEnabled: resolveNamespaceCatalogEnabled(cfg.namespaceCatalogEnabled),
+    namespaceCatalogEnabled: resolveNamespaceCatalogEnabled(cfg.namespaceCatalogEnabled, rawOperatorConfig, runtimeSet),
     // NOTE: namespace identifiers are intentionally NOT sanitized here — the
     // codebase rejects unsafe namespaces at the point of use (see
     // codex-materialize-runner and NamespaceStorageRouter / resolveNamespaceDir),
@@ -4100,7 +4056,7 @@ export function parseConfig(raw: unknown): PluginConfig {
     // Legacy MCP tool aliases opt-out (issue #1427). Config field wins; then
     // the REMNIC_/ENGRAM_ env var (gotcha #9); default true for back-compat.
     // Malformed values fail fast rather than silently defaulting (gotcha #51).
-    emitLegacyTools: resolveEmitLegacyTools(cfg.emitLegacyTools),
+    emitLegacyTools: resolveEmitLegacyTools(cfg.emitLegacyTools, rawOperatorConfig, runtimeSet),
     // Codex citation parity (issue #379)
     citationsEnabled: cfg.citationsEnabled === true,
     citationsAutoDetect: cfg.citationsAutoDetect !== false,

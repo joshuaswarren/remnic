@@ -124,7 +124,7 @@ This plugin hooks into the OpenClaw gateway lifecycle:
 - **`session_start`** / **`session_end`** -- session lifecycle tracking
 - **`before_tool_call`** / **`after_tool_call`** -- tool usage observation for analytics
 - **`llm_output`** -- LLM token usage tracking
-- **`subagent_spawning`** / **`subagent_ended`** -- subagent lifecycle observation
+- **`subagent_spawned`** / **`subagent_ended`** -- subagent lifecycle observation (replaced the deprecated `subagent_spawning` hook in issue #1550; core handles thread-bound subagent bindings)
 - **Tools** -- registers `memory_search`, `memory_get`, `memory_stats`, and other agent tools
 - **Commands** -- provides CLI commands for memory management
 
@@ -441,7 +441,7 @@ and can optionally persist JSONL recall transcripts under
 |---------|--------|-------|
 | `before_tool_call` / `after_tool_call` | Supported | 2026.3.22 |
 | `llm_output` (token tracking) | Supported | 2026.3.22 |
-| `subagent_spawning` / `subagent_ended` | Supported | 2026.3.22 |
+| `subagent_spawned` / `subagent_ended` | Supported (replaced `subagent_spawning`) | 2026.3.22 |
 
 ### Dreaming
 

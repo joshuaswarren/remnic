@@ -236,7 +236,6 @@ declare module "openclaw/plugin-sdk" {
     | "inbound_claim"
     | "session_start"
     | "session_end"
-    | "subagent_spawning"
     | "subagent_delivery_target"
     | "subagent_spawned"
     | "subagent_ended"

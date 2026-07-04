@@ -25,7 +25,7 @@
         "before_tool_call",
         "after_tool_call",
         "llm_output",
-        "subagent_spawning",
+        "subagent_spawned",
         "subagent_ended"
       ],
       "registrations": [
