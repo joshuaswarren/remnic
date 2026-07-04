@@ -306,10 +306,21 @@ export async function withHeldFileLock<T>(
   // detection sees an active holder and does not break us out from under
   // (catalog round 5). Failures are swallowed (advisory lock); the timer is
   // always cleared in the finally.
+  //
+  // OWNERSHIP CHECK (codex P2): if our event loop was paused long enough that
+  // another process judged us stale, broke our lock, and created a replacement,
+  // we must NOT refresh the replacement's mtime — that would keep a (possibly
+  // crashed) replacement looking fresh. Verify lockHeldBySelf before each
+  // utimes; if ownership is lost, stop heartbeating (our lock is gone).
   const heartbeat = setInterval(() => {
-    utimes(held.path, new Date(), new Date()).catch((err: unknown) => {
-      warn("withHeldFileLock heartbeat refresh failed", err);
-    });
+    lockHeldBySelf(held)
+      .then((ours) => {
+        if (!ours) return; // broken/replaced — stop refreshing
+        return utimes(held.path, new Date(), new Date());
+      })
+      .catch((err: unknown) => {
+        warn("withHeldFileLock heartbeat refresh failed", err);
+      });
   }, heartbeatMs);
   // Don't keep the event loop alive solely for the heartbeat.
   heartbeat.unref?.();

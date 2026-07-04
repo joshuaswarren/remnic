@@ -770,3 +770,54 @@ test("withHeldFileLock swallows a throwing onLockWarning hook (never crashes the
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("heartbeat does NOT refresh a REPLACEMENT lock's mtime (ownership check, codex P2)", async () => {
+  // If our event loop was paused long enough that another process judged us
+  // stale, broke our lock, and created a replacement, our heartbeat must NOT
+  // refresh the replacement's mtime — that would keep a (possibly crashed)
+  // replacement looking fresh, defeating the stale-lock bound.
+  //
+  // Real platform clock (mtime): replace the lock file mid-hold with a
+  // different owner id, wait several heartbeat cycles, verify the replacement
+  // mtime was NOT refreshed by our stale heartbeat.
+  const dir = await mkTmpDir();
+  try {
+    const lockPath = path.join(dir, "replaced.lock");
+    const { promise: holderDone, resolve: finishHolder } = Promise.withResolvers<void>();
+
+    const holder = withHeldFileLock(
+      lockPath,
+      { staleMs: 60_000, heartbeatMs: 30 },
+      async () => {
+        await holderDone;
+      },
+    );
+
+    // Let the heartbeat run normally for a couple cycles.
+    await delay(80);
+
+    // Simulate a stale break + replacement: overwrite the lock with a
+    // DIFFERENT owner id, and set its mtime to a known old value.
+    const replacement = `${999999} deadbeef-0000-4000-8000-000000000000 ${new Date().toISOString()}\n`;
+    const replacementTime = new Date(Date.now() - 5_000); // 5s ago
+    await writeFile(lockPath, replacement, "utf8");
+    await utimes(lockPath, replacementTime, replacementTime);
+
+    // Let several heartbeat cycles fire against the replacement lock.
+    await delay(150);
+
+    // The replacement lock's mtime should NOT have been refreshed — our
+    // heartbeat checked lockHeldBySelf, saw a different owner, and skipped.
+    const info = await stat(lockPath);
+    const ageAfterHeartbeats = Date.now() - info.mtimeMs;
+    assert.ok(
+      ageAfterHeartbeats > 4_000,
+      `replacement lock mtime was NOT refreshed by stale heartbeat (age=${ageAfterHeartbeats}ms; expected >4000ms)`,
+    );
+
+    finishHolder();
+    await holder;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
