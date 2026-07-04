@@ -657,3 +657,37 @@ test("(p) cache hits zero out binary-prompt latencyMs and tokens (PR #1591 round
     assert.equal(hit.model, "judge-mock");
   });
 });
+
+test("(q) modelCalls is incremented BEFORE the underlying judge await, even when the judge throws (PR #1591 round-4 OS8tv)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    let binaryEntered = false;
+    const wrapper = runJudgeWithCache({
+      judge: {
+        scoreWithMetrics: async () => {
+          throw new Error("provider 500");
+        },
+        scoreBinaryPrompt: async () => {
+          binaryEntered = true;
+          throw new Error("provider timeout");
+        },
+      },
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    await assert.rejects(
+      () => wrapper.scoreWithMetrics!("q", "p", "e"),
+      /provider 500/,
+    );
+    await assert.rejects(
+      () => wrapper.scoreBinaryPrompt!("yes-no"),
+      /provider timeout/,
+    );
+    // Both failures must have registered as attempted judge calls —
+    // otherwise the wrapper would under-report attempted/paid traffic
+    // and observers could not distinguish a fully-cached run (0) from
+    // a fully-failed run (also 0).
+    assert.equal(wrapper.counters.modelCalls, 2, "both attempted calls must count even though both threw");
+    assert.equal(binaryEntered, true, "scoreBinaryPrompt was actually invoked");
+  });
+});

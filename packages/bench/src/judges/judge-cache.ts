@@ -361,7 +361,11 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
         // underlying call so the synthesized `latencyMs` reflects the
         // real judge work, not zero — task latency and benchmark cost
         // metrics depend on this (PR #1591 P2, follow-up to round 3,
-        // reviewer chatgpt-codex-connector).
+        // reviewer chatgpt-codex-connector). Increment `modelCalls`
+        // BEFORE the await so a thrown/timeout error still registers as
+        // an attempted judge call (PR #1591 P2 round-4, reviewer
+        // chatgpt-codex-connector, OS8tv).
+        counters.modelCalls += 1;
         const scoreStartedAt = Date.now();
         const scoreValue = judge.score
           ? await judge.score(question, predicted, expected, control)
@@ -372,18 +376,17 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
           latencyMs: Date.now() - scoreStartedAt,
           model: keyExtras.judgeModelId ?? undefined,
         };
-        counters.modelCalls += 1;
         await putSafely(parts, synthesized);
         return synthesized;
       }
 
+      counters.modelCalls += 1;
       const fresh = await judge.scoreWithMetrics(
         question,
         predicted,
         expected,
         control,
       );
-      counters.modelCalls += 1;
       await putSafely(parts, fresh);
       return fresh;
     },
@@ -427,9 +430,12 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
           }
           counters.cacheMisses += 1;
         }
+        // Increment BEFORE the await (PR #1591 P2 round-4, OS8tv): a
+        // thrown/timeout error must still register as an attempted
+        // judge call so cost.judgeModelCalls reflects attempted traffic.
+        counters.modelCalls += 1;
         const underlying = judge.scoreBinaryPrompt!;
         const fresh = await underlying(prompt, control);
-        counters.modelCalls += 1;
         await putSafely(parts, fresh);
         return fresh;
       },
