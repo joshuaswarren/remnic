@@ -871,3 +871,46 @@ test("(s) cache-wrapping preserves BenchMemoryAdapter instance, prototype, and p
     assert.equal(wrappedSystem, adapter, "wrap site must not clone the adapter");
   });
 });
+
+test("(t) slow cache reads fall through to the underlying judge (PR #1591 round-6 OTKGC)", async () => {
+  await withTempDir(async (dir) => {
+    // A cache whose get() resolves only on signal abort. Without
+    // readCacheWithAbort the judge cache lookup would itself trip the
+    // phase timeout; with the fix the wrapper treats the slow read as
+    // a cache miss and runs the underlying judge.
+    const ac = new AbortController();
+    const stubbornCache = {
+      async get(): Promise<unknown> {
+        return new Promise((resolve) => {
+          if (ac.signal.aborted) {
+            resolve(undefined);
+            return;
+          }
+          ac.signal.addEventListener("abort", () => resolve(undefined), { once: true });
+        });
+      },
+      async put(): Promise<void> {
+        return;
+      },
+      pendingWriteCount(): number {
+        return 0;
+      },
+    } as unknown as JudgeCache;
+    const wrapper = runJudgeWithCache({
+      judge: {
+        async scoreWithMetrics() {
+          return sampleResult;
+        },
+      },
+      cache: stubbornCache as JudgeCache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    const control = { signal: ac.signal };
+    const verdictP = wrapper.scoreWithMetrics!("q", "p", "e", control);
+    ac.abort();
+    const verdict = await verdictP;
+    assert.equal(verdict.score, sampleResult.score);
+    assert.equal(wrapper.counters.cacheMisses, 1, "slow read is reported as a cache miss, not a hit");
+    assert.equal(wrapper.counters.cacheHits, 0);
+  });
+});

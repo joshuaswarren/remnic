@@ -314,6 +314,24 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
   // judge pass while `judgeModelCalls` reads zero (PR #1591 round-3
   // cursor bugbot, OS7QE). Return the stored score/model identity but
   // zero the work-tracking fields so cache hits are observably free.
+
+async function readCacheWithAbort(
+  cache: JudgeCache,
+  parts: JudgeCacheKeyParts,
+  control: BenchPhaseControl | undefined,
+): Promise<JudgeCacheHit | undefined> {
+  const read = cache.get(parts);
+  const signal = control?.signal;
+  if (!signal) return read;
+  if (signal.aborted) return undefined;
+  return Promise.race<JudgeCacheHit | undefined>([
+    read,
+    new Promise<undefined>((resolve) => {
+      signal.addEventListener("abort", () => resolve(undefined), { once: true });
+    }),
+  ]);
+}
+
   const cachedVerdict = (stored: BenchJudgeResult): BenchJudgeResult => ({
     score: stored.score,
     tokens: { input: 0, output: 0 },
@@ -358,7 +376,22 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
       };
 
       if (cache) {
-        const hit = await cache.get(parts);
+        // Slow/stalled cache reads must not consume the judge-call
+        // phase timeout (PR #1591 round-6 OTKGC): a slow filesystem
+        // read on the cache directory would let the timeout fire
+        // before the underlying judge is invoked, and
+        // llmJudgeScoreDetailed() would record the deterministic
+        // fallback instead of asking the judge. Treat the read as a
+        // race against the control signal — if the signal aborts, or
+        // the read throws, treat the entry as absent and fall through
+        // to the judge path. The wrapper's own cacheMisses counter
+        // increments so observers still see the miss.
+        let hit: JudgeCacheHit | undefined;
+        try {
+          hit = await readCacheWithAbort(cache, parts, control);
+        } catch {
+          hit = undefined;
+        }
         if (hit) {
           counters.cacheHits += 1;
           return cachedVerdict(hit.verdict);
@@ -433,7 +466,14 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
           judgeParamsHash: keyExtras.judgeParamsHash ?? "unknown-params",
         };
         if (cache) {
-          const hit = await cache.get(parts);
+          // Slow reads must not consume the phase timeout — see
+          // readCacheWithAbort's docblock (PR #1591 round-6 OTKGC).
+          let hit: JudgeCacheHit | undefined;
+          try {
+            hit = await readCacheWithAbort(cache, parts, control);
+          } catch {
+            hit = undefined;
+          }
           if (hit) {
             counters.cacheHits += 1;
             return cachedVerdict(hit.verdict);
