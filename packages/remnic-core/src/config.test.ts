@@ -75,13 +75,15 @@ test("parseConfig emitLegacyTools raw-vs-effective: schema default does not bloc
       false,
       "explicit operator opt-out via file is honored",
     );
-    // Explicit operator opt-out via rawOperatorConfig with string coercion
-    // (gotcha #36: string "false" stays false).
+    // When raw author wrote a real value but the merged configValue
+    // disagrees, configValue wins (matches the runtime-over-file spread in
+    // src/index.ts — chatgpt-codex-connector P2, PR #1593 round 4).
+    // coerceBooleanLikeOrThrow normalizes string "false" to boolean false.
     assert.equal(
-      parseConfig({ emitLegacyTools: true }, { emitLegacyTools: "false" })
+      parseConfig({ emitLegacyTools: "false" }, { emitLegacyTools: "true" })
         .emitLegacyTools,
       false,
-      "raw operator wins even when merged value would have been true",
+      "merged value wins over raw value (runtime-over-file precedence)",
     );
   });
   // Upgraded install with legacy connector JSON on disk: schema-default
@@ -141,19 +143,19 @@ test("parseConfig namespaceCatalogEnabled raw-vs-effective: schema-default harde
     false,
     "merged false differs from schema default — runtime operator intent honored",
   );
-  // Raw operator opt-out wins over merged value (operator wrote false).
+  // Merged value wins over raw value when both are present — matches
+  // the runtime-over-file spread in src/index.ts.
   assert.equal(
     parseConfig({ namespaceCatalogEnabled: true }, { namespaceCatalogEnabled: false })
       .namespaceCatalogEnabled,
-    false,
-    "raw operator false wins over merged true",
+    true,
+    "merged true wins over raw false (runtime-over-file)",
   );
-  // Raw operator opt-in wins over merged false.
   assert.equal(
     parseConfig({ namespaceCatalogEnabled: false }, { namespaceCatalogEnabled: true })
       .namespaceCatalogEnabled,
-    true,
-    "raw operator true wins over merged false",
+    false,
+    "merged false wins over raw true (runtime-over-file)",
   );
 });
 
@@ -1646,4 +1648,59 @@ test("parseConfig rejects invalid maintenance namespace fanout values", () => {
     () => parseConfig({ maintenance: { namespaceLockStaleMs: 1.5 } }),
     /maintenance\.namespaceLockStaleMs must be a positive integer/,
   );
+});
+
+
+test("parseConfig runtime-over-file precedence (PR #1593 review round 4)", () => {
+  // chatgpt-codex-connector P2: src/index.ts calls parseConfig with
+  // { ...fileConfig, ...api.pluginConfig } where the spread means runtime
+  // overrides file. The resolver must honor configValue (the merged
+  // object) as authoritative when both raw and configValue are present.
+  // raw is consulted only to detect "operator authored" vs "schema-default
+  // materialization" — NOT to override configValue.
+  //
+  // Scenario: file says emitLegacyTools: false, runtime says
+  // api.pluginConfig.emitLegacyTools: true. The merged configValue is
+  // true; the resolver must honor the runtime override, not the file.
+  withIsolatedConnectorsDir(false, () => {
+    assert.equal(
+      parseConfig(
+        { emitLegacyTools: true }, // merged: runtime over file
+        { emitLegacyTools: false }, // file wrote false
+      ).emitLegacyTools,
+      true,
+      "runtime true overrides file false (rawOperatorConfig has the key)",
+    );
+    // Symmetric: file says true, runtime says false → merged false wins.
+    assert.equal(
+      parseConfig(
+        { emitLegacyTools: false },
+        { emitLegacyTools: true },
+      ).emitLegacyTools,
+      false,
+      "runtime false overrides file true",
+    );
+    // Same precedence for namespaceCatalogEnabled.
+    assert.equal(
+      parseConfig(
+        { namespaceCatalogEnabled: false }, // runtime override to false
+        { namespaceCatalogEnabled: true }, // file set true (schema default)
+      ).namespaceCatalogEnabled,
+      false,
+      "runtime false overrides file true for namespaceCatalogEnabled",
+    );
+  });
+  // Sticky-legacy still works: merged false (schema default), raw empty
+  // → fall through to env / sticky-legacy. With legacy connector JSON on
+  // disk → returns true (the upgraded install scenario).
+  withIsolatedConnectorsDir(true, () => {
+    assert.equal(
+      parseConfig(
+        { emitLegacyTools: false },
+        {}, // no file
+      ).emitLegacyTools,
+      true,
+      "merged false with empty raw falls through to sticky-legacy (upgraded install)",
+    );
+  });
 });

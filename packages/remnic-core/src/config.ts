@@ -653,44 +653,43 @@ function resolveEmitLegacyTools(
   configValue: unknown,
   rawOperatorConfig: Record<string, unknown> | undefined | null,
 ): boolean {
-  // Defensive: a JSON null on disk in the operator config block surfaces as
-  // \`null\` here (the loader's previous \`as Record<...> | undefined\` cast
-  // hid this — the file loader now normalizes to \`undefined\`, but defensive
-  // null handling here keeps the resolver safe against any caller that
-  // passes null directly). Treat null as "file layer present but authored
-  // nothing" (i.e. \`{}\`) — so we consult env / sticky-legacy rather than
-  // trusting a materialized schema default (Cursor Bugbot + kilo-code-bot
-  // PR #1593 round 3).
+  // Defensive null normalization — see round-3 notes (Cursor Bugbot
+  // PR #1593). null raw → treat as `{}` so the schema-default-detection
+  // logic runs.
   if (rawOperatorConfig === null) rawOperatorConfig = {};
-  // The OpenClaw schema default for `emitLegacyTools` is `false` (issue
-  // #1550). When `rawOperatorConfig` is missing the key, the merged value
-  // is the schema default UNLESS it differs from `false` — in which case
-  // it's runtime operator intent (e.g. the gateway set `true` via the
-  // runtime API, which never lands in the on-disk file). Comparing against
-  // the schema default lets us keep both the sticky-legacy fallback (when
-  // the merged value equals the schema default) AND honor explicit runtime
-  // overrides (when it doesn't).
+  // Schema default for `emitLegacyTools` is `false` (issue #1550).
+  //
+  // Precedence (PR #1593 round 4, chatgpt-codex-connector P2):
+  //   1. `configValue` is the MERGED config (runtime-over-file via the
+  //      `{...fileConfig, ...api.pluginConfig}` spread in src/index.ts).
+  //      If it's a real boolean, it represents what the operator wants,
+  //      so honor it. We only fall through when it's the schema-default
+  //      materialization with no operator authoring in raw.
+  //   2. rawOperatorConfig: when `rawOperatorConfig` has the key (with
+  //      non-null/undefined value), the file layer authored it. The merged
+  //      value reflects the full operator intent (file + runtime), so
+  //      `configValue` is authoritative. We DO use raw presence as the
+  //      "operator authored this key" signal — if raw is missing AND
+  //      configValue equals the schema default, that means only the
+  //      schema layer materialized the key (no operator intent anywhere)
+  //      and we fall through to env / sticky-legacy.
+  //   3. Legacy callers (raw undefined): trust configValue as before to
+  //      preserve the 121+ existing call sites that pass only one arg.
   const SCHEMA_DEFAULT = false;
   if (rawOperatorConfig !== undefined) {
-    if ("emitLegacyTools" in rawOperatorConfig) {
-      const rawValue = rawOperatorConfig.emitLegacyTools;
+    if (configValue !== undefined && configValue !== null) {
+      const rawValue = (rawOperatorConfig as Record<string, unknown>).emitLegacyTools;
+      const rawAuthored = "emitLegacyTools" in rawOperatorConfig && rawValue !== null && rawValue !== undefined;
+      if (rawAuthored || configValue !== SCHEMA_DEFAULT) {
+        return coerceBooleanLikeOrThrow("emitLegacyTools", configValue);
+      }
+    } else if ("emitLegacyTools" in rawOperatorConfig) {
+      const rawValue = (rawOperatorConfig as Record<string, unknown>).emitLegacyTools;
       if (rawValue !== null && rawValue !== undefined) {
         return coerceBooleanLikeOrThrow("emitLegacyTools", rawValue);
       }
-      // Raw explicitly cleared (null/undefined) — fall through to merged.
-    } else if (configValue !== undefined && configValue !== null) {
-      // Raw didn't author this key. If the merged value differs from the
-      // schema default, the runtime layer set it — honor that as operator
-      // intent. If it equals the schema default, it's just the schema
-      // materialization — fall through to env / sticky-legacy.
-      if (configValue !== SCHEMA_DEFAULT) {
-        return coerceBooleanLikeOrThrow("emitLegacyTools", configValue);
-      }
     }
   } else if (configValue !== undefined && configValue !== null) {
-    // Legacy caller (no rawOperatorConfig) — trust the merged value as
-    // before. This branch keeps every existing call site working without
-    // forcing them all to thread a raw config through.
     return coerceBooleanLikeOrThrow("emitLegacyTools", configValue);
   }
   const envRaw =
@@ -711,24 +710,24 @@ function resolveNamespaceCatalogEnabled(
   configValue: unknown,
   rawOperatorConfig: Record<string, unknown> | undefined | null,
 ): boolean {
-  // Defensive null guard — see resolveEmitLegacyTools for the rationale
-  // (Cursor Bugbot PR #1593 round 3, kilo-code-bot P2). Treat null as
-  // \`{}\` so the schema-default-detection logic runs.
+  // Defensive null normalization — see resolveEmitLegacyTools for the
+  // rationale (Cursor Bugbot PR #1593 round 3, kilo-code-bot P2).
   if (rawOperatorConfig === null) rawOperatorConfig = {};
-  // Schema default is `true` (the catalog is opt-out). Same null-vs-schema-
-  // default semantics as `resolveEmitLegacyTools` — see the comment there
-  // for the full rationale. Class hardening so a future schema flip to
-  // `default: false` cannot silently flip behavior on upgraded installs.
+  // Schema default is `true` (the catalog is opt-out). See
+  // resolveEmitLegacyTools for the full precedence rationale
+  // (chatgpt-codex-connector P2, PR #1593 round 4).
   const SCHEMA_DEFAULT = true;
   if (rawOperatorConfig !== undefined) {
-    if ("namespaceCatalogEnabled" in rawOperatorConfig) {
-      const rawValue = rawOperatorConfig.namespaceCatalogEnabled;
+    if (configValue !== undefined && configValue !== null) {
+      const rawValue = (rawOperatorConfig as Record<string, unknown>).namespaceCatalogEnabled;
+      const rawAuthored = "namespaceCatalogEnabled" in rawOperatorConfig && rawValue !== null && rawValue !== undefined;
+      if (rawAuthored || configValue !== SCHEMA_DEFAULT) {
+        return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", configValue);
+      }
+    } else if ("namespaceCatalogEnabled" in rawOperatorConfig) {
+      const rawValue = (rawOperatorConfig as Record<string, unknown>).namespaceCatalogEnabled;
       if (rawValue !== null && rawValue !== undefined) {
         return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", rawValue);
-      }
-    } else if (configValue !== undefined && configValue !== null) {
-      if (configValue !== SCHEMA_DEFAULT) {
-        return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", configValue);
       }
     }
   } else if (configValue !== undefined && configValue !== null) {
@@ -736,7 +735,6 @@ function resolveNamespaceCatalogEnabled(
   }
   return SCHEMA_DEFAULT;
 }
-
 function readNestedConfig(
   cfg: Record<string, unknown>,
   blockName: string,
