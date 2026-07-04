@@ -539,7 +539,7 @@ test("register does not overwrite prior discoveredBy on an existing record", asy
 
 // A record first PRE-REGISTERED via the router's onResolve hook (config) is
 // UPGRADED to "write" by a later real write touch (round 6, codex P2 — NBPmT):
-// `storageFor()` fires registerResolved (config) before recordCatalogWrite runs,
+// `storageFor()` fires registerResolved (config) before the storage chokepoint runs,
 // so without the upgrade `listNamespaces({ discoveredBy: "write" })` would miss a
 // genuinely-written namespace. A non-write touch (read/register) still preserves
 // provenance.
@@ -689,7 +689,7 @@ test("chunked write path contract: markWrite updates lastWriteAt for the namespa
     const ns = "project-origin-chunked";
     const storageDir = path.join(memoryDir, "namespaces", namespaceIdentityToken(ns));
     // This is exactly the call the orchestrator chunked branch now makes
-    // (markCatalogWrite -> markWrite with discoveredBy "write" + storageDir).
+    // (storage chokepoint -> markWrite with discoveredBy "write" + storageDir).
     await catalog.markWrite(ns, { discoveredBy: "write", storageDir });
     const record = await catalog.getNamespaceRecord(ns);
     assert.ok(record?.lastWriteAt, "chunked write must update lastWriteAt");

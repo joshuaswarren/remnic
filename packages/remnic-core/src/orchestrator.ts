@@ -16598,9 +16598,9 @@ export class Orchestrator {
     // Consolidated catalog write touch — belt-and-suspenders for cleanup-only
     // passes that mutate the store via delete-only paths (entity merges, TTL
     // cleanup) without triggering the storage chokepoint's post-write hook.
-    // Gated on merged/invalidated so idle passes don't spuriously touch.
+    // Gated on memoryItemMutated (set by every durable mutation including cleanup-only passes)
     // Best-effort and failure-tolerant.
-    if (merged > 0 || invalidated > 0) {
+    if (memoryItemMutated) {
       this.storageRouter.recordWrite(this.config.defaultNamespace, this.storage.dir);
     }
 

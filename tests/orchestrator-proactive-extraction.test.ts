@@ -195,8 +195,8 @@ test("persistExtraction records the catalog write under the real namespace, not 
 // ── NHZEZ (codex P2): an extraction that persists ONLY entities/relationships (no
 // facts) still writes durable data to the base namespace, so the catalog must get a
 // write touch — otherwise that namespace's lastWriteAt stays stale and
-// writtenSince/QMD maintenance miss the write. The per-fact markCatalogWrite never
-// runs for a fact-less extraction; the new base-namespace touch covers it.
+// writtenSince/QMD maintenance miss the write. The per-fact storage chokepoint never
+// fires for a fact-less extraction; the new base-namespace touch covers it.
 test("persistExtraction touches the catalog for an entity-only (fact-less) extraction (NHZEZ)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-nhzez-"));
   const config = parseConfig({

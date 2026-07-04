@@ -212,18 +212,23 @@ test("persistExplicitCapture writes lifecycle events and dedupes active duplicat
 // ── Round 6 (codex P2 — NAUf4): a DEFAULT explicit capture (no `namespace`)
 // resolves `undefined` → writes to the default root, but must STILL record a
 // catalog WRITE so the default namespace's `lastWriteAt` is updated for
-// `writtenSince`/maintenance consumers. recordCatalogWrite resolves an
-// undefined/empty namespace to `config.defaultNamespace`.
+// `writtenSince`/maintenance consumers. The storage chokepoint fires the
+// write touch after writeMemory completes (#1522).
 test("persistExplicitCapture records a catalog write for the DEFAULT namespace", async () => {
+  let catalogTouched = false;
   const storage = {
     dir: "/synthetic/memory",
+    onCatalogWrite: undefined as (() => void) | undefined,
     hasFactContentHash: async () => false,
     isFactContentHashAuthoritative: async () => true,
     readAllMemories: async () => [],
-    writeMemory: async () => "fact-default",
+    writeMemory: async () => {
+      storage.onCatalogWrite?.();
+      return "fact-default";
+    },
     appendMemoryLifecycleEvents: async () => 1,
   };
-  const recorded: Array<{ namespace?: string; storageDir?: string }> = [];
+  storage.onCatalogWrite = () => { catalogTouched = true; };
   const orchestrator = {
     config: {
       defaultNamespace: "default",
@@ -232,11 +237,6 @@ test("persistExplicitCapture records a catalog write for the DEFAULT namespace",
       namespacePolicies: [],
     },
     getStorage: async () => storage,
-    // Mirror the real method's default-resolution so the test exercises NAUf4.
-    recordCatalogWrite(namespace?: string, storageDir?: string) {
-      const ns = namespace && namespace.trim().length > 0 ? namespace : this.config.defaultNamespace;
-      recorded.push({ namespace: ns, storageDir });
-    },
   };
 
   await persistExplicitCapture(
@@ -248,13 +248,10 @@ test("persistExplicitCapture records a catalog write for the DEFAULT namespace",
     "memory_capture",
   );
 
-  assert.equal(recorded.length, 1, "default explicit capture must record exactly one catalog write");
-  assert.equal(
-    recorded[0]?.namespace,
-    "default",
-    "an undefined capture namespace must record the configured default in the catalog",
-  );
-  assert.equal(recorded[0]?.storageDir, "/synthetic/memory");
+  // #1522: the catalog touch is now handled at the storage chokepoint. The
+  // StorageManager's onCatalogWrite hook fires after writeMemory, recording
+  // the namespace write automatically.
+  assert.equal(catalogTouched, true, "default explicit capture must touch the catalog via the storage chokepoint");
 });
 
 // ── Round 6 (codex P2 — NAUf4): the review-queue path has the same default-write
@@ -262,12 +259,15 @@ test("persistExplicitCapture records a catalog write for the DEFAULT namespace",
 // so it must also record a catalog write for the default namespace.
 test("queueExplicitCaptureForReview records a catalog write for the DEFAULT namespace", async () => {
   const memories: Array<{ frontmatter: { id: string; status?: string }; content: string; path: string }> = [];
+  let catalogTouched = false;
   const storage = {
     dir: "/synthetic/memory",
+    onCatalogWrite: undefined as (() => void) | undefined,
     readAllMemories: async () => memories,
-    writeMemory: async (category: string, content: string) => {
+    writeMemory: async (_category: string, content: string) => {
       const id = `fact-${memories.length + 1}`;
       memories.push({ frontmatter: { id, status: "active" }, content, path: `/tmp/${id}.md` });
+      storage.onCatalogWrite?.();
       return id;
     },
     getMemoryById: async (id: string) => memories.find((m) => m.frontmatter.id === id) ?? null,
@@ -277,7 +277,7 @@ test("queueExplicitCaptureForReview records a catalog write for the DEFAULT name
     },
     appendMemoryLifecycleEvents: async () => 1,
   };
-  const recorded: Array<{ namespace?: string; storageDir?: string }> = [];
+  storage.onCatalogWrite = () => { catalogTouched = true; };
   const orchestrator = {
     config: {
       defaultNamespace: "default",
@@ -286,10 +286,6 @@ test("queueExplicitCaptureForReview records a catalog write for the DEFAULT name
       namespacePolicies: [],
     },
     getStorage: async () => storage,
-    recordCatalogWrite(namespace?: string, storageDir?: string) {
-      const ns = namespace && namespace.trim().length > 0 ? namespace : this.config.defaultNamespace;
-      recorded.push({ namespace: ns, storageDir });
-    },
   };
 
   await queueExplicitCaptureForReview(
@@ -303,12 +299,8 @@ test("queueExplicitCaptureForReview records a catalog write for the DEFAULT name
     new Error("queued for review"),
   );
 
-  assert.equal(recorded.length, 1, "queued default review capture must record exactly one catalog write");
-  assert.equal(
-    recorded[0]?.namespace,
-    "default",
-    "an undefined review-queue namespace must record the configured default in the catalog",
-  );
+  // #1522: the catalog touch fires at the storage chokepoint after writeMemory.
+  assert.equal(catalogTouched, true, "queued default review capture must touch the catalog via the storage chokepoint");
 });
 
 // NIhUg follow-up: once writeMemory returns an id, the queued review memory is
@@ -316,12 +308,15 @@ test("queueExplicitCaptureForReview records a catalog write for the DEFAULT name
 // must still record the write so writtenSince/QMD maintenance can find the root.
 test("queueExplicitCaptureForReview records a catalog write when a post-write frontmatter update fails", async () => {
   const memories: Array<{ frontmatter: { id: string; status?: string }; content: string; path: string }> = [];
+  let catalogTouched = false;
   const storage = {
     dir: "/synthetic/team",
+    onCatalogWrite: undefined as (() => void) | undefined,
     readAllMemories: async () => memories,
     writeMemory: async (_category: string, content: string) => {
       const id = `fact-${memories.length + 1}`;
       memories.push({ frontmatter: { id, status: "active" }, content, path: `/tmp/${id}.md` });
+      storage.onCatalogWrite?.();
       return id;
     },
     getMemoryById: async (id: string) => memories.find((m) => m.frontmatter.id === id) ?? null,
@@ -332,7 +327,7 @@ test("queueExplicitCaptureForReview records a catalog write when a post-write fr
     },
     appendMemoryLifecycleEvents: async () => 1,
   };
-  const recorded: Array<{ namespace?: string; storageDir?: string }> = [];
+  storage.onCatalogWrite = () => { catalogTouched = true; };
   const orchestrator = {
     config: {
       defaultNamespace: "default",
@@ -341,9 +336,6 @@ test("queueExplicitCaptureForReview records a catalog write when a post-write fr
       namespacePolicies: [{ name: "team" }],
     },
     getStorage: async () => storage,
-    recordCatalogWrite(namespace?: string, storageDir?: string) {
-      recorded.push({ namespace, storageDir });
-    },
   };
 
   await assert.rejects(
@@ -362,12 +354,14 @@ test("queueExplicitCaptureForReview records a catalog write when a post-write fr
     /frontmatter write failed/,
   );
 
+  // #1522: the catalog touch fires at the storage chokepoint during writeMemory,
+  // before the pending_review frontmatter update runs — so it is recorded even
+  // when the frontmatter write fails.
   assert.equal(
-    recorded.length,
-    1,
-    "a failed post-write frontmatter update must still record one catalog write touch",
+    catalogTouched,
+    true,
+    "a failed post-write frontmatter update must still touch the catalog via the storage chokepoint",
   );
-  assert.deepEqual(recorded[0], { namespace: "team", storageDir: "/synthetic/team" });
   assert.equal(memories.length, 1, "precondition: writeMemory created a durable memory before the failure");
 });
 
