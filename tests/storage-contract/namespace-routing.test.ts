@@ -77,10 +77,20 @@ test("namespace routing: default vs named namespaces resolve to DIFFERENT roots 
 
     const defaultStorage = await router.storageFor("default");
     const namedStorage = await router.storageFor("team-marketing");
+    const namedStorage2 = await router.storageFor("team-engineering");
     assert.notEqual(
       defaultStorage.dir,
       namedStorage.dir,
       "default and named namespaces must resolve to distinct roots",
+    );
+    // Tenant isolation: two DIFFERENT named namespaces must NOT collapse onto
+    // the same child (e.g. a regression mapping every non-default namespace to
+    // namespaces/default would pass the default-vs-named check alone because the
+    // default root is memoryDir in an empty store).
+    assert.notEqual(
+      namedStorage.dir,
+      namedStorage2.dir,
+      "two distinct named namespaces must resolve to distinct roots (tenant isolation)",
     );
   });
 });

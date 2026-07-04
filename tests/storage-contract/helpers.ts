@@ -16,7 +16,7 @@
 
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm, readdir } from "node:fs/promises";
+import { mkdtemp, rm, readdir, readFile } from "node:fs/promises";
 import { chmodSync } from "node:fs";
 
 import type { PluginConfig, MemoryCategory } from "../../packages/remnic-core/src/types.js";
@@ -574,8 +574,16 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
         // midnight and a regression that returns an id without writing would
         // pass spuriously.
         const entries = await readdir(path.join(storage.dir, "artifacts"), { recursive: true });
-        if (!entries.some((e) => e.endsWith(`${id}.md`))) {
+        const match = entries.find((e) => e.endsWith(`${id}.md`));
+        if (!match) {
           throw new Error("writeArtifact did not persist a readable artifact file");
+        }
+        // Read the body back — a regression returning an id but writing an
+        // empty or corrupt file would pass the filename check alone. Proving the
+        // content persisted closes that spurious-pass hole.
+        const artifactBody = await readFile(path.join(storage.dir, "artifacts", match), "utf8");
+        if (!artifactBody.includes("contract-surface-artifact-body")) {
+          throw new Error("writeArtifact did not persist the artifact body (round-trip mismatch)");
         }
         return id;
       },
