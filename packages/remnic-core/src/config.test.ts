@@ -1704,3 +1704,51 @@ test("parseConfig runtime-over-file precedence (PR #1593 review round 4)", () =>
     );
   });
 });
+
+
+test("parseConfig null raw + runtime override honored (PR #1593 review round 5)", () => {
+  // Cursor Bugbot + chatgpt-codex-connector P2 (round 5, flagged against
+  // round-3 commit ee58f92f/34316d5e): when raw has the key with a
+  // null/undefined value, the previous resolver skipped the merged
+  // configValue entirely. The round-4 rewrite (6c3ca83e) fixed this via
+  // the `configValue !== SCHEMA_DEFAULT` check — the resolver honors
+  // configValue whenever it differs from the schema default, regardless
+  // of whether raw authored the key.
+  //
+  // This test pins the contract so a future refactor cannot reintroduce
+  // the bug.
+  withIsolatedConnectorsDir(false, () => {
+    // emitLegacyTools: file has null, runtime sets true → honored.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, { emitLegacyTools: null }).emitLegacyTools,
+      true,
+      "null raw with runtime true overrides schema default false",
+    );
+    // emitLegacyTools: file has undefined, runtime sets true → honored.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, { emitLegacyTools: undefined }).emitLegacyTools,
+      true,
+      "undefined raw with runtime true overrides schema default false",
+    );
+    // emitLegacyTools: file absent (key not in raw), runtime sets true → honored.
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, {}).emitLegacyTools,
+      true,
+      "absent raw with runtime true overrides schema default false",
+    );
+    // namespaceCatalogEnabled: file has null, runtime sets false → honored
+    // (differs from schema default true).
+    assert.equal(
+      parseConfig({ namespaceCatalogEnabled: false }, { namespaceCatalogEnabled: null }).namespaceCatalogEnabled,
+      false,
+      "null raw with runtime false overrides schema default true",
+    );
+    // Sticky-legacy still works: merged false (schema default), raw empty →
+    // fall through to sticky-legacy.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
+      false,
+      "schema-default false with empty raw falls through to sticky-legacy",
+    );
+  });
+});
