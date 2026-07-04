@@ -3655,7 +3655,6 @@
         "properties": {
           "enabled": {
             "type": "boolean",
-            "default": true,
             "description": "Emit provenance spans on new extractions. Off = pre-feature extraction prompt/output, byte-identical (rule 39)."
           },
           "maxQuoteChars": {

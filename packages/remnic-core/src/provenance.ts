@@ -178,15 +178,27 @@ export function parseProvenanceConfig(raw: unknown): ProvenanceConfig {
       return coerced;
     })(),
     maxQuoteChars: (() => {
+      if (rawProvenance.maxQuoteChars === undefined) return 300;
       const rawCap = coerceNumber(rawProvenance.maxQuoteChars);
-      // A quote cap below 1 would store empty excerpts (dropped by the
-      // PR 2 validator), so non-positive / non-finite values fall back
-      // to the documented default rather than silently clamping (rule
-      // 28 / sibling-field precedent: invalid -> default, not invalid
-      // -> boundary).
-      if (rawCap === undefined || !Number.isFinite(rawCap) || rawCap < 1) return 300;
-      return Math.floor(rawCap);
+      // Reject present-but-invalid rather than silently widening the cap
+      // (AGENTS.md input-validation rule — a typo should not persist more
+      // text than the operator configured).
+      if (rawCap === undefined || !Number.isFinite(rawCap) || rawCap < 1 || !Number.isInteger(rawCap)) {
+        throw new Error(
+          `provenance.maxQuoteChars must be a positive integer >= 1 (got ${JSON.stringify(rawProvenance.maxQuoteChars)}).`,
+        );
+      }
+      return rawCap;
     })(),
-    requireSpans: coerceBool(rawProvenance.requireSpans) === true,
+    requireSpans: (() => {
+      if (rawProvenance.requireSpans === undefined) return false;
+      const coerced = coerceBool(rawProvenance.requireSpans);
+      if (coerced === undefined) {
+        throw new Error(
+          `provenance.requireSpans must be a boolean or one of "true"/"false"/"1"/"0"/"yes"/"no"/"on"/"off" (got ${JSON.stringify(rawProvenance.requireSpans)}).`,
+        );
+      }
+      return coerced;
+    })(),
   };
 }

@@ -1963,14 +1963,19 @@ test("parseConfig provenance.enabled coerces boolean-like strings and rejects ga
   );
 });
 
-test("parseConfig provenance.maxQuoteChars clamps to a positive integer (issue #1575)", () => {
+test("parseConfig provenance.maxQuoteChars rejects present-but-invalid (issue #1575)", () => {
   assert.equal(parseConfig({ provenance: { maxQuoteChars: 500 } }).provenance.maxQuoteChars, 500);
   // String coercion (CLI --config style).
   assert.equal(parseConfig({ provenance: { maxQuoteChars: "150" } }).provenance.maxQuoteChars, 150);
-  // Non-positive / garbage falls back to the documented default, never 0.
-  assert.equal(parseConfig({ provenance: { maxQuoteChars: 0 } }).provenance.maxQuoteChars, 300);
-  assert.equal(parseConfig({ provenance: { maxQuoteChars: -5 } }).provenance.maxQuoteChars, 300);
-  assert.equal(parseConfig({ provenance: { maxQuoteChars: "garbage" } }).provenance.maxQuoteChars, 300);
+  // Omitted key uses the documented default.
+  assert.equal(parseConfig({}).provenance.maxQuoteChars, 300);
+  // Present-but-invalid values are rejected loudly (review thread 3 / AGENTS.md input-validation).
+  for (const v of [0, -5, "garbage", 3.7, Infinity, null] as unknown[]) {
+    assert.throws(
+      () => parseConfig({ provenance: { maxQuoteChars: v } }),
+      /provenance\.maxQuoteChars must be a positive integer/,
+    );
+  }
 });
 
 test("parseConfig provenance.requireSpans defaults false and coerces (issue #1575)", () => {
@@ -1978,6 +1983,11 @@ test("parseConfig provenance.requireSpans defaults false and coerces (issue #157
   assert.equal(parseConfig({ provenance: { requireSpans: true } }).provenance.requireSpans, true);
   assert.equal(parseConfig({ provenance: { requireSpans: "true" } }).provenance.requireSpans, true);
   assert.equal(parseConfig({ provenance: { requireSpans: "no" } }).provenance.requireSpans, false);
+  // Present-but-invalid values are rejected loudly (review thread 2 / AGENTS.md input-validation).
+  assert.throws(
+    () => parseConfig({ provenance: { requireSpans: "treu" } }),
+    /provenance\.requireSpans must be a boolean/,
+  );
 });
 
 test("parseConfig provenance non-object shape rejects loudly (issue #1575)", () => {
