@@ -62,20 +62,27 @@ export interface ResolvedLocalLabProfile {
  * Resolve a single manifest role into a `ResolvedLocalLabRole`, forwarding
  * `temperature` and `seed` into the `ProviderConfig` so providers can read
  * them off the config directly.
+ *
+ * Ollama `baseUrl`s are normalized to include `/api` so the provider posts to
+ * `${baseUrl}/generate` → `…/api/generate` rather than `…/generate` (404).
+ * This mirrors `discoveryEndpointFor` which already appends `/api/tags` for
+ * preflight. Operators can write `http://127.0.0.1:11434` or
+ * `http://127.0.0.1:11434/api` interchangeably (codex review, #1573 PR2).
  */
 export function resolveLocalLabRole(role: LocalLabRoleConfig): ResolvedLocalLabRole {
   const provider = manifestProviderKindToBuiltIn(role.provider);
+  const baseUrl = normalizeRoleBaseUrl(role.provider, role.baseUrl);
   const providerConfig: ProviderConfig = {
     provider,
     model: role.model,
-    baseUrl: role.baseUrl,
+    baseUrl,
     temperature: role.temperature,
     seed: role.seed,
   };
 
   return {
     provider: role.provider,
-    baseUrl: role.baseUrl,
+    baseUrl,
     model: role.model,
     ctx: role.ctx,
     temperature: role.temperature,
@@ -83,6 +90,24 @@ export function resolveLocalLabRole(role: LocalLabRoleConfig): ResolvedLocalLabR
     ...(role.quantization ? { quantization: role.quantization } : {}),
     providerConfig,
   };
+}
+
+/**
+ * Normalize a manifest role's `baseUrl` for the provider that will consume it.
+ * Strips a trailing slash, then ensures Ollama URLs carry the `/api` path
+ * segment the native transport requires (`/api/generate`, `/api/tags`).
+ * Implemented without a regex so CodeQL does not flag manifest input as
+ * uncontrolled pattern source.
+ */
+function normalizeRoleBaseUrl(
+  providerKind: LocalLabRoleConfig["provider"],
+  rawBaseUrl: string,
+): string {
+  const trimmed = rawBaseUrl.endsWith("/") ? rawBaseUrl.slice(0, -1) : rawBaseUrl;
+  if (providerKind === "ollama" && !trimmed.endsWith("/api")) {
+    return `${trimmed}/api`;
+  }
+  return trimmed;
 }
 
 /**
