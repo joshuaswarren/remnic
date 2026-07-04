@@ -614,8 +614,22 @@ export class GraphStore {
         .all(result.fileId),
       ["id", "qualified_name"],
     );
+    // Count qualified_name occurrences so ambiguous names are excluded.
+    // Node identity is (qualifiedName, filePath, label) — two symbols in
+    // the same file CAN share a qualified_name (e.g. a TS type + value
+    // both named Foo, with different labels → different node ids). A
+    // qualified_name-only map would silently keep just one; instead,
+    // ambiguous names are left out so edges to them resolve to undefined
+    // and are dropped — matching the DST conservative-drop policy
+    // (chatgpt-codex-connector P2: 'Reject ambiguous local qualified names').
+    const qnameCounts = new Map<string, number>();
     for (const row of ownSymbols) {
-      qualifiedNameToId.set(row.qualified_name, row.id);
+      qnameCounts.set(row.qualified_name, (qnameCounts.get(row.qualified_name) ?? 0) + 1);
+    }
+    for (const row of ownSymbols) {
+      if ((qnameCounts.get(row.qualified_name) ?? 0) === 1) {
+        qualifiedNameToId.set(row.qualified_name, row.id);
+      }
     }
 
     const assertedKeys = new Set<string>();

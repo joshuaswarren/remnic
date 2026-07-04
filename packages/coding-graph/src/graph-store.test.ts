@@ -576,3 +576,47 @@ test("duplicate (src,dst,type) edges keep first metadata, do not inflate edgeCou
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("ambiguous local qualified_name drops edges, does not silently pick one node (chatgpt-codex-connector P2)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-ambig-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "store.db"),
+  });
+  try {
+    // Two symbols share qualifiedName "ambig.Foo" but have different
+    // kinds (type vs function) → different node ids, same qualified_name.
+    // Node identity is (qualifiedName, filePath, label=kind).
+    const fileAmbig: FileIR = {
+      path: "src/ambig.ts",
+      language: "ts",
+      contentHash: "h-ambig",
+      symbols: [
+        sym("ambig.Foo", "Foo", 0, 100, "type"),
+        sym("ambig.Foo", "Foo", 100, 200, "function"),
+        sym("ambig.bar", "bar", 200, 300, "function"),
+      ],
+      edges: [
+        {
+          // src "ambig.Foo" is ambiguous (two nodes) — must be dropped,
+          // NOT silently attached to whichever the unordered query left last.
+          srcQualifiedName: "ambig.Foo",
+          dstQualifiedName: "ambig.bar",
+          type: "CALLS",
+          confidence: 0.9,
+          provenance: "heuristic",
+        },
+      ],
+    };
+    const r = await store.upsertFileBatch([fileAmbig]);
+    assert.equal(r.ok, true);
+    if (!r.ok) throw new Error("expected ok");
+    assert.equal(
+      r.results[0]?.edgeCount,
+      0,
+      "edge whose src qualified_name is ambiguous (two nodes share it) must be dropped, not silently resolved",
+    );
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
