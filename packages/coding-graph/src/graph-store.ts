@@ -759,19 +759,47 @@ export class GraphStore {
       // dead-code misclassification. Reject at the boundary like the
       // symbols check above (chatgpt-codex-connector P2: 'Validate
       // attribute arrays before clearing flags').
-      if (ir.exports != null && !Array.isArray(ir.exports)) {
-        throw new Error(
-          `graph-store: file '${ir.path}' exports must be an array when present; received ${
-            ir.exports === null ? "null" : typeof ir.exports
-          } — refusing to ingest to avoid wiping existing flags`,
-        );
+      if (ir.exports != null) {
+        if (!Array.isArray(ir.exports)) {
+          throw new Error(
+            `graph-store: file '${ir.path}' exports must be an array when present; received ${
+              ir.exports === null ? "null" : typeof ir.exports
+            } — refusing to ingest to avoid wiping existing flags`,
+          );
+        }
+        // Each entry must carry a non-empty string `name`; a malformed
+        // entry (e.g. `{ name: 42 }`) is silently skipped by the
+        // per-flag rebuild, so it contributes nothing while the wipe
+        // still clears every is_exported flag. Reject the whole batch
+        // like the symbols check (chatgpt-codex-connector P2: 'Reject
+        // malformed attribute entries before clearing flags').
+        for (const ex of ir.exports) {
+          if (!ex || typeof ex.name !== "string" || ex.name.length === 0) {
+            throw new Error(
+              `graph-store: file '${ir.path}' has a malformed export entry — expected { name: string (non-empty) }; refusing to ingest to avoid wiping existing flags`,
+            );
+          }
+        }
       }
-      if (ir.routes != null && !Array.isArray(ir.routes)) {
-        throw new Error(
-          `graph-store: file '${ir.path}' routes must be an array when present; received ${
-            ir.routes === null ? "null" : typeof ir.routes
-          } — refusing to ingest to avoid wiping existing flags`,
-        );
+      if (ir.routes != null) {
+        if (!Array.isArray(ir.routes)) {
+          throw new Error(
+            `graph-store: file '${ir.path}' routes must be an array when present; received ${
+              ir.routes === null ? "null" : typeof ir.routes
+            } — refusing to ingest to avoid wiping existing flags`,
+          );
+        }
+        for (const r of ir.routes) {
+          if (
+            !r ||
+            typeof r.handlerQualifiedName !== "string" ||
+            r.handlerQualifiedName.length === 0
+          ) {
+            throw new Error(
+              `graph-store: file '${ir.path}' has a malformed route entry — expected { handlerQualifiedName: string (non-empty) }; refusing to ingest to avoid wiping existing flags`,
+            );
+          }
+        }
       }
     }
     try {
@@ -1445,6 +1473,15 @@ export class GraphStore {
    */
   traverse(query: TraverseQuery): TraverseResult {
     if (this.closed) return { ok: false, code: "store_closed" };
+    // Guard the query object before any dereference: a null/undefined
+    // payload (e.g. malformed JSON forwarded at an MCP boundary) would
+    // throw on `query.maxDepth` below instead of returning the tagged
+    // invalid_query the read contract advertises
+    // (chatgpt-codex-connector P2: 'Validate read query objects before
+    // dereferencing').
+    if (query == null || typeof query !== "object") {
+      return { ok: false, code: "invalid_query" };
+    }
     // Validate maxDepth up-front (rule 51: surface what's wrong).
     if (
       typeof query.maxDepth !== "number" ||
@@ -1642,7 +1679,6 @@ export class GraphStore {
       return classifyReadError(error) as TraverseResult;
     }
   }
-
   /**
    * Structured node search. All filters are AND-combined; patterns use
    * SQLite LIKE (case-insensitive via COLLATE NOCASE). Patterns and
@@ -1651,6 +1687,10 @@ export class GraphStore {
    */
   searchGraph(query: SearchQuery): SearchResult {
     if (this.closed) return { ok: false, code: "store_closed" };
+    // Guard the query object before any dereference (see traverse).
+    if (query == null || typeof query !== "object") {
+      return { ok: false, code: "invalid_query" };
+    }
     // Validate numeric inputs (rule 51). NaN / negative / non-integer
     // limits are rejected, not silently clamped, so callers learn what
     // they passed.
@@ -1927,9 +1967,27 @@ export class GraphStore {
    */
   async snippetFor(query: SnippetQuery): Promise<SnippetResult> {
     if (this.closed) return { ok: false, code: "store_closed" };
+    // Guard the query object before any dereference (see traverse).
+    if (query == null || typeof query !== "object") {
+      return { ok: false, code: "invalid_query" };
+    }
     if (
       typeof query.qualifiedName !== "string" ||
       query.qualifiedName.length === 0
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    // Validate contextLines is a non-negative integer when present,
+    // consistent with traverse's maxDepth and the other numeric read
+    // fields. The old path coerced (Math.floor), so `1.9` silently
+    // became 1 and `"2"` became 2 — reject malformed values up-front
+    // instead (chatgpt-codex-connector P2: 'Reject invalid context
+    // line counts').
+    if (
+      query.contextLines !== undefined &&
+      (typeof query.contextLines !== "number" ||
+        !Number.isInteger(query.contextLines) ||
+        query.contextLines < 0)
     ) {
       return { ok: false, code: "invalid_query" };
     }

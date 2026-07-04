@@ -1348,3 +1348,86 @@ test("traverse: non-string start rejected with 'invalid_query' before binding (c
     await dispose(store, dir);
   }
 });
+
+test("upsertFileBatch: malformed export entry (non-string name) rejected before wiping flags", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const file = {
+      path: "src/badentry.ts",
+      language: "typescript",
+      contentHash: "h-bade",
+      symbols: [sym("bade.fn", "fn", 0, 10)],
+      exports: [{ name: 42 }],
+      edges: [],
+    } as unknown as StoreFileIR;
+    await assert.rejects(
+      store.upsertFileBatch([file]),
+      /malformed export entry/,
+      "a malformed export entry must be rejected, not silently skipped while the wipe runs",
+    );
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("upsertFileBatch: malformed route entry (non-string handlerQualifiedName) rejected", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const file = {
+      path: "src/badr2.ts",
+      language: "typescript",
+      contentHash: "h-badr2",
+      symbols: [sym("badr2.fn", "fn", 0, 10)],
+      routes: [{ handlerQualifiedName: 99 }],
+      edges: [],
+    } as unknown as StoreFileIR;
+    await assert.rejects(
+      store.upsertFileBatch([file]),
+      /malformed route entry/,
+      "a malformed route entry must be rejected, not silently skipped while the wipe runs",
+    );
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("read APIs reject a null/undefined query object with 'invalid_query'", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    for (const bad of [null, undefined, 42, "x"] as unknown[]) {
+      const t = store.traverse(bad as never);
+      assert.equal(t.ok, false, `traverse(nullish) must not succeed`);
+      if (!t.ok) assert.equal(t.code, "invalid_query");
+      const s = store.searchGraph(bad as never);
+      assert.equal(s.ok, false, `searchGraph(nullish) must not succeed`);
+      if (!s.ok) assert.equal(s.code, "invalid_query");
+      const sn = await store.snippetFor(bad as never);
+      assert.equal(sn.ok, false, `snippetFor(nullish) must not succeed`);
+      if (!sn.ok) assert.equal(sn.code, "invalid_query");
+    }
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("snippetFor: invalid contextLines (non-integer / negative / string) rejected with 'invalid_query'", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    for (const bad of [1.9, -1, "2", NaN, true] as unknown[]) {
+      const out = await store.snippetFor({
+        qualifiedName: "x.y",
+        contextLines: bad as never,
+      });
+      assert.equal(out.ok, false, `contextLines=${JSON.stringify(bad)} must not succeed`);
+      if (!out.ok) {
+        assert.equal(
+          out.code,
+          "invalid_query",
+          `invalid contextLines must return invalid_query, not ${out.code}`,
+        );
+      }
+    }
+  } finally {
+    await dispose(store, dir);
+  }
+});
