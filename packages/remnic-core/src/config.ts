@@ -653,15 +653,30 @@ function resolveEmitLegacyTools(
   configValue: unknown,
   rawOperatorConfig: Record<string, unknown> | undefined,
 ): boolean {
+  // The OpenClaw schema default for `emitLegacyTools` is `false` (issue
+  // #1550). When `rawOperatorConfig` is missing the key, the merged value
+  // is the schema default UNLESS it differs from `false` — in which case
+  // it's runtime operator intent (e.g. the gateway set `true` via the
+  // runtime API, which never lands in the on-disk file). Comparing against
+  // the schema default lets us keep both the sticky-legacy fallback (when
+  // the merged value equals the schema default) AND honor explicit runtime
+  // overrides (when it doesn't).
+  const SCHEMA_DEFAULT = false;
   if (rawOperatorConfig !== undefined) {
-    // `fileConfig` reached parseConfig — operator authoring layer was
-    // available. If the operator wrote the key (even to `null`/`undefined`),
-    // honor it via coerceBooleanLikeOrThrow. If the operator did NOT write
-    // the key, ignore `configValue` entirely: that value is the OpenClaw
-    // schema-default materialization (e.g. `false` for fresh installs) and
-    // must not short-circuit the env / sticky-legacy chain.
     if ("emitLegacyTools" in rawOperatorConfig) {
-      return coerceBooleanLikeOrThrow("emitLegacyTools", rawOperatorConfig.emitLegacyTools);
+      const rawValue = rawOperatorConfig.emitLegacyTools;
+      if (rawValue !== null && rawValue !== undefined) {
+        return coerceBooleanLikeOrThrow("emitLegacyTools", rawValue);
+      }
+      // Raw explicitly cleared (null/undefined) — fall through to merged.
+    } else if (configValue !== undefined && configValue !== null) {
+      // Raw didn't author this key. If the merged value differs from the
+      // schema default, the runtime layer set it — honor that as operator
+      // intent. If it equals the schema default, it's just the schema
+      // materialization — fall through to env / sticky-legacy.
+      if (configValue !== SCHEMA_DEFAULT) {
+        return coerceBooleanLikeOrThrow("emitLegacyTools", configValue);
+      }
     }
   } else if (configValue !== undefined && configValue !== null) {
     // Legacy caller (no rawOperatorConfig) — trust the merged value as
@@ -687,17 +702,26 @@ function resolveNamespaceCatalogEnabled(
   configValue: unknown,
   rawOperatorConfig: Record<string, unknown> | undefined,
 ): boolean {
+  // Schema default is `true` (the catalog is opt-out). Same null-vs-schema-
+  // default semantics as `resolveEmitLegacyTools` — see the comment there
+  // for the full rationale. Class hardening so a future schema flip to
+  // `default: false` cannot silently flip behavior on upgraded installs.
+  const SCHEMA_DEFAULT = true;
   if (rawOperatorConfig !== undefined) {
     if ("namespaceCatalogEnabled" in rawOperatorConfig) {
-      return coerceBooleanLikeOrThrow(
-        "namespaceCatalogEnabled",
-        rawOperatorConfig.namespaceCatalogEnabled,
-      );
+      const rawValue = rawOperatorConfig.namespaceCatalogEnabled;
+      if (rawValue !== null && rawValue !== undefined) {
+        return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", rawValue);
+      }
+    } else if (configValue !== undefined && configValue !== null) {
+      if (configValue !== SCHEMA_DEFAULT) {
+        return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", configValue);
+      }
     }
   } else if (configValue !== undefined && configValue !== null) {
     return coerceBooleanLikeOrThrow("namespaceCatalogEnabled", configValue);
   }
-  return true;
+  return SCHEMA_DEFAULT;
 }
 
 function readNestedConfig(

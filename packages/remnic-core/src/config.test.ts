@@ -112,23 +112,34 @@ test("parseConfig emitLegacyTools raw-vs-effective: schema default does not bloc
 test("parseConfig namespaceCatalogEnabled raw-vs-effective: schema-default hardening (#1550 class hardening)", () => {
   // Same-class hardening as emitLegacyTools: if a future schema revision flips
   // namespaceCatalogEnabled's default to `false`, the resolver must still let
-  // sticky / env / absent chains run unless the operator wrote the key. Today
+  // the sticky / absent chain run unless the operator wrote the key. Today
   // the schema default is `true`, so the bug doesn't manifest — but the helper
   // now has the raw-vs-effective split, and this test pins the contract so a
   // future schema flip can't reintroduce the bug class silently.
-  // Absent from both → default true.
+  //
+  // Logic: when raw is missing the key, compare merged to the schema default
+  // (true). If merged equals the schema default, it's the materialized
+  // schema value — fall through to default. If merged differs (i.e. merged
+  // is `false`), it's runtime operator intent — honor it. Symmetric to
+  // resolveEmitLegacyTools, with the schema default inverted.
+  // Absent from both → schema default true (sticky chain returns true).
   assert.equal(
     parseConfig({}, {}).namespaceCatalogEnabled,
     true,
-    "absent from both raw and merged -> true",
+    "absent from both raw and merged -> true (schema default)",
   );
-  // Schema-default false in merged, absent from raw → still treated as absent
-  // and resolves to true (today's behavior; would have flipped to false under
-  // the old resolver if the schema had `default: false`).
+  // Merged `true` (schema default) with empty raw → fall through, return true.
+  assert.equal(
+    parseConfig({ namespaceCatalogEnabled: true }, {}).namespaceCatalogEnabled,
+    true,
+    "merged true (schema default) with empty raw falls through to default",
+  );
+  // Merged `false` (DIFFERENT from schema default) with empty raw → runtime
+  // opt-out intent — honor it, return false.
   assert.equal(
     parseConfig({ namespaceCatalogEnabled: false }, {}).namespaceCatalogEnabled,
-    true,
-    "merged false with empty raw treated as schema default, not operator opt-out",
+    false,
+    "merged false differs from schema default — runtime operator intent honored",
   );
   // Raw operator opt-out wins over merged value (operator wrote false).
   assert.equal(
@@ -144,6 +155,52 @@ test("parseConfig namespaceCatalogEnabled raw-vs-effective: schema-default harde
     true,
     "raw operator true wins over merged false",
   );
+});
+
+test("parseConfig emitLegacyTools raw null is treated as absent (PR #1593 review round 2)", () => {
+  // Cursor Bugbot round 2: when raw has the key but its value is `null`
+  // (operator explicitly cleared it in openclaw.json), the old resolver
+  // threw via coerceBooleanLikeOrThrow. New behavior: treat null/undefined
+  // in raw as "absent" and fall through to merged / env / sticky-legacy.
+  withIsolatedConnectorsDir(false, () => {
+    // Fresh install: raw null + merged null + env absent + sticky false → false.
+    assert.equal(
+      parseConfig({ emitLegacyTools: null }, { emitLegacyTools: null }).emitLegacyTools,
+      false,
+      "fresh install with raw null resolves to false via sticky-legacy",
+    );
+    // Legacy install: raw null + sticky evidence → true.
+  });
+  withIsolatedConnectorsDir(true, () => {
+    assert.equal(
+      parseConfig({ emitLegacyTools: null }, { emitLegacyTools: null }).emitLegacyTools,
+      true,
+      "upgraded install with raw null resolves to true via sticky-legacy",
+    );
+  });
+});
+
+test("parseConfig emitLegacyTools runtime true overrides schema default (PR #1593 review round 2)", () => {
+  // Cursor Bugbot round 2: schema default is `false`. When raw is missing
+  // the key but merged carries `true` (runtime gateway set it), the old
+  // resolver dropped the runtime override as schema-default materialization.
+  // New behavior: if merged value differs from the schema default, treat
+  // it as runtime operator intent and honor it.
+  withIsolatedConnectorsDir(false, () => {
+    // Merged `true` with empty raw → runtime opt-in honored, even on a
+    // fresh install (no legacy connector entries).
+    assert.equal(
+      parseConfig({ emitLegacyTools: true }, {}).emitLegacyTools,
+      true,
+      "runtime true with empty raw treated as operator intent",
+    );
+    // Merged `false` (the schema default) with empty raw → sticky fallback.
+    assert.equal(
+      parseConfig({ emitLegacyTools: false }, {}).emitLegacyTools,
+      false,
+      "merged false (schema default) with empty raw falls through to sticky-legacy",
+    );
+  });
 });
 
 test("parseConfig emitLegacyTools coerces config/env (issue #1427)", () => {
