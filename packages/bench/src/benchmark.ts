@@ -176,8 +176,22 @@ export async function runBenchmark(
   // PR #1591 P2 (thread #10): AMA-Bench can run a separate cross judge
   // (`options.amaBenchCrossJudge`) that shares the same content-keyed
   // cache as the primary system judge (when both have provider config).
+  // PR #1591 P2 (round-4 OS_ny): when `options.system.judge` is unset
+  // (no primary judge) but a configured cross judge exists, still wire
+  // the cache for the cross judge path. The primary-judge check only
+  // skips primary wrapping, not the shared cache / cross-judge path.
   const baseSystem: BenchMemoryAdapter = (() => {
-    if (options.noJudgeCache || !options.system.judge) {
+    if (options.noJudgeCache) {
+      return options.system;
+    }
+    // Determine whether cache wrapping is in play at all. If neither
+    // the primary nor the cross judge will be wrapped, fall back to
+    // the byte-identical baseline.
+    const willWrapPrimary = options.system.judge !== undefined
+      && (options.judgeProvider ?? null) !== null;
+    const willWrapCross = options.amaBenchCrossJudge !== undefined
+      && (options.amaBenchCrossJudgeProvider ?? null) !== null;
+    if (!willWrapPrimary && !willWrapCross) {
       return options.system;
     }
     // An explicit judgeCacheDir enables caching on its own — programmatic
@@ -185,7 +199,7 @@ export async function runBenchmark(
     // PR #1591 (round-3 cursor bugbot): Node's path.resolve does not
     // expand a leading `~`; resolve it manually so programmatic callers
     // (the CLI already expands via shell) can pass `~/bench-cache` and
-    // land in the user's home directory instead of a literal `~/…` path.
+    // land in the user home directory instead of a literal `~/…` path.
     const cacheDir = options.judgeCacheDir
       ? path.resolve(expandTilde(options.judgeCacheDir))
       : options.outputDir
@@ -196,15 +210,14 @@ export async function runBenchmark(
     }
     const cache = new JudgeCache({ dir: cacheDir });
     let baseSystemInner: BenchMemoryAdapter = options.system;
-    const judgeProvider = options.judgeProvider ?? null;
-    if (judgeProvider !== null) {
+    if (willWrapPrimary) {
       const primary = wrapJudgeWithCache({
         role: "primary",
-        judge: options.system.judge,
+        judge: options.system.judge!,
         benchmarkId,
         datasetVersion: definition.meta.version,
         amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
-        provider: judgeProvider,
+        provider: options.judgeProvider ?? null,
         cache,
       });
       judgeCacheCounters = primary.counters;
@@ -213,13 +226,10 @@ export async function runBenchmark(
     // AMA-Bench cross judge: only wrap when a cross-judge provider config
     // identifies it. Without provider config, leave the cross judge
     // untouched so unidentified closure-based judges cannot collide.
-    if (
-      options.amaBenchCrossJudge &&
-      (options.amaBenchCrossJudgeProvider ?? null) !== null
-    ) {
+    if (willWrapCross) {
       const wrapped = wrapJudgeWithCache({
         role: "cross",
-        judge: options.amaBenchCrossJudge,
+        judge: options.amaBenchCrossJudge!,
         benchmarkId,
         datasetVersion: definition.meta.version,
         amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
