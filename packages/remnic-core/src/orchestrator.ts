@@ -245,7 +245,12 @@ import {
   type TrustZoneSearchResult,
 } from "./trust-zones.js";
 import { tryDirectAnswer, type DirectAnswerSources } from "./direct-answer-wiring.js";
-import { resolveCapabilities, type CapabilitySet } from "./capabilities.js";
+import {
+  resolveCapabilities,
+  resolveGraphConstructionCapabilities,
+  type CapabilitySet,
+  type GraphConstructionCapabilitySet,
+} from "./capabilities.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/index.js";
 import {
   searchHarmonicRetrieval,
@@ -5755,6 +5760,7 @@ export class Orchestrator {
     // entry, and thread the frozen set down (issue #1523). Never re-read the
     // migrated flags off `this.config` mid-operation.
     const caps = resolveCapabilities(this.config);
+    const graphCaps = resolveGraphConstructionCapabilities(this.config); // #1566 Cluster A
     const abortController = new AbortController();
     const onAbort = () => {
       abortController.abort();
@@ -5830,7 +5836,7 @@ export class Orchestrator {
       const recallPromise = this.recallInternal(prompt, sessionKey, {
         ...options,
         abortSignal: abortController.signal,
-      }, caps);
+      }, caps, graphCaps);
       const RECALL_TIMEOUT_MS = this.config.recallOuterTimeoutMs ?? 75_000;
       if (RECALL_TIMEOUT_MS <= 0) {
         return await recallPromise;
@@ -7311,6 +7317,7 @@ export class Orchestrator {
     sessionKey?: string,
     options: RecallInvocationOptions = {},
     caps: CapabilitySet = resolveCapabilities(this.config),
+    graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
   ): Promise<string> {
     const recallStart = Date.now();
     // Backend degradations observed by this recall's QMD searches (#1536):
@@ -7472,7 +7479,7 @@ export class Orchestrator {
     const recallModeDecisionOptions = {
       plannerEnabled: caps.recallPlanner,
       graphRecallEnabled: caps.graphRecall,
-      multiGraphMemoryEnabled: this.config.multiGraphMemoryEnabled,
+      multiGraphMemoryEnabled: graphCaps.multiGraphMemory,
       graphExpandedIntentEnabled: caps.graphExpandedIntent,
       prompt,
     };
@@ -7825,7 +7832,7 @@ export class Orchestrator {
         shadowMode: graphDecisionShadowMode,
         qmdAvailable,
         graphRecallEnabled: caps.graphRecall,
-        multiGraphMemoryEnabled: this.config.multiGraphMemoryEnabled,
+        multiGraphMemoryEnabled: graphCaps.multiGraphMemory,
       },
     });
 
@@ -11045,7 +11052,7 @@ export class Orchestrator {
       );
 
       const isFullModeGraphAssist =
-        this.config.multiGraphMemoryEnabled &&
+        graphCaps.multiGraphMemory &&
         caps.graphAssistInFullMode &&
         recallMode === "full" &&
         memoryResults.length >=
@@ -11468,6 +11475,7 @@ export class Orchestrator {
             recallResultLimit,
             recallMode,
             caps,
+            graphCaps,
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
             onDegradation: (degradation) => {
@@ -11695,6 +11703,7 @@ export class Orchestrator {
               recallResultLimit,
               recallMode,
               caps,
+              graphCaps,
               queryAwarePrefilter,
               abortSignal: options.abortSignal,
               onDegradation: (degradation) => {
@@ -11809,6 +11818,7 @@ export class Orchestrator {
                 recallResultLimit,
                 recallMode,
                 caps,
+                graphCaps,
                 queryAwarePrefilter,
                 abortSignal: options.abortSignal,
                 onDegradation: (degradation) => {
@@ -11857,6 +11867,7 @@ export class Orchestrator {
             recallResultLimit,
             recallMode,
             caps,
+            graphCaps,
             queryAwarePrefilter,
             abortSignal: options.abortSignal,
             onDegradation: (degradation) => {
@@ -14073,6 +14084,7 @@ export class Orchestrator {
     sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
+    graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
     // fact is rewritten to carry a compact provenance tag inside its body so
@@ -14734,7 +14746,7 @@ export class Orchestrator {
         allMemsForGraph: null,
         memoryPathById: new Map<string, string>(),
       };
-      if (this.config.multiGraphMemoryEnabled) {
+      if (graphCaps.multiGraphMemory) {
         try {
           created.allMemsForGraph = await targetStorage.readAllMemories();
           for (const [id, relPath] of buildMemoryPathById(
@@ -14751,7 +14763,7 @@ export class Orchestrator {
       return created;
     };
     let threadEpisodeIdsForGraph: string[] | undefined;
-    if (this.config.multiGraphMemoryEnabled && threadIdForExtraction) {
+    if (graphCaps.multiGraphMemory && threadIdForExtraction) {
       try {
         const thread = await this.threading.loadThread(threadIdForExtraction);
         threadEpisodeIdsForGraph = thread?.episodeIds
@@ -15591,7 +15603,7 @@ export class Orchestrator {
               });
             }
             // v8.2: graph edge building for chunked memories
-            if (this.config.multiGraphMemoryEnabled) {
+            if (graphCaps.multiGraphMemory) {
               try {
                 const graphContext = await ensureGraphContext(targetStorage);
                 const entityRef =
@@ -15783,7 +15795,7 @@ export class Orchestrator {
           source: extractionWriteSource,
         });
         // v8.2: graph edge building (fail-open — errors caught inside GraphIndex)
-        if (this.config.multiGraphMemoryEnabled) {
+        if (graphCaps.multiGraphMemory) {
           try {
             const graphContext = await ensureGraphContext(targetStorage);
             const entityRef =
@@ -16087,6 +16099,7 @@ export class Orchestrator {
     threadIdForEdge: string | undefined,
     threadEpisodeIdsForGraph: string[] | undefined,
     fallbackCausalPredecessor: string | undefined,
+    graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
   ): Promise<void> {
     // Entity siblings: other memories sharing the same entityRef
     const entitySiblings: string[] = [];
@@ -16123,7 +16136,7 @@ export class Orchestrator {
     }
     if (
       recentInThread.length === 0 &&
-      this.config.graphWriteSessionAdjacencyEnabled !== false &&
+      graphCaps.graphWriteSessionAdjacency &&
       fallbackCausalPredecessor &&
       fallbackCausalPredecessor !== memoryRelPath
     ) {
@@ -18755,6 +18768,8 @@ export class Orchestrator {
      * equivalent config-derived set — behavior-preserving.
      */
     caps?: CapabilitySet;
+    /** Graph-construction gates resolved at recall entry (#1566 Cluster A). */
+    graphCaps?: GraphConstructionCapabilitySet;
     queryAwarePrefilter?: QueryAwarePrefilter;
     abortSignal?: AbortSignal;
     /** Backend degradation observer — cold-tier QMD must report like hot (#1536). */
@@ -18777,6 +18792,7 @@ export class Orchestrator {
     // Prefer the threaded set; fall back to a config-derived set so direct
     // callers (unit tests) behave identically to the recall pipeline (#1523).
     const caps = options.caps ?? resolveCapabilities(this.config);
+    const graphCaps = options.graphCaps ?? resolveGraphConstructionCapabilities(this.config);
     if (options.queryAwarePrefilter?.candidatePaths?.size === 0) {
       if (options.xrayPoolSizeSink) options.xrayPoolSizeSink.size = 0;
       return [];
@@ -18991,7 +19007,7 @@ export class Orchestrator {
 
     const isFullModeGraphAssist =
       this.config.qmdTierParityGraphEnabled &&
-      this.config.multiGraphMemoryEnabled &&
+      graphCaps.multiGraphMemory &&
       caps.graphAssistInFullMode &&
       options.recallMode === "full" &&
       results.length >= Math.max(1, this.config.graphAssistMinSeedResults ?? 3);

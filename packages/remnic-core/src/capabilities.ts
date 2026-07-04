@@ -84,3 +84,64 @@ export function resolveCapabilities(config: PluginConfig): CapabilitySet {
     graphExpandedIntent: config.graphExpandedIntentEnabled === true,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Graph-construction capability set (issue #1566 Cluster A).
+//
+// The recall CapabilitySet above covers flags whose EVERY read site lives on
+// the recall call chain. The five flags below are read on graph-construction,
+// write/extraction, AND recall paths — so they cannot join the recall set
+// without leaving some sites on `caps.` and others on `config.` (the exact
+// divergence #1523 forbade). They get their own projection, resolved at graph
+// build/write entry (and alongside `caps` when recall reads them).
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of graph-construction feature gates.
+ *
+ * Every field is `readonly boolean`. Composition (including default-when-
+ * undefined semantics for the optional `graphWriteSessionAdjacencyEnabled`)
+ * lives ONLY in {@link resolveGraphConstructionCapabilities}.
+ */
+export interface GraphConstructionCapabilitySet {
+  /** `entityGraphEnabled` — maintain entity co-reference graph edges. */
+  readonly entityGraph: boolean;
+  /** `timeGraphEnabled` — maintain thread-adjacency graph edges. */
+  readonly timeGraph: boolean;
+  /** `causalGraphEnabled` — maintain causal-language graph edges. */
+  readonly causalGraph: boolean;
+  /** `multiGraphMemoryEnabled` — master switch for multi-graph writes/traversal. */
+  readonly multiGraphMemory: boolean;
+  /** `graphWriteSessionAdjacencyEnabled` — session-adjacency fallback for time edges (default-on). */
+  readonly graphWriteSessionAdjacency: boolean;
+}
+
+/**
+ * Resolve the {@link GraphConstructionCapabilitySet} from parsed config.
+ *
+ * Call this ONCE at graph build/write entry (extraction, recall graph
+ * expansion, graph-health/repair) and thread the result down — exactly the
+ * pattern {@link resolveCapabilities} established for recall.
+ */
+export type GraphConstructionConfigProjection = Pick<
+  PluginConfig,
+  | "entityGraphEnabled"
+  | "timeGraphEnabled"
+  | "causalGraphEnabled"
+  | "multiGraphMemoryEnabled"
+  | "graphWriteSessionAdjacencyEnabled"
+>;
+
+export function resolveGraphConstructionCapabilities(
+  config: GraphConstructionConfigProjection,
+): GraphConstructionCapabilitySet {
+  return Object.freeze({
+    entityGraph: config.entityGraphEnabled,
+    timeGraph: config.timeGraphEnabled,
+    causalGraph: config.causalGraphEnabled,
+    multiGraphMemory: config.multiGraphMemoryEnabled,
+    // Optional flag: preserve the exact default-when-undefined semantics the
+    // migrated call site used (`!== false` = default-on).
+    graphWriteSessionAdjacency: config.graphWriteSessionAdjacencyEnabled !== false,
+  });
+}
