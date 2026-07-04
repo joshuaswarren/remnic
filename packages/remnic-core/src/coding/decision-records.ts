@@ -443,15 +443,35 @@ export function applySupersede(
       `applySupersede cannot find target record '${targetId}' in the current record set.`,
     );
   }
+  // Reject a collision where `replacement.id` already exists in the record
+  // set. Without this guard, an operator typo or MCP rename can silently
+  // overwrite an unrelated decision with a record that `supersedes` itself,
+  // corrupting the decision history (chatgpt-codex-connector review on
+  // PR #1590). The replacement must either be a NEW id (append) or the
+  // same id as the target (in-place replacement — supported as a separate
+  // edge case below).
+  const existing = records.find((r) => r.id === replacement.id);
+  if (existing && replacement.id !== targetId) {
+    throw new Error(
+      `applySupersede replacement id '${replacement.id}' already exists in the record set; ` +
+        `pick a new id to avoid silently overwriting an unrelated decision.`,
+    );
+  }
   const next: DecisionRecord[] = records.map((r) =>
     r.id === targetId
       ? { ...r, status: "superseded" as DecisionStatus, supersedes: undefined }
       : r,
   );
   const replacementWithEdge: DecisionRecord = { ...replacement, supersedes: targetId };
-  const idx = next.findIndex((r) => r.id === replacement.id);
-  if (idx >= 0) next[idx] = replacementWithEdge;
-  else next.push(replacementWithEdge);
+  // Same-id replacement path: a single record swaps its body in place. The
+  // entry keeps its place in the array (so the listing order is preserved)
+  // and the new record still carries the supersede edge for traceability.
+  if (replacement.id === targetId) {
+    const idx = next.findIndex((r) => r.id === targetId);
+    next[idx] = replacementWithEdge;
+  } else {
+    next.push(replacementWithEdge);
+  }
 
   hook?.(`write:${replacement.id}`);
   hook?.(`mutate:${targetId}:superseded`);

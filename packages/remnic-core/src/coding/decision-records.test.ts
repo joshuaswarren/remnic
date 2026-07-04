@@ -237,6 +237,77 @@ test("applySupersede: throws when the replaced record is missing", () => {
 });
 
 
+test("applySupersede: throws when the replacement id collides with an unrelated existing record (chatgpt-codex review)", () => {
+  // chatgpt-codex-connector review (PR #1590): an operator typo or MCP
+  // rename that supplies a replacement.id already present in the record
+  // set must not silently overwrite that unrelated decision. The collision
+  // path MUST throw — the caller picks a fresh id and retries.
+  const records: DecisionRecord[] = [
+    {
+      id: "ADR-0001",
+      title: "Old",
+      status: "accepted",
+      context: "",
+      decision: "",
+      consequences: undefined,
+      entityRefs: [],
+    },
+    {
+      id: "ADR-0002",
+      title: "Unrelated",
+      status: "accepted",
+      context: "",
+      decision: "",
+      consequences: undefined,
+      entityRefs: [],
+    },
+  ];
+  const replacement: DecisionRecord = {
+    id: "ADR-0002", // collision with the unrelated record
+    title: "New",
+    status: "accepted",
+    context: "",
+    decision: "",
+    consequences: undefined,
+    entityRefs: [],
+  };
+  assert.throws(
+    () => applySupersede(records, "ADR-0001", replacement),
+    /replacement id 'ADR-0002' already exists/,
+  );
+});
+
+test("applySupersede: allows same-id replacement (in-place body swap)", () => {
+  // The one collision we intentionally allow: replacement.id === targetId.
+  // This is the in-place body-swap path — the entry stays in its position
+  // in the listing and the new record carries the supersede edge back to
+  // the OLD body that was replaced.
+  const records: DecisionRecord[] = [
+    {
+      id: "ADR-0001",
+      title: "Original",
+      status: "accepted",
+      context: "C",
+      decision: "D",
+      consequences: undefined,
+      entityRefs: [],
+    },
+  ];
+  const replacement: DecisionRecord = {
+    id: "ADR-0001",
+    title: "Revised",
+    status: "accepted",
+    context: "C2",
+    decision: "D2",
+    consequences: undefined,
+    entityRefs: [],
+  };
+  const next = applySupersede(records, "ADR-0001", replacement);
+  assert.equal(next.length, 1, "in-place swap must not duplicate the entry");
+  assert.equal(next[0]!.title, "Revised");
+  assert.equal(next[0]!.supersedes, "ADR-0001");
+});
+
 test("applySupersede result round-trips through serialize/parse (issue #1548 review)", () => {
   // The classic on-disk shape after supersede: the old record carries
   // `status: "superseded"` and no `supersedes` field (the edge lives on
