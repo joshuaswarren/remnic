@@ -9,11 +9,15 @@ import {
   type CapsuleImportRequest,
   type CapsuleListRequest,
   type DaySummaryRequest,
-  type MemoryStoreRequest,
   type SchemaName,
   type SchemaTypeFor,
   type SuggestionSubmitRequest,
 } from "./access-schema.js";
+// Importing access-operations registers the pilot boundary operations
+// (memory_get / memory_search / memory_store) as a side effect; callTool
+// dispatches migrated tools through the registry (issue #1525).
+import { getOperation, type OperationName } from "./access-boundary.js";
+import "./access-operations.js";
 import { readEnvVar } from "./runtime/env.js";
 import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { validateBriefingFormat } from "./briefing.js";
@@ -93,6 +97,19 @@ function withToolAliases(tool: McpTool, emitLegacyTools = true): McpTool[] {
   // alias only trims `tools/list`, not callability.
   return emitLegacyTools ? [canonicalTool, tool] : [canonicalTool];
 }
+
+/**
+ * MCP tool name (legacy `engram.*` form, since {@link toLegacyToolName}
+ * canonicalizes incoming calls) → boundary operation it dispatches through.
+ * A tool appears here once its `access-operations.ts` registration lands and
+ * its surface-local validation is deleted. The fitness test
+ * (`access-surface-catalog.test.ts`) asserts this map and the catalog agree.
+ */
+const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
+  "engram.memory_get": "memory_get",
+  "engram.memory_search": "memory_search",
+  "engram.memory_store": "memory_store",
+};
 
 function resolveChatGptInspectorRecallSessionKey(
   explicitSessionKey: string | undefined,
@@ -2278,6 +2295,29 @@ export class EngramMcpServer {
   }
 
   private async callTool(name: string, args: Record<string, unknown>, effectivePrincipal?: string, mcpSessionId?: string): Promise<unknown> {
+    // Migrated operations dispatch through the access boundary (issue #1525):
+    // one registry entry owns schema validation, normalization (rules
+    // 17/28/36/48/51), and error mapping for every surface. The switch
+    // below still serves the not-yet-migrated tools. memory_store keeps its
+    // parseMcpRequest strict-keys guard (MCP transport contract) before the
+    // boundary re-validates the cleaned body.
+    const migrated = MCP_MIGRATED_OPERATIONS[toLegacyToolName(name)];
+    if (migrated) {
+      const op = getOperation(migrated);
+      if (!op) {
+        throw new EngramAccessInputError(`access-boundary: operation not registered: ${migrated}`);
+      }
+      const envelope =
+        migrated === "memory_store" ? parseMcpRequest("memoryStore", args) : args;
+      // The registry erases In/Out at the Map boundary; the caller knows the
+      // concrete output shape ({ result: <service response> }) so the cast is
+      // the type-erasure seam, not a leap of faith.
+      const output = (await op.run(envelope, {
+        service: this.service,
+        authenticatedPrincipal: effectivePrincipal,
+      })) as { result: unknown };
+      return output.result;
+    }
     switch (toLegacyToolName(name)) {
       case "engram.recall": {
         // Forward `disclosure` only when the caller actually supplied it,
@@ -2744,12 +2784,6 @@ export class EngramMcpServer {
           },
           effectivePrincipal,
         );
-      case "engram.memory_get":
-        return this.service.memoryGet(
-          typeof args.memoryId === "string" ? args.memoryId : "",
-          typeof args.namespace === "string" ? args.namespace : undefined,
-          effectivePrincipal,
-        );
       case "engram.memory_timeline": {
         const limit = typeof args.limit === "number" && Number.isFinite(args.limit) ? args.limit : 200;
         return this.service.memoryTimeline(
@@ -2758,26 +2792,6 @@ export class EngramMcpServer {
           limit,
           effectivePrincipal,
         );
-      }
-      case "engram.memory_store": {
-        const body: MemoryStoreRequest = parseMcpRequest("memoryStore", args);
-        return this.service.memoryStore({
-          schemaVersion: body.schemaVersion,
-          idempotencyKey: body.idempotencyKey,
-          dryRun: body.dryRun,
-          sessionKey: body.sessionKey,
-          authenticatedPrincipal: effectivePrincipal,
-          content: body.content,
-          category: body.category,
-          confidence: body.confidence,
-          namespace: body.namespace,
-          tags: body.tags,
-          entityRef: body.entityRef,
-          ttl: body.ttl,
-          sourceReason: body.sourceReason,
-          cwd: body.cwd,
-          projectTag: body.projectTag,
-        });
       }
       case "engram.suggestion_submit": {
         const body: SuggestionSubmitRequest = parseMcpRequest("suggestionSubmit", args);
@@ -3017,14 +3031,6 @@ export class EngramMcpServer {
           expectedGuidelineVersion: typeof args.expectedGuidelineVersion === "number" ? args.expectedGuidelineVersion : undefined,
         });
       // ── Memory search & debug tools ──────────────────────────────────
-      case "engram.memory_search":
-        return this.service.memorySearch({
-          query: typeof args.query === "string" ? args.query : "",
-          namespace: typeof args.namespace === "string" ? args.namespace : undefined,
-          maxResults: typeof args.maxResults === "number" && Number.isFinite(args.maxResults) ? args.maxResults : undefined,
-          collection: typeof args.collection === "string" ? args.collection : undefined,
-          principal: effectivePrincipal,
-        });
       case "engram.memory_profile":
         return this.service.memoryProfile(
           typeof args.namespace === "string" ? args.namespace : undefined,

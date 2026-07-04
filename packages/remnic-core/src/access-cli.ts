@@ -7,6 +7,10 @@ import { EngramAccessService } from "./access-service.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import { resolvePluginEntry } from "./plugin-entry-resolver.js";
 import { expandTildePath } from "./utils/path.js";
+import { getOperation } from "./access-boundary.js";
+// Importing access-operations registers the pilot boundary operations as a
+// side effect; the store command dispatches through the registry (issue #1525).
+import "./access-operations.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
@@ -428,21 +432,34 @@ async function runStore(args: ParsedArgs, preferredId?: string): Promise<void> {
   };
 
   const { config, service } = buildRuntime(preferredId);
-  const result = await service.memoryStore({
-    namespace: storeArgs.namespace,
-    sessionKey: storeArgs.sessionKey,
-    authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
-    content: storeArgs.content,
-    category: storeArgs.category,
-    confidence: storeArgs.confidence,
-    tags: storeArgs.tags,
-    entityRef: storeArgs.entityRef,
-    ttl: storeArgs.ttl,
-    sourceReason: storeArgs.sourceReason,
-    idempotencyKey: storeArgs.idempotencyKey,
-    dryRun: storeArgs.dryRun,
-  });
-  console.log(JSON.stringify(result, null, 2));
+  // Migrated through the access boundary (issue #1525): the store command
+  // dispatches through the same registry entry as the MCP tool and HTTP
+  // route, so validation/normalization is owned in ONE place. The CLI has no
+  // write-quota hook (it is a one-shot process), so no hooks are forwarded.
+  const op = getOperation("memory_store");
+  if (!op) {
+    throw new Error("access-boundary: operation not registered: memory_store");
+  }
+  const output = (await op.run(
+    {
+      namespace: storeArgs.namespace,
+      sessionKey: storeArgs.sessionKey,
+      content: storeArgs.content,
+      category: storeArgs.category,
+      confidence: storeArgs.confidence,
+      tags: storeArgs.tags,
+      entityRef: storeArgs.entityRef,
+      ttl: storeArgs.ttl,
+      sourceReason: storeArgs.sourceReason,
+      idempotencyKey: storeArgs.idempotencyKey,
+      dryRun: storeArgs.dryRun,
+    },
+    {
+      service,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
+    },
+  )) as { result: unknown };
+  console.log(JSON.stringify(output.result, null, 2));
 }
 
 function expandOptionalPath(value: string | undefined): string | undefined {
