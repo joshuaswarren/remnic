@@ -3,8 +3,10 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+
 import { EngramAccessService } from "@remnic/core";
 import {
   createTimeoutGuardedAdapter,
@@ -180,10 +182,14 @@ export async function runBenchmark(
     }
     // An explicit judgeCacheDir enables caching on its own — programmatic
     // callers do not need outputDir for the flag to work (PR #1591, Low).
+    // PR #1591 (round-3 cursor bugbot): Node's path.resolve does not
+    // expand a leading `~`; resolve it manually so programmatic callers
+    // (the CLI already expands via shell) can pass `~/bench-cache` and
+    // land in the user's home directory instead of a literal `~/…` path.
     const cacheDir = options.judgeCacheDir
-      ? path.resolve(options.judgeCacheDir)
+      ? path.resolve(expandTilde(options.judgeCacheDir))
       : options.outputDir
-        ? path.join(path.resolve(options.outputDir), "judge-cache")
+        ? path.join(path.resolve(expandTilde(options.outputDir)), "judge-cache")
         : undefined;
     if (cacheDir === undefined) {
       return options.system;
@@ -291,14 +297,30 @@ export async function runBenchmark(
   // "judge model calls" line is observable (zero on a cached re-run).
   // PR #1591 P2 (thread #10): when a cross judge was cached too, include
   // its model calls so the counter reflects every judge the harness called.
-  if (judgeCacheCounters !== undefined) {
-    let totalModelCalls = judgeCacheCounters.modelCalls;
-    if (crossJudgeCacheCounters !== undefined) {
-      totalModelCalls += crossJudgeCacheCounters.modelCalls;
-    }
-    result.cost.judgeModelCalls = totalModelCalls;
+  // PR #1591 (round-3 cursor bugbot): always surface both — if the
+  // primary judge is unwrapped (no judgeProvider) but the cross judge IS
+  // wrapped, the cross-judge model calls must still be reported.
+  const primaryCalls = judgeCacheCounters?.modelCalls ?? 0;
+  const crossCalls = crossJudgeCacheCounters?.modelCalls ?? 0;
+  if (primaryCalls > 0 || crossCalls > 0) {
+    result.cost.judgeModelCalls = primaryCalls + crossCalls;
   }
   return finalizeBenchmarkResultConfig(result, options);
+}
+
+/**
+ * Expand a leading `~` (or `~user`) in a filesystem path to the user's
+ * home directory. Node's `path.resolve` does not perform tilde expansion,
+ * so a caller-supplied `~/bench-cache` would otherwise land at a literal
+ * `~/…` path (PR #1591 round-3 cursor bugbot).
+ */
+function expandTilde(input: string): string {
+  if (input !== "~" && !input.startsWith("~/") && !input.startsWith("~\\")) {
+    return input;
+  }
+  const home = os.homedir();
+  if (input === "~") return home;
+  return home + input.slice(1);
 }
 
 /**
