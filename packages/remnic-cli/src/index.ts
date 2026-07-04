@@ -509,6 +509,8 @@ type PackageBenchModule = {
     amaBenchCrossJudge?: unknown;
     amaBenchCrossJudgeProvider?: PackageBenchProviderConfig | null;
     drainTimeoutMs?: number;
+    noJudgeCache?: boolean;
+    judgeCacheDir?: string;
     system: {
       destroy(): Promise<void>;
     };
@@ -2919,6 +2921,9 @@ async function runBenchViaPackage(
       internalProvider: plan.runtime.internalProvider,
       remnicConfig: plan.runtime.effectiveRemnicConfig,
       drainTimeoutMs: plan.runtime.adapterOptions.drainTimeoutMs,
+      // Issue #1573 PR1: judge-result cache controls from the CLI flags.
+      ...(parsed.noJudgeCache ? { noJudgeCache: true } : {}),
+      ...(parsed.judgeCacheDir ? { judgeCacheDir: parsed.judgeCacheDir } : {}),
       ...(benchmarkOptions ? { benchmarkOptions } : {}),
       ...(amaBenchProtocol.judgeProtocol
         ? { amaBenchJudgeProtocol: amaBenchProtocol.judgeProtocol }
@@ -3199,6 +3204,8 @@ async function runCustomBenchViaPackage(parsed: ParsedBenchArgs): Promise<boolea
         internalProvider: plan.runtime.internalProvider,
         remnicConfig: plan.runtime.effectiveRemnicConfig,
         system,
+        ...(parsed.noJudgeCache ? { noJudgeCache: true } : {}),
+        ...(parsed.judgeCacheDir ? { judgeCacheDir: parsed.judgeCacheDir } : {}),
       });
       result.config.remnicConfig = plan.runtime.remnicConfig;
       result.config.internalProvider = plan.runtime.internalProvider;

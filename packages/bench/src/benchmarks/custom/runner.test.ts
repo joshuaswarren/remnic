@@ -6,6 +6,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { runCustomBenchmarkFile } from "./runner.ts";
+import type { BenchJudge, BenchMemoryAdapter } from "../../adapters/types.ts";
 
 test("custom benchmark latency includes reported judge latency outside the search timer", async () => {
   const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-custom-bench-"));
@@ -337,6 +338,156 @@ test("custom benchmark full mode honors requested iterations", async () => {
       { completed: 3, total: 4 },
       { completed: 4, total: 4 },
     ]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("custom llm_judge benchmark honors judgeCacheDir across runs (PR #1591 round-7 OU-so)", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-custom-cache-"));
+  const benchmarkPath = path.join(tempDir, "cache.yaml");
+  const cacheDir = path.join(tempDir, "judge-cache");
+  try {
+    await writeFile(
+      benchmarkPath,
+      [
+        "name: Custom Cache",
+        "scoring: llm_judge",
+        "tasks:",
+        "  - question: What happened?",
+        "    expected: It happened.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    let judgeCalls = 0;
+    const originalJudge = {
+      async score() {
+        return 0.75;
+      },
+      async scoreWithMetrics() {
+        judgeCalls += 1;
+        return { score: 0.75, tokens: { input: 12, output: 4 }, latencyMs: 50, model: "judge-model" };
+      },
+    };
+    const makeSystem = () => ({
+      async store() {},
+      async recall() {
+        return "";
+      },
+      async search() {
+        return [{ turnIndex: 0, role: "assistant", snippet: "It happened.", sessionId: "s1" }];
+      },
+      async reset() {},
+      async getStats() {
+        return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+      },
+      async destroy() {},
+      judge: originalJudge,
+    });
+    const judgeProvider = { provider: "openai" as const, model: "judge-model" };
+
+    // Run 1: cache miss — the underlying judge is invoked once and the verdict
+    // is persisted (the runner drains fire-and-forget writes on return).
+    const system1 = makeSystem();
+    const r1 = await runCustomBenchmarkFile(benchmarkPath, {
+      mode: "quick",
+      judgeCacheDir: cacheDir,
+      judgeProvider,
+      system: system1,
+    });
+    assert.equal(judgeCalls, 1, "first run must call the underlying judge once");
+    assert.equal(r1.cost.judgeModelCalls, 1, "first run reports one judge model call");
+    assert.equal(system1.judge, originalJudge, "caller judge restored after run 1");
+
+    // Run 2: cache hit — the judge is NOT invoked; the cached verdict is served.
+    const system2 = makeSystem();
+    const r2 = await runCustomBenchmarkFile(benchmarkPath, {
+      mode: "quick",
+      judgeCacheDir: cacheDir,
+      judgeProvider,
+      system: system2,
+    });
+    assert.equal(judgeCalls, 1, "second run must serve from cache without calling the judge");
+    assert.equal(r2.cost.judgeModelCalls, 0, "cached run reports zero judge model calls");
+    assert.equal(system2.judge, originalJudge, "caller judge restored after run 2");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("custom llm_judge benchmark does not break #private receivers when judge is getter-only (PR #1591 round-9)", async () => {
+  // Mirror of the runBenchmark (ab) regression for the custom path: a
+  // class-based system adapter with a #private field AND a getter-only
+  // judge property. The in-place mutation throws (getter-only), so the
+  // runner must fall back to createJudgeOverrideProxy and complete the run
+  // without throwing or mutating the caller's adapter. The old Object.create
+  // fallback changed `this` and broke private member access (cursor bugbot,
+  // thread PRRT_kwDORJXyws6OVjxR).
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-custom-readonly-judge-"));
+  const benchmarkPath = path.join(tempDir, "readonly.yaml");
+  const cacheDir = path.join(tempDir, "judge-cache");
+  try {
+    await writeFile(
+      benchmarkPath,
+      [
+        "name: Custom ReadOnly Judge",
+        "scoring: llm_judge",
+        "tasks:",
+        "  - question: What happened?",
+        "    expected: It happened.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const originalJudge = {
+      async score() {
+        return 0.75;
+      },
+      async scoreWithMetrics() {
+        return { score: 0.75, tokens: { input: 12, output: 4 }, latencyMs: 50, model: "judge-model" };
+      },
+    } as unknown as BenchJudge;
+
+    class PrivateSystem {
+      #data: string;
+      constructor(data: string) {
+        this.#data = data;
+      }
+      async store(): Promise<void> {}
+      async recall(): Promise<string> {
+        // Throws only if `this` is not a real PrivateSystem instance
+        // holding the #data slot — i.e. if a shadow Object.create were used.
+        return this.#data;
+      }
+      async search() {
+        return [{ turnIndex: 0, role: "assistant", snippet: "It happened.", sessionId: "s1" }];
+      }
+      async reset(): Promise<void> {}
+      async getStats() {
+        return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+      }
+      async destroy(): Promise<void> {}
+      // getter-only judge => `system.judge = wrapped` throws in strict mode,
+      // forcing the runner onto the createJudgeOverrideProxy fallback path.
+      get judge(): BenchJudge {
+        return originalJudge;
+      }
+    }
+
+    const system = new PrivateSystem("private-data") as unknown as BenchMemoryAdapter;
+
+    const result = await runCustomBenchmarkFile(benchmarkPath, {
+      mode: "quick",
+      judgeCacheDir: cacheDir,
+      judgeProvider: { provider: "openai" as const, model: "judge-model" },
+      system,
+    });
+
+    assert.ok(result, "custom runner should complete without throwing on a getter-only judge class adapter");
+    assert.equal(system.judge, originalJudge, "caller's getter-only judge must not be mutated");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
