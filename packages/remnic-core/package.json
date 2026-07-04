@@ -451,6 +451,11 @@
       "remnic-source": "./src/coding/optional-coding-graph.ts",
       "import": "./dist/coding/optional-coding-graph.js"
     },
+    "./coding/coding-graph-types": {
+      "types": "./dist/coding/coding-graph-types.d.ts",
+      "remnic-source": "./src/coding/coding-graph-types.ts",
+      "import": "./dist/coding/coding-graph-types.js"
+    },
     "./commitment-ledger": {
       "types": "./dist/commitment-ledger.d.ts",
       "remnic-source": "./src/commitment-ledger.ts",
