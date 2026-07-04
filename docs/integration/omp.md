@@ -98,6 +98,132 @@ remnic connectors install omp \
   --config namespace=work
 ```
 
+### Known issue: omp cannot resolve the extension's npm dependencies
+
+> **Status:** open omp loader bug, confirmed against omp v16.3.5
+> (macOS arm64 and Debian x64). Tracked for an installer-side fix in the
+> Remnic repo — see the `OmpMemoryExtensionPublisher` auto-bundle issue.
+
+omp's embedded runtime fails to resolve bare npm specifiers from the
+extension's `node_modules`, even though the packages are installed and a
+system `bun` resolves them fine from the same directory. Every session start
+logs (and the extension silently never loads):
+
+```text
+Failed to load extension: ResolveMessage: Cannot find module
+'@sinclair/typebox' from
+'~/.omp/agent/extensions/remnic/node_modules/@remnic/plugin-pi/dist/index.js'
+```
+
+omp's extension loader has a compat shim that rewrites bare
+`@sinclair/typebox` imports onto its host-bundled copy, but the rewrite does
+not reach files under the extension's `node_modules`, and plain resolution
+from those files fails inside omp's compiled binary.
+
+**Workaround — pre-bundle the extension so nothing resolves at runtime.**
+
+Step 1: the connector-generated `index.ts` imports `@remnic/plugin-pi` via a
+`file://` URL pointing at the global install (`renderWrapper()` in
+`packages/plugin-pi/src/publisher.ts`). Bun's bundler cannot resolve
+`file://` specifiers (`Could not resolve: "file://…"`), so first convert the
+extension directory to a self-contained npm layout with a bare-specifier
+import:
+
+```bash
+# Resolve the extension root the same way the installer does (see
+# "Install location" above): active profile wins, then PI_CODING_AGENT_DIR,
+# then the default agent dir.
+# Profile selection mirrors resolveOmpProfile(): OMP_PROFILE wins whenever it
+# is SET (even set-but-empty — it does not fall through to PI_PROFILE), values
+# are trimmed, and blank or the reserved "default" mean "no profile".
+if [ "${OMP_PROFILE+x}" = "x" ]; then raw_profile="$OMP_PROFILE"; else raw_profile="${PI_PROFILE-}"; fi
+profile="$(printf '%s' "$raw_profile" | xargs)"
+[ "$profile" = "default" ] && profile=""
+config_root="$HOME/${PI_CONFIG_DIR:-.omp}"
+if [ -n "$profile" ]; then
+  agent_dir="$config_root/profiles/$profile/agent"
+elif [ -n "${PI_CODING_AGENT_DIR:-}" ]; then
+  # Expand a leading tilde the way expandTildePath() does.
+  case "$PI_CODING_AGENT_DIR" in
+    "~") agent_dir="$HOME" ;;
+    "~/"*) agent_dir="$HOME/${PI_CODING_AGENT_DIR#\~/}" ;;
+    *) agent_dir="$PI_CODING_AGENT_DIR" ;;
+  esac
+else
+  agent_dir="$config_root/agent"
+fi
+ext_dir="$agent_dir/extensions/remnic"
+[ -f "$ext_dir/remnic.config.json" ] || {
+  echo "No remnic extension at $ext_dir — run: remnic connectors install omp" >&2
+  exit 1
+}
+cd "$ext_dir"
+cat > index.ts <<'EOF'
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createRemnicPiExtension } from "@remnic/plugin-pi";
+
+// Resolve remnic.config.json relative to this file so the extension keeps
+// working under profiles / custom agent dirs (OMP_PROFILE, PI_CONFIG_DIR,
+// PI_CODING_AGENT_DIR). When bundled, this file runs from dist-bundle/, so
+// also check one level up.
+const here = dirname(fileURLToPath(import.meta.url));
+const configPath = [
+  join(here, "remnic.config.json"),
+  join(here, "..", "remnic.config.json"),
+].find(existsSync);
+
+export default createRemnicPiExtension({ configPath });
+EOF
+npm init -y >/dev/null && npm install @remnic/plugin-pi
+```
+
+(Keep your existing `remnic.config.json` — only `index.ts` is replaced. The
+relative lookup preserves the installer-written location instead of
+hard-coding `~/.omp/agent`, so profile-scoped installs keep their token and
+namespace.)
+
+Step 2: bundle:
+
+```bash
+bun build index.ts --target=bun --outdir=dist-bundle
+```
+
+This inlines every dependency (only `node:` builtins stay external; native
+addons such as lancedb are emitted as sibling `.node` assets — which is why
+the bundle is **per-host** and must never be copied between machines). Then
+point omp at the bundle instead of `index.ts` by adding an `omp.extensions`
+manifest to the extension's `package.json` (omp prefers the manifest over
+`index.ts`):
+
+```json
+{
+  "omp": { "extensions": ["./dist-bundle/index.js"] },
+  "scripts": {
+    "postinstall": "bun build index.ts --target=bun --outdir=dist-bundle"
+  }
+}
+```
+
+The `postinstall` script keeps the bundle fresh across `npm install` /
+`npm update` of `@remnic/plugin-pi`. For extra safety you can make the
+manifest entry a small wrapper that compares the bundle's mtime against
+`node_modules/@remnic/plugin-pi/dist/index.js` and re-runs `bun build`
+before importing the bundle, so a stale bundle can never load silently.
+
+Verify with a throwaway session — there must be no `Failed to load
+extension` line for the remnic path:
+
+```bash
+omp -p --no-session "Reply with just: ok"
+grep "Failed to load extension" ~/.omp/logs/omp.$(date +%F).log
+```
+
+Until the bundle workaround is in place, Path 1 (the raw MCP entry with an
+`Authorization: Bearer` header) still works — only tool-gated access, no
+automatic recall/observe.
+
 ### Install location
 
 The connector writes into the same agent directory omp auto-discovers
