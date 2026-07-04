@@ -481,6 +481,41 @@ test("traverse: invalid direction rejected with code 'invalid_query' (chatgpt-co
   }
 });
 
+test("traverse: a 64-hex node id resolves by id only, never conflated with a qualified_name (cursor Bugbot: 'Traverse start conflates id and name')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([cyclicFile]);
+    assert.equal(r.ok, true);
+
+    // Look up the actual node id for cyc.a via searchGraph.
+    const search = store.searchGraph({ namePattern: "a" });
+    assert.equal(search.ok, true);
+    if (!search.ok) throw new Error("expected ok");
+    const cycA = search.hits.find((h) => h.qualifiedName === "cyc.a");
+    assert.ok(cycA, "cyc.a should be in the graph");
+    // Node ids are 64-char lowercase hex (sha256).
+    assert.match(cycA.nodeId, /^[0-9a-f]{64}$/);
+
+    // Traverse by node id → resolves uniquely to cyc.a, NOT ambiguous.
+    const byId = store.traverse({ start: cycA.nodeId, maxDepth: 1 });
+    assert.equal(byId.ok, true);
+    if (!byId.ok) throw new Error("expected ok");
+    assert.equal(byId.hits.length, 2, "cyc.a + its direct neighbor at depth 1");
+
+    // A 64-hex string that is NOT any node's id → unknown_start, even
+    // though the old `WHERE id = ? OR qualified_name = ?` would have
+    // returned [] here too. The point is the id path no longer falls
+    // through to the qualified_name path.
+    const bogusId = "0".repeat(64);
+    const miss = store.traverse({ start: bogusId, maxDepth: 3 });
+    assert.equal(miss.ok, false);
+    if (miss.ok) throw new Error("expected failure");
+    assert.equal(miss.code, "unknown_start");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // searchGraph(): label / name / file patterns + degree filters + limit.
 // ──────────────────────────────────────────────────────────────────────────

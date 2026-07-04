@@ -1439,14 +1439,25 @@ export class GraphStore {
     ) {
       return { ok: false, code: "invalid_query" };
     }
-    // Resolve the start node. If `start` is a 64-char hex string, treat
-    // it as a node id; otherwise resolve by qualified_name (ambiguous →
-    // explicit rejection so the caller can pass an id).
+    // Resolve the start node. If `start` is a 64-char lowercase hex
+    // string (the nodeIdFor sha256 format), resolve ONLY by id — this
+    // is the unambiguous path a caller uses after seeing an ambiguous
+    // qualified_name rejection. Otherwise resolve ONLY by qualified_name.
+    // Splitting the two paths (cursor Bugbot: 'Traverse start conflates id
+    // and name') prevents a mistyped id from silently matching an
+    // unrelated qualified_name, and prevents a unique id from being
+    // reported as ambiguous just because some other node shares the id
+    // string as a qualified_name.
     let startId: string;
+    const isNodeId = /^[0-9a-f]{64}$/.test(query.start);
     const rows = expectRows<{ id: string }>(
       this.db
-        .prepare("SELECT id FROM nodes WHERE id = ? OR qualified_name = ?")
-        .all(query.start, query.start),
+        .prepare(
+          isNodeId
+            ? "SELECT id FROM nodes WHERE id = ?"
+            : "SELECT id FROM nodes WHERE qualified_name = ?",
+        )
+        .all(query.start),
       ["id"],
     );
     if (rows.length === 0) {
