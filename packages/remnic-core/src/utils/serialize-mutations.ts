@@ -251,9 +251,18 @@ export async function withHeldFileLock<T>(
     throw new TypeError("withHeldFileLock: opts.staleMs must be a positive finite number");
   }
 
-  const maxWaitMs = opts.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
-  const pollMs = opts.pollMs ?? DEFAULT_POLL_MS;
-  const heartbeatMs = opts.heartbeatMs ?? Math.max(MIN_HEARTBEAT_MS, Math.floor(opts.staleMs / 3));
+  // Validate optional timings: a NaN/Infinity here is a real hazard (e.g.
+  // `Date.now() + NaN` === NaN, so `Date.now() >= deadline` is always false and
+  // the bounded acquire loop would wait forever instead of falling back to
+  // best-effort). Reject invalid input rather than silently defaulting it
+  // (codex P2 review). Omitting an option still picks its default.
+  const maxWaitMs = optionalPositiveMs(opts.maxWaitMs, "maxWaitMs", DEFAULT_MAX_WAIT_MS);
+  const pollMs = optionalPositiveMs(opts.pollMs, "pollMs", DEFAULT_POLL_MS);
+  const heartbeatMs = optionalPositiveMs(
+    opts.heartbeatMs,
+    "heartbeatMs",
+    Math.max(MIN_HEARTBEAT_MS, Math.floor(opts.staleMs / 3)),
+  );
   if (heartbeatMs >= opts.staleMs) {
     throw new TypeError(
       `withHeldFileLock: heartbeatMs (${heartbeatMs}) must be below staleMs (${opts.staleMs}) ` +
@@ -294,6 +303,28 @@ export async function withHeldFileLock<T>(
     clearInterval(heartbeat);
     await releaseLock(held, warn);
   }
+}
+
+/**
+ * Resolve an optional millisecond timing option, REJECTING invalid values
+ * (NaN, Infinity, non-positive) rather than silently defaulting them. A NaN or
+ * Infinity maxWaitMs would make the bounded acquire loop wait forever
+ * (`Date.now() + NaN` is NaN); a non-positive poll/heartbeat makes no sense.
+ * Omitting the option (`undefined`) picks `fallback`. Non-number types are also
+ * rejected (defensive against config/env coercion).
+ */
+function optionalPositiveMs(
+  value: number | undefined,
+  name: "maxWaitMs" | "pollMs" | "heartbeatMs",
+  fallback: number,
+): number {
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new TypeError(
+      `withHeldFileLock: opts.${name} must be a positive finite number when provided (got ${String(value)})`,
+    );
+  }
+  return value;
 }
 
 /**

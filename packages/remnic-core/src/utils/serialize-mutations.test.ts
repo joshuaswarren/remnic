@@ -534,6 +534,50 @@ test("withHeldFileLock rejects a non-positive staleMs", async () => {
   );
 });
 
+test("withHeldFileLock rejects NaN/Infinity/negative optional timings (not silently defaulted)", async () => {
+  // A NaN maxWaitMs would make `Date.now() >= deadline` always false and the
+  // bounded loop wait forever; reject it instead of silently falling back.
+  for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1, 0]) {
+    await assert.rejects(
+      () => withHeldFileLock("/tmp/x.lock", { staleMs: 1_000, maxWaitMs: bad }, async () => undefined),
+      /maxWaitMs must be a positive finite number/,
+      `maxWaitMs=${bad} should be rejected`,
+    );
+    await assert.rejects(
+      () => withHeldFileLock("/tmp/x.lock", { staleMs: 1_000, pollMs: bad }, async () => undefined),
+      /pollMs must be a positive finite number/,
+      `pollMs=${bad} should be rejected`,
+    );
+    await assert.rejects(
+      () => withHeldFileLock("/tmp/x.lock", { staleMs: 1_000, heartbeatMs: bad }, async () => undefined),
+      /heartbeatMs must be a positive finite number/,
+      `heartbeatMs=${bad} should be rejected`,
+    );
+  }
+});
+
+test("withHeldFileLock accepts a finite positive maxWaitMs that bounds acquisition", async () => {
+  const dir = await mkTmpDir();
+  try {
+    // A short but valid maxWaitMs against a fresh held lock times out cleanly.
+    const lockPath = path.join(dir, "bounded.lock");
+    const fresh = `${777777} 00000000-0000-4000-8000-000000000000 ${new Date().toISOString()}\n`;
+    await writeFile(lockPath, fresh, "utf8");
+    await utimes(lockPath, new Date(), new Date());
+    let acquired = true;
+    await withHeldFileLock(
+      lockPath,
+      { staleMs: 5_000, maxWaitMs: 1 },
+      async (a) => {
+        acquired = a;
+      },
+    );
+    assert.equal(acquired, false, "tiny maxWaitMs timed out best-effort without hanging");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("withHeldFileLock rejects a heartbeatMs >= staleMs", async () => {
   const dir = await mkTmpDir();
   try {
