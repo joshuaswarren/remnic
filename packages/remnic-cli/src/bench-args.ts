@@ -24,7 +24,7 @@ export type BenchDatasetAction = "download" | "status";
 export type BenchExportFormat = "json" | "csv" | "html";
 export type BenchProviderAction = "discover";
 export type BenchPublishTarget = "remnic-ai";
-export type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain";
+export type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain" | "local-lab";
 export type BenchModelSource = "plugin" | "gateway";
 export type BenchRunAction = "list" | "show" | "delete";
 export type AmaBenchJudgeProtocol = "default" | "recommended";
@@ -195,7 +195,8 @@ function isBenchRuntimeProfile(value: string): value is BenchRuntimeProfile {
   return (
     value === "baseline" ||
     value === "real" ||
-    value === "openclaw-chain"
+    value === "openclaw-chain" ||
+    value === "local-lab"
   );
 }
 
@@ -209,12 +210,12 @@ function parseBenchRuntimeProfile(
 
   if (flagName === "--runtime-profile") {
     throw new Error(
-      'ERROR: --runtime-profile must be "baseline", "real", or "openclaw-chain".',
+      'ERROR: --runtime-profile must be "baseline", "real", "openclaw-chain", or "local-lab".',
     );
   }
 
   throw new Error(
-    'ERROR: --matrix must contain only "baseline", "real", or "openclaw-chain".',
+    'ERROR: --matrix must contain only "baseline", "real", "openclaw-chain", or "local-lab".',
   );
 }
 

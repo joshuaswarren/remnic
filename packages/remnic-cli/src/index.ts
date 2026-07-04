@@ -223,6 +223,7 @@ import type {
   BenchmarkDefinition,
   BenchmarkResult,
   ComparisonResult,
+  ResolvedLocalLabProfile,
 } from "@remnic/bench";
 import { firstSuccessfulCandidate, firstSuccessfulResult } from "./service-candidates.js";
 import {
@@ -744,7 +745,7 @@ async function loadTrainingExportCoreRuntime(): Promise<CoreTrainingExportRuntim
   return (await import("@remnic/core")) as unknown as CoreTrainingExportRuntime;
 }
 
-type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain";
+type BenchRuntimeProfile = "baseline" | "real" | "openclaw-chain" | "local-lab";
 
 interface BenchProviderConfig {
   provider: string;
@@ -799,6 +800,12 @@ interface ResolveBenchRuntimeProfileOptions {
   drainTimeout?: number;
   max429WaitMs?: number;
   disableThinking?: boolean;
+  /**
+   * Path to a local-lab manifest JSON file (issue #1573 PR2). Required when
+   * `runtimeProfile: "local-lab"`. The manifest pins responder/judge/embedding
+   * to operator-hosted models with temperature=0 and a fixed seed.
+   */
+  localLabManifestPath?: string;
 }
 
 interface ResolvedBenchRuntimeProfile {
@@ -815,6 +822,12 @@ interface ResolvedBenchRuntimeProfile {
   systemProvider: BenchProviderConfig | null;
   judgeProvider: BenchProviderConfig | null;
   internalProvider: BenchProviderConfig | null;
+  /**
+   * Resolved local-lab profile (issue #1573 PR2). Present only when
+   * `runtimeProfile: "local-lab"`. Drives sequential phase scheduling +
+   * endpoint preflight in the bench runner.
+   */
+  localLab?: ResolvedLocalLabProfile;
 }
 
 interface BenchSummaryResult {

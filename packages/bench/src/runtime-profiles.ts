@@ -30,6 +30,11 @@ import type { ProviderFactoryConfig } from "./providers/types.js";
 import { createProvider } from "./providers/factory.js";
 import { isSecretKey } from "./security/secret-keys.js";
 import type { BenchRuntimeProfile, BuiltInProvider, ProviderConfig } from "./types.js";
+import {
+  loadLocalLabManifest,
+  resolveLocalLabProfile,
+  type ResolvedLocalLabProfile,
+} from "./local-lab/index.js";
 export type BenchModelSource = "plugin" | "gateway";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
@@ -97,6 +102,12 @@ export interface ResolveBenchRuntimeProfileOptions {
   drainTimeout?: number;
   max429WaitMs?: number;
   disableThinking?: boolean;
+  /**
+   * Path to a local-lab manifest JSON file (issue #1573 PR2). Required when
+   * `runtimeProfile: "local-lab"`. The manifest pins responder/judge/embedding
+   * to operator-hosted models with temperature=0 and a fixed seed.
+   */
+  localLabManifestPath?: string;
 }
 
 export interface ResolvedBenchRuntimeProfile {
@@ -113,6 +124,12 @@ export interface ResolvedBenchRuntimeProfile {
   systemProvider: ProviderConfig | null;
   judgeProvider: ProviderConfig | null;
   internalProvider: ProviderConfig | null;
+  /**
+   * Resolved local-lab profile (issue #1573 PR2). Present only when
+   * `runtimeProfile: "local-lab"`. Drives sequential phase scheduling +
+   * endpoint preflight in the bench runner.
+   */
+  localLab?: ResolvedLocalLabProfile;
 }
 
 const REDACTED_CONFIG_VALUE = "[redacted]";
@@ -124,6 +141,11 @@ export async function resolveBenchRuntimeProfile(
   options: ResolveBenchRuntimeProfileOptions,
 ): Promise<ResolvedBenchRuntimeProfile> {
   const profile = options.runtimeProfile ?? "baseline";
+
+  if (profile === "local-lab") {
+    return resolveLocalLabRuntimeProfile(options);
+  }
+
   const systemProvider = profile === "openclaw-chain"
     ? null
     : resolveProviderConfig(
@@ -835,4 +857,79 @@ function sanitizePersistedValue(value: unknown): unknown {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+
+/**
+ * Resolve a `local-lab` runtime profile (issue #1573 PR2) into the bench
+ * runtime profile structure. Loads + validates the manifest, then maps the
+ * manifest's responder/judge roles into the existing system/judge provider
+ * slots so the bench runner can drive them without a CLI flag rewrite. The
+ * full resolved profile (with embedding + hand-off notes) is also returned
+ * under `localLab` for the sequential phase scheduler.
+ *
+ * Embedding is intentionally NOT aliased onto `internalProvider`: the
+ * existing `internalProvider` slot describes Remnic's internal LLM calls
+ * (extraction, summarization), not embedding. Wiring embedding into the
+ * runtime path is a separate follow-up; this PR exposes it only via
+ * `localLab.embedding`.
+ */
+async function resolveLocalLabRuntimeProfile(
+  options: ResolveBenchRuntimeProfileOptions,
+): Promise<ResolvedBenchRuntimeProfile> {
+  if (!options.localLabManifestPath) {
+    throw new Error(
+      'local-lab runtime profile requires localLabManifestPath pointing at a manifest JSON file (issue #1573 PR2)',
+    );
+  }
+  const manifest = await loadLocalLabManifest(options.localLabManifestPath);
+  const resolved = resolveLocalLabProfile(manifest);
+  const drainTimeoutMs = normalizeDrainTimeoutMs(
+    options.drainTimeout ?? options.requestTimeout,
+  );
+  const systemProvider = sanitizeProviderConfig(
+    resolved.responder.providerConfig,
+  );
+  const judgeProvider = sanitizeProviderConfig(
+    resolved.judge.providerConfig,
+  );
+  const judgeFactoryConfig = judgeProvider
+    ? asProviderFactoryConfig(judgeProvider)
+    : undefined;
+  const judgeProviderInstance = judgeFactoryConfig
+    ? createProvider(judgeFactoryConfig)
+    : undefined;
+  const judge = judgeFactoryConfig
+    ? createProviderBackedJudge(judgeFactoryConfig, judgeProviderInstance)
+    : undefined;
+  const structuredJudge = judgeFactoryConfig
+    ? createProviderBackedStructuredJudge(judgeFactoryConfig, judgeProviderInstance)
+    : undefined;
+  const responderFactoryConfig = systemProvider
+    ? asProviderFactoryConfig(systemProvider)
+    : undefined;
+  const responder = responderFactoryConfig
+    ? createProviderBackedResponder(responderFactoryConfig)
+    : undefined;
+  const baselineConfig = buildBenchBaselineRemnicConfig();
+  const effectiveRemnicConfig = withAssistantHooks(
+    baselineConfig,
+    responder,
+    structuredJudge,
+  );
+  return {
+    profile: "local-lab",
+    remnicConfig: sanitizePersistedConfig(effectiveRemnicConfig),
+    effectiveRemnicConfig,
+    adapterOptions: {
+      configOverrides: effectiveRemnicConfig,
+      responder,
+      judge,
+      ...(drainTimeoutMs ? { drainTimeoutMs } : {}),
+    },
+    systemProvider,
+    judgeProvider,
+    internalProvider: null,
+    localLab: resolved,
+  };
 }
