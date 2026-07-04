@@ -180,59 +180,63 @@ export async function runCli(argv: string[], options: RunCliOptions = {}): Promi
 
   let exitSignal: CliExitSignal | null = null;
 
-  process.exit = ((code?: number) => {
-    // Mirrors Node's process.exit: an explicit numeric code wins, otherwise
-    // fall back to whatever exitCode was set, then 0. We throw so that both
-    // sync and async handlers unwind uniformly back to runCli.
-    const rawCode = typeof code === "number" ? code : (process.exitCode ?? 0);
-    // Node accepts `process.exitCode = "1"` and coerces to 1; do the same so
-    // the captured exitCode is always a finite non-negative integer.
-    const resolved = typeof rawCode === "number" ? rawCode : Number(rawCode) || 0;
-    const signal = new CliExitSignal(resolved);
-    exitSignal = signal;
-    throw signal;
-  }) as typeof process.exit;
-
-  if (options.cwd !== undefined) {
-    // Use process.chdir (not process.cwd = () => ...) so that filesystem
-    // APIs receiving relative paths resolve against the override directory,
-    // not the test runner's real cwd. Restored in finally via chdir back.
-    process.chdir(options.cwd);
-  }
-
-  for (const [key, value] of options.env ? Object.entries(options.env) : []) {
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-
-  // Swap the stream objects, not the methods. `defineProperty` is used
-  // because `process.stdout` / `process.stderr` are read-only getters on
-  // the process object in modern Node; a plain assignment throws.
-  Object.defineProperty(process, "stdout", { value: fakeStdout, configurable: true });
-  Object.defineProperty(process, "stderr", { value: fakeStderr, configurable: true });
-  console.log = (...args: unknown[]) => {
-    stdout.write(formatConsoleArgs(args));
-  };
-  console.error = (...args: unknown[]) => {
-    stderr.write(formatConsoleArgs(args));
-  };
-  console.warn = (...args: unknown[]) => {
-    stderr.write(formatConsoleArgs(args));
-  };
-  console.info = (...args: unknown[]) => {
-    stdout.write(formatConsoleArgs(args));
-  };
-
-  // Reset exitCode at entry — the binary starts each invocation at 0 and
-  // lets handlers raise it. Snapshotting/restoring the original above keeps
-  // the host test process safe; resetting at entry keeps each runCli call
-  // independent of the previous one.
-  process.exitCode = 0;
-
+  // All overrides are inside the try so that a setup failure (e.g.
+  // process.chdir to a non-existent directory) still triggers finally
+  // and restores whatever was already patched. Restoring an un-patched
+  // global is a harmless no-op (re-sets the same value).
   try {
+    process.exit = ((code?: number) => {
+      // Mirrors Node's process.exit: an explicit numeric code wins, otherwise
+      // fall back to whatever exitCode was set, then 0. We throw so that both
+      // sync and async handlers unwind uniformly back to runCli.
+      const rawCode = typeof code === "number" ? code : (process.exitCode ?? 0);
+      // Node accepts `process.exitCode = "1"` and coerces to 1; do the same so
+      // the captured exitCode is always a finite non-negative integer.
+      const resolved = typeof rawCode === "number" ? rawCode : Number(rawCode) || 0;
+      const signal = new CliExitSignal(resolved);
+      exitSignal = signal;
+      throw signal;
+    }) as typeof process.exit;
+
+    if (options.cwd !== undefined) {
+      // Use process.chdir (not process.cwd = () => ...) so that filesystem
+      // APIs receiving relative paths resolve against the override directory,
+      // not the test runner's real cwd. Restored in finally via chdir back.
+      process.chdir(options.cwd);
+    }
+
+    for (const [key, value] of options.env ? Object.entries(options.env) : []) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+
+    // Swap the stream objects, not the methods. `defineProperty` is used
+    // because `process.stdout` / `process.stderr` are read-only getters on
+    // the process object in modern Node; a plain assignment throws.
+    Object.defineProperty(process, "stdout", { value: fakeStdout, configurable: true });
+    Object.defineProperty(process, "stderr", { value: fakeStderr, configurable: true });
+    console.log = (...args: unknown[]) => {
+      stdout.write(formatConsoleArgs(args));
+    };
+    console.error = (...args: unknown[]) => {
+      stderr.write(formatConsoleArgs(args));
+    };
+    console.warn = (...args: unknown[]) => {
+      stderr.write(formatConsoleArgs(args));
+    };
+    console.info = (...args: unknown[]) => {
+      stdout.write(formatConsoleArgs(args));
+    };
+
+    // Reset exitCode at entry — the binary starts each invocation at 0 and
+    // lets handlers raise it. Snapshotting/restoring the original above keeps
+    // the host test process safe; resetting at entry keeps each runCli call
+    // independent of the previous one.
+    process.exitCode = 0;
+
     await main(argv);
     return {
       exitCode: process.exitCode ?? 0,
