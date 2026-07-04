@@ -33,29 +33,32 @@ test("cache coherence: instance B (fresh, same dir) sees a memory written via in
   });
 });
 
-test("cache coherence: instance B with a primed empty cache sees A's later write (stale-empty invalidation)", async () => {
-  await withScratchDir("cache-stale-empty", async (dir) => {
+test("cache coherence: readAllMemories does not serve a stale list — a second call reflects a write made between calls", async () => {
+  // readAllMemories() does NOT keep a hot list cache: it only deduplicates
+  // concurrent in-flight reads (allMemoriesInFlight) and rescans disk on every
+  // call. So cross-instance coherence is disk-visibility, not cache
+  // invalidation — pin that property directly: a second read sees a write A
+  // makes between B's two reads.
+  await withScratchDir("cache-no-stale-list", async (dir) => {
     const a = new StorageManager(dir);
     await a.ensureDirectories();
+    const id1 = await a.writeMemory("fact", "first fact", { confidence: 0.9 });
+
     const b = new StorageManager(dir);
     await b.ensureDirectories();
+    const first = await b.readAllMemories();
+    assert.equal(first.length, 1, "B sees A's first write");
 
-    // Prime B's cache with an EMPTY snapshot BEFORE A writes anything. The
-    // regression this guards: writeMemory stops invalidating an already-cached
-    // empty snapshot, so B would keep serving a stale [] after A writes.
-    const empty = await b.readAllMemories();
-    assert.equal(empty.length, 0, "store is empty before A writes");
-
-    // A writes — this must invalidate the baseDir-keyed cache so B does not
-    // serve the stale empty snapshot it just cached.
-    const id = await a.writeMemory("fact", "fact A writes after B primed empty", {
-      confidence: 0.9,
-    });
-
-    const seen = await b.getMemoryById(id);
-    assert.ok(seen, "B must see A's write despite having cached an empty snapshot first");
-    const all = await b.readAllMemories();
-    assert.equal(all.length, 1, "B readAllMemories must reflect A's write (stale-empty invalidation)");
+    // A writes a SECOND memory between B's reads. Because readAllMemories
+    // rescans disk (never serves a previously-materialized list), B's second
+    // call must include it.
+    const id2 = await a.writeMemory("fact", "second fact", { confidence: 0.9 });
+    const second = await b.readAllMemories();
+    assert.equal(second.length, 2, "readAllMemories must rescan disk — not serve a stale list");
+    assert.ok(
+      second.some((m) => m.frontmatter.id === id2),
+      "B's second read must include the write A made between calls",
+    );
   });
 });
 

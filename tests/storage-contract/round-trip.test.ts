@@ -100,6 +100,37 @@ for (const category of WRITE_CATEGORIES) {
   });
 }
 
+test("round-trip entity (writeMemory category): routes to the facts/ fallback and round-trips separately from writeEntity", async () => {
+  await withScratchStorage("roundtrip-entity-writeMemory", async (storage, dir) => {
+    // `entity` is a valid MemoryCategory but has NO dedicated dir
+    // (categoryDirName("entity") === "facts"); entity FILES live under
+    // entities/ via writeEntity (its own path). Pin that writeMemory("entity")
+    // still routes + reads + lists through the facts/ fallback, so a
+    // regression on that path is caught independently of the writeEntity
+    // surface (which is why entity is excluded from WRITE_CATEGORIES above).
+    const id = await storage.writeMemory("entity", "entity-as-memory body", {
+      confidence: 0.9,
+      tags: ["contract", "entity"],
+      source: "contract-test",
+    });
+    const mem = await storage.getMemoryById(id);
+    assert.ok(mem, "writeMemory(entity) must be retrievable by id");
+    assert.equal(mem!.frontmatter.category, "entity");
+    assert.equal(mem!.content, "entity-as-memory body");
+    // Lands in the facts/ fallback (categoryDirName("entity") === "facts").
+    assert.equal(
+      path.relative(dir, mem!.path),
+      path.join("facts", mem!.frontmatter.created.slice(0, 10), `${id}.md`),
+      "writeMemory(entity) must route to the facts/ fallback dir",
+    );
+    const listed = await storage.readAllMemories();
+    assert.ok(
+      listed.some((m) => m.frontmatter.id === id),
+      "writeMemory(entity) must appear in readAllMemories",
+    );
+  });
+});
+
 test("round-trip: non-existent id returns null/false everywhere (no silent synthesizing)", async () => {
   await withScratchStorage("roundtrip-miss", async (storage) => {
     const miss = await storage.getMemoryById("does-not-exist-1533");

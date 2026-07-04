@@ -20,15 +20,23 @@ import { withScratchDir, withScratchStorage, setDirReadOnly, setDirReadWrite, PE
 
 const SKIP_ATOMIC = !PERM_FAULT_INJECTION_AVAILABLE;
 
-test("atomic-write (rule 54): writeMaybeEncryptedFile uses temp-then-rename — original survives a failed rename", { skip: SKIP_ATOMIC }, async () => {
+test("atomic-write (rule 54): writeMaybeEncryptedFile is temp-then-rename — original survives when the write is rejected before the replace", { skip: SKIP_ATOMIC }, async () => {
   await withScratchDir("atomic-primitive", async (dir) => {
     const target = path.join(dir, "mem.md");
     const original = "original body — must survive";
     await writeFile(target, original, "utf-8");
 
     // Lock the parent dir read-only: the temp file cannot be created inside
-    // it, so the atomic write throws BEFORE touching the target. The temp
-    // helper cleans up after itself; the target is untouched.
+    // it, so the atomic write throws at temp CREATION — BEFORE any replace
+    // could touch the target. This covers the pre-replace failure phase of
+    // rule 54 (no delete-before-write).
+    //
+    // The post-temp RENAME-failure phase is guaranteed by rename's atomic
+    // semantics — a failed rename is a no-op on the target, and the temp is
+    // cleaned up in writeMaybeEncryptedFile's catch (secure-fs.ts). Proving it
+    // by injection needs --experimental-test-module-mock (not enabled in this
+    // suite) or a production test seam, which is outside Phase A's test-only
+    // scope; the contract holds by construction there.
     setDirReadOnly(dir);
     try {
       await assert.rejects(
@@ -37,7 +45,7 @@ test("atomic-write (rule 54): writeMaybeEncryptedFile uses temp-then-rename — 
         "writeMaybeEncryptedFile must throw when the parent dir rejects temp creation",
       );
 
-      // The invariant: original content intact (no delete-before-write).
+      // The invariant: original content byte-identical (no delete-before-write).
       const after = await readFile(target, "utf-8");
       assert.equal(after, original, "rule 54 violated: original file altered by a failed write");
     } finally {
