@@ -79,10 +79,12 @@ export type SymbolKind =
   | "constant"
   | "unknown";
 
-export interface SymbolIR extends ByteSpan {
+export interface SymbolIR {
   kind: SymbolKind;
   name: string;
   qualifiedName: string;
+  /** Half-open span — matches @remnic/core's CodingGraphEngine contract. */
+  span: ByteSpan;
   parentQualifiedName?: string;
 }
 
@@ -97,23 +99,27 @@ export interface ExportIR {
   span: ByteSpan;
 }
 
-export interface CallSiteIR extends ByteSpan {
+export interface CallSiteIR {
   /** Best-effort callee-name candidates from the parser. */
   calleeCandidates: string[];
+  span: ByteSpan;
 }
 
 /**
- * Hand-written fixture IR. Structurally compatible with issue #1551's
- * `FileIR` contract: `{path, lang, contentHash, symbols[], imports[],
- * exports[], callSites[]}`. Spans are half-open `[startByte, endByte)`.
+ * Hand-written fixture IR. Field names align with issue #1551's
+ * `FileIR` contract from @remnic/core (`language`, nested `span`):
+ * `{path, language, contentHash, symbols[], imports[], exports[],
+ * callSites[]}`. The parser from #1551 will produce richer entries
+ * (routes, more metadata); the store ingests whichever subset is
+ * present and ignores missing arrays as empty.
  *
- * The parser from #1551 will produce richer entries (routes, more
- * metadata); the store ingests whichever subset is present and ignores
- * missing arrays as empty.
+ * `edges` is a store-specific extension: the graph-edge model derived
+ * from callSites by the caller (PR1 carries pre-derived edges; PR2
+ * adds an adapter if the parser emits raw callSites only).
  */
 export interface FileIR {
   path: string;
-  lang: string;
+  language: string;
   contentHash: string;
   symbols?: SymbolIR[];
   imports?: ImportIR[];
@@ -370,7 +376,7 @@ export class GraphStore {
        RETURNING id`,
     );
     const fileRow = expectRow<{ id: number }>(
-      upsertFile.get(ir.path, ir.lang, ir.contentHash),
+      upsertFile.get(ir.path, ir.language, ir.contentHash),
       ["id"],
     );
     if (!fileRow) {
@@ -464,9 +470,9 @@ export class GraphStore {
         prior.label === sym.kind &&
         prior.name === sym.name &&
         prior.qualified_name === sym.qualifiedName &&
-        prior.span_start === sym.startByte &&
-        prior.span_end === sym.endByte &&
-        prior.lang === ir.lang
+        prior.span_start === sym.span.startByte &&
+        prior.span_end === sym.span.endByte &&
+        prior.lang === ir.language
       ) {
         // Truly a no-op — the row already matches the IR. Skip the
         // INSERT/UPDATE entirely so `changes` stays 0.
@@ -491,9 +497,9 @@ export class GraphStore {
         sym.name,
         sym.qualifiedName,
         fileId,
-        sym.startByte,
-        sym.endByte,
-        ir.lang,
+        sym.span.startByte,
+        sym.span.endByte,
+        ir.language,
       );
       insertFts.run(ftsRowid, sym.name, sym.qualifiedName);
       upsertFtsIndex.run(ftsRowid, id);

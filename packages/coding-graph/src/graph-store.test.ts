@@ -36,12 +36,12 @@ function sym(
   endByte: number,
   kind: SymbolIR["kind"] = "function",
 ): SymbolIR {
-  return { qualifiedName, name, startByte, endByte, kind };
+  return { qualifiedName, name, span: { startByte, endByte }, kind };
 }
 
 const fileA: FileIR = {
   path: "src/a.ts",
-  lang: "ts",
+  language: "ts",
   contentHash: "h-a",
   symbols: [
     sym("a.greet", "greet", 0, 100),
@@ -60,7 +60,7 @@ const fileA: FileIR = {
 
 const fileB: FileIR = {
   path: "src/b.ts",
-  lang: "ts",
+  language: "ts",
   contentHash: "h-b",
   symbols: [
     sym("b.run", "run", 0, 50),
@@ -177,7 +177,7 @@ test("dangling-edge policy: cross-file edges whose dst is dropped are counted, n
     // the cross-file edge from b.run → a.greet becomes dangling.
     const fileAReduced: FileIR = {
       path: "src/a.ts",
-      lang: "ts",
+      language: "ts",
       contentHash: "h-a-2",
       symbols: [sym("a.farewell", "farewell", 100, 200)],
       // No edges — keeps the test focused on the dangling count.
@@ -255,7 +255,7 @@ test("fts_index: prunes the mapping when a node is removed by re-ingest", async 
     // pruned, so every fts_index row must follow.
     const empty: FileIR = {
       path: "src/a.ts",
-      lang: "ts",
+      language: "ts",
       contentHash: "h-a-empty",
       symbols: [],
       edges: [],
@@ -338,7 +338,7 @@ test("write queue serializes concurrent upserts (rule 40)", async () => {
     const N = 8;
     const irs: FileIR[] = Array.from({ length: N }, (_, i) => ({
       path: `src/file-${i}.ts`,
-      lang: "ts",
+      language: "ts",
       contentHash: `h-${i}`,
       symbols: [sym(`f-${i}.run`, "run", 0, 10)],
       edges: [],
@@ -387,7 +387,7 @@ test("node-id ingestion: file-level delete cascades prior nodes + owned edges", 
     // Re-ingest fileA with empty symbols — deletes both nodes.
     const fileAEmpty: FileIR = {
       path: "src/a.ts",
-      lang: "ts",
+      language: "ts",
       contentHash: "h-a-empty",
       symbols: [],
       edges: [],
@@ -445,7 +445,7 @@ test("edge src validation: cross-file edge src is rejected, not cross-owned (cha
     // cross-owned by fileB and survive fileA re-ingests.
     const fileAMalformedEdge: FileIR = {
       path: "src/a.ts",
-      lang: "ts",
+      language: "ts",
       contentHash: "h-a-malformed",
       symbols: [sym("a.greet", "greet", 0, 100)],
       edges: [
@@ -473,7 +473,7 @@ test("edge src validation: cross-file edge src is rejected, not cross-owned (cha
     // no cross-owned edge was left behind.
     const fileAClean: FileIR = {
       path: "src/a.ts",
-      lang: "ts",
+      language: "ts",
       contentHash: "h-a-clean",
       symbols: [sym("a.greet", "greet", 0, 100)],
       edges: [],
