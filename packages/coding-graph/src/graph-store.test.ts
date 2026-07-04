@@ -880,3 +880,46 @@ test("close blocks new writes before draining so a concurrent upsert is rejected
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("a second close() during an in-progress drain awaits it, not resolves early (chatgpt-codex-connector P2: 'Wait for an in-progress close')", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-close2-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "store.db"),
+  });
+  try {
+    // Schedule a write but do NOT await it, so close()'s drain has a
+    // pending write to wait on.
+    const firstWrite = store.upsertFileBatch([fileA]);
+    // closeA runs first: it sets `closing` synchronously then awaits
+    // the drain. closeB is issued on the SAME synchronous tick, while
+    // closeA is still mid-drain (no microtasks have flushed yet).
+    const closeA = store.close();
+    const closeB = store.close();
+
+    // Discriminator: the pre-fix early `return` resolved closeB
+    // synchronously (it returned a settled promise), so a .then
+    // callback fires on the very next microtask. The fix returns the
+    // shared pending drain promise, so closeB stays pending until the
+    // drain finishes. `await Promise.resolve()` advances exactly one
+    // microtask — enough for closeB's .then to fire if it was already
+    // settled, not enough if it is still waiting on the drain.
+    let earlyResolved = false;
+    closeB.then(() => {
+      earlyResolved = true;
+    });
+    await Promise.resolve();
+    assert.equal(
+      earlyResolved,
+      false,
+      "a second close() issued while the first is draining must await the shared drain promise, not resolve before it",
+    );
+
+    // Both closes now settle together once the drain (and firstWrite)
+    // complete.
+    await closeA;
+    await closeB;
+    await firstWrite;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

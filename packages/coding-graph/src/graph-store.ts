@@ -211,6 +211,11 @@ export class GraphStore {
   private readonly queue = new WriteQueue();
   private closed = false;
   private closing = false;
+  // Shared drain-and-close promise so a second close() called while the
+  // first is still draining awaits the same completion instead of
+  // resolving early (chatgpt-codex-connector P2: 'Wait for an
+  // in-progress close').
+  private closePromise: Promise<void> | undefined;
 
   private constructor(db: BetterSqlite3Database) {
     this.db = db;
@@ -301,13 +306,27 @@ export class GraphStore {
    * then close (cursor Bugbot #09be5784).
    */
   async close(): Promise<void> {
-    if (this.closed || this.closing) return;
+    if (this.closed) return;
+    // A concurrent close() is already draining. Return the shared
+    // promise so this caller's `await store.close()` actually waits
+    // for the drain to finish and the SQLite handle to close — the
+    // pre-fix early `return` resolved immediately, so a caller that
+    // treats close() as a flush barrier could delete/reopen the DB
+    // while writes were still in flight (chatgpt-codex-connector P2:
+    // 'Wait for an in-progress close').
+    if (this.closing) return this.closePromise;
     // Block NEW writes before draining so a concurrent upsertFileBatch
     // cannot schedule a write that runs after this drain's await captured
     // the old tail. Without this flag, close() drains the queue snapshot,
     // closes the handle, and the late-scheduled write hits a closed DB
     // (chatgpt-codex-connector P2: 'Block new writes before draining').
     this.closing = true;
+    this.closePromise = this.finishClose();
+    return this.closePromise;
+  }
+
+  /** Drain queued writes then close the SQLite handle exactly once. */
+  private async finishClose(): Promise<void> {
     await this.queue.drain();
     this.closed = true;
     this.db.close();
