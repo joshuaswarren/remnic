@@ -44,12 +44,34 @@ const ROOT = process.env.REMNIC_DOCS_PARITY_ROOT
   : path.resolve(SCRIPT_DIR, "..");
 
 // TODO_REGISTRY (#1532): once the CLI registrar table lands, import it and
-// replace collectRegisteredCommands() with a direct lookup. The current grep
-// approach is deliberately conservative — it over-approximates the set of
-// registered commands (case strings + .command() names) so a rename that the
-// grep misses fails loudly here rather than silently in docs. When #1532
-// ships, delete GREP_PATTERNS and read the registrar directly.
+// replace collectRegisteredCommands() with a direct lookup. The current
+// approach scans two CLI surfaces (see CLI_FILES below); #1532 unifies them
+// behind a single registrar that both the standalone binary and the plugin
+// runtime read from.
 
+// The `remnic` command surface spans TWO registration sites, and this gate
+// deliberately merges both — they are the same user-facing CLI:
+//
+//   1. Standalone binary (packages/remnic-cli/src/index.ts): dispatches via
+//      a `switch (command as CommandName)` on the `CommandName` type union.
+//      Covers init, status, query, daemon, bench, … (34 top-level commands).
+//
+//   2. Plugin-runtime commander (packages/remnic-core/src/cli.ts): the
+//      `registerCli` export registers a commander tree rooted at the `engram`
+//      parent (`const cmd = program.command("engram")`). Its top-level
+//      children — `secure-store`, `recall`, `tier`, `backup`, `patterns`, …
+//      — are the commands the OpenClaw gateway exposes and that the
+//      standalone binary wires case-by-case (some are not yet wired into
+//      the switch; that dispatch gap is a code-level issue tracked by #1532,
+//      not a docs-parity defect).
+//
+// Merging is required: 10 documented commands (secure-store, recall, tier,
+// backup, console, dreams, patterns, peer, purge, recall-explain) exist ONLY
+// in surface 2. Scoping the gate to surface 1 alone would flag all 10 as
+// drift, contradicting long-standing docs and the CLI's own error messages
+// (e.g. index.ts says "Run `remnic secure-store unlock` to decrypt"). The
+// gate verifies that a documented `remnic <cmd>` is REGISTERED in at least
+// one surface — not that every surface dispatches it.
 const CLI_FILES = [
   "packages/remnic-cli/src/index.ts",
   "packages/remnic-core/src/cli.ts",
@@ -292,6 +314,11 @@ const CORE_TOP_LEVEL_RE = /\bcmd\b\s*\.\s*command\(\s*"([A-Za-z][A-Za-z0-9:_-]*)
 
 /**
  * Collect the set of registered top-level command names from both CLI files.
+ *
+ * CONTRACT — this gate verifies REGISTRATION, not DISPATCH. A documented
+ * `remnic <cmd>` passes if the command is registered in EITHER CLI surface
+ * (the standalone binary's `CommandName` union OR the core plugin-runtime
+ * commander tree). See the CLI_FILES comment above for why both are merged.
  *
  * For remnic-cli/src/index.ts, extracts the `type CommandName = …;` body
  * and scans only that — the authoritative top-level set. Sibling union
