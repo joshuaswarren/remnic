@@ -158,19 +158,36 @@ export const memoryStoreOperation = defineOperation<MemoryStoreInput, MemoryStor
  * subset; the handler validates subcommand-specific requirements after
  * routing.
  */
-const codingDecisionSchema = z.object({
-  subcommand: z.enum(DECISION_SUBCOMMANDS),
-  sessionKey: z.string().trim().max(512).optional(),
-  namespace: z.string().trim().max(256).optional(),
-  id: z.string().trim().max(512).optional(),
-  title: z.string().trim().max(512).optional(),
-  status: z.string().trim().max(64).optional(),
-  context: z.string().trim().max(8192).optional(),
-  decision: z.string().trim().max(8192).optional(),
-  consequences: z.string().trim().max(8192).optional(),
-  entityRefs: z.array(z.string().trim().min(1).max(256)).optional(),
-  supersedesId: z.string().trim().max(512).optional(),
-});
+/**
+ * MCP clients send `null` for absent optional fields. Zod `.optional()`
+ * rejects `null`, so strip nulls at the object level before the inner
+ * schema validates (review: cursor null-field thread).
+ */
+const codingDecisionSchema = z.preprocess(
+  (data) => {
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+        if (v !== null) out[k] = v;
+      }
+      return out;
+    }
+    return data;
+  },
+  z.object({
+    subcommand: z.enum(DECISION_SUBCOMMANDS),
+    sessionKey: z.string().trim().max(512).optional(),
+    namespace: z.string().trim().max(256).optional(),
+    id: z.string().trim().max(512).optional(),
+    title: z.string().trim().max(512).optional(),
+    status: z.string().trim().max(64).optional(),
+    context: z.string().trim().max(8192).optional(),
+    decision: z.string().trim().max(8192).optional(),
+    consequences: z.string().trim().max(8192).optional(),
+    entityRefs: z.array(z.string().trim().min(1).max(256)).optional(),
+    supersedesId: z.string().trim().max(512).optional(),
+  }),
+);
 
 export type CodingDecisionInput = DecisionSurfaceRequest;
 export type CodingDecisionOutput = { result: DecisionSurfaceResponse };
@@ -182,7 +199,7 @@ export const codingDecisionOperation = defineOperation<
   name: "coding_decision",
   description:
     "List, get, record, or supersede decision records in the session's coding namespace (issue #1548 Track A).",
-  schema: codingDecisionSchema,
+  schema: codingDecisionSchema as z.ZodType<CodingDecisionInput>,
   handler: async (input, ctx) => {
     const result = await ctx.service.codingDecision(input, ctx.authenticatedPrincipal);
     return { result };

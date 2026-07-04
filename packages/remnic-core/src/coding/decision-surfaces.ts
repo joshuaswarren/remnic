@@ -385,10 +385,12 @@ async function decisionSupersede(
       source: "coding-decision",
     },
   );
-  // Mark the old record superseded via structuredAttributes so list/get can
-  // filter without re-parsing content. The content body is not mutated —
-  // the structuredAttribute is the authoritative lifecycle marker.
+  // Mark the old record superseded: set BOTH frontmatter.status (so
+  // recall/search/maintenance exclude it from the active corpus — review P2)
+  // AND structuredAttributes.decisionStatus (the decision-specific lifecycle
+  // marker used by list/get projection). The content body is not mutated.
   await storage.writeMemoryFrontmatter(oldMemory, {
+    status: "archived",
     structuredAttributes: {
       ...(oldMemory.frontmatter.structuredAttributes ?? {}),
       decisionStatus: "superseded",

@@ -4426,11 +4426,14 @@ export class EngramAccessService {
       codingKnowledge: this.orchestrator.config.codingKnowledge,
       getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
       resolveStorage: async (req) => {
-        const ns = await this.resolveCodingScopedWriteNamespace({
-          namespace: req.namespace,
-          sessionKey: req.sessionKey,
-          authenticatedPrincipal,
-        });
+        const isWrite = req.subcommand === "record" || req.subcommand === "supersede";
+        const ns = isWrite
+          ? await this.resolveCodingScopedWriteNamespace({
+              namespace: req.namespace,
+              sessionKey: req.sessionKey,
+              authenticatedPrincipal,
+            })
+          : this.resolveReadableNamespace(req.namespace, authenticatedPrincipal);
         const storage = await this.orchestrator.getStorage(ns);
         return Object.assign(storage, { namespace: ns });
       },
