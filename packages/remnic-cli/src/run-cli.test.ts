@@ -25,7 +25,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, before, test } from "node:test";
 
-import { runCli } from "./run-cli.js";
+import { formatConsoleArgs, runCli } from "./run-cli.js";
 
 // Isolate HOME for the entire file so the dispatcher's migrateFromEngram()
 // (which runs for every non-migrate command) is a no-op against an empty
@@ -282,4 +282,30 @@ test("runCli rejects concurrent calls (process-global swap hazard)", async () =>
   // cleared in finally.
   const result = await runCli(["status"]);
   assert.equal(result.exitCode, 0);
+});
+
+test("formatConsoleArgs substitutes printf-style specifiers via util.format", () => {
+  // Regression for the #1613 review thread on formatConsoleArgs
+  // (PRRT_kwDORJXyws6OXhGV): the old custom formatter joined args with
+  // spaces without substituting printf-style specifiers, so a core log
+  // line like log.info("found %d items in %s", 3, "scope") was captured
+  // as "found %d items in %s 3 scope" instead of "found 3 items in
+  // scope". Using util.format (the exact function console.* uses
+  // internally) makes captured output byte-identical to the binary's
+  // console output.
+    // %d / %s substitution
+  assert.equal(
+    formatConsoleArgs(["found %d items in %s", 3, "scope"]),
+    "found 3 items in scope\n",
+  );
+  // %j (JSON) substitution
+  assert.equal(
+    formatConsoleArgs(["config: %j", { verbose: true }]),
+    'config: {"verbose":true}\n',
+  );
+  // No specifiers — plain join with newline (matches console.log)
+  assert.equal(
+    formatConsoleArgs(["hello", "world"]),
+    "hello world\n",
+  );
 });

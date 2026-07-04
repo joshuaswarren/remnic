@@ -60,6 +60,7 @@
  * against without booting the whole CLI as a subprocess.
  */
 
+import { format } from "node:util";
 import { main } from "./index.js";
 
 /**
@@ -117,23 +118,16 @@ class CliExitSignal extends Error {
 
 /**
  * Format a `console.*` argument list the way Node's default console does:
- * coerce each argument to a string (objects via `String()`, errors via
- * `.message`, everything else via `String(x)`), join with spaces, and add
- * the trailing newline that console methods insert. Buffering the raw
- * chunks (without the newline) would under-test the formatting that real
- * CLI output relies on.
+ * delegate to `util.format` (the exact function `console.log` /
+ * `console.error` use internally) so printf-style format specifiers
+ * (`%s`, `%d`, `%j`, `%o`, …) are substituted, objects are inspected via
+ * `util.inspect` (not JSON.stringify), and errors are rendered the same way
+ * the binary's console renders them. Append the trailing newline that
+ * console methods insert. Using anything other than `util.format` here
+ * means contract tests bless output the binary's users never see.
  */
-function formatConsoleArgs(args: unknown[]): string {
-  const parts = args.map((arg) => {
-    if (arg instanceof Error) return arg.message;
-    if (typeof arg === "string") return arg;
-    try {
-      return JSON.stringify(arg);
-    } catch {
-      return String(arg);
-    }
-  });
-  return `${parts.join(" ")}\n`;
+export function formatConsoleArgs(args: unknown[]): string {
+  return `${format(...args)}\n`;
 }
 
 /**
