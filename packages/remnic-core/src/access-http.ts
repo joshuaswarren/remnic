@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
-import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { EngramAccessInputError, type EngramAccessService, type EngramAccessMemoryResponse, type EngramAccessWriteResponse } from "./access-service.js";
 import { WearablesInputError } from "./wearables/errors.js";
 import { EngramMcpServer } from "./access-mcp.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
@@ -27,6 +27,11 @@ import {
 } from "./graph-events.js";
 import { expandTildePath } from "./utils/path.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
+import { getOperation } from "./access-boundary.js";
+// Importing access-operations registers the pilot boundary operations
+// (memory_get / memory_store) as a side effect; the HTTP handlers below
+// dispatch the migrated routes through the registry (issue #1525).
+import "./access-operations.js";
 
 export interface EngramAccessHttpServerOptions {
   service: EngramAccessService;
@@ -1297,35 +1302,28 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/memories") {
+      // Migrated through the access boundary (issue #1525): the registry
+      // entry owns schema validation, normalization, and service dispatch.
+      // The HTTP transport resolves the request-scoped namespace and principal
+      // BEFORE the boundary re-validates the cleaned envelope. The write-quota
+      // hook is forwarded via ctx.hooks so it still fires atomically inside
+      // the service's idempotent-write lock — never before, never on a replay
+      // (#1434 invariant preserved by the boundary migration).
       const body = await this.readValidatedBody(req, "memoryStore");
-      const request = {
-        schemaVersion: body.schemaVersion,
-        idempotencyKey: body.idempotencyKey,
-        dryRun: body.dryRun === true,
-        sessionKey: body.sessionKey,
-        authenticatedPrincipal: this.resolveRequestPrincipal(req),
-        content: body.content,
-        category: body.category,
-        confidence: body.confidence,
+      const envelope = {
+        ...body,
         namespace: this.resolveNamespace(req, body.namespace),
-        tags: body.tags,
-        entityRef: body.entityRef,
-        ttl: body.ttl,
-        sourceReason: body.sourceReason,
-        cwd: body.cwd,
-        projectTag: body.projectTag,
       };
-      // Rate-limit enforcement is SOLELY authoritative inside memoryStore via
-      // enforceWriteQuota: it runs atomically with the real idempotency-miss
-      // determination (and the real resolved namespace), and is never invoked
-      // for a replay. We deliberately do NOT pre-check here: the write namespace
-      // is resolved from mutable session/git context, so a stale peek could
-      // report "miss" for a request that is actually an idempotent replay in the
-      // now-scoped namespace and hard-reject a safe replay with 429 (#1434 Codex
-      // review). Letting the in-lock hook be the only hard gate avoids that.
-      const response = await this.service.memoryStore(request, {
-        enforceWriteQuota: () => this.ensureWriteRateLimitAvailable(),
-      });
+      const op = getOperation("memory_store");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: memory_store");
+      }
+      const output = (await op.run(envelope, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable() },
+      })) as { result: EngramAccessWriteResponse };
+      const response = output.result;
       if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
         this.recordWriteRateLimitHit();
       }
@@ -1387,7 +1385,19 @@ export class EngramAccessHttpServer {
     if (req.method === "GET" && memoryMatch) {
       const memoryId = decodeURIComponent(memoryMatch[1] ?? "");
       const namespace = parsed.searchParams.get("namespace") ?? undefined;
-      const response = await this.service.memoryGet(memoryId, namespace, this.resolveRequestPrincipal(req));
+      // Migrated through the access boundary (issue #1525): the registry
+      // entry owns memoryId presence/shape validation (rule 51: reject empty
+      // ids loudly instead of silently passing "" into the service) and the
+      // service dispatch.
+      const op = getOperation("memory_get");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: memory_get");
+      }
+      const output = (await op.run(
+        { memoryId, namespace: namespace ?? null },
+        { service: this.service, authenticatedPrincipal: this.resolveRequestPrincipal(req) },
+      )) as { result: EngramAccessMemoryResponse };
+      const response = output.result;
       this.respondJson(res, response.found ? 200 : 404, response);
       return;
     }

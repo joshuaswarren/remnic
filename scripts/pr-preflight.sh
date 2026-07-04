@@ -79,6 +79,9 @@ if [[ "$MODE" == "quick" ]]; then
   run pnpm exec tsx --test tests/recall-no-recall-short-circuit.test.ts
   run pnpm exec tsx --test tests/orchestrator-path-filter.test.ts
   run pnpm exec tsx --test tests/artifact-cache.test.ts
+  # Access boundary fitness test — enforces catalog completeness and the
+  # unmigrated-handler ratchet on every quick preflight (issue #1525).
+  run pnpm exec tsx --test packages/remnic-core/src/access-surface-catalog.test.ts
 else
   run npm test
   run npm run build
