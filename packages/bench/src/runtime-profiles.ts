@@ -951,15 +951,21 @@ async function resolveLocalLabRuntimeProfile(
   const responder = responderFactoryConfig
     ? createProviderBackedResponder(responderFactoryConfig)
     : undefined;
+  const lcmObserveConcurrencyOverrides =
+    buildLcmObserveConcurrencyOverrides(options.lcmObserveConcurrency);
   const baselineConfig = buildBenchBaselineRemnicConfig();
+  const localLabRemnicConfig = {
+    ...baselineConfig,
+    ...lcmObserveConcurrencyOverrides,
+  };
   const effectiveRemnicConfig = withAssistantHooks(
-    baselineConfig,
+    localLabRemnicConfig,
     responder,
     structuredJudge,
   );
   return {
     profile: "local-lab",
-    remnicConfig: sanitizePersistedConfig(effectiveRemnicConfig),
+    remnicConfig: sanitizePersistedConfig(localLabRemnicConfig),
     effectiveRemnicConfig,
     adapterOptions: {
       configOverrides: effectiveRemnicConfig,

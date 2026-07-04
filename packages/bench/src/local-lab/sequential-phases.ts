@@ -94,13 +94,15 @@ export interface RunSequentialPhasesOptions {
 }
 
 /**
- * Normalize a baseUrl for endpoint-sameness comparison. Strips trailing
- * slashes so `…/v1` and `…/v1/` compare equal — matching the trailing-slash
- * tolerance `discoveryEndpointFor` (preflight) already applies when composing
- * discovery URLs (cursor review, issue #1573 PR2).
+ * Normalize a baseUrl for endpoint-sameness comparison. Strips a single
+ * trailing slash so `…/v1` and `…/v1/` compare equal — exactly matching the
+ * one-slash trim `discoveryEndpointFor` (preflight) applies before composing
+ * discovery URLs (cursor review, issue #1573 PR2). Implemented without a
+ * regex so CodeQL's polynomial-backtracking heuristic does not flag manifest
+ * baseUrls as uncontrolled regex input.
  */
 function normalizeBaseUrlForSameness(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, "");
+  return baseUrl.endsWith("/") ? baseUrl.slice(0, -1) : baseUrl;
 }
 
 /**

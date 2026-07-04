@@ -666,3 +666,43 @@ test("local-lab runtime profile leaves providers unchanged when no runtime optio
   assert.equal(resolved.judgeProvider?.retryOptions, undefined);
   assert.equal(resolved.judgeProvider?.disableThinking, undefined);
 });
+
+test("local-lab runtime profile applies lcmObserveConcurrency to the effective config (cursor review: #1573 PR2 round 4)", async () => {
+  // Regression: resolveLocalLabRuntimeProfile built effectiveRemnicConfig from
+  // buildBenchBaselineRemnicConfig() only and never merged lcmObserveConcurrency,
+  // so --ingest-concurrency silently no-op'd on local-lab (unlike baseline/real).
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-local-lab-"));
+  const manifestPath = path.join(root, "local-lab.json");
+  await writeFile(
+    manifestPath,
+    JSON.stringify({
+      profile: "local-lab",
+      responder: {
+        provider: "openai-compatible",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "qwen3:14b",
+        ctx: 16384,
+        temperature: 0,
+        seed: 1573,
+      },
+      judge: {
+        provider: "openai-compatible",
+        baseUrl: "http://127.0.0.1:8080/v1",
+        model: "gemma3:27b",
+        ctx: 16384,
+        temperature: 0,
+        seed: 1573,
+      },
+      phases: "sequential",
+    }),
+  );
+
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "local-lab",
+    localLabManifestPath: manifestPath,
+    lcmObserveConcurrency: 4,
+  });
+
+  assert.equal(resolved.remnicConfig.lcmObserveConcurrency, 4);
+  assert.equal(resolved.effectiveRemnicConfig.lcmObserveConcurrency, 4);
+});
