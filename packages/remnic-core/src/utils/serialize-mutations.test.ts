@@ -516,6 +516,62 @@ test("withHeldFileLock does not unlink a replacement lock on release (ownership-
   }
 });
 
+test("release does NOT rename a replacement lock out of lockPath (pre-check, codex P2)", async () => {
+  // PROVE-FAIL: without the pre-check, releaseLock renames the replacement at
+  // lockPath to a trash path, leaving lockPath empty. The test seam simulates a
+  // third contender acquiring in that window. With the old code the link-restore
+  // fails (EEXIST) and the replacement is orphaned in trash; with the pre-check
+  // the rename never happens, so the seam never fires and no trash is created.
+  const dir = await mkTmpDir();
+  try {
+    const lockPath = path.join(dir, "release-precheck.lock");
+    const replacementOwner = "replacement-deadbeef-0000-4000-8000-000000000001";
+    const contenderOwner = "contender-cafebabe-0000-4000-8000-000000000002";
+    let seamFired = false;
+
+    await withHeldFileLock(
+      lockPath,
+      {
+        staleMs: 5_000,
+        onAfterReleaseRenameForTest: async () => {
+          // Simulate a third contender acquiring the now-empty lockPath.
+          seamFired = true;
+          const contender = `${888888} ${contenderOwner} ${new Date().toISOString()}\n`;
+          await writeFile(lockPath, contender, "utf8");
+          await utimes(lockPath, new Date(), new Date());
+        },
+      },
+      async () => {
+        // Simulate a stale break + replacement: overwrite with a different owner.
+        const replacement = `${777777} ${replacementOwner} ${new Date().toISOString()}\n`;
+        await writeFile(lockPath, replacement, "utf8");
+        await utimes(lockPath, new Date(), new Date());
+      },
+    );
+
+    // The pre-check must return BEFORE the rename, so the seam never fires.
+    assert.equal(seamFired, false, "pre-check returned before rename — seam never fired");
+
+    // The replacement lock must still be at lockPath, unchanged.
+    const after = await readFile(lockPath, "utf8");
+    assert.ok(
+      after.includes(replacementOwner),
+      "replacement lock remains at lockPath after our release",
+    );
+
+    // No `.releasing.` trash file may exist — lockPath was never emptied.
+    const entries = await readdir(dir);
+    const trashFiles = entries.filter((e) => e.includes(".releasing."));
+    assert.deepEqual(
+      trashFiles,
+      [],
+      "no release trash file created — replacement was never renamed out of lockPath",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // withHeldFileLock — input validation
 // ─────────────────────────────────────────────────────────────────────────────

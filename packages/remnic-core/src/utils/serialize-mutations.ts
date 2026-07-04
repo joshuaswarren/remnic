@@ -187,6 +187,13 @@ export interface HeldFileLockOptions {
    */
   readonly onBeforeBreakStaleUnlinkForTest?: () => Promise<void> | void;
   /**
+   * Test seam (codex P2): fires AFTER the release rename moves the lock to a
+   * trash path and BEFORE the ownership re-verify/restore — simulating a third
+   * contender acquiring the (now-empty) lockPath in the race window. No-op in
+   * production. Used to prove the pre-check prevents the rename entirely.
+   */
+  readonly onAfterReleaseRenameForTest?: () => Promise<void> | void;
+  /**
    * Best-effort hook for non-fatal lock warnings (heartbeat refresh failure,
    * release-time ownership check failure). Never throws into the caller. If
    * omitted, warnings are swallowed (the lock is advisory; release/heartbeat
@@ -328,7 +335,7 @@ export async function withHeldFileLock<T>(
     return await task(true);
   } finally {
     clearInterval(heartbeat);
-    await releaseLock(held, warn);
+    await releaseLock(held, warn, opts.onAfterReleaseRenameForTest);
   }
 }
 
@@ -546,31 +553,60 @@ async function breakStaleLock(
 
 /**
  * Release the lock ONLY if its content still identifies THIS acquirer (same
- * owner id). Uses an atomic rename+verify to tie the ownership check to the
- * deletion: a bare readFile-then-unlink leaves a window where a contender can
- * break our stale lock and create a replacement before our unlink runs,
- * deleting the fresh replacement (codex P2). The rename is POSIX-atomic;
- * after moving, we verify the content still carries our ownerId before
- * cleaning up the trash. If the moved file is NOT ours (a replacement was
- * created in the window), we restore it via link (non-overwriting).
+ * owner id). Two-stage ownership check:
+ *
+ *   1. PRE-CHECK (chatgpt-codex-connector P2): read lockPath BEFORE renaming.
+ *      If the lock is already a replacement (a contender broke our stale lock),
+ *      return WITHOUT renaming — renaming a replacement out of lockPath leaves
+ *      it empty, letting a third contender acquire while the replacement holder
+ *      is still active. The replacement is safe at lockPath; leave it alone.
+ *
+ *   2. ATOMIC CLAIM: if the pre-check saw our ownerId, rename lockPath→trash
+ *      (POSIX-atomic) and re-verify on the moved file. A replacement could
+ *      appear between the pre-check and the rename; if the moved file is no
+ *      longer ours, restore it via link (non-overwriting). This ties the
+ *      ownership check to the deletion so a bare readFile-then-unlink TOCTOU
+ *      cannot delete a fresh replacement (codex P2).
  */
 async function releaseLock(
   held: HeldLock,
   warn: (message: string, err: unknown) => void,
+  onAfterReleaseRenameForTest: (() => Promise<void> | void) | undefined,
 ): Promise<void> {
   try {
-    // Atomic release: rename first, then verify ownership on the moved file.
+    // PRE-CHECK (chatgpt-codex-connector P2): read lockPath before renaming. If
+    // the lock is no longer ours, a contender broke our stale lock and created a
+    // replacement. Return WITHOUT renaming — renaming the replacement out of
+    // lockPath leaves it empty, so a third contender could acquire while the
+    // replacement holder is still active. The replacement is safe at lockPath.
+    let precheck: string;
+    try {
+      precheck = await readFile(held.path, "utf8");
+    } catch {
+      return; // lock vanished — nothing to release.
+    }
+    if (!precheck.includes(held.ownerId)) {
+      return; // replacement lock — leave it untouched for its holder.
+    }
+    // It was ours when we read it. Atomically claim via rename, then re-verify
+    // on the moved file: a replacement could appear between the pre-check read
+    // above and this rename.
     const trashPath = `${held.path}.releasing.${process.pid}.${Date.now()}`;
     await rename(held.path, trashPath);
+    // Test seam: simulate a third contender acquiring the now-empty lockPath
+    // in the rename-to-restore window. No-op in production.
+    if (onAfterReleaseRenameForTest) {
+      await onAfterReleaseRenameForTest();
+    }
     try {
       const moved = await readFile(trashPath, "utf8");
       if (moved.includes(held.ownerId)) {
         // Still our lock — safe to delete.
         await unlink(trashPath).catch(() => undefined);
       } else {
-        // Not ours: a contender broke our stale lock and created a replacement
-        // between our last heartbeat and this rename. Restore it via link
-        // (non-overwriting — if lockPath already has a newer lock, leave it).
+        // Not ours: a replacement appeared between the pre-check and the rename.
+        // Restore it via link (non-overwriting — if lockPath already has a newer
+        // lock, leave it).
         try {
           await link(trashPath, held.path);
         } catch {
@@ -581,7 +617,7 @@ async function releaseLock(
         await unlink(trashPath).catch(() => undefined);
       }
     } catch {
-      // Could not read the moved file — clean up best-effort.
+      // Could not read the moved file — clean it up best-effort.
       await unlink(trashPath).catch(() => undefined);
     }
   } catch (err) {
