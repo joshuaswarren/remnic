@@ -244,6 +244,9 @@ async function decisionList(
   const records: DecisionSurfaceRecord[] = [];
   for (const m of memories) {
     if (m.frontmatter.category !== "decision") continue;
+    // Exclude archived memories so superseded/replaced records don't appear
+    // (review: cursor lifecycle-status thread).
+    if (m.frontmatter.status === "archived") continue;
     const parsed = safeParseDecisionRecord(m.content);
     if (!parsed) continue;
     const structStatus = m.frontmatter.structuredAttributes?.decisionStatus;
@@ -389,13 +392,23 @@ async function decisionSupersede(
   // recall/search/maintenance exclude it from the active corpus — review P2)
   // AND structuredAttributes.decisionStatus (the decision-specific lifecycle
   // marker used by list/get projection). The content body is not mutated.
-  await storage.writeMemoryFrontmatter(oldMemory, {
-    status: "archived",
-    structuredAttributes: {
-      ...(oldMemory.frontmatter.structuredAttributes ?? {}),
-      decisionStatus: "superseded",
-    },
-  });
+  // Rule 25: the replacement is written BEFORE the old record is mutated so
+  // a frontmatter-write failure leaves a harmless duplicate, not a missing
+  // record. Best-effort: log the failure but don't roll back the replacement
+  // (review: cursor partial-write thread).
+  try {
+    await storage.writeMemoryFrontmatter(oldMemory, {
+      status: "archived",
+      structuredAttributes: {
+        ...(oldMemory.frontmatter.structuredAttributes ?? {}),
+        decisionStatus: "superseded",
+      },
+    });
+  } catch (err) {
+    log.warn(
+      `coding_decision/supersede: replacement ${replacementId} written but old record ${targetId} status update failed — old record will still appear until retried: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
   ctx.recordCatalogWrite(storage.namespace, storage.dir);
   log.info(
     `access-write op=coding_decision/supersede superseded=${targetId} replacement=${replacementId}`,
