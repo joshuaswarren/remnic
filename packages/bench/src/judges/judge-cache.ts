@@ -331,21 +331,39 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
   // cursor bugbot, OS7QE). Return the stored score/model identity but
   // zero the work-tracking fields so cache hits are observably free.
 
+// Cache read helper with bounded latency. PR #1591 round-6 OUrjm + OUsjh:
+// the prior version registered an `abort` listener on the merged
+// phase-timeout signal that was never cleaned up when the read won
+// the race (cache hits), leaking one listener per judge call. Worse,
+// a slow read meant the merged signal had already aborted, so the
+// judge call that followed inherited an aborted signal and the
+// timeout-guarded adapter recorded the deterministic fallback
+// instead of letting the judge run. The fix uses a small INDEPENDENT
+// budget (not the phase-timeout signal) so the cache read never
+// consumes the judge's time, and the listener is always removed
+// once the read resolves or times out.
+const CACHE_READ_BUDGET_MS = 250;
 async function readCacheWithAbort(
   cache: JudgeCache,
   parts: JudgeCacheKeyParts,
   control: BenchPhaseControl | undefined,
 ): Promise<JudgeCacheHit | undefined> {
+  // If the merged phase-timeout signal already aborted, treat the
+  // read as a miss — the judge path that follows needs a fresh
+  // signal to make full use of its phase budget. (This is the only
+  // signal-driven check; we do not race the read against the signal
+  // itself because doing so would propagate the abort into the
+  // subsequent judge call and trigger the timeout fallback.)
+  if (control?.signal?.aborted) return undefined;
   const read = cache.get(parts);
-  const signal = control?.signal;
-  if (!signal) return read;
-  if (signal.aborted) return undefined;
-  return Promise.race<JudgeCacheHit | undefined>([
-    read,
-    new Promise<undefined>((resolve) => {
-      signal.addEventListener("abort", () => resolve(undefined), { once: true });
-    }),
-  ]);
+  const readBudget = new Promise<undefined>((resolveBudget) => {
+    setTimeout(() => { resolveBudget(undefined); }, CACHE_READ_BUDGET_MS);
+  });
+  // Race the actual read against a small independent budget
+  // (CACHE_READ_BUDGET_MS) — long enough for a normal filesystem
+  // read, short enough that the judge call afterwards has its full
+  // phase-timeout budget to complete.
+  return Promise.race<JudgeCacheHit | undefined>([read, readBudget]);
 }
 
   const cachedVerdict = (stored: BenchJudgeResult): BenchJudgeResult => ({

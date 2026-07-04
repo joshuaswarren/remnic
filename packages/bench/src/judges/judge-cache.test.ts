@@ -914,3 +914,32 @@ test("(t) slow cache reads fall through to the underlying judge (PR #1591 round-
     assert.equal(wrapper.counters.cacheHits, 0);
   });
 });
+
+test("(u) cache reads after an already-aborted signal still let the judge run (PR #1591 round-6 OUsjh)", async () => {
+  await withTempDir(async (dir) => {
+    // Pre-populate so the read would normally produce a hit; the
+    // aborted-signal branch forces a miss so the judge path runs.
+    const cache = new JudgeCache({ dir });
+    await cache.put(sampleKeyParts(), sampleResult);
+    const ac = new AbortController();
+    ac.abort();
+    let judgeCalls = 0;
+    const wrapper = runJudgeWithCache({
+      judge: {
+        async scoreWithMetrics() {
+          judgeCalls += 1;
+          return sampleResult;
+        },
+      },
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    const verdict = await wrapper.scoreWithMetrics!("q", "p", "e", {
+      signal: ac.signal,
+    });
+    assert.equal(verdict.score, sampleResult.score);
+    assert.equal(judgeCalls, 1, "judge must run when the control signal was already aborted at entry");
+    assert.equal(wrapper.counters.cacheMisses, 1);
+    assert.equal(wrapper.counters.cacheHits, 0);
+  });
+});
