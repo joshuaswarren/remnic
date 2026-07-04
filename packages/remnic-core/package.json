@@ -2922,7 +2922,9 @@
     "agent",
     "core"
   ],
-  "peerDependencies": {},
+  "peerDependencies": {
+    "@remnic/coding-graph": "^9.3.669"
+  },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {
       "optional": true

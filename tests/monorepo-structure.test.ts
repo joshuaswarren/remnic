@@ -121,11 +121,26 @@ test("no circular dependencies between packages", () => {
     nameToDir.set(pkg.name, dir);
     graph.set(pkg.name, new Set());
 
+    // Optional peers (peerDependenciesMeta[optional] = true) are
+    // install-time orthogonal in the à-la-carte contract and must not
+    // create graph cycles (see issue #1551 round 8 — mirrors the carve-out
+    // in scripts/publish-order.mjs).
+    const optionalPeers = new Set<string>(
+      Object.entries(pkg.peerDependenciesMeta ?? {})
+        .filter(([, meta]) => (meta as { optional?: boolean })?.optional === true)
+        .map(([name]) => name as string),
+    );
+    const isOptionalPeer = (name: string): boolean => optionalPeers.has(name);
+
     const allDeps = {
       ...pkg.dependencies,
       ...pkg.devDependencies,
-      ...pkg.peerDependencies,
     };
+
+    for (const dep of Object.keys(pkg.peerDependencies ?? {})) {
+      if (isOptionalPeer(dep)) continue;
+      allDeps[dep] = pkg.peerDependencies[dep];
+    }
 
     for (const dep of Object.keys(allDeps)) {
       // Only track internal workspace deps
