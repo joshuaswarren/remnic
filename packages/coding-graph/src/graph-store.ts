@@ -1439,6 +1439,18 @@ export class GraphStore {
     ) {
       return { ok: false, code: "invalid_query" };
     }
+    // Validate edgeTypes, if present, is an array of strings (rule 51 +
+    // chatgpt-codex-connector P2: 'Validate edgeTypes before building
+    // traversal SQL'). A malformed value like a bare string "CALLS"
+    // would otherwise throw at .map() instead of returning the
+    // tagged invalid_query failure the contract advertises.
+    if (
+      query.edgeTypes !== undefined &&
+      (!Array.isArray(query.edgeTypes) ||
+        !query.edgeTypes.every((e) => typeof e === "string"))
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
     // Resolve the start node. If `start` is a 64-char lowercase hex
     // string (the nodeIdFor sha256 format), resolve ONLY by id — this
     // is the unambiguous path a caller uses after seeing an ambiguous
@@ -1622,6 +1634,21 @@ export class GraphStore {
     // hits array (rule 27 — guard the slice/LIMIT against zero).
     const MAX_SEARCH_LIMIT = 1000;
     const limit = Math.min(rawLimit, MAX_SEARCH_LIMIT);
+
+    // Validate string filters are strings when present (rule 51 +
+    // chatgpt-codex-connector P2: 'Reject non-string search patterns
+    // instead of dropping filters'). A non-string like namePattern: 42
+    // has undefined .length, so the guard below would silently drop
+    // the filter and return unrelated nodes. Reject up-front instead.
+    if (
+      (query.label !== undefined && typeof query.label !== "string") ||
+      (query.namePattern !== undefined &&
+        typeof query.namePattern !== "string") ||
+      (query.filePattern !== undefined &&
+        typeof query.filePattern !== "string")
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
 
     // Build a single parameterized query. The degree subquery counts
     // inbound + outbound edges per node; the WHERE clause AND-combines

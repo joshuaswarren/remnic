@@ -516,6 +516,39 @@ test("traverse: a 64-hex node id resolves by id only, never conflated with a qua
   }
 });
 
+test("traverse: malformed edgeTypes (non-array or non-string element) rejected with 'invalid_query' (chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([cyclicFile]);
+    assert.equal(r.ok, true);
+
+    // A bare string instead of an array would throw at .map() without
+    // this guard. Now it surfaces as invalid_query.
+    const asString = store.traverse({
+      start: "cyc.a",
+      maxDepth: 3,
+      // @ts-expect-error — deliberately malformed at runtime
+      edgeTypes: "CALLS",
+    });
+    assert.equal(asString.ok, false);
+    if (asString.ok) throw new Error("expected failure");
+    assert.equal(asString.code, "invalid_query");
+
+    // An array with a non-string element is also rejected.
+    const withNumber = store.traverse({
+      start: "cyc.a",
+      maxDepth: 3,
+      // @ts-expect-error — deliberately malformed at runtime
+      edgeTypes: ["CALLS", 42],
+    });
+    assert.equal(withNumber.ok, false);
+    if (withNumber.ok) throw new Error("expected failure");
+    assert.equal(withNumber.code, "invalid_query");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // searchGraph(): label / name / file patterns + degree filters + limit.
 // ──────────────────────────────────────────────────────────────────────────
@@ -685,6 +718,32 @@ test("searchGraph: invalid degree / limit rejected with 'invalid_query'", async 
     assert.equal(fractional.ok, false);
     if (fractional.ok) throw new Error("expected failure");
     assert.equal(fractional.code, "invalid_query");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("searchGraph: non-string label/namePattern/filePattern rejected with 'invalid_query' (chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([starFile]);
+    assert.equal(r.ok, true);
+
+    // A non-string pattern (e.g. a number) must NOT be silently
+    // dropped — its .length is undefined, so without this guard the
+    // filter would be skipped and unrelated nodes returned as ok.
+    for (const bad of [
+      { namePattern: 42 },
+      { label: 100 },
+      { filePattern: 0 },
+    ]) {
+      const out = store.searchGraph(bad as unknown as Parameters<
+        typeof store.searchGraph
+      >[0]);
+      assert.equal(out.ok, false);
+      if (out.ok) throw new Error("expected failure");
+      assert.equal(out.code, "invalid_query");
+    }
   } finally {
     await dispose(store, dir);
   }
