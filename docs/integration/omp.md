@@ -183,6 +183,8 @@ Supported config keys:
 
 Boolean-like strings such as `"false"`, `"0"`, `"no"`, and `"off"` are treated as false.
 
+> **Remote daemons: raise `startupRequestTimeoutMs`.** MCP tool registration happens once at session start (`tools/list` against the daemon) under this timeout, and a timeout is swallowed silently — the session simply runs without any `remnic_*` tools, while the separate (lighter) health probe can still report the daemon as ready. The `1000` default is tuned for a localhost daemon; when `remnicDaemonUrl` points at another machine (Tailscale/MagicDNS, VPN, LAN), one cold DNS resolution or relayed round trip can exceed it. Set `"startupRequestTimeoutMs": 10000` for remote daemons, and prefer a stable Tailscale IP over a MagicDNS name on hosts where MagicDNS is not enabled.
+
 ### Direct load (without the connector installer)
 
 You can load the package directly, pointing it at a config via `REMNIC_OMP_CONFIG`:
