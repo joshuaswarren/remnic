@@ -589,12 +589,18 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
           "person",
           ["contract-surface entity fact"],
         );
-        // writeEntity returns a slug (not a memory id); verify it appears in
-        // readEntities() so a regression that returns a slug without writing
-        // fails the surface test.
+        // Verify BOTH that the entity is listed AND its body round-trips.
+        // readEntities() only lists filenames — a regression that creates an
+        // empty or corrupt file with the right slug would pass that check
+        // alone. Reading the body via readEntity(slug) proves the facts/content
+        // actually persisted, not just the filename.
         const entities = await storage.readEntities();
         if (!entities.includes(slug)) {
           throw new Error("writeEntity did not persist a readable entity");
+        }
+        const body = await storage.readEntity(slug);
+        if (!body || !body.includes("contract-surface entity fact")) {
+          throw new Error("writeEntity did not persist the entity body (round-trip mismatch)");
         }
         return slug;
       },
