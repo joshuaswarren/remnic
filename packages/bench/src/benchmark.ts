@@ -161,6 +161,19 @@ export async function runBenchmark(
   // any role so primary and cross judges can share the helper below.
   let cachedCrossJudge: BenchJudge | undefined;
   let crossJudgeCacheCounters: JudgeCacheCounters | undefined;
+  // Issue #1573 PR1: optionally route judge calls through a content-keyed
+  // cache. Wrap before createTimeoutGuardedAdapter so timeout-phase
+  // enforcement still applies to underlying model calls on cache misses.
+  // PR #1591 P2 (round-3 follow-up, reviewer chatgpt-codex-connector):
+  // when no `judgeProvider` config is supplied we cannot identify the
+  // judge by model/baseUrl — two factory-created judges with identical
+  // source text but different closure-captured thresholds/prompts would
+  // collide on the same cache key. Skip caching for unidentified judges
+  // and leave the unwrapped judge in place so the harness sees the
+  // byte-identical baseline.
+  // PR #1591 P2 (thread #10): AMA-Bench can run a separate cross judge
+  // (`options.amaBenchCrossJudge`) that shares the same content-keyed
+  // cache as the primary system judge (when both have provider config).
   const baseSystem: BenchMemoryAdapter = (() => {
     if (options.noJudgeCache || !options.system.judge) {
       return options.system;
@@ -176,22 +189,28 @@ export async function runBenchmark(
       return options.system;
     }
     const cache = new JudgeCache({ dir: cacheDir });
-    const primary = wrapJudgeWithCache({
-      role: "primary",
-      judge: options.system.judge,
-      benchmarkId,
-      datasetVersion: definition.meta.version,
-      amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
-      provider: options.judgeProvider ?? null,
-      cache,
-    });
-    judgeCacheCounters = primary.counters;
-    // AMA-Bench cross judge: when supplied, route it through the same
-    // cache. The cross judge's cache key uses `role: "cross"` and a
-    // distinct `judgeModelId` (`unknown-cross-judge` when no provider
-    // config) so primary and cross-judge verdicts never collide on the
-    // same key.
-    if (options.amaBenchCrossJudge) {
+    let baseSystemInner: BenchMemoryAdapter = options.system;
+    const judgeProvider = options.judgeProvider ?? null;
+    if (judgeProvider !== null) {
+      const primary = wrapJudgeWithCache({
+        role: "primary",
+        judge: options.system.judge,
+        benchmarkId,
+        datasetVersion: definition.meta.version,
+        amaBenchJudgeProtocol: options.amaBenchJudgeProtocol ?? "default",
+        provider: judgeProvider,
+        cache,
+      });
+      judgeCacheCounters = primary.counters;
+      baseSystemInner = { ...options.system, judge: primary.judge };
+    }
+    // AMA-Bench cross judge: only wrap when a cross-judge provider config
+    // identifies it. Without provider config, leave the cross judge
+    // untouched so unidentified closure-based judges cannot collide.
+    if (
+      options.amaBenchCrossJudge &&
+      (options.amaBenchCrossJudgeProvider ?? null) !== null
+    ) {
       const wrapped = wrapJudgeWithCache({
         role: "cross",
         judge: options.amaBenchCrossJudge,
@@ -204,7 +223,7 @@ export async function runBenchmark(
       cachedCrossJudge = wrapped.judge;
       crossJudgeCacheCounters = wrapped.counters;
     }
-    return { ...options.system, judge: primary.judge };
+    return baseSystemInner;
   })();
   const system = !shouldGuardSystem
     ? baseSystem
@@ -297,29 +316,11 @@ function wrapJudgeWithCache(args: {
   provider: ProviderConfig | null;
   cache: JudgeCache;
 }): { judge: BenchJudge; counters: JudgeCacheCounters } {
-
-  // PR #1591 P2 (thread #11): when the caller supplied a custom judge but
-  // no `judgeProvider` config, we have no identifying model/baseUrl/retry
-  // block to fold into the paramsHash. Without explicit identity, two
-  // different custom judges could share the `unknown-{role}-judge` key
-  // namespace and reuse each other's verdicts. Fingerprint the judge
-  // function(s) source when no provider is configured so distinct judges
-  // produce distinct cache keys.
-  const judgeIdentityFingerprint = (() => {
-    if (args.provider !== null) return undefined;
-    const sources: string[] = [];
-    for (const fn of [
-      args.judge.score,
-      args.judge.scoreWithMetrics,
-      args.judge.scoreBinaryPrompt,
-    ]) {
-      if (typeof fn === "function") {
-        sources.push(String(fn));
-      }
-    }
-    if (sources.length === 0) return undefined;
-    return createHash("sha256").update(sources.join("\u0001")).digest("hex");
-  })();
+  // PR #1591 P2 (round-3 follow-up, reviewer chatgpt-codex-connector):
+  // caller guarantees `provider !== null` here — providerless judges are
+  // passed through unwrapped so two factory-created judges with identical
+  // source text but different closure-captured state cannot collide on
+  // the cache key.
   const crossJudgeIdSuffix = args.role === "cross" ? "-cross" : "";
   const wrapped = runJudgeWithCache({
     judge: args.judge,
@@ -346,15 +347,12 @@ function wrapJudgeWithCache(args: {
       // Full judge configuration, deterministically serialized (sorted
       // keys) so provider/base-url/retry changes produce fresh cache
       // keys. `role` is included so primary and cross judges never
-      // share a paramsHash. `judgeIdentityFingerprint` covers the
-      // providerless path so two distinct custom judges cannot collide
-      // (PR #1591 P2, thread #11).
+      // share a paramsHash.
       judgeParamsHash: createHash("sha256")
         .update(
           stableStringify({
             role: args.role,
             provider: args.provider,
-            judgeIdentityFingerprint: judgeIdentityFingerprint ?? null,
           }),
         )
         .digest("hex"),

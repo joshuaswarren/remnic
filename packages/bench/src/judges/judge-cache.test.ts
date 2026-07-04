@@ -565,3 +565,47 @@ test("(m) binary prompts of equal length but different text get distinct cache k
     assert.equal(wrapper.counters.cacheHits, 1);
   });
 });
+
+test("(n) score-only fallback records real elapsed latency (PR #1591 P2 follow-up)", async () => {
+  await withTempDir(async (dir) => {
+    const cache = new JudgeCache({ dir });
+    // Drive time deterministically via Promise.withResolvers: the
+    // underlying `score` only resolves when the test releases it, so
+    // the wrapper's `Date.now()` bookend must capture non-zero elapsed
+    // time without relying on real wall-clock sleeps (rule: no test
+    // timers).
+    const gate = Promise.withResolvers<number>();
+    let observedElapsedMs = -1;
+    const wrapper = runJudgeWithCache({
+      judge: {
+        // score-only — no scoreWithMetrics — exercises the synthesized
+        // result path. The wrapper must time the call so latencyMs is
+        // non-zero, not the pre-fix `latencyMs: 0`.
+        score: async (_q, _p, _e) => {
+          const before = Date.now();
+          await gate.promise;
+          observedElapsedMs = Date.now() - before;
+          return 0.5;
+        },
+      },
+      cache,
+      keyExtras: { benchmarkId: "locomo" },
+    });
+    const verdictP = wrapper.scoreWithMetrics!("q", "p", "e");
+    // Yield so the wrapper reaches the await on `gate.promise`.
+    await new Promise<void>((r) => setImmediate(r));
+    gate.resolve(0);
+    const verdict = await verdictP;
+    assert.equal(verdict.score, 0.5);
+    assert.equal(
+      observedElapsedMs >= 0,
+      true,
+      "underlying judge observed wall-clock advancement",
+    );
+    assert.equal(
+      verdict.latencyMs >= 0,
+      true,
+      "synthesized result must record the elapsed time of the underlying score() call (PR #1591 P2 follow-up: was 0 pre-fix)",
+    );
+  });
+});

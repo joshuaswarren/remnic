@@ -345,14 +345,19 @@ export function runJudgeWithCache(options: RunJudgeWithCacheOptions): BenchJudge
       }
 
       if (!judge.scoreWithMetrics) {
-        // Fall back to score() then synthesize a result shape.
+        // Fall back to score() then synthesize a result shape. Time the
+        // underlying call so the synthesized `latencyMs` reflects the
+        // real judge work, not zero — task latency and benchmark cost
+        // metrics depend on this (PR #1591 P2, follow-up to round 3,
+        // reviewer chatgpt-codex-connector).
+        const scoreStartedAt = Date.now();
         const scoreValue = judge.score
           ? await judge.score(question, predicted, expected, control)
           : 0;
         const synthesized: BenchJudgeResult = {
           score: scoreValue,
           tokens: { input: 0, output: 0 },
-          latencyMs: 0,
+          latencyMs: Date.now() - scoreStartedAt,
           model: keyExtras.judgeModelId ?? undefined,
         };
         counters.modelCalls += 1;
