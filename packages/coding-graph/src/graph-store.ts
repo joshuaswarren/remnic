@@ -329,6 +329,24 @@ export class GraphStore {
         );
       }
       seenPaths.add(ir.path);
+      // `symbols` is a REQUIRED FileIR contract field (non-optional
+      // `readonly symbols: readonly SymbolIR[]`). Runtime null can
+      // still arrive via JSON deserialization or a malformed parser
+      // result; without this guard the `?? []` fallback made a
+      // missing/null field indistinguishable from an explicit empty
+      // array, so the prune step silently wiped every existing
+      // node/edge for the path while the batch returned ok. Reject
+      // the contract violation instead of clearing the file
+      // (chatgpt-codex-connector P2: 'Reject missing symbols instead
+      // of pruning the file').
+      const symbolsField = ir.symbols as unknown;
+      if (!Array.isArray(symbolsField)) {
+        throw new Error(
+          `graph-store: file '${ir.path}' symbols must be an array (FileIR contract requires it); received ${
+            symbolsField === null ? "null" : typeof symbolsField
+          } — refusing to ingest to avoid wiping existing nodes`,
+        );
+      }
     }
     try {
       const results: UpsertResult[] = [];
@@ -401,7 +419,7 @@ export class GraphStore {
     // nodeIdFor for the canonical form.
     const seenNodeIds = new Set<string>();
     const symbolByNodeId = new Map<string, SymbolIR>();
-    for (const sym of ir.symbols ?? []) {
+    for (const sym of ir.symbols) {
       const id = nodeIdFor({
         qualifiedName: sym.qualifiedName,
         filePath: ir.path,

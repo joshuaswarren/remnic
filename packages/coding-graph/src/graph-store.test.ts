@@ -522,6 +522,54 @@ test("duplicate paths in one batch throw (cursor Bugbot: 'Duplicate paths corrup
   }
 });
 
+test("null/missing symbols is rejected as a contract violation, not silently pruned (chatgpt-codex-connector P2: 'Reject missing symbols instead of pruning the file')", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-nullsym-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "store.db"),
+  });
+  try {
+    // Seed the file with valid symbols so there is real state to wipe.
+    const seeded = await store.upsertFileBatch([fileA]);
+    assert.equal(seeded.ok, true, "seed ingest succeeds");
+    assert.equal(
+      seeded.ok && seeded.results[0]!.nodeCount,
+      2,
+      "fileA seeded with 2 symbol nodes",
+    );
+
+    // Deliberately violate the FileIR contract (symbols is required,
+    // non-optional). The type system forbids null; this cast seeds
+    // exactly the malformed payload a JSON-deserializing or buggy
+    // caller would send, to prove the runtime guard catches it.
+    const nullSymbolsIr = { ...fileA, symbols: null } as unknown as StoreFileIR;
+
+    // The guard throws BEFORE the transaction opens, so no prune can
+    // run and the existing nodes survive. The pre-fix `?? []` made
+    // this return ok and delete both seeded nodes.
+    await assert.rejects(
+      store.upsertFileBatch([nullSymbolsIr]),
+      /symbols must be an array .* received null/,
+      "a null symbols field must be rejected, not treated as an empty assertion set",
+    );
+
+    // The guard throws before the transaction opens, so the seeded
+    // nodes must still be present. nodeCount counts NEW inserts, so a
+    // no-op re-ingest (nodeCount 0) is the proof: had the null-symbols
+    // call wiped them (the pre-fix `?? []` bug), this re-ingest would
+    // re-insert both and report 2.
+    const reingested = await store.upsertFileBatch([fileA]);
+    assert.equal(reingested.ok, true, "store accepts a valid ingest after the rejection");
+    assert.equal(
+      reingested.ok && reingested.results[0]!.nodeCount,
+      0,
+      "fileA re-ingest is a no-op — seeded nodes survived the rejected null-symbols attempt (no wipe)",
+    );
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("duplicate (src,dst,type) edges keep first metadata, do not inflate edgeCount (cursor Bugbot #28876d4c)", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "cg-dupedge-"));
   const store = await GraphStore.open({
