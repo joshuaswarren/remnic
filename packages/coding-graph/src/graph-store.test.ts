@@ -469,6 +469,94 @@ test("closed store returns tagged failure, never throws (rule 34)", async () => 
   }
 });
 
+// ──────────────────────────────────────────────────────────────────────────
+// Rule 22 — read primitives distinguish backend failure from empty.
+// Before the fix, readMeta / readFileHashes / readCoChanges caught every
+// error and returned the empty value (null / new Map() / []), so a
+// SQLITE_BUSY or a closed store was indistinguishable from "key absent" /
+// "empty index" / "no co-change edges". The reindex executor's prune +
+// head-advance decisions depend on these reads, so conflating error with
+// empty could skip pruning while advancing head, or prune against a
+// falsely-empty set (cursor Bugbot HIGH: 'readFileHashes conflates error
+// with empty'; 'readCoChanges swallows store errors'; 'readMeta conflates
+// absent key with db failure').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("readMeta: closed store returns tagged failure, not null (rule 22)", async () => {
+  const { store, dir } = await tempStore();
+  await store.close();
+  try {
+    const r = store.readMeta("any_key");
+    assert.equal(r.ok, false);
+    if (r.ok) throw new Error("expected failure");
+    assert.equal(r.code, "store_closed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readMeta: absent key returns { ok: true; value: null } — distinct from failure (rule 22)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = store.readMeta("absent_key");
+    assert.equal(r.ok, true);
+    if (!r.ok) throw new Error("expected ok");
+    assert.equal(r.value, null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readFileHashes: closed store returns tagged failure, not an empty Map (rule 22)", async () => {
+  const { store, dir } = await tempStore();
+  await store.close();
+  try {
+    const r = store.readFileHashes();
+    assert.equal(r.ok, false);
+    if (r.ok) throw new Error("expected failure");
+    assert.equal(r.code, "store_closed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readFileHashes: empty index returns { ok: true; hashes: <empty> } — distinct from failure (rule 22)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = store.readFileHashes();
+    assert.equal(r.ok, true);
+    if (!r.ok) throw new Error("expected ok");
+    assert.equal(r.hashes.size, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readCoChanges: closed store returns tagged failure, not [] (rule 22)", async () => {
+  const { store, dir } = await tempStore();
+  await store.close();
+  try {
+    const r = store.readCoChanges("src/a.ts");
+    assert.equal(r.ok, false);
+    if (r.ok) throw new Error("expected failure");
+    assert.equal(r.code, "store_closed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("readCoChanges: no edges returns { ok: true; edges: [] } — distinct from failure (rule 22)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = store.readCoChanges("src/a.ts");
+    assert.equal(r.ok, true);
+    if (!r.ok) throw new Error("expected ok");
+    assert.equal(r.edges.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("node-id ingestion: file-level delete cascades prior nodes + owned edges", async () => {
   const { store, dir } = await tempStore();
   try {

@@ -243,6 +243,8 @@ export interface TraverseHit {
   qualifiedName: string;
   name: string;
   label: string;
+  /** Repo-relative file path of the node (joined from files.path). */
+  filePath: string;
   /** BFS depth from the start node (start = 0). */
   depth: number;
 }
@@ -370,6 +372,45 @@ export type SnippetFailureCode =
   | "db_error";
 
 export type SnippetResult = SnippetSuccess | { ok: false; code: SnippetFailureCode };
+
+// ──────────────────────────────────────────────────────────────────────────
+// KV / list read primitives — tagged failures (rule 22). readMeta,
+// readFileHashes, and readCoChanges previously caught every error and
+// returned the empty value (null / new Map() / []), making a SQLITE_BUSY
+// indistinguishable from "key absent" / "empty index" / "no co-change
+// edges". The reindex executor's prune + head-advance decisions depend on
+// readFileHashes, so conflating error with empty could skip pruning while
+// advancing head, or prune against a falsely-empty set. These result types
+// force callers to handle the two cases distinctly (cursor Bugbot HIGH:
+// 'readFileHashes conflates error with empty'; 'readCoChanges swallows
+// store errors'; 'readMeta conflates absent key with db failure').
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Result of readMeta — `{ ok: true; value: null }` is a genuinely absent key;
+ * a tagged failure is a backend error (rule 22). */
+export type ReadMetaResult =
+  | { ok: true; value: string | null }
+  | ({ ok: false } & GraphStoreFailure);
+
+/** Result of readFileHashes — `{ ok: true; hashes: <empty> }` is an empty
+ * index; a tagged failure is a backend error (rule 22). */
+export type ReadFileHashesResult =
+  | { ok: true; hashes: Map<string, string> }
+  | ({ ok: false } & GraphStoreFailure);
+
+/** A co-change edge row returned by readCoChanges. */
+export interface ReadCoChangeEdge {
+  readonly fileA: string;
+  readonly fileB: string;
+  readonly support: number;
+  readonly confidence: number;
+}
+
+/** Result of readCoChanges — `{ ok: true; edges: [] }` means no edges
+ * recorded; a tagged failure is a backend error (rule 22). */
+export type ReadCoChangesResult =
+  | { ok: true; edges: readonly ReadCoChangeEdge[] }
+  | ({ ok: false } & GraphStoreFailure);
 
 // ──────────────────────────────────────────────────────────────────────────
 // PR2 dead-code exclusion — explicit named constant (rule 53 analog).
@@ -645,19 +686,215 @@ export class GraphStore {
    *     `database disk image is malformed`; the caller must surface and
    *     stop trusting this DB.
    */
-  async upsertFileBatch(files: StoreFileIR[]): Promise<UpsertBatchResult> {
+  async upsertFileBatch(
+    files: StoreFileIR[],
+    /**
+     * Optional paths to delete in the SAME transaction as the upsert
+     * (issue #1553 — the reindex executor prunes deleted files atomically
+     * with the changed-files upsert so a mid-batch failure cannot leave
+     * the graph with committed deletions but no re-ingested replacements).
+     * Cascades to nodes + edges + node_attributes via the schema's
+     * `ON DELETE CASCADE`. Empty/omitted = no deletions.
+     */
+    deletePaths: readonly string[] = [],
+  ): Promise<UpsertBatchResult> {
     if (this.closed || this.closing) {
       return {
         ok: false,
         code: "store_closed",
       };
     }
-    return this.queue.schedule(() => this.runUpsert(files));
+    return this.queue.schedule(() => this.runUpsert(files, deletePaths));
   }
 
   /** Wait for pending writes to drain — test seam. */
   async drain(): Promise<void> {
     await this.queue.drain();
+  }
+  // ──────────────────────────────────────────────────────────────────────
+  // PR3 (issue #1553): meta-table + file-management methods for the
+  // incremental reindex pipeline.
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Read a value from the `meta` table. Returns `null` when the key is
+   * absent. Synchronous (like the other read primitives) so the reindex
+   * planner can read `last_indexed_head` without an await.
+   */
+  readMeta(key: string): ReadMetaResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
+    try {
+      const row = expectRow<{ value: string }>(
+        this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key),
+        ["value"],
+      );
+      return { ok: true, value: row ? row.value : null };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyReadError(error);
+    }
+  }
+
+  /**
+   * Write a key/value pair to the `meta` table. Synchronous — runs in its
+   * own implicit transaction. The reindex executor calls this AFTER
+   * `upsertFileBatch` resolves (rule 25: head/state updates only after
+   * the data transaction commits). A crash between the two leaves the old
+   * head, and the next run re-ingests idempotently (deterministic node ids).
+   */
+  writeMeta(key: string, value: string): void {
+    if (this.closed) return;
+    this.db
+      .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+      .run(key, value);
+  }
+
+  /**
+   * Read every file row's path → content_hash. Used by hash_scan mode
+   * to detect content drift without a reachable base commit (issue #1553).
+   */
+  readFileHashes(): ReadFileHashesResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
+    try {
+      const rows = expectRows<{ path: string; content_hash: string }>(
+        this.db.prepare("SELECT path, content_hash FROM files").all(),
+        ["path", "content_hash"],
+      );
+      const out = new Map<string, string>();
+      for (const r of rows) out.set(r.path, r.content_hash);
+      return { ok: true, hashes: out };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyReadError(error);
+    }
+  }
+
+  /**
+   * Drop file rows by path, cascading to their nodes + edges +
+   * node_attributes (the schema's `ON DELETE CASCADE` from `files(id)`
+   * handles the cascade — `foreign_keys = ON` is set in `open()`).
+   * Used by the reindex executor to prune deleted files.
+   *
+   * Paths are chunked under the SQLite variable limit (rule 23 pattern).
+   */
+  async dropFiles(paths: readonly string[]): Promise<void> {
+    if (this.closed || this.closing || paths.length === 0) return;
+    await this.queue.schedule(async () => {
+      this.runChunkedDelete(
+        "DELETE FROM files WHERE path IN (%PH%)",
+        paths,
+      );
+    });
+  }
+
+  /**
+   * Chunk a parameterized DELETE-with-IN-list under SQLite's variable
+   * bind limit. Mirrors the chunking pattern used by `runChunkedUpdate`
+   * and the stale-edge deletes.
+   */
+  private runChunkedDelete(sqlTemplate: string, params: readonly string[]): void {
+    if (params.length === 0) return;
+    for (let i = 0; i < params.length; i += SQLITE_VARIABLE_LIMIT) {
+      const chunk = params.slice(i, i + SQLITE_VARIABLE_LIMIT);
+      const placeholders = chunk.map(() => "?").join(", ");
+      this.db.prepare(sqlTemplate.replace("%PH%", placeholders)).run(...chunk);
+    }
+  }
+  /**
+   * PR3 (issue #1553): upsert co-change edges into the `co_changes`
+   * table. Clears existing edges then inserts the new set in one
+   * transaction (idempotent — re-running on unchanged history produces
+   * the same table). Serialized through the write queue.
+   */
+  /**
+   * PR3 (issue #1553): upsert co-change edges into the `co_changes`
+   * table. Clears existing edges then inserts the new set in one
+   * transaction (idempotent — re-running on unchanged history produces
+   * the same table). Serialized through the write queue.
+   *
+   * Returns `{ ok: false, code: "store_closed" }` when the store is
+   * closed/closing so the caller does NOT believe mining succeeded
+   * while nothing was persisted (cursor Bugbot: 'Co-change store
+   * reports false success').
+   */
+  async upsertCoChanges(edges: readonly {
+    readonly fileA: string;
+    readonly fileB: string;
+    readonly support: number;
+    readonly confidence: number;
+  }[]): Promise<
+    | { ok: true }
+    | { ok: false; code: "store_closed" }
+    | { ok: false; code: "db_error" }
+  > {
+    if (this.closed || this.closing) {
+      return { ok: false, code: "store_closed" };
+    }
+    try {
+      await this.queue.schedule(async () => {
+        const tx = this.db.transaction(() => {
+          this.db.exec("DELETE FROM co_changes");
+          const insert = this.db.prepare(
+            `INSERT INTO co_changes (file_a, file_b, support, confidence)
+               VALUES (?, ?, ?, ?)
+             ON CONFLICT(file_a, file_b) DO UPDATE SET
+               support = excluded.support,
+               confidence = excluded.confidence`,
+          );
+          for (const e of edges) {
+            insert.run(e.fileA, e.fileB, e.support, e.confidence);
+          }
+        });
+        tx();
+      });
+      return { ok: true };
+    } catch (error) {
+      // A locked/corrupt DB would otherwise throw out of the queued
+      // callback and crash the caller even though the public type only
+      // advertises tagged failures. Surface a tagged db_error instead
+      // (chatgpt-codex-connector: 'Return a tagged co-change store
+      // failure').
+      logWriteFailure(error);
+      return { ok: false, code: "db_error" };
+    }
+  }
+
+  /**
+   * PR3 (issue #1553): read co-change edges for a file. Returns edges
+   * where the file is either `file_a` or `file_b`. Synchronous read.
+   */
+  readCoChanges(filePath: string): ReadCoChangesResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
+    try {
+      const rows = expectRows<{
+        file_a: string;
+        file_b: string;
+        support: number;
+        confidence: number;
+      }>(
+        this.db
+          .prepare(
+            `SELECT file_a, file_b, support, confidence
+               FROM co_changes
+              WHERE file_a = ? OR file_b = ?
+              ORDER BY confidence DESC, file_a ASC, file_b ASC`,
+          )
+          .all(filePath, filePath),
+        ["file_a", "file_b", "support", "confidence"],
+      );
+      return {
+        ok: true,
+        edges: rows.map((r) => ({
+          fileA: r.file_a,
+          fileB: r.file_b,
+          support: r.support,
+          confidence: r.confidence,
+        })),
+      };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyReadError(error);
+    }
   }
 
   /**
@@ -696,7 +933,10 @@ export class GraphStore {
 
   // ────────────── private ──────────────
 
-  private async runUpsert(files: StoreFileIR[]): Promise<UpsertBatchResult> {
+  private async runUpsert(
+    files: StoreFileIR[],
+    deletePaths: readonly string[] = [],
+  ): Promise<UpsertBatchResult> {
     // Guard: duplicate paths in one batch silently corrupt the edge
     // pass — pass 2 deletes the first entry's edges when the second
     // entry's edge pass runs against the same file row. Fail loud so
@@ -815,6 +1055,19 @@ export class GraphStore {
       // passes together make the write pipeline order-independent for
       // cross-file edges (chatgpt-codex-connector P1/P2).
       const tx = this.db.transaction((irs: StoreFileIR[]) => {
+        // Pass 0 (issue #1553): prune deleted-file rows in the SAME
+        // transaction as the upsert so a failure rolls both back
+        // atomically (cursor Bugbot: 'Deletes commit before ingest
+        // fails'). Cascades to nodes + edges + node_attributes.
+        if (deletePaths.length > 0) {
+          for (let i = 0; i < deletePaths.length; i += SQLITE_VARIABLE_LIMIT) {
+            const chunk = deletePaths.slice(i, i + SQLITE_VARIABLE_LIMIT);
+            const placeholders = chunk.map(() => "?").join(", ");
+            this.db
+              .prepare("DELETE FROM files WHERE path IN (%PH%)".replace("%PH%", placeholders))
+              .run(...chunk);
+          }
+        }
         // Pass 1a: upsert every file's nodes and collect the per-file
         // prune sets WITHOUT deleting yet. `upsertFileNodes` returns
         // the result plus the node ids it wants to prune; the actual
@@ -1595,13 +1848,14 @@ export class GraphStore {
       qualified_name: string;
       name: string;
       label: string;
+      file_path: string;
     }>(
       this.db
         .prepare(
-          "SELECT id, qualified_name, name, label FROM nodes WHERE id = ?",
+          "SELECT n.id, n.qualified_name, n.name, n.label, f.path AS file_path FROM nodes n JOIN files f ON n.file_id = f.id WHERE n.id = ?",
         )
         .get(startId),
-      ["id", "qualified_name", "name", "label"],
+      ["id", "qualified_name", "name", "label", "file_path"],
     );
     if (!startRow) {
       // Race: the node vanished between the resolve and the read.
@@ -1613,6 +1867,7 @@ export class GraphStore {
       qualifiedName: startRow.qualified_name,
       name: startRow.name,
       label: startRow.label,
+      filePath: startRow.file_path,
       depth: 0,
     });
 
@@ -1654,13 +1909,14 @@ export class GraphStore {
             qualified_name: string;
             name: string;
             label: string;
+            file_path: string;
           }>(
             this.db
               .prepare(
-                "SELECT id, qualified_name, name, label FROM nodes WHERE id = ?",
+                "SELECT n.id, n.qualified_name, n.name, n.label, f.path AS file_path FROM nodes n JOIN files f ON n.file_id = f.id WHERE n.id = ?",
               )
               .get(neighbor),
-            ["id", "qualified_name", "name", "label"],
+            ["id", "qualified_name", "name", "label", "file_path"],
           );
           if (hitRow) {
             hits.push({
@@ -1668,6 +1924,7 @@ export class GraphStore {
               qualifiedName: hitRow.qualified_name,
               name: hitRow.name,
               label: hitRow.label,
+              filePath: hitRow.file_path,
               depth,
             });
           }
