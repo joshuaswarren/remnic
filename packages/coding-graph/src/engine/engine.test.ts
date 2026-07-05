@@ -628,6 +628,72 @@ test("python-routes: @app.get('/users') def users() captures handler name", asyn
 });
 
 // ---------------------------------------------------------------------------
+// 2d. Round-3 review-thread fixes (#1551 PR2 — PR #1652).
+//   - Go receiver-qualified method names (thread dHXe)
+//   - Concurrent parseFile serialization (thread dHXZ)
+// ---------------------------------------------------------------------------
+
+test("go-receivers: method qualified names use receiver type", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    'package main',
+    '',
+    'type Server struct {',
+    '    port int',
+    '}',
+    '',
+    'func (s *Server) Start() {}',
+    'func (s Server) Stop() {}',
+    'func NewServer() *Server { return nil }',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "main.go", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const start = result.ir.symbols.find((s) => s.name === "Start");
+  assert.ok(start, "Go: Start method must exist");
+  assert.equal(start!.qualifiedName, "Server.Start", "pointer receiver method should be Server.Start");
+  assert.equal(start!.parentQualifiedName, "Server");
+
+  const stop = result.ir.symbols.find((s) => s.name === "Stop");
+  assert.ok(stop, "Go: Stop method must exist");
+  assert.equal(stop!.qualifiedName, "Server.Stop", "value receiver method should be Server.Stop");
+  assert.equal(stop!.parentQualifiedName, "Server");
+
+  const newServer = result.ir.symbols.find((s) => s.name === "NewServer");
+  assert.ok(newServer, "Go: NewServer function must exist");
+  assert.equal(newServer!.qualifiedName, "NewServer", "free functions should have no parent qualifier");
+
+  await engine.dispose();
+});
+
+test("concurrent-parse: parallel parseFile calls do not race", async () => {
+  const engine = createCodingGraphEngine();
+  const jsCode = 'const x = require("x"); function f() {}';
+  const pyCode = 'def f():\n    pass\nclass C:\n    pass';
+  const tsCode = 'export function g(): void {}';
+
+  // Fire all three concurrently — the shared parser must serialize them.
+  const results = await Promise.all([
+    engine.parseFile({ path: "a.js", content: Buffer.from(jsCode, "utf-8") }),
+    engine.parseFile({ path: "b.py", content: Buffer.from(pyCode, "utf-8") }),
+    engine.parseFile({ path: "c.ts", content: Buffer.from(tsCode, "utf-8") }),
+  ]);
+
+  for (const [i, result] of results.entries()) {
+    assert.ok(result.ok, `concurrent parse #${i} must succeed, got: ${result.ok ? "" : result.message}`);
+  }
+
+  // Verify the results are correct (not mixed up by a race).
+  const [jsR, pyR, tsR] = results;
+  assert.ok(jsR.ok && jsR.ir.symbols.some((s) => s.name === "f"), "JS parse should have function f");
+  assert.ok(pyR.ok && pyR.ir.symbols.some((s) => s.name === "C"), "Python parse should have class C");
+  assert.ok(tsR.ok && tsR.ir.symbols.some((s) => s.name === "g"), "TS parse should have function g");
+
+  await engine.dispose();
+});
+
+// ---------------------------------------------------------------------------
 // 3. Determinism — same file parsed twice must produce byte-identical IR.
 // ---------------------------------------------------------------------------
 

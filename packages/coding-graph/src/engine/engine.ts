@@ -33,13 +33,18 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
   readonly supportedLanguages: readonly CodingGraphLanguage[];
   private readonly backend: ParserBackend;
   private disposed = false;
+  /**
+   * Serialize parse calls. The backend's single Parser instance is shared
+   * across all languages, so concurrent setLanguage/parse calls would race.
+   * Each parseFile call awaits the previous before touching the parser.
+   */
+  private parseChain: Promise<void> = Promise.resolve();
 
   constructor(backend: ParserBackend) {
     this.engineVersion = CODING_GRAPH_ENGINE_VERSION;
     this.supportedLanguages = TIER_1_LANGUAGES;
     this.backend = backend;
   }
-
   async parseFile(input: ParseFileInput): Promise<ParseResult> {
     if (this.disposed) {
       return {
@@ -49,6 +54,22 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
         message: "engine has been disposed",
       };
     }
+
+    // Serialize: wait for any in-flight parse before touching the shared parser.
+    const previous = this.parseChain;
+    let release!: () => void;
+    this.parseChain = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await this.doParseFile(input);
+    } finally {
+      release();
+    }
+  }
+
+  private async doParseFile(input: ParseFileInput): Promise<ParseResult> {
 
     // Resolve the language — explicit override wins, then sniff from path.
     const lang: CodingGraphLanguage | null =

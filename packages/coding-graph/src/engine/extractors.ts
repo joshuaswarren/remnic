@@ -176,7 +176,18 @@ const PYTHON_EXTRACTOR: LanguageExtractor = {
 const GO_EXTRACTOR: LanguageExtractor = {
   definitionsQuery: `
 (function_declaration name: (identifier) @name) @def.function
-(method_declaration name: (field_identifier) @name) @def.method
+
+; Go methods sit outside their receiver struct, so byte-span nesting
+; cannot compute qualified names. Capture the receiver type_identifier
+; so extractSymbols can prefix the method name (Server.Start).
+(method_declaration
+  receiver: (parameter_list
+    (parameter_declaration type: (type_identifier) @__receiver.type))
+  name: (field_identifier) @name) @def.method
+(method_declaration
+  receiver: (parameter_list
+    (parameter_declaration type: (pointer_type (type_identifier) @__receiver.type)))
+  name: (field_identifier) @name) @def.method
 (type_spec name: (type_identifier) @name type: (struct_type)) @def.class
 (type_spec name: (type_identifier) @name type: (interface_type)) @def.interface
 (type_spec name: (type_identifier) @name type: (type_identifier)) @def.type

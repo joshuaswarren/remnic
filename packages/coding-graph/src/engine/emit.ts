@@ -68,6 +68,8 @@ interface RawDef {
   readonly name: string;
   readonly startByte: number;
   readonly endByte: number;
+  /** Go receiver type (e.g. "Server" from `func (s *Server) Start()`). */
+  readonly receiverType?: string;
 }
 
 function extractSymbols(root: TSNode, language: Language, lang: CodingGraphLanguage): SymbolIR[] {
@@ -81,6 +83,7 @@ function extractSymbols(root: TSNode, language: Language, lang: CodingGraphLangu
       let kind: DefKind | null = null;
       let nameNode: TSNode | null = null;
       let defNode: TSNode | null = null;
+      let receiverType = "";
       for (const cap of match.captures) {
         const k = kindFromCapture(cap.name);
         if (k) {
@@ -88,6 +91,8 @@ function extractSymbols(root: TSNode, language: Language, lang: CodingGraphLangu
           defNode = cap.node;
         } else if (cap.name === "name") {
           nameNode = cap.node;
+        } else if (cap.name === "__receiver.type") {
+          receiverType = cap.node.text;
         }
       }
       if (!kind || !defNode || !nameNode) continue;
@@ -96,6 +101,7 @@ function extractSymbols(root: TSNode, language: Language, lang: CodingGraphLangu
         name: nameNode.text,
         startByte: defNode.startIndex,
         endByte: defNode.endIndex,
+        receiverType: receiverType || undefined,
       });
     }
 
@@ -107,8 +113,11 @@ function extractSymbols(root: TSNode, language: Language, lang: CodingGraphLangu
       while (stack.length > 0 && stack[stack.length - 1].endByte <= def.startByte) {
         stack.pop();
       }
+      // Go methods sit outside their receiver struct, so byte-span nesting
+      // cannot determine the parent. Use the captured receiver type instead.
       const parentQualifiedName =
-        stack.length > 0 ? stack.map((d) => d.name).join(".") : undefined;
+        def.receiverType ??
+        (stack.length > 0 ? stack.map((d) => d.name).join(".") : undefined);
       const qualifiedName = parentQualifiedName
         ? `${parentQualifiedName}.${def.name}`
         : def.name;
