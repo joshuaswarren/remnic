@@ -645,8 +645,8 @@ test("omp publisher publishes config, wrapper, readme, pre-bundle loader, and ma
   assert.ok(scripts?.postinstall?.includes("bun build"), "postinstall must run bun build");
 
   const loader = fs.readFileSync(loaderPath, "utf8");
-  assert.match(loader, /omp\.extensions/);
-  assert.match(loader, /bun build/);
+  assert.match(loader, /bundleIsStale/, "loader must have staleness check");
+  assert.match(loader, /dist-bundle/, "loader must reference dist-bundle");
 });
 
 test("omp publisher refuses a symlinked extension root", async (t) => {
@@ -913,7 +913,7 @@ test("omp publisher loader.js embeds the plugin-pi dist path for mtime self-heal
 
   // The loader must reference the same plugin-pi dist path that the wrapper imports from,
   // so mtime self-healing detects npm updates of @remnic/plugin-pi.
-  const wrapperImportMatch = wrapper.match(/from\s+"(file:\/\/.+plugin-pi\/dist\/index\.js)"/);
+  const wrapperImportMatch = wrapper.match(/from\s+"(file:\/\/.+plugin-pi\/(?:src|dist)\/index\.(?:ts|js))"/);
   assert.ok(wrapperImportMatch, "wrapper must import from plugin-pi dist");
   const wrapperPath = wrapperImportMatch[1].replace(/^file:\/\//, "");
   assert.ok(
