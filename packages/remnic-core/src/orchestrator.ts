@@ -19258,15 +19258,17 @@ export class Orchestrator {
           temporalSupersededFilteredCount += 1;
           continue;
         }
-        // Bi-temporal injection filter (issue #1578): when the master gate
+        // Bi-temporal INJECTION filter (issue #1578): when the master gate
         // is on and the caller did NOT pin `as_of`, drop facts whose event-
-        // time interval has ended before now. They remain findable by
-        // explicit search and `as_of` queries (escape hatch: the as_of branch
-        // above already admits historically-valid records; this filter only
-        // trims the default injection set). Gated off entirely when
-        // `temporalExpiredInInjection` is set. Status-orthogonal: an `active`
-        // fact can be validity-expired; a `superseded` one may still be within
-        // its window (issue pitfall matrix).
+        // time interval has ended before now. This lives ONLY in the recall
+        // injection path (filterSearchResultsByRecallSafety) — explicit
+        // search (access-service.memorySearch → searchAcrossNamespaces /
+        // qmd.search) never routes through here, so expired-validity facts
+        // remain findable by memory_search and `as_of` queries (escape
+        // hatch: the as_of branch above also admits historically-valid
+        // records). Gated off entirely when `temporalExpiredInInjection` is
+        // set. Status-orthogonal: an `active` fact can be validity-expired;
+        // a `superseded` one may still be within its window.
         if (
           !asOfActive &&
           this.config.temporalBiTemporal &&

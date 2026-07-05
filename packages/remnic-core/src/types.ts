@@ -790,11 +790,14 @@ export interface PluginConfig {
   temporalSupersessionIncludeInRecall: boolean;
   /**
    * Bi-temporal validity master gate (issue #1578). When `false` (default),
-   * the extraction event-time resolver, the recall validity-injection filter,
-   * and the `asOf` injection semantics behave byte-identically to pre-#1578.
-   * Turn on to (a) resolve per-fact event-time expressions at write time,
-   * recording `observedAt`/`eventTimeSource`, and (b) exclude
-   * validity-expired facts from injection candidates by default.
+   * the recall validity-injection filter and `asOf` semantics behave
+   * byte-identically to pre-#1578.
+   *
+   * Turn on to exclude validity-expired facts from default injection
+   * candidates (they remain findable by explicit search and `as_of`
+   * queries). Storage round-trips `observedAt`/`eventTimeSource`; the
+   * extraction prompt → `resolveEventTime` write-time wiring lands in a
+   * follow-on PR, so new extractions are not yet event-time-resolved.
    */
   temporalBiTemporal: boolean;
   /**

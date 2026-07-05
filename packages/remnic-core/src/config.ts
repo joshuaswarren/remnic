@@ -2084,10 +2084,17 @@ export function parseConfig(
     temporalSupersessionEnabled: cfg.temporalSupersessionEnabled !== false, // On by default
     temporalSupersessionIncludeInRecall:
       cfg.temporalSupersessionIncludeInRecall === true, // Off by default
-    // Bi-temporal validity (issue #1578). Default `false` so extraction,
-    // storage, and recall behave byte-identically to pre-#1578 until an
-    // operator opts in. `=== true` rejects non-boolean / string-coerced
-    // truthy values (rule 51 — never silently default invalid input).
+    // Bi-temporal validity (issue #1578). Default `false` so recall behaves
+    // byte-identically to pre-#1578 until an operator opts in. `=== true`
+    // rejects non-boolean / string-coerced truthy values (rule 51).
+    //
+    // CURRENT scope (this PR): the recall injection filter (expired-validity
+    // facts leave default injection but stay findable by explicit search and
+    // as_of queries) + the observedAt/eventTimeSource storage fields. The
+    // extraction prompt → resolveEventTime write-time wiring lands in a
+    // follow-on PR; until then, enabling the gate exercises the filter and
+    // storage round-trip but new extractions are not yet event-time-resolved
+    // (docs kept honest — review: wire resolver before exposing the gate).
     temporalBiTemporal: cfg.temporalBiTemporal === true,
     temporalExpiredInInjection: cfg.temporalExpiredInInjection === true,
     // Direct-answer retrieval tier (issue #518).  Default off so the

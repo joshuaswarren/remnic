@@ -223,3 +223,50 @@ test("interval is half-open: validFrom inclusive, validUntil exclusive", () => {
   const until = resolveEventTime("until 2026-03-01", ANCHOR).validUntil!;
   assert.equal(dayMs(until) > dayMs(from), true, "exclusive end must exceed inclusive start");
 });
+
+// ── Review fixes (cursor quarter + codex month-year after since) ─────────
+
+test("last quarter moves the quarter INDEX back, not the year (cursor review)", () => {
+  // Anchor June 2026 = Q2. "last quarter" must be Q1 = Jan 1 2026, not Apr 1.
+  const r = resolveEventTime("last quarter", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2026-01-01T00:00:00.000Z");
+});
+
+test("next quarter moves the quarter INDEX forward (cursor review)", () => {
+  // Anchor June 2026 = Q2. "next quarter" must be Q3 = July 1 2026.
+  const r = resolveEventTime("next quarter", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2026-07-01T00:00:00.000Z");
+});
+
+test("this quarter stays the current quarter (Q2 = April)", () => {
+  const r = resolveEventTime("this quarter", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2026-04-01T00:00:00.000Z");
+});
+
+test("last quarter wraps the year boundary (anchor Q1 → prev Q4 prior year)", () => {
+  // Anchor Feb 2026 = Q1. "last quarter" must be Q4 2025 = Oct 1 2025.
+  const r = resolveEventTime("last quarter", "2026-02-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-10-01T00:00:00.000Z");
+});
+
+test("since <month> <year> resolves with the explicit year (codex review)", () => {
+  const r = resolveEventTime("since March 2025", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-03-01T00:00:00.000Z");
+});
+
+test("since <season> <year> resolves (codex review)", () => {
+  const r = resolveEventTime("since spring 2024", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2024-03-01T00:00:00.000Z");
+});
+
+test("until <month> <year> exclusive end is start of following month (codex review)", () => {
+  const r = resolveEventTime("until March 2025", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2025-04-01T00:00:00.000Z");
+});

@@ -177,6 +177,24 @@ function resolveMonthYear(
   }
   return null;
 }
+/**
+ * Resolve an explicit "<month|season> <year>" token (e.g. "march 2025",
+ * "dec 2024", "spring 2025") to a start-of-month ms.  The explicit year is
+ * authoritative — it is never derived from the anchor.  Returns null when
+ * the token is not in that shape or does not name a real month/season.
+ * Shared by the bare phrase path, "since <month> <year>", and the end bound
+ * so all three resolve identically (review: month-year phrases after since).
+ */
+function resolveExplicitMonthYear(token: string): number | null {
+  const m = token.trim().toLowerCase().match(/^([a-z]+)\s+(\d{4})$/);
+  if (!m) return null;
+  const year = parseInt(m[2], 10);
+  if (!Number.isInteger(year)) return null;
+  const monthIdx = monthIndex(m[1]);
+  const baseMonth = typeof monthIdx === "number" ? monthIdx : SEASON_TO_MONTH[m[1]];
+  if (typeof baseMonth !== "number") return null;
+  return buildDateMs(year, baseMonth, 1);
+}
 
 function resolveSeasonYear(
   anchorMs: number,
@@ -258,7 +276,10 @@ export function resolveEventTime(
   const sinceMatch = lower.match(/^since\s+(.+)$/);
   if (sinceMatch) {
     const inner = sinceMatch[1].trim();
-    const fromMs = resolveRelativePeriod(anchorMs, inner) ?? resolveAbsolute(inner);
+    const fromMs =
+      resolveRelativePeriod(anchorMs, inner) ??
+      resolveExplicitMonthYear(inner) ??
+      resolveAbsolute(inner);
     const fromIso = toIsoUtc(fromMs);
     if (!fromIso) return fallback;
     return { validFrom: fromIso, ok: true };
@@ -296,24 +317,13 @@ export function resolveEventTime(
     return fromIso ? { validFrom: fromIso, ok: true } : fallback;
   }
 
-  // ── bare month+year ("March 2025", "Dec 2024") or season+year ─────────
-  // The explicit year in the expression is authoritative — never derive it
-  // from the anchor (the prior bug ignored the captured year and produced
-  // the anchor's year for "March 2025").
-  const monthYear = lower.match(/^([a-z]+)\s+(\d{4})$/);
-  if (monthYear) {
-    const explicitYear = parseInt(monthYear[2], 10);
-    if (Number.isInteger(explicitYear)) {
-      const mIdx = monthIndex(monthYear[1]);
-      const baseMonth = typeof mIdx === "number" ? mIdx : SEASON_TO_MONTH[monthYear[1]];
-      if (typeof baseMonth === "number") {
-        const ms = buildDateMs(explicitYear, baseMonth, 1);
-        if (ms !== null) {
-          const fromIso = toIsoUtc(ms);
-          if (fromIso) return { validFrom: fromIso, ok: true };
-        }
-      }
-    }
+  // ── bare month+year ("March 2025", "Dec 2024", "spring 2025") ─────────
+  // Explicit year is authoritative (never derived from the anchor). Shares
+  // resolveExplicitMonthYear with the since/until paths for consistency.
+  const explicitMs = resolveExplicitMonthYear(lower);
+  if (explicitMs !== null) {
+    const fromIso = toIsoUtc(explicitMs);
+    if (fromIso) return { validFrom: fromIso, ok: true };
   }
 
   // ── absolute ISO date / datetime ───────────────────────────────────────
@@ -344,9 +354,21 @@ function resolveRelativePeriod(
     return resolveQuarter(anchorMs, Number(qTok[1]), direction);
   }
   if (lower === "quarter") {
+    // "last quarter" / "next quarter" move the quarter INDEX (with year
+    // wraparound), not just the year — resolveQuarter only nudges the year
+    // for an explicit quarter number, so routing "last quarter" through it
+    // returned the current quarter's start (review: bare last/next quarter).
     const d = new Date(anchorMs);
-    const q = Math.floor(d.getUTCMonth() / 3) + 1;
-    return resolveQuarter(anchorMs, q, direction);
+    let q = Math.floor(d.getUTCMonth() / 3) + 1;
+    let year = d.getUTCFullYear();
+    if (direction === -1) {
+      q -= 1;
+      if (q < 1) { q = 4; year -= 1; }
+    } else if (direction === +1) {
+      q += 1;
+      if (q > 4) { q = 1; year += 1; }
+    }
+    return buildDateMs(year, QUARTER_START_MONTH[q], 1);
   }
 
   // Relative unit: "week", "month", "year", "day"
@@ -377,6 +399,16 @@ function resolveEndBound(anchorMs: number, period: string): number | null {
     // Date-only → start of next day (exclusive end).  Datetime → use as-is.
     if (!/[Tt]/.test(trimmed)) return startOfNextDayUtc(absMs);
     return absMs;
+  }
+  // Explicit "<month> <year>" end bound (e.g. "until March 2025") — the
+  // explicit year is authoritative, so exclusive end = start of the FOLLOWING
+  // month in that year (no anchor rollback). Shares resolveExplicitMonthYear
+  // with the since/bare paths (review: month-year phrases after since).
+  const explicitMs = resolveExplicitMonthYear(trimmed);
+  if (explicitMs !== null) {
+    const nd = new Date(explicitMs);
+    nd.setUTCMonth(nd.getUTCMonth() + 1);
+    return startOfDayUtc(nd.getTime());
   }
 
   // Period-name end bound: month → exclusive end at start of the FOLLOWING

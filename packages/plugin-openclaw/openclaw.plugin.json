@@ -3138,7 +3138,7 @@
       "temporalBiTemporal": {
         "type": "boolean",
         "default": false,
-        "description": "Bi-temporal validity master gate (issue #1578). When false (default), the extraction event-time resolver, the recall validity-injection filter, and asOf injection semantics behave byte-identically to pre-#1578. Turn on to resolve per-fact event-time expressions at write time (recording observedAt/eventTimeSource) and to exclude validity-expired facts from injection candidates by default."
+        "description": "Bi-temporal validity master gate (issue #1578). When false (default), recall behaves byte-identically to pre-#1578. Turn on to exclude validity-expired facts from default injection candidates (they stay findable by explicit search and as_of). Storage round-trips observedAt/eventTimeSource; extraction event-time write-time wiring lands in a follow-on PR."
       },
       "temporalExpiredInInjection": {
         "type": "boolean",
