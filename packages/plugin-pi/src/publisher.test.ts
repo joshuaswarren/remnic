@@ -54,6 +54,30 @@ function restoreEnv(name: string, value: string | undefined): void {
   process.env[name] = value;
 }
 
+/**
+ * Creates a fake `bun` binary that mimics `bun build <entry> --outdir=<dir>`
+ * by writing a stub `index.js` (valid ESM default export) into the outdir.
+ * Returned path is meant for `process.env.REMNIC_OMP_BUN_BIN` so tests can
+ * exercise the omp pre-bundle path without a real bun on PATH.
+ */
+function createFakeBun(root: string): string {
+  const binPath = path.join(root, "fake-bun");
+  const script = [
+    "#!/usr/bin/env node",
+    'const fs = require("node:fs");',
+    'const path = require("node:path");',
+    "const args = process.argv.slice(2);",
+    'const outdirArg = args.find((a) => a.startsWith("--outdir="));',
+    'if (!outdirArg) { console.error("fake-bun: --outdir missing"); process.exit(1); }',
+    'const outdir = outdirArg.slice("--outdir=".length);',
+    "fs.mkdirSync(outdir, { recursive: true });",
+    'fs.writeFileSync(path.join(outdir, "index.js"), "export default async function remnicPiExtension() {}\\n");',
+    "",
+  ].join("\n");
+  fs.writeFileSync(binPath, script, { mode: 0o755 });
+  return binPath;
+}
+
 test("Pi publisher honors PI_CODING_AGENT_DIR for extension root", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-pi-publisher-dir-test-"));
   try {
@@ -549,7 +573,7 @@ test("omp publisher honors PI_CODING_AGENT_DIR for extension root", async () => 
   );
 });
 
-test("omp publisher publishes config, wrapper, and readme with the omp connector token", async (t) => {
+test("omp publisher publishes config, wrapper, readme, pre-bundle loader, and manifest with the omp connector token", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-publisher-test-"));
   const home = path.join(root, "home");
   fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
@@ -559,17 +583,20 @@ test("omp publisher publishes config, wrapper, and readme with the omp connector
   const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
   const previousOmpProfile = process.env.OMP_PROFILE;
   const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
   process.env.HOME = home;
   process.env.USERPROFILE = home;
   delete process.env.PI_CODING_AGENT_DIR;
   delete process.env.OMP_PROFILE;
   delete process.env.PI_PROFILE;
+  process.env.REMNIC_OMP_BUN_BIN = createFakeBun(root);
   t.after(() => {
     restoreEnv("HOME", previousHome);
     restoreEnv("USERPROFILE", previousUserProfile);
     restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
     restoreEnv("OMP_PROFILE", previousOmpProfile);
     restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -602,6 +629,24 @@ test("omp publisher publishes config, wrapper, and readme with the omp connector
   assert.ok(fs.existsSync(path.join(extensionRoot, "index.ts")));
   const readme = fs.readFileSync(path.join(extensionRoot, "README.md"), "utf8");
   assert.match(readme, /omp/i);
+
+  // Pre-bundle infrastructure (issue #1598): loader.js + package.json + dist-bundle.
+  const loaderPath = path.join(extensionRoot, "loader.js");
+  const packageJsonPath = path.join(extensionRoot, "package.json");
+  const bundleEntry = path.join(extensionRoot, "dist-bundle", "index.js");
+  assert.ok(fs.existsSync(loaderPath), "loader.js was not written");
+  assert.ok(fs.existsSync(packageJsonPath), "package.json was not written");
+  assert.ok(fs.existsSync(bundleEntry), "dist-bundle/index.js was not produced");
+
+  const pkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as Record<string, unknown>;
+  const ompManifest = pkg.omp as { extensions?: string[] } | undefined;
+  assert.deepEqual(ompManifest?.extensions, ["./loader.js"]);
+  const scripts = pkg.scripts as { postinstall?: string } | undefined;
+  assert.ok(scripts?.postinstall?.includes("bun build"), "postinstall must run bun build");
+
+  const loader = fs.readFileSync(loaderPath, "utf8");
+  assert.match(loader, /omp\.extensions/);
+  assert.match(loader, /bun build/);
 });
 
 test("omp publisher refuses a symlinked extension root", async (t) => {
@@ -664,11 +709,13 @@ test("omp publisher unpublish removes a profile-scoped install even without the 
   const previousConfigDir = process.env.PI_CONFIG_DIR;
   const previousOmpProfile = process.env.OMP_PROFILE;
   const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
   process.env.HOME = home;
   process.env.USERPROFILE = home;
   delete process.env.PI_CODING_AGENT_DIR;
   delete process.env.PI_CONFIG_DIR;
   delete process.env.PI_PROFILE;
+  process.env.REMNIC_OMP_BUN_BIN = createFakeBun(root);
   t.after(() => {
     restoreEnv("HOME", previousHome);
     restoreEnv("USERPROFILE", previousUserProfile);
@@ -676,6 +723,7 @@ test("omp publisher unpublish removes a profile-scoped install even without the 
     restoreEnv("PI_CONFIG_DIR", previousConfigDir);
     restoreEnv("OMP_PROFILE", previousOmpProfile);
     restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
     fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -693,6 +741,8 @@ test("omp publisher unpublish removes a profile-scoped install even without the 
   });
   assert.equal(installResult.extensionRoot, profileRoot);
   assert.ok(fs.existsSync(path.join(profileRoot, "remnic.config.json")));
+  assert.ok(fs.existsSync(path.join(profileRoot, "loader.js")), "loader.js was not installed");
+  assert.ok(fs.existsSync(path.join(profileRoot, "dist-bundle", "index.js")), "bundle was not installed");
 
   // Remove WITHOUT the profile env set — must still find and remove the
   // profile-scoped install instead of no-oping on the default agent dir.
@@ -702,4 +752,172 @@ test("omp publisher unpublish removes a profile-scoped install even without the 
   assert.equal(fs.existsSync(path.join(profileRoot, "remnic.config.json")), false);
   assert.equal(fs.existsSync(path.join(profileRoot, "index.ts")), false);
   assert.equal(fs.existsSync(path.join(profileRoot, "README.md")), false);
+  assert.equal(fs.existsSync(path.join(profileRoot, "loader.js")), false, "loader.js was not removed");
+  assert.equal(fs.existsSync(path.join(profileRoot, "package.json")), false, "package.json was not removed");
+  assert.equal(fs.existsSync(path.join(profileRoot, "dist-bundle")), false, "dist-bundle was not removed");
+});
+
+test("omp publisher fails with a clear message when bun is absent", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-no-bun-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  // Point to a nonexistent binary so resolveBunBinary returns null.
+  process.env.REMNIC_OMP_BUN_BIN = path.join(root, "does-not-exist");
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  const publisher = new OmpMemoryExtensionPublisher();
+  await assert.rejects(
+    () =>
+      publisher.publish({
+        config: { memoryDir: path.join(root, "memory") },
+        skillsRoot: path.join(root, "memory", "skills"),
+        log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      }),
+    /requires `bun`.*omp/i,
+  );
+
+  // Rollback: the extension root was newly created, so it must be cleaned up.
+  const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
+  assert.equal(fs.existsSync(extensionRoot), false, "extension root must be cleaned up on rollback");
+});
+
+test("omp publisher rolls back shared files when bun build fails", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-bundle-fail-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  // Pre-populate the extension root with prior files so we can verify rollback
+  // restores them rather than deleting the root.
+  const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
+  fs.mkdirSync(extensionRoot, { recursive: true });
+  fs.writeFileSync(path.join(extensionRoot, "remnic.config.json"), '{"prior":true}\n');
+  fs.writeFileSync(path.join(extensionRoot, "index.ts"), "// prior wrapper\n");
+  fs.writeFileSync(path.join(extensionRoot, "README.md"), "prior readme\n");
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  // Fake bun that always fails.
+  const failingBun = path.join(root, "failing-bun");
+  fs.writeFileSync(
+    failingBun,
+    ['#!/usr/bin/env node', 'console.error("simulated bun build failure"); process.exit(1);', ""].join("\n"),
+    { mode: 0o755 },
+  );
+  process.env.REMNIC_OMP_BUN_BIN = failingBun;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  const publisher = new OmpMemoryExtensionPublisher();
+  await assert.rejects(
+    () =>
+      publisher.publish({
+        config: { memoryDir: path.join(root, "memory") },
+        skillsRoot: path.join(root, "memory", "skills"),
+        log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      }),
+    /bun build failed/i,
+  );
+
+  // Prior files must be restored to their original content.
+  assert.equal(fs.readFileSync(path.join(extensionRoot, "remnic.config.json"), "utf8"), '{"prior":true}\n');
+  assert.equal(fs.readFileSync(path.join(extensionRoot, "index.ts"), "utf8"), "// prior wrapper\n");
+  assert.equal(fs.readFileSync(path.join(extensionRoot, "README.md"), "utf8"), "prior readme\n");
+  // dist-bundle must not exist (rollback cleans newly created dirs).
+  assert.equal(fs.existsSync(path.join(extensionRoot, "dist-bundle")), false, "dist-bundle must be cleaned up on rollback");
+});
+
+test("omp publisher loader.js embeds the plugin-pi dist path for mtime self-healing", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-loader-path-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  process.env.REMNIC_OMP_BUN_BIN = createFakeBun(root);
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  await new OmpMemoryExtensionPublisher().publish({
+    config: { memoryDir: path.join(root, "memory") },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+
+  const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
+  const loader = fs.readFileSync(path.join(extensionRoot, "loader.js"), "utf8");
+  const wrapper = fs.readFileSync(path.join(extensionRoot, "index.ts"), "utf8");
+
+  // The loader must reference the same plugin-pi dist path that the wrapper imports from,
+  // so mtime self-healing detects npm updates of @remnic/plugin-pi.
+  const wrapperImportMatch = wrapper.match(/from\s+"(file:\/\/.+plugin-pi\/dist\/index\.js)"/);
+  assert.ok(wrapperImportMatch, "wrapper must import from plugin-pi dist");
+  const wrapperPath = wrapperImportMatch[1].replace(/^file:\/\//, "");
+  assert.ok(
+    loader.includes(JSON.stringify(wrapperPath)),
+    `loader must embed the plugin-pi dist path (${wrapperPath}) for mtime comparison`,
+  );
 });
