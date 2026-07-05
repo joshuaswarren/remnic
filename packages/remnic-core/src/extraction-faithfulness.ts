@@ -451,7 +451,13 @@ export async function checkFaithfulnessBatch(
   // both aborts the fallback (which honors the signal) and resolves the race
   // so the batch returns promptly; the in-flight local call aborts on its own
   // per-attempt timeoutMs. (codex review PRRT_kwDORJXyws6ObgMJ.)
-  const { promise: racedTimeout, resolve: resolveTimeout } = Promise.withResolvers<true>();
+  // Manual deferred instead of Promise.withResolvers (ES2024) — plugin-openclaw's
+  // standalone tsconfig targets ES2022 lib and this module is reachable from its
+  // type graph, so withResolvers would TS2550 there.
+  let resolveTimeout!: (value: true) => void;
+  const racedTimeout = new Promise<true>((resolve) => {
+    resolveTimeout = resolve;
+  });
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
