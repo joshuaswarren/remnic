@@ -861,3 +861,29 @@ test("executor: hash_scan transient read error is retained for retry (chatgpt-co
     await dispose(store, dir);
   }
 });
+
+test("executor: hash_scan without candidatePaths does NOT advance head (chatgpt-codex-connector: 'Require current candidates before advancing hash-scan')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Seed src/a.ts at SHA_A with an authoritative candidate list.
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    await executeReindex({ store, git: mockGit({ head: SHA_A }), repoRoot: dir, parseFile: mockParseFile, candidatePaths: ["src/a.ts"] });
+    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_A);
+
+    // A file is added in the new HEAD, then force-push makes the base
+    // unreachable → hash_scan. The caller OMITS candidatePaths, so the scan
+    // covers only stored+pending paths and cannot see src/new.ts. Advancing
+    // head here would falsely report freshness while src/new.ts is unindexed.
+    await writeFiles(dir, { "src/new.ts": "export function bar() {}" });
+    const result = await executeReindex({
+      store, git: mockGit({ head: SHA_B, reachable: false }), repoRoot: dir, parseFile: mockParseFile,
+      // candidatePaths intentionally omitted
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.head, SHA_A, "head must NOT advance without an authoritative candidate list");
+    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_A, "persisted head unchanged");
+  } finally {
+    await dispose(store, dir);
+  }
+});

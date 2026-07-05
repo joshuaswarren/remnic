@@ -446,6 +446,7 @@ async function runReindex(
     }
 
     case "full": {
+      const candidatesProvided = options.candidatePaths !== undefined;
       const candidates = options.candidatePaths ?? [];
       if (candidates.length === 0 && pendingRetry.length === 0) {
         // Nothing to index and nothing to retry. Do NOT advance
@@ -464,11 +465,21 @@ async function runReindex(
       // before the first meta write) does not leave deleted-file symbols
       // behind while marking the index current (chatgpt-codex-connector:
       // 'Prune absent files during full reindex').
-      const knownForFull = readFileHashes(store);
-      const fullCandidateSet = new Set(toIngest);
-      const fullDelete = [...knownForFull.keys()].filter(
-        (p) => !fullCandidateSet.has(p),
-      );
+      // Only prune when the caller supplied an AUTHORITATIVE candidate list.
+      // Without candidatePaths (e.g. a retry-only resume) we cannot know which
+      // stored files are truly absent; pruning against a retry-only set would
+      // destructively delete every successfully-indexed file. Likewise we must
+      // not advance last_indexed_head in that case, since a partial (retry-only)
+      // pass has not re-verified the whole tree (chatgpt-codex-connector: 'Do
+      // not prune full indexes when candidates are absent').
+      let fullDelete: string[] = [];
+      if (candidatesProvided) {
+        const knownForFull = readFileHashes(store);
+        const fullCandidateSet = new Set(toIngest);
+        fullDelete = [...knownForFull.keys()].filter(
+          (p) => !fullCandidateSet.has(p),
+        );
+      }
       const ingestResult = await ingestFiles(
         store,
         repoRoot,
@@ -482,13 +493,16 @@ async function runReindex(
         META_KEY_PENDING_PARSE_FAILURES,
         JSON.stringify(ingestResult.parseFailedPaths),
       );
-      // Rule 25: persist head ONLY after data + pending-set commit.
-      store.writeMeta(META_KEY_LAST_HEAD, headResult.head ?? "");
+      // Rule 25: persist head ONLY after data + pending-set commit — and ONLY
+      // when candidates were authoritative (see above).
+      if (candidatesProvided) {
+        store.writeMeta(META_KEY_LAST_HEAD, headResult.head ?? "");
+      }
       return {
         ok: true,
         mode: "full",
         filesIngested: ingestResult.count,
-        head: headResult.head,
+        head: candidatesProvided ? headResult.head : lastHead,
       };
     }
 
@@ -556,6 +570,7 @@ async function runReindex(
       // yet in the index (chatgpt-codex-connector: 'Require candidates
       // before completing hash-scan' / 'Include indexed files in
       // hash-scan candidates').
+      const hashScanCandidatesProvided = options.candidatePaths !== undefined;
       const candidateSet = new Set<string>([
         ...(options.candidatePaths ?? []),
         ...lastState.fileHashes.keys(),
@@ -603,13 +618,19 @@ async function runReindex(
         META_KEY_PENDING_PARSE_FAILURES,
         JSON.stringify([...ingestResult.parseFailedPaths, ...hashScanRetry]),
       );
-      // Rule 25: persist head ONLY after data commits.
-      store.writeMeta(META_KEY_LAST_HEAD, headResult.head ?? "");
+      // Rule 25: persist head ONLY after data commits — and ONLY when the
+      // caller supplied candidates. Without candidatePaths the scan covers only
+      // stored + pending paths, so a file newly added in the current HEAD would
+      // be missed; advancing head would falsely report freshness (chatgpt-codex-
+      // connector: 'Require current candidates before advancing hash-scan').
+      if (hashScanCandidatesProvided) {
+        store.writeMeta(META_KEY_LAST_HEAD, headResult.head ?? "");
+      }
       return {
         ok: true,
         mode: "hash_scan",
         filesIngested: ingestResult.count,
-        head: headResult.head,
+        head: hashScanCandidatesProvided ? headResult.head : lastHead,
       };
     }
   }
