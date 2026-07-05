@@ -36,6 +36,23 @@ export type OperationName =
   | "memory_store"
   | "coding_decision"
   | "coding_architecture"
+  // codegraph parity tools (issue #1554) -- each maps to one codegraph_*
+  // boundary operation that delegates to the surface handler in
+  // coding/codegraph-surfaces.ts. Names match the external tool suffixes.
+  | "codegraph_index"
+  | "codegraph_list_projects"
+  | "codegraph_delete_project"
+  | "codegraph_index_status"
+  | "codegraph_search_graph"
+  | "codegraph_trace_path"
+  | "codegraph_detect_changes"
+  | "codegraph_query_graph"
+  | "codegraph_get_schema"
+  | "codegraph_get_snippet"
+  | "codegraph_get_architecture"
+  | "codegraph_search_code"
+  | "codegraph_manage_adr"
+  | "codegraph_ingest_traces"
   | "coding_delta";
 
 // ---------------------------------------------------------------------------

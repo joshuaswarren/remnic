@@ -22,15 +22,22 @@ jobs:
       (github.event_name == 'check_run' &&
         contains(fromJSON('["cursor-bugbot","cursor"]'), github.event.check_run.app.slug)) ||
       (github.event_name != 'check_run' && github.event.pull_request.draft == false)
-    # Only the newest gate evaluation per PR matters: a fresh push, review, or
-    # reviewer check_run supersedes an in-flight evaluation. Concurrency lives
-    # at JOB level so check_run completions from unrelated apps (CI, CodeQL,
-    # ...) — whose job is skipped by the `if` above — can never cancel a live
-    # polling evaluation (cursor review on #1608). check_run events with no
-    # associated PR fall back to a unique group (they self-skip anyway).
+    # Coalesce PR-head events, isolate check_run, never force-cancel. All PR-head
+    # events (pull_request, pull_request_review, pull_request_review_comment — all
+    # land on refs/pull/N/merge) share ONE group so they serialize on the head and
+    # exactly one completes the required `ai-reviewers` check; they must NOT race
+    # in separate groups (a review run passing while the pull_request poll times
+    # out would leave a failed suite — codex OcHGk). `check_run` completions land
+    # on the default branch and cannot satisfy the PR-head check, so they get their
+    # own group and can never evict a pending PR-head run (codex OcD1Z).
+    # cancel-in-progress:false never force-cancels a running evaluation, so a
+    # required check is never left `cancelled` on the head SHA (the stuck-merge
+    # mode check-unsticker was clearing); a superseded run self-exits via the
+    # head-SHA guard. Coverage unchanged: the PR head always gets a complete
+    # evaluation before merge.
     concurrency:
-      group: ai-review-gate-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.run_id }}
-      cancel-in-progress: true
+      group: ai-review-gate-${{ github.event_name == 'check_run' && 'checkrun' || 'prhead' }}-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.run_id }}
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -328,6 +335,16 @@ jobs:
               return;
             }
 
+            // Anchor this run to the head SHA that triggered it (pull_request
+            // events only). If the head advances mid-poll a newer run gates the
+            // new head, so this run self-supersedes below instead of polling a
+            // stale head to the deadline. Non-PR events (review/comment/
+            // check_run) have no trigger-head anchor and keep follow-the-head.
+            const triggerHeadSha =
+              typeof context.payload.pull_request?.head?.sha === 'string'
+                ? context.payload.pull_request.head.sha
+                : null;
+
             async function evaluatePullRequests() {
               const failures = [];
               let evaluatedCount = 0;
@@ -425,15 +442,37 @@ jobs:
 
             // Poll instead of a fixed sleep: pass the moment every required
             // reviewer has spoken on the current head. Explicit negative
-            // signals (blockers) fail immediately — a new push or review
-            // event re-fires this workflow and supersedes this run via the
-            // concurrency group, so waiting on a blocker buys nothing.
+            // signals (blockers) fail immediately — waiting on a blocker buys
+            // nothing because a new push or review re-fires the gate; this run
+            // self-supersedes at the top of the poll loop when the head advances
+            // (concurrency is cancel-in-progress:false, so runs are never force-cancelled).
             const POLL_INTERVAL_MS = 20_000;
             const POLL_DEADLINE_MS = 7 * 60_000;
             const startedAt = Date.now();
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
             for (;;) {
+              // Self-supersession, checked BEFORE evaluating so the SUCCESS path
+              // also respects the head anchor (cursor ObzZ5): if the head advanced
+              // past the SHA that triggered this run, a newer run now owns the
+              // current head's gate — exit neutral rather than validate or claim
+              // success for a commit that is no longer head. cancel-in-progress:false
+              // never force-cancels us, so this is how a superseded run yields
+              // instead of polling a stale head to the deadline.
+              if (triggerHeadSha) {
+                const current = await github.rest.pulls.get({
+                  owner,
+                  repo,
+                  pull_number: pullRequestNumbers[0],
+                });
+                const currentHeadSha = current.data.head?.sha;
+                if (currentHeadSha && currentHeadSha !== triggerHeadSha) {
+                  core.notice(
+                    `AI review gate superseded: head advanced ${triggerHeadSha.slice(0, 7)} -> ${currentHeadSha.slice(0, 7)}. A newer run gates the current head; exiting without blocking.`,
+                  );
+                  return;
+                }
+              }
               const { failures, evaluatedCount, hasBlockers } = await evaluatePullRequests();
 
               if (evaluatedCount === 0) {

@@ -131,6 +131,7 @@ const THINKING_COMPATIBLE_BACKENDS: ReadonlySet<LocalLlmType> = new Set([
 const THINKING_SUPPRESSED_OPERATIONS: ReadonlySet<string> = new Set([
   "extraction",
   "extraction-judge",
+  "extraction-faithfulness",
   "contradiction-judge",
   "contradiction_verification",
   "link_suggestion",

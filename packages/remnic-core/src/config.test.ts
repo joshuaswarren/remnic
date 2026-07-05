@@ -1329,6 +1329,8 @@ test("parseConfig codingKnowledge: defaults match the documented contract (issue
     architectureCardLlmSummary: false,
     structuralProvider: "none",
     structuralProviderCommand: "",
+    codegraphTools: false,
+    codegraphDbDir: "",
   });
 });
 
@@ -2031,4 +2033,20 @@ test("parseConfig provenance.enabled honors REMNIC_/ENGRAM_ env fallback (issue 
     if (prevE !== undefined) process.env.ENGRAM_PROVENANCE_ENABLED = prevE;
     else delete process.env.ENGRAM_PROVENANCE_ENABLED;
   }
+});
+
+test("parseConfig rejects a present-but-non-string extractionFaithfulnessGate (safety gate must not silently disable, #1576 Ob4RQ)", () => {
+  assert.equal(parseConfig({}).extractionFaithfulnessGate, "off");
+  assert.equal(parseConfig({ extractionFaithfulnessGate: null }).extractionFaithfulnessGate, "off");
+  assert.equal(parseConfig({ extractionFaithfulnessGate: "enforce" }).extractionFaithfulnessGate, "enforce");
+  assert.equal(parseConfig({ extractionFaithfulnessGate: "ENFORCE" }).extractionFaithfulnessGate, "enforce");
+  for (const bad of [true, 1, {}, ["enforce"]] as unknown[]) {
+    assert.throws(
+      () => parseConfig({ extractionFaithfulnessGate: bad } as Record<string, unknown>),
+      /extractionFaithfulnessGate must be one of/,
+      `present non-string ${JSON.stringify(bad)} must reject, not default to off`,
+    );
+  }
+  // A present-but-unknown string still rejects (pre-existing behavior preserved).
+  assert.throws(() => parseConfig({ extractionFaithfulnessGate: "on" }), /extractionFaithfulnessGate must be one of/);
 });

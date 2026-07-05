@@ -1117,3 +1117,126 @@ test("non-canonical file paths are rejected before persisting (chatgpt-codex-con
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// upsertEdges (issue #1554 codegraph ingest_traces persistence path)
+// ──────────────────────────────────────────────────────────────────────────
+
+test("upsertEdges: persists a standalone HTTP_CALLS edge between indexed nodes (issue #1554 P1 persistence)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Seed two files so the nodes the trace edge references exist.
+    const seeded = await store.upsertFileBatch([fileA, fileB]);
+    assert.equal(seeded.ok, true);
+
+    // Persist a runtime HTTP call observation as a standalone edge.
+    const result = await store.upsertEdges([
+      {
+        srcQualifiedName: "a.greet",
+        dstQualifiedName: "b.run",
+        type: "HTTP_CALLS",
+        confidence: 0.7,
+        provenance: "trace",
+      },
+    ]);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("expected ok");
+    assert.equal(result.persisted, 1, "one edge persisted");
+    assert.equal(result.skipped, 0, "no skipped edges");
+
+    // Re-open the store and verify the edge survived on disk (real
+    // persistence, not an in-memory stub — P1 acceptance criterion).
+    await store.close();
+    const reopened = await GraphStore.open({ dbPath: path.join(dir, "graph.sqlite") });
+    const stats = reopened.schemaStats();
+    assert.equal(stats.ok, true);
+    if (!stats.ok) throw new Error("expected stats ok");
+    assert.equal(
+      (stats.stats.edgesByType["HTTP_CALLS"] ?? 0),
+      1,
+      "HTTP_CALLS edge persisted across reopen",
+    );
+    await reopened.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("upsertEdges: skips edges whose endpoint does not resolve to an indexed node (dangling policy)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await store.upsertFileBatch([fileA]);
+
+    // 'b.run' is not indexed (only fileA was ingested) → edge is skipped.
+    const result = await store.upsertEdges([
+      {
+        srcQualifiedName: "a.greet",
+        dstQualifiedName: "b.run",
+        type: "HTTP_CALLS",
+        confidence: 0.7,
+        provenance: "trace",
+      },
+    ]);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("expected ok");
+    assert.equal(result.persisted, 0, "dangling dst → not persisted");
+    assert.equal(result.skipped, 1, "dangling edge counted as skipped");
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("upsertEdges: upgrades confidence on an existing (src,dst,type) edge (idempotent upsert)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await store.upsertFileBatch([fileA, fileB]);
+
+    // First trace: confidence 0.5.
+    const first = await store.upsertEdges([
+      { srcQualifiedName: "a.greet", dstQualifiedName: "b.run", type: "HTTP_CALLS", confidence: 0.5, provenance: "trace" },
+    ]);
+    assert.equal(first.ok && first.persisted, 1);
+
+    // Second trace, same endpoints: confidence upgraded to 0.9.
+    const second = await store.upsertEdges([
+      { srcQualifiedName: "a.greet", dstQualifiedName: "b.run", type: "HTTP_CALLS", confidence: 0.9, provenance: "trace" },
+    ]);
+    assert.equal(second.ok && second.persisted, 1, "upsert updates the existing edge row");
+
+    // Reopen + verify there is exactly ONE HTTP_CALLS edge (not two).
+    await store.close();
+    const reopened = await GraphStore.open({ dbPath: path.join(dir, "graph.sqlite") });
+    const stats = reopened.schemaStats();
+    assert.equal(stats.ok && (stats.stats.edgesByType["HTTP_CALLS"] ?? 0), 1, "no duplicate edge rows");
+    await reopened.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("upsertEdges: rejects invalid provenance / out-of-range confidence at the boundary (rule 51)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await store.upsertFileBatch([fileA]);
+
+    // Validation errors are fail-loud (matching upsertFileBatch's policy:
+    // a bad edge is a contract violation, not a tagged failure).
+    await assert.rejects(
+      store.upsertEdges([
+        { srcQualifiedName: "a.greet", dstQualifiedName: "a.farewell", type: "HTTP_CALLS", confidence: 0.5, provenance: "bogus" as never },
+      ]),
+      /provenance/,
+    );
+    await assert.rejects(
+      store.upsertEdges([
+        { srcQualifiedName: "a.greet", dstQualifiedName: "a.farewell", type: "HTTP_CALLS", confidence: 1.5, provenance: "trace" },
+      ]),
+      /out of range/,
+    );
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

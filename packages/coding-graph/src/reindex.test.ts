@@ -111,6 +111,9 @@ function mockGit(facts: {
     logFiles() {
       return { ok: true, entries: [] };
     },
+    listTrackedFiles() {
+      return { ok: true, paths: [] };
+    },
   };
 }
 

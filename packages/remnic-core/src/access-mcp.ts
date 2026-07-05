@@ -111,6 +111,21 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.memory_store": "memory_store",
   "engram.coding_decision": "coding_decision",
   "engram.coding_architecture": "coding_architecture",
+  // codegraph parity tools (issue #1554) — each maps to its boundary op.
+  "engram.codegraph_index": "codegraph_index",
+  "engram.codegraph_list_projects": "codegraph_list_projects",
+  "engram.codegraph_delete_project": "codegraph_delete_project",
+  "engram.codegraph_index_status": "codegraph_index_status",
+  "engram.codegraph_search_graph": "codegraph_search_graph",
+  "engram.codegraph_trace_path": "codegraph_trace_path",
+  "engram.codegraph_detect_changes": "codegraph_detect_changes",
+  "engram.codegraph_query_graph": "codegraph_query_graph",
+  "engram.codegraph_get_schema": "codegraph_get_schema",
+  "engram.codegraph_get_snippet": "codegraph_get_snippet",
+  "engram.codegraph_get_architecture": "codegraph_get_architecture",
+  "engram.codegraph_search_code": "codegraph_search_code",
+  "engram.codegraph_manage_adr": "codegraph_manage_adr",
+  "engram.codegraph_ingest_traces": "codegraph_ingest_traces",
   "engram.coding_delta": "coding_delta",
 };
 
@@ -332,6 +347,12 @@ export class EngramMcpServer {
    * (issue #1548 Track A PR 3, rule 39).
    */
   private readonly architectureCardVisible: boolean;
+  /**
+   * Whether the 14 codegraph parity tools should appear in `tools/list`
+   * (issue #1554). Config-only -- runtime availability is checked at call
+   * time. When false the tools array is byte-identical to pre-feature.
+   */
+  private readonly codegraphVisible: boolean;
   private readonly sessionDeltaVisible: boolean;
 
   constructor(
@@ -343,6 +364,7 @@ export class EngramMcpServer {
       emitLegacyTools?: boolean;
       codingDecisionVisible?: boolean;
       architectureCardVisible?: boolean;
+      codegraphVisible?: boolean;
       sessionDeltaVisible?: boolean;
     } = {},
   ) {
@@ -351,6 +373,7 @@ export class EngramMcpServer {
     this.emitLegacyTools = options.emitLegacyTools !== false;
     this.codingDecisionVisible = options.codingDecisionVisible === true;
     this.architectureCardVisible = options.architectureCardVisible === true;
+    this.codegraphVisible = options.codegraphVisible === true;
     this.sessionDeltaVisible = options.sessionDeltaVisible === true;
     this.authenticatedPrincipal =
       options.principal?.trim() ||
@@ -2037,6 +2060,70 @@ export class EngramMcpServer {
       );
       this.tools = [...this.tools, ...architectureTools];
     }
+    if (this.codegraphVisible) {
+      // The 14 codegraph parity tools (issue #1554). Each delegates to its
+      // boundary operation; the MCP dispatch injects the `tool` field from
+      // the operation name. The inputSchema is intentionally permissive —
+      // the boundary's zod schema owns validation (rule 51).
+      const codegraphToolDefs: Array<{ suffix: string; description: string; required?: string[] }> = [
+        { suffix: "index", description: "Index a repository into the code graph.", required: ["repoRoot"] },
+        { suffix: "list_projects", description: "List code graph projects for the principal." },
+        { suffix: "delete_project", description: "Delete a code graph project (requires confirm: true).", required: ["confirm"] },
+        { suffix: "index_status", description: "Get the indexing status for a project." },
+        { suffix: "search_graph", description: "Search the code graph for symbols.", required: ["query"] },
+        { suffix: "trace_path", description: "Trace call/dependency paths from a starting symbol.", required: ["start"] },
+        { suffix: "detect_changes", description: "Detect changed symbols since a git ref.", required: ["head"] },
+        { suffix: "query_graph", description: "Run a structured query against the code graph.", required: ["structuredQuery"] },
+        { suffix: "get_schema", description: "Get the code graph schema statistics." },
+        { suffix: "get_snippet", description: "Get a source code snippet for a symbol.", required: ["qualifiedName"] },
+        { suffix: "get_architecture", description: "Get the composed architecture card + graph stats." },
+        { suffix: "search_code", description: "Search the code graph for code (functions, classes, methods).", required: ["query"] },
+        { suffix: "manage_adr", description: "Manage ADRs via Track A decision records (list, get, record, supersede).", required: ["subcommand"] },
+        { suffix: "ingest_traces", description: "Ingest call-site traces to upgrade edge confidence.", required: ["traces"] },
+      ];
+      for (const def of codegraphToolDefs) {
+        const tools = withToolAliases(
+          {
+            name: `engram.codegraph_${def.suffix}`,
+            description: def.description,
+            inputSchema: {
+              type: "object",
+              properties: {
+                sessionKey: { type: "string", description: "Session identifier whose coding context scopes the operation." },
+                project: { type: "string", description: "Explicit project id (defaults to session coding context)." },
+                principal: { type: "string", description: "Authenticated principal override." },
+                query: { type: "string" },
+                limit: { type: "number" },
+                start: { type: "string" },
+                direction: { type: "string", enum: ["inbound", "outbound", "both"] },
+                depth: { type: "number" },
+                qualifiedName: { type: "string" },
+                path: { type: "string" },
+                structuredQuery: { type: "object" },
+                head: { type: "string" },
+                repoRoot: { type: "string" },
+                mode: { type: "string", enum: ["auto", "full", "incremental"] },
+                confirm: { type: "boolean" },
+                subcommand: { type: "string", enum: ["list", "get", "record", "supersede"] },
+                id: { type: "string" },
+                title: { type: "string" },
+                status: { type: "string", enum: ["proposed", "accepted", "superseded", "rejected"] },
+                context: { type: "string" },
+                decision: { type: "string" },
+                consequences: { type: "string" },
+                entityRefs: { type: "array", items: { type: "string" } },
+                supersedesId: { type: "string" },
+                traces: { type: "array", items: { type: "object" } },
+              },
+              required: def.required ?? [],
+              additionalProperties: false,
+            },
+          },
+          this.emitLegacyTools,
+        );
+        this.tools = [...this.tools, ...tools];
+      }
+    }
     if (this.sessionDeltaVisible) {
       const deltaTools = withToolAliases(
         {
@@ -2423,8 +2510,18 @@ export class EngramMcpServer {
       if (!op) {
         throw new EngramAccessInputError(`access-boundary: operation not registered: ${migrated}`);
       }
-      const envelope =
-        migrated === "memory_store" ? parseMcpRequest("memoryStore", args) : args;
+      let envelope: Record<string, unknown>;
+      if (migrated === "memory_store") {
+        envelope = parseMcpRequest("memoryStore", args);
+      } else if (migrated.startsWith("codegraph_")) {
+        // codegraph parity tools (issue #1554): the surface handler dispatches
+        // on the `tool` field. The MCP tool name encodes it (e.g.
+        // codegraph_search_graph → tool: "search_graph"); inject it so the
+        // client payload does not need to carry the internal dispatch field.
+        envelope = { ...args, tool: migrated.slice("codegraph_".length) };
+      } else {
+        envelope = args;
+      }
       // The registry erases In/Out at the Map boundary; the caller knows the
       // concrete output shape ({ result: <service response> }) so the cast is
       // the type-erasure seam, not a leap of faith.

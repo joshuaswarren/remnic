@@ -207,6 +207,8 @@ export {
   type ReadFileHashesResult,
   type ReadMetaResult,
   type UpsertBatchResult,
+  type UpsertEdgesResult,
+  type UpsertEdgesSuccess,
   type UpsertResult,
   type UpsertSuccess,
 } from "./graph-store.js";
