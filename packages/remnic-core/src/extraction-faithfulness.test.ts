@@ -23,6 +23,7 @@ import {
 } from "./extraction-faithfulness.js";
 import type { FaithfulnessResult } from "./extraction-faithfulness.js";
 import type { FallbackLlmClient } from "./fallback-llm.js";
+import type { LocalLlmClient } from "./local-llm.js";
 import type { MemoryFrontmatter } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -821,3 +822,117 @@ test("applyFaithfulnessVerdict: bumps verdict counters at apply time (cursor rev
   assert.equal(counters.unchecked, 1);
 });
 
+
+// ---------------------------------------------------------------------------
+// #1576: model-override routing — codex P2 (PRRT_kwDORJXyws6ObYQ8)
+// ---------------------------------------------------------------------------
+
+test("checkFaithfulnessBatch: extractionFaithfulnessModel override routes to gateway, skips local (codex P2)", async () => {
+  // LocalLlmClient always sends config.localLlmModel and ignores options.model,
+  // so a local success would silently run the wrong model and the override
+  // would never reach the gateway. When an override is set the local backend
+  // must be skipped and the gateway fallback must receive the override model.
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = parseConfig({
+    extractionFaithfulnessModel: "verifier-ft-v1",
+  });
+  const localCalls: Array<{ options: unknown }> = [];
+  const localLlm = {
+    chatCompletion: async (
+      _messages: Array<{ role: string; content: string }>,
+      options: Record<string, unknown> = {},
+    ) => {
+      localCalls.push({ options });
+      return {
+        content: JSON.stringify([{ index: 0, verdict: "unsupported" }]),
+      };
+    },
+  };
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
+  const fallbackContent = JSON.stringify([{ index: 0, verdict: "entailed" }]);
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    localLlm as unknown as LocalLlmClient,
+    stubFallbackLlm(fallbackContent, fallbackCalls),
+  );
+  assert.equal(localCalls.length, 0, "local LLM must be skipped when a model override is set");
+  assert.equal(fallbackCalls.length, 1, "gateway fallback must run with the override");
+  const opts = fallbackCalls[0]?.options as Record<string, unknown>;
+  assert.equal(opts?.model, "verifier-ft-v1", "override model must reach the gateway");
+  assert.equal(result.results[0]?.ok, true);
+  if (result.results[0]?.ok) {
+    assert.equal(result.results[0].verdict, "entailed", "gateway verdict is used, not the local one");
+  }
+});
+
+test("checkFaithfulnessBatch: no override keeps the local backend first (regression guard)", async () => {
+  // Without an override, the local backend must still be tried first (the
+  // override-skip is conditional, not unconditional).
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = baseConfig();
+  const localCalls: number[] = [];
+  const localLlm = {
+    chatCompletion: async () => {
+      localCalls.push(1);
+      return { content: JSON.stringify([{ index: 0, verdict: "entailed" }]) };
+    },
+  };
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    localLlm as unknown as LocalLlmClient,
+    stubFallbackLlm("[]", fallbackCalls),
+  );
+  assert.equal(localCalls.length, 1, "local backend is used when no override is set");
+  assert.equal(fallbackCalls.length, 0, "fallback is not reached when local succeeds");
+  assert.equal(result.results[0]?.ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// #1576: multi-source verification — codex P2 (PRRT_kwDORJXyws6ObYQ_)
+// ---------------------------------------------------------------------------
+
+test("runFaithfulnessGateBatch: multi-source facts verify against ALL source spans (codex P2)", async () => {
+  // A composite fact whose support is split across two adjacent source spans.
+  // Previously only sources[0] reached the verifier; the second span (the
+  // actual support for the date/status) was discarded, risking a false
+  // unsupported verdict (and a spurious pending_review in enforce mode). The
+  // verifier must now see the full evidence.
+  const facts = [
+    {
+      content: "The Acme project launched in March 2024 at beta status.",
+      sources: [
+        { quote: "We started the Acme project earlier this year." },
+        { quote: "It launched in March 2024 at beta status." },
+      ],
+    },
+  ];
+  const counters = createFaithfulnessCounters();
+  const captured: Array<{ messages: Array<{ role: string; content: string }>; options: unknown }> = [];
+  const llm = JSON.stringify([{ index: 0, verdict: "entailed" }]);
+  const result = await runFaithfulnessGateBatch(
+    facts,
+    "shadow",
+    baseConfig(),
+    null,
+    stubFallbackLlm(llm, captured),
+    counters,
+  );
+  assert.ok(result instanceof Map);
+  assert.equal(result.size, 1);
+  const r0 = result.get(0);
+  assert.equal(r0?.ok, true);
+  if (r0?.ok) assert.equal(r0.verdict, "entailed");
+  // The verifier prompt must include BOTH source spans, not just sources[0].
+  const userMsg = captured[0]?.messages.find((m) => m.role === "user");
+  assert.ok(
+    userMsg?.content.includes("We started the Acme project"),
+    "first source span must reach the verifier prompt",
+  );
+  assert.ok(
+    userMsg?.content.includes("It launched in March 2024 at beta status."),
+    "second source span must reach the verifier prompt (multi-source fix)",
+  );
+});

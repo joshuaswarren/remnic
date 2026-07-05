@@ -275,14 +275,18 @@ async function callFaithfulnessLlm(
 
   const modelOverride = config.extractionFaithfulnessModel || undefined;
 
-  // When modelSource is "gateway", skip localLlm and go directly to the
-  // gateway-routed backend (same precedence as the extraction judge).
-  const skipLocal = config.modelSource === "gateway";
+  // Skip the local backend when (a) modelSource is "gateway", or (b) a
+  // faithfulness model override is set. The local client always sends
+  // config.localLlmModel and silently ignores options.model, so a local
+  // success would run the wrong model and prevent the override from ever
+  // reaching the gateway. Routing straight to the gateway honors the
+  // override (codex review PRRT_kwDORJXyws6ObYQ8).
+  const skipLocal = config.modelSource === "gateway" || Boolean(modelOverride);
   const gatewayChain = gatewayTaskChainOptions(config);
 
   let modelUsed: string | null = null;
 
-  // Try local LLM first (unless modelSource says gateway)
+  // Try local LLM first (only when no override routes the call to gateway)
   if (localLlm && !skipLocal) {
     try {
       const result = await callLocalLlm(localLlm, messages, {
@@ -291,7 +295,6 @@ async function callFaithfulnessLlm(
         responseFormat: { type: "json_object" },
         timeoutMs,
         operation: "extraction-faithfulness",
-        ...(modelOverride ? { model: modelOverride } : {}),
         ...(signal ? { signal } : {}),
       });
       if (result.content) {
@@ -697,14 +700,19 @@ export async function runFaithfulnessGateBatch(
   for (let fi = 0; fi < facts.length; fi++) {
     const f = facts[fi];
     if (!f || typeof f.content !== "string" || !f.content.trim()) continue;
-    // Prefer a #1575 verified span; fall back to a located quote from the
+    // Prefer #1575 verified spans; fall back to a located quote from the
     // source turn text so the gate runs even before per-fact sources are
     // attached. Without either, the fact is skipped_no_span (never gated).
+    // A composite fact may be supported by multiple adjacent spans — collect
+    // every valid source quote so the verifier sees the full evidence, not
+    // just sources[0] (codex review PRRT_kwDORJXyws6ObYQ_).
     const sources = Array.isArray(f.sources) ? f.sources : [];
-    const firstSource = sources[0];
+    const sourceQuotes = sources
+      .map((s) => (s && typeof s.quote === "string" ? s.quote.trim() : ""))
+      .filter((q) => q.length > 0);
     const quote =
-      firstSource && typeof firstSource.quote === "string" && firstSource.quote.trim()
-        ? firstSource.quote
+      sourceQuotes.length > 0
+        ? sourceQuotes.join("\n")
         : locateFactQuote(f.content, sourceText);
     if (!quote) continue; // no located span — applyFaithfulnessVerdict tags skipped_no_span
     inputs.push({ factIndex: fi, input: { factText: f.content, quote } });
