@@ -333,6 +333,14 @@ export class TombstoneStore {
     entityRef?: string;
     supersessionKey?: string;
     createdAt?: string;
+    /**
+     * Pre-computed canonical contentHash from the retired memory's frontmatter.
+     * When provided, used directly so the tombstone's exact tier matches the
+     * hash writeMemory computes on re-extraction (issue #1579 review: cited
+     * facts must not slip past the chokepoint because the emitter hashed the
+     * citation-annotated body instead of the canonical source).
+     */
+    contentHash?: string;
   }): Promise<string> {
     await this.load();
     const createdAt = input.createdAt ?? new Date().toISOString();
@@ -342,7 +350,7 @@ export class TombstoneStore {
       kind: "tombstone",
       reason: input.reason,
       sourceMemoryId: input.sourceMemoryId,
-      contentHash: this.options.hashContent(input.rawContent),
+      contentHash: input.contentHash ?? this.options.hashContent(input.rawContent),
       normalizedText: this.options.normalizeText(input.rawContent),
       ...(input.entityRef ? { entityRef: input.entityRef } : {}),
       ...(input.supersessionKey ? { supersessionKey: input.supersessionKey } : {}),
@@ -493,16 +501,28 @@ export class TombstoneStore {
       reason: TombstoneReason;
       createdBy: TombstoneCreatedBy;
       createdAt: string;
+      /**
+       * Pre-computed canonical contentHash from the retired memory's
+       * frontmatter (issue #1579 review: avoids the citation-hash mismatch).
+       */
+      contentHash?: string;
     }>,
   ): Promise<number> {
     // Preserve existing revocations so a rebuild does not silently un-revoke.
     const existingRevocations = this.entries.filter((e) => e.kind === "revocation");
+    // Reuse existing tombstone ids for source-equivalent entries so a prior
+    // revocation (which references the tombstone id) survives rebuild — minting
+    // fresh ids would orphan the revocation and silently un-revoke the content.
+    const existingBySource = new Map<string, string>();
+    for (const e of this.entries) {
+      if (e.kind === "tombstone") existingBySource.set(e.sourceMemoryId, e.id);
+    }
     const rebuilt: TombstoneEntry[] = retiredMemories.map((m) => ({
-      id: newTombstoneId(),
+      id: existingBySource.get(m.memoryId) ?? newTombstoneId(),
       kind: "tombstone" as const,
       reason: m.reason,
       sourceMemoryId: m.memoryId,
-      contentHash: this.options.hashContent(m.rawContent),
+      contentHash: m.contentHash ?? this.options.hashContent(m.rawContent),
       normalizedText: this.options.normalizeText(m.rawContent),
       ...(m.entityRef ? { entityRef: m.entityRef } : {}),
       ...(m.supersessionKey ? { supersessionKey: m.supersessionKey } : {}),

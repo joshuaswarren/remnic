@@ -2320,6 +2320,8 @@ export class StorageManager {
   // every other cache layer via invalidateAllMemoriesCache (rule 25).
   private tombstoneStore: TombstoneStore | null = null;
   private tombstoneStoreLoadPromise: Promise<TombstoneStore> | null = null;
+  /** Last-seen mtime of tombstones.jsonl; used by the cross-process staleness probe. */
+  private tombstoneStoreFileMtimeMs = 0;
   private tombstonesConfig: {
     enabled: boolean;
     semanticMatch: boolean;
@@ -3139,11 +3141,40 @@ export class StorageManager {
   }
 
   /**
+   * Cross-process staleness probe (#1579 review). If tombstones.jsonl's mtime
+   * advanced since the last load, invalidate the in-memory index so the next
+   * access reloads from disk. Best-effort: a stat error is swallowed (the
+   * existing loaded index is retained rather than crashing the write path).
+   */
+  private maybeInvalidateTombstoneStoreForPeerAppend(): void {
+    if (!this.tombstoneStore) return;
+    try {
+      const stat = statSync(this.tombstonesPath);
+      const mtimeMs = Math.floor(stat.mtimeMs);
+      if (mtimeMs !== this.tombstoneStoreFileMtimeMs) {
+        this.tombstoneStore.invalidate();
+        this.tombstoneStore = null;
+        this.tombstoneStoreLoadPromise = null;
+        this.tombstoneStoreFileMtimeMs = mtimeMs;
+      }
+    } catch {
+      // ENOENT / permission — keep the loaded index (fail-open, rule 34 spirit).
+    }
+  }
+
+  /**
    * Lazily load the tombstone store. Mirrors the fact-hash-index lazy-load
    * pattern: a single in-flight load promise dedups concurrent first-access.
    */
   getTombstoneStore(): Promise<TombstoneStore> {
-    if (this.tombstoneStore) return Promise.resolve(this.tombstoneStore);
+    if (this.tombstoneStore) {
+      // Cross-process staleness guard (#1579 review): if another process
+      // appended to tombstones.jsonl, our in-memory index is stale. A cheap
+      // mtime probe detects peer appends and reloads so the next writeMemory
+      // lookup does not admit resurrected content.
+      this.maybeInvalidateTombstoneStoreForPeerAppend();
+      return Promise.resolve(this.tombstoneStore);
+    }
     if (!this.tombstoneStoreLoadPromise) {
       const store = this.buildTombstoneStore();
       this.tombstoneStoreLoadPromise = store
@@ -3174,6 +3205,8 @@ export class StorageManager {
     entityRef?: string;
     supersessionKey?: string;
     createdAt?: string;
+    /** Canonical contentHash from the retired memory's frontmatter (#1579). */
+    contentHash?: string;
   }): Promise<string | null> {
     if (!this.tombstonesConfig.enabled) return null;
     try {
@@ -3253,6 +3286,9 @@ export class StorageManager {
       retired.push({
         memoryId: m.frontmatter.id,
         rawContent: stripCitationForTemplate(m.content, this.citationTemplate),
+        // Pass the canonical contentHash so the rebuilt tombstone's exact tier
+        // matches re-extraction (issue #1579 review: citation-hash alignment).
+        contentHash: m.frontmatter.contentHash,
         ...(entityRef ? { entityRef } : {}),
         ...(keys.length > 0 ? { supersessionKey: keys[0] } : {}),
         reason,
@@ -7412,7 +7448,13 @@ export class StorageManager {
           reason: "contradiction_resolution",
           createdBy: "contradiction_resolution",
           sourceMemoryId: oldMemoryId,
-          rawContent: oldMemory.content,
+          // Issue #1579 review: hash the CANONICAL source, not the citation-
+          // annotated body. Re-extraction looks up by the contentHashSource /
+          // citation-stripped hash; passing the stored frontmatter.contentHash
+          // guarantees the exact tier matches. rawContent is the stripped body
+          // so the normalized fallback tier also aligns.
+          contentHash: oldMemory.frontmatter.contentHash,
+          rawContent: stripCitationForTemplate(oldMemory.content, this.citationTemplate),
           ...(oldMemory.frontmatter.entityRef
             ? { entityRef: oldMemory.frontmatter.entityRef }
             : {}),
