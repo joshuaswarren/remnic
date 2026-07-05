@@ -957,3 +957,38 @@ test("session-end: REMNIC_NAMESPACE scopes the final-flush /observe (#1571 revie
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("pre-compact: REMNIC_PRECOMPACT_LOCK_RETRIES=0 is honored, not coerced to 150 (#1571 kilo review)", async () => {
+  // Number.parseInt(... || "150") || 150 would treat 0 as falsy and fall back
+  // to 150. The explicit finite-check must honor 0 (immediate busy-skip). Hold
+  // the lock and set 0 retries — the hook must return near-instantly without
+  // the ~15s wait a coerced 150 would impose.
+  const home = mkHome();
+  const sessionId = "compact-zero-retries";
+  const tpath = transcript(home, [
+    { role: "user", content: "x" },
+    { role: "assistant", content: "y" },
+  ]);
+  const lockDir = path.join(home, "state", "remnic", "hooks", `remnic-lock-${sessionId}.d`);
+  fs.mkdirSync(path.dirname(lockDir), { recursive: true });
+  fs.mkdirSync(lockDir);
+  const { server, port, calls } = await startServer((req, res) =>
+    res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}'),
+  );
+  try {
+    const start = Date.now();
+    const { json } = await runHook(
+      "pre-compact",
+      { session_id: sessionId, transcript_path: tpath, trigger: "auto", cwd: home },
+      { port, home, env: { extra: { REMNIC_PRECOMPACT_LOCK_RETRIES: "0" } } },
+    );
+    const elapsed = Date.now() - start;
+    assert.deepEqual(json, { continue: true });
+    assert.ok(!calls.some((c) => c.url === "/engram/v1/lcm/compaction/flush"), "flush skipped (busy)");
+    // 0 retries ⇒ no 100ms-poll loop; must be well under the 15s a coerced 150 would add.
+    assert.ok(elapsed < 5000, `0-retries returned in ${elapsed}ms (not coerced to 150)`);
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

@@ -90,8 +90,10 @@ const OBSERVE_WORKER = "__observe-worker__";
 // pathologically slow worker that outlasts this is left for the next cycle
 // rather than blocking compaction indefinitely. The hooks.json PreCompact
 // timeout accommodates this budget plus the drain observe + LCM flush.
-const PRECOMPACT_LOCK_RETRIES =
-  Number.parseInt(process.env.REMNIC_PRECOMPACT_LOCK_RETRIES || "150", 10) || 150;
+const _pcRaw = process.env.REMNIC_PRECOMPACT_LOCK_RETRIES;
+const _pcParsed = _pcRaw != null && _pcRaw !== "" ? Number.parseInt(_pcRaw, 10) : 150;
+// 0 is honored (immediate busy-skip); NaN/negative falls back to the 150 default.
+const PRECOMPACT_LOCK_RETRIES = Number.isFinite(_pcParsed) && _pcParsed >= 0 ? _pcParsed : 150;
 
 const LOG_FILES = {
   "session-start": "remnic-session-recall.log",
