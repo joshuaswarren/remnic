@@ -1185,6 +1185,7 @@ test("semantic consolidation records a catalog write when archival fails after c
 // primary memory and the derived writes.
 test("persistExtraction records non-chunked source catalog touch after graph and artifact writes", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-nonchunk-touch-order-"));
+  let cleanup: (() => Promise<void>) | undefined;
   try {
     const config = parseConfig({
       openaiApiKey: "sk-test",
@@ -1204,6 +1205,7 @@ test("persistExtraction records non-chunked source catalog touch after graph and
     });
 
     const orchestrator = new Orchestrator(config) as any;
+    cleanup = () => orchestrator.destroy();
     const ns = "project-origin-nonchunk-order";
     const storage = await orchestrator.getStorage(ns);
     await storage.ensureDirectories();
@@ -1260,6 +1262,7 @@ test("persistExtraction records non-chunked source catalog touch after graph and
       `catalog write touch must fire via the storage chokepoint during non-chunked extraction; saw ${events.join(" -> ")}`,
     );
   } finally {
+    await cleanup?.().catch(() => undefined);
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
