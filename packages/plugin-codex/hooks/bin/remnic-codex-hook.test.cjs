@@ -711,3 +711,84 @@ test("runner source: DAEMON_URL honors https:// remotes and falls back to HOST/P
   // HOST/PORT remain as a backward-compat fallback.
   assert.match(src, /new URL\(`http:\/\/\$\{HOST\}:\$\{PORT\}`\)/, "HOST/PORT fallback preserved");
 });
+
+test("pre-compact: drains the unobserved transcript tail to /observe BEFORE the LCM flush (#1571 review)", async () => {
+  // The codex bot pointed out that /lcm/compaction/flush only drains work
+  // already queued by prior /observe calls — if a turn landed after the last
+  // PostToolUse, its tail is still only in the transcript and would be lost
+  // when Codex summarizes. PreCompact must observe the delta first.
+  const home = mkHome();
+  const sessionId = "compact-tail";
+  const tpath = transcript(home, [
+    { role: "user", content: "first turn already observed" },
+    { role: "assistant", content: "response one" },
+    { role: "user", content: "second turn — the unobserved tail" },
+    { role: "assistant", content: "response two" },
+  ]);
+  // Seed a cursor at 2 so the last two messages are the pending tail.
+  fs.mkdirSync(path.join(home, "state", "remnic", "hooks"), { recursive: true });
+  fs.writeFileSync(cursorPath(home, sessionId), "2\n");
+  const order = [];
+  const { server, port, calls } = await startServer((req, res) => {
+    order.push(req.url);
+    if (req.url === "/engram/v1/observe") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
+    }
+    if (req.url === "/engram/v1/lcm/compaction/flush") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}');
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook(
+      "pre-compact",
+      { session_id: sessionId, transcript_path: tpath, trigger: "auto", cwd: home },
+      { port, home },
+    );
+    assert.deepEqual(json, { continue: true });
+    // Critical: the observe must precede the LCM flush.
+    const observeIdx = order.indexOf("/engram/v1/observe");
+    const flushIdx = order.indexOf("/engram/v1/lcm/compaction/flush");
+    assert.ok(observeIdx !== -1, "observe (tail drain) was called");
+    assert.ok(flushIdx !== -1, "LCM flush was called");
+    assert.ok(observeIdx < flushIdx, "observe (tail drain) runs BEFORE the LCM flush");
+    // The tail was the 2 unobserved messages.
+    const observe = calls.find((c) => c.url === "/engram/v1/observe");
+    assert.equal(observe.body.messages.length, 2, "exactly the pending tail was observed");
+    // Cursor advanced past the drained tail (not removed — session continues).
+    assert.equal(fs.readFileSync(cursorPath(home, sessionId), "utf8").trim(), "4");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pre-compact: retains the cursor when the tail-drain observe fails (#1571 review)", async () => {
+  const home = mkHome();
+  const sessionId = "compact-tail-fail";
+  const tpath = transcript(home, [
+    { role: "user", content: "tail that won't drain this time" },
+    { role: "assistant", content: "response" },
+  ]);
+  fs.mkdirSync(path.join(home, "state", "remnic", "hooks"), { recursive: true });
+  fs.writeFileSync(cursorPath(home, sessionId), "0\n");
+  const { server, port } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/observe") return res.writeHead(500).end('{"error":"x"}');
+    if (req.url === "/engram/v1/lcm/compaction/flush") return res.writeHead(200).end('{"ok":true}');
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook(
+      "pre-compact",
+      { session_id: sessionId, transcript_path: tpath, trigger: "manual", cwd: home },
+      { port, home },
+    );
+    // Fail-open: compaction still proceeds.
+    assert.deepEqual(json, { continue: true });
+    // Cursor retained at 0 so the tail is retried on the next observe/compact.
+    assert.equal(fs.readFileSync(cursorPath(home, sessionId), "utf8").trim(), "0");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

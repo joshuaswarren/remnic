@@ -895,23 +895,95 @@ async function handleSessionEnd(input, token, log) {
   runMaterialize(log);
 }
 
+// Drain any unobserved transcript tail to /engram/v1/observe under the
+// session's cursor/lock, advancing the cursor only on a successful observe.
+// Shared mid-session drain used by handlePreCompact (the session-end path in
+// handleSessionEnd has its own cursor-removal cleanup and is intentionally not
+// refactored onto this helper to avoid perturbing its retention semantics).
+//
+// Why this exists separately from the LCM flush: /engram/v1/lcm/compaction/flush
+// can only drain work ALREADY queued by prior /observe calls. If a turn landed
+// after the last PostToolUse (e.g. a long user prompt that triggers auto
+// compaction without a Bash tool call in between), that tail is still only in
+// the transcript and would be lost when Codex summarizes/replaces context. So
+// PreCompact must observe the delta FIRST, then ask LCM to flush. Returns true
+// when the tail was observed (or nothing was pending); false on parse/observe
+// failure so the caller can decide. Always fail-open.
+async function drainTranscriptTail(sessionId, transcriptPath, token, log) {
+  const safe = sessionId !== "" && !/[^A-Za-z0-9._-]/.test(sessionId);
+  if (!safe || !token || !transcriptPath || !fs.existsSync(transcriptPath)) {
+    return false;
+  }
+  const state = resolveState(sessionId, log);
+  if (!state) return false;
+  const { cursorFile, lockFile } = state;
+  // The lock guards against the detached post-tool observe worker racing this
+  // drain. If we can't acquire it (worker still running), skip — the worker
+  // will observe the tail, and the LCM flush still drains what's queued.
+  if (!acquireLock(lockFile, log)) {
+    log(`transcript tail drain skipped for ${sessionId}: lock busy`);
+    return false;
+  }
+  try {
+    migrateTmpCursor(sessionId, cursorFile, log);
+    const lastCount = readCursor(cursorFile, log);
+    if (lastCount === null) {
+      log(`transcript tail drain skipped for ${sessionId}: unsafe cursor`);
+      return false;
+    }
+    let newMessages;
+    try {
+      newMessages = parseTranscript(transcriptPath).slice(lastCount);
+    } catch {
+      log(`transcript tail parse failed for ${sessionId}; cursor retained`);
+      return false;
+    }
+    if (newMessages.length === 0) return true;
+    log(`transcript tail drain: ${newMessages.length} new message(s) for ${sessionId}`);
+    const res = await httpPost(
+      "/engram/v1/observe",
+      token,
+      { sessionKey: sessionId, messages: newMessages },
+      30000,
+    );
+    if (res.ok) {
+      // Advance (not remove) the cursor — the session continues after compaction,
+      // so the post-compact transcript must not re-observe this tail.
+      writeCursor(cursorFile, lastCount + newMessages.length, log);
+      return true;
+    }
+    log(`transcript tail drain failed for ${sessionId} (http=${res.status}); cursor retained`);
+    return false;
+  } finally {
+    releaseLock(lockFile);
+  }
+}
+
 // PreCompact (#1571) — coordinate with Remnic's LCM layer before Codex
 // compacts the conversation. Mirrors @remnic/plugin-pi's session_before_compact
-// handler: POST /engram/v1/lcm/compaction/flush so the daemon flushes the
-// in-flight observe buffer into long-term memory before the transcript is
-// summarized. ALWAYS returns continue:true — a hook failure must never block
-// Codex's compaction (the upstream contract notes continue:false stops the
-// compact entirely), so this handler is fail-open end to end.
+// handler, with one Codex-specific addition: because Codex observes
+// asynchronously (PostToolUse on Bash + Stop), an unobserved transcript tail
+// can exist when compaction fires mid-session. So we drain that tail to
+// /engram/v1/observe FIRST, then POST /engram/v1/lcm/compaction/flush so the
+// daemon flushes the now-complete observe buffer into long-term memory before
+// the transcript is summarized. ALWAYS returns continue:true — a hook failure
+// must never block Codex's compaction (the upstream contract notes
+// continue:false stops the compact entirely), so this handler is fail-open
+// end to end.
 async function handlePreCompact(input, token, log) {
   const sessionId = input.session_id || "";
+  const transcriptPath = input.transcript_path || "";
   const trigger = input.trigger || "auto";
   // Acknowledge first so Codex never waits on the network for compaction to
-  // proceed — the flush is best-effort coordination, not a gate.
+  // proceed — the drain + flush are best-effort coordination, not a gate.
   emit({ continue: true });
   if (!token) {
-    log(`skipping LCM flush: no token (session=${sessionId} trigger=${trigger})`);
+    log(`skipping pre-compact drain+flush: no token (session=${sessionId} trigger=${trigger})`);
     return;
   }
+  // 1. Drain any unobserved transcript tail so it's archived before compaction.
+  await drainTranscriptTail(sessionId, transcriptPath, token, log);
+  // 2. Ask the LCM layer to flush the (now-complete) observe buffer.
   const body = { sessionKey: sessionId };
   // Optional namespace override (parity with @remnic/plugin-pi's config.namespace).
   // Unset → the daemon resolves the default namespace for this principal.
