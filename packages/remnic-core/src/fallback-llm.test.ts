@@ -3,7 +3,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { FallbackLlmClient, gatewayTaskChainOptions } from "./fallback-llm.js";
-import { __codexCliFallbackTestHooks } from "./codex-cli-fallback.js";
+import { __codexCliFallbackTestHooks } from "./cli-fallback.js";
 import { clearModelsJsonCache, __setModelsJsonForTest } from "./models-json.js";
 import {
   __setGatewayRuntimeAuthForModelForTest,

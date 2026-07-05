@@ -151,7 +151,7 @@ import {
   isAbortError,
   throwIfAborted as sharedThrowIfAborted,
 } from "./abort-error.js";
-import { CODEX_THREAD_KEY_PREFIX } from "./codex-thread-key.js";
+import { CODEX_THREAD_KEY_PREFIX } from "./thread-key.js";
 import { isDisagreementPrompt } from "./signal.js";
 import { lintWorkspaceFiles, rotateMarkdownFileToArchive } from "./hygiene.js";
 import { isPathInsideStorageRoot } from "./storage-paths.js";

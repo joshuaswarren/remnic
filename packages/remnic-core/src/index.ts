@@ -125,7 +125,7 @@ export {
   type CodexCliFallbackRequest,
   type CodexCliFallbackResult,
   type CodexCliFallbackRunner,
-} from "./codex-cli-fallback.js";
+} from "./cli-fallback.js";
 
 // ---------------------------------------------------------------------------
 // Smart buffer (issue #563)
@@ -589,7 +589,7 @@ export { BootstrapEngine } from "./bootstrap.js";
 // Codex compatibility helpers
 // ---------------------------------------------------------------------------
 
-export { CODEX_THREAD_KEY_PREFIX } from "./codex-thread-key.js";
+export { CODEX_THREAD_KEY_PREFIX } from "./thread-key.js";
 export type { CodexCompatConfig } from "./types.js";
 
 // ---------------------------------------------------------------------------
