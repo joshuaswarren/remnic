@@ -473,6 +473,98 @@ test("ACCEPT: multi-hop path chains (a)-[:CALLS]->(b)-[:CALLS]->(c)", async () =
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// ACCEPT — anonymous nodes (cursor Bugbot: 'Anonymous nodes break path
+// expansion'). An anonymous node `()` participates in the path but is not
+// bound to a variable; the executor tracks the positional cursor so the
+// path flows through it.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("ACCEPT: anonymous FIRST node — ()-[:CALLS]->(b) enumerates all starts", async () => {
+  const { store, dir } = await tempStoreWithFixture();
+  try {
+    // Every node with an outgoing CALLS edge is a valid (anon) start.
+    // b = the CALLS target. Distinct b targets: runServer, handleRequest, query.
+    const { rows } = await run(
+      store,
+      "MATCH ()-[:CALLS]->(b:Function) RETURN b.qualifiedName",
+    );
+    const qnames = rows
+      .map((r) => r["b.qualifiedName"] as string)
+      .sort();
+    assert.deepEqual(qnames, [
+      "app.handleRequest",
+      "app.runServer",
+      "db.query",
+    ]);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("ACCEPT: anonymous MIDDLE node — path flows through ()", async () => {
+  const { store, dir } = await tempStoreWithFixture();
+  try {
+    // (a)-[:CALLS]->()-[:CALLS]->(c): the middle node is anonymous but
+    // the 2-hop path still resolves. Same result as the named-middle
+    // chain test above.
+    const { rows } = await run(
+      store,
+      "MATCH (a:Function)-[:CALLS]->()-[:CALLS]->(c:Function) RETURN a.name, c.name",
+    );
+    const pairs = rows
+      .map((r) => `${r["a.name"]}…${r["c.name"]}`)
+      .sort();
+    assert.deepEqual(pairs, [
+      "bootstrap…handleRequest",
+      "runServer…query",
+    ]);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// ACCEPT — inline-property pushdown narrows the start set before the cap
+// (cursor Bugbot: 'Start search truncates before filters'). A specific name
+// pushes down to searchGraph's namePattern so a low-degree node is still
+// found even when the graph exceeds the 1000-row cap.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("ACCEPT: inline name filter on a low-degree node still resolves", async () => {
+  // util.format has zero inbound edges (dead code) → degree 0, ranked last
+  // by searchGraph's degree-desc ordering. Without the pushdown a graph
+  // with >1000 higher-degree nodes would truncate it out; the pushdown
+  // narrows by name first so it is always found.
+  const { store, dir } = await tempStoreWithFixture();
+  try {
+    const { rows } = await run(
+      store,
+      'MATCH (f:Function {name: "format"}) RETURN f.qualifiedName',
+    );
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]!["f.qualifiedName"], "util.format");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("ACCEPT: wrong-type inline literal matches nothing (standard Cypher, not a parse error)", async () => {
+  // {name: 123} is valid syntax; a numeric name never equals a string name,
+  // so the result is empty (no tagged failure). This is standard Cypher
+  // behavior, documented in the module's rejection-table note.
+  const { store, dir } = await tempStoreWithFixture();
+  try {
+    const { rows } = await run(
+      store,
+      "MATCH (f:Function {name: 123}) RETURN f.name",
+    );
+    assert.equal(rows.length, 0);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // ACCEPT — LIMIT.
 // ──────────────────────────────────────────────────────────────────────────
 

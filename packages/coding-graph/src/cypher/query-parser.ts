@@ -67,7 +67,10 @@
  *   - `MATCH (a:NotALabel) ...`        → unknown label (lists valid options)
  *   - `MATCH (a) RETURN *`             → `RETURN *` not in subset
  *   - `MATCH (a)-[:CALLS]->(b) RETURN a, c`  → unbound variable `c`
- *   - `MATCH (a:Function {name: 123}) ...`   → wrong-type literal in prop map
+ *   - `MATCH (a:Function {name: 123}) ...`   → wrong-type literal matches
+ *                                              nothing (standard Cypher;
+ *                                              NOT a parse error — a numeric
+ *                                              `name` never equals a string)
  *   - `MATCH (a:Function WHERE ...`     → missing `)` / missing RETURN
  *   - `MATCH (a:Function)` (no RETURN)  → missing RETURN
  *
@@ -1298,33 +1301,76 @@ function compareValues(a: CypherScalar, op: Comparison["op"], b: CypherScalar): 
 }
 
 /**
- * A binding is a row of variables → nodes resolved so far. The executor
- * grows bindings left-to-right across the MATCH pattern.
+ * A binding tracks both the named variables (for WHERE / RETURN) AND the
+ * most-recently-resolved node by position (`lastNode`). The positional
+ * cursor is what makes anonymous nodes work: `MATCH ()-[:CALLS]->(b)`
+ * starts from every node (anonymous first node) and traverses forward,
+ * and `MATCH (a)-[:CALLS]->()-[:CALLS]->(c)` flows through the anonymous
+ * middle node without dropping the path (cursor Bugbot: 'Anonymous nodes
+ * break path expansion').
  */
-type Binding = Map<string, CypherNodeValue>;
+interface Binding {
+  varByName: Map<string, CypherNodeValue>;
+  lastNode: CypherNodeValue;
+}
+
+/**
+ * Push the inline `name` / `filePath` property filters from a node pattern
+ * down to the structured `searchGraph` filters so the candidate set is
+ * narrowed by the index BEFORE the 1000-row cap applies. A specific name
+ * like `"runServer"` narrows from the whole graph to a handful of rows,
+ * so a low-degree node with an exact name match is no longer truncated
+ * out (cursor Bugbot: 'Start search truncates before filters').
+ *
+ * The post-filter ({@link matchesNodePattern}) still enforces EXACT
+ * case-sensitive equality afterwards; the pushdown uses `searchGraph`'s
+ * `LIKE ... COLLATE NOCASE`, which is a SUPERSET of exact match, so no
+ * valid result is lost (the post-filter removes the extras). A literal
+ * `%`/`_` in the user's value acts as a LIKE wildcard for the narrow
+ * pass, which only makes the candidate set slightly broader — never
+ * narrower — so correctness is preserved.
+ */
+function pushInlineFiltersToSearch(
+  query: { label?: string; namePattern?: string; filePattern?: string },
+  properties: ReadonlyArray<{ key: string; value: CypherScalar }>,
+): void {
+  for (const { key, value } of properties) {
+    const k = key.toLowerCase();
+    if (k === "name" && typeof value === "string") {
+      query.namePattern = value;
+    } else if (
+      (k === "filepath" || k === "file_path") &&
+      typeof value === "string"
+    ) {
+      query.filePattern = value;
+    }
+  }
+}
 
 /**
  * Execute a parsed AST against a store. Exposed so callers that already
  * hold an AST (e.g. a cached plan) can skip re-parsing.
  */
 export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
-  // 1. Resolve the FIRST node pattern via searchGraph. Property filters in
-  //    the node pattern AND WHERE conditions are applied as JS post-
-  //    filters after the structured search returns candidates. A closed
-  //    store surfaces as `{ ok: false, code: "store_closed" }` from
-  //    searchGraph itself (we don't reach into the private `closed` flag).
+  // 1. Resolve the FIRST node pattern via searchGraph. The label + any
+  //    inline `name`/`filePath` property filters are pushed down so the
+  //    candidate set is narrowed by the index before the 1000-row cap;
+  //    remaining inline properties + WHERE conditions are applied as JS
+  //    post-filters. A closed store surfaces as
+  //    `{ ok: false, code: "store_closed" }` from searchGraph itself
+  //    (we don't reach into the private `closed` flag).
   const firstNode = ast.match.nodes[0]!;
-  const searchLabel =
-    firstNode.label !== undefined
-      ? CYPHER_LABEL_TO_DB_LABEL[firstNode.label]!
-      : undefined;
-  // Use the maximum limit the store allows so we don't silently truncate
-  // the start set; the query's LIMIT applies later. For graphs above the
-  // cap, narrow the start with a label + property filter.
-  const search = store.searchGraph({
-    ...(searchLabel !== undefined ? { label: searchLabel } : {}),
-    limit: 1000,
-  });
+  const searchQuery: {
+    label?: string;
+    namePattern?: string;
+    filePattern?: string;
+    limit: number;
+  } = { limit: 1000 };
+  if (firstNode.label !== undefined) {
+    searchQuery.label = CYPHER_LABEL_TO_DB_LABEL[firstNode.label]!;
+  }
+  pushInlineFiltersToSearch(searchQuery, firstNode.properties);
+  const search = store.searchGraph(searchQuery);
   if (!search.ok) {
     return storeFailureToCypher(search);
   }
@@ -1333,32 +1379,22 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
     .map((hit) => nodeToValue(hit))
     .filter((node) => matchesNodePattern(node, firstNode))
     .map((node) => {
-      const m = new Map<string, CypherNodeValue>();
-      if (firstNode.varName) m.set(firstNode.varName, node);
-      return m;
+      const varByName = new Map<string, CypherNodeValue>();
+      if (firstNode.varName) varByName.set(firstNode.varName, node);
+      return { varByName, lastNode: node };
     });
 
   // 2. Walk the remaining (rel, node) pairs, expanding each binding via
-  //    traverse.
+  //    traverse. The traverse start is the binding's POSITIONAL lastNode,
+  //    not a named variable — so anonymous nodes anywhere in the path
+  //    still pass the cursor forward.
   for (let idx = 0; idx < ast.match.rels.length; idx += 1) {
     const rel = ast.match.rels[idx]!;
     const nodePattern = ast.match.nodes[idx + 1]!;
-    const leftVar = ast.match.nodes[idx]!.varName;
-    if (!leftVar) {
-      // The left node of this hop was anonymous — we cannot traverse
-      // from an unnamed binding. This is a structural error caught at
-      // parse-validate only for RETURN/WHERE; for traversal we catch
-      // here and return empty (the user wrote `(a)-->( ) RETURN a`,
-      // which is valid but yields no new bindings).
-      bindings = [];
-      break;
-    }
     const nextBindings: Binding[] = [];
     for (const binding of bindings) {
-      const startNode = binding.get(leftVar);
-      if (!startNode) continue;
       const t = store.traverse({
-        start: startNode.nodeId,
+        start: binding.lastNode.nodeId,
         direction: rel.direction,
         ...(rel.types.length > 0 ? { edgeTypes: rel.types } : {}),
         maxDepth: rel.maxHops,
@@ -1386,25 +1422,25 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
         seen.add(hit.nodeId);
         const node = nodeToValue(hit);
         if (!matchesNodePattern(node, nodePattern)) continue;
-        const extended = new Map(binding);
+        const varByName = new Map(binding.varByName);
         if (nodePattern.varName) {
           // If the var was already bound (re-binding in a path), require
           // it to be the SAME node (Cypher equality semantics). Skip
           // otherwise.
-          const existing = extended.get(nodePattern.varName);
+          const existing = varByName.get(nodePattern.varName);
           if (existing && existing.nodeId !== node.nodeId) continue;
-          extended.set(nodePattern.varName, node);
+          varByName.set(nodePattern.varName, node);
         }
-        nextBindings.push(extended);
+        nextBindings.push({ varByName, lastNode: node });
       }
     }
     bindings = nextBindings;
     if (bindings.length === 0) break;
   }
 
-  // 3. Apply WHERE.
+  // 3. Apply WHERE (resolves variables by name — anonymous nodes have none).
   if (ast.where) {
-    bindings = bindings.filter((b) => matchesWhere(b, ast.where!));
+    bindings = bindings.filter((b) => matchesWhere(b.varByName, ast.where!));
   }
 
   // 4. Apply LIMIT.
@@ -1412,7 +1448,7 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
     bindings = bindings.slice(0, ast.limit);
   }
 
-  // 5. Project RETURN.
+  // 5. Project RETURN (resolves variables by name).
   const columns = ast.return.map((item) =>
     item.kind === "var" ? item.varName : `${item.varName}.${item.key}`,
   );
@@ -1420,7 +1456,7 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
     const row: CypherRow = {};
     ast.return.forEach((item) => {
       const col = item.kind === "var" ? item.varName : `${item.varName}.${item.key}`;
-      const node = b.get(item.varName);
+      const node = b.varByName.get(item.varName);
       if (!node) {
         row[col] = null;
         return;
@@ -1442,11 +1478,14 @@ function matchesNodePattern(node: CypherNodeValue, pattern: NodePattern): boolea
   return true;
 }
 
-function matchesWhere(binding: Binding, where: WhereClause): boolean {
+function matchesWhere(
+  varByName: Map<string, CypherNodeValue>,
+  where: WhereClause,
+): boolean {
   // OR-of-AND.
   return where.orGroups.some((group) =>
     group.every((term) => {
-      const node = binding.get(term.varName);
+      const node = varByName.get(term.varName);
       if (!node) return false;
       const actual = readProperty(node, term.key);
       return compareValues(actual, term.op, term.value);
