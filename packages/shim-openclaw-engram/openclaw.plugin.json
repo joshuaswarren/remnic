@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.3.690",
+  "version": "9.3.691",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -3135,6 +3135,16 @@
         "default": false,
         "description": "If true, include temporally-superseded facts in recall results (for audit/history). Default: exclude."
       },
+      "temporalBiTemporal": {
+        "type": "boolean",
+        "default": false,
+        "description": "Bi-temporal validity master gate (issue #1578). When false (default), recall behaves byte-identically to pre-#1578. Turn on to exclude validity-expired facts from default injection candidates (they stay findable by explicit search and as_of). Storage round-trips observedAt/eventTimeSource; extraction event-time write-time wiring lands in a follow-on PR."
+      },
+      "temporalExpiredInInjection": {
+        "type": "boolean",
+        "default": false,
+        "description": "Escape hatch for the bi-temporal injection filter (issue #1578). When true, facts whose [valid_at, invalid_at) interval ended before now are kept in injection candidates even with temporalBiTemporal on — some deployments prefer the older (always-inject) behavior."
+      },
       "recallDirectAnswerEnabled": {
         "type": "boolean",
         "default": false,
@@ -5819,6 +5829,16 @@
       "label": "Include Superseded Facts In Recall",
       "advanced": true,
       "help": "If enabled, superseded facts still surface in recall (audit/history mode)."
+    },
+    "temporalBiTemporal": {
+      "label": "Bi-temporal Validity",
+      "advanced": true,
+      "help": "Master gate (issue #1578): resolve per-fact event-time at write time and exclude validity-expired facts from injection by default. Off = byte-identical to pre-#1578."
+    },
+    "temporalExpiredInInjection": {
+      "label": "Keep Expired-Validity Facts In Injection",
+      "advanced": true,
+      "help": "Escape hatch (issue #1578): keep facts whose event-time interval ended in injection candidates even with bi-temporal on."
     },
     "recallDirectAnswerEnabled": {
       "label": "Direct-Answer Retrieval Tier",

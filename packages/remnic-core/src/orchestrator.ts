@@ -114,7 +114,7 @@ import {
   normalizeSupersessionKey,
   shouldFilterSupersededFromRecall,
 } from "./temporal-supersession.js";
-import { isValidAsOf } from "./temporal-validity.js";
+import { isValidAsOf, isValidityExpiredNow } from "./temporal-validity.js";
 import { RelevanceStore } from "./relevance.js";
 import { NegativeExampleStore } from "./negative.js";
 import {
@@ -18953,6 +18953,7 @@ export class Orchestrator {
   ): QmdSearchResult[] {
     let lifecycleFilteredCount = 0;
     let temporalSupersededFilteredCount = 0;
+    let biTemporalExpiredFilteredCount = 0;
     let dedicatedSurfaceFilteredCount = 0;
     let forgottenFilteredCount = 0;
     let blockedPathFilteredCount = 0;
@@ -19015,6 +19016,26 @@ export class Orchestrator {
           temporalSupersededFilteredCount += 1;
           continue;
         }
+        // Bi-temporal INJECTION filter (issue #1578): when the master gate
+        // is on and the caller did NOT pin `as_of`, drop facts whose event-
+        // time interval has ended before now. This lives ONLY in the recall
+        // injection path (filterSearchResultsByRecallSafety) — explicit
+        // search (access-service.memorySearch → searchAcrossNamespaces /
+        // qmd.search) never routes through here, so expired-validity facts
+        // remain findable by memory_search and `as_of` queries (escape
+        // hatch: the as_of branch above also admits historically-valid
+        // records). Gated off entirely when `temporalExpiredInInjection` is
+        // set. Status-orthogonal: an `active` fact can be validity-expired;
+        // a `superseded` one may still be within its window.
+        if (
+          !asOfActive &&
+          this.config.temporalBiTemporal &&
+          !this.config.temporalExpiredInInjection &&
+          isValidityExpiredNow(memory.frontmatter, Date.now())
+        ) {
+          biTemporalExpiredFilteredCount += 1;
+          continue;
+        }
 
         if (
           options?.allowDedicatedSurface !== true &&
@@ -19035,6 +19056,11 @@ export class Orchestrator {
     if (temporalSupersededFilteredCount > 0) {
       log.debug(
         `temporal supersession filter removed ${temporalSupersededFilteredCount} superseded candidates`,
+      );
+    }
+    if (biTemporalExpiredFilteredCount > 0) {
+      log.debug(
+        `bi-temporal validity filter removed ${biTemporalExpiredFilteredCount} expired-validity candidates from injection (temporal.biTemporal on)`,
       );
     }
     if (dedicatedSurfaceFilteredCount > 0) {

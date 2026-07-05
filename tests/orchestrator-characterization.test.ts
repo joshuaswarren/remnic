@@ -804,8 +804,9 @@ test("runQmdMaintenance unions configured and cataloged namespaces into one stri
 
     scheduler = new MaintenanceScheduler({
       config,
-      // Fixture: qmd stub — only isAvailable() is checked when arming pending.
-      qmd: { isAvailable: () => true },
+      // Fixture: live accessor — only isAvailable() is checked when arming
+      // pending. Mirrors the production wiring (getQmd: () => this.qmd).
+      getQmd: () => ({ isAvailable: () => true }),
       namespaceSearchRouter: router,
       namespaceCatalog: catalog,
       // Fixture cast: stubs implement only the surface runQmdMaintenance invokes.
