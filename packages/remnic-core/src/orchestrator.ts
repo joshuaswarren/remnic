@@ -2732,16 +2732,17 @@ export class Orchestrator {
     // primary default-namespace storage. Router-created namespace storages
     // get the same config via NamespaceStorageRouter.bindTombstonesConfig
     // (installed below) so every write path funnels through the chokepoint.
+    const { tombstonesEnabled, tombstonesSemanticMatch, tombstonesSemanticThreshold } = config;
     this.storage.setTombstonesConfig({
-      enabled: config.tombstonesEnabled,
-      semanticMatch: config.tombstonesSemanticMatch,
-      semanticThreshold: config.tombstonesSemanticThreshold,
+      enabled: tombstonesEnabled,
+      semanticMatch: tombstonesSemanticMatch,
+      semanticThreshold: tombstonesSemanticThreshold,
       namespace: config.defaultNamespace,
     });
     this.storageRouter.bindTombstonesConfig(this.storage, config.defaultNamespace, {
-      enabled: config.tombstonesEnabled,
-      semanticMatch: config.tombstonesSemanticMatch,
-      semanticThreshold: config.tombstonesSemanticThreshold,
+      enabled: tombstonesEnabled,
+      semanticMatch: tombstonesSemanticMatch,
+      semanticThreshold: tombstonesSemanticThreshold,
     });
     // Wire at-rest encryption (issue #690 PR 3/4).
     // If secureStoreEnabled, check whether the keyring already holds a key
