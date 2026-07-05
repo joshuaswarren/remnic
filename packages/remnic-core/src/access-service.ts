@@ -4578,10 +4578,13 @@ export class EngramAccessService {
           authenticatedPrincipal,
         });
         const storage = await this.orchestrator.getStorage(ns);
-        // Delta only needs memoryDir + namespace (no readAllMemories); build
-        // the narrow storage shape from the orchestrator config + resolved ns.
+        // Delta only needs memoryDir + namespace (no readAllMemories). Use the
+        // namespace-ROUTED root (storage.dir), not the global config.memoryDir:
+        // non-default namespaces route to memoryDir/namespaces/<token>, so
+        // session-delta markers must read/write from the routed tree, mirroring
+        // the decision/architecture siblings (cursor review).
         return {
-          memoryDir: this.orchestrator.config.memoryDir,
+          memoryDir: storage.dir,
           namespace: ns,
         } satisfies DeltaSurfaceStorage;
       },
