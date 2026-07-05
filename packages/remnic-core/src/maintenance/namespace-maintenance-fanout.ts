@@ -28,6 +28,7 @@ import type { NamespaceCatalog } from "../namespaces/catalog.js";
 import type { PluginConfig } from "../types.js";
 import {
   planNamespaceMaintenance,
+  readNamespaceMaintenanceLastRanStatuses,
   readNamespaceMaintenanceStatuses,
   runNamespaceMaintenancePlan,
   type NamespaceMaintenanceCandidate,
@@ -195,6 +196,16 @@ export async function summarizeNamespaceMaintenanceHealth(
 ): Promise<NamespaceMaintenanceHealthSummary> {
   const generatedAt = new Date().toISOString();
   const statuses = await readNamespaceMaintenanceStatuses(config);
+  // Merge last-successful-run records so lastRunAt reflects the most recent
+  // successful maintenance, not just the latest (possibly skipped/failed)
+  // outcome. The latest status file is overwritten on every run; without
+  // this merge a namespace that ran then got budget-skipped shows ran=0 /
+  // lastRunAt=null (review #1622: preserve last successful run).
+  const lastRanStatuses = await readNamespaceMaintenanceLastRanStatuses(config);
+  const lastRanByJobNs = new Map<string, NamespaceMaintenanceRunStatus>();
+  for (const lr of lastRanStatuses) {
+    lastRanByJobNs.set(`${lr.jobName}\u0000${lr.namespace}`, lr);
+  }
 
   const byJob = new Map<string, NamespaceMaintenanceRunStatus[]>();
   for (const status of statuses) {
@@ -224,11 +235,15 @@ export async function summarizeNamespaceMaintenanceHealth(
     const ran = jobStatuses.filter((s) => s.state === "ran").length;
     const skipped = jobStatuses.filter((s) => s.state === "skipped").length;
     const failed = jobStatuses.filter((s) => s.state === "failed").length;
-    const lastRunAt = jobStatuses
-      .map((s) => s.completedAt)
-      .filter((v): v is string => typeof v === "string")
-      .sort()
-      .at(-1) ?? null;
+    // Consider BOTH the latest outcome and the last successful run so a
+    // namespace that ran then was later skipped still reports lastRunAt.
+    const candidates: string[] = [];
+    for (const st of jobStatuses) {
+      if (typeof st.completedAt === "string") candidates.push(st.completedAt);
+      const lr = lastRanByJobNs.get(`${jobName}\u0000${st.namespace}`);
+      if (lr && typeof lr.completedAt === "string") candidates.push(lr.completedAt);
+    }
+    const lastRunAt = candidates.sort().at(-1) ?? null;
 
     totalRan += ran;
     totalSkipped += skipped;
@@ -290,6 +305,13 @@ export function formatNamespaceMaintenanceHealthText(
       parts.push(`last=${job.lastRunAt}`);
     }
     lines.push(`    ${job.jobName}: ${parts.join(", ")}`);
+    // Surface failed namespaces with their reason/error so operators know
+    // WHAT to fix without rerunning with --json (review #1622).
+    const failedNs = job.namespaces.filter((n) => n.state === "failed");
+    for (const ns of failedNs) {
+      const detail = ns.error ? `: ${ns.error}` : "";
+      lines.push(`      ! ${ns.namespace} failed (reason=${ns.reason ?? "unknown"})${detail}`);
+    }
   }
 
   return lines.join("\n");

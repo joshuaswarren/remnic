@@ -213,7 +213,14 @@ export async function planNamespaceMaintenance(
   options: NamespaceMaintenancePlannerOptions
 ): Promise<NamespaceMaintenancePlan> {
   const generatedAt = (options.now ?? new Date()).toISOString();
-  const configured = configuredNamespaces(config);
+  // When namespaces are disabled, storageFor() collapses every namespace name
+  // to config.memoryDir. Seeding all configured namespaces (default + shared +
+  // policies) would make a mutating maintenance job process the SAME corpus
+  // once per configured name. The #1500 contract is "namespaces disabled:
+  // maintain the current default storage only," so collapse to the default.
+  const configured = config.namespacesEnabled
+    ? configuredNamespaces(config)
+    : [config.defaultNamespace.trim()].filter(Boolean);
   const byNamespace = new Map<string, NamespaceMaintenanceCandidate>();
   const skipped: NamespaceMaintenanceSkippedNamespace[] = [];
 
@@ -634,6 +641,26 @@ function maintenanceErrorDetail(error: unknown): string {
 
 export async function readNamespaceMaintenanceStatuses(config: PluginConfig): Promise<NamespaceMaintenanceRunStatus[]> {
   return (await readStatusFiles(config)).sort((a, b) => {
+    const byJob = a.jobName.localeCompare(b.jobName);
+    if (byJob !== 0) return byJob;
+    return a.namespace.localeCompare(b.namespace);
+  });
+}
+
+/**
+ * Read the last SUCCESSFUL run status per job+namespace (the
+ * `<namespace>.last-ran.json` files written only when state === "ran").
+ *
+ * The latest status file (`<namespace>.json`) is overwritten on every run,
+ * so after a successful run followed by a skip (budget/lock/cadence) the
+ * latest file shows "skipped" and the prior success is invisible. Merging
+ * these last-ran records into the health summary lets `lastRunAt` and run
+ * history reflect the most recent successful maintenance (review #1622).
+ */
+export async function readNamespaceMaintenanceLastRanStatuses(
+  config: PluginConfig,
+): Promise<NamespaceMaintenanceRunStatus[]> {
+  return (await readLastRanStatusFiles(config)).sort((a, b) => {
     const byJob = a.jobName.localeCompare(b.jobName);
     if (byJob !== 0) return byJob;
     return a.namespace.localeCompare(b.namespace);

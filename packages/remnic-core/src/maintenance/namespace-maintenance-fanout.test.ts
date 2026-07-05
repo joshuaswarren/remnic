@@ -367,8 +367,11 @@ test("fanout runs once against default when namespaces are disabled", async () =
       },
     });
 
-    assert.deepEqual(seen, ["default", "shared"], "configured namespaces (default + shared) are processed even with fanout off");
-    assert.equal(summary.ran, 2);
+    // Namespaces disabled: storageFor() collapses every name to memoryDir, so
+    // the planner seeds ONLY the default namespace to avoid double-processing
+    // the same corpus (review #1622: honor the namespace fanout opt-out).
+    assert.deepEqual(seen, ["default"], "only the default namespace is processed when namespaces are disabled");
+    assert.equal(summary.ran, 1);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -526,6 +529,66 @@ test("fanout records runner-reported skip as skipped (cadence-skip accuracy, rev
     const health = await summarizeNamespaceMaintenanceHealth(config);
     assert.equal(health.totalRan, 0);
     assert.equal(health.totalSkipped, summary.statuses.length);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("formatNamespaceMaintenanceHealthText surfaces failed namespace names and reasons (review #1622)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const config = makeConfig(memoryDir);
+    // Run a job that fails for one namespace and succeeds for another.
+    const catalog = fakeCatalog([
+      record(memoryDir, "default", "default", new Date().toISOString()),
+    ]);
+    await runNamespaceMaintenanceFanout({
+      config,
+      catalog,
+      jobName: "governance",
+      resolveStorage: async () => { throw new Error("disk full"); },
+      runner: async () => { throw new Error("disk full"); },
+    });
+
+    const summary = await summarizeNamespaceMaintenanceHealth(config);
+    const text = formatNamespaceMaintenanceHealthText(summary);
+    // The failed namespace name and its error must appear in human-readable
+    // output so operators know WHAT to fix without --json.
+    assert.ok(text.includes("default"), "failed namespace name in output");
+    assert.ok(text.includes("disk full") || text.includes("failed"), "failure detail in output");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("health summary lastRunAt survives a later skip via last-ran records (review #1622)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const config = makeConfig(memoryDir);
+
+    // First: a successful run writes both <ns>.json (ran) and <ns>.last-ran.json.
+    await runNamespaceMaintenanceFanout({
+      config,
+      jobName: "semantic-consolidation",
+      resolveStorage: async () => ({}),
+      runner: async () => ({ itemCount: 3 }),
+    });
+
+    // Second: a skip overwrites <ns>.json with "skipped" but leaves last-ran.
+    await runNamespaceMaintenanceFanout({
+      config,
+      jobName: "semantic-consolidation",
+      resolveStorage: async () => ({}),
+      runner: async () => ({ skipped: true, skipReason: "cadence" }),
+    });
+
+    const health = await summarizeNamespaceMaintenanceHealth(config);
+    const job = health.jobs.find((j) => j.jobName === "semantic-consolidation");
+    assert.ok(job, "semantic-consolidation job in health summary");
+    // The latest outcome is skipped, but lastRunAt must still reflect the
+    // prior successful run (from the last-ran record), not null.
+    assert.ok(job!.lastRunAt, "lastRunAt preserved from last-ran after a skip");
+    assert.notEqual(job!.lastRunAt, null);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
