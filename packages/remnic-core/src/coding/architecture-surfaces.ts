@@ -30,6 +30,7 @@ import type {
   MemoryStatus,
 } from "../types.js";
 import type { VersionTrigger, VersioningConfig } from "../page-versioning.js";
+import { stripAttributesSuffix } from "../structured-attributes.js";
 import { ARCHITECTURE_CARD_TRUNCATION_MARKER, type ArchitectureCardBuildResult } from "./architecture-card.js";
 import { log } from "../logger.js";
 
@@ -239,23 +240,6 @@ export async function handleCodingArchitecture(
 // Subcommand handlers
 // ──────────────────────────────────────────────────────────────────────────
 
-/**
- * Strip the `\n[Attributes: …]` enrichment suffix `writeMemory` appends when
- * `structuredAttributes` are present. The architecture card persists
- * `structuredAttributes.cardKind` so findArchitectureCardMemory can identify
- * it, but that suffix is storage metadata — not card markdown — so `get`
- * returns the card content alone (cursor review: get returned the suffix and
- * an inflated byteSize). `updateMemory` does not append the suffix, so this
- * is a safe no-op after a refresh-update path.
- */
-function stripAttributesSuffix(content: string): string {
-  const marker = "\n[Attributes: ";
-  const idx = content.lastIndexOf(marker);
-  if (idx === -1) return content;
-  // Only strip when the marker opens the final non-empty line.
-  if (!content.slice(idx + marker.length).trimEnd().endsWith("]")) return content;
-  return content.slice(0, idx);
-}
 
 async function architectureGet(
   request: ArchitectureSurfaceRequest,

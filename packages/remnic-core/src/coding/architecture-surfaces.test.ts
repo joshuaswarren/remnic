@@ -254,6 +254,24 @@ test("get: strips the [Attributes:] suffix writeMemory appends (cursor review)",
   assert.equal(result.card!.byteSize, Buffer.byteLength(cardMarkdown, "utf-8"), "byteSize excludes the suffix");
 });
 
+test("get: shares storage's stripper — legitimate trailing attributes-like line is not truncated (cursor review)", async () => {
+  // The handler now uses the shared `stripAttributesSuffix` from
+  // structured-attributes.ts (dedup). That helper only strips a single-line
+  // enrichment whose payload has no premature `]` or embedded newline — so
+  // card markdown that legitimately ends in an attributes-LIKE line (e.g. one
+  // quoting a `[config]` token) is returned verbatim. The old local copy only
+  // checked the trailing `]` and would have sliced this content in half.
+  const cardMarkdown =
+    "# Architecture Card\n\nreal content\n[Attributes: see the [config] section]";
+  const storage = makeStubStorage([makeCardMemory({ content: cardMarkdown })]);
+  const ctx = makeContext({ resolveStorage: async () => storage });
+  const result = await handleCodingArchitecture({ subcommand: "get", sessionKey: "s1" }, ctx);
+  if (result.subcommand !== "get") return;
+  assert.equal(result.found, true);
+  assert.ok(result.card);
+  assert.equal(result.card!.content, cardMarkdown, "legitimate attributes-like line preserved, not truncated");
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // refresh — first write (no existing card)
 // ──────────────────────────────────────────────────────────────────────────

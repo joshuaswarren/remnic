@@ -525,7 +525,11 @@ function parsePythonProject(raw: string, _filename: string): { name: string | nu
   let name: string | null = null;
   const nameMatch = raw.match(/^name\s*=\s*["']([^"']+)["']/m);
   if (nameMatch) name = nameMatch[1] ?? null;
-  const scriptsMatch = raw.match(/\[project\.scripts\]([\s\S]*?)(\n\[|\Z)/);
+  // Anchor on the next `[section]` header OR end-of-string (`$`). Do NOT use
+  // `\Z` — JavaScript regex treats it as a literal `Z`, so a `[project.scripts]`
+  // table at EOF (the common layout) never matched and every console-script
+  // entry point was dropped from the card (codex P2 review).
+  const scriptsMatch = raw.match(/\[project\.scripts\]([\s\S]*?)(?:\n\[|$)/);
   if (scriptsMatch && scriptsMatch[1]) {
     for (const line of scriptsMatch[1].split("\n")) {
       const m = line.match(/^([a-zA-Z0-9_-]+)\s*=/);

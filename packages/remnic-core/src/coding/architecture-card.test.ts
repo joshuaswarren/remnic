@@ -477,3 +477,68 @@ test("empty repo: produces a valid (if sparse) card without crashing", async () 
     await rm(repo, { recursive: true, force: true });
   }
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// pyproject.toml [project.scripts] — EOF handling (codex P2 review)
+//
+// The scripts-table regex once used `\Z`, which JavaScript treats as a
+// literal `Z`. When `[project.scripts]` is the final section (the common
+// layout, with or without a trailing newline) the regex never matched and
+// every console-script entry point was dropped from the card.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("pyproject: scripts at EOF with no trailing newline surface as entry points", async () => {
+  // [project.scripts] is the LAST section and the file has NO trailing newline.
+  const pyproject =
+    '[project]\n' +
+    'name = "demo-py"\n' +
+    'version = "1.0.0"\n' +
+    '[project.scripts]\n' +
+    'mycli = "demo_py.cli:main"\n' +
+    'worker = "demo_py.worker:run"'; // no trailing newline, no next section
+  const repo = await makeFixtureRepo({
+    dirs: ["src"],
+    files: [
+      { path: "pyproject.toml", content: pyproject },
+      { path: "src/demo_py/__init__.py", content: "" },
+    ],
+  });
+  try {
+    const result = await buildArchitectureCard(repo, { now: NOW });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(result.card.content.includes("- scripts.mycli"), "mycli entry point surfaced");
+    assert.ok(result.card.content.includes("- scripts.worker"), "worker entry point surfaced");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("pyproject: scripts followed by another section still parse correctly", async () => {
+  // Guards the non-EOF path: the next `[section]` header must still terminate
+  // the capture, so entries after a following section are NOT mis-attributed.
+  const pyproject =
+    '[project]\n' +
+    'name = "demo-py"\n' +
+    '[project.scripts]\n' +
+    'mycli = "demo_py.cli:main"\n' +
+    '\n' +
+    '[tool.poetry]\n' +
+    'not_a_script = "should-not-appear"\n';
+  const repo = await makeFixtureRepo({
+    dirs: ["src"],
+    files: [
+      { path: "pyproject.toml", content: pyproject },
+      { path: "src/demo_py/__init__.py", content: "" },
+    ],
+  });
+  try {
+    const result = await buildArchitectureCard(repo, { now: NOW });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(result.card.content.includes("- scripts.mycli"), "mycli entry point surfaced");
+    assert.equal(result.card.content.includes("should-not-appear"), false, "poetry-section line not mis-attributed as a script");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
