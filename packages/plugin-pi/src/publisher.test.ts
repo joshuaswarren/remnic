@@ -1414,3 +1414,37 @@ test("omp publisher loader rebuilds via a temp dir swap, not an in-place build",
   );
   assert.equal(syntaxCheck.status, 0, `loader.js fails node --check: ${syntaxCheck.stderr}`);
 });
+
+// ── Regression (PR #1641 / #1598): the omp pre-bundle must not pull all of
+// @remnic/core (and the LanceDB native asset) into the extension bundle.
+// The omp wrapper is `bun build`-ed from the generated index.ts, which imports
+// `createRemnicPiExtension`. Every file transitively reachable from that entry
+// must reach core through leaf submodules (`@remnic/core/<submodule>`), never
+// the `@remnic/core` barrel — the barrel eagerly imports the search backends
+// (LanceDB/Orama/Meilisearch), and since the package has no `sideEffects`
+// field, bundlers cannot tree-shake them out. Measured before this fix: a real
+// `bun build` emitted 917 modules + the ~100 MB lancedb .node asset; after, 209
+// modules / ~0.16 MB with zero native refs.
+test("omp extension runtime closure imports core only via leaf submodules, not the barrel", () => {
+  const srcDir = path.join(path.dirname(new URL(import.meta.url).pathname), "..", "src");
+  // publisher.ts is build/install-time only — it is never in the omp-bundled
+  // runtime graph (the wrapper imports createRemnicPiExtension from index.ts),
+  // so its barrel import is exempt.
+  const exempt: Record<string, true> = { "publisher.ts": true };
+  const barrelRe = /from\s+["@']@remnic\/core["@']/;
+  const offenders: string[] = [];
+  for (const file of fs.readdirSync(srcDir)) {
+    if (!file.endsWith(".ts") || file.endsWith(".test.ts") || exempt[file]) continue;
+    const text = fs.readFileSync(path.join(srcDir, file), "utf8");
+    if (barrelRe.test(text)) offenders.push(file);
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "omp-bundled runtime files must import @remnic/core helpers from leaf " +
+      "submodules (e.g. @remnic/core/utils/path, @remnic/core/message-parts), " +
+      "not the @remnic/core barrel — the barrel pulls the search backends " +
+      "(LanceDB native asset) into the omp extension bundle. Offenders: " +
+      offenders.join(", "),
+  );
+});

@@ -1,7 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { expandTildePath } from "@remnic/core";
+// Leaf submodule (not the `@remnic/core` barrel) so the omp pre-bundle's
+// `bun build` does not pull the rest of core — including the LanceDB native
+// asset — into the extension bundle. See PR #1641.
+import { expandTildePath } from "@remnic/core/utils/path";
 
 import { REMNIC_PI_EXTENSION_DIR_NAME, resolvePiAgentHome } from "./paths.js";
 

@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 
-import { parsePiMessageParts, type LcmMessagePartInput } from "@remnic/core";
+// Leaf submodule (not the `@remnic/core` barrel) so the omp pre-bundle's
+// `bun build` does not pull the rest of core into the extension bundle.
+// `message-parts` is a pure parser with no storage/native deps. See PR #1641.
+import { parsePiMessageParts, type LcmMessagePartInput } from "@remnic/core/message-parts";
 
 import type { ObserveMessage, ObserveMessagePart } from "./client.js";
 
