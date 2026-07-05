@@ -20,6 +20,11 @@ import type {
   EngramAccessMemoryResponse,
   EngramAccessWriteResponse,
 } from "./access-service.js";
+import {
+  DECISION_SUBCOMMANDS,
+  type DecisionSurfaceRequest,
+  type DecisionSurfaceResponse,
+} from "./coding/decision-surfaces.js";
 
 // ---------------------------------------------------------------------------
 // memory_get — fetch one memory by id
@@ -135,8 +140,68 @@ export const memoryStoreOperation = defineOperation<MemoryStoreInput, MemoryStor
       // so the hook still fires inside the service's idempotent-write lock —
       // never before, never on a replay (#1434 invariant preserved by the
       // boundary migration).
+
       ctx.hooks,
     );
+    return { result };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// coding_decision — decision-record surfaces (issue #1548 Track A PR 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The subcommand field is required and MUST be one of the four valid values
+ * (rule 51 — reject loudly, list the options, never silently default). The
+ * remaining fields are optional because each subcommand uses a different
+ * subset; the handler validates subcommand-specific requirements after
+ * routing.
+ */
+/**
+ * MCP clients send `null` for absent optional fields. Zod `.optional()`
+ * rejects `null`, so strip nulls at the object level before the inner
+ * schema validates (review: cursor null-field thread).
+ */
+const codingDecisionSchema = z.preprocess(
+  (data) => {
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+        if (v !== null) out[k] = v;
+      }
+      return out;
+    }
+    return data;
+  },
+  z.object({
+    subcommand: z.enum(DECISION_SUBCOMMANDS),
+    sessionKey: z.string().trim().max(512).optional(),
+    namespace: z.string().trim().max(256).optional(),
+    id: z.string().trim().max(512).optional(),
+    title: z.string().trim().max(512).optional(),
+    status: z.string().trim().max(64).optional(),
+    context: z.string().trim().max(8192).optional(),
+    decision: z.string().trim().max(8192).optional(),
+    consequences: z.string().trim().max(8192).optional(),
+    entityRefs: z.array(z.string().trim().min(1).max(256)).optional(),
+    supersedesId: z.string().trim().max(512).optional(),
+  }),
+);
+
+export type CodingDecisionInput = DecisionSurfaceRequest;
+export type CodingDecisionOutput = { result: DecisionSurfaceResponse };
+
+export const codingDecisionOperation = defineOperation<
+  CodingDecisionInput,
+  CodingDecisionOutput
+>({
+  name: "coding_decision",
+  description:
+    "List, get, record, or supersede decision records in the session's coding namespace (issue #1548 Track A).",
+  schema: codingDecisionSchema as z.ZodType<CodingDecisionInput>,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codingDecision(input, ctx.authenticatedPrincipal);
     return { result };
   },
 });
@@ -154,4 +219,5 @@ export const REGISTERED_OPERATIONS = [
   memoryGetOperation.spec.name,
   memorySearchOperation.spec.name,
   memoryStoreOperation.spec.name,
+  codingDecisionOperation.spec.name,
 ] as const;

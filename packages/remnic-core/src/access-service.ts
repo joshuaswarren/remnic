@@ -12,7 +12,13 @@ import {
   lcmSessionKeyForNamespace,
   projectTagProjectId,
   resolveCodingNamespaceOverlay,
+  type CodingNamespaceOverlay,
 } from "./coding/coding-namespace.js";
+import {
+  handleCodingDecision,
+  type DecisionSurfaceRequest,
+  type DecisionSurfaceResponse,
+} from "./coding/decision-surfaces.js";
 import { WorkStorage } from "./work/storage.js";
 import {
   exportWorkBoardMarkdown,
@@ -59,6 +65,7 @@ import { canReadNamespace, canWriteNamespace, defaultNamespaceForPrincipal, reca
 import {
   expandScopeProfileReadNamespaces,
   resolveScopeProfilePlan,
+  type ResolvedScopeProfilePlan,
   type ScopeProfileLayerResolution,
   type ScopeProfilePromotionResolution,
 } from "./namespaces/scope-profiles.js";
@@ -1346,74 +1353,29 @@ export class EngramAccessService {
     return null;
   }
 
-  /**
-   * Resolve the write namespace for explicit-write tools (memory_store /
-   * suggestion_submit), project-scoping the write the same way recall does so a
-   * memory stored with a client-injected `cwd`/`projectTag` is discoverable by
-   * project-scoped recall (#1434, rule 42).
-   *
-   * Precedence:
-   *  - An explicit `namespace` always wins and is authorized strictly via
-   *    `resolveWritableNamespace` → `canWriteNamespace`. A coding-overlay
-   *    namespace string (`<base>-project-*`) is NOT a writable target via the
-   *    explicit field — project scoping is requested with `cwd`/`projectTag`,
-   *    never by naming the derived namespace — so there is no way to bypass the
-   *    policy allow-list by guessing/forging an overlay name (Codex review).
-   *  - With NO coding overlay, the write stays on `config.defaultNamespace` —
-   *    exactly the pre-#1434 behavior, so an unqualified write is NOT silently
-   *    moved to a principal self namespace (Codex review).
-   *  - WITH a coding overlay, the base is the principal self namespace
-   *    (`defaultNamespaceForPrincipal`, write-checked) — the SAME base recall,
-   *    observe, and the orchestrator buffer-flush write path overlay onto
-   *    (rule 42 / Cursor) — so a project-scoped store lands exactly where
-   *    project-scoped recall searches. The overlay namespace is always REBUILT
-   *    from the authenticated principal's base, never accepted as a caller
-   *    string, so a caller can never reach another principal's subtree.
-   *
-   * Read-only: this NEVER mutates session coding context, so the idempotency
-   * peeks and dryRun preflights that call it stay side-effect free (Codex
-   * review). It prefers the per-call `cwd`/`projectTag` (the project explicitly
-   * identified for this write), else the session's existing context. The HTTP
-   * surface lets the peek and the write each resolve independently; the peek's
-   * namespace only gates rate-limiting (memory_store/suggestion_submit run their
-   * own idempotency check), so a benign session-context change between the two
-   * never fails a write — there is no namespace to "pin".
-   */
-  private async resolveCodingScopedWriteNamespace(
+  /** Shared coding-scope derivation for the read/write resolvers below —
+   *  coding context, overlay, principal, scope-profile plan for an IMPLICIT
+   *  request, IDENTICAL to recall precedence (session-first, per-call fallback)
+   *  so a scoped store is discoverable by scoped recall (#1434). Single source
+   *  of truth for the namespacesEnabled/projectScope gates (rule 22; keeps the
+   *  scattered-config-read ratchet flat). READ-ONLY: never mutates session. */
+  private async resolveCodingScopeInputs(
     request: CodingScopedWriteInput & {
       namespace?: string;
       sessionKey?: string;
       authenticatedPrincipal?: string;
     },
-  ): Promise<string> {
-    const hasExplicitNamespace =
-      typeof request.namespace === "string" && request.namespace.trim().length > 0;
-    if (hasExplicitNamespace) {
-      return this.resolveWritableNamespace(
-        request.namespace,
-        request.sessionKey,
-        request.authenticatedPrincipal,
-      );
-    }
-    // Project scoping only applies when namespaces are enabled (else overlaying
-    // would create false isolation over a single storage dir) and projectScope
-    // is on. The coding context MUST be resolved exactly as the recall path
-    // resolves it, or a scoped store won't be discoverable by scoped recall
-    // (the whole point of #1434). Recall calls `maybeAttachCodingContext`, which
-    // returns early when the session already has a context — so recall is
-    // SESSION-FIRST: an existing session binding wins, and the per-call
-    // cwd/projectTag is only used to seed a context when none is attached yet.
-    // Mirror that precedence here: session context first, per-call as fallback
-    // (Codex review — a per-call-wins write would land in a project that the
-    // same session's recall, still on the bound project, never searches).
-    //
+  ): Promise<{
+    principal: string | undefined;
+    codingContext: CodingContext | null;
+    overlay: CodingNamespaceOverlay | null;
+    profilePlan: ResolvedScopeProfilePlan | null;
+  }> {
     // A sessionKey is REQUIRED to apply the overlay. The recall path can only
-    // attach/look up coding context per session (`maybeAttachCodingContext` and
-    // `applyCodingNamespaceOverlay` both no-op without a sessionKey), so a
-    // sessionless recall always searches the base namespace. A sessionless
-    // write must therefore also stay on the base — otherwise a client that
-    // injects cwd/projectTag but no sessionKey would store into
-    // `default-project-*` that its own recall never searches (Codex review).
+    // attach/look up coding context per session, so a sessionless recall always
+    // searches the base namespace; a sessionless write/read must too — otherwise
+    // a client that injects cwd/projectTag but no sessionKey would land in a
+    // `default-project-*` namespace its own recall never searches (Codex review).
     const hasSession =
       typeof request.sessionKey === "string" && request.sessionKey.length > 0;
     const codingContext =
@@ -1443,6 +1405,35 @@ export class EngramAccessService {
       codingContext,
       codingOverlay: overlay,
     });
+    return { principal, codingContext, overlay, profilePlan };
+  }
+
+  /**
+   * Resolve the write namespace for explicit-write tools (memory_store /
+   * suggestion_submit), project-scoping the write the same way recall does so a
+   * memory stored with a client-injected `cwd`/`projectTag` is discoverable by
+   * project-scoped recall (#1434, rule 42). Shared derivation lives in
+   * {@link resolveCodingScopeInputs}; this method enforces the WRITE acl
+   * (`canWriteNamespace` / profile-layer writability). Read-only: never mutates
+   * session coding context.
+   */
+  private async resolveCodingScopedWriteNamespace(
+    request: CodingScopedWriteInput & {
+      namespace?: string;
+      sessionKey?: string;
+      authenticatedPrincipal?: string;
+    },
+  ): Promise<string> {
+    const hasExplicitNamespace =
+      typeof request.namespace === "string" && request.namespace.trim().length > 0;
+    if (hasExplicitNamespace) {
+      return this.resolveWritableNamespace(
+        request.namespace,
+        request.sessionKey,
+        request.authenticatedPrincipal,
+      );
+    }
+    const { principal, overlay, profilePlan } = await this.resolveCodingScopeInputs(request);
     if (profilePlan) {
       const selectedLayer = profilePlan.layers.find((layer) => layer.id === profilePlan.writeLayer);
       const writeNamespaceReadable =
@@ -1471,6 +1462,60 @@ export class EngramAccessService {
     const base = defaultNamespaceForPrincipal(principal, this.orchestrator.config);
     if (!canWriteNamespace(principal, base, this.orchestrator.config)) {
       throw new EngramAccessInputError(`namespace is not writable: ${base}`);
+    }
+    return combineNamespaces(base, overlay.namespace);
+  }
+
+  /** Read-side mirror of {@link resolveCodingScopedWriteNamespace}. Decision
+   *  `list`/`get` use this so a record written by a project-scoped session is
+   *  listable/fetchable by the SAME session without manually supplying the
+   *  overlaid namespace (review P2). Derivation is IDENTICAL to the write path
+   *  (shared via {@link resolveCodingScopeInputs}); the only difference is the
+   *  ACL — reads enforce {@link canReadNamespace}, so a read-but-not-write
+   *  principal can still list/fetch (rule 42). */
+  private async resolveCodingScopedReadableNamespace(
+    request: CodingScopedWriteInput & {
+      namespace?: string;
+      sessionKey?: string;
+      authenticatedPrincipal?: string;
+    },
+  ): Promise<string> {
+    const principal = this.resolveRequestPrincipal(
+      request.sessionKey,
+      request.authenticatedPrincipal,
+    );
+    const hasExplicitNamespace =
+      typeof request.namespace === "string" && request.namespace.trim().length > 0;
+    if (hasExplicitNamespace) {
+      return this.resolveReadableNamespace(request.namespace, principal);
+    }
+    const inputs = await this.resolveCodingScopeInputs(request);
+    const { overlay, profilePlan, principal: resolvedPrincipal } = inputs;
+    if (profilePlan) {
+      // The write layer is the namespace decisions are RECORDED under. The
+      // WRITE path authorizes it through the profile plan (selectedLayer.
+      // writable AND readNamespaces.includes(writeNamespace)), NOT the raw
+      // namespace ACL, so the READ path must use the SAME profile-plan
+      // authorization. canReadNamespace only recognizes explicit policies
+      // plus default/shared namespaces, which would reject a profile-granted
+      // layer the same session just wrote through (review P2: scope-profile
+      // read authorization for decision reads; rule 42).
+      const target = profilePlan.writeNamespace;
+      if (!profilePlan.readNamespaces.includes(target)) {
+        throw new EngramAccessInputError(`namespace is not readable: ${target}`);
+      }
+      return target;
+    }
+    if (!overlay) {
+      // No coding overlay → read the base namespace through the standard read
+      // ACL, identical to memory_get with no explicit namespace.
+      return this.resolveReadableNamespace(undefined, resolvedPrincipal);
+    }
+    // Coding overlay → overlay onto the principal self base, the SAME namespace
+    // the write path writes to, then enforce the read ACL.
+    const base = defaultNamespaceForPrincipal(resolvedPrincipal, this.orchestrator.config);
+    if (!canReadNamespace(resolvedPrincipal, base, this.orchestrator.config)) {
+      throw new EngramAccessInputError(`namespace is not readable: ${base}`);
     }
     return combineNamespaces(base, overlay.namespace);
   }
@@ -4399,6 +4444,45 @@ export class EngramAccessService {
       namespace: resolvedNamespace,
       memory: this.serializeMemory(memory),
     };
+  }
+
+  /** Whether the coding_decision tool should appear in tools/list (rule 39). */
+  get decisionRecordSurfaceVisible(): boolean {
+    return this.orchestrator.config.codingKnowledge?.enabled === true
+      && this.orchestrator.config.codingKnowledge?.decisionRecords === true;
+  }
+  /**
+   * Thin delegate — handler logic in coding/decision-surfaces.ts (#1548 PR2).
+   * All three surfaces (MCP/HTTP/CLI) arrive here via the boundary operation.
+   * Namespace resolution uses the SAME path as memory_store (principal ACL +
+   * coding overlay + default fallback) so decision records land in the same
+   * storage root.
+   */
+  async codingDecision(
+    request: DecisionSurfaceRequest,
+    authenticatedPrincipal?: string,
+  ): Promise<DecisionSurfaceResponse> {
+    return handleCodingDecision(request, {
+      codingKnowledge: this.orchestrator.config.codingKnowledge,
+      getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
+      resolveStorage: async (req) => {
+        const isWrite = req.subcommand === "record" || req.subcommand === "supersede";
+        const ns = isWrite
+          ? await this.resolveCodingScopedWriteNamespace({
+              namespace: req.namespace,
+              sessionKey: req.sessionKey,
+              authenticatedPrincipal,
+            })
+        : await this.resolveCodingScopedReadableNamespace({
+            namespace: req.namespace,
+            sessionKey: req.sessionKey,
+            authenticatedPrincipal,
+          });
+        const storage = await this.orchestrator.getStorage(ns);
+        return Object.assign(storage, { namespace: ns });
+      },
+      throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+    });
   }
 
   async memoryBrowse(
@@ -8264,3 +8348,4 @@ export class EngramAccessService {
     });
   }
 }
+
