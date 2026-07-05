@@ -360,6 +360,8 @@ export async function runPatternReinforcement(
         updated: nowIso,
       };
       await storage.writeMemoryFrontmatter(dup, patch);
+      supersededIds.push(dup.frontmatter.id);
+      result.duplicatesSuperseded += 1;
       // Issue #1579 thread Oblq9 / Ocn0C / OcoPs: emit a tombstone so the
       // retired duplicate cannot resurrect through re-extraction / import.
       // Pattern reinforcement retires via writeMemoryFrontmatter which
