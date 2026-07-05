@@ -111,6 +111,32 @@ function coercePositiveInt(value: unknown, fallback: number, max: number, fieldN
   return parsed;
 }
 
+/**
+ * Like {@link coercePositiveInt} but allows 0, for knobs where 0 is a
+ * meaningful "disabled" value (e.g. observeMaxRetries). Still rejects
+ * negatives, non-integers, and values above the cap.
+ */
+function coerceNonNegativeInt(value: unknown, fallback: number, max: number, fieldName: string): number {
+  if (value === undefined || value === null || value === "") return fallback;
+  let parsed: number;
+  if (typeof value === "number") {
+    parsed = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) return fallback;
+    if (!/^[+-]?\d+$/.test(trimmed)) {
+      throw new Error(`Invalid numeric value for Remnic Pi config field ${fieldName}: expected an integer from 0 to ${max}`);
+    }
+    parsed = Number(trimmed);
+  } else {
+    throw new Error(`Invalid numeric value for Remnic Pi config field ${fieldName}: expected an integer from 0 to ${max}`);
+  }
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > max) {
+    throw new Error(`Invalid numeric value for Remnic Pi config field ${fieldName}: expected an integer from 0 to ${max}`);
+  }
+  return parsed;
+}
+
 function coerceOptionalNonEmptyString(value: unknown, fieldName: string): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === "string" && value.trim().length > 0) return value.trim();
@@ -200,6 +226,24 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     coerceOptionalString(env.REMNIC_PI_AUTH_TOKEN, "REMNIC_PI_AUTH_TOKEN");
   const namespace = coerceOptionalNonEmptyString(fileConfig.namespace, "namespace");
 
+  const requestTimeoutMs = coercePositiveInt(
+    fileConfig.requestTimeoutMs,
+    DEFAULT_CONFIG.requestTimeoutMs,
+    60_000,
+    "requestTimeoutMs",
+  );
+  // When turnRequestTimeoutMs is not explicitly set, derive it from the
+  // configured requestTimeoutMs (capped at the default turn budget) so an
+  // existing install that lowered requestTimeoutMs below 20s keeps its tighter
+  // per-turn budget instead of being silently raised back to 20s (codex review).
+  const turnFallback = Math.min(requestTimeoutMs, DEFAULT_CONFIG.turnRequestTimeoutMs);
+  const turnRequestTimeoutMs = coercePositiveInt(
+    fileConfig.turnRequestTimeoutMs,
+    turnFallback,
+    25_000,
+    "turnRequestTimeoutMs",
+  );
+
   return {
     remnicDaemonUrl: daemonUrl,
     authToken,
@@ -213,26 +257,21 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
     compactionEnabled: coerceBoolean(fileConfig.compactionEnabled, DEFAULT_CONFIG.compactionEnabled, "compactionEnabled"),
     mcpToolsEnabled: coerceBoolean(fileConfig.mcpToolsEnabled, DEFAULT_CONFIG.mcpToolsEnabled, "mcpToolsEnabled"),
     statusEnabled: coerceBoolean(fileConfig.statusEnabled, DEFAULT_CONFIG.statusEnabled, "statusEnabled"),
-    requestTimeoutMs: coercePositiveInt(fileConfig.requestTimeoutMs, DEFAULT_CONFIG.requestTimeoutMs, 60_000, "requestTimeoutMs"),
+    requestTimeoutMs,
     startupRequestTimeoutMs: coercePositiveInt(
       fileConfig.startupRequestTimeoutMs,
       DEFAULT_CONFIG.startupRequestTimeoutMs,
       60_000,
       "startupRequestTimeoutMs",
     ),
-    turnRequestTimeoutMs: coercePositiveInt(
-      fileConfig.turnRequestTimeoutMs,
-      DEFAULT_CONFIG.turnRequestTimeoutMs,
-      25_000,
-      "turnRequestTimeoutMs",
-    ),
+    turnRequestTimeoutMs,
     observeMaxBytes: coercePositiveInt(
       fileConfig.observeMaxBytes,
       DEFAULT_CONFIG.observeMaxBytes,
       8_388_608,
       "observeMaxBytes",
     ),
-    observeMaxRetries: coercePositiveInt(fileConfig.observeMaxRetries, DEFAULT_CONFIG.observeMaxRetries, 5, "observeMaxRetries"),
+    observeMaxRetries: coerceNonNegativeInt(fileConfig.observeMaxRetries, DEFAULT_CONFIG.observeMaxRetries, 5, "observeMaxRetries"),
     daemonCooldownMs: coercePositiveInt(fileConfig.daemonCooldownMs, DEFAULT_CONFIG.daemonCooldownMs, 60_000, "daemonCooldownMs"),
   };
 }
