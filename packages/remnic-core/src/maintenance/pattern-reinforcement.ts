@@ -50,6 +50,21 @@ export interface PatternReinforcementStorage {
     memory: MemoryFile,
     patch: Partial<MemoryFrontmatter>,
   ): Promise<boolean>;
+  /**
+   * Best-effort tombstone append for retired duplicates (issue #1579 thread
+   * Oblq9). Optional so unit-test stubs need not implement it; the production
+   * StorageManager satisfies it via its appendTombstone chokepoint.
+   */
+  appendTombstone?(input: {
+    reason: "supersession" | "correction" | "retraction";
+    createdBy: "supersession" | "contradiction_resolution" | "user_correction" | "chat";
+    sourceMemoryId: string;
+    contentHash?: string;
+    rawContent: string;
+    entityRef?: string;
+    supersessionKey?: string;
+    createdAt: string;
+  }): Promise<string | null>;
 }
 
 export interface PatternReinforcementOptions {
@@ -345,6 +360,28 @@ export async function runPatternReinforcement(
       await storage.writeMemoryFrontmatter(dup, patch);
       supersededIds.push(dup.frontmatter.id);
       result.duplicatesSuperseded += 1;
+      // Issue #1579 thread Oblq9: emit a tombstone so the retired duplicate
+      // cannot resurrect through re-extraction / import. Pattern reinforcement
+      // retires via writeMemoryFrontmatter which bypasses the writeMemory
+      // chokepoint; without this emit, the same content re-extracted before a
+      // manual rebuild would be stored active. Best-effort (the interface
+      // method is optional; a failure must not fail the reinforcement job).
+      if (storage.appendTombstone) {
+        try {
+          await storage.appendTombstone({
+            reason: "supersession",
+            createdBy: "supersession",
+            sourceMemoryId: dup.frontmatter.id,
+            ...(dup.frontmatter.contentHash ? { contentHash: dup.frontmatter.contentHash } : {}),
+            rawContent: dup.content,
+            ...(dup.frontmatter.entityRef ? { entityRef: dup.frontmatter.entityRef } : {}),
+            createdAt: nowIso,
+          });
+        } catch {
+          // Best-effort: a tombstone append failure must not fail the
+          // reinforcement job (gotcha #13 / rule 34 spirit).
+        }
+      }
     }
 
     result.clusters.push({

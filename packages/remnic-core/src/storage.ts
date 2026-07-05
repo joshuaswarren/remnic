@@ -3719,10 +3719,13 @@ export class StorageManager {
       category === "fact" &&
       this.tombstonesConfig.enabled &&
       factHashSourceForTombstone !== null &&
-      // Only block facts that would otherwise become ACTIVE. A caller that
-      // explicitly requests a non-active status (e.g. a correction memory
-      // written with status: "rejected") is respected.
-      (fm.status === undefined || fm.status === "active")
+      // Block facts that would become ACTIVE or are already pending_review
+      // (issue #1579 thread ObteQ: wearable/native imports write fact
+      // candidates with status: pending_review; without checking them here,
+      // promoteWearableMemory could later flip a retired fact active without
+      // a tombstone check). A caller that explicitly requests a terminal
+      // non-active status (rejected/retracted/superseded) is respected.
+      (fm.status === undefined || fm.status === "active" || fm.status === "pending_review")
     ) {
       try {
         const tombstoneStore = await this.getTombstoneStore();
