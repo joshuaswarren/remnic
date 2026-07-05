@@ -295,3 +295,116 @@ test("end-to-end: verified tag without sources downgrades to none on read", asyn
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Regression: cursor thread Ocveu — non-ISO turn timestamps must not drop sources
+// ---------------------------------------------------------------------------
+
+test("buildFactProvenance: non-strict-ISO turn timestamp is normalized (thread Ocveu)", () => {
+  // Date-formatted timestamp that Date.parse accepts but isStrictIsoTimestamp
+  // rejects — the pre-fix path copied it verbatim, so the write-path schema
+  // dropped the source and downgraded the tag to "none".
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026/05/03 10:01:30" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "verified source must survive timestamp normalization");
+  assert.ok(result.sources, "sources must be present");
+  assert.equal(result.sources!.length, 1);
+  const observedAt = result.sources![0]!.observedAt;
+  // The persisted timestamp must pass the same strict-ISO check the write-path
+  // schema enforces — otherwise the source would be dropped at serialization.
+  const isoRe = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+  assert.match(observedAt, isoRe, "observedAt must be strict ISO-8601 after normalization");
+  assert.notEqual(observedAt, "2026/05/03 10:01:30", "raw non-ISO timestamp must not leak through");
+});
+
+test("buildFactProvenance: unparseable timestamp falls back to epoch for unverified (thread Ocveu)", () => {
+  // A turn whose timestamp neither passes strict ISO nor Date.parse can't back
+  // a verifiable source. When the quote is NOT located (unverified path), the
+  // fallback source still needs a schema-valid observedAt — epoch is the
+  // documented last-resort (matches the empty-turns fallback).
+  const turns = [
+    makeTurn("Unrelated content with no match.", { timestamp: "not-a-date" }),
+  ];
+  const result = buildFactProvenance("a quote that is not present", turns, DEFAULT_CONFIG);
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  const observedAt = result.sources![0]!.observedAt;
+  const isoRe = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+  assert.match(observedAt, isoRe, "unverified fallback observedAt must still be strict ISO");
+});
+
+test("end-to-end: verified source with non-ISO turn timestamp survives write → read (thread Ocveu)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-prov-tsnorm-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+
+    // Simulate extraction output: a verified source whose observedAt has been
+    // normalized to strict ISO by buildFactProvenance (the fix). Pre-fix, the
+    // raw "2026/05/03 10:01:30" would have been dropped by the write-path
+    // ProvenanceSourceSchema, clearing sources and downgrading to "none".
+    const turns = [
+      makeTurn("We migrated the production database to pgBouncer.", {
+        timestamp: "2026/05/03 10:01:30" as unknown as string,
+      }),
+    ];
+    const built = buildFactProvenance(
+      "migrated the production database to pgBouncer",
+      turns,
+      DEFAULT_CONFIG,
+    );
+    assert.equal(built.provenance, "verified");
+
+    const memoryId = await storage.writeMemory("fact", "Production DB uses pgBouncer.", {
+      confidence: 0.9,
+      tags: ["infra"],
+      sources: built.sources,
+      provenance: built.provenance,
+    });
+
+    const memories = await storage.readAllMemories();
+    const written = memories.find((m) => m.frontmatter.id === memoryId);
+    assert.ok(written, "fact must be discoverable");
+    assert.equal(written!.frontmatter.provenance, "verified", "tag must not downgrade to none");
+    assert.ok(written!.frontmatter.sources, "sources must survive the round-trip");
+    assert.equal(written!.frontmatter.sources!.length, 1);
+    assert.equal(written!.frontmatter.sources![0]!.quote, "migrated the production database to pgBouncer");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Regression: cursor thread Ocver — normalized match must not drop verified source
+// ---------------------------------------------------------------------------
+
+test("buildFactProvenance: normalized match (case + whitespace) records a verified source with the quote (thread Ocver)", () => {
+  // The quote matches the turn only after whitespace-collapse + casefold.
+  // Pre-fix, locateQuoteOffsets could return undefined for the normalized
+  // path's unrecoverable-offsets edge case, causing buildFactProvenance to
+  // skip the turn and fall through to "unverified" despite the literal
+  // substring being present in the buffered conversation.
+  const turns = [makeTurn("We   Migrated  The	Production Database to pgBouncer.")];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "normalized match must verify, never drop to unverified");
+  assert.ok(result.sources, "a verified source must be recorded for the matching turn");
+  assert.equal(result.sources!.length, 1);
+  // The excerpt survives regardless of whether offsets were recovered.
+  assert.equal(
+    result.sources![0]!.quote,
+    "migrated the production database to pgBouncer",
+    "quote excerpt must survive even when offsets are best-effort",
+  );
+});

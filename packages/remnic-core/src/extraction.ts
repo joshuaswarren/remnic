@@ -746,7 +746,10 @@ export class ExtractionEngine {
       `Return at most ${maxAdditional} additional high-confidence memory candidates that were omitted from the base extraction.`,
       "Only include information directly supported by the conversation. Do not speculate. Do not repeat the base extraction.",
       "Return only valid JSON with this shape:",
-      '{"facts":[{"category":"fact","content":"...","confidence":0.0,"tags":["..."],"entityRef":"optional","promptedByQuestion":"optional"}],"profileUpdates":["..."],"entities":[{"name":"...","type":"person","facts":["..."],"structuredSections":[{"key":"beliefs","title":"Beliefs","facts":["..."]}],"promptedByQuestion":"optional"}],"relationships":[{"source":"...","target":"...","label":"...","promptedByQuestion":"optional"}]}',
+      '{"facts":[{"category":"fact","content":"...","confidence":0.0,"tags":["..."],"entityRef":"optional","promptedByQuestion":"optional","quote":"optional verbatim span from a single turn"}],"profileUpdates":["..."],"entities":[{"name":"...","type":"person","facts":["..."],"structuredSections":[{"key":"beliefs","title":"Beliefs","facts":["..."]}],"promptedByQuestion":"optional"}],"relationships":[{"source":"...","target":"...","label":"...","promptedByQuestion":"optional"}]}',
+      this.config.provenance?.enabled
+        ? '- Source quotes: For each fact, include a "quote" field with the EXACT verbatim words from the conversation that support the fact (a contiguous span from a single turn, not a paraphrase). Cap at ~300 chars.'
+        : "",
       "",
       "Base extracted facts (do not repeat):",
       factsPreview || "(none)",

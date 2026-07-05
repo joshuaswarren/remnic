@@ -7050,6 +7050,10 @@ export class StorageManager {
       status?: import("./types.js").MemoryStatus;
       /** Faithfulness gate verdict (issue #1576), propagated from the parent fact. */
       faithfulness?: import("./types.js").FaithfulnessFrontmatter;
+      /** Claim-level provenance spans (issue #1575 PR 2), propagated from the parent fact so a chunk surfaced independently (memory_get/x-ray) preserves them (chatgpt-codex-connector thread Ocvmo). */
+      sources?: ProvenanceSource[];
+      /** Coarse provenance tag (issue #1575 PR 2), propagated from the parent. */
+      provenance?: "verified" | "unverified" | "none";
     } = {},
   ): Promise<string> {
     await this.ensureDirectories();
@@ -7081,6 +7085,8 @@ export class StorageManager {
       valid_at: validAt,
       ...(options.status ? { status: options.status } : {}),
       ...(options.faithfulness ? { faithfulness: options.faithfulness } : {}),
+      ...(options.sources ? { sources: options.sources } : {}),
+      ...(options.provenance ? { provenance: options.provenance } : {}),
     };
 
     const sanitized = sanitizeMemoryContent(content);

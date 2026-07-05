@@ -173,6 +173,33 @@ function isStrictIsoTimestamp(s: string): boolean {
 }
 
 /**
+ * Coerce a turn timestamp to a strict ISO-8601 string (cursor thread Ocveu —
+ * "Non-ISO turn timestamps drop sources"). The write-path `ProvenanceSourceSchema`
+ * rejects anything `isStrictIsoTimestamp` fails, so a turn whose `timestamp`
+ * parses via `new Date(...)` but isn't already strict ISO (e.g.
+ * `"2026/01/15 12:00:00"` or `"Jan 15 2026"`) would be silently dropped at
+ * serialization — clearing the whole `sources` array and downgrading the tag
+ * to `"none"`. Normalizing at extraction time preserves the source.
+ *
+ * Returns the strict ISO string when the timestamp already passes or
+ * `Date.parse` can round-trip it; `undefined` for empty / unparseable input
+ * so callers can decide whether to skip the source or fall back.
+ */
+function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined {
+  if (typeof ts !== "string" || ts.length === 0) return undefined;
+  if (isStrictIsoTimestamp(ts)) return ts;
+  const parsed = Date.parse(ts);
+  if (Number.isNaN(parsed)) return undefined;
+  // Reject bare-year / numeric-only strings that Date.parse accepts (e.g.
+  // "123") — isStrictIsoTimestamp already rejected them, and the round-trip
+  // below would otherwise resurrect them. Require at least one date/time
+  // separator so a plain number never round-trips into a fake epoch.
+  if (!/[-:T]/.test(ts)) return undefined;
+  const iso = new Date(parsed).toISOString();
+  return isStrictIsoTimestamp(iso) ? iso : undefined;
+}
+
+/**
  * Zod schema for a single `ProvenanceSource` entry (issue #1575).  Parsed
  * JSON from frontmatter is external data, so each entry is validated here
  * rather than trusted via a cast (rule: no inline-cast-access on parsed
@@ -372,24 +399,31 @@ function casefold(s: string): string {
 }
 
 /**
- * Locate `quote` within `text`, returning the half-open `[start, end)` offsets.
- * Tries exact substring first, then whitespace/case-normalized match.
+ * Locate `quote` within `text`, returning whether a match was found and, when
+ * recoverable, the half-open `[start, end)` offsets. Tries exact substring
+ * first, then whitespace/case-normalized match.
  *
  * For the normalized path, the mapping from the normalized string back to
  * original offsets is recovered by walking both strings in lockstep: we know
  * `collapseWhitespace(text)` is a subsequence of `text` with whitespace runs
  * collapsed, so we can track the original offset as we scan.
  *
- * Returns `undefined` when neither match succeeds.
+ * Returns `{ matched: false }` when neither match succeeds. Returns
+ * `{ matched: true, offsets }` when offsets are recoverable. Returns
+ * `{ matched: true }` (offsets omitted) when the normalized substring was
+ * found but original offsets could not be recovered — callers still treat
+ * this as a verified match and record a source without offsets (cursor
+ * thread Ocver — "Normalized match drops verified provenance").
  */
-function locateQuoteOffsets(
-  quote: string,
-  text: string,
-): { charStart: number; charEnd: number } | undefined {
+type LocateQuoteResult =
+  | { matched: false }
+  | { matched: true; offsets?: { charStart: number; charEnd: number } };
+
+function locateQuoteOffsets(quote: string, text: string): LocateQuoteResult {
   // 1. Exact substring match (handles unicode, curly quotes, emoji verbatim).
   const exactIdx = text.indexOf(quote);
   if (exactIdx >= 0) {
-  return { charStart: exactIdx, charEnd: exactIdx + quote.length };
+    return { matched: true, offsets: { charStart: exactIdx, charEnd: exactIdx + quote.length } };
   }
 
   // 2. Whitespace/case-normalized match. Collapse runs of whitespace and
@@ -398,10 +432,10 @@ function locateQuoteOffsets(
   //    match start through the original text, accumulating non-whitespace
   //    glyphs until we've consumed the normalized quote length.
   const normQuote = collapseWhitespace(casefold(quote));
-  if (normQuote.length === 0) return undefined;
+  if (normQuote.length === 0) return { matched: false };
   const normText = collapseWhitespace(casefold(text));
   const normIdx = normText.indexOf(normQuote);
-  if (normIdx < 0) return undefined;
+  if (normIdx < 0) return { matched: false };
 
   // Recover original offsets: walk the original text, skipping leading
   // whitespace to align with the collapsed form, then track how many
@@ -441,12 +475,14 @@ function locateQuoteOffsets(
     }
   }
   if (origStart >= 0 && origEnd >= 0) {
-    return { charStart: origStart, charEnd: origEnd };
+    return { matched: true, offsets: { charStart: origStart, charEnd: origEnd } };
   }
-  // Fallback: offsets not recoverable (edge case in normalized mapping).
-  // Return undefined so consumers tolerate absence (issue pitfall: charStart/
-  // charEnd are best-effort debugging aids).
-  return undefined;
+  // Normalized substring was found, but original offsets are not recoverable
+  // (edge case in the normalized mapping). The match still counts as verified
+  // — record a source without offsets rather than dropping the turn entirely
+  // (cursor thread Ocver). charStart/charEnd are best-effort debugging aids,
+  // not a precondition for a verified source.
+  return { matched: true };
 }
 
 /**
@@ -491,14 +527,24 @@ export function buildFactProvenance(
     for (const turn of turns) {
       if (!turn || typeof turn.content !== "string" || turn.content.length === 0) continue;
       const located = locateQuoteOffsets(rawQuote, turn.content);
-      if (!located) continue;
+      // cursor thread Ocver: a normalized match counts as verified even when
+      // original offsets are unrecoverable — record the source without
+      // charStart/charEnd instead of skipping the turn.
+      if (!located.matched) continue;
+      // cursor thread Ocveu: normalize the turn timestamp to strict ISO so
+      // the write-path ProvenanceSourceSchema keeps the source. Skip the turn
+      // when the timestamp can't be coerced — pushing it would guarantee a
+      // serialization drop (and the tag downgrade) for this source.
+      const observedAt = toStrictIsoTimestamp(turn.timestamp);
+      if (!observedAt) continue;
       sources.push({
         sessionKey: turn.sessionKey ?? turn.logicalSessionKey ?? "unknown",
         ...(turn.turnId ? { turnId: turn.turnId } : {}),
-        observedAt: turn.timestamp,
+        observedAt,
         quote: capQuote(rawQuote, config.maxQuoteChars),
-        charStart: located.charStart,
-        charEnd: located.charEnd,
+        ...(located.offsets
+          ? { charStart: located.offsets.charStart, charEnd: located.offsets.charEnd }
+          : {}),
       });
     }
 
@@ -509,16 +555,22 @@ export function buildFactProvenance(
     // Quote provided but not located in any turn. Keep it as an unverified
     // source — the LLM vouched for the excerpt even if we can't pin it to a
     // character offset. Downstream consumers (faithfulness gate #1576) treat
-    // unverified spans as weaker evidence.
+    // unverified spans as weaker evidence. Normalize the timestamp (thread
+    // Ocveu); fall back to epoch when no turn supplies a coercible timestamp
+    // so the unverified source still survives the write-path schema.
+    const fallbackSessionKey =
+      turns.length > 0
+        ? (turns[turns.length - 1]!.sessionKey ?? turns[turns.length - 1]!.logicalSessionKey ?? "unknown")
+        : "unknown";
+    const fallbackObservedAt =
+      turns.length > 0
+        ? (toStrictIsoTimestamp(turns[turns.length - 1]!.timestamp) ?? new Date(0).toISOString())
+        : new Date(0).toISOString();
     return {
       sources: [
         {
-          sessionKey:
-            turns.length > 0
-              ? (turns[turns.length - 1]!.sessionKey ?? turns[turns.length - 1]!.logicalSessionKey ?? "unknown")
-              : "unknown",
-          observedAt:
-            turns.length > 0 ? turns[turns.length - 1]!.timestamp : new Date(0).toISOString(),
+          sessionKey: fallbackSessionKey,
+          observedAt: fallbackObservedAt,
           quote: capQuote(rawQuote, config.maxQuoteChars),
         },
       ],

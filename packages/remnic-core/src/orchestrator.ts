@@ -15203,6 +15203,12 @@ export class Orchestrator {
                   // is not indexed as active through its chunks (chatgpt P2).
                   ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
                   ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
+                  // Claim-level provenance (issue #1575 PR 2): mirror the
+                  // parent's spans onto each chunk so a chunk surfaced
+                  // independently (memory_get/x-ray on a chunk ID) preserves
+                  // the verified span (chatgpt-codex-connector thread Ocvmo).
+                  ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
+                  ...(fact.provenance ? { provenance: fact.provenance } : {}),
                 },
               );
             }
