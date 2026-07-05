@@ -989,3 +989,25 @@ test("executor: hash_scan retains a hash-matching pending parse failure (cursor 
     await dispose(store, dir);
   }
 });
+
+test("executor: full reindex does NOT ingest a symlink that escapes repoRoot (chatgpt-codex-connector: 'Reject symlink escapes before parsing files')", async () => {
+  const { store, dir } = await tempStore();
+  const outside = await mkdtemp(path.join(tmpdir(), "reindex-outside-"));
+  try {
+    await writeFile(path.join(outside, "secret.ts"), "export function secret() {}");
+    const { symlink } = await import("node:fs/promises");
+    await symlink(path.join(outside, "secret.ts"), path.join(dir, "evil.ts"));
+
+    const result = await executeReindex({
+      store, git: mockGit({ head: SHA_A }), repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["evil.ts"],
+    });
+    assert.equal(result.ok, true);
+    // A canonical relative path can still be a symlink whose target lives
+    // outside repoRoot; following it would read arbitrary files into the graph.
+    assert.equal(fileHashes(store).has("evil.ts"), false, "symlink escaping repoRoot must not be ingested (rule 3)");
+  } finally {
+    await rm(outside, { recursive: true, force: true });
+    await dispose(store, dir);
+  }
+});

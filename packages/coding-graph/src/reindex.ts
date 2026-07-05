@@ -33,7 +33,7 @@
  * reindex run).
  */
 import { createHash } from "node:crypto";
-import { readFile as fsReadFile } from "node:fs/promises";
+import { readFile as fsReadFile, lstat as fsLstat, realpath as fsRealpath } from "node:fs/promises";
 import path from "node:path";
 
 import type { ParseFileInput, ParseResult } from "@remnic/core";
@@ -275,8 +275,11 @@ async function probeRead(
   readFile: ReadFileFn,
 ): Promise<ProbeRead> {
   if (!isCanonicalRelativePath(relPath)) return { kind: "skip" };
+  const probeAbs = resolveRepoPath(repoRoot, relPath);
+  // Reject symlinks that escape repoRoot before reading (rule 3).
+  if (await symlinkEscapesRoot(repoRoot, probeAbs)) return { kind: "skip" };
   try {
-    const content = await readFile(resolveRepoPath(repoRoot, relPath));
+    const content = await readFile(probeAbs);
     return { kind: "exists", content };
   } catch (e) {
     const code =
@@ -294,6 +297,30 @@ function resolveRepoPath(repoRoot: string, relPath: string): string {
   // Split on forward slashes and re-join with the platform separator so
   // Windows backslash-in-relPath is never accidentally treated as escape.
   return path.resolve(repoRoot, ...relPath.split("/"));
+}
+
+/**
+ * Symlink-escape guard (AGENTS.md rule 3): a canonical repo-relative path can
+ * still resolve to a SYMLINK whose target lives outside repoRoot; following it
+ * would let a crafted/tracked symlink read arbitrary files into the graph.
+ * Returns true only for real symlinks whose resolved target escapes repoRoot.
+ * Non-symlinks and unresolvable paths return false (the normal read path then
+ * classifies ENOENT/transient errors) so injected readers and regular files are
+ * unaffected.
+ */
+async function symlinkEscapesRoot(repoRoot: string, absPath: string): Promise<boolean> {
+  try {
+    const st = await fsLstat(absPath);
+    if (!st.isSymbolicLink()) return false;
+    const [realRoot, realAbs] = await Promise.all([
+      fsRealpath(repoRoot),
+      fsRealpath(absPath),
+    ]);
+    const rel = path.relative(realRoot, realAbs);
+    return rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel);
+  } catch {
+    return false;
+  }
 }
 
 /** Default file reader: reads from disk via node:fs/promises. */
@@ -801,9 +828,13 @@ async function ingestFiles(
       parseFailedPaths.push(relPath);
       continue;
     }
+    const ingestAbs = resolveRepoPath(repoRoot, relPath);
+    // Reject symlinks that escape repoRoot before reading (rule 3). A skipped
+    // escape is not a parse failure — do not retain it as a pending retry.
+    if (await symlinkEscapesRoot(repoRoot, ingestAbs)) continue;
     let content: Uint8Array;
     try {
-      content = await readFile(resolveRepoPath(repoRoot, relPath));
+      content = await readFile(ingestAbs);
     } catch {
       // File unreadable (deleted between plan and execution, or a
       // transient I/O error). Record it for retry so a transient read
