@@ -270,3 +270,35 @@ test("until <month> <year> exclusive end is start of following month (codex revi
   assert.equal(r.ok, true);
   assert.equal(r.validUntil, "2025-04-01T00:00:00.000Z");
 });
+
+test("since <bare year> resolves to January 1 of that year (codex review r2)", () => {
+  const r = resolveEventTime("since 2024", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2024-01-01T00:00:00.000Z");
+});
+
+test("bare four-digit year resolves to January 1 (codex review r2)", () => {
+  const r = resolveEventTime("2023", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2023-01-01T00:00:00.000Z");
+});
+
+test("until <bare year> exclusive end is January 1 of the FOLLOWING year (codex review r2)", () => {
+  const r = resolveEventTime("until 2024", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2025-01-01T00:00:00.000Z");
+});
+
+test("until end of <month> strips the prefix and resolves (codex review r2)", () => {
+  const r = resolveEventTime("until end of March", ANCHOR);
+  assert.equal(r.ok, true);
+  // "end of March" backwards-looking from June 2026 anchor → exclusive end
+  // at the start of the month AFTER March 2026 = April 1 2026.
+  assert.equal(r.validUntil, "2026-04-01T00:00:00.000Z");
+});
+
+test("until end of <month> <year> strips the prefix and resolves (codex review r2)", () => {
+  const r = resolveEventTime("until end of March 2025", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2025-04-01T00:00:00.000Z");
+});

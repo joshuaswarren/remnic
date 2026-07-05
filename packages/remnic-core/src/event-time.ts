@@ -196,6 +196,19 @@ function resolveExplicitMonthYear(token: string): number | null {
   return buildDateMs(year, baseMonth, 1);
 }
 
+
+/**
+ * Resolve a bare four-digit year token (e.g. "2024") to January 1 of that
+ * year.  Used by "since 2024" and bare year expressions.  Review #1578 r2:
+ * previously these fell through to ok:false, stamping the fact at ingestion
+ * time instead of the documented year start.
+ */
+function resolveBareYear(token: string): number | null {
+  const m = token.trim().match(/^(\d{4})$/);
+  if (!m) return null;
+  return buildDateMs(Number(m[1]), 1, 1);
+}
+
 function resolveSeasonYear(
   anchorMs: number,
   seasonToken: string,
@@ -279,6 +292,7 @@ export function resolveEventTime(
     const fromMs =
       resolveRelativePeriod(anchorMs, inner) ??
       resolveExplicitMonthYear(inner) ??
+      resolveBareYear(inner) ??
       resolveAbsolute(inner);
     const fromIso = toIsoUtc(fromMs);
     if (!fromIso) return fallback;
@@ -317,10 +331,11 @@ export function resolveEventTime(
     return fromIso ? { validFrom: fromIso, ok: true } : fallback;
   }
 
-  // ── bare month+year ("March 2025", "Dec 2024", "spring 2025") ─────────
+  // ── bare month+year ("March 2025", "Dec 2024", "spring 2025") or
+  // bare four-digit year ("2024") ────────────────────────────────────────
   // Explicit year is authoritative (never derived from the anchor). Shares
-  // resolveExplicitMonthYear with the since/until paths for consistency.
-  const explicitMs = resolveExplicitMonthYear(lower);
+  // resolveExplicitMonthYear / resolveBareYear with the since/until paths.
+  const explicitMs = resolveExplicitMonthYear(lower) ?? resolveBareYear(lower);
   if (explicitMs !== null) {
     const fromIso = toIsoUtc(explicitMs);
     if (fromIso) return { validFrom: fromIso, ok: true };
@@ -391,7 +406,15 @@ function resolveRelativePeriod(
  * the start of the *following* period.
  */
 function resolveEndBound(anchorMs: number, period: string): number | null {
-  const trimmed = period.trim();
+  // Strip an optional "end of " prefix so "until end of March" resolves the
+  // same as "until March".  Review #1578 r2: previously the prefix was passed
+  // unchanged and resolveEndBound returned null for the full phrase.
+  const trimmed = period.trim().replace(/^end\s+of\s+/i, "").trim();
+
+  // Bare four-digit year: exclusive end = January 1 of the FOLLOWING year.
+  if (/^\d{4}$/.test(trimmed)) {
+    return buildDateMs(Number(trimmed) + 1, 1, 1);
+  }
 
   // Absolute date/datetime end bound.
   const absMs = resolveAbsolute(trimmed);
