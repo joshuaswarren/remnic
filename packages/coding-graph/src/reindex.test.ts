@@ -887,3 +887,29 @@ test("executor: hash_scan without candidatePaths does NOT advance head (chatgpt-
     await dispose(store, dir);
   }
 });
+
+test("executor: hash_scan retains a hash-matching pending parse failure (cursor Bugbot HIGH: 'Pending retries cleared incorrectly')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Seed src/a.ts at SHA_A so its content hash is stored.
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    await executeReindex({ store, git: mockGit({ head: SHA_A }), repoRoot: dir, parseFile: mockParseFile, candidatePaths: ["src/a.ts"] });
+    // Simulate a prior parse failure recorded for src/a.ts (content unchanged).
+    store.writeMeta(META_KEY_PENDING_PARSE_FAILURES, JSON.stringify(["src/a.ts"]));
+
+    // Force-push → hash_scan. src/a.ts is unchanged, so its on-disk hash MATCHES
+    // the stored hash and it is NOT re-ingested. It must nonetheless REMAIN in
+    // pending (a future full/incremental run must still retry parsing it) — the
+    // old code dropped it because it was neither a fresh parse failure nor a
+    // transient retry.
+    const result = await executeReindex({
+      store, git: mockGit({ head: SHA_B, reachable: false }), repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts"],
+    });
+    assert.equal(result.ok, true);
+    const pending = JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]");
+    assert.ok(pending.includes("src/a.ts"), "hash-matching pending parse failure must be retained, not silently dropped");
+  } finally {
+    await dispose(store, dir);
+  }
+});

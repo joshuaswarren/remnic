@@ -491,7 +491,14 @@ async function runReindex(
       if (!ingestResult.ok) return ingestResult;
       store.writeMeta(
         META_KEY_PENDING_PARSE_FAILURES,
-        JSON.stringify(ingestResult.parseFailedPaths),
+        JSON.stringify(
+          computeNextPending({
+            priorPending: pendingRetry,
+            parseFailedPaths: ingestResult.parseFailedPaths,
+            ingestedCandidates: toIngest,
+            deleted: fullDelete,
+          }),
+        ),
       );
       // Rule 25: persist head ONLY after data + pending-set commit — and ONLY
       // when candidates were authoritative (see above).
@@ -547,7 +554,14 @@ async function runReindex(
       if (!ingestResult.ok) return ingestResult;
       store.writeMeta(
         META_KEY_PENDING_PARSE_FAILURES,
-        JSON.stringify(ingestResult.parseFailedPaths),
+        JSON.stringify(
+          computeNextPending({
+            priorPending: pendingRetry,
+            parseFailedPaths: ingestResult.parseFailedPaths,
+            ingestedCandidates: toIngest,
+            deleted: toDelete,
+          }),
+        ),
       );
       // Rule 25: persist head ONLY after data commits.
       store.writeMeta(META_KEY_LAST_HEAD, headResult.head ?? "");
@@ -616,7 +630,15 @@ async function runReindex(
       if (!ingestResult.ok) return ingestResult;
       store.writeMeta(
         META_KEY_PENDING_PARSE_FAILURES,
-        JSON.stringify([...ingestResult.parseFailedPaths, ...hashScanRetry]),
+        JSON.stringify(
+          computeNextPending({
+            priorPending: pendingRetry,
+            parseFailedPaths: ingestResult.parseFailedPaths,
+            extraRetry: hashScanRetry,
+            ingestedCandidates: toIngest,
+            deleted: toDelete,
+          }),
+        ),
       );
       // Rule 25: persist head ONLY after data commits — and ONLY when the
       // caller supplied candidates. Without candidatePaths the scan covers only
@@ -655,6 +677,41 @@ function readPendingParseFailures(store: GraphStore): string[] {
 // ──────────────────────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Compute the next `pending_parse_failures` set. A path must remain pending
+ * until it is actually INGESTED (parsed + stored) or confirmed DELETED —
+ * otherwise a pending path that was skipped (non-canonical), hash-matched in
+ * hash_scan, or otherwise not re-ingested silently drops off the retry list
+ * while `last_indexed_head` advances, so its symbols are never (re)built yet the
+ * index reports fresh (cursor Bugbot HIGH: 'Pending retries cleared
+ * incorrectly'). The next set is therefore the union of the prior pending set,
+ * this run's parse failures, and any transient retries, MINUS the paths that
+ * were successfully ingested or deleted this run.
+ */
+function computeNextPending(args: {
+  readonly priorPending: readonly string[];
+  readonly parseFailedPaths: readonly string[];
+  readonly extraRetry?: readonly string[];
+  readonly ingestedCandidates: readonly string[];
+  readonly deleted: readonly string[];
+}): string[] {
+  const failed = new Set(args.parseFailedPaths);
+  const successfullyIngested = new Set(
+    args.ingestedCandidates.filter((p) => !failed.has(p)),
+  );
+  const deleted = new Set(args.deleted);
+  const next = new Set<string>();
+  for (const path of [
+    ...args.priorPending,
+    ...args.parseFailedPaths,
+    ...(args.extraRetry ?? []),
+  ]) {
+    if (successfullyIngested.has(path) || deleted.has(path)) continue;
+    next.add(path);
+  }
+  return [...next];
+}
 
 /**
  * Narrow result type for the ingest helper — avoids union overlap with

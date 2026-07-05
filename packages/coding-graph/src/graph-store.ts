@@ -1815,7 +1815,7 @@ export class GraphStore {
           "SELECT n.id, n.qualified_name, n.name, n.label, f.path AS file_path FROM nodes n JOIN files f ON n.file_id = f.id WHERE n.id = ?",
         )
         .get(startId),
-      ["id", "qualified_name", "name", "label"],
+      ["id", "qualified_name", "name", "label", "file_path"],
     );
     if (!startRow) {
       // Race: the node vanished between the resolve and the read.
@@ -1876,7 +1876,7 @@ export class GraphStore {
                 "SELECT n.id, n.qualified_name, n.name, n.label, f.path AS file_path FROM nodes n JOIN files f ON n.file_id = f.id WHERE n.id = ?",
               )
               .get(neighbor),
-            ["id", "qualified_name", "name", "label"],
+            ["id", "qualified_name", "name", "label", "file_path"],
           );
           if (hitRow) {
             hits.push({
