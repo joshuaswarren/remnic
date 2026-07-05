@@ -10,6 +10,7 @@ import { type PublishContext, loadTokenStore, saveTokenStore } from "@remnic/cor
 import {
   OmpMemoryExtensionPublisher,
   PiMemoryExtensionPublisher,
+  resolveBunOnPath,
   resolveOmpWrapperImportSpecifier,
 } from "./publisher.js";
 
@@ -1584,4 +1585,38 @@ test("omp publisher resolveBunBinary resolves the PATH-found bun to an absolute 
     /var bunForRebuild\s*=\s*"bun"\s*;/,
     "loader must not fall back to the bare 'bun' string when an absolute binary was available on PATH",
   );
+});
+
+// ── Regression (PR #1641 / #1598): resolveBunOnPath must skip non-executable
+// PATH candidates so it matches `which(1)` and the spawnSync("bun", …) version
+// probe. When a stale, non-executable `bun` file appears earlier on PATH than
+// the real executable, the OS exec lookup in the version probe skips it and
+// succeeds against the later binary; returning the non-executable file here
+// would diverge and embed a path that fails with EACCES at bundle time.
+test("resolveBunOnPath skips a non-executable bun earlier on PATH and resolves the later executable one", (t) => {
+  if (process.platform === "win32") {
+    // The POSIX executable-bit check that this regression guards against is
+    // not meaningful on Windows (PATHEXT/.exe semantics differ); skip there.
+    t.skip();
+    return;
+  }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-bun-nonexec-"));
+  const staleDir = path.join(root, "stale");
+  const goodDir = path.join(root, "good");
+  fs.mkdirSync(staleDir, { recursive: true });
+  fs.mkdirSync(goodDir, { recursive: true });
+  const staleBun = path.join(staleDir, "bun");
+  const goodBun = path.join(goodDir, "bun");
+  // Stale: a regular, non-executable file named `bun` earlier on PATH.
+  fs.writeFileSync(staleBun, "#!/bin/sh\nold broken bun\n", { mode: 0o644 });
+  // Good: an executable `bun` later on PATH.
+  fs.writeFileSync(goodBun, "#!/bin/sh\necho bun\n", { mode: 0o755 });
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${staleDir}:${goodDir}`;
+  t.after(() => {
+    process.env.PATH = previousPath;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const resolved = resolveBunOnPath();
+  assert.equal(resolved, fs.realpathSync(goodBun));
 });

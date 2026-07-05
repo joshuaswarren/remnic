@@ -805,7 +805,7 @@ try {
  * string `"bun"`, which would break self-heal rebuilds under a stripped
  * runtime PATH (GUI/service launches). Mirrors `which(1)`; no dependency.
  */
-function resolveBunOnPath(): string | null {
+export function resolveBunOnPath(): string | null {
   const pathVar = process.env.PATH ?? process.env.Path ?? process.env.path ?? "";
   const separator = process.platform === "win32" ? ";" : ":";
   const candidateNames =
@@ -818,9 +818,18 @@ function resolveBunOnPath(): string | null {
         : path.resolve(dir, name);
       try {
         const stat = fs.statSync(candidate);
-        if (stat.isFile()) return fs.realpathSync(candidate);
+        // Match `which(1)`: skip non-executable candidates. The PATH version
+        // probe (spawnSync("bun", ["--version"])) uses the OS exec lookup, which
+        // skips non-executable files, so returning a non-executable `bun` here
+        // would diverge from the probe and embed a path that fails with EACCES
+        // at bundle time. fs.accessSync with X_OK is a no-op check on Windows
+        // for real .exe files (it verifies read access there).
+        if (stat.isFile()) {
+          fs.accessSync(candidate, fs.constants.X_OK);
+          return fs.realpathSync(candidate);
+        }
       } catch {
-        // Missing dir or permission error — try the next candidate.
+        // Missing dir, non-executable file, or permission error — next candidate.
       }
     }
   }
