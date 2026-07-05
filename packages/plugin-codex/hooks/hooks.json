@@ -60,7 +60,7 @@
             "type": "command",
             "command": "\"${PLUGIN_ROOT}/hooks/bin/remnic-codex-hook.sh\" pre-compact",
             "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${PLUGIN_ROOT}\\hooks\\bin\\remnic-codex-hook.ps1\" pre-compact",
-            "timeout": 20000
+            "timeout": 90000
           }
         ]
       }

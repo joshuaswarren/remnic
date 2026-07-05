@@ -44,16 +44,32 @@ const PORT = process.env.REMNIC_PORT || process.env.ENGRAM_PORT || "4318";
 
 // Parse once. `protocol` is "http:" or "https:" so https.request is selected
 // for TLS daemons (common for remote/private deployments behind a proxy).
+//
+// An EXPLICIT but invalid REMNIC_DAEMON_URL (missing scheme, typo, e.g.
+// "macstudio:4318") must NOT silently fall through to REMNIC_HOST/REMNIC_PORT —
+// that would route recall/observe/flush to a local daemon and corrupt the wrong
+// memory store. Instead we disable the daemon entirely (all HTTP calls fail
+// open) and surface the misconfiguration once on stderr so the operator fixes
+// the URL rather than debugging silent cross-store writes (#1571 review).
+let DAEMON_CONFIG_ERROR = "";
 const DAEMON_URL = (function resolveDaemonUrl() {
   if (RAW_DAEMON_URL) {
     try {
       const parsed = new URL(RAW_DAEMON_URL);
-      // Require an explicit scheme — a bare "macstudio:4318" parses as
-      // pathname-only and would silently route to localhost.
+      // Require an explicit scheme — a bare "macstudio:4318" parses with
+      // protocol "macstudio:" and would otherwise silently route to localhost.
       if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed;
     } catch {
-      /* fall through to host/port */
+      /* handled below */
     }
+    DAEMON_CONFIG_ERROR =
+      'REMNIC_DAEMON_URL="' + RAW_DAEMON_URL + '" is not a valid http(s) URL — ' +
+      "daemon disabled (recall/observe/flush will no-op). Set a valid " +
+      "http(s):// URL or unset REMNIC_DAEMON_URL to use REMNIC_HOST/REMNIC_PORT.";
+    if (process.env.REMNIC_HOOK_QUIET !== "1") {
+      try { process.stderr.write("[remnic-codex-hook] " + DAEMON_CONFIG_ERROR + "\n"); } catch {}
+    }
+    return null;
   }
   try {
     return new URL(`http://${HOST}:${PORT}`);
@@ -66,6 +82,16 @@ const DAEMON_URL = (function resolveDaemonUrl() {
 // so the (slow) observe runs in the background and never blocks Codex past the
 // short PostToolUse timeout — mirroring the original `( … ) & disown`.
 const OBSERVE_WORKER = "__observe-worker__";
+
+// PreCompact tail-drain lock-wait budget (100ms each → ~15s). Bounds how long
+// handlePreCompact waits for a detached PostToolUse observe worker (whose own
+// /observe can run up to 120s) to release the session lock before skipping the
+// drain+flush. 15s covers a typical observe round-trip on a healthy daemon; a
+// pathologically slow worker that outlasts this is left for the next cycle
+// rather than blocking compaction indefinitely. The hooks.json PreCompact
+// timeout accommodates this budget plus the drain observe + LCM flush.
+const PRECOMPACT_LOCK_RETRIES =
+  Number.parseInt(process.env.REMNIC_PRECOMPACT_LOCK_RETRIES || "150", 10) || 150;
 
 const LOG_FILES = {
   "session-start": "remnic-session-recall.log",
@@ -230,6 +256,11 @@ function resolveToken() {
 // setting REMNIC_DAEMON_URL — same transport contract as @remnic/plugin-pi. ─
 
 function httpPost(urlPath, token, bodyObj, timeoutMs) {
+  if (DAEMON_URL === null) {
+    // Explicit-but-invalid REMNIC_DAEMON_URL — disabled, fail open (see
+    // resolveDaemonUrl). Callers treat this like a dead daemon.
+    return Promise.resolve({ ok: false, status: 0, body: "" });
+  }
   const transport = DAEMON_URL.protocol === "https:" ? https : http;
   return new Promise((resolve) => {
     let data;
@@ -279,6 +310,7 @@ function httpPost(urlPath, token, bodyObj, timeoutMs) {
 }
 
 function httpHealthy(timeoutMs) {
+  if (DAEMON_URL === null) return Promise.resolve(false);
   const transport = DAEMON_URL.protocol === "https:" ? https : http;
   return new Promise((resolve) => {
     const req = transport.request(
@@ -538,8 +570,12 @@ function migrateTmpCursor(sessionId, cursorFile, log) {
 }
 
 // mkdir-based mutex with stale-lock reaping (10 min). Returns true if acquired.
-function acquireLock(lockFile, log) {
-  for (let i = 0; i < 50; i++) {
+// `retries` bounds the synchronous wait (100ms each). The default (50 → ~5s)
+// suits foreground hooks; PreCompact's tail drain passes a larger budget so it
+// can outlast a detached PostToolUse observe worker holding the lock, ensuring
+// the subsequent flush sees the worker's queued messages instead of racing.
+function acquireLock(lockFile, log, retries = 50) {
+  for (let i = 0; i < retries; i++) {
     try {
       fs.mkdirSync(lockFile);
       return true;
@@ -906,10 +942,20 @@ async function handleSessionEnd(input, token, log) {
 // after the last PostToolUse (e.g. a long user prompt that triggers auto
 // compaction without a Bash tool call in between), that tail is still only in
 // the transcript and would be lost when Codex summarizes/replaces context. So
-// PreCompact must observe the delta FIRST, then ask LCM to flush. Returns true
-// when the tail was observed (or nothing was pending); false on parse/observe
-// failure so the caller can decide. Always fail-open.
-async function drainTranscriptTail(sessionId, transcriptPath, token, log) {
+// PreCompact must observe the delta FIRST, then ask LCM to flush.
+//
+// Returns "busy" when the session lock could not be acquired within the
+// caller's budget (a detached PostToolUse observe worker is still holding it),
+// so handlePreCompact can SKIP the flush instead of letting it drain nothing
+// and race the worker; true when the tail was observed (or nothing pending);
+// false on parse/observe failure (cursor retained) so the caller can still
+// flush already-queued work. Always fail-open.
+//
+// `lockRetries` (100ms each) bounds how long to wait for a busy worker.
+// `namespace` (when set) scopes the observe to the same key the LCM flush
+// drains — without it, a namespaced install queues the tail under the default
+// key while the flush drains the namespaced key, leaving the tail unflushed.
+async function drainTranscriptTail(sessionId, transcriptPath, token, log, lockRetries = 50, namespace = "") {
   const safe = sessionId !== "" && !/[^A-Za-z0-9._-]/.test(sessionId);
   if (!safe || !token || !transcriptPath || !fs.existsSync(transcriptPath)) {
     return false;
@@ -918,11 +964,15 @@ async function drainTranscriptTail(sessionId, transcriptPath, token, log) {
   if (!state) return false;
   const { cursorFile, lockFile } = state;
   // The lock guards against the detached post-tool observe worker racing this
-  // drain. If we can't acquire it (worker still running), skip — the worker
-  // will observe the tail, and the LCM flush still drains what's queued.
-  if (!acquireLock(lockFile, log)) {
-    log(`transcript tail drain skipped for ${sessionId}: lock busy`);
-    return false;
+  // drain. Wait up to the caller's budget for the worker to finish its /observe
+  // and release the lock — once it does, either the worker already advanced the
+  // cursor (nothing left to drain) or we observe the remaining delta, and in
+  // both cases the subsequent flush sees all queued work. Only if the worker
+  // outlasts our budget do we return "busy" so handlePreCompact SKIPS the flush
+  // rather than racing ahead of the worker's in-flight /observe.
+  if (!acquireLock(lockFile, log, lockRetries)) {
+    log(`transcript tail drain skipped for ${sessionId}: lock busy (worker still running)`);
+    return "busy";
   }
   try {
     migrateTmpCursor(sessionId, cursorFile, log);
@@ -940,10 +990,12 @@ async function drainTranscriptTail(sessionId, transcriptPath, token, log) {
     }
     if (newMessages.length === 0) return true;
     log(`transcript tail drain: ${newMessages.length} new message(s) for ${sessionId}`);
+    const observeBody = { sessionKey: sessionId, messages: newMessages };
+    if (namespace) observeBody.namespace = namespace;
     const res = await httpPost(
       "/engram/v1/observe",
       token,
-      { sessionKey: sessionId, messages: newMessages },
+      observeBody,
       30000,
     );
     if (res.ok) {
@@ -981,13 +1033,32 @@ async function handlePreCompact(input, token, log) {
     log(`skipping pre-compact drain+flush: no token (session=${sessionId} trigger=${trigger})`);
     return;
   }
+  // Optional namespace override (parity with @remnic/plugin-pi's config.namespace).
+  // Unset → the daemon resolves the default namespace for this principal. The
+  // same namespace is passed to the tail drain so the observe and the flush
+  // target the same key (#1571 review).
+  const ns = process.env.REMNIC_NAMESPACE || process.env.ENGRAM_NAMESPACE || "";
   // 1. Drain any unobserved transcript tail so it's archived before compaction.
-  await drainTranscriptTail(sessionId, transcriptPath, token, log);
+  //    Wait up to PRECOMPACT_LOCK_RETRIES for a concurrent observe worker to
+  //    release the session lock, so the flush below sees the worker's queued
+  //    messages. If the worker outlasts us, drain returns "busy" and we SKIP
+  //    the flush entirely — flushing now would drain nothing and the worker's
+  //    in-flight observe would miss this compaction, so we defer to the next
+  //    PreCompact/Stop rather than race.
+  const drainResult = await drainTranscriptTail(
+    sessionId,
+    transcriptPath,
+    token,
+    log,
+    PRECOMPACT_LOCK_RETRIES,
+    ns,
+  );
+  if (drainResult === "busy") {
+    log(`skipping LCM flush: tail drain lock busy (session=${sessionId} trigger=${trigger}); deferring to next cycle`);
+    return;
+  }
   // 2. Ask the LCM layer to flush the (now-complete) observe buffer.
   const body = { sessionKey: sessionId };
-  // Optional namespace override (parity with @remnic/plugin-pi's config.namespace).
-  // Unset → the daemon resolves the default namespace for this principal.
-  const ns = process.env.REMNIC_NAMESPACE || process.env.ENGRAM_NAMESPACE || "";
   if (ns) body.namespace = ns;
   const res = await httpPost("/engram/v1/lcm/compaction/flush", token, body, 20000);
   if (res.ok) {

@@ -792,3 +792,114 @@ test("pre-compact: retains the cursor when the tail-drain observe fails (#1571 r
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("pre-compact: REMNIC_NAMESPACE also scopes the tail-drain /observe to the same key (#1571 review)", async () => {
+  // chatgpt-codex-connector: the drain posted /observe WITHOUT the namespace
+  // while the flush used it, so a namespaced install queued the tail under the
+  // default key and the flush drained the namespaced key — leaving the tail
+  // unflushed. Both must target the same key.
+  const home = mkHome();
+  const sessionId = "compact-ns-drain";
+  const tpath = transcript(home, [
+    { role: "user", content: "turn one" },
+    { role: "assistant", content: "reply one" },
+    { role: "user", content: "turn two (unobserved tail)" },
+    { role: "assistant", content: "reply two" },
+  ]);
+  fs.mkdirSync(path.join(home, "state", "remnic", "hooks"), { recursive: true });
+  fs.writeFileSync(cursorPath(home, sessionId), "2\n");
+  const { server, port, calls } = await startServer((req, res) =>
+    res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}'),
+  );
+  try {
+    const { json } = await runHook(
+      "pre-compact",
+      { session_id: sessionId, transcript_path: tpath, trigger: "auto", cwd: home },
+      { port, home, env: { extra: { REMNIC_NAMESPACE: "team/fleet" } } },
+    );
+    assert.deepEqual(json, { continue: true });
+    const observe = calls.find((c) => c.url === "/engram/v1/observe");
+    assert.ok(observe, "tail drain observed");
+    assert.equal(observe.body.namespace, "team/fleet", "drain observe carries the namespace");
+    assert.equal(observe.body.messages.length, 2, "drained the pending tail");
+    const flush = calls.find((c) => c.url === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush, "flush called");
+    assert.equal(flush.body.namespace, "team/fleet", "flush carries the same namespace");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pre-compact: an invalid explicit REMNIC_DAEMON_URL disables the daemon instead of falling back to localhost (#1571 review)", async () => {
+  // chatgpt-codex-connector: a typo'd URL (no scheme) must NOT silently route to
+  // the REMNIC_HOST/REMNIC_PORT default — that would corrupt the wrong store.
+  // It should disable (fail open) and warn.
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) =>
+    res.writeHead(200).end('{"ok":true}'),
+  );
+  try {
+    const { json, stderr } = await runHook(
+      "pre-compact",
+      { session_id: "bad-url", trigger: "auto", cwd: home },
+      {
+        port, // the localhost fallback target — must NOT be reached
+        home,
+        env: {
+          extra: {
+            REMNIC_DAEMON_URL: "macstudio:4318", // missing scheme → invalid
+            REMNIC_HOOK_QUIET: "1",
+          },
+        },
+      },
+    );
+    // Fail-open: compaction proceeds.
+    assert.deepEqual(json, { continue: true });
+    // No traffic reached the localhost mock server.
+    assert.equal(calls.length, 0, "invalid daemon URL did not fall back to localhost");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pre-compact: when the session lock stays held, the drain returns busy and the LCM flush is skipped (#1571 review)", async () => {
+  // cursor bugbot: if PreCompact cannot acquire the session observe lock (a
+  // detached PostToolUse worker is still running), flushing now would drain
+  // nothing while the worker's in-flight observe misses this compaction.
+  // Fix: wait a bounded budget, and if still busy, SKIP the flush (defer to the
+  // next cycle) rather than race. Use a tiny budget so the test is fast.
+  const home = mkHome();
+  const sessionId = "compact-busy";
+  const tpath = transcript(home, [
+    { role: "user", content: "turn while worker holds the lock" },
+    { role: "assistant", content: "reply" },
+  ]);
+  const lockDir = path.join(home, "state", "remnic", "hooks", `remnic-lock-${sessionId}.d`);
+  fs.mkdirSync(path.dirname(lockDir), { recursive: true });
+  fs.mkdirSync(lockDir); // simulate the detached worker holding the lock
+  const { server, port, calls } = await startServer((req, res) =>
+    res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}'),
+  );
+  try {
+    const { json } = await runHook(
+      "pre-compact",
+      { session_id: sessionId, transcript_path: tpath, trigger: "auto", cwd: home },
+      { port, home, env: { extra: { REMNIC_PRECOMPACT_LOCK_RETRIES: "2" } } },
+    );
+    assert.deepEqual(json, { continue: true });
+    // Neither the tail drain /observe NOR the LCM flush should have run.
+    assert.ok(
+      !calls.some((c) => c.url === "/engram/v1/lcm/compaction/flush"),
+      "LCM flush was skipped because the drain could not acquire the lock",
+    );
+    assert.ok(
+      !calls.some((c) => c.url === "/engram/v1/observe"),
+      "tail drain /observe was skipped because the lock was held",
+    );
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
