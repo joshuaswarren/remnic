@@ -1483,6 +1483,27 @@ test("resolveOmpWrapperImportSpecifier fails fast with an actionable error for c
     "cross-drive omp layout must fail fast instead of emitting an invalid ./D:\\… specifier",
   );
 });
+test("resolveOmpWrapperImportSpecifier treats Windows drive-letter casing as the same drive", () => {
+  // Windows drive roots are case-insensitive: the omp agent home and the
+  // plugin-pi install may report the drive letter in different casing (e.g.
+  // C:\ from the home env var, c:\ from fileURLToPath(import.meta.url)). Such a
+  // layout is same-drive and path.win32.relative yields a valid specifier, so
+  // the guard must NOT reject it.
+  const wrapperDir = "C:\\Users\\me\\.omp\\agent\\extensions\\remnic";
+  const modulePath = "c:\\remnic\\plugin-pi\\dist\\index.js";
+  // Sanity-check: raw roots differ in casing but the drive is the same.
+  assert.notEqual(win32.parse(wrapperDir).root, win32.parse(modulePath).root);
+  assert.equal(
+    win32.parse(wrapperDir).root.toLowerCase(),
+    win32.parse(modulePath).root.toLowerCase(),
+  );
+  const specifier = resolveOmpWrapperImportSpecifier(modulePath, wrapperDir, win32);
+  assert.ok(
+    specifier.startsWith("./") || specifier.startsWith("../"),
+    `expected a relative specifier for same-drive different-casing roots, got ${specifier}`,
+  );
+  assert.doesNotMatch(specifier, /^[A-Za-z]:[\\/]/, "specifier must not be a bare absolute drive path");
+});
 
 // ── Regression (PR #1641 / #1598): when bun is found via the PATH probe,
 // resolveBunBinary must resolve it to an absolute executable path so the

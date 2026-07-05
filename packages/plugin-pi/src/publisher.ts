@@ -561,7 +561,10 @@ function resolveExtensionModulePath(): string {
  * prefixing `./` then yields an invalid module specifier that fails `bun build`
  * with a cryptic error. Detect that layout and fail fast with an actionable
  * message instead. (Cross-drive omp installs are unsupported because neither a
- * relative specifier nor a `file://` URL is acceptable to `bun build`.)
+ * relative specifier nor a `file://` URL is acceptable to `bun build`.) Drive
+ * roots are compared case-insensitively so a same-drive Windows install is not
+ * falsely rejected when the agent home and the plugin-pi install report the
+ * drive letter in different casing (`C:\\` vs `c:\\`).
  *
  * Exported so the cross-drive guard can be exercised on non-Windows hosts via
  * `path.win32`.
@@ -571,7 +574,13 @@ export function resolveOmpWrapperImportSpecifier(
   wrapperDir: string,
   pathApi: typeof path = path,
 ): string {
-  if (pathApi.parse(wrapperDir).root !== pathApi.parse(extensionModulePath).root) {
+  // Windows drive roots are case-insensitive: `C:\\…` (e.g. from the omp agent
+  // home) and `c:\\…` (e.g. from fileURLToPath(import.meta.url)) are the SAME
+  // drive, and path.win32.relative yields a valid relative specifier between
+  // them. Compare the parsed roots case-insensitively so a same-drive install
+  // isn't falsely rejected as "different drives". posix roots (`/`) are
+  // unaffected by toLowerCase().
+  if (pathApi.parse(wrapperDir).root.toLowerCase() !== pathApi.parse(extensionModulePath).root.toLowerCase()) {
     throw new Error(
       "Remnic omp extension cannot pre-bundle: the extension directory " +
         `(${wrapperDir}) and the @remnic/plugin-pi install (${extensionModulePath}) ` +
