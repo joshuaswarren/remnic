@@ -34,6 +34,7 @@ import { Orchestrator } from "../src/orchestrator.js";
 import { parseConfig } from "../src/config.js";
 import { resolveNamespaceStorageRoot } from "../src/namespaces/storage.js";
 import type { BufferTurn, ExtractionResult, PluginConfig } from "../src/types.js";
+import { MaintenanceScheduler } from "../src/orchestration/maintenance.js";
 
 // ── shared helpers ──────────────────────────────────────────────────────────
 
@@ -726,16 +727,18 @@ test("restart recovery: a fresh orchestrator over the same memoryDir sees prior 
 
 // ── 5. Maintenance ──────────────────────────────────────────────────────────
 
-// Root-suite pin of the #1506 r27 contract (mirrors the package-level NGnei
-// test in packages/remnic-core/src/orchestrator-flush.test.ts so the invariant
-// also runs under the entity-hardening gate): runQmdMaintenance must cover the
-// UNION of configured namespaces and cataloged dynamic namespaces, batched
-// into one strict router update.
+// Root-suite pin of the #1506 r27 contract (now exercised directly against
+// MaintenanceScheduler, which owns runQmdMaintenance after the #1526 PR1
+// extraction): runQmdMaintenance must cover the UNION of configured namespaces
+// and cataloged dynamic namespaces, batched into one strict router update.
 test("runQmdMaintenance unions configured and cataloged namespaces into one strict update", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-char-qmd-union-"));
+  let scheduler: MaintenanceScheduler | undefined;
   try {
-    const orchestrator = Object.create(Orchestrator.prototype) as any;
-    orchestrator.config = {
+    // Fixture: partial config cast — only the fields the scheduler/planner
+    // read are populated; qmdMaintenanceEnabled + a long debounce arm the
+    // debounced pending flag via the public requestQmdMaintenanceForTool path.
+    const config = {
       memoryDir,
       namespacesEnabled: true,
       defaultNamespace: "default",
@@ -744,21 +747,21 @@ test("runQmdMaintenance unions configured and cataloged namespaces into one stri
       maintenanceNamespaceLockStaleMs: 100,
       qmdAutoEmbedEnabled: true,
       qmdEmbedMinIntervalMs: 0,
-    };
+      qmdMaintenanceEnabled: true,
+      qmdMaintenanceDebounceMs: 60_000,
+    } as unknown as PluginConfig;
 
     // A dynamic namespace that exists ONLY in the catalog (never configured),
     // with a live storage root so the planner's safety check accepts it.
     const dynamicNamespace = "project-char-dynamic";
     const dynamicStorageDir = await resolveNamespaceStorageRoot(
-      orchestrator.config,
+      config,
       dynamicNamespace,
     );
     await mkdir(path.join(dynamicStorageDir, "facts"), { recursive: true });
 
-    orchestrator.qmdMaintenanceInFlight = false;
-    orchestrator.qmdMaintenancePending = true;
-    orchestrator.lastQmdEmbedAtMs = 0;
-    orchestrator.namespaceCatalog = {
+    // Fixture: catalog stub implements only listNamespaces + markMaintenance.
+    const catalog = {
       enabled: true,
       async listNamespaces() {
         return [
@@ -778,24 +781,38 @@ test("runQmdMaintenance unions configured and cataloged namespaces into one stri
 
     const updateCalls: Array<{ namespaces: string[]; strict: boolean | undefined }> = [];
     const embedCalls: Array<{ namespaces: string[]; strict: boolean | undefined }> = [];
-    orchestrator.namespaceSearchRouter = {
+    // Fixture: router stub implements only the two methods runQmdMaintenance invokes.
+    const router = {
       async updateNamespacesDetailed(
         namespaces: string[],
-        _execution?: unknown,
-        options?: { strict?: boolean },
-      ) {
+        _execution: unknown,
+        options: { strict?: boolean } | undefined,
+      ): Promise<{ backendCount: number; eligibleNamespaces: string[] }> {
         updateCalls.push({ namespaces: [...namespaces], strict: options?.strict });
         return { backendCount: namespaces.length, eligibleNamespaces: namespaces };
       },
       // Mock signature matches production (rule 33 / #1545 codex review):
       // runQmdMaintenance passes { strict: true }, and dropping the options
       // parameter here would let a non-strict regression pass silently.
-      async embedNamespaces(namespaces: string[], options?: { strict?: boolean }) {
+      async embedNamespaces(
+        namespaces: string[],
+        options: { strict?: boolean } | undefined,
+      ): Promise<void> {
         embedCalls.push({ namespaces: [...namespaces], strict: options?.strict });
       },
     };
 
-    await orchestrator.runQmdMaintenance();
+    scheduler = new MaintenanceScheduler({
+      config,
+      // Fixture: live accessor — only isAvailable() is checked when arming
+      // pending. Mirrors the production wiring (getQmd: () => this.qmd).
+      getQmd: () => ({ isAvailable: () => true }),
+      namespaceSearchRouter: router,
+      namespaceCatalog: catalog,
+      // Fixture cast: stubs implement only the surface runQmdMaintenance invokes.
+    } as unknown as ConstructorParameters<typeof MaintenanceScheduler>[0]);
+    scheduler.requestQmdMaintenanceForTool("test");
+    await scheduler.runQmdMaintenance();
 
     assert.equal(updateCalls.length, 1, "maintenance batches the selected namespaces into ONE update");
     assert.equal(updateCalls[0]?.strict, true, "recurring maintenance uses strict update semantics");
@@ -811,6 +828,7 @@ test("runQmdMaintenance unions configured and cataloged namespaces into one stri
       new Set(["default", "shared", dynamicNamespace]),
     );
   } finally {
+    scheduler?.dispose();
     await cleanupDir(memoryDir);
   }
 });

@@ -52,11 +52,11 @@ test("initialize skips nightly governance cron auto-register unless explicitly e
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-off-memory-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-off-workspace-"));
   try {
-    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, false)) as any;
+    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, false));
     stubInitializeDependencies(orchestrator);
 
     let nightlyCalls = 0;
-    orchestrator.autoRegisterNightlyGovernanceCron = () => {
+    orchestrator.maintenanceScheduler.autoRegisterNightlyGovernanceCron = () => {
       nightlyCalls += 1;
       return Promise.resolve();
     };
@@ -75,11 +75,11 @@ test("initialize triggers nightly governance cron auto-register when explicitly 
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-on-memory-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-nightly-governance-config-on-workspace-"));
   try {
-    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, true)) as any;
+    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, true));
     stubInitializeDependencies(orchestrator);
 
     let nightlyCalls = 0;
-    orchestrator.autoRegisterNightlyGovernanceCron = () => {
+    orchestrator.maintenanceScheduler.autoRegisterNightlyGovernanceCron = () => {
       nightlyCalls += 1;
       return Promise.resolve();
     };
@@ -98,11 +98,11 @@ test("abortDeferredInit stops deferred initialization before cron registration",
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-abort-deferred-memory-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-abort-deferred-workspace-"));
   try {
-    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, true)) as any;
+    const orchestrator = new Orchestrator(buildConfig(memoryDir, workspaceDir, true));
     stubInitializeDependencies(orchestrator);
 
     let nightlyCalls = 0;
-    orchestrator.autoRegisterNightlyGovernanceCron = () => {
+    orchestrator.maintenanceScheduler.autoRegisterNightlyGovernanceCron = () => {
       nightlyCalls += 1;
       return Promise.resolve();
     };

@@ -136,9 +136,14 @@ type OrchestratorTeardownView = {
   deferredReady: Promise<void>;
   lcmEngine: { close(): void } | null;
   qmd: { dispose?(): void | Promise<void> };
-  qmdMaintenanceTimer?: NodeJS.Timeout | null;
-  qmdMaintenancePending?: boolean;
-  qmdMaintenanceInFlight?: boolean;
+  /**
+   * Maintenance scheduler owns the QMD debounce timer after the #1526 PR1
+   * extraction. The orchestrator used to expose qmdMaintenanceTimer /
+   * qmdMaintenancePending / qmdMaintenanceInFlight directly; disposing the
+   * scheduler here clears the live timer so no maintenance pass fires after
+   * the QMD sandbox is torn down.
+   */
+  maintenanceScheduler?: { dispose(): void };
 };
 
 type OrchestratorDrainDiagnosticsView = {
@@ -148,9 +153,14 @@ type OrchestratorDrainDiagnosticsView = {
   } | null;
   extractionQueue?: unknown[];
   queueProcessing?: boolean;
-  consolidationInFlight?: boolean;
-  qmdMaintenancePending?: boolean;
-  qmdMaintenanceInFlight?: boolean;
+  /** Maintenance scheduler owns consolidation cadence AND QMD debounce state
+   *  after the #1526 PR1 extraction; read both through the scheduler's public
+   *  accessors (the orchestrator no longer exposes these fields directly). */
+  maintenanceScheduler?: {
+    isConsolidationInFlight(): boolean;
+    isQmdMaintenancePending(): boolean;
+    isQmdMaintenanceInFlight(): boolean;
+  };
   tierMigrationInFlight?: boolean;
 };
 
@@ -1588,12 +1598,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       const orchestrator = state.orchestrator as unknown as OrchestratorTeardownView;
 
       orchestrator.abortDeferredInit();
-      if (orchestrator.qmdMaintenanceTimer) {
-        clearTimeout(orchestrator.qmdMaintenanceTimer);
-      }
-      orchestrator.qmdMaintenanceTimer = null;
-      orchestrator.qmdMaintenancePending = false;
-      orchestrator.qmdMaintenanceInFlight = false;
+      // The QMD debounce timer lives on MaintenanceScheduler after the #1526
+      // PR1 extraction (the orchestrator no longer exposes
+      // qmdMaintenanceTimer/Pending/InFlight). Dispose the scheduler so the
+      // live timer is cleared and no maintenance pass runs against the QMD
+      // sandbox once it is torn down below.
+      orchestrator.maintenanceScheduler?.dispose();
       await Promise.race([
         orchestrator.deferredReady.catch(() => undefined),
         new Promise((resolve) =>
@@ -2549,9 +2559,9 @@ function describeDrainState(orchestrator: Orchestrator): string {
     `lcmInFlight=${lcmInFlight}`,
     `extractionProcessing=${view.queueProcessing === true}`,
     `extractionQueueDepth=${extractionQueueDepth}`,
-    `consolidationInFlight=${view.consolidationInFlight === true}`,
-    `qmdMaintenancePending=${view.qmdMaintenancePending === true}`,
-    `qmdMaintenanceInFlight=${view.qmdMaintenanceInFlight === true}`,
+    `consolidationInFlight=${view.maintenanceScheduler?.isConsolidationInFlight() === true}`,
+    `qmdMaintenancePending=${view.maintenanceScheduler?.isQmdMaintenancePending() === true}`,
+    `qmdMaintenanceInFlight=${view.maintenanceScheduler?.isQmdMaintenanceInFlight() === true}`,
     `tierMigrationInFlight=${view.tierMigrationInFlight === true}`,
   ].join(", ");
 }

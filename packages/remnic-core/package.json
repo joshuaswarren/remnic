@@ -1646,6 +1646,16 @@
       "remnic-source": "./src/orchestrator.ts",
       "import": "./dist/orchestrator.js"
     },
+    "./orchestration/maintenance": {
+      "types": "./dist/orchestration/maintenance.d.ts",
+      "remnic-source": "./src/orchestration/maintenance.ts",
+      "import": "./dist/orchestration/maintenance.js"
+    },
+    "./orchestration/maintenance.js": {
+      "types": "./dist/orchestration/maintenance.d.ts",
+      "remnic-source": "./src/orchestration/maintenance.ts",
+      "import": "./dist/orchestration/maintenance.js"
+    },
     "./page-versioning": {
       "types": "./dist/page-versioning.d.ts",
       "remnic-source": "./src/page-versioning.ts",
