@@ -152,8 +152,11 @@ export {
 export type {
   BenchmarkArtifact,
   BenchmarkArtifactEnvironment,
+  BenchmarkArtifactHardware,
+  BenchmarkArtifactJudgeCalibration,
   BenchmarkArtifactPerTaskScore,
   BenchmarkArtifactSystem,
+  BenchmarkArtifactTier,
   BuildBenchmarkArtifactInput,
   PublishedBenchmarkId,
   WriteBenchmarkArtifactResult,
@@ -394,6 +397,27 @@ export {
   DEFAULT_ASSISTANT_RUBRIC_ID,
   SEALED_PROMPT_REGISTRY,
 } from "./judges/sealed-prompts/index.js";
+
+// Cross-tier judge calibration — Cohen's kappa + calibration slice (issue #1573 PR3).
+export {
+  CALIBRATION_SLICE_SIZE,
+  DEFAULT_JUDGE_BINARIZATION_THRESHOLD,
+  JUDGE_CALIBRATION_KAPPA_THRESHOLD,
+  binarizeJudgeScore,
+  computeCohensKappa,
+  loadJudgeCalibrationState,
+  runJudgeCalibration,
+  selectCalibrationSlice,
+  writeJudgeCalibrationState,
+} from "./judges/calibration-slice.js";
+export type {
+  CalibrationAnswer,
+  CalibrationVerdictPair,
+  CohenKappaResult,
+  JudgeCalibrationResult,
+  JudgeCategory,
+  RunJudgeCalibrationOptions,
+} from "./judges/calibration-slice.js";
 
 // Assistant bench tier — shared runner helpers.
 export {

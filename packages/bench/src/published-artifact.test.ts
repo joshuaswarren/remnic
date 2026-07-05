@@ -649,3 +649,136 @@ test("schemaVersion bump guard: constant matches declared type", () => {
   const value: typeof BENCHMARK_ARTIFACT_SCHEMA_VERSION = 1;
   assert.equal(value, BENCHMARK_ARTIFACT_SCHEMA_VERSION);
 });
+
+test("buildBenchmarkArtifact attaches tier/hardware/judgeCalibration when provided (issue #1573)", () => {
+  const artifact = buildBenchmarkArtifact({
+    benchmarkId: "locomo",
+    datasetVersion: "locomo-10",
+    model: "llama-3.1-8b-instruct",
+    seed: 7,
+    startedAt: "2026-07-05T08:00:00.000Z",
+    finishedAt: "2026-07-05T08:30:00.000Z",
+    result: sampleResult(),
+    tier: "local",
+    hardware: { gpu: "NVIDIA RTX 3090", vramGb: 24, quantization: "Q4_K_M" },
+    judgeCalibration: { kappa: 0.82, sampleSize: 50, threshold: 0.7, warning: false },
+  });
+  assert.equal(artifact.tier, "local");
+  assert.equal(artifact.hardware?.gpu, "NVIDIA RTX 3090");
+  assert.equal(artifact.hardware?.vramGb, 24);
+  assert.equal(artifact.hardware?.quantization, "Q4_K_M");
+  assert.equal(artifact.judgeCalibration?.kappa, 0.82);
+  assert.equal(artifact.judgeCalibration?.sampleSize, 50);
+  assert.equal(artifact.judgeCalibration?.threshold, 0.7);
+  assert.equal(artifact.judgeCalibration?.warning, false);
+});
+
+test("buildBenchmarkArtifact omits tier/hardware/judgeCalibration when absent (backwards compatible)", () => {
+  const artifact = buildBenchmarkArtifact({
+    benchmarkId: "longmemeval",
+    datasetVersion: "v1",
+    model: "gpt-4o-mini",
+    seed: 0,
+    startedAt: "2026-04-20T12:00:00.000Z",
+    finishedAt: "2026-04-20T12:05:00.000Z",
+    result: sampleResult(),
+  });
+  assert.equal(artifact.tier, undefined);
+  assert.equal(artifact.hardware, undefined);
+  assert.equal(artifact.judgeCalibration, undefined);
+});
+
+test("tier/hardware/judgeCalibration round-trip through serialize + parse (issue #1573)", () => {
+  const built = buildBenchmarkArtifact({
+    benchmarkId: "locomo",
+    datasetVersion: "v1",
+    model: "m",
+    seed: 1,
+    startedAt: "2026-07-05T08:00:00.000Z",
+    finishedAt: "2026-07-05T08:10:00.000Z",
+    result: sampleResult(),
+    tier: "local",
+    hardware: { gpu: "RTX 3090", vramGb: 24, quantization: "AWQ-int4" },
+    judgeCalibration: { kappa: 0.55, sampleSize: 50, threshold: 0.7, warning: true },
+  });
+  const roundTripped = parseBenchmarkArtifact(serializeBenchmarkArtifact(built));
+  assert.equal(roundTripped.tier, "local");
+  assert.equal(roundTripped.hardware?.gpu, "RTX 3090");
+  assert.equal(roundTripped.hardware?.vramGb, 24);
+  assert.equal(roundTripped.hardware?.quantization, "AWQ-int4");
+  assert.equal(roundTripped.judgeCalibration?.kappa, 0.55);
+  assert.equal(roundTripped.judgeCalibration?.warning, true);
+});
+
+test("parseBenchmarkArtifact accepts old artifacts without tier/hardware (forwards compatible)", () => {
+  // An artifact serialized before #1573 has none of the new fields; parse
+  // must still accept it (additive-only schema evolution).
+  const payload = sampleArtifactPayload();
+  const parsed = parseBenchmarkArtifact(JSON.stringify(payload));
+  assert.equal(parsed.tier, undefined);
+  assert.equal(parsed.hardware, undefined);
+  assert.equal(parsed.judgeCalibration, undefined);
+});
+
+test("parseBenchmarkArtifact rejects invalid tier value", () => {
+  const payload = { ...sampleArtifactPayload(), tier: "edge" };
+  assert.throws(
+    () => parseBenchmarkArtifact(JSON.stringify(payload)),
+    /tier must be "local" or "frontier"/,
+  );
+});
+
+test("parseBenchmarkArtifact rejects malformed hardware (missing quantization)", () => {
+  const payload = { ...sampleArtifactPayload(), tier: "local", hardware: { gpu: "x", vramGb: 24 } };
+  assert.throws(
+    () => parseBenchmarkArtifact(JSON.stringify(payload)),
+    /quantization.*must be a string/,
+  );
+});
+
+test("parseBenchmarkArtifact rejects non-boolean judgeCalibration.warning", () => {
+  const payload = {
+    ...sampleArtifactPayload(),
+    judgeCalibration: { kappa: 0.9, sampleSize: 50, threshold: 0.7, warning: "yes" },
+  };
+  assert.throws(
+    () => parseBenchmarkArtifact(JSON.stringify(payload)),
+    /judgeCalibration\.warning must be a boolean/,
+  );
+});
+
+test("hashBenchmarkArtifact is stable for tier/hardware/judgeCalibration presence (sorted-key canonical JSON)", () => {
+  // Same fields in different insertion orders must hash identically — the
+  // canonical serializer sorts keys, so leaderboard integrity checks are
+  // order-independent.
+  const base = buildBenchmarkArtifact({
+    benchmarkId: "locomo",
+    datasetVersion: "v1",
+    model: "m",
+    seed: 1,
+    startedAt: "2026-07-05T08:00:00.000Z",
+    finishedAt: "2026-07-05T08:10:00.000Z",
+    result: sampleResult(),
+  });
+  const hashBefore = hashBenchmarkArtifact(base);
+  // Rebuild with the additive fields; the hash changes (fields added) but is
+  // deterministic — rebuilding the same artifact twice yields the same hash.
+  const withMeta = buildBenchmarkArtifact({
+    benchmarkId: "locomo",
+    datasetVersion: "v1",
+    model: "m",
+    seed: 1,
+    startedAt: "2026-07-05T08:00:00.000Z",
+    finishedAt: "2026-07-05T08:10:00.000Z",
+    result: sampleResult(),
+    tier: "local",
+    hardware: { gpu: "RTX 3090", vramGb: 24, quantization: "Q4_K_M" },
+    judgeCalibration: { kappa: 0.9, sampleSize: 50, threshold: 0.7, warning: false },
+  });
+  const hashA = hashBenchmarkArtifact(withMeta);
+  const hashB = hashBenchmarkArtifact(
+    JSON.parse(JSON.stringify(withMeta)) as typeof withMeta,
+  );
+  assert.notEqual(hashA, hashBefore);
+  assert.equal(hashA, hashB);
+});

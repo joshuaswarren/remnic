@@ -66,6 +66,46 @@ export interface BenchmarkArtifactEnvironment {
   arch?: string;
 }
 
+/**
+ * Additive tier metadata (issue #1573). Local-lab regression runs (Tier L)
+ * record `tier: "local"`; frontier leaderboard runs (Tier F) record
+ * `"frontier"`. Omitted on older artifacts — consumers treat absence as
+ * frontier for backwards compatibility (frontier is the historical default).
+ */
+export type BenchmarkArtifactTier = "local" | "frontier";
+
+/**
+ * Hardware envelope for a local-lab run (issue #1573). Recorded so a Tier L
+ * number is never conflated with a Tier F number: the GPU, VRAM, and model
+ * quantization pin exactly what produced the result. Optional on all runs;
+ * expected (and audited) on `tier: "local"` artifacts.
+ */
+export interface BenchmarkArtifactHardware {
+  /** Short GPU product id, e.g. "NVIDIA RTX 3090". */
+  gpu: string;
+  /** VRAM in gigabytes (e.g. 24). */
+  vramGb: number;
+  /** Model quantization label, e.g. "Q4_K_M" or "AWQ-int4". */
+  quantization: string;
+}
+
+/**
+ * Cross-tier judge calibration result recorded on local artifacts (issue
+ * #1573 PR3). The Cohen's kappa between the local and frontier judges over a
+ * fixed calibration slice; below `threshold` the local judge is flagged
+ * unreliable for the benchmark and `warning` is set.
+ */
+export interface BenchmarkArtifactJudgeCalibration {
+  /** Cohen's kappa in [-1, 1] between local and frontier judge verdicts. */
+  kappa: number;
+  /** Number of paired judgements the kappa was computed over. */
+  sampleSize: number;
+  /** Kappa threshold below which `warning` is set. */
+  threshold: number;
+  /** True when `kappa < threshold` — local judge unreliable for this benchmark. */
+  warning: boolean;
+}
+
 export interface BenchmarkArtifactPerTaskScore {
   /** Runner-assigned task ID (stable across reruns). */
   taskId: string;
@@ -102,6 +142,24 @@ export interface BenchmarkArtifact {
   /** Total wall-clock duration in milliseconds. */
   durationMs: number;
   env: BenchmarkArtifactEnvironment;
+  /**
+   * Two-tier provenance (issue #1573). `"local"` for local-lab regression
+   * runs, `"frontier"` for leaderboard runs. Optional and additive: older
+   * artifacts omit it.
+   */
+  tier?: BenchmarkArtifactTier;
+  /**
+   * Hardware envelope for local-lab runs (issue #1573). Optional; recorded
+   * for `tier: "local"` artifacts so the GPU/VRAM/quantization that produced
+   * a number travel with it.
+   */
+  hardware?: BenchmarkArtifactHardware;
+  /**
+   * Cross-tier judge calibration (issue #1573 PR3). The Cohen's kappa between
+   * the local and frontier judges over the calibration slice; lands in
+   * subsequent local artifacts after `remnic bench judge-calibrate`.
+   */
+  judgeCalibration?: BenchmarkArtifactJudgeCalibration;
   /** Optional explanatory note (e.g. "--limit 100"). Never contains PII. */
   note?: string;
 }
@@ -119,8 +177,13 @@ export interface BuildBenchmarkArtifactInput {
   categoryFor?: (task: TaskResult) => string | undefined;
   /** Optional free-form note (e.g. `"--limit 100"`). */
   note?: string;
+  /** Optional two-tier provenance tag (issue #1573). */
+  tier?: BenchmarkArtifactTier;
+  /** Optional hardware envelope for local-lab runs (issue #1573). */
+  hardware?: BenchmarkArtifactHardware;
+  /** Optional cross-tier judge calibration result (issue #1573 PR3). */
+  judgeCalibration?: BenchmarkArtifactJudgeCalibration;
 }
-
 /**
  * Build a `BenchmarkArtifact` from a runner's `BenchmarkResult`.
  * Aggregates metrics to their `.mean` for public consumption; preserves
@@ -207,6 +270,9 @@ export function buildBenchmarkArtifact(input: BuildBenchmarkArtifactInput): Benc
       ...(result.environment.hardware ? { arch: result.environment.hardware } : {}),
     },
     ...(input.note !== undefined ? { note: input.note } : {}),
+    ...(input.tier !== undefined ? { tier: input.tier } : {}),
+    ...(input.hardware !== undefined ? { hardware: input.hardware } : {}),
+    ...(input.judgeCalibration !== undefined ? { judgeCalibration: input.judgeCalibration } : {}),
   };
 }
 
@@ -324,6 +390,27 @@ export function parseBenchmarkArtifact(raw: string): BenchmarkArtifact {
   requireString(env, "os");
   requireOptionalString(env, "arch", "env.arch");
   requireOptionalString(record, "note", "note");
+  if (record.tier !== undefined && record.tier !== "local" && record.tier !== "frontier") {
+    throw new Error(
+      `BenchmarkArtifact tier must be "local" or "frontier" when provided; got ${String(record.tier)}.`,
+    );
+  }
+  if (record.hardware !== undefined) {
+    const hardware = requireObject(record, "hardware");
+    requireString(hardware, "gpu");
+    requireNumber(hardware, "vramGb");
+    requireString(hardware, "quantization");
+  }
+  if (record.judgeCalibration !== undefined) {
+    const calibration = requireObject(record, "judgeCalibration");
+    requireNumber(calibration, "kappa");
+    requireNumber(calibration, "sampleSize");
+    requireNumber(calibration, "threshold");
+    const warning = calibration.warning;
+    if (typeof warning !== "boolean") {
+      throw new Error(`BenchmarkArtifact judgeCalibration.warning must be a boolean; got ${String(warning)}.`);
+    }
+  }
   const metrics = requireObject(record, "metrics");
   for (const [key, value] of Object.entries(metrics)) {
     if (typeof value !== "number" || !Number.isFinite(value)) {
