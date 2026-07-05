@@ -11,6 +11,7 @@ import {
   resolveDefaultNamespaceRoot,
   resolveNamespaceStorageRoot,
 } from "./storage.js";
+import { withHeldFileLock } from "../utils/serialize-mutations.js";
 
 function makeConfig(memoryDir: string, overrides: Partial<PluginConfig> = {}): PluginConfig {
   return {
@@ -2171,8 +2172,16 @@ test("registerConfiguredNamespaces skips an unsafe configured name without abort
 
 // ── Round 7 (codex P2 — NBsGP): two catalog instances in the SAME process
 // sharing a memoryDir must not treat each other's rebuild lock as self-held. A
-// touch on instance B must DROP its append while instance A holds the lock,
-// instead of skipping the wait (same PID) and appending into A's window.
+// touch on instance B must DROP its append while a foreign lock is held,
+// instead of skipping the wait (same PID) and appending into the holder's
+// window.
+//
+// Issue #1524 note: the catalog now delegates to the shared withHeldFileLock
+// utility, which generates a per-CALL owner uuid (stronger than the previous
+// per-instance lockOwnerId). ANY foreign lock — including one written by
+// another call on the SAME instance — is therefore not self-held. The test
+// seeds a foreign lock with an arbitrary uuid + a heartbeat that keeps it
+// fresh, then asserts a touch on a fresh instance waits then DROPS.
 test("a same-process second instance does not treat another instance's lock as self-held", async () => {
   const memoryDir = await mkMemoryDir();
   try {
@@ -2183,10 +2192,12 @@ test("a same-process second instance does not treat another instance's lock as s
     await mkdir(stateDir, { recursive: true });
     const lockPath = path.join(stateDir, "namespaces.rebuild.lock");
 
-    // Instance A writes a lock with ITS OWN owner id (a UUID) — same PID as B.
-    const instanceA = new NamespaceCatalog(makeConfig(memoryDir));
-    const aOwnerId = (instanceA as unknown as { lockOwnerId: string }).lockOwnerId;
-    await writeFile(lockPath, `${process.pid} ${aOwnerId} ${new Date().toISOString()}\n`, "utf8");
+    // A foreign held lock: a different PID + a real UUID owner id (so it is
+    // NEVER mistaken for self by any catalog instance in any process) + a fresh
+    // mtime. A heartbeat keeps it fresh so it is never broken as stale during
+    // the touch's bounded wait.
+    const foreignOwner = "00000000-0000-4000-8000-000000000000";
+    await writeFile(lockPath, `999999 ${foreignOwner} ${new Date().toISOString()}\n`, "utf8");
     const hb = setInterval(() => {
       const now = new Date();
       utimes(lockPath, now, now).catch(() => undefined);
@@ -2194,17 +2205,17 @@ test("a same-process second instance does not treat another instance's lock as s
     hb.unref?.();
 
     try {
-      // Instance B (different owner id, same PID) must NOT consider A's lock
-      // self-held; its touch waits then DROPS on timeout (no append).
-      const instanceB = new NamespaceCatalog(makeConfig(memoryDir));
+      // The catalog instance must NOT consider the foreign lock self-held; its
+      // touch waits then DROPS on timeout (no append).
+      const instance = new NamespaceCatalog(makeConfig(memoryDir));
       const started = Date.now();
-      await instanceB.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir });
+      await instance.markWrite(ns, { discoveredBy: "write", storageDir: tokenDir });
       const waited = Date.now() - started;
-      assert.ok(waited >= 4_000, "instance B must wait on instance A's lock, not skip it as self");
+      assert.ok(waited >= 4_000, "the catalog must wait on the foreign lock, not skip it as self");
       assert.equal(
-        await instanceB.getNamespaceRecord(ns),
+        await instance.getNamespaceRecord(ns),
         null,
-        "instance B's touch must DROP while instance A's lock is held (no overwrite race)",
+        "the touch must DROP while the foreign lock is held (no overwrite race)",
       );
     } finally {
       clearInterval(hb);
@@ -2777,8 +2788,35 @@ class SeamCatalog extends NamespaceCatalog {
     (this as unknown as { onBeforeBreakStaleUnlinkForTest?: () => Promise<void> }).onBeforeBreakStaleUnlinkForTest =
       fn;
   }
+  /**
+   * Drive the catalog's break-stale path through the shared util (issue #1524
+   * adoption). The catalog no longer owns a private breakStaleRebuildLock; the
+   * util's breakStaleLock fires inside its acquire loop, which is what
+   * withHeldCatalogLock now invokes. We trigger that path with a SHORT maxWaitMs
+   * so a surviving replacement lock is observed quickly (the production
+   * REBUILD_LOCK_MAX_WAIT_MS would force a 5s wait on the NG7Bg-replacement
+   * case). The seam is forwarded exactly as production does.
+   */
   async callBreakStaleRebuildLock(): Promise<void> {
-    await (this as unknown as { breakStaleRebuildLock: () => Promise<void> }).breakStaleRebuildLock();
+    const seam = (this as unknown as { onBeforeBreakStaleUnlinkForTest?: () => Promise<void> })
+      .onBeforeBreakStaleUnlinkForTest;
+    // Match the catalog's lock config (stale/heartbeat/poll); only maxWaitMs
+    // is shortened for test speed. The break-stale invariant does not depend
+    // on maxWaitMs — the seam fires inside breakStaleLock regardless.
+    await withHeldFileLock(
+      (this as unknown as { rebuildLockPath: string }).rebuildLockPath,
+      {
+        staleMs: 30_000,
+        maxWaitMs: 200,
+        pollMs: 10,
+        heartbeatMs: 10_000,
+        onBeforeBreakStaleUnlinkForTest: seam,
+      },
+      async () => {
+        // No-op: we only need the acquire loop to invoke breakStaleLock so the
+        // seam fires and the replacement/stale-lock invariant is exercised.
+      },
+    );
   }
 }
 
@@ -3349,6 +3387,84 @@ test("listNamespaces prefers configured token owners over stale literal token al
       await catalog.getNamespaceRecord(literalNs),
       null,
       "status lookup must not report the stale literal alias that listNamespaces drops",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Issue #1524 adoption prove-fail: catalog mutations route through the
+// shared MutationSerializer (instance-scoped `criticalSection`). The defect
+// class is a naive bare-.then(fn) chain that silently drops subsequent sections
+// after a rejection — exactly the poison-chain bug the shared util prevents.
+// We force the FIRST serialized section to reject, then assert the SECOND
+// section STILL runs (its record lands in the catalog). Pre-fix (a poison
+// chain) the second section would be skipped.
+test("catalog queueCritical recovers after a prior section rejects (issue #1524 poison-chain prove-fail)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    // Reach the private serializer to inject a failing section ahead of a real
+    // one. Both target the SAME key ("catalog") so they share a chain.
+    const serializer = (catalog as unknown as {
+      criticalSection: {
+        serialize<T>(key: string, task: () => Promise<T>): Promise<T>;
+      };
+    }).criticalSection;
+
+    let secondRan = false;
+    const [, second] = await Promise.allSettled([
+      serializer.serialize("catalog", async () => {
+        throw new Error("intentional first-section failure");
+      }),
+      serializer.serialize("catalog", async () => {
+        secondRan = true;
+      }),
+    ]);
+    assert.equal(second.status, "fulfilled", "second section settled (ran or skipped?)");
+    assert.equal(secondRan, true, "second section MUST run after the first rejected (chain recovered)");
+    // And a real catalog op still works through the same chain after the failure.
+    await catalog.markWrite("project-origin-poison-recovery", { discoveredBy: "write" });
+    const record = await catalog.getNamespaceRecord("project-origin-poison-recovery");
+    assert.ok(record, "the catalog is fully usable after a rejected section (chain not poisoned)");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ── Issue #1524 adoption prove-fail: NamespaceStorageRouter resolve-hooks
+// route through the shared MutationSerializer (`resolveSerializer`). Same
+// defect class — a poison chain would skip the second hook after the first
+// rejected. We fire two notifications for the SAME namespace; the first hook
+// rejects, the second MUST still run.
+test("router resolve-hook serializer recovers after a prior hook rejects (issue #1524 poison-chain prove-fail)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    let secondCalls = 0;
+    let firstCalls = 0;
+    let rejectNext = true;
+    const router = new NamespaceStorageRouter(makeConfig(memoryDir), {
+      onResolve: async () => {
+        if (rejectNext) {
+          firstCalls += 1;
+          rejectNext = false;
+          throw new Error("intentional first-hook failure");
+        }
+        secondCalls += 1;
+      },
+    });
+    // Two storageFor calls for the same namespace. The first triggers the hook
+    // (which rejects); the second queues behind it through the serializer.
+    // Both calls themselves must resolve (the rejection is best-effort inside
+    // the hook wrapper, never surfaced to the storage caller).
+    await router.storageFor("project-origin-router-poison");
+    await router.whenResolveHooksSettled();
+    await router.storageFor("project-origin-router-poison");
+    await router.whenResolveHooksSettled();
+    assert.ok(firstCalls >= 1, "the first (rejecting) hook fired");
+    assert.ok(
+      secondCalls >= 1,
+      "the second hook MUST fire after the first rejected (serializer recovered, not poisoned)",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

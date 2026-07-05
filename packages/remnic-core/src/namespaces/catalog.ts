@@ -1,21 +1,21 @@
 import path from "node:path";
-import { randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import {
   appendFile,
   lstat,
   mkdir,
-  open,
   readdir,
   readFile,
   realpath,
   rename,
   stat,
-  unlink,
-  utimes,
   writeFile,
 } from "node:fs/promises";
 import type { PluginConfig } from "../types.js";
+import {
+  MutationSerializer,
+  withHeldFileLock,
+} from "../utils/serialize-mutations.js";
 import { isSafeRouteNamespace } from "../routing/engine.js";
 import { namespaceIdentityFromToken, namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
 import { resolveDefaultNamespaceRoot, resolveNamespaceStorageRoot } from "./storage.js";
@@ -430,15 +430,16 @@ export class NamespaceCatalog {
   private readonly stateDir: string;
   private readonly catalogPath: string;
   private readonly rebuildLockPath: string;
-  // Per-INSTANCE lock owner id (round 6, codex P2 — NBsGP). The rebuild lock
-  // file records this id, not just `process.pid`, so two NamespaceCatalog
-  // instances in the SAME process sharing a memoryDir are NOT mistaken for each
-  // other: a touch on instance B must still wait for instance A's rebuild lock
-  // (different owner id, same PID) instead of skipping as "self-held".
-  private readonly lockOwnerId: string = randomUUID();
-  // Serialized write chain that recovers from rejection (CLAUDE.md rule #40)
-  // so a single failed append cannot permanently poison subsequent writes.
-  private writeChain: Promise<void> = Promise.resolve();
+  // In-process serialization for catalog mutations (issue #1524 adoption).
+  // Replaces the bespoke `writeChain` field: every touch/rebuild runs through
+  // this serializer so a single failed section never poisons subsequent ones
+  // (CLAUDE.md rule #40 — recovery is the util's contract, not re-implemented
+  // here). Cross-process identity (the lock file's owner-uuid) is now per-CALL
+  // inside the shared util, which is STRONGER than the previous per-instance
+  // `lockOwnerId` — two calls on the SAME instance get different ids, so
+  // neither mistakes the other's lock for self-held (round 6, codex P2 — NBsGP
+  // invariant preserved and tightened).
+  private readonly criticalSection = new MutationSerializer();
   // Test-only seam (round 7 — NEZkA): fires inside a touch's HELD-lock critical
   // section, after the lock is acquired but BEFORE the read→merge→append. A
   // deterministic concurrency test installs a hook here to widen the (otherwise
@@ -1826,24 +1827,23 @@ export class NamespaceCatalog {
    * their respective critical sections — closing the check-then-append gap where a
    * polled-only touch could append into a rebuild's load→rename window.
    *
-   * Acquisition is atomic via `open(..., "wx")`. A lock older than
-   * `REBUILD_LOCK_STALE_MS` is treated as a crashed holder and broken. After
-   * `REBUILD_LOCK_MAX_WAIT_MS` of contention we proceed best-effort WITHOUT the
-   * lock rather than block forever. The lock is always released in `finally`.
+   * Issue #1524 adoption: this is now a thin delegation to the shared
+   * `withHeldFileLock` utility. The acquire loop, mtime heartbeat, stale-break
+   * (NG7Bg replacement-safe), and ownership-checked release (NCzT6) all live in
+   * ONE place — the util — so this module no longer re-implements them. The
+   * catalog's `REBUILD_LOCK_*` constants and the `onBeforeBreakStaleUnlinkForTest`
+   * seam flow straight through. The util generates a per-CALL owner uuid, which
+   * is stricter than the previous per-instance `lockOwnerId` (two calls on the
+   * same instance get different ids, so neither mistakes the other's lock as
+   * self-held — the NBsGP invariant, preserved and tightened).
    *
    * IN-PROCESS SAFETY: every caller invokes this from inside (or wrapping) the
    * per-process `queueCritical` chain, which serializes all catalog mutations in
-   * THIS process. So within one process only one logical holder attempts OS-lock
-   * acquisition at a time — the file lock is never self-contended in-process, and
-   * the lock is acquired and released within a single in-process turn. The file
-   * lock adds only the missing CROSS-process exclusion.
-   *
-   * HEARTBEAT (round 5, cursor/codex Medium/P2): while WE hold the lock a timer
-   * refreshes its mtime every `REBUILD_LOCK_HEARTBEAT_MS`, so a legitimately long
-   * holder (> `REBUILD_LOCK_STALE_MS`) is not treated as a crashed holder and
-   * unlinked by another process — which would let overlapping windows lose
-   * appends. Heartbeat failures are swallowed; the timer is always cleared in
-   * `finally`.
+   * THIS process (now via `MutationSerializer`). So within one process only one
+   * logical holder attempts OS-lock acquisition at a time — the file lock is never
+   * self-contended in-process, and the lock is acquired and released within a
+   * single in-process turn. The file lock adds only the missing CROSS-process
+   * exclusion.
    *
    * ACQUISITION RESULT (round 6, codex P2 — NBPmY): `fn` receives whether WE
    * actually hold the lock. When acquisition TIMED OUT (another holder is active),
@@ -1852,152 +1852,20 @@ export class NamespaceCatalog {
    * caller uses `acquired` to run compute-only (rebuild) or DROP the append
    * (touch) when unlocked.
    */
-  private async withHeldCatalogLock<T>(fn: (acquired: boolean) => Promise<T>): Promise<T> {
-    const acquired = await this.acquireRebuildLock();
-    let heartbeat: ReturnType<typeof setInterval> | undefined;
-    if (acquired) {
-      heartbeat = setInterval(() => {
-        const now = new Date();
-        // Refresh mtime so age-based stale detection sees an active holder.
-        utimes(this.rebuildLockPath, now, now).catch(() => undefined);
-      }, REBUILD_LOCK_HEARTBEAT_MS);
-      // Don't keep the event loop alive solely for the heartbeat.
-      heartbeat.unref?.();
-    }
-    try {
-      return await fn(acquired);
-    } finally {
-      if (heartbeat) clearInterval(heartbeat);
-      if (acquired) {
-        try {
-          // Release ONLY the lock still owned by THIS instance (round 6, codex
-          // P2 — NCzT6). If this rebuild paused long enough that another process
-          // treated our lock as stale, unlinked it, and acquired a REPLACEMENT,
-          // an unconditional unlink here would delete that other holder's active
-          // lock — letting writers/another rebuild proceed during its load/rename
-          // window and recreating the lost-append race. Verify ownership first.
-          if (await this.rebuildLockHeldBySelf()) {
-            await unlink(this.rebuildLockPath);
-          }
-        } catch {
-          // Best-effort release; a stale lock will be broken on next rebuild.
-        }
-      }
-    }
-  }
-
-  /** Try to acquire the rebuild lock; returns true if WE created it. */
-  private async acquireRebuildLock(): Promise<boolean> {
-    const deadline = Date.now() + REBUILD_LOCK_MAX_WAIT_MS;
-    await mkdir(this.stateDir, { recursive: true });
-    for (;;) {
-      try {
-        const handle = await open(this.rebuildLockPath, "wx");
-        try {
-          // Record PID, this instance's owner id, and a timestamp. The owner id
-          // distinguishes same-process instances (NBsGP).
-          await handle.writeFile(
-            `${process.pid} ${this.lockOwnerId} ${new Date().toISOString()}\n`,
-            "utf8",
-          );
-        } catch {
-          // Ignore write failures — the exclusive create already gave us the lock.
-        } finally {
-          await handle.close();
-        }
-        return true;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException)?.code !== "EEXIST") {
-          // Unexpected FS error — proceed best-effort without the lock.
-          return false;
-        }
-        // Lock exists: break it if stale, otherwise wait briefly.
-        await this.breakStaleRebuildLock();
-        if (Date.now() >= deadline) return false;
-        await new Promise((r) => setTimeout(r, REBUILD_LOCK_POLL_MS));
-      }
-    }
-  }
-
-  /**
-   * Remove the lock file if its mtime is older than the stale threshold.
-   *
-   * REPLACEMENT-SAFE (NG7Bg, codex P2): a plain `stat` → `unlink` has a TOCTOU
-   * window — two processes can both observe the SAME stale lock; one removes it and
-   * creates a FRESH lock, and the other's later `unlink` then deletes that fresh
-   * holder's ACTIVE lock based on the stale identity it read earlier, leaving the
-   * fresh holder running its critical section with no visible lock and reopening the
-   * lost-update race the mutex prevents. We therefore capture the lock's IDENTITY
-   * (its full content line: `<pid> <owner-uuid> <iso>`) when we judge it stale, then
-   * RE-READ immediately before unlinking and only remove it when the content is
-   * byte-identical AND still stale. A replacement lock has a different owner id /
-   * timestamp, so its content differs and we leave it untouched. We never unlink a
-   * lock whose mtime is now fresh (a heartbeat refreshed it) or whose identity
-   * changed (a replacement was created). This is best-effort: any mismatch/vanish
-   * simply skips the break and the caller polls again.
-   */
-  private async breakStaleRebuildLock(): Promise<void> {
-    let staleIdentity: string;
-    try {
-      const info = await stat(this.rebuildLockPath);
-      if (Date.now() - info.mtimeMs <= REBUILD_LOCK_STALE_MS) {
-        // Not stale (e.g. a live holder's heartbeat keeps it fresh) — leave it.
-        return;
-      }
-      // Capture the exact identity we judged stale, so we can confirm it has not
-      // been replaced before we unlink.
-      staleIdentity = await readFile(this.rebuildLockPath, "utf8");
-    } catch {
-      // Lock vanished (released by holder) or stat/read failed — nothing to do.
-      return;
-    }
-    // Test-only seam: simulate a replacement lock being created in the race window
-    // between the staleness judgment and the unlink (NG7Bg). No-op in production.
-    if (this.onBeforeBreakStaleUnlinkForTest) {
-      await this.onBeforeBreakStaleUnlinkForTest();
-    }
-    try {
-      // Re-validate immediately before unlinking: the lock must still carry the
-      // SAME identity AND still be stale. If a replacement lock was created in the
-      // window (different owner/timestamp) or a heartbeat refreshed the mtime, do
-      // NOT unlink — that would delete another process's ACTIVE lock.
-      const current = await readFile(this.rebuildLockPath, "utf8");
-      if (current !== staleIdentity) return; // replaced — leave the fresh lock
-      const recheck = await stat(this.rebuildLockPath);
-      if (Date.now() - recheck.mtimeMs <= REBUILD_LOCK_STALE_MS) return; // refreshed
-      await unlink(this.rebuildLockPath).catch(() => undefined);
-    } catch {
-      // The lock changed/vanished between checks — another process handled it.
-    }
-  }
-
-  /**
-   * Whether the rebuild lock file was written by THIS instance (round 6, codex
-   * P2 — NBsGP). Matches the per-instance owner id, NOT just `process.pid`: two
-   * NamespaceCatalog instances in the same process share a PID, so a PID-only
-   * check would wrongly treat instance A's lock as self-held by instance B and
-   * let B's touch skip the wait and append into A's rebuild window. Falls back to
-   * the legacy PID-only form for lock files written before owner ids existed.
-   */
-  private async rebuildLockHeldBySelf(): Promise<boolean> {
-    try {
-      const body = await readFile(this.rebuildLockPath, "utf8");
-      const parts = body.trim().split(/\s+/);
-      const pid = Number.parseInt(parts[0] ?? "", 10);
-      const ownerId = parts[1];
-      // New format: "<pid> <uuid> <iso>". A UUID at parts[1] uniquely identifies
-      // the writing INSTANCE; only the same instance is self. The strict UUID
-      // shape avoids mistaking a legacy "<pid> <iso>" timestamp (also hyphenated)
-      // for an owner id.
-      const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-      if (ownerId && UUID_RE.test(ownerId)) {
-        return ownerId === this.lockOwnerId;
-      }
-      // Legacy format: "<pid> <iso>" (no owner id). Best-effort PID match.
-      return Number.isFinite(pid) && pid === process.pid;
-    } catch {
-      return false;
-    }
+  private withHeldCatalogLock<T>(fn: (acquired: boolean) => Promise<T>): Promise<T> {
+    return withHeldFileLock(
+      this.rebuildLockPath,
+      {
+        staleMs: REBUILD_LOCK_STALE_MS,
+        maxWaitMs: REBUILD_LOCK_MAX_WAIT_MS,
+        pollMs: REBUILD_LOCK_POLL_MS,
+        heartbeatMs: REBUILD_LOCK_HEARTBEAT_MS,
+        // NG7Bg seam: fires inside the util's breakStaleLock after it judges the
+        // lock stale and captures its identity, before the atomic rename+verify.
+        onBeforeBreakStaleUnlinkForTest: this.onBeforeBreakStaleUnlinkForTest,
+      },
+      fn,
+    );
   }
 
   /**
@@ -2071,21 +1939,20 @@ export class NamespaceCatalog {
 
   /**
    * Serialize an arbitrary read-modify-write critical section through the single
-   * write chain. Every catalog mutation (touch read+merge+append, full rewrite)
-   * runs through this so they are mutually exclusive: a touch always reads the
-   * latest persisted state before appending, and a rebuild rewrite cannot
-   * interleave with a touch's append. The chain recovers from rejection
-   * (CLAUDE.md rule #40) — one failed section never poisons subsequent ones —
-   * while still surfacing the error to that section's awaited promise.
+   * per-instance chain. Every catalog mutation (touch read+merge+append, full
+   * rewrite) runs through this so they are mutually exclusive: a touch always
+   * reads the latest persisted state before appending, and a rebuild rewrite
+   * cannot interleave with a touch's append.
+   *
+   * Issue #1524 adoption: delegates to the shared `MutationSerializer` (stored
+   * as `criticalSection`). The util owns the rejection-recovery invariant
+   * (CLAUDE.md rule #40 — one failed section never poisons subsequent ones, but
+   * the failing section's error still surfaces to ITS awaited promise) and the
+   * no-unbounded-growth cleanup. The key is constant: the catalog has ONE
+   * logical mutation queue (touches and rebuilds mutually exclude in-process).
    */
   private queueCritical<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.writeChain.then(fn);
-    // Keep the chain alive after a rejection so later sections still run.
-    this.writeChain = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
+    return this.criticalSection.serialize("catalog", fn);
   }
 
   /**

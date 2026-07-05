@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, open, readFile, rm, unlink, writeFile } from "node:fs/promises";
 import { HourlySummarizer } from "./summarizer.js";
 import {
   readSummarySnapshot,
@@ -755,4 +755,66 @@ test("hourly transcript lookup reads encoded transcript channel directories", as
     entries.map((entry: any) => entry.content),
     ["encoded transcript"],
   );
+});
+
+// ── Issue #1524 adoption prove-fail: summary-snapshot upserts must run through
+// the shared serializeMutations chain (rejection-recovering). The defect class
+// is a naive bare-.then(fn) chain that silently drops subsequent tasks after a
+// rejection: if upsert A rejects (e.g. transient I/O error) and the chain does
+// not recover, upsert B queued behind it never runs — its hour goes missing
+// from the snapshot. We seed the failure by rejecting the first upsert (a
+// hostile lock directory that throws on mkdir), then upsert B must STILL land
+// its hour. Pre-fix (a poison chain) B would be skipped.
+test("upsertSummarySnapshot recovers after a prior upsert rejects (issue #1524 poison-chain prove-fail)", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-summary-poison-chain-"));
+  const sessionKey = "session-poison";
+  try {
+    // The lock directory for sessionKey is <root>/state/summaries/<encoded>.lock.
+    // Pre-create a FILE at the summaries root so the upsert's mkdir(dirname)
+    // inside writeSummarySnapshot throws ENOTDIR — a deterministic rejection
+    // that does not depend on filesystem timing. Both upserts target the SAME
+    // sessionKey so they serialize through the same chain.
+    const summariesRoot = path.join(memoryDir, "state", "summaries");
+    await mkdir(path.dirname(summariesRoot), { recursive: true });
+    await writeFile(summariesRoot, "not-a-dir", "utf-8");
+
+    const summaryA = {
+      hour: "2026-03-26T08:00:00.000Z",
+      sessionKey,
+      bullets: ["A"],
+      turnCount: 1,
+      generatedAt: "2026-03-26T08:15:00.000Z",
+    };
+    const summaryB = {
+      hour: "2026-03-26T09:00:00.000Z",
+      sessionKey,
+      bullets: ["B"],
+      turnCount: 1,
+      generatedAt: "2026-03-26T09:15:00.000Z",
+    };
+
+    // Upsert A rejects (hostile summaries root). We MUST catch — the contract
+    // is that the chain recovers, not that the failing op silently succeeds.
+    await upsertSummarySnapshot(memoryDir, summaryA).then(
+      () => assert.fail("upsert A should have rejected on the hostile summaries root"),
+      () => undefined,
+    );
+
+    // Restore a usable summaries root so upsert B can actually write.
+    await unlink(summariesRoot);
+    await mkdir(summariesRoot, { recursive: true });
+
+    // Upsert B MUST still run despite A's rejection. With a poison chain B
+    // would be skipped (no snapshot, no B-hour bullet).
+    await upsertSummarySnapshot(memoryDir, summaryB);
+
+    const snapshot = await readSummarySnapshot(memoryDir, sessionKey);
+    assert.ok(snapshot, "upsert B landed after upsert A rejected (chain recovered)");
+    assert.ok(
+      snapshot.some((s) => s.bullets.includes("B")),
+      "upsert B's hour survived — the chain was not poisoned by A's rejection",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
