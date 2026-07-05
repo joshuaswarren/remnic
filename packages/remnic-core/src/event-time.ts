@@ -233,9 +233,16 @@ function resolveQuarter(
   const d = new Date(anchorMs);
   let year = d.getUTCFullYear();
   const anchorMonth = d.getUTCMonth() + 1;
-  const qStartMonthValue = startMonth;
-  if (direction === -1 && qStartMonthValue >= anchorMonth) year -= 1;
-  else if (direction === +1 && qStartMonthValue <= anchorMonth) year += 1;
+  const anchorQ = Math.floor((anchorMonth - 1) / 3) + 1;
+  // Roll back/forward when the target quarter hasn't started yet this year
+  // (startMonth past the anchor month) OR when the anchor is currently
+  // INSIDE the target quarter (review r2: "last Q2" from May returned 2026
+  // instead of 2025 because the quarter start month had already passed but
+  // the quarter was still ongoing).
+  if (direction === -1 && (startMonth >= anchorMonth || anchorQ === qNumber))
+    year -= 1;
+  else if (direction === +1 && (startMonth <= anchorMonth || anchorQ === qNumber))
+    year += 1;
   return buildDateMs(year, startMonth, 1);
 }
 
@@ -448,7 +455,11 @@ function resolveEndBound(anchorMs: number, period: string): number | null {
     const nd = new Date(startMs);
     nd.setUTCMonth(nd.getUTCMonth() + 1);
     let endMs = startOfDayUtc(nd.getTime());
-    if (endMs > anchorMs) {
+    // Only roll back when the named month boundary is genuinely future
+    // relative to the anchor cycle.  When the anchor IS in the named month,
+    // the end of the current month is the right boundary — do not roll back
+    // (cursor review r2: "until March" from mid-March returned the prior year).
+    if (endMs > anchorMs && d.getUTCMonth() + 1 !== monthIdx) {
       nd.setUTCFullYear(nd.getUTCFullYear() - 1);
       endMs = startOfDayUtc(nd.getTime());
     }

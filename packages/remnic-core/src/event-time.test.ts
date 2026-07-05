@@ -302,3 +302,57 @@ test("until end of <month> <year> strips the prefix and resolves (codex review r
   assert.equal(r.ok, true);
   assert.equal(r.validUntil, "2025-04-01T00:00:00.000Z");
 });
+
+test("last Q2 from May rolls back a year — anchor inside target quarter (codex review r2)", () => {
+  // Anchor May 2026 is inside Q2. "last Q2" must be Q2 2025 = April 1 2025.
+  const r = resolveEventTime("last Q2", "2026-05-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-04-01T00:00:00.000Z");
+});
+
+test("last Q2 from June rolls back a year — anchor in last month of target quarter (codex review r2)", () => {
+  const r = resolveEventTime("last Q2", "2026-06-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-04-01T00:00:00.000Z");
+});
+
+test("last Q2 from March stays current year — target quarter not yet started (codex review r2)", () => {
+  // Anchor March 2026. Q2 2026 hasn't started, so "last Q2" = Q2 2025.
+  const r = resolveEventTime("last Q2", "2026-03-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-04-01T00:00:00.000Z");
+});
+
+test("last Q2 from July stays current year — target quarter already completed (codex review r2)", () => {
+  // Anchor July 2026. Q2 2026 ended, so "last Q2" = Q2 2026 = April 1 2026.
+  const r = resolveEventTime("last Q2", "2026-07-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2026-04-01T00:00:00.000Z");
+});
+
+test("next Q2 from May rolls forward a year — anchor inside target quarter (codex review r2)", () => {
+  const r = resolveEventTime("next Q2", "2026-05-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2027-04-01T00:00:00.000Z");
+});
+
+test("until <current month> does not roll back a year (cursor review r2)", () => {
+  // Anchor mid-March 2026. "until March" should end at the current month's end.
+  const r = resolveEventTime("until March", "2026-03-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2026-04-01T00:00:00.000Z");
+});
+
+test("until <past month> rolls back correctly (cursor review r2 regression)", () => {
+  // Anchor June 2026. "until March" → March already ended this year → April 1 2026.
+  const r = resolveEventTime("until March", "2026-06-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2026-04-01T00:00:00.000Z");
+});
+
+test("until <future month> rolls back a year (cursor review r2 regression)", () => {
+  // Anchor January 2026. "until March" → March hasn't happened yet → April 1 2025.
+  const r = resolveEventTime("until March", "2026-01-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2025-04-01T00:00:00.000Z");
+});
