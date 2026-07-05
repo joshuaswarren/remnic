@@ -66,7 +66,7 @@ export interface CodingNamespaceOverlay {
  * greedy quantifiers) closes the polynomial-backtracking surface that
  * CodeQL flagged on patterns like `-+` and `^-+|-+$`.
  */
-function sanitizeFragment(input: string): string {
+export function sanitizeFragment(input: string): string {
   if (typeof input !== "string") return "";
   const trimmed = input.trim().toLowerCase();
   let out = "";
