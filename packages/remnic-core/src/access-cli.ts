@@ -184,6 +184,7 @@ function usage(): string {
     "  --session-key <key>",
     "  --principal <principal>",
     "  --project-tag <tag> (attach coding context for this invocation)",
+    "  --repo-root <path> (repo to scan for refresh; defaults to the current directory)",
   ].join("\n");
 }
 
@@ -243,6 +244,7 @@ const COMMAND_SPECS: Record<CommandName, CommandSpec> = {
       "session-key",
       "principal",
       "project-tag",
+      "repo-root",
     ]),
     flagOptions: new Set(),
   },
@@ -596,12 +598,17 @@ async function runArchitecture(args: ParsedArgs, preferredId?: string): Promise<
   const sessionKey = getLastOption(args, "session-key");
   if (projectTag && projectTag.trim().length > 0 && sessionKey && sessionKey.trim().length > 0) {
     const projectId = projectTagProjectId(projectTag.trim());
+    // refresh scans codingContext.rootPath, so it must be a REAL checkout
+    // path — the synthetic tag:* projectId is not. Default to the CWD (or an
+    // explicit --repo-root) so a one-shot CLI refresh scans the caller's
+    // repo, not a non-existent tag path (codex review: refresh → invalid_root).
+    const repoRoot = expandOptionalPath(getLastOption(args, "repo-root")) ?? process.cwd();
     service.setCodingContext({
       sessionKey,
       codingContext: {
         projectId,
         branch: null,
-        rootPath: projectId,
+        rootPath: repoRoot,
         defaultBranch: null,
       },
     });

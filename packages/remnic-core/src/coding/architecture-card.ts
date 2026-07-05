@@ -253,6 +253,19 @@ export async function buildArchitectureCard(
     };
   }
 
+  // Probe root readability BEFORE scanning. An unreadable root (EACCES,
+  // transient I/O) must surface as scan_failed, not a silent empty card —
+  // otherwise refresh could overwrite a valid card with a sparse scan (codex
+  // review). lstat can succeed while readdir is denied.
+  try {
+    await readdir(absoluteRoot);
+  } catch (err) {
+    return {
+      ok: false,
+      code: "scan_failed",
+      detail: `repoRoot not readable: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
   try {
     const scan = await scanRepository(absoluteRoot);
     const deterministic = renderCard(scan, options.now ?? new Date());

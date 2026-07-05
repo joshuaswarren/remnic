@@ -288,6 +288,11 @@ async function architectureRefresh(
   codingContext: CodingContext,
 ): Promise<ArchitectureSurfaceResponse> {
   const repoRoot = codingContext.rootPath ?? codingContext.projectId;
+  // Authorize the write + resolve storage BEFORE scanning the repo or
+  // invoking the summariser, so an unauthorized refresh fails fast instead
+  // of doing work (and an LLM call) it cannot persist (codex review: buildCard
+  // ran before the write ACL was enforced).
+  const storage = await ctx.resolveStorage(request);
   const buildResult = await ctx.buildCard(repoRoot);
   if (!buildResult.ok) {
     // A failed build is a tagged outcome, not a crash. Log the full detail
@@ -303,7 +308,6 @@ async function architectureRefresh(
     );
   }
 
-  const storage = await ctx.resolveStorage(request);
   const cardContent = buildResult.card.content;
   const tags = [ARCHITECTURE_CARD_TAG];
   if (buildResult.card.truncated) tags.push("truncated");

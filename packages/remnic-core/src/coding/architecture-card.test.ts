@@ -13,7 +13,7 @@
  * All fixtures are synthetic temp dirs — no real repos (public-repo policy).
  */
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -192,6 +192,26 @@ test("invalid: path that is a file, not a directory, rejected", async () => {
     assert.equal(result.code, "invalid_root");
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("invalid: unreadable root surfaces scan_failed, not a silent empty card (codex review)", async () => {
+  // Skip under root — root bypasses permission bits so the readdir would
+  // succeed and the assertion would be meaningless.
+  if (process.getuid?.() === 0) return;
+  const repo = await makeFixtureRepo({
+    files: [{ path: "package.json", content: JSON.stringify({ name: "guarded" }) }],
+  });
+  try {
+    await chmod(repo, 0o000);
+    const result = await buildArchitectureCard(repo, { now: NOW });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.code, "scan_failed", "unreadable root is scan_failed, not a sparse success");
+  } finally {
+    // Restore perms so rm can clean up.
+    await chmod(repo, 0o755).catch(() => {});
+    await rm(repo, { recursive: true, force: true });
   }
 });
 
