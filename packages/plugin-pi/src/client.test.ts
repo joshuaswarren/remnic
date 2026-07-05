@@ -300,3 +300,40 @@ test("circuit breaker reports unreachable during cooldown and recovers (#1626)",
   client.markReachable();
   assert.ok(client.isReachable(), "reachable again after success");
 });
+
+
+test("truncateObserveMessage drops bulky rawContent and parts so the chunk fits (#1600, review cursor+codex)", () => {
+  const config = baseConfig();
+  // A live Pi observe message carries the full original payload in rawContent
+  // and parsed parts — both dominate the serialized size.
+  const huge: ObserveMessage = {
+    role: "assistant",
+    content: "small rendered text",
+    rawContent: { big: "x".repeat(200000) },
+    parts: [{ kind: "tool_result", payload: { output: "y".repeat(200000) } }],
+  };
+  const chunks = chunkObservePayload(config, "sess", "/cwd", [huge], 50000);
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0].messages.length, 1);
+  const out = chunks[0].messages[0];
+  assert.match(out.content, /\[Remnic observe truncated/);
+  assert.equal(out.rawContent, undefined, "rawContent must be dropped on truncation");
+  assert.equal(out.parts, undefined, "parts must be dropped on truncation");
+  const bytes = new TextEncoder().encode(JSON.stringify(chunks[0])).length;
+  assert.ok(bytes <= 50000, `truncated chunk ${bytes} exceeds cap even after dropping raw fields`);
+});
+
+test("chunkObservePayload never overshoots the cap once array commas are counted (review cursor)", () => {
+  const config = baseConfig();
+  // Many small messages near the cap boundary exercise the comma accounting.
+  const messages: ObserveMessage[] = Array.from({ length: 200 }, (_, i) => ({
+    role: "user" as const,
+    content: "m" + String(i).padStart(3, "0"),
+  }));
+  const chunks = chunkObservePayload(config, "sess", "/cwd", messages, 3000);
+  assert.ok(chunks.length > 1);
+  for (const chunk of chunks) {
+    const bytes = new TextEncoder().encode(JSON.stringify(chunk)).length;
+    assert.ok(bytes <= 3000, `chunk ${bytes} bytes exceeds 3000 cap`);
+  }
+});

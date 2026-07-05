@@ -149,17 +149,27 @@ export class RemnicClient {
     if (chunks.length === 1) {
       return this.requestWithRetry("POST", "/engram/v1/observe", chunks[0], retryOptions);
     }
-    // Multiple chunks: send sequentially so a single slow daemon connection is
-    // not stressed by parallel writes. Each chunk is retried independently on
-    // transient connection failures. Observe is dedupe-safe, so a partial
-    // failure just re-sends (redundantly) on the next turn.
+    // Multiple chunks: send sequentially within a single per-turn deadline so
+    // the TOTAL observe time stays under turnRequestTimeoutMs (not per-chunk),
+    // which keeps it inside the host's ~30s handler budget (#1626). Each chunk
+    // is retried independently on transient connection failures; observe is
+    // dedupe-safe, so a partial failure just re-sends on the next turn.
+    const turnBudgetMs = options.timeoutMs ?? this.config.turnRequestTimeoutMs;
+    const deadline = Date.now() + turnBudgetMs;
     const results: Record<string, unknown>[] = [];
-    for (const chunk of chunks) {
+    for (let i = 0; i < chunks.length; i++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        throw new Error(
+          `Remnic observe exceeded the per-turn budget of ${turnBudgetMs}ms across ${chunks.length} chunks (completed ${i})`,
+        );
+      }
+      const chunkOptions: RequestOptions = { ...retryOptions, timeoutMs: remaining };
       const result = await this.requestWithRetry<Record<string, unknown>>(
         "POST",
         "/engram/v1/observe",
-        chunk,
-        retryOptions,
+        chunks[i],
+        chunkOptions,
       );
       if (result && typeof result === "object") {
         results.push(result);
@@ -436,9 +446,13 @@ export function chunkObservePayload(
       chunks.push([truncateObserveMessage(message, messageBudget)]);
       continue;
     }
-    if (currentSize + size > messageBudget) {
+    // Account for the JSON array comma separator before this message when it is
+    // not the first in the chunk, so the serialized body never overshoots the
+    // cap (review: cursor).
+    if (current.length > 0 && currentSize + 1 + size > messageBudget) {
       flush();
     }
+    if (current.length > 0) currentSize += 1;
     current.push(message);
     currentSize += size;
   }
@@ -452,20 +466,24 @@ export function chunkObservePayload(
 const decoder = new TextDecoder();
 
 function truncateObserveMessage(message: ObserveMessage, budgetBytes: number): ObserveMessage {
-  // Measure the ACTUAL JSON bytes of candidate messages so JSON escaping (which
-  // turns the marker's \n into \\\\n, doubling its size) can't make the
-  // final body overshoot the budget.
-  const fullBytes = jsonBytes({ ...message, content: message.content + TRUNCATION_MARKER });
-  if (fullBytes <= budgetBytes) {
-    return { ...message, content: message.content + TRUNCATION_MARKER };
-  }
-  const markerOnly = jsonBytes({ ...message, content: TRUNCATION_MARKER });
+  // A truncated observe keeps ONLY role + a content marker, dropping rawContent
+  // and parts. Live Pi turns carry the full original message in rawContent and
+  // parsed parts; those fields dominate the serialized size and would keep the
+  // chunk over the cap (defeating #1600), so they are removed — the daemon
+  // extracts from content. JSON-escape-aware: measures ACTUAL jsonBytes of each
+  // candidate so escaping (\n -> \\\\n) can't overshoot.
+  const slim: ObserveMessage = { role: message.role, content: "" };
+  const markerOnly = jsonBytes({ ...slim, content: TRUNCATION_MARKER });
   if (markerOnly > budgetBytes) {
     // Pathological: even the marker alone doesn't fit. Keep it anyway so the
     // turn isn't silently dropped.
-    return { ...message, content: TRUNCATION_MARKER };
+    return { role: message.role, content: TRUNCATION_MARKER };
   }
-  // Binary-search the largest content slice whose full message fits. Slicing by
+  const fullContent = message.content + TRUNCATION_MARKER;
+  if (jsonBytes({ ...slim, content: fullContent }) <= budgetBytes) {
+    return { role: message.role, content: fullContent };
+  }
+  // Binary-search the largest content slice whose slim message fits. Slicing by
   // encoded bytes keeps multi-byte sequences intact where possible; the decoder
   // replaces any dangling tail with the replacement char.
   const encoded = encoder.encode(message.content);
@@ -474,14 +492,14 @@ function truncateObserveMessage(message: ObserveMessage, budgetBytes: number): O
   while (lo < hi) {
     const mid = hi - Math.floor((hi - lo) / 2);
     const candidate = decoder.decode(encoded.subarray(0, mid)) + TRUNCATION_MARKER;
-    if (jsonBytes({ ...message, content: candidate }) <= budgetBytes) {
+    if (jsonBytes({ ...slim, content: candidate }) <= budgetBytes) {
       lo = mid;
     } else {
       hi = mid - 1;
     }
   }
   const truncated = lo > 0 ? decoder.decode(encoded.subarray(0, lo)) : "";
-  return { ...message, content: truncated + TRUNCATION_MARKER };
+  return { role: message.role, content: truncated + TRUNCATION_MARKER };
 }
 
 function mergeObserveResults(results: Record<string, unknown>[]): Record<string, unknown> {
