@@ -81,9 +81,10 @@ function makeContext(overrides: Partial<DeltaSurfaceContext> = {}): DeltaSurface
 // shimming its filesystem. The handler imports readLastSeenState / writeLastSeenState
 // from ./session-delta.js, which hit the real fs. We point memoryDir at a
 // temp dir per-test.
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { sessionDeltaStatePath } from "./session-delta.js";
 
 async function makeTempStorage(): Promise<{ storage: DeltaSurfaceStorage; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(tmpdir(), "delta-surface-"));
@@ -379,6 +380,189 @@ test("handler/get: state file is created after a successful first_run", async ()
     const parsed = JSON.parse(raw);
     assert.equal(parsed.head, "head1");
     assert.ok(parsed.at);
+  } finally {
+    await cleanup();
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Issue #1630 fix 1 — uncapped totals surface in the changed response
+// ──────────────────────────────────────────────────────────────────────────
+
+test("handler/get: changed response surfaces uncapped totals alongside capped slices (issue #1630 fix 1)", async () => {
+  const { storage, cleanup } = await makeTempStorage();
+  try {
+    // Seed: first run on headA.
+    const invoker1 = makeInvoker([
+      { args: ["rev-parse", "HEAD"], stdout: "headA\n" },
+    ]);
+    await handleCodingDelta(
+      { subcommand: "get", sessionKey: "s1" },
+      makeContext({ resolveStorage: async () => storage, gitInvoker: invoker1 }),
+    );
+
+    // Now head moved to headB with 25 commits / 60 files — both exceed the
+    // caps (MAX_DELTA_COMMITS=20, MAX_DELTA_FILES=50).
+    const sep = "\x1f";
+    const commitBlocks = Array.from({ length: 25 }, (_, i) => [
+      `sha${i}${sep}fix ${i}`,
+      "",
+      `src/file${i}.ts`,
+      "",
+    ].join("\n"));
+    // Add 35 more distinct files so the total crosses the file cap.
+    const extraFiles = Array.from({ length: 35 }, (_, i) => `extra${i}.ts`);
+    const lastBlock = [
+      `shaExtra${sep}extra`,
+      "",
+      ...extraFiles,
+      "",
+    ].join("\n");
+    const log = [...commitBlocks, lastBlock].join("\n");
+    const invoker2 = makeInvoker([
+      { args: ["rev-parse", "HEAD"], stdout: "headB\n" },
+      { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "headA..headB"], stdout: log },
+    ]);
+    const result = await handleCodingDelta(
+      { subcommand: "get", sessionKey: "s1" },
+      makeContext({ resolveStorage: async () => storage, gitInvoker: invoker2 }),
+    );
+    if (!("ok" in result) || !result.ok || result.kind !== "changed") {
+      assert.fail(`expected changed, got ${JSON.stringify(result)}`);
+      return;
+    }
+    // Capped display slices.
+    assert.equal(result.delta.commits.length, 20, "commits slice must be capped to MAX_DELTA_COMMITS");
+    assert.equal(result.delta.touchedFiles.length, 50, "touchedFiles slice must be capped to MAX_DELTA_FILES");
+    // Uncapped totals — the TRUE delta size, NOT the capped length.
+    assert.equal(result.delta.totalCommits, 26, "totalCommits must report the uncapped commit count");
+    assert.ok(
+      result.delta.totalTouchedFiles > 50,
+      `totalTouchedFiles must report the uncapped file count (got ${result.delta.totalTouchedFiles})`,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Issue #1630 fix 2 — read-only callers do NOT advance the state marker
+// ──────────────────────────────────────────────────────────────────────────
+
+test("handler/get: read-only caller (canAdvanceState=false) does NOT advance the state marker (issue #1630 fix 2)", async () => {
+  const { storage, cleanup } = await makeTempStorage();
+  try {
+    // Seed headA with a WRITE-capable caller (default canAdvanceState=true).
+    const invoker1 = makeInvoker([
+      { args: ["rev-parse", "HEAD"], stdout: "headA\n" },
+    ]);
+    await handleCodingDelta(
+      { subcommand: "get", sessionKey: "s1" },
+      makeContext({
+        resolveStorage: async () => ({ ...storage, canAdvanceState: true }),
+        gitInvoker: invoker1,
+      }),
+    );
+    // Confirm the marker landed at headA.
+    const statePath = sessionDeltaStatePath(storage.memoryDir, storage.namespace);
+    const seeded = JSON.parse(await readFile(statePath, "utf8"));
+    assert.equal(seeded.head, "headA");
+
+    // A READ-ONLY caller (canAdvanceState=false) on headB. The delta is
+    // computed and returned, but the marker MUST NOT advance.
+    const sep = "\x1f";
+    const log = [
+      `shaRO${sep}read only commit`,
+      "",
+      "src/ro.ts",
+      "",
+    ].join("\n");
+    const invoker2 = makeInvoker([
+      { args: ["rev-parse", "HEAD"], stdout: "headB\n" },
+      { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "headA..headB"], stdout: log },
+    ]);
+    const result = await handleCodingDelta(
+      { subcommand: "get", sessionKey: "s1" },
+      makeContext({
+        resolveStorage: async () => ({ ...storage, canAdvanceState: false }),
+        gitInvoker: invoker2,
+      }),
+    );
+    // The delta is still computed and returned — read-only callers see the data.
+    if (!("ok" in result) || !result.ok || result.kind !== "changed") {
+      assert.fail(`expected changed, got ${JSON.stringify(result)}`);
+      return;
+    }
+    assert.equal(result.delta.commits.length, 1);
+    // But the persisted marker stayed at headA — read-only did not advance it.
+    const persisted = JSON.parse(await readFile(statePath, "utf8"));
+    assert.equal(persisted.head, "headA", "read-only caller must NOT advance the state marker");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("handler/get: write-capable caller (canAdvanceState=true) DOES advance the state marker (issue #1630 fix 2)", async () => {
+  const { storage, cleanup } = await makeTempStorage();
+  try {
+    // Seed headA.
+    const invoker1 = makeInvoker([
+      { args: ["rev-parse", "HEAD"], stdout: "headA\n" },
+    ]);
+    await handleCodingDelta(
+      { subcommand: "get", sessionKey: "s1" },
+      makeContext({
+        resolveStorage: async () => ({ ...storage, canAdvanceState: true }),
+        gitInvoker: invoker1,
+      }),
+    );
+
+    // A WRITE-capable caller on headB — the marker MUST advance.
+    const sep = "\x1f";
+    const log = [
+      `shaW${sep}write commit`,
+      "",
+      "src/w.ts",
+      "",
+    ].join("\n");
+    const invoker2 = makeInvoker([
+      { args: ["rev-parse", "HEAD"], stdout: "headB\n" },
+      { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "headA..headB"], stdout: log },
+    ]);
+    await handleCodingDelta(
+      { subcommand: "get", sessionKey: "s1" },
+      makeContext({
+        resolveStorage: async () => ({ ...storage, canAdvanceState: true }),
+        gitInvoker: invoker2,
+      }),
+    );
+    const statePath = sessionDeltaStatePath(storage.memoryDir, storage.namespace);
+    const persisted = JSON.parse(await readFile(statePath, "utf8"));
+    assert.equal(persisted.head, "headB", "write-capable caller must advance the state marker");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("handler/get: canAdvanceState defaults to true when omitted (back-compat) (issue #1630 fix 2)", async () => {
+  // Legacy callers that don't set canAdvanceState keep pre-fix behavior:
+  // the marker advances. This protects the existing surface contract.
+  const { storage, cleanup } = await makeTempStorage();
+  try {
+    const invoker = makeInvoker([
+      { args: ["rev-parse", "HEAD"], stdout: "headDefault\n" },
+    ]);
+    await handleCodingDelta(
+      { subcommand: "get", sessionKey: "s1" },
+      makeContext({
+        // canAdvanceState intentionally omitted.
+        resolveStorage: async () => storage,
+        gitInvoker: invoker,
+      }),
+    );
+    const statePath = sessionDeltaStatePath(storage.memoryDir, storage.namespace);
+    const persisted = JSON.parse(await readFile(statePath, "utf8"));
+    assert.equal(persisted.head, "headDefault", "omitted canAdvanceState defaults to true (back-compat)");
   } finally {
     await cleanup();
   }

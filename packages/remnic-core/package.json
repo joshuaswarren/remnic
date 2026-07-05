@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.3.696",
+  "version": "9.3.697",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -421,25 +421,25 @@
       "remnic-source": "./src/cli.ts",
       "import": "./dist/cli.js"
     },
-    "./codex-cli-fallback": {
-      "types": "./dist/codex-cli-fallback.d.ts",
-      "remnic-source": "./src/codex-cli-fallback.ts",
-      "import": "./dist/codex-cli-fallback.js"
+    "./cli-fallback": {
+      "types": "./dist/cli-fallback.d.ts",
+      "remnic-source": "./src/cli-fallback.ts",
+      "import": "./dist/cli-fallback.js"
     },
-    "./codex-cli-fallback.js": {
-      "types": "./dist/codex-cli-fallback.d.ts",
-      "remnic-source": "./src/codex-cli-fallback.ts",
-      "import": "./dist/codex-cli-fallback.js"
+    "./cli-fallback.js": {
+      "types": "./dist/cli-fallback.d.ts",
+      "remnic-source": "./src/cli-fallback.ts",
+      "import": "./dist/cli-fallback.js"
     },
-    "./codex-thread-key": {
-      "types": "./dist/codex-thread-key.d.ts",
-      "remnic-source": "./src/codex-thread-key.ts",
-      "import": "./dist/codex-thread-key.js"
+    "./thread-key": {
+      "types": "./dist/thread-key.d.ts",
+      "remnic-source": "./src/thread-key.ts",
+      "import": "./dist/thread-key.js"
     },
-    "./codex-thread-key.js": {
-      "types": "./dist/codex-thread-key.d.ts",
-      "remnic-source": "./src/codex-thread-key.ts",
-      "import": "./dist/codex-thread-key.js"
+    "./thread-key.js": {
+      "types": "./dist/thread-key.d.ts",
+      "remnic-source": "./src/thread-key.ts",
+      "import": "./dist/thread-key.js"
     },
     "./coding/optional-coding-graph": {
       "types": "./dist/coding/optional-coding-graph.d.ts",
@@ -2948,7 +2948,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.3.696"
+    "@remnic/coding-graph": "^9.3.697"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

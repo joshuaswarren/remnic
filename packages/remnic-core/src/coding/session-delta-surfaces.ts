@@ -117,6 +117,16 @@ export type DeltaSurfaceResponse =
       delta: {
         commits: ReadonlyArray<{ sha: string; subject: string }>;
         touchedFiles: readonly string[];
+        /**
+         * Uncapped total commit count (the {@link commits} slice is capped
+         * for transport). Issue #1630 fix 1.
+         */
+        totalCommits: number;
+        /**
+         * Uncapped total touched-file count (the {@link touchedFiles} slice
+         * is capped for transport). Issue #1630 fix 1.
+         */
+        totalTouchedFiles: number;
         summaryLine: string;
       };
       nextState: LastSeenState;
@@ -161,6 +171,15 @@ export interface DeltaSurfaceStorage {
   readonly memoryDir: string;
   /** The resolved coding-scoped namespace — basis for the state filename. */
   readonly namespace: string;
+  /**
+   * Whether the calling principal may WRITE the namespace — i.e. advance the
+   * last-seen-head marker. Read-only callers (e.g. a principal with read-but-
+   * not-write on the shared namespace) receive the computed delta but the
+   * state file is NOT advanced, so they cannot move another principal's
+   * baseline (issue #1630 fix 2). Defaults to `true` when omitted so existing
+   * callers (and the surface contract tests) keep their pre-fix behavior.
+   */
+  readonly canAdvanceState?: boolean;
 }
 
 /**
@@ -265,13 +284,21 @@ async function deltaGet(
   // 5. Persist the new state (rule 25 + rule 54). Failures here are logged
   //    but do NOT fail the operation — the delta was computed; the next
   //    session may re-derive it. A write failure surfaces in doctor/xray.
+  //
+  //    Issue #1630 fix 2: the marker write is gated on a write-capable
+  //    principal. A read-only caller (e.g. read-but-not-write on the shared
+  //    namespace) receives the computed delta but does NOT advance the state
+  //    marker, so it cannot move another principal's baseline. The default
+  //    is `true` so legacy callers and the surface contract tests keep their
+  //    pre-fix behavior.
+  const canAdvanceState = storage.canAdvanceState !== false;
   let nextState: LastSeenState | null = null;
   if (result.ok) {
     nextState = result.nextState;
   } else if (result.code === "unreachable_head") {
     nextState = result.nextState;
   }
-  if (nextState) {
+  if (nextState && canAdvanceState) {
     try {
       await writeLastSeenState(statePath, nextState);
     } catch (err) {
@@ -312,6 +339,8 @@ async function deltaGet(
         delta: {
           commits: result.delta.commits,
           touchedFiles: result.delta.touchedFiles,
+          totalCommits: result.delta.totalCommits,
+          totalTouchedFiles: result.delta.totalTouchedFiles,
           summaryLine: result.delta.summaryLine,
         },
         nextState: result.nextState,

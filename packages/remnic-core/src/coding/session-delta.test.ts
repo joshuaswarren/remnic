@@ -171,6 +171,52 @@ test("computeSessionDelta caps a large delta to MAX constants", () => {
   assert.equal(result.delta.touchedFiles.length, MAX_DELTA_FILES);
 });
 
+test("computeSessionDelta reports uncapped totals alongside capped slices (issue #1630 fix 1)", () => {
+  // A repo exceeding both caps: 100 commits / 200 files. The slices are
+  // capped for transport, but totalCommits/totalTouchedFiles must report
+  // the TRUE delta size so summaries never under-report.
+  const commitCount = 100;
+  const fileCount = 200;
+  const commits: GitCommit[] = Array.from({ length: commitCount }, (_, i) => ({
+    sha: `c${i}`,
+    subject: `s ${i}`,
+  }));
+  const files = Array.from({ length: fileCount }, (_, i) => `f${i}.ts`);
+  const result = computeSessionDelta(PRIOR, slice("head", commits, files));
+  if (!result.ok || result.kind !== "changed") {
+    assert.fail(`expected changed, got ${JSON.stringify(result)}`);
+    return;
+  }
+  // Capped display lists — transport-sized.
+  assert.equal(result.delta.commits.length, MAX_DELTA_COMMITS);
+  assert.equal(result.delta.touchedFiles.length, MAX_DELTA_FILES);
+  // Uncapped totals — the true delta size, NOT the capped slice length.
+  assert.equal(result.delta.totalCommits, commitCount);
+  assert.equal(result.delta.totalTouchedFiles, fileCount);
+  // The summary line must report the UNCAPPED totals, not the capped slice
+  // length — otherwise the briefing under-reports the delta size (codex review).
+  assert.match(result.delta.summaryLine, /100 commits, 200 files touched/);
+  assert.ok(!result.delta.summaryLine.match(/^.*20 commits, 50 files/), "summary must NOT use capped counts");
+});
+
+test("computeSessionDelta totals equal slice lengths when under the cap (issue #1630 fix 1)", () => {
+  // Below the caps, totals === slice lengths (no information lost).
+  const commits: GitCommit[] = [
+    { sha: "u1", subject: "under cap 1" },
+    { sha: "u2", subject: "under cap 2" },
+  ];
+  const files = ["a.ts", "b.ts", "c.ts"];
+  const result = computeSessionDelta(PRIOR, slice("head", commits, files));
+  if (!result.ok || result.kind !== "changed") {
+    assert.fail(`expected changed, got ${JSON.stringify(result)}`);
+    return;
+  }
+  assert.equal(result.delta.totalCommits, 2);
+  assert.equal(result.delta.totalTouchedFiles, 3);
+  assert.equal(result.delta.totalCommits, result.delta.commits.length);
+  assert.equal(result.delta.totalTouchedFiles, result.delta.touchedFiles.length);
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // State persistence — rule 25 (write after compute) + rule 54 (temp+rename)
 // ──────────────────────────────────────────────────────────────────────────

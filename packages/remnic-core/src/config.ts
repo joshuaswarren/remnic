@@ -2937,18 +2937,18 @@ export function parseConfig(
       typeof cfg.extractionFaithfulnessModel === "string"
         ? cfg.extractionFaithfulnessModel
         : "",
-    // Numeric knobs go through coerceNumber so CLI operators can pass
-    // --config extractionFaithfulnessTimeoutMs=4000 without the string
-    // silently dropping to the default. Matches the coercion contract applied
-    // to other numeric config keys (CLAUDE.md rule #28 / gotcha #36).
-    extractionFaithfulnessContextChars: (() => {
-      const n = coerceNumber(cfg.extractionFaithfulnessContextChars);
-      return n !== undefined && n > 0 ? Math.min(Math.round(n), 4000) : 400;
-    })(),
-    extractionFaithfulnessTimeoutMs: (() => {
-      const n = coerceNumber(cfg.extractionFaithfulnessTimeoutMs);
-      return n !== undefined && n > 0 ? Math.min(Math.round(n), 60_000) : 8000;
-    })(),
+    // Issue #1634 (#1576 follow-up): strict-integer validation via
+    // parseIntegerAtLeast — reject non-numeric, <=0, non-integer, NaN,
+    // Infinity, booleans, objects (gotcha #51). Mirrors qmdDaemonTimeoutMs.
+    // Valid CLI-string integers still coerce and clamp to the budget cap.
+    extractionFaithfulnessContextChars: Math.min(
+      parseIntegerAtLeast(cfg.extractionFaithfulnessContextChars, 400, 1, "extractionFaithfulnessContextChars"),
+      4000,
+    ),
+    extractionFaithfulnessTimeoutMs: Math.min(
+      parseIntegerAtLeast(cfg.extractionFaithfulnessTimeoutMs, 8000, 1, "extractionFaithfulnessTimeoutMs"),
+      60_000,
+    ),
     // Inline source attribution (issue #369). Opt-in to preserve
     // backwards compatibility with existing downstream consumers.
     inlineSourceAttributionEnabled: cfg.inlineSourceAttributionEnabled === true,

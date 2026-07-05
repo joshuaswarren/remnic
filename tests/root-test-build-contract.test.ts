@@ -64,3 +64,27 @@ test("root test runner applies remnic source conditions and test globs portably"
   assert.match(script, /process\.platform === "win32" \? "tsx\.cmd" : "tsx"/);
   assert.doesNotMatch(script, /shell:/);
 });
+
+test("root test runner ensures @remnic/bench dist before running tests (#1609)", () => {
+  // Regression guard for the fresh-clone failure: the runner MUST ensure
+  // @remnic/bench dist exists before spawning tsx --test, otherwise
+  // tests/remnic-cli-dataset-resolution.test.ts triggers the optional-bench
+  // tsImport fallback which poisons subsequent dynamic .ts imports.
+  // See issue #1609 and scripts/run-root-tests.mjs.
+  const script = readFileSync(join(repoRoot, "scripts", "run-root-tests.mjs"), "utf8");
+  assert.match(
+    script,
+    /ensurePackageBuild/,
+    "run-root-tests.mjs must call ensurePackageBuild so a fresh clone without a prior build still passes",
+  );
+  assert.match(
+    script,
+    /"@remnic\/bench"/,
+    "run-root-tests.mjs must ensure the @remnic/bench package specifically",
+  );
+  assert.match(
+    script,
+    /join\(repoRoot,\s*"packages",\s*"bench",\s*"dist",\s*"index\.js"\)/,
+    "run-root-tests.mjs must target the bench dist entry (packages/bench/dist/index.js) as the build artifact",
+  );
+});

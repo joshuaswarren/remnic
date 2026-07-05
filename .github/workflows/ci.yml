@@ -155,17 +155,15 @@ jobs:
       - name: Rebuild native modules
         run: pnpm rebuild better-sqlite3
 
-      # Tests need @remnic/core AND @remnic/bench dist output. The bench dist
-      # requirement is load-bearing: tests/remnic-cli-dataset-resolution.test.ts
-      # loads @remnic/bench through the CLI's optional-bench loader, and when
-      # dist/ is absent the tsx/esm/api tsImport fallback breaks subsequent
-      # dynamic .ts imports in the same process (latent bug — main's serial
-      # quality job only passed because the recursive check-types step
-      # side-built bench/dist before Tests ran).
-      - name: Build workspace packages needed by tests
-        run: |
-          pnpm --filter @remnic/core build
-          pnpm --filter @remnic/bench build
+      # Tests need @remnic/core dist (the test runner links against it).
+      # @remnic/bench dist is NOT pre-built here on purpose: the root test
+      # runner (scripts/run-root-tests.mjs) now self-serves it via
+      # ensurePackageBuild, so a missing bench/dist no longer breaks the
+      # suite (issue #1609). Leaving it unbuilt here exercises the exact
+      # fresh-clone path on every CI run — if the runner's ensure regresses,
+      # CI fails loudly instead of passing via a side-effect.
+      - name: Build core
+        run: pnpm --filter @remnic/core build
 
       # CI hard-requires capability tests (#1541), which in turn hard-require
       # `uv` for the AMB runner scripts. Install it on the runner so the gate

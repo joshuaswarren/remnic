@@ -2050,3 +2050,35 @@ test("parseConfig rejects a present-but-non-string extractionFaithfulnessGate (s
   // A present-but-unknown string still rejects (pre-existing behavior preserved).
   assert.throws(() => parseConfig({ extractionFaithfulnessGate: "on" }), /extractionFaithfulnessGate must be one of/);
 });
+
+test("parseConfig extractionFaithfulnessContextChars rejects non-numeric and non-integer input (#1634)", () => {
+  // Issue #1634 (#1576 follow-up): migrate from coerce+clamp/default to the
+  // strict-integer validator used by qmdDaemonTimeoutMs / commitmentDecayDays.
+  // A malformed budget must reject, not silently default or round.
+  assert.equal(parseConfig({}).extractionFaithfulnessContextChars, 400);
+  assert.equal(parseConfig({ extractionFaithfulnessContextChars: null }).extractionFaithfulnessContextChars, 400);
+  assert.equal(parseConfig({ extractionFaithfulnessContextChars: "2400" }).extractionFaithfulnessContextChars, 2400);
+  assert.equal(parseConfig({ extractionFaithfulnessContextChars: 5000 }).extractionFaithfulnessContextChars, 4000);
+  for (const value of ["abc", "", 0, 1.5, "1.5", Number.NaN, Infinity, true, {}] as unknown[]) {
+    assert.throws(
+      () => parseConfig({ extractionFaithfulnessContextChars: value } as Record<string, unknown>),
+      /extractionFaithfulnessContextChars must be an integer/,
+      `invalid extractionFaithfulnessContextChars ${String(value)} should throw`,
+    );
+  }
+});
+
+test("parseConfig extractionFaithfulnessTimeoutMs rejects non-numeric and non-integer input (#1634)", () => {
+  // Issue #1634: same strict-integer contract as extractionFaithfulnessContextChars.
+  assert.equal(parseConfig({}).extractionFaithfulnessTimeoutMs, 8000);
+  assert.equal(parseConfig({ extractionFaithfulnessTimeoutMs: null }).extractionFaithfulnessTimeoutMs, 8000);
+  assert.equal(parseConfig({ extractionFaithfulnessTimeoutMs: "12000" }).extractionFaithfulnessTimeoutMs, 12_000);
+  assert.equal(parseConfig({ extractionFaithfulnessTimeoutMs: 999_999 }).extractionFaithfulnessTimeoutMs, 60_000);
+  for (const value of ["abc", "", 0, 1.5, "1.5", Number.NaN, Infinity, true, {}] as unknown[]) {
+    assert.throws(
+      () => parseConfig({ extractionFaithfulnessTimeoutMs: value } as Record<string, unknown>),
+      /extractionFaithfulnessTimeoutMs must be an integer/,
+      `invalid extractionFaithfulnessTimeoutMs ${String(value)} should throw`,
+    );
+  }
+});
