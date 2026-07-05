@@ -38,6 +38,14 @@ import path from "node:path";
 export const ARCHITECTURE_CARD_MAX_BYTES = 4096;
 
 /**
+ * Visible marker appended when the card is truncated. Exported so callers
+ * that read stored card content can detect truncation from the content
+ * itself, without depending on a frontmatter tag that may go stale on
+ * content-only updates (cursor review: "stale truncated tag on update").
+ */
+export const ARCHITECTURE_CARD_TRUNCATION_MARKER = "… card truncated to fit size cap …";
+
+/**
  * Manifest files the scanner knows how to parse for project metadata
  * (name, entry points). Single source of truth (rule 53 analog).
  */
@@ -514,7 +522,7 @@ function capToBytes(text: string, maxBytes: number): { text: string; truncated: 
   if (byteLen <= maxBytes) {
     return { text, truncated: false };
   }
-  const marker = "\n\n_… card truncated to fit size cap …_";
+  const marker = `\n\n_${ARCHITECTURE_CARD_TRUNCATION_MARKER}_`;
   const markerBytes = Buffer.byteLength(marker, "utf-8");
   const budget = maxBytes - markerBytes;
   if (budget <= 0) {

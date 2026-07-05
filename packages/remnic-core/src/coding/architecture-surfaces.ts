@@ -29,7 +29,7 @@ import type {
   MemoryFrontmatter,
   MemoryStatus,
 } from "../types.js";
-import type { ArchitectureCardBuildResult } from "./architecture-card.js";
+import { ARCHITECTURE_CARD_TRUNCATION_MARKER, type ArchitectureCardBuildResult } from "./architecture-card.js";
 import { log } from "../logger.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -254,7 +254,10 @@ async function architectureGet(
       content: existing.content,
       generatedAt: existing.frontmatter.updated ?? existing.frontmatter.created,
       byteSize: Buffer.byteLength(existing.content, "utf-8"),
-      truncated: existing.frontmatter.tags?.includes("truncated") === true,
+      // Derive truncation from the CONTENT marker, not a frontmatter tag —
+      // the refresh update path changes content without rewriting tags, so
+      // a tag-based check goes stale (cursor review: stale truncated tag).
+      truncated: existing.content.includes(ARCHITECTURE_CARD_TRUNCATION_MARKER),
     },
   };
 }
@@ -267,14 +270,16 @@ async function architectureRefresh(
   const repoRoot = codingContext.rootPath ?? codingContext.projectId;
   const buildResult = await ctx.buildCard(repoRoot);
   if (!buildResult.ok) {
-    // A failed build is a tagged outcome, not a crash. Surface the code
-    // so the caller/operator can diagnose (rule 34).
+    // A failed build is a tagged outcome, not a crash. Log the full detail
+    // for operators; it may include absolute paths / raw I/O messages that
+    // must NOT reach clients (cursor review: raw build errors reach clients).
     log.warn(
       `coding_architecture/refresh: card build failed (code=${buildResult.code}): ${buildResult.detail}`,
     );
     // Persist nothing on build failure — no stale card left behind (rule 44).
+    // Client-facing error carries only the code.
     ctx.throwInputError(
-      `coding_architecture refresh failed: card build returned ${buildResult.code} — ${buildResult.detail}`,
+      `coding_architecture refresh failed: card build returned ${buildResult.code}`,
     );
   }
 

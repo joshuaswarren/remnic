@@ -299,7 +299,15 @@ test("refresh: build failure throws, nothing persisted (rule 34/44)", async () =
   });
   await assert.rejects(
     () => handleCodingArchitecture({ subcommand: "refresh", sessionKey: "s1" }, ctx),
-    /scan_failed/,
+    (err: Error) => {
+      assert.match(err.message, /scan_failed/, "error carries the build code");
+      assert.doesNotMatch(
+        err.message,
+        /permission denied/,
+        "raw detail must NOT reach the client (cursor review: raw build errors)",
+      );
+      return true;
+    },
   );
   assert.equal(storage.written.length, 0, "nothing written on build failure");
   assert.equal(storage.updated.length, 0, "nothing updated on build failure");
@@ -344,6 +352,41 @@ test("refresh: truncated card carries 'truncated' tag in write options", async (
   assert.deepEqual(storage.written[0]!.options.tags, [ARCHITECTURE_CARD_TAG, "truncated"]);
   const written = storage.memories[storage.memories.length - 1];
   assert.ok(written?.frontmatter.tags?.includes("truncated"), "truncated tag present");
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// get — truncation derived from content, not from a stale tag (cursor review)
+// ──────────────────────────────────────────────────────────────────────────
+
+test("get: truncation derived from content marker, surviving an update that left stale tags", async () => {
+  // Seed a card that was originally truncated (tag present) but whose
+  // content was later updated to a non-truncated body via updateMemory
+  // (which does not refresh frontmatter tags).
+  const storage = makeStubStorage([
+    makeCardMemory({
+      content: "# Fresh card — no truncation marker",
+      frontmatter: { tags: [ARCHITECTURE_CARD_TAG, "truncated"] },
+    }),
+  ]);
+  const ctx = makeContext({ resolveStorage: async () => storage });
+  const result = await handleCodingArchitecture({ subcommand: "get", sessionKey: "s1" }, ctx);
+  if (result.subcommand !== "get") return;
+  assert.equal(result.found, true);
+  assert.equal(result.card?.truncated, false, "content has no marker → false despite stale tag");
+});
+
+test("get: truncation true when content carries the marker", async () => {
+  const storage = makeStubStorage([
+    makeCardMemory({
+      content: "# Card\n\n_… card truncated to fit size cap …_",
+      frontmatter: { tags: [ARCHITECTURE_CARD_TAG] },
+    }),
+  ]);
+  const ctx = makeContext({ resolveStorage: async () => storage });
+  const result = await handleCodingArchitecture({ subcommand: "get", sessionKey: "s1" }, ctx);
+  if (result.subcommand !== "get") return;
+  assert.equal(result.found, true);
+  assert.equal(result.card?.truncated, true, "content marker present → true");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
