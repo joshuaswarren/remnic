@@ -20,6 +20,11 @@
       "types": "./dist/graph-store.d.ts",
       "remnic-source": "./src/graph-store.ts",
       "import": "./dist/graph-store.js"
+    },
+    "./cypher": {
+      "types": "./dist/cypher/query-parser.d.ts",
+      "remnic-source": "./src/cypher/query-parser.ts",
+      "import": "./dist/cypher/query-parser.js"
     }
   },
   "files": [
