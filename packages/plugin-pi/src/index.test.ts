@@ -1583,6 +1583,55 @@ test("a successful startup health probe clears a stale circuit breaker (review c
   assert.ok(calls > callsBeforeSecondRecall, "recall ran after the health probe cleared the breaker");
 });
 
+test("an offline startup health probe trips the circuit breaker so the first turn fast-skips (review codex)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let recallCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/health")) {
+      // Daemon is offline: a connection-level failure fails fast (health() does not retry).
+      throw new Error("The socket connection was closed unexpectedly.");
+    }
+    // If the breaker let recall through, this would hang until the AbortController fires.
+    recallCalls += 1;
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+      turnRequestTimeoutMs: 30,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "status-trip-breaker" },
+  };
+  const event = { messages: [{ role: "user", content: "hi" }] };
+
+  // 1) session_start health fails because the daemon is offline -> trips the breaker.
+  await emit("session_start", {}, ctx);
+  // 2) context (recall) fast-skips because the breaker is tripped, so the doomed
+  //    recall never costs the full turn budget.
+  await emit("context", event, ctx);
+  assert.equal(recallCalls, 0, "recall fast-skipped after the offline startup probe tripped the breaker");
+});
+
 test("/remnic-recall bounds retry to the general request budget instead of unbounded retries (review cursor)", async (t) => {
   const originalFetch = globalThis.fetch;
   let calls = 0;

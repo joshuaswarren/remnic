@@ -592,7 +592,12 @@ async function setStatus(session: PiContextSnapshot, client: RemnicClient, confi
     // (codex review).
     client.markReachable();
     session.setStatus("remnic", `Remnic ${config.namespace ? `(${config.namespace})` : "ready"}`);
-  } catch {
+  } catch (err) {
+    // Startup just proved the daemon is unreachable, so trip the fast-skip
+    // breaker too — otherwise the first live context/observe hook still spends
+    // the full turn budget on a doomed request before the breaker would trip
+    // on its own (codex review).
+    if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
     session.setStatus("remnic", "Remnic offline");
   }
 }
