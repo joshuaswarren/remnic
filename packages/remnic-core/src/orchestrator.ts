@@ -122,7 +122,7 @@ import {
   normalizeSupersessionKey,
   shouldFilterSupersededFromRecall,
 } from "./temporal-supersession.js";
-import { isValidAsOf } from "./temporal-validity.js";
+import { isValidAsOf, isValidityExpiredNow } from "./temporal-validity.js";
 import { RelevanceStore } from "./relevance.js";
 import { NegativeExampleStore } from "./negative.js";
 import {
@@ -19195,6 +19195,7 @@ export class Orchestrator {
   ): QmdSearchResult[] {
     let lifecycleFilteredCount = 0;
     let temporalSupersededFilteredCount = 0;
+    let biTemporalExpiredFilteredCount = 0;
     let dedicatedSurfaceFilteredCount = 0;
     let forgottenFilteredCount = 0;
     let blockedPathFilteredCount = 0;
@@ -19257,6 +19258,24 @@ export class Orchestrator {
           temporalSupersededFilteredCount += 1;
           continue;
         }
+        // Bi-temporal injection filter (issue #1578): when the master gate
+        // is on and the caller did NOT pin `as_of`, drop facts whose event-
+        // time interval has ended before now. They remain findable by
+        // explicit search and `as_of` queries (escape hatch: the as_of branch
+        // above already admits historically-valid records; this filter only
+        // trims the default injection set). Gated off entirely when
+        // `temporalExpiredInInjection` is set. Status-orthogonal: an `active`
+        // fact can be validity-expired; a `superseded` one may still be within
+        // its window (issue pitfall matrix).
+        if (
+          !asOfActive &&
+          this.config.temporalBiTemporal &&
+          !this.config.temporalExpiredInInjection &&
+          isValidityExpiredNow(memory.frontmatter, Date.now())
+        ) {
+          biTemporalExpiredFilteredCount += 1;
+          continue;
+        }
 
         if (
           options?.allowDedicatedSurface !== true &&
@@ -19277,6 +19296,11 @@ export class Orchestrator {
     if (temporalSupersededFilteredCount > 0) {
       log.debug(
         `temporal supersession filter removed ${temporalSupersededFilteredCount} superseded candidates`,
+      );
+    }
+    if (biTemporalExpiredFilteredCount > 0) {
+      log.debug(
+        `bi-temporal validity filter removed ${biTemporalExpiredFilteredCount} expired-validity candidates from injection (temporal.biTemporal on)`,
       );
     }
     if (dedicatedSurfaceFilteredCount > 0) {

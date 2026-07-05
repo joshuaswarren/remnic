@@ -2084,6 +2084,12 @@ export function parseConfig(
     temporalSupersessionEnabled: cfg.temporalSupersessionEnabled !== false, // On by default
     temporalSupersessionIncludeInRecall:
       cfg.temporalSupersessionIncludeInRecall === true, // Off by default
+    // Bi-temporal validity (issue #1578). Default `false` so extraction,
+    // storage, and recall behave byte-identically to pre-#1578 until an
+    // operator opts in. `=== true` rejects non-boolean / string-coerced
+    // truthy values (rule 51 — never silently default invalid input).
+    temporalBiTemporal: cfg.temporalBiTemporal === true,
+    temporalExpiredInInjection: cfg.temporalExpiredInInjection === true,
     // Direct-answer retrieval tier (issue #518).  Default off so the
     // recall path keeps least-privileged behavior unless operators
     // explicitly opt in.

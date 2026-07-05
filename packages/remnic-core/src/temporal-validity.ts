@@ -102,6 +102,40 @@ export function isValidAsOf(
 }
 
 /**
+ * Bi-temporal injection filter (issue #1578).
+ *
+ * Returns `true` when the fact's event-time interval has already ended before
+ * `nowMs` — i.e. it is no longer *true in the world* and should leave the
+ * default injection candidate set (it remains findable by explicit search
+ * and `as_of` queries, mirroring the lifecycle-filter escape-hatch principle
+ * in AGENTS.md §16).  Gated by `temporalBiTemporal`; the escape hatch
+ * `temporalExpiredInInjection` re-admits expired facts when a deployment
+ * prefers the older always-inject behavior.
+ *
+ * Semantics: a fact is expired-now when `invalid_at` is present and
+ * `invalid_at <= nowMs` (the exclusive upper bound has passed).  Absent
+ * `invalid_at` means "still valid" — never expired.  This is the
+ * status-orthogonal complement of `isValidAsOf` for the wall-clock instant:
+ * an `active` memory can be validity-expired, and a `superseded` one can
+ * still be validity-valid within its historical window (issue pitfall: the
+ * filter is status-orthogonal).
+ */
+export function isValidityExpiredNow(
+  fm: Pick<MemoryFrontmatter, "invalid_at">,
+  nowMs: number,
+): boolean {
+  if (!Number.isFinite(nowMs)) return false;
+  const invalidAt = fm.invalid_at?.trim();
+  if (!invalidAt || invalidAt.length === 0) return false;
+  const invalidAtMs = Date.parse(invalidAt);
+  // Unparseable invalid_at — conservatively keep the fact (do not filter on
+  // corrupt data; the as_of path already handles malformed bounds).
+  if (!Number.isFinite(invalidAtMs)) return false;
+  // Half-open interval end has passed: [valid_at, invalid_at) ended.
+  return invalidAtMs <= nowMs;
+}
+
+/**
  * Parse and validate an `as_of` value supplied at an input boundary
  * (CLI flag, HTTP query param, MCP field).  Returns parsed milliseconds
  * on success; throws a `RangeError` with a helpful message on malformed

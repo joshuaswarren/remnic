@@ -321,6 +321,22 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
   // memories round-trip unchanged; readers default `valid_at` to `created`.
   if (fm.valid_at) lines.push(`validAt: ${fm.valid_at}`);
   if (fm.invalid_at) lines.push(`invalidAt: ${fm.invalid_at}`);
+  // Issue #1578 — bi-temporal ingestion provenance.  Validate on write so a
+  // corrupt `observedAt` (non-ISO / overflowed) cannot leak onto disk; reads
+  // are permissive, mirroring the `valid_at` precedent.  `eventTimeSource` is
+  // a closed enum — reject anything outside it rather than persisting garbage.
+  if (fm.observedAt) {
+    const validated = normalizeMemoryWriteTimestamp("observedAt", fm.observedAt);
+    if (validated) lines.push(`observedAt: ${validated}`);
+  }
+  if (fm.eventTimeSource) {
+    if (fm.eventTimeSource !== "extracted" && fm.eventTimeSource !== "assumed") {
+      throw new Error(
+        `serializeFrontmatter: invalid eventTimeSource ${JSON.stringify(fm.eventTimeSource)} — expected "extracted" | "assumed"`,
+      );
+    }
+    lines.push(`eventTimeSource: ${fm.eventTimeSource}`);
+  }
   if (fm.forgottenAt) lines.push(`forgottenAt: ${fm.forgottenAt}`);
   if (fm.forgottenReason) lines.push(`forgottenReason: ${JSON.stringify(fm.forgottenReason)}`);
   // Lifecycle policy fields
@@ -808,6 +824,12 @@ function parseFrontmatter(
       // Issue #680 — explicit fact lifecycle round-trip.
       valid_at: fm.validAt || undefined,
       invalid_at: fm.invalidAt || undefined,
+      // Issue #1578 — bi-temporal ingestion provenance round-trip.
+      observedAt: fm.observedAt || undefined,
+      eventTimeSource:
+        fm.eventTimeSource === "extracted" || fm.eventTimeSource === "assumed"
+          ? fm.eventTimeSource
+          : undefined,
       forgottenAt: fm.forgottenAt || undefined,
       forgottenReason: parseFrontmatterStringValue(fm.forgottenReason),
       lifecycleState: (fm.lifecycleState as LifecycleState) || undefined,
@@ -3333,6 +3355,12 @@ export class StorageManager {
       memoryKind?: MemoryFrontmatter["memoryKind"];
       expiresAt?: string;
       validAt?: string;
+      // Issue #1578 — bi-temporal ingestion provenance.  `observedAt` is the
+      // ingestion time (when Remnic learned the fact); `eventTimeSource`
+      // records whether `validAt` was resolved from an extracted expression
+      // or assumed from the ingestion anchor.  Both validate on serialize.
+      observedAt?: string;
+      eventTimeSource?: "extracted" | "assumed";
       structuredAttributes?: Record<string, string>;
       /**
        * When provided, this string is used as the source for the fact-content
@@ -3365,6 +3393,10 @@ export class StorageManager {
     const conf = options.confidence ?? 0.8;
     const tier = confidenceTier(conf);
     const validAt = normalizeMemoryWriteTimestamp("validAt", options.validAt);
+    const observedAt = normalizeMemoryWriteTimestamp(
+      "observedAt",
+      options.observedAt,
+    );
 
     // Auto-set TTL for speculative memories
     let expiresAt: string | undefined;
@@ -3398,6 +3430,8 @@ export class StorageManager {
       sourceTurnId: options.sourceTurnId,
       memoryKind: options.memoryKind,
       valid_at: validAt,
+      observedAt,
+      eventTimeSource: options.eventTimeSource,
       structuredAttributes: options.structuredAttributes,
     };
     if (options.status !== undefined) {

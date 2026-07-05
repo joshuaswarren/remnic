@@ -4,13 +4,18 @@
   "oversizeThresholdLoc": 3000,
   "metrics": {
     "watchlistLoc": {
-      "packages/remnic-core/src/orchestrator.ts": 19946,
+      "packages/remnic-core/src/orchestrator.ts": 19970,
       "packages/remnic-core/src/cli.ts": 9853,
       "packages/remnic-core/src/access-service.ts": 8412,
-      "packages/remnic-core/src/storage.ts": 7306,
-      "packages/remnic-core/src/config.ts": 4505
+      "packages/remnic-core/src/storage.ts": 7340,
+      "packages/remnic-core/src/config.ts": 4511
     },
     "oversizedFileCount": 10,
     "scatteredConfigFlagReads": 553
+  },
+  "justifications": {
+    "packages/remnic-core/src/orchestrator.ts": "+24 (19946->19970, #1578): bi-temporal injection filter in filterSearchResultsByRecallSafety — THE single shared recall-safety point (hot+filesystem-fallback parity contract); cannot move to a spine stage until #1539 lands. Gated by temporalBiTemporal, status-orthogonal.",
+    "packages/remnic-core/src/storage.ts": "+34 (7306->7340, #1578): serializeFrontmatter/parseFrontmatter round-trip for observedAt+eventTimeSource (the frontmatter chokepoint — MUST live here) + writeMemory option wiring; validate-on-write rejects corrupt timestamps.",
+    "packages/remnic-core/src/config.ts": "+6 (4505->4511, #1578): two new gates temporalBiTemporal + temporalExpiredInInjection parsed with ===true (rule 51); cannot live elsewhere."
   }
 }
