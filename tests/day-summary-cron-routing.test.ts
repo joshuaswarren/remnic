@@ -107,9 +107,11 @@ test("day-summary cron omits direct plugin summary models from OpenClaw routing"
         summaryModel: "gpt-4.1",
         daySummaryTimezone: "America/Chicago",
       });
-      const orchestrator = new Orchestrator(config) as any;
+      const orchestrator = new Orchestrator(config);
 
-      await orchestrator.autoRegisterDaySummaryCron();
+      // The day-summary cron registration moved to MaintenanceScheduler (#1526 PR1);
+      // the orchestrator delegates through its public maintenanceScheduler field.
+      await orchestrator.maintenanceScheduler.autoRegisterDaySummaryCron();
 
       const parsed = JSON.parse(await readFile(jobsPath, "utf-8")) as {
         jobs: Array<{

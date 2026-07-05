@@ -82,15 +82,7 @@ import {
   fallbackLlmRuntimeContextFromConfig,
   gatewayTaskChainOptions,
 } from "./fallback-llm.js";
-import {
-  ensureDaySummaryCron,
-  ensureNightlyGovernanceCron,
-  ensureProceduralMiningCron,
-  ensureContradictionScanCron,
-  ensurePatternReinforcementCron,
-  ensureGraphEdgeDecayCron,
-  graphEdgeDecayCadenceToCronExpr,
-} from "./maintenance/memory-governance-cron.js";
+import { MaintenanceScheduler } from "./orchestration/maintenance.js";
 import {
   runLiveConnectorsOnce,
   type LiveConnectorsRunSummary,
@@ -315,9 +307,6 @@ import {
 } from "./namespaces/catalog.js";
 import {
   planNamespaceMaintenance,
-  runNamespaceMaintenanceBatchPlan,
-  type NamespaceMaintenancePlan,
-  type NamespaceMaintenanceSkipReason,
   type NamespaceMaintenanceSummary,
 } from "./maintenance/namespace-planner.js";
 import {
@@ -1804,13 +1793,6 @@ export function resolvePersistedMemoryRelativePath(options: {
   return path.join(subtree, `${options.memoryId}.md`);
 }
 
-function qmdMaintenanceSkipReasonForError(error: unknown): NamespaceMaintenanceSkipReason | null {
-  const message = error instanceof Error ? error.message : String(error);
-  return /^QMD (?:update|embed) skipped by .*min-interval gate$/.test(message)
-    ? "throttled"
-    : null;
-}
-
 export class Orchestrator {
   readonly storage: StorageManager;
   private readonly storageRouter: NamespaceStorageRouter;
@@ -1820,6 +1802,12 @@ export class Orchestrator {
   private namespaceStorageDirHintsLoaded = false;
   private readonly namespaceSearchRouter: NamespaceSearchRouter;
   qmd: SearchBackend;
+  /**
+   * Maintenance scheduler (issue #1526 PR1). Owns cron auto-registration,
+   * debounced QMD index maintenance, and consolidation scheduling. Job
+   * runners (consolidation/pattern-reinforcement/governance) stay here.
+   */
+  readonly maintenanceScheduler: MaintenanceScheduler;
   private readonly conversationQmd?: ConversationQmdRuntime;
   private readonly conversationFaiss?: ReturnType<
     typeof createConversationIndexRuntime
@@ -1947,19 +1935,11 @@ export class Orchestrator {
   private queueProcessing = false;
   private heartbeatObserverChains = new Map<string, Promise<void>>();
   private recentExtractionFingerprints = new Map<string, number>();
-  private nonZeroExtractionsSinceConsolidation = 0;
-  private lastConsolidationRunAtMs = 0;
-  private consolidationInFlight = false;
   private readonly consolidationObservers = new Set<
     (observation: ConsolidationObservation) => Promise<void> | void
   >();
-  private qmdMaintenanceTimer: NodeJS.Timeout | null = null;
   private wearablesServiceInstance: WearablesService | null = null;
   private wearablesAutoSyncHandle: { stop(): Promise<void> } | null = null;
-  private qmdMaintenancePending = false;
-  private qmdMaintenanceInFlight = false;
-  private lastQmdEmbedAtMs = 0;
-  private lastQmdEmbedAtMsByNamespace = new Map<string, number>();
   private lastQmdReprobeAtMs = 0;
   private tierMigrationInFlight = false;
   private lastTierMigrationRunAtMs = 0;
@@ -2044,11 +2024,7 @@ export class Orchestrator {
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
     }
-    if (this.qmdMaintenanceTimer) {
-      clearTimeout(this.qmdMaintenanceTimer);
-      this.qmdMaintenanceTimer = null;
-    }
-    this.qmdMaintenancePending = false;
+    this.maintenanceScheduler.dispose();
     await this.namespaceSearchRouter.dispose();
     await this.disposeSearchBackendIfNeeded();
     if (this.conversationQmd && this.conversationQmd !== this.qmd) {
@@ -2462,22 +2438,6 @@ export class Orchestrator {
     }
   }
 
-  /**
-   * Shared namespace maintenance planner (issue #1500). This extends the
-   * #1499 catalog-union QMD helper into a reusable contract: configured
-   * namespaces are always considered, dynamic catalog namespaces are admitted
-   * only when their live router root still matches real memory data, and branch
-   * namespaces are opt-in. Recurring jobs use the per-cycle budget; startup and
-   * recovery discovery paths use the same safety filters without that cycle
-   * budget so every live namespace is ensured/synced.
-   */
-  private async namespaceMaintenancePlan(jobName: string): Promise<NamespaceMaintenancePlan> {
-    return planNamespaceMaintenance(this.config, {
-      jobName,
-      catalog: this.namespaceCatalog,
-    });
-  }
-
   private async maintenanceNamespaces(
     jobName = "qmd",
     budgetMode: "cycle" | "unbounded" = "unbounded",
@@ -2760,6 +2720,12 @@ export class Orchestrator {
       // and writes will throw SecureStoreLockedError via resolveWriteKey().
     }
     this.qmd = createSearchBackend(config);
+    this.maintenanceScheduler = new MaintenanceScheduler({
+      config,
+      qmd: this.qmd,
+      namespaceSearchRouter: this.namespaceSearchRouter,
+      namespaceCatalog: this.namespaceCatalog,
+    });
     const conversationIndexRuntime = createConversationIndexRuntime(config, {
       getQmd: () => this.conversationQmd,
       getFaiss: () => this.conversationFaiss,
@@ -3540,56 +3506,10 @@ export class Orchestrator {
     // rely on cron jobs being registered when it resolves. Without this, the
     // fire-and-forget pattern lets deferredReady settle while cron writes are
     // still in flight. Errors are non-fatal — catch individually.
-    if (this.config.daySummaryEnabled) {
-      try {
-        await this.autoRegisterDaySummaryCron();
-      } catch (err) {
-        log.debug(`day-summary cron auto-register failed (non-fatal): ${err}`);
-      }
-    }
-    if (this.config.nightlyGovernanceCronAutoRegister) {
-      try {
-        await this.autoRegisterNightlyGovernanceCron();
-      } catch (err) {
-        log.debug(`nightly governance cron auto-register failed (non-fatal): ${err}`);
-      }
-    }
-    if (this.config.procedural?.proceduralMiningCronAutoRegister) {
-      try {
-        await this.autoRegisterProceduralMiningCron();
-      } catch (err) {
-        log.debug(`procedural mining cron auto-register failed (non-fatal): ${err}`);
-      }
-    }
-
-    // Auto-register contradiction scan cron (gated by config)
-    if (this.config.contradictionScan?.enabled) {
-      try {
-        await this.autoRegisterContradictionScanCron();
-      } catch (err) {
-        log.debug(`contradiction scan cron auto-register failed (non-fatal): ${err}`);
-      }
-    }
-
-    // Auto-register pattern-reinforcement cron (issue #687 PR 2/4).
-    // Gated on the feature flag so memory-only users without the
-    // cron daemon installed never see a stray jobs.json mutation.
-    if (this.config.patternReinforcementEnabled) {
-      try {
-        await this.autoRegisterPatternReinforcementCron();
-      } catch (err) {
-        log.debug(`pattern reinforcement cron auto-register failed (non-fatal): ${err}`);
-      }
-    }
-
-    // Auto-register graph-edge decay cron (gated by config — issue #681 PR 2/3).
-    if (this.config.graphEdgeDecayEnabled) {
-      try {
-        await this.autoRegisterGraphEdgeDecayCron();
-      } catch (err) {
-        log.debug(`graph edge decay cron auto-register failed (non-fatal): ${err}`);
-      }
-    }
+    // Auto-register every cron job in one pass. Each registration is gated
+    // by its config flag inside the scheduler and individually non-fatal
+    // (issue #1526 PR1 — moved to MaintenanceScheduler).
+    await this.maintenanceScheduler.autoRegisterCrons(signal);
 
     // First-start lifecycle migration (issue #686 retention-completion).
     // When lifecyclePolicyEnabled is true and the memoryDir has never been
@@ -3820,168 +3740,6 @@ export class Orchestrator {
   }
 
   /**
-   * Auto-register the engram-day-summary cron job in OpenClaw.
-   * Reconciles model and timezone on every startup so config changes propagate.
-   * Fire-and-forget — never blocks init or crashes on failure.
-   * Issues #1474, #1475.
-   */
-  private async autoRegisterDaySummaryCron(): Promise<void> {
-    const home = resolveHomeDir();
-    const jobsPath = path.join(home, ".openclaw", "cron", "jobs.json");
-
-    try {
-      if (!existsSync(jobsPath)) {
-        log.debug(
-          "day-summary cron: jobs.json not found, skipping auto-register",
-        );
-        return;
-      }
-
-      // Resolve an OpenClaw cron-routing model only in gateway mode. In plugin
-      // mode, summaryModel is a direct-client model id for Remnic's own LLM
-      // calls and may be unroutable as an OpenClaw agentTurn model.
-      const rawSummaryModel = this.config.summaryModel;
-      const taskPrimary = this.config.taskModelChain?.primary;
-      const isGateway = this.config.modelSource === "gateway";
-      const model = isGateway ? (rawSummaryModel || taskPrimary || undefined) : undefined;
-      // Attach task-chain fallbacks only when the model matches the task-chain
-      // primary. If summaryModel is a distinct override, its fallbacks would
-      // be unrelated to the task chain. Also append gateway default models as
-      // tail fallbacks (de-duped) so a task-chain outage doesn't stop the cron
-      // before reaching the gateway default chain. Mirrors hourly cron pattern.
-      const fallbacks: string[] = [];
-      if (model && taskPrimary && model === taskPrimary) {
-        const seen = new Set<string>(model ? [model] : []);
-        const addUnique = (value: string | undefined) => {
-          if (typeof value !== "string") return;
-          const trimmed = value.trim();
-          if (trimmed.length > 0 && !seen.has(trimmed)) {
-            seen.add(trimmed);
-            fallbacks.push(trimmed);
-          }
-        };
-        for (const fb of this.config.taskModelChain?.fallbacks ?? []) addUnique(fb);
-        const gwDefaults = this.config.gatewayConfig?.agents?.defaults?.model;
-        addUnique(gwDefaults?.primary);
-        if (Array.isArray(gwDefaults?.fallbacks)) {
-          for (const fb of gwDefaults.fallbacks) addUnique(fb);
-        }
-      }
-
-      // Resolve timezone: configurable override, then server default
-      const timezone = this.config.daySummaryTimezone
-        || Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-      const result = await ensureDaySummaryCron(jobsPath, {
-        timezone,
-        ...(model ? { model } : {}),
-        ...(fallbacks.length > 0 ? { fallbacks } : {}),
-      });
-      if (result.created) {
-        log.info(
-          `day-summary cron auto-registered (${result.jobId}, 23:47 ${timezone}${model ? `, model: ${model}` : ""})`,
-        );
-      } else if (result.updated) {
-        log.info(
-          `day-summary cron reconciled (${result.jobId}, timezone: ${timezone}${model ? `, model: ${model}` : ""})`,
-        );
-      } else {
-        log.debug("day-summary cron already up to date");
-      }
-    } catch (err) {
-      log.debug(`day-summary cron auto-register error: ${err}`);
-    }
-  }
-
-  private async autoRegisterNightlyGovernanceCron(): Promise<void> {
-    const home = resolveHomeDir();
-    const jobsPath = path.join(home, ".openclaw", "cron", "jobs.json");
-
-    try {
-      if (!existsSync(jobsPath)) {
-        log.debug("nightly governance cron: jobs.json not found, skipping auto-register");
-        return;
-      }
-
-      const created = await ensureNightlyGovernanceCron(jobsPath, {
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
-      if (created.created) {
-        log.info(
-          `nightly governance cron auto-registered (${created.jobId}, 02:23 ${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
-        );
-      } else {
-        log.debug("nightly governance cron already exists, skipping auto-register");
-      }
-    } catch (err) {
-      log.debug(`nightly governance cron auto-register error: ${err}`);
-    }
-  }
-
-  private async autoRegisterProceduralMiningCron(): Promise<void> {
-    const home = resolveHomeDir();
-    const jobsPath = path.join(home, ".openclaw", "cron", "jobs.json");
-    try {
-      if (!existsSync(jobsPath)) {
-        log.debug("procedural mining cron: jobs.json not found, skipping auto-register");
-        return;
-      }
-      const created = await ensureProceduralMiningCron(jobsPath, {
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
-      if (created.created) {
-        log.info(`procedural mining cron auto-registered (${created.jobId})`);
-      } else {
-        log.debug("procedural mining cron already exists, skipping auto-register");
-      }
-    } catch (err) {
-      log.debug(`procedural mining cron auto-register error: ${err}`);
-    }
-  }
-
-  private async autoRegisterContradictionScanCron(): Promise<void> {
-    const home = resolveHomeDir();
-    const jobsPath = path.join(home, ".openclaw", "cron", "jobs.json");
-    try {
-      if (!existsSync(jobsPath)) {
-        log.debug("contradiction scan cron: jobs.json not found, skipping auto-register");
-        return;
-      }
-      const created = await ensureContradictionScanCron(jobsPath, {
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
-      if (created.created) {
-        log.info(`contradiction scan cron auto-registered (${created.jobId})`);
-      } else {
-        log.debug("contradiction scan cron already exists, skipping auto-register");
-      }
-    } catch (err) {
-      log.debug(`contradiction scan cron auto-register error: ${err}`);
-    }
-  }
-
-  private async autoRegisterPatternReinforcementCron(): Promise<void> {
-    const home = resolveHomeDir();
-    const jobsPath = path.join(home, ".openclaw", "cron", "jobs.json");
-    try {
-      if (!existsSync(jobsPath)) {
-        log.debug("pattern reinforcement cron: jobs.json not found, skipping auto-register");
-        return;
-      }
-      const created = await ensurePatternReinforcementCron(jobsPath, {
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
-      if (created.created) {
-        log.info(`pattern reinforcement cron auto-registered (${created.jobId})`);
-      } else {
-        log.debug("pattern reinforcement cron already exists, skipping auto-register");
-      }
-    } catch (err) {
-      log.debug(`pattern reinforcement cron auto-register error: ${err}`);
-    }
-  }
-
-  /**
    * Run the pattern-reinforcement maintenance job (issue #687 PR 2/4).
    *
    * Cadence-gated on `patternReinforcementCadenceMs` so every caller
@@ -4140,29 +3898,6 @@ export class Orchestrator {
       },
       { enabled: this.config.dreamsPhases.deepSleep.enabled },
     );
-  }
-
-  private async autoRegisterGraphEdgeDecayCron(): Promise<void> {
-    const home = resolveHomeDir();
-    const jobsPath = path.join(home, ".openclaw", "cron", "jobs.json");
-    try {
-      if (!existsSync(jobsPath)) {
-        log.debug("graph edge decay cron: jobs.json not found, skipping auto-register");
-        return;
-      }
-      const scheduleExpr = graphEdgeDecayCadenceToCronExpr(this.config.graphEdgeDecayCadenceMs);
-      const created = await ensureGraphEdgeDecayCron(jobsPath, {
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        scheduleExpr,
-      });
-      if (created.created) {
-        log.info(`graph edge decay cron auto-registered (${created.jobId}, ${scheduleExpr})`);
-      } else {
-        log.debug("graph edge decay cron already exists, skipping auto-register");
-      }
-    } catch (err) {
-      log.debug(`graph edge decay cron auto-register error: ${err}`);
-    }
   }
 
   async runLiveConnectors(options: {
@@ -4718,7 +4453,7 @@ export class Orchestrator {
 
   async waitForConsolidationIdle(timeoutMs: number = 60_000): Promise<boolean> {
     const started = Date.now();
-    while (this.consolidationInFlight) {
+    while (this.maintenanceScheduler.isConsolidationInFlight()) {
       if (Date.now() - started > timeoutMs) {
         log.warn(`waitForConsolidationIdle timed out after ${timeoutMs}ms`);
         return false;
@@ -13657,7 +13392,8 @@ export class Orchestrator {
     // Check if consolidation is needed (debounced + non-zero gated).
     const nonZeroExtraction = durableOutputCount > 0;
     try {
-      if (nonZeroExtraction) this.nonZeroExtractionsSinceConsolidation += 1;
+      // The increment of nonZeroExtractionsSinceConsolidation moved into
+      // the scheduler with the rest of the cadence state (issue #1526 PR1).
       this.maybeScheduleConsolidation(nonZeroExtraction);
     } catch (err) {
       log.warn(
@@ -13928,148 +13664,22 @@ export class Orchestrator {
   }
 
   private maybeScheduleConsolidation(nonZeroExtraction: boolean): void {
-    if (this.config.consolidationRequireNonZeroExtraction && !nonZeroExtraction)
-      return;
-    if (
-      this.nonZeroExtractionsSinceConsolidation < this.config.consolidateEveryN
-    )
-      return;
-
-    const now = Date.now();
-    if (
-      now - this.lastConsolidationRunAtMs <
-      this.config.consolidationMinIntervalMs
-    )
-      return;
-    if (this.consolidationInFlight) return;
-
-    this.consolidationInFlight = true;
-    this.lastConsolidationRunAtMs = now;
-    this.nonZeroExtractionsSinceConsolidation = 0;
-    this.runConsolidation()
-      .catch((err) => log.error("background consolidation failed", err))
-      .finally(() => {
-        this.consolidationInFlight = false;
-      });
+    this.maintenanceScheduler.maybeScheduleConsolidation(
+      nonZeroExtraction,
+      () => this.runConsolidation(),
+    );
   }
 
-  private requestQmdMaintenance(): void {
-    if (!this.qmd.isAvailable()) return;
-    if (!this.config.qmdMaintenanceEnabled) return;
-
-    this.qmdMaintenancePending = true;
-    if (this.qmdMaintenanceTimer) return;
-
-    this.qmdMaintenanceTimer = setTimeout(() => {
-      this.qmdMaintenanceTimer = null;
-      this.runQmdMaintenance().catch((err) =>
-        log.debug(`background qmd maintenance failed: ${err}`),
-      );
-    }, this.config.qmdMaintenanceDebounceMs);
+  requestQmdMaintenance(): void {
+    this.maintenanceScheduler.requestQmdMaintenanceForTool("__internal__");
   }
 
   /**
    * Public entrypoint for tool-driven QMD maintenance requests.
-   * Routes through existing debounced/singleflight maintenance controls.
+   * Delegates to the maintenance scheduler (issue #1526 PR1).
    */
   requestQmdMaintenanceForTool(reason: string): void {
-    try {
-      this.requestQmdMaintenance();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn(`qmd maintenance request failed (${reason}): ${msg}`);
-    }
-  }
-
-  private async runQmdMaintenance(): Promise<void> {
-    if (this.qmdMaintenanceInFlight) return;
-    if (!this.qmdMaintenancePending) return;
-    this.qmdMaintenanceInFlight = true;
-    this.qmdMaintenancePending = false;
-
-    try {
-      if (this.config.namespacesEnabled) {
-        // Include cataloged dynamic namespaces, not just the configured set
-        // (NGnei), but run through the namespace-aware maintenance planner so
-        // each namespace is budgeted, lock-protected, and status-recorded
-        // independently (issue #1500).
-        const plan = await this.namespaceMaintenancePlan("qmd");
-        const now = Date.now();
-        const lastEmbedAtByNamespace =
-          this.lastQmdEmbedAtMsByNamespace ?? (this.lastQmdEmbedAtMsByNamespace = new Map());
-        const dueEmbedNamespaces = (namespaces: string[]): string[] => {
-          if (!this.config.qmdAutoEmbedEnabled) return [];
-          return namespaces.filter(
-            (namespace) =>
-              now - (lastEmbedAtByNamespace.get(namespace) ?? 0) >= this.config.qmdEmbedMinIntervalMs,
-          );
-        };
-        const markEmbedded = (namespaces: string[]): void => {
-          if (namespaces.length === 0) return;
-          for (const namespace of namespaces) {
-            lastEmbedAtByNamespace.set(namespace, now);
-          }
-          this.lastQmdEmbedAtMs = now;
-        };
-        await runNamespaceMaintenanceBatchPlan(
-          this.config,
-          plan,
-          async (candidates) => {
-            const namespaces = candidates.map((candidate) => candidate.namespace);
-            const embedNamespaces = dueEmbedNamespaces(namespaces);
-            let result: Awaited<ReturnType<NamespaceSearchRouter["updateNamespacesDetailed"]>>;
-            try {
-              result = await this.namespaceSearchRouter.updateNamespacesDetailed(
-                namespaces,
-                undefined,
-                { strict: true },
-              );
-            } catch (error) {
-              if (
-                embedNamespaces.length > 0 &&
-                qmdMaintenanceSkipReasonForError(error) === "throttled"
-              ) {
-                await this.namespaceSearchRouter.embedNamespaces(embedNamespaces, { strict: true });
-                markEmbedded(embedNamespaces);
-              }
-              throw error;
-            }
-            if (result.backendCount <= 0) {
-              throw new Error("no eligible QMD backend for selected namespaces");
-            }
-            if (result.eligibleNamespaces.length !== namespaces.length) {
-              const eligible = new Set(result.eligibleNamespaces);
-              const missing = namespaces.filter((namespace) => !eligible.has(namespace));
-              throw new Error(`QMD backend ineligible for selected namespaces (${missing.length})`);
-            }
-            if (embedNamespaces.length > 0) {
-              await this.namespaceSearchRouter.embedNamespaces(embedNamespaces, { strict: true });
-              markEmbedded(embedNamespaces);
-            }
-            return { itemCount: result.backendCount };
-          },
-          this.namespaceCatalog,
-          {
-            skipReasonForError: qmdMaintenanceSkipReasonForError,
-          },
-        );
-      } else {
-        await this.qmd.update();
-        const now = Date.now();
-        if (
-          this.config.qmdAutoEmbedEnabled &&
-          now - this.lastQmdEmbedAtMs >= this.config.qmdEmbedMinIntervalMs
-        ) {
-          await this.qmd.embed();
-          this.lastQmdEmbedAtMs = now;
-        }
-      }
-    } finally {
-      this.qmdMaintenanceInFlight = false;
-      if (this.qmdMaintenancePending) {
-        this.requestQmdMaintenance();
-      }
-    }
+    this.maintenanceScheduler.requestQmdMaintenanceForTool(reason);
   }
 
   private async persistExtraction(
