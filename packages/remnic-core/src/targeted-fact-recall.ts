@@ -9,6 +9,11 @@ import {
   resolveLcmReadSessionIds,
 } from "./lcm-fallback-read.js";
 
+import {
+  unifiedDedupeAndRank,
+  type RankedEvidenceItem,
+} from "./recall-pipeline-stages.js";
+
 export interface TargetedFactRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
   sessionId?: string;
@@ -25,10 +30,6 @@ export interface TargetedFactRecallOptions {
   maxScanWindowTurns?: number;
   maxScanWindowTokens?: number;
   title?: string;
-}
-
-interface RankedEvidenceItem extends EvidencePackItem {
-  rank: number;
 }
 
 const DEFAULT_MAX_SEARCH_RESULTS = 48;
@@ -210,38 +211,30 @@ async function collectTargetedFactScanItems(
   return items;
 }
 
+/**
+ * Issue #1539 PR3: targeted-fact now routes dedup/score/threshold/sort through
+ * the unified spine (`unifiedDedupeAndRank`). The divergence that lived inline
+ * here — append-normalized-numeric-cues content transform, relevance scoring on
+ * ORIGINAL content, default DESC turn-index ordering with -1 sentinel for
+ * missing turns — is now declared config on the spine. The score and
+ * appendNormalizedNumericCues helpers stay in this module because they are
+ * genuinely per-tier policy; only the duplicated dedup/sort/threshold machinery
+ * moved out.
+ *
+ * Behavior is byte-for-byte identical to the inline implementation it replaces
+ * (the spine was extracted to match it exactly; see recall-pipeline-stages.ts).
+ * The targeted-fact-recall.test.ts suite (42 cases, incl. the search/scan
+ * ordering and summary insertion tests) is the characterization.
+ */
 function rankAndDedupeTargetedFactItems(
   items: EvidencePackItem[],
   query: string,
 ): RankedEvidenceItem[] {
-  const seenIds = new Set<string>();
-  const seenContent = new Set<string>();
-  const ranked: RankedEvidenceItem[] = [];
-
-  for (const item of items) {
-    const id = item.id ?? (
-      item.sessionId && typeof item.turnIndex === "number"
-        ? `${item.sessionId}:${item.turnIndex}`
-        : undefined
-    );
-    if (id && seenIds.has(id)) continue;
-    const contentKey = item.content.toLowerCase().replace(/\s+/g, " ").trim();
-    if (seenContent.has(contentKey)) continue;
-    if (id) seenIds.add(id);
-    seenContent.add(contentKey);
-    ranked.push({
-      ...item,
-      content: appendNormalizedNumericCues(item.content),
-      rank: scoreTargetedFactEvidence(item, query),
-    });
-  }
-
-  return ranked.sort((left, right) => {
-    if (right.rank !== left.rank) return right.rank - left.rank;
-    const leftTurn = typeof left.turnIndex === "number" ? left.turnIndex : -1;
-    const rightTurn = typeof right.turnIndex === "number" ? right.turnIndex : -1;
-    if (rightTurn !== leftTurn) return rightTurn - leftTurn;
-    return (right.score ?? 0) - (left.score ?? 0);
+  return unifiedDedupeAndRank(items, {
+    query,
+    intents: [],
+    scoreEvidence: (item, q) => scoreTargetedFactEvidence(item, q),
+    transformContent: (content) => appendNormalizedNumericCues(content),
   });
 }
 
