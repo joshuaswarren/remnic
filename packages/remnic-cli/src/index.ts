@@ -235,6 +235,7 @@ import {
   filterBenchWorkItemsForPreviousStatus,
   parseBenchActionArgs,
   parseBenchArgs,
+  readBenchOptionValue,
 } from "./bench-args.js";
 import {
   createBenchStatusPath,
@@ -873,8 +874,8 @@ export interface PackageBenchExecutionPlan {
 }
 
 export function getBenchUsageText(): string {
-  return `Usage: remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers> [options] [benchmark...]
-       remnic benchmark <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|check|report> [options] [benchmark...]
+  return `Usage: remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate> [options] [benchmark...]
+       remnic benchmark <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|check|report> [options] [benchmark...]
 
 Commands:
   list                     List published benchmark packs
@@ -902,6 +903,11 @@ Commands:
                            Generate the Remnic.ai benchmark feed from stored runs
   ui                       Launch the local benchmark overview UI
   providers discover       Auto-detect available local provider backends
+  judge-calibrate --benchmark <id> --local-lab-manifest <path> --judge-provider <p> --judge-model <m>
+                           Cross-tier judge calibration (issue #1573): runs the
+                           local + frontier judges over a benchmark's cached
+                           answers, reports Cohen's kappa, and persists it so
+                           subsequent local artifacts carry the kappa + warning.
   check                    Legacy latency regression gate (compatibility)
   report                   Legacy latency report generator (compatibility)
   procedural-ablation --out <path> [--fixture <path>]
@@ -2397,6 +2403,139 @@ async function discoverBenchProviders(parsed: ParsedBenchArgs): Promise<void> {
       );
     }
   }
+}
+
+/**
+ * `remnic bench judge-calibrate` — cross-tier judge calibration (issue #1573 PR3).
+ *
+ * Runs the local judge (resolved from `--local-lab-manifest`) and the frontier
+ * judge (resolved from `--judge-provider`/`--judge-model`) over the cached
+ * answers for a benchmark, computes Cohen's kappa, prints it, and persists the
+ * result so subsequent local artifacts carry the kappa + warning. The actual
+ * full-mode run that consumes live endpoints is a separate operator step; this
+ * command wires the software end-to-end.
+ */
+async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]): Promise<void> {
+  const benchmarkId =
+    readBenchOptionValue(rawArgs, "--benchmark") ?? parsed.benchmarks[0];
+  if (!benchmarkId) {
+    console.error(
+      "ERROR: judge-calibrate requires a benchmark. Usage: remnic bench judge-calibrate --benchmark <id> [--local-lab-manifest <path>] [--judge-provider <p> --judge-model <m>] [--results-dir <path>] [--json]",
+    );
+    process.exit(1);
+  }
+  if (!BENCHMARK_IDS.has(benchmarkId)) {
+    console.error(
+      `ERROR: unknown benchmark "${benchmarkId}". Known: ${[...BENCHMARK_IDS].sort().join(", ")}.`,
+    );
+    process.exit(1);
+  }
+
+  const manifestPath = parsed.localLabManifestPath;
+  if (!manifestPath) {
+    console.error(
+      "ERROR: judge-calibrate requires --local-lab-manifest <path> (the Tier L judge source). Provide a local-lab manifest whose judge role names the local model.",
+    );
+    process.exit(1);
+  }
+  if (!parsed.judgeProvider || !parsed.judgeModel) {
+    console.error(
+      "ERROR: judge-calibrate requires --judge-provider <p> and --judge-model <m> (the Tier F gold-standard judge).",
+    );
+    process.exit(1);
+  }
+
+  const bench = await loadBenchModule();
+  const resultsDir = expandTilde(
+    parsed.resultsDir ?? path.join(resolveHomeDir(), ".remnic", "bench", "results"),
+  );
+
+  // Build the calibration answers from the most recent stored result for the
+  // benchmark. `actual` is the responder's predicted answer; `expected` is the
+  // gold. Both judges re-score the same (question, predicted, expected) triple.
+  const stored = await bench.listBenchmarkResults(resultsDir);
+  const candidates = stored
+    .filter((entry) => entry.benchmark === benchmarkId)
+    .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+  const latest = candidates[0];
+  if (!latest) {
+    console.error(
+      `ERROR: no stored benchmark results for "${benchmarkId}" in ${resultsDir}. Run the benchmark first (remnic bench run ${benchmarkId}) so cached answers exist to calibrate against.`,
+    );
+    process.exit(1);
+  }
+  const loaded = await bench.loadBenchmarkResult(latest.path);
+  const answers = loaded.results.tasks.map((task) => ({
+    questionId: task.taskId,
+    question: task.question,
+    predicted: task.actual,
+    expected: task.expected,
+  }));
+
+  // Resolve the two judges. The local judge comes from the manifest's judge
+  // role (Tier L); the frontier judge from the --judge-* flags (Tier F gold).
+  const manifest = await bench.loadLocalLabManifest(expandTilde(manifestPath));
+  const resolvedProfile = bench.resolveLocalLabProfile(manifest);
+  // Both judges resolve to a `ProviderFactoryConfig` — a discriminated union
+  // keyed on a literal `provider`. The local judge's config arrives already
+  // typed from the resolved local-lab profile; the frontier judge is assembled
+  // from CLI flags whose `provider` is the broad `BuiltInProvider` union, so
+  // it is narrowed through the same cast the local judge uses.
+  type ProviderFactoryConfig = Parameters<typeof bench.createProviderBackedJudge>[0];
+  const localJudge = bench.createProviderBackedJudge(
+    resolvedProfile.judge.providerConfig as ProviderFactoryConfig,
+  );
+  const frontierJudge = bench.createProviderBackedJudge({
+    provider: parsed.judgeProvider,
+    model: parsed.judgeModel,
+    ...(parsed.judgeBaseUrl ? { baseUrl: parsed.judgeBaseUrl } : {}),
+    ...(parsed.judgeApiKey ? { apiKey: parsed.judgeApiKey } : {}),
+  } as ProviderFactoryConfig);
+
+  const result = await bench.runJudgeCalibration({
+    benchmarkId,
+    localJudge,
+    frontierJudge,
+    answers,
+  });
+
+  const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
+  const statePath = await bench.writeJudgeCalibrationState(result, calibrationDir);
+
+  if (parsed.json) {
+    console.log(
+      JSON.stringify(
+        {
+          benchmarkId: result.benchmarkId,
+          kappa: result.kappa,
+          observedAgreement: result.observedAgreement,
+          expectedAgreement: result.expectedAgreement,
+          sampleSize: result.sampleSize,
+          threshold: result.threshold,
+          warning: result.warning,
+          categories: result.categories,
+          statePath,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  console.log(`Judge calibration: ${benchmarkId}`);
+  console.log(`  Cohen's kappa: ${result.kappa.toFixed(4)} (threshold ${result.threshold})`);
+  console.log(`  Sample size:   ${result.sampleSize}`);
+  console.log(`  Observed agreement: ${result.observedAgreement.toFixed(4)}`);
+  console.log(`  Expected agreement: ${result.expectedAgreement.toFixed(4)}`);
+  if (result.warning) {
+    console.log(
+      `  WARNING: local judge unreliable for ${benchmarkId} (kappa ${result.kappa.toFixed(4)} < ${result.threshold}). Tier L numbers for this benchmark should not be trusted for regression until the judge improves.`,
+    );
+  } else {
+    console.log(`  OK: local judge agrees with frontier above threshold.`);
+  }
+  console.log(`  Calibration state written to: ${statePath}`);
 }
 
 async function publishBenchPackageResults(parsed: ParsedBenchArgs): Promise<void> {
@@ -9205,6 +9344,11 @@ async function cmdBench(rest: string[]): Promise<void> {
 
   if (parsed.action === "export") {
     await exportBenchPackageResult(parsed);
+    return;
+  }
+
+  if (parsed.action === "judge-calibrate") {
+    await calibrateBenchJudges(parsed, benchAction.args);
     return;
   }
 
