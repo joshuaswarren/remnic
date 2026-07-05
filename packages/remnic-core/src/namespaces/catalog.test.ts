@@ -2669,6 +2669,49 @@ test("a burst of concurrent storageFor() with a DROPPED hook fires it ONCE (not 
   }
 });
 
+// ── Composite-key in-flight dedup (cursor Medium, codex P2): the in-flight
+// marker must be keyed by (namespace, storageDir), NOT namespace alone. A
+// CHANGED storageDir (migration/realignment) for the same namespace while
+// another dir's hook is pending must still get its OWN hook invocation — it is
+// not collapsed onto the old dir's pending registration. A namespace-only key
+// would silently drop the new-dir notification.
+test("a CHANGED storageDir for the same namespace is not collapsed onto a pending hook", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const seen: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const router = new NamespaceStorageRouter(makeConfig(memoryDir), {
+      onResolve: async (_ns, dir) => {
+        seen.push(dir);
+        await gate;
+      },
+    });
+    // notifyResolved is private; reach it via the same cast pattern other tests
+    // use for router internals, so we can drive two distinct dirs directly.
+    const internals = router as unknown as {
+      notifyResolved(namespace: string, storageDir: string): void;
+    };
+    const dirA = path.join(memoryDir, "dir-a");
+    const dirB = path.join(memoryDir, "dir-b");
+    // dirA's hook is IN-FLIGHT (gated). dirB is a DIFFERENT dir for the same
+    // namespace — it must NOT be collapsed onto dirA's pending registration.
+    internals.notifyResolved("project-origin-dir-change", dirA);
+    internals.notifyResolved("project-origin-dir-change", dirB);
+    release();
+    await router.whenResolveHooksSettled();
+    assert.deepEqual(
+      seen.sort(),
+      [dirA, dirB].sort(),
+      "both distinct dirs fire their own hook; the new dir is not collapsed onto the pending one",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 7 (codex P2 — NDxiS): a configured non-default namespace must be seeded
 // with the ROUTER-resolved root, not a blanket tokenized dir. When a legacy raw
 // root (`namespaces/<rawname>`) already exists, the router serves it, so the

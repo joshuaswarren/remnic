@@ -218,7 +218,7 @@ export class NamespaceStorageRouter {
   // hook invocation (the once-per-namespace intent). Recovery is preserved —
   // one rejected hook never poisons subsequent notifications for that key.
   private readonly resolveSerializer = new MutationSerializer();
-  // Namespaces whose resolve hook is currently pending. Set SYNCHRONOUSLY in
+  // (namespace, storageDir) pairs whose resolve hook is currently pending. Set SYNCHRONOUSLY in
   // notifyResolved (before queueing) so a burst of concurrent storageFor()
   // cache hits collapses onto the one in-flight hook instead of each enqueuing
   // its own task. Cleared when the queued hook settles. Without this, a dropped
@@ -340,8 +340,13 @@ export class NamespaceStorageRouter {
     // its result (set `notifiedResolved` on success, leave unset on drop)
     // decides whether a LATER `storageFor()` retries — collapsing loses
     // nothing because the drop is already retried on the next cache hit.
-    if (this.inFlightResolveHooks.has(namespace)) return;
-    this.inFlightResolveHooks.add(namespace);
+    // Keyed by the composite (namespace, storageDir) so a CHANGED dir
+    // (migration/realignment) for the same namespace still gets its own hook —
+    // it is NOT collapsed onto the old dir's pending registration (cursor
+    // Medium, codex P2).
+    const inFlightKey = namespace + "\u0000" + storageDir;
+    if (this.inFlightResolveHooks.has(inFlightKey)) return;
+    this.inFlightResolveHooks.add(inFlightKey);
     // Queue through the serializer. Concurrent calls for the same namespace
     // strictly order here; the 2nd call's task runs only after the 1st's hook
     // settles, by which point `notifiedResolved` is either set (no-op) or still
@@ -374,7 +379,7 @@ export class NamespaceStorageRouter {
     // storageFor() can retry after a drop, or short-circuit via notifiedResolved
     // after a success.
     const cleanup = (): void => {
-      this.inFlightResolveHooks.delete(namespace);
+      this.inFlightResolveHooks.delete(inFlightKey);
       this.pendingResolveHooks.delete(queued);
     };
     void queued.then(cleanup, cleanup);
