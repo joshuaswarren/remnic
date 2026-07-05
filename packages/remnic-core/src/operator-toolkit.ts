@@ -12,6 +12,7 @@ import {
 } from "./native-knowledge.js";
 import { StorageManager } from "./storage.js";
 import { listNamespaces } from "./namespaces/migrate.js";
+import { summarizeNamespaceMaintenanceHealth } from "./maintenance/namespace-maintenance-fanout.js";
 import {
   createEvalBaselineSnapshot,
   getEvalHarnessStatus,
@@ -1300,6 +1301,30 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   // always resolves to `ok`; an empty ledger is the expected cold-install
   // state and is never an error.
   checks.push(await summarizeObservationThroughput(config.memoryDir));
+
+  // Namespace maintenance fanout status (issue #1500).
+  // Reports per-job+namespace maintenance outcomes (ran/skipped/failed) so
+  // operators can verify that dynamic project/team namespaces are being
+  // maintained. Informational: never errors on its own — a namespace that has
+  // never been maintained is the expected cold-install state.
+  const namespaceMaintenanceHealth = await summarizeNamespaceMaintenanceHealth(config);
+  checks.push({
+    key: "namespace_maintenance",
+    status: namespaceMaintenanceHealth.totalFailed > 0 ? "warn" : "ok",
+    summary:
+      namespaceMaintenanceHealth.totalRan === 0 && namespaceMaintenanceHealth.totalFailed === 0
+        ? "No namespace maintenance recorded yet (expected for a fresh install)."
+        : `${namespaceMaintenanceHealth.totalRan} namespace maintenance run(s)` +
+          (namespaceMaintenanceHealth.totalFailed > 0
+            ? `, ${namespaceMaintenanceHealth.totalFailed} failure(s) across ${namespaceMaintenanceHealth.jobs.filter((j) => j.failed > 0).length} job(s)`
+            : "") +
+          ".",
+    remediation:
+      namespaceMaintenanceHealth.totalFailed > 0
+        ? "Run `remnic namespaces maintenance` for per-namespace details."
+        : undefined,
+    details: namespaceMaintenanceHealth,
+  });
 
   const summary = checks.reduce(
     (acc, check) => {

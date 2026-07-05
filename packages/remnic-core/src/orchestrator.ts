@@ -318,7 +318,14 @@ import {
   runNamespaceMaintenanceBatchPlan,
   type NamespaceMaintenancePlan,
   type NamespaceMaintenanceSkipReason,
+  type NamespaceMaintenanceSummary,
 } from "./maintenance/namespace-planner.js";
+import {
+  runNamespaceMaintenanceFanout,
+  summarizeNamespaceMaintenanceHealth,
+  type NamespaceMaintenanceFanoutRunnerContext,
+  type NamespaceMaintenanceHealthSummary,
+} from "./maintenance/namespace-maintenance-fanout.js";
 import {
   namespaceIdentityFromToken,
   namespaceIdentityToken,
@@ -2483,6 +2490,42 @@ export class Orchestrator {
     return plan.namespaces.map((candidate) => candidate.namespace);
   }
 
+  /**
+   * Fan out a maintenance job across all maintained namespaces (issue #1500).
+   *
+   * Delegates to the namespace-maintenance-fanout coordinator, which plans
+   * namespace discovery (configured + catalog), applies the cycle budget,
+   * acquires per-job+namespace locks, records status files, and touches the
+   * catalog's `lastMaintenanceAt`. The runner receives a per-namespace
+   * candidate and a storage resolver wired to `this.getStorage(namespace)`.
+   *
+   * When namespaces are disabled the planner returns only the default
+   * namespace, so the job runs exactly once — preserving single-user behavior.
+   */
+  async runNamespaceMaintenanceFanoutForJob(
+    jobName: string,
+    runner: (ctx: NamespaceMaintenanceFanoutRunnerContext) => Promise<{ itemCount?: number } | undefined>,
+    options: { enabled?: boolean } = {},
+  ): Promise<NamespaceMaintenanceSummary> {
+    return runNamespaceMaintenanceFanout({
+      config: this.config,
+      catalog: this.namespaceCatalog,
+      jobName,
+      runner,
+      resolveStorage: (namespace) => this.getStorage(namespace),
+      enabled: options.enabled,
+    });
+  }
+
+  /**
+   * Read-only namespace maintenance health summary for doctor / dashboard /
+   * CLI (issue #1500). Aggregates all per-namespace maintenance status files
+   * into one report without running any maintenance.
+   */
+  async readNamespaceMaintenanceHealth(): Promise<NamespaceMaintenanceHealthSummary> {
+    return summarizeNamespaceMaintenanceHealth(this.config);
+  }
+
   private buildConfiguredQmdSearchOptions(
     queryText: string,
   ): SearchQueryOptions | undefined {
@@ -3996,6 +4039,95 @@ export class Orchestrator {
       `pattern reinforcement [ns=${cadenceKey || "(default)"}]: clusters=${result.clustersFound} canonicalsUpdated=${result.canonicalsUpdated} duplicatesSuperseded=${result.duplicatesSuperseded}`,
     );
     return { ran: true, result, namespace: cadenceKey };
+  }
+
+  /**
+   * Fan out pattern reinforcement across all maintained namespaces (issue #1500).
+   * Delegates per-namespace execution to {@link runPatternReinforcement} while
+   * the planner handles discovery, budgeting, locking, and status recording.
+   * When namespaces are disabled, runs once against default storage.
+   */
+  async runPatternReinforcementFanout(options: {
+    force?: boolean;
+  } = {}): Promise<NamespaceMaintenanceSummary> {
+    return this.runNamespaceMaintenanceFanoutForJob(
+      "pattern-reinforcement",
+      async (ctx) => {
+        const result = await this.runPatternReinforcement({
+          namespace: ctx.candidate.namespace,
+          force: options.force,
+        });
+        return result.result
+          ? { itemCount: result.result.clustersFound }
+          : undefined;
+      },
+      { enabled: this.config.patternReinforcementEnabled },
+    );
+  }
+
+  /**
+   * Fan out lifecycle/governance policy across all maintained namespaces
+   * (issue #1500). Each namespace gets its own lifecycle pass against its
+   * namespace-scoped storage. When namespaces are disabled, runs once against
+   * default storage.
+   */
+  async runLifecyclePolicyFanout(): Promise<NamespaceMaintenanceSummary> {
+    return this.runNamespaceMaintenanceFanoutForJob(
+      "lifecycle",
+      async (ctx) => {
+        const storage = await this.getStorage(ctx.candidate.namespace);
+        const corpus = await storage.readAllMemories();
+        const assessed = await this.runLifecyclePolicyPass(corpus, storage);
+        return { itemCount: assessed };
+      },
+      { enabled: this.config.lifecyclePolicyEnabled },
+    );
+  }
+
+  /**
+   * Fan out semantic consolidation across all maintained namespaces (issue #1500).
+   * Each namespace gets its own consolidation pass against its namespace-scoped
+   * storage. When namespaces are disabled, runs once against default storage.
+   */
+  async runSemanticConsolidationFanout(options: {
+    dryRun?: boolean;
+  } = {}): Promise<NamespaceMaintenanceSummary> {
+    return this.runNamespaceMaintenanceFanoutForJob(
+      "semantic-consolidation",
+      async (ctx) => {
+        const storage = await this.getStorage(ctx.candidate.namespace);
+        const result = await this.runSemanticConsolidation({
+          dryRun: options.dryRun,
+          thresholdOverride: undefined,
+          force: true,
+          storage,
+        });
+        return { itemCount: result.clustersFound };
+      },
+      { enabled: this.config.semanticConsolidationEnabled },
+    );
+  }
+
+  /**
+   * Fan out deep-sleep governance across all maintained namespaces (issue #1500).
+   * Each namespace gets its own governance scan against its namespace-scoped
+   * storage. When namespaces are disabled, runs once against default storage.
+   */
+  async runDeepSleepGovernanceFanout(options: {
+    dryRun?: boolean;
+  } = {}): Promise<NamespaceMaintenanceSummary> {
+    return this.runNamespaceMaintenanceFanoutForJob(
+      "governance",
+      async (ctx) => {
+        const storage = await this.getStorage(ctx.candidate.namespace);
+        const result = await this.runDeepSleepGovernanceNow({
+          dryRun: options.dryRun,
+          storage,
+        });
+        return { itemCount: result.scannedMemories };
+      },
+      { enabled: this.config.dreamsPhases.deepSleep.enabled },
+    );
   }
 
   private async autoRegisterGraphEdgeDecayCron(): Promise<void> {
