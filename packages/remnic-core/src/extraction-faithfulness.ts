@@ -845,23 +845,28 @@ function boundedWindow(
     const end = Math.min(text.length, maxChars);
     return { text: text.slice(0, end), start: 0 };
   }
+  // matchedPositions is sorted ascending (the regex scans left-to-right), so a
+  // two-pointer sliding window finds the densest maxChars-wide cluster in O(n)
+  // instead of O(n^2). This matters when a long unpunctuated candidate carries
+  // many repeats of a fact token (pasted logs, minified text) — thousands of
+  // positions would otherwise stall extraction before the LLM call (codex
+  // PRRT_kwDORJXyws6Ocih3).
   let bestAnchor = matchedPositions[0]!;
   let bestCount = 0;
   let bestLast = bestAnchor;
-  for (const anchor of matchedPositions) {
+  let j = 0;
+  for (let i = 0; i < matchedPositions.length; i++) {
+    const anchor = matchedPositions[i]!;
     const winEnd = anchor + maxChars;
-    let count = 0;
-    let last = anchor;
-    for (const p of matchedPositions) {
-      if (p >= anchor && p < winEnd) {
-        count++;
-        last = p;
-      }
+    if (j < i) j = i;
+    while (j + 1 < matchedPositions.length && matchedPositions[j + 1]! < winEnd) {
+      j++;
     }
+    const count = j - i + 1;
     if (count > bestCount) {
       bestCount = count;
       bestAnchor = anchor;
-      bestLast = last;
+      bestLast = matchedPositions[j]!;
     }
   }
   // The densest cluster [bestAnchor, bestLast] fits within maxChars by

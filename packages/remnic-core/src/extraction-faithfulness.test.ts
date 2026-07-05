@@ -896,6 +896,37 @@ test("locateFactQuote: bounded window keeps the densest evidence cluster when ma
   );
 });
 
+test("locateFactQuote: bounded window stays linear with many repeated matched tokens (codex PRRT_kwDORJXyws6Ocih3)", () => {
+  // A long unpunctuated candidate with thousands of repeats of a fact token
+  // (pasted logs / minified text). The densest-cluster selection must stay
+  // O(n) via the two-pointer sliding window; the O(n^2) nested loop would
+  // stall extraction on ~5k repeats. This test asserts both correctness (the
+  // bounded window contains the densest cluster) and that the call returns
+  // promptly — under O(n^2) this fixture (~5k repeats) would take seconds.
+  const repeats = 5000;
+  const token = "PostgreSQL "; // one fact token per repeat
+  const filler = "x ".repeat(50); // leading filler so the cluster is mid-string
+  const sourceText = filler + token.repeat(repeats) + "migration done";
+  const start = Date.now();
+  const located = locateFactQuote("PostgreSQL migration done.", sourceText, 200);
+  const elapsed = Date.now() - start;
+  assert.ok(located, "expected a located quote");
+  assert.ok(
+    located!.quote.length <= 200,
+    `bounded quote must respect maxQuoteChars (got ${located!.quote.length})`,
+  );
+  // The densest cluster is the run of PostgreSQL repeats; the window must be
+  // anchored inside it (not in the leading filler) and contain evidence.
+  assert.ok(
+    located!.quote.includes("PostgreSQL"),
+    "bounded window must anchor inside the densest cluster",
+  );
+  assert.ok(
+    elapsed < 1000,
+    `bounded window must stay linear (took ${elapsed}ms for ${repeats} repeats)`,
+  );
+});
+
 test("applyFaithfulnessVerdict: bumps verdict counters at apply time (cursor review)", () => {
   const counters = createFaithfulnessCounters();
   const map: Map<number, FaithfulnessResult> = new Map([
