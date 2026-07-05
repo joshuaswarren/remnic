@@ -661,16 +661,24 @@ export function collectRetiredMemoriesForRebuild(
             structuredAttributes: m.frontmatter.structuredAttributes,
           })
         : [];
-    retired.push({
-      memoryId: m.frontmatter.id,
-      rawContent: deps.stripCitation(m.content),
-      contentHash: m.frontmatter.contentHash,
-      ...(entityRef ? { entityRef } : {}),
-      ...(keys.length > 0 ? { supersessionKey: keys[0] } : {}),
-      reason,
-      createdBy,
-      createdAt: m.frontmatter.updated || m.frontmatter.created || new Date().toISOString(),
-    });
+    // Issue #1579 thread Ocgjz: emit one record per matched supersession key
+    // (not just keys[0]) so rebuild reproduces the same keyed tombstones as
+    // live temporal-supersession (which now appends one per key — thread ObteS).
+    // Without this, a rebuild would under-rebuild the JSONL and keyed-tier
+    // blocks would disappear until rediscovered.
+    const keysToEmit = keys.length > 0 ? keys : [undefined];
+    for (const key of keysToEmit) {
+      retired.push({
+        memoryId: m.frontmatter.id,
+        rawContent: deps.stripCitation(m.content),
+        contentHash: m.frontmatter.contentHash,
+        ...(entityRef ? { entityRef } : {}),
+        ...(key ? { supersessionKey: key } : {}),
+        reason,
+        createdBy,
+        createdAt: m.frontmatter.updated || m.frontmatter.created || new Date().toISOString(),
+      });
+    }
   }
   return retired;
 }
