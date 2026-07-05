@@ -68,7 +68,7 @@ test("redactSensitive redacts bearer-token-shaped values and sensitive keys", ()
     // opaque branch. All-a's has zero entropy so it won't trip secret scanners.
     opaqueField: "a".repeat(46),
     array: ["bearer-test-array-value", "normal value"],
-    identityToken: "abcdef0123456789", // 16-hex — NOT redacted (storage token)
+    identityToken: "ns-test-routing-token", // routing token — NOT redacted (exempt key)
   });
   assert.equal(redacted.namespace, "default");
   assert.equal((redacted as Record<string, unknown>).authToken, REDACTED);
@@ -90,7 +90,7 @@ test("redactSensitive redacts bearer-token-shaped values and sensitive keys", ()
   // Long-opaque branch: 46-char alphanumeric string under a non-sensitive key.
   assert.equal((redacted as Record<string, unknown>).opaqueField, REDACTED);
   // The 16-hex identity token must survive (it's a routing token, not a credential).
-  assert.equal((redacted as Record<string, unknown>).identityToken, "abcdef0123456789");
+  assert.equal((redacted as Record<string, unknown>).identityToken, "ns-test-routing-token");
 });
 
 test("redactSensitive leaves primitives untouched", () => {
