@@ -2316,8 +2316,16 @@ export class EngramAccessHttpServer {
     if (isMcpWrite && response !== null) {
       const result = (response as Record<string, unknown>).result as Record<string, unknown> | undefined;
       const isError = result?.isError === true;
-      const structured = result?.structuredContent as { dryRun?: boolean; idempotencyReplay?: boolean } | undefined;
-      if (!isError && structured && this.shouldCountWriteRateLimit(structured)) {
+      const structured = result?.structuredContent as
+        | { dryRun?: boolean; idempotencyReplay?: boolean; ok?: boolean }
+        | undefined;
+      // Rejected codegraph calls carry { ok: false } in structuredContent
+      // (confirm_required, package_missing, runtime_unavailable, ...). The
+      // MCP layer sets isError:false for these, so without this guard they
+      // would consume the write quota despite no mutation occurring
+      // (issue #1554 review thread: don't bill rejected calls as writes).
+      const isRejectedCodegraph = structured?.ok === false;
+      if (!isError && !isRejectedCodegraph && structured && this.shouldCountWriteRateLimit(structured)) {
         this.recordWriteRateLimitHit();
       }
     }

@@ -4517,11 +4517,12 @@ export class EngramAccessService {
         }
       },
       removeFile: (filePath) => {
-        try {
-          unlinkSync(filePath);
-        } catch {
-          // Best-effort; delete_project reports the outcome.
-        }
+        // Propagate unlink failures so deleteCodegraphProject can classify
+        // them (ENOENT → idempotent deleted=true; EACCES/EISDIR/EBUSY →
+        // deleted=false). The previous bare catch swallowed real failures
+        // and delete_project reported deleted=true while the DB stayed on
+        // disk (issue #1554 review thread).
+        unlinkSync(filePath);
       },
       throwInputError: (msg) => {
         throw new EngramAccessInputError(msg);

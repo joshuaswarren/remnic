@@ -127,6 +127,44 @@ export type CodegraphSurfaceResponse =
   | { tool: CodegraphToolName; ok: false; code: string; message: string };
 
 // ──────────────────────────────────────────────────────────────────────────
+// Runtime-delegate outcomes — the handler surfaces these verbatim so the
+// surface never reports stub success for index / ingest / status / detect.
+// Each delegate is OPTIONAL: when the runtime (@remnic/coding-graph) is
+// unavailable, the access-service omits it and the handler degrades with a
+// clean code instead of pretending success (P1 fix, issue #1554 review).
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Outcome of a reindex run (mirrors @remnic/coding-graph ReindexResult). */
+export type CodegraphReindexOutcome =
+  | { ok: true; mode: string; filesIngested: number; head: string | null }
+  | { ok: false; code: string; message: string };
+
+/** Outcome of an index-status probe (mirrors IndexStatus). */
+export type CodegraphIndexStatusOutcome =
+  | {
+      ok: true;
+      status: {
+        lastIndexedHead: string | null;
+        currentHead: string | null;
+        dirty: boolean;
+        mode: string;
+        fileCount: number;
+        nodeCount: number;
+      };
+    }
+  | { ok: false; code: string; message: string };
+
+/** Outcome of a detect_changes / blast-radius computation. */
+export type CodegraphDetectChangesOutcome =
+  | { ok: true; affected: readonly unknown[] }
+  | { ok: false; code: string; message: string };
+
+/** Outcome of trace ingestion (persisted edges). */
+export type CodegraphIngestTracesOutcome =
+  | { ok: true; accepted: number; persisted: number }
+  | { ok: false; code: string; message: string };
+
+// ──────────────────────────────────────────────────────────────────────────
 // Allow-lists for enum-ish params — rule 51 (reject loudly, list options)
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -167,6 +205,28 @@ export interface CodegraphSurfaceContext {
   delegateDecisionRecord(request: DecisionSurfaceRequest): Promise<DecisionSurfaceResponse>;
   /** Composed architecture card + graph stats builder (Track A reuse). */
   buildArchitectureCard(repoRoot: string): Promise<unknown>;
+  /**
+   * Run a reindex via @remnic/coding-graph's executeReindex. Optional — when
+   * omitted (runtime unavailable), the index handler degrades with a clean
+   * code instead of stub success (P1 fix).
+   */
+  runReindex?(store: CodegraphStore, repoRoot: string, mode: string): Promise<CodegraphReindexOutcome>;
+  /**
+   * Report index status via @remnic/coding-graph's getIndexStatus. Optional —
+   * when omitted, index_status degrades with a clean code (no placeholder).
+   */
+  reportIndexStatus?(store: CodegraphStore, repoRoot: string): Promise<CodegraphIndexStatusOutcome>;
+  /**
+   * Detect changes / blast radius via @remnic/coding-graph's detect-changes
+   * pipeline. Optional — when omitted, detect_changes degrades cleanly.
+   */
+  detectChanges?(store: CodegraphStore, repoRoot: string, head: string): Promise<CodegraphDetectChangesOutcome>;
+  /**
+   * Persist runtime call traces as HTTP_CALLS edges via the store's write
+   * path. Optional — when omitted, ingest_traces degrades cleanly. The
+   * returned `persisted` count is the number of traces actually written.
+   */
+  ingestTraces?(store: CodegraphStore, traces: readonly unknown[]): Promise<CodegraphIngestTracesOutcome>;
 }
 
 /**
@@ -202,9 +262,9 @@ export async function handleCodegraphTool(
     case "query_graph":
       return withStore(request, ctx, (store) => handleQueryGraph(store, request, ctx));
     case "index_status":
-      return withStore(request, ctx, () => handleIndexStatus(request.tool));
+      return withStore(request, ctx, (store) => handleIndexStatus(store, request, ctx));
     case "detect_changes":
-      return withStore(request, ctx, () => handleDetectChanges(request, ctx));
+      return withStore(request, ctx, (store) => handleDetectChanges(store, request, ctx));
     case "index":
       return handleIndex(request, ctx);
     case "delete_project":
@@ -291,6 +351,9 @@ async function handleSearchGraph(
   return { tool: request.tool, ok: true, result };
 }
 
+/** Symbol kinds search_code limits results to (issue #1554 rejection table). */
+const SEARCH_CODE_KINDS = ["function", "class", "method"] as const;
+
 async function handleSearchCode(
   store: CodegraphStore,
   request: CodegraphSurfaceRequest,
@@ -298,10 +361,28 @@ async function handleSearchCode(
 ): Promise<CodegraphSurfaceResponse> {
   const query = requireString(request.query, "query", ctx);
   const limit = clampPositiveInteger(request.limit, 50, "limit", ctx);
-  // search_code reuses the FTS5-backed searchGraph path — map the surface
-  // query to the store's namePattern + a kind filter for code symbols.
-  const result = store.searchGraph({ namePattern: query, limit, kinds: ["function", "class", "method"] });
-  return { tool: request.tool, ok: true, result };
+  // search_code limits results to code symbol kinds (function/class/method).
+  // The store's SearchQuery.label takes a SINGLE kind, so query per kind and
+  // merge + dedupe by nodeId. The earlier `kinds` array was silently
+  // ignored by GraphStore.searchGraph, making this an unfiltered name search
+  // (issue #1554 review threads: kind filter must be real, not cosmetic).
+  const seen = new Set<string>();
+  const merged: unknown[] = [];
+  for (const kind of SEARCH_CODE_KINDS) {
+    if (merged.length >= limit) break;
+    const result = store.searchGraph({ label: kind, namePattern: query, limit });
+    if (!result.ok) {
+      return { tool: request.tool, ok: false, code: result.code, message: "searchGraph failed" };
+    }
+    for (const hit of result.hits as readonly Record<string, unknown>[]) {
+      const id = typeof hit?.nodeId === "string" ? hit.nodeId : JSON.stringify(hit);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      merged.push(hit);
+      if (merged.length >= limit) break;
+    }
+  }
+  return { tool: request.tool, ok: true, result: { hits: merged } };
 }
 
 async function handleTracePath(
@@ -356,34 +437,55 @@ async function handleQueryGraph(
   return { tool: request.tool, ok: true, result };
 }
 
-async function handleIndexStatus(tool: CodegraphToolName): Promise<CodegraphSurfaceResponse> {
-  // The full index-status computation lives in @remnic/coding-graph's
-  // getIndexStatus(); the surface delegates via the runtime. The handler
-  // here returns a placeholder envelope that the runtime fills when
-  // wired through getCodegraphStore + git-invoker -- see issue #1553.
-  return {
-    tool,
-    ok: true,
-    result: {
-      note: "index_status computed by the @remnic/coding-graph index-status module; the surface returns the runtime envelope.",
-    },
-  };
-}
-
-async function handleDetectChanges(
+async function handleIndexStatus(
+  store: CodegraphStore,
   request: CodegraphSurfaceRequest,
   ctx: CodegraphSurfaceContext,
 ): Promise<CodegraphSurfaceResponse> {
-  // detect_changes delegates to @remnic/coding-graph's blast-radius
-  // computation (issue #1553). The surface validates the head argument
-  // and forwards to the runtime; the runtime returns the
-  // AffectedSymbol[] + risk classification.
+  const repoRoot = resolveRepoRoot(request, ctx);
+  // Delegate to @remnic/coding-graph's getIndexStatus via the runtime. When
+  // the runtime delegate is absent (package missing), degrade with a clean
+  // code instead of a placeholder success (issue #1554 review thread).
+  if (!ctx.reportIndexStatus) {
+    return {
+      tool: request.tool,
+      ok: false,
+      code: "runtime_unavailable",
+      message: "index_status requires @remnic/coding-graph; the runtime is unavailable.",
+    };
+  }
+  void store; // store resolved by withStore; the delegate opens its own read path.
+  const outcome = await ctx.reportIndexStatus(store, repoRoot);
+  if (!outcome.ok) {
+    return { tool: request.tool, ok: false, code: outcome.code, message: outcome.message };
+  }
+  return { tool: request.tool, ok: true, result: outcome.status };
+}
+
+async function handleDetectChanges(
+  store: CodegraphStore,
+  request: CodegraphSurfaceRequest,
+  ctx: CodegraphSurfaceContext,
+): Promise<CodegraphSurfaceResponse> {
   const head = requireString(request.head, "head", ctx);
-  return {
-    tool: request.tool,
-    ok: true,
-    result: { head, note: "blast-radius computed by @remnic/coding-graph detect-changes module." },
-  };
+  // Delegate to @remnic/coding-graph's detect-changes + blast-radius
+  // pipeline (issue #1553). When the runtime delegate is absent, degrade
+  // with a clean code instead of a placeholder success (review thread).
+  if (!ctx.detectChanges) {
+    return {
+      tool: request.tool,
+      ok: false,
+      code: "runtime_unavailable",
+      message: "detect_changes requires @remnic/coding-graph; the runtime is unavailable.",
+    };
+  }
+  const repoRoot = resolveRepoRoot(request, ctx);
+  void store;
+  const outcome = await ctx.detectChanges(store, repoRoot, head);
+  if (!outcome.ok) {
+    return { tool: request.tool, ok: false, code: outcome.code, message: outcome.message };
+  }
+  return { tool: request.tool, ok: true, result: { head, affected: outcome.affected } };
 }
 
 async function handleIndex(
@@ -395,10 +497,10 @@ async function handleIndex(
   if (!INDEX_MODE_SET.has(modeRaw)) {
     ctx.throwInputError(`mode must be one of ${INDEX_MODES.join(", ")}; got ${JSON.stringify(modeRaw)}`);
   }
-  // Open the per-project store (which triggers @remnic/coding-graph's
-  // GraphStore.open → reindex pipeline). The store's open path handles the
-  // full/incremental mode selection internally. The returned envelope carries
-  // `mode` so callers can tell full/incremental apart (issue #1554).
+  // Open the per-project store. The reindex itself is invoked explicitly
+  // via ctx.runReindex below — GraphStore.open only creates/applies the
+  // schema; it does NOT parse or ingest files (P1 fix: previously the
+  // handler returned ok:true after open + schemaStats without reindexing).
   let store: CodegraphStore;
   try {
     store = await ctx.resolveStore({ ...request, repoRoot });
@@ -408,15 +510,29 @@ async function handleIndex(
     }
     throw err;
   }
-  // Touch schemaStats so the store is materialised (the open itself may be
-  // lazy). If the store reports a degradation code, pass it through (rule 34).
+  // Run the reindex executor. When the runtime delegate is absent (package
+  // missing), degrade with a clean code instead of stub success.
+  if (!ctx.runReindex) {
+    return {
+      tool: request.tool,
+      ok: false,
+      code: "runtime_unavailable",
+      message: "index requires @remnic/coding-graph's reindex executor; the runtime is unavailable.",
+    };
+  }
+  const outcome = await ctx.runReindex(store, repoRoot, modeRaw);
+  if (!outcome.ok) {
+    return { tool: request.tool, ok: false, code: outcome.code, message: outcome.message };
+  }
   const stats = store.schemaStats();
   return {
     tool: request.tool,
     ok: true,
     result: {
       repoRoot,
-      mode: modeRaw,
+      mode: outcome.mode,
+      filesIngested: outcome.filesIngested,
+      head: outcome.head,
       stats,
     },
   };
@@ -530,18 +646,28 @@ async function handleIngestTraces(
   if (!Array.isArray(request.traces)) {
     ctx.throwInputError("codegraph_ingest_traces requires traces: an array of call-site observations");
   }
-  // The trace-to-edge upgrade lives in @remnic/coding-graph's store write
-  // pipeline (HTTP_CALLS edge confidence with provenance: "trace"). The
-  // store handle is resolved via withStore; we call schemaStats to confirm
-  // the store is materialised before accepting the trace batch. The actual
-  // edge upgrade is performed by the store's transactional write path.
-  const stats = store.schemaStats();
+  // Persist traces as HTTP_CALLS edges via the store's write path. The
+  // trace→edge upgrade lives in the runtime delegate (P1 fix: previously
+  // the handler returned accepted: traces.length without persisting). When
+  // the runtime delegate is absent, degrade with a clean code.
+  if (!ctx.ingestTraces) {
+    return {
+      tool: request.tool,
+      ok: false,
+      code: "runtime_unavailable",
+      message: "ingest_traces requires @remnic/coding-graph's store write path; the runtime is unavailable.",
+    };
+  }
+  const outcome = await ctx.ingestTraces(store, request.traces);
+  if (!outcome.ok) {
+    return { tool: request.tool, ok: false, code: outcome.code, message: outcome.message };
+  }
   return {
     tool: request.tool,
     ok: true,
     result: {
-      accepted: request.traces.length,
-      stats,
+      accepted: outcome.accepted,
+      persisted: outcome.persisted,
     },
   };
 }
@@ -588,6 +714,20 @@ function resolveProjectId(request: CodegraphSurfaceRequest, ctx: CodegraphSurfac
     return request.project.trim();
   }
   return resolveCodingContext(request, ctx).projectId;
+}
+
+/**
+ * Resolve the repo root for index_status / detect_changes. Prefers an
+ * explicit `repoRoot` on the request; falls back to the session's coding
+ * context rootPath (the same fallback get_architecture uses). Throws a
+ * surface input error when neither is available so the runtime delegate
+ * never receives an empty root.
+ */
+function resolveRepoRoot(request: CodegraphSurfaceRequest, ctx: CodegraphSurfaceContext): string {
+  if (typeof request.repoRoot === "string" && request.repoRoot.trim().length > 0) {
+    return request.repoRoot.trim();
+  }
+  return resolveCodingContext(request, ctx).rootPath;
 }
 
 /**
