@@ -765,3 +765,46 @@ test("mineAndStoreCoChanges: closed store reports failure, not false success (cu
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("executor: transient read error (EACCES) does NOT delete indexed nodes (cursor Bugbot: 'Read errors trigger graph deletes')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    const git1 = mockGit({ head: SHA_A });
+    await executeReindex({
+      store, git: git1, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts"],
+    });
+    let stats = store.schemaStats();
+    assert.ok(stats.ok);
+    assert.equal(stats.stats.nodes, 1);
+
+    // Advance HEAD with a.ts "changed", but every read of a.ts fails with
+    // a TRANSIENT error (EACCES) — the file still exists on disk.
+    const eaccRead = (absPath: string): Promise<Uint8Array> =>
+      absPath.endsWith("src/a.ts")
+        ? Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" }))
+        : import("node:fs/promises").then((fs) => fs.readFile(absPath));
+    const git2 = mockGit({
+      head: SHA_B,
+      changedFiles: [{ status: "M", path: "src/a.ts" }],
+    });
+    const result = await executeReindex({
+      store, git: git2, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts"], readFile: eaccRead,
+    });
+    assert.equal(result.ok, true);
+    // The node must STILL be in the graph — a transient error must not
+    // be mistaken for a deletion.
+    stats = store.schemaStats();
+    assert.ok(stats.ok);
+    assert.equal(stats.stats.nodes, 1, "transient read error must not delete the indexed node");
+    // And a.ts is recorded as pending (retry next run).
+    assert.deepEqual(
+      JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]"),
+      ["src/a.ts"],
+    );
+  } finally {
+    await dispose(store, dir);
+  }
+});

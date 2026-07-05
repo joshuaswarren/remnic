@@ -248,6 +248,41 @@ function isCanonicalRelativePath(p: string): boolean {
   return true;
 }
 
+/**
+ * Probe a repo-relative path: canonical check + existence/content read that
+ * distinguishes a CONFIRMED deletion (ENOENT) from a transient I/O error
+ * (EACCES / EBUSY / timeout). A transient error must NOT be treated as a
+ * deletion — otherwise a momentary lock/permission error would drop the
+ * file's nodes from the graph while the file still exists on disk
+ * (cursor Bugbot: 'Read errors trigger graph deletes'). Also enforces the
+ * canonical-path guard BEFORE any read so a crafted `../` path cannot
+ * escape repoRoot (cursor Bugbot: 'Non-canonical paths read early').
+ */
+type ProbeRead =
+  | { readonly kind: "exists"; readonly content: Uint8Array }
+  | { readonly kind: "missing" }
+  | { readonly kind: "unknown" }
+  | { readonly kind: "skip" };
+async function probeRead(
+  repoRoot: string,
+  relPath: string,
+  readFile: ReadFileFn,
+): Promise<ProbeRead> {
+  if (!isCanonicalRelativePath(relPath)) return { kind: "skip" };
+  try {
+    const content = await readFile(resolveRepoPath(repoRoot, relPath));
+    return { kind: "exists", content };
+  } catch (e) {
+    const code =
+      e && typeof e === "object"
+        ? (e as { code?: unknown }).code
+        : undefined;
+    if (code === "ENOENT") return { kind: "missing" };
+    // Transient error — the file may still exist. Do not prune.
+    return { kind: "unknown" };
+  }
+}
+
 /** Resolve a repo-relative forward-slash path to an absolute OS path. */
 function resolveRepoPath(repoRoot: string, relPath: string): string {
   // Split on forward slashes and re-join with the platform separator so
@@ -262,6 +297,17 @@ async function defaultReadFile(absPath: string): Promise<Uint8Array> {
   // Uint8Array subclass; this copy-free view satisfies the FileIR contract).
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 }
+
+/**
+ * Per-store reindex serialization. Concurrent `executeReindex` calls
+ * against the same store are serialized end-to-end so a slower run that
+ * indexed an older HEAD cannot finish later and overwrite
+ * `last_indexed_head` with a stale SHA (cursor Bugbot: 'Stale head
+ * after concurrent reindex'). The store's write queue already serializes
+ * individual upserts, but the head/meta writes around them are not
+ * ordered across runs without this gate.
+ */
+const reindexLocks = new WeakMap<GraphStore, Promise<unknown>>();
 
 /**
  * Execute a reindex against a store + git repo.
@@ -291,6 +337,33 @@ export async function executeReindex(options: {
 }): Promise<ReindexResult> {
   const { store, git, repoRoot, parseFile } = options;
   const readFile = options.readFile ?? defaultReadFile;
+
+  // Serialize concurrent runs against the same store end-to-end.
+  const prev = reindexLocks.get(store) ?? Promise.resolve();
+  let release!: () => void;
+  const next = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  reindexLocks.set(store, prev.then(() => next));
+  await prev;
+  try {
+    return await runReindex(store, git, repoRoot, parseFile, readFile, options);
+  } finally {
+    release();
+  }
+}
+
+/** Inner reindex body — runs under the per-store serialization lock. */
+async function runReindex(
+  store: GraphStore,
+  git: CodingGitInvoker,
+  repoRoot: string,
+  parseFile: ParseFileFn,
+  readFile: ReadFileFn,
+  options: {
+    readonly candidatePaths?: readonly string[];
+  },
+): Promise<ReindexResult> {
 
   // ── Gather git facts ──────────────────────────────────────────────────
   const lastHead = readLastIndexedHead(store);
@@ -416,20 +489,21 @@ export async function executeReindex(options: {
       // Pending parse-failures from a prior run are also candidates.
       for (const p2 of pendingRetry) seen.add(p2);
 
-      // Determine which paths still exist on disk vs are deleted.
+      // Determine which paths still exist on disk vs are deleted. Use a
+      // probe that distinguishes a confirmed deletion (ENOENT) from a
+      // transient I/O error (which must NOT prune the file).
       const knownFiles = readFileHashes(store);
       const toDelete: string[] = [];
       const toIngest: string[] = [];
       for (const p2 of seen) {
-        let exists = true;
-        try {
-          await readFile(resolveRepoPath(repoRoot, p2));
-        } catch {
-          exists = false;
-        }
-        if (exists) {
+        const probe = await probeRead(repoRoot, p2, readFile);
+        if (probe.kind === "skip") continue;
+        if (probe.kind === "exists" || probe.kind === "unknown") {
+          // exists → re-ingest; unknown (transient error) → route to
+          // ingest so ingestFiles records it as a pending retry if the
+          // read still fails, WITHOUT deleting the existing nodes.
           toIngest.push(p2);
-        } else if (knownFiles.has(p2)) {
+        } else if (probe.kind === "missing" && knownFiles.has(p2)) {
           toDelete.push(p2);
         }
       }
@@ -476,37 +550,28 @@ export async function executeReindex(options: {
         ...lastState.fileHashes.keys(),
         ...pendingRetry,
       ]);
-      const mismatched: string[] = [];
-      for (const candidatePath of candidateSet) {
-        let content: Uint8Array;
-        try {
-          content = await readFile(resolveRepoPath(repoRoot, candidatePath));
-        } catch {
-          // File no longer exists → it's a mismatch (prune it).
-          if (lastState.fileHashes.has(candidatePath) || pendingRetry.includes(candidatePath)) {
-            mismatched.push(candidatePath);
-          }
-          continue;
-        }
-        const currentHash = hashContent(content);
-        const storedHash = lastState.fileHashes.get(candidatePath);
-        if (storedHash !== currentHash) {
-          mismatched.push(candidatePath);
-        }
-      }
-
-      // Prune deleted files, ingest the rest. A mismatched path is either:
-      //   - still readable but content changed → re-ingest
-      //   - no longer readable → prune from store (if it was known)
+      // Hash every candidate via the canonical+ENOENT-aware probe. A
+      // transient read error must NOT be treated as a deletion.
       const knownFiles = readFileHashes(store);
       const toDelete: string[] = [];
       const toIngest: string[] = [];
-      for (const p2 of mismatched) {
-        try {
-          await readFile(resolveRepoPath(repoRoot, p2));
-          toIngest.push(p2);
-        } catch {
-          if (knownFiles.has(p2)) toDelete.push(p2);
+      for (const candidatePath of candidateSet) {
+        const probe = await probeRead(repoRoot, candidatePath, readFile);
+        if (probe.kind === "skip") continue;
+        if (probe.kind === "missing") {
+          if (knownFiles.has(candidatePath)) toDelete.push(candidatePath);
+          continue;
+        }
+        if (probe.kind === "unknown") {
+          // Transient error — keep the stored entry; do not prune. It
+          // will be re-evaluated next run.
+          continue;
+        }
+        // exists — compare content hash.
+        const currentHash = hashContent(probe.content);
+        const storedHash = lastState.fileHashes.get(candidatePath);
+        if (storedHash !== currentHash) {
+          toIngest.push(candidatePath);
         }
       }
 

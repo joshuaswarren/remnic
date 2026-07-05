@@ -259,3 +259,16 @@ test("index_status: pending parse failures report stale even when heads match (c
     await dispose(store, dir);
   }
 });
+
+test("revParseHead: non-git directory returns git_error, not head:null (chatgpt-codex-connector: 'Return a git failure for non-repository HEAD')", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "notgit-"));
+  try {
+    const invoker = defaultCodingGitInvoker();
+    const result = invoker.revParseHead(dir);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.code, "git_error");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

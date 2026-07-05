@@ -173,11 +173,22 @@ export function defaultCodingGitInvoker(): CodingGitInvoker {
       const r = runGit(cwd, ["rev-parse", "HEAD"]);
       if (!r.ok) return r;
       const trimmed = r.stdout.trim();
-      // An empty repo prints nothing and exits non-zero; treat as null.
-      if (trimmed.length === 0 || r.exitCode !== 0) {
+      if (r.exitCode === 0 && trimmed.length > 0) {
+        return { ok: true, head: trimmed };
+      }
+      // Non-zero exit: could be an UNBORN repo (no commits yet, HEAD is a
+      // symbolic ref to a non-existent branch) OR a directory that is not
+      // a git worktree at all. Distinguish them so a misconfigured workspace
+      // surfaces as a git failure instead of silently looking like an empty
+      // repo (chatgpt-codex-connector: 'Return a git failure for non-
+      // repository HEAD lookups').
+      const wt = runGit(cwd, ["rev-parse", "--is-inside-work-tree"]);
+      if (wt.ok && wt.exitCode === 0 && wt.stdout.trim() === "true") {
+        // Inside a worktree but HEAD has no commits → unborn, head null.
         return { ok: true, head: null };
       }
-      return { ok: true, head: trimmed };
+      // Not a git worktree (or git failed to answer) → degrade visibly.
+      return { ok: false, code: "git_error" };
     },
 
     isReachable(cwd: string, ref: string) {
