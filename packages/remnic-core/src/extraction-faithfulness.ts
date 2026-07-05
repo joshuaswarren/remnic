@@ -286,7 +286,13 @@ async function callFaithfulnessLlm(
 
   let modelUsed: string | null = null;
 
-  // Try local LLM first (only when no override routes the call to gateway)
+  // Try local LLM first (only when no override routes the call to gateway).
+  // The local client uses its OWN per-attempt AbortController keyed on
+  // `timeoutMs` (it does not read options.signal — see LocalLlmChatCompletionOptions),
+  // so the batch `signal` is not forwarded here; `timeoutMs` bounds each local
+  // attempt instead. The batch AbortController still governs the fallback path,
+  // which DOES honor the signal. (Matches extraction-judge.ts, which also passes
+  // no signal to the local client.)
   if (localLlm && !skipLocal) {
     try {
       const result = await callLocalLlm(localLlm, messages, {
@@ -295,7 +301,6 @@ async function callFaithfulnessLlm(
         responseFormat: { type: "json_object" },
         timeoutMs,
         operation: "extraction-faithfulness",
-        ...(signal ? { signal } : {}),
       });
       if (result.content) {
         return { content: result.content, modelUsed: result.modelUsed ?? "local" };
@@ -346,8 +351,6 @@ interface LocalLlmCallOptions {
   responseFormat?: { type: string };
   timeoutMs: number;
   operation: string;
-  model?: string;
-  signal?: AbortSignal;
 }
 
 interface LocalLlmCallResponse {

@@ -890,6 +890,37 @@ test("checkFaithfulnessBatch: no override keeps the local backend first (regress
   assert.equal(result.results[0]?.ok, true);
 });
 
+test("checkFaithfulnessBatch: local call is bounded by timeoutMs, not the batch signal (kilo)", async () => {
+  // LocalLlmClient.chatCompletion does not read options.signal — it uses its
+  // own per-attempt AbortController keyed on timeoutMs. The gate must forward
+  // timeoutMs (so each local attempt is bounded by the faithfulness budget)
+  // and must NOT forward the batch signal (dead code the local client drops).
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = baseConfig();
+  const captured: Array<{ options: Record<string, unknown> }> = [];
+  const localLlm = {
+    chatCompletion: async (
+      _messages: Array<{ role: string; content: string }>,
+      options: Record<string, unknown> = {},
+    ) => {
+      captured.push({ options });
+      return { content: JSON.stringify([{ index: 0, verdict: "entailed" }]) };
+    },
+  };
+  await checkFaithfulnessBatch(
+    inputs,
+    config,
+    localLlm as unknown as LocalLlmClient,
+    stubFallbackLlm("[]"),
+  );
+  assert.equal(captured.length, 1, "local backend runs once");
+  const opts = captured[0]?.options;
+  assert.equal(typeof opts?.timeoutMs, "number", "timeoutMs is forwarded to bound each local attempt");
+  assert.equal(opts?.operation, "extraction-faithfulness");
+  assert.equal("signal" in (opts ?? {}), false, "batch signal is not forwarded to the local client (it ignores it)");
+  assert.equal("model" in (opts ?? {}), false, "model override is not forwarded to the local client (it ignores it)");
+});
+
 // ---------------------------------------------------------------------------
 // #1576: multi-source verification — codex P2 (PRRT_kwDORJXyws6ObYQ_)
 // ---------------------------------------------------------------------------
