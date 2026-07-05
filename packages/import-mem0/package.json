@@ -1,6 +1,6 @@
 {
   "name": "@remnic/import-mem0",
-  "version": "9.3.689",
+  "version": "9.3.690",
   "description": "Import memories from the mem0.ai REST API into Remnic (issue #568)",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^9.3.689"
+    "@remnic/core": "^9.3.690"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
