@@ -2097,6 +2097,16 @@ export function parseConfig(
     // (docs kept honest — review: wire resolver before exposing the gate).
     temporalBiTemporal: coerceBool(cfg.temporalBiTemporal) ?? false,
     temporalExpiredInInjection: coerceBool(cfg.temporalExpiredInInjection) ?? false,
+    // Tombstones — non-resurrection invariant (issue #1579). The invariant is
+    // the point, so it ships ON by default; `false` restores pre-feature
+    // behavior for rollback safety (rule 30). Uses coerceBool so CLI string
+    // "false" / "0" disable it (CLAUDE.md §24).
+    tombstonesEnabled: coerceBool(cfg.tombstonesEnabled) ?? true,
+    tombstonesSemanticMatch: coerceBool(cfg.tombstonesSemanticMatch) ?? false,
+    tombstonesSemanticThreshold: (() => {
+      const n = coerceNumber(cfg.tombstonesSemanticThreshold);
+      return n !== undefined && n >= 0 && n <= 1 ? n : 0.9;
+    })(),
     // Direct-answer retrieval tier (issue #518).  Default off so the
     // recall path keeps least-privileged behavior unless operators
     // explicitly opt in.

@@ -70,6 +70,15 @@ export interface ReviewOptions {
 export interface ReviewActionOptions {
   /** Match the threshold used when listing review items (default: 0.7) */
   confidenceThreshold?: number;
+  /**
+   * Revocation hook (issue #1579). When approving a memory whose frontmatter
+   * carries `blockedBy: <tombstoneId>`, the hook fires so the caller (CLI /
+   * orchestrator) can append a `kind: "revocation"` tombstone entry —
+   * re-allowing the content. Fire-and-forget: a revocation failure MUST NOT
+   * fail the approval (gotcha #13). The hook receives the tombstone id and
+   * the memory id.
+   */
+  onApproveBlockedMemory?: (tombstoneId: string, memoryId: string) => void | Promise<void>;
 }
 
 interface ReviewFileMatch {
@@ -276,10 +285,29 @@ function approveItem(
   const fm = parseFrontmatter(content);
   if (!fm) return { itemId, action: "approve", message: "Could not parse frontmatter" };
 
+  // Issue #1579 — when approving a tombstone-blocked memory, fire the
+  // revocation hook so the content is re-allowed (append-only log: a
+  // `kind: "revocation"` entry supersedes the tombstone at lookup). Clear
+  // blockedBy/tombstoneBlockTier on the promoted memory so it is fully
+  // active. Fire-and-forget: a hook failure never fails the approval.
+  const blockedBy = typeof fm.blockedBy === "string" ? fm.blockedBy : null;
+  if (blockedBy && options.onApproveBlockedMemory) {
+    try {
+      const maybe = options.onApproveBlockedMemory(blockedBy, itemId);
+      if (maybe && typeof (maybe as Promise<void>).then === "function") {
+        void (maybe as Promise<void>).catch(() => undefined);
+      }
+    } catch {
+      /* fire-and-forget — never fail the approval (gotcha #13) */
+    }
+  }
+
   const updatedContent = updateFrontmatterFields(content, {
     confidence: "0.9",
     confidenceTier: "high",
     reviewDismissed: null,
+    // Clear the tombstone-block markers so the promoted memory is active.
+    ...(blockedBy ? { blockedBy: null, tombstoneBlockTier: null } : {}),
   });
 
   if (found.location === "category") {

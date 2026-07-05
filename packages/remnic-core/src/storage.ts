@@ -37,6 +37,15 @@ import {
   stripCitationForTemplate,
   DEFAULT_CITATION_FORMAT,
 } from "./source-attribution.js";
+import {
+  TombstoneStore,
+  type TombstoneStoreOptions,
+  type TombstoneFileIo,
+  type TombstoneReason,
+  type TombstoneCreatedBy,
+  type TombstoneStats,
+} from "./lifecycle/tombstones.js";
+import { supersessionKeysForFact } from "./temporal-supersession.js";
 import type {
   AccessTrackingEntry,
   BufferState,
@@ -314,6 +323,11 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
   }
   // Status management
   if (fm.status && fm.status !== "active") lines.push(`status: ${fm.status}`);
+  // Tombstone block visibility (issue #1579). Emit only when present so legacy
+  // memories round-trip unchanged; the review queue reads these to drive the
+  // automatic revocation on approval.
+  if (fm.blockedBy) lines.push(`blockedBy: ${fm.blockedBy}`);
+  if (fm.tombstoneBlockTier) lines.push(`tombstoneBlockTier: ${fm.tombstoneBlockTier}`);
   if (fm.supersededBy) lines.push(`supersededBy: ${fm.supersededBy}`);
   if (fm.supersededAt) lines.push(`supersededAt: ${fm.supersededAt}`);
   if (fm.archivedAt) lines.push(`archivedAt: ${fm.archivedAt}`);
@@ -818,6 +832,15 @@ function parseFrontmatter(
       lineage: lineage && lineage.length > 0 ? lineage : undefined,
       // Status management
       status: (fm.status as MemoryStatus) || "active",
+      // Tombstone block visibility (issue #1579) — read-through.
+      blockedBy: fm.blockedBy || undefined,
+      tombstoneBlockTier:
+        fm.tombstoneBlockTier === "exact" ||
+        fm.tombstoneBlockTier === "normalized" ||
+        fm.tombstoneBlockTier === "keyed" ||
+        fm.tombstoneBlockTier === "semantic"
+          ? fm.tombstoneBlockTier
+          : undefined,
       supersededBy: fm.supersededBy || undefined,
       supersededAt: fm.supersededAt || undefined,
       archivedAt: fm.archivedAt || undefined,
@@ -2291,6 +2314,19 @@ export class StorageManager {
     try { this.onCatalogWrite?.(); } catch { /* gotcha #13 */ }
   }
 
+  // ── Tombstone store (issue #1579) ───────────────────────────────────────
+  // Instance-scoped (rule 11) + namespace-scoped (rule 42) tombstone index.
+  // Lazily loaded from <stateDir>/tombstones.jsonl; invalidated together with
+  // every other cache layer via invalidateAllMemoriesCache (rule 25).
+  private tombstoneStore: TombstoneStore | null = null;
+  private tombstoneStoreLoadPromise: Promise<TombstoneStore> | null = null;
+  private tombstonesConfig: {
+    enabled: boolean;
+    semanticMatch: boolean;
+    semanticThreshold: number;
+    namespace: string;
+  } = { enabled: false, semanticMatch: false, semanticThreshold: 0.9, namespace: "default" };
+
   /** Page-versioning configuration.  Set by the orchestrator after construction. */
   private _versioningConfig: VersioningConfig | null = null;
 
@@ -3044,6 +3080,189 @@ export class StorageManager {
     return path.join(this.stateDir, "fact-hashes.ready");
   }
 
+  // ── Tombstone store access (issue #1579) ─────────────────────────────────
+  /**
+   * The on-disk tombstone log path. Lives under `<stateDir>/tombstones.jsonl`
+   * so it is co-located with the fact-hash index and encrypted at rest when
+   * the secure-store is enabled (the StorageManager's secure read/write
+   * helpers are injected into the store).
+   */
+  private get tombstonesPath(): string {
+    return path.join(this.stateDir, "tombstones.jsonl");
+  }
+
+  /**
+   * Configure the tombstone invariant for this storage instance. Installed
+   * by the orchestrator after construction (same pattern as
+   * `setVersioningConfig` / `citationTemplate`). When `enabled` is false
+   * (default until the orchestrator wires config), the chokepoint check is a
+   * no-op — pre-feature behavior for rollback safety (rule 30).
+   */
+  setTombstonesConfig(config: {
+    enabled: boolean;
+    semanticMatch: boolean;
+    semanticThreshold: number;
+    namespace: string;
+  }): void {
+    this.tombstonesConfig = { ...config };
+    // Reset the store so the next access rebuilds with the new options.
+    if (this.tombstoneStore) {
+      this.tombstoneStore.invalidate();
+      this.tombstoneStore = null;
+      this.tombstoneStoreLoadPromise = null;
+    }
+  }
+
+  private buildTombstoneStore(): TombstoneStore {
+    const options: TombstoneStoreOptions = {
+      enabled: this.tombstonesConfig.enabled,
+      semanticMatch: this.tombstonesConfig.semanticMatch,
+      semanticThreshold: this.tombstonesConfig.semanticThreshold,
+      // Wire the SAME helpers the dedup index uses (rule 23 / checklist §13):
+      // hashContent = ContentHashIndex.computeHash, normalizeText =
+      // ContentHashIndex.normalizeContent. Importing them here (not copying)
+      // guarantees the tombstone tiers can never drift from dedup.
+      hashContent: ContentHashIndex.computeHash,
+      normalizeText: ContentHashIndex.normalizeContent,
+    };
+    const io: TombstoneFileIo = {
+      read: (filePath) => this.readStorageSecureFile(filePath),
+      append: (filePath, content) => this.appendStorageSecureFile(filePath, content),
+      write: (filePath, content) => this.writeStorageSecureFile(filePath, content),
+    };
+    return new TombstoneStore(
+      this.tombstonesPath,
+      this.tombstonesConfig.namespace,
+      options,
+      io,
+    );
+  }
+
+  /**
+   * Lazily load the tombstone store. Mirrors the fact-hash-index lazy-load
+   * pattern: a single in-flight load promise dedups concurrent first-access.
+   */
+  getTombstoneStore(): Promise<TombstoneStore> {
+    if (this.tombstoneStore) return Promise.resolve(this.tombstoneStore);
+    if (!this.tombstoneStoreLoadPromise) {
+      const store = this.buildTombstoneStore();
+      this.tombstoneStoreLoadPromise = store
+        .load()
+        .then(() => {
+          this.tombstoneStore = store;
+          return store;
+        })
+        .catch((err) => {
+          this.tombstoneStoreLoadPromise = null;
+          throw err;
+        });
+    }
+    return this.tombstoneStoreLoadPromise;
+  }
+
+  /**
+   * Append a tombstone for a retired memory (issue #1579 emitters).
+   * Best-effort: a tombstone append failure MUST NOT fail the supersession /
+   * correction that triggered it (gotcha #13 / rule 34). The memory is
+   * already retired on disk; the tombstone is the non-resurrection guard.
+   */
+  async appendTombstone(input: {
+    reason: TombstoneReason;
+    createdBy: TombstoneCreatedBy;
+    sourceMemoryId: string;
+    rawContent: string;
+    entityRef?: string;
+    supersessionKey?: string;
+    createdAt?: string;
+  }): Promise<string | null> {
+    if (!this.tombstonesConfig.enabled) return null;
+    try {
+      const store = await this.getTombstoneStore();
+      return await store.appendTombstone(input);
+    } catch (err) {
+      log.warn(`tombstone append failed (memory=${input.sourceMemoryId}): ${err}`);
+      return null;
+    }
+  }
+
+  /**
+   * Revoke a tombstone (re-allow the content). Used by the review-queue
+   * approval path when an operator approves a blocked memory.
+   */
+  async revokeTombstone(tombstoneId: string, createdBy: TombstoneCreatedBy): Promise<string | null> {
+    if (!this.tombstonesConfig.enabled) return null;
+    try {
+      const store = await this.getTombstoneStore();
+      return await store.revoke(tombstoneId, createdBy);
+    } catch (err) {
+      log.warn(`tombstone revoke failed (id=${tombstoneId}): ${err}`);
+      return null;
+    }
+  }
+
+  /** Aggregate tombstone stats for `remnic doctor`. */
+  async getTombstoneStats(): Promise<TombstoneStats | null> {
+    if (!this.tombstonesConfig.enabled) return null;
+    try {
+      const store = await this.getTombstoneStore();
+      return store.stats();
+    } catch (err) {
+      log.warn(`tombstone stats failed: ${err}`);
+      return null;
+    }
+  }
+
+  /**
+   * Rebuild the tombstone log from retired memories on disk. Exposed for
+   * `remnic doctor --rebuild-tombstones` and tests.
+   */
+  async rebuildTombstonesFromFiles(): Promise<number> {
+    if (!this.tombstonesConfig.enabled) return 0;
+    const store = await this.getTombstoneStore();
+    const all = [...(await this.readAllMemories()), ...(await this.readAllColdMemories())];
+    type Retired = {
+      memoryId: string;
+      rawContent: string;
+      entityRef?: string;
+      supersessionKey?: string;
+      reason: TombstoneReason;
+      createdBy: TombstoneCreatedBy;
+      createdAt: string;
+    };
+    const retired: Retired[] = [];
+    for (const m of all) {
+      const status = m.frontmatter.status ?? "active";
+      if (status !== "superseded" && status !== "rejected" && status !== "forgotten") continue;
+      // Only facts participate in the dedup/tombstone invariant — entities,
+      // questions, and artifacts have their own lifecycle.
+      if (m.frontmatter.category !== "fact") continue;
+      const reason: TombstoneReason =
+        status === "superseded" ? "supersession" : status === "forgotten" ? "retraction" : "correction";
+      const createdBy: TombstoneCreatedBy =
+        reason === "supersession" ? "supersession" : "user_correction";
+      const entityRef = m.frontmatter.entityRef;
+      // Derive the supersession key from structured attributes when present
+      // (the SAME helper the write-time supersession uses — one helper).
+      const keys =
+        entityRef && m.frontmatter.structuredAttributes
+          ? supersessionKeysForFact({
+              entityRef,
+              structuredAttributes: m.frontmatter.structuredAttributes,
+            })
+          : [];
+      retired.push({
+        memoryId: m.frontmatter.id,
+        rawContent: stripCitationForTemplate(m.content, this.citationTemplate),
+        ...(entityRef ? { entityRef } : {}),
+        ...(keys.length > 0 ? { supersessionKey: keys[0] } : {}),
+        reason,
+        createdBy,
+        createdAt: m.frontmatter.updated || m.frontmatter.created,
+      });
+    }
+    return store.rebuild(retired);
+  }
+
   private async getFactHashIndex(): Promise<ContentHashIndex> {
     if (this.factHashIndex) {
       return this.factHashIndex;
@@ -3473,12 +3692,68 @@ export class StorageManager {
     // consolidation paths can remove the correct hash from ContentHashIndex
     // regardless of what citation format (if any) has been appended to the
     // stored body. Mirrors the logic in the fact-hash-index update below.
+    let factHashSourceForTombstone: string | null = null;
     if (category === "fact") {
       const hashSource =
         options.contentHashSource !== undefined && options.contentHashSource.length > 0
           ? sanitizeMemoryContent(options.contentHashSource).text
           : sanitized.text;
       fm.contentHash = ContentHashIndex.computeHash(hashSource);
+      factHashSourceForTombstone = hashSource;
+    }
+
+    // ── Non-resurrection chokepoint (issue #1579) ────────────────────────
+    // Before a new fact becomes active, consult the tombstone index. If a
+    // retired fact matches (exact / normalized / keyed / semantic), persist
+    // the candidate as pending_review + blockedBy instead — VISIBLE, never a
+    // silent drop (rule 34) — and skip the active dedup/index registration
+    // (rule 44). This is the SINGLE storage persist path: every write
+    // (extraction, import, consolidation, dreams, pattern-reinforcement)
+    // funnels through writeMemory, so the five resurrection paths are blocked
+    // here without per-path code (rule 43).
+    let tombstoneBlocked = false;
+    if (
+      category === "fact" &&
+      this.tombstonesConfig.enabled &&
+      factHashSourceForTombstone !== null &&
+      // Only block facts that would otherwise become ACTIVE. A caller that
+      // explicitly requests a non-active status (e.g. a correction memory
+      // written with status: "rejected") is respected.
+      (fm.status === undefined || fm.status === "active")
+    ) {
+      try {
+        const tombstoneStore = await this.getTombstoneStore();
+        // Derive the keyed-tier supersession key from structured attributes
+        // using the SAME helper write-time supersession uses (one helper).
+        const keyedSupersession =
+          options.entityRef && options.structuredAttributes
+            ? supersessionKeysForFact({
+                entityRef: options.entityRef,
+                structuredAttributes: options.structuredAttributes,
+              })
+            : [];
+        const match = tombstoneStore.lookup({
+          contentHash: fm.contentHash,
+          normalizedText: ContentHashIndex.normalizeContent(factHashSourceForTombstone),
+          ...(options.entityRef ? { entityRef: options.entityRef } : {}),
+          ...(keyedSupersession.length > 0 ? { supersessionKey: keyedSupersession[0] } : {}),
+          namespace: this.tombstonesConfig.namespace,
+        });
+        if (match) {
+          tombstoneBlocked = true;
+          fm.status = "pending_review";
+          fm.blockedBy = match.tombstoneId;
+          fm.tombstoneBlockTier = match.matchedTier;
+          log.info(
+            `tombstone: blocked resurrection of fact ${id} (tier=${match.matchedTier}, tombstone=${match.tombstoneId}, reason=${match.reason})`,
+          );
+        }
+      } catch (err) {
+        // Fail-open (rule 34 spirit): a tombstone lookup error must not block
+        // the write. The fact persists as active; the next lookup after the
+        // store recovers will catch a subsequent re-extraction.
+        log.warn(`tombstone lookup failed for fact ${id} (fail-open): ${err}`);
+      }
     }
 
     const fileContent = `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`;
@@ -3499,7 +3774,11 @@ export class StorageManager {
         ...((options.lineage ?? []).filter(Boolean)),
       ],
     });
-    if (category === "fact") {
+    if (category === "fact" && !tombstoneBlocked) {
+      // Rule 44 (#1579): a tombstone-blocked fact MUST NOT be registered as an
+      // active dedup/index entry — otherwise the block is invisible to dedup
+      // and the content is silently banned on the next extraction. Only active
+      // (un-blocked) facts enter the hash index.
       try {
         const factHashIndex = await this.getFactHashIndex();
         // When the caller provides a separate contentHashSource (e.g. the raw
@@ -4055,6 +4334,15 @@ export class StorageManager {
     // recall cache was never invalidated on mutations, so recall served
     // pre-edit bundles for the remainder of its fresh/stale TTL window.
     invalidateAllForDir(this.baseDir);
+    // Issue #1579 — tombstone store is a cache layer too (rule 25: clear ALL
+    // cache layers). A tombstone append from another path (supersession /
+    // correction) must be visible to the next writeMemory lookup on this
+    // instance without waiting for a process restart.
+    if (this.tombstoneStore) {
+      this.tombstoneStore.invalidate();
+      this.tombstoneStore = null;
+      this.tombstoneStoreLoadPromise = null;
+    }
   }
 
   /**
@@ -7113,6 +7401,24 @@ export class StorageManager {
       });
       this.bumpMemoryStatusVersion();
       log.debug(`superseded memory ${oldMemoryId} by ${newMemoryId}: ${reason}`);
+
+      // Issue #1579 — emit a tombstone so the superseded fact cannot
+      // resurrect. Contradiction resolution verbs (keep-a/keep-b/merge) all
+      // funnel through supersedeMemory, so emitting here covers every verb
+      // exactly once (rule 22). Only facts participate (entities/questions/
+      // artifacts have their own lifecycle and are not dedup-tombstoned).
+      if (oldMemory.frontmatter.category === "fact") {
+        await this.appendTombstone({
+          reason: "contradiction_resolution",
+          createdBy: "contradiction_resolution",
+          sourceMemoryId: oldMemoryId,
+          rawContent: oldMemory.content,
+          ...(oldMemory.frontmatter.entityRef
+            ? { entityRef: oldMemory.frontmatter.entityRef }
+            : {}),
+          createdAt: now,
+        });
+      }
 
       // Also write a correction entry for the audit trail
       await this.writeMemory("correction", `Superseded: ${oldMemory.content}\n\nReason: ${reason}`, {
