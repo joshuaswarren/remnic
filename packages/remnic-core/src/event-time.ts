@@ -515,6 +515,24 @@ function resolveEndBound(anchorMs: number, period: string): number | null {
     }
     return endMs;
   }
+  // Season end bound: advance by the full 3-month season.  Same
+  // backwards-looking rollback logic as month names, but do not roll back
+  // when the anchor is currently inside the season (codex review r2: bare
+  // season end bounds like "until spring" / "through summer" returned null).
+  const seasonMonth = SEASON_TO_MONTH[lower];
+  if (typeof seasonMonth === "number") {
+    const d = new Date(anchorMs);
+    const startMs = buildDateMs(d.getUTCFullYear(), seasonMonth, 1);
+    if (startMs === null) return null;
+    const nd = new Date(startMs);
+    nd.setUTCMonth(nd.getUTCMonth() + 3);
+    let endMs = startOfDayUtc(nd.getTime());
+    if (endMs > anchorMs && !isInSeason(seasonMonth, d.getUTCMonth() + 1)) {
+      nd.setUTCFullYear(nd.getUTCFullYear() - 1);
+      endMs = startOfDayUtc(nd.getTime());
+    }
+    return endMs;
+  }
   if (lower === "year") {
     const d = new Date(anchorMs);
     return buildDateMs(d.getUTCFullYear() + 1, 1, 1);

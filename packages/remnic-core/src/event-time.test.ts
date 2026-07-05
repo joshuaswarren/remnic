@@ -442,3 +442,31 @@ test("since <month> <year> with explicit year does not roll back (codex review r
   assert.equal(r.ok, true);
   assert.equal(r.validFrom, "2026-03-01T00:00:00.000Z");
 });
+
+test("until <bare season> resolves end bound (codex review r2)", () => {
+  // "until spring" from June → spring ended May → exclusive end June 1 2026.
+  const r = resolveEventTime("until spring", "2026-06-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2026-06-01T00:00:00.000Z");
+});
+
+test("through <bare season> from inside the season does not roll back (codex review r2)", () => {
+  // "through summer" from July → we're in summer → end = Sep 1 2026.
+  const r = resolveEventTime("through summer", "2026-07-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2026-09-01T00:00:00.000Z");
+});
+
+test("until end of <season> strips prefix and resolves (codex review r2)", () => {
+  // "until end of spring" from June → same as "until spring".
+  const r = resolveEventTime("until end of spring", "2026-06-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2026-06-01T00:00:00.000Z");
+});
+
+test("until <bare season> from before the season rolls back (codex review r2)", () => {
+  // "until spring" from January → spring hasn't happened → last spring ended Jun 2025.
+  const r = resolveEventTime("until spring", "2026-01-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2025-06-01T00:00:00.000Z");
+});
