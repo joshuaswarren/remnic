@@ -2620,6 +2620,55 @@ test("a dropped resolve registration (hook returns false) is retried on a later 
   }
 });
 
+// ── In-flight dedup under a DROPPED hook (cursor Medium 06f58a7c, codex P2).
+// The serializer strictly orders queued tasks, but ordering alone does not
+// collapse a burst when the hook returns `false` (dropped registration, e.g. a
+// rebuild-lock timeout): `notifiedResolved` stays unset, so every queued sibling
+// task passes its re-check and re-invokes the hook — N serial lock waits. The
+// `inFlightResolveHooks` marker (set synchronously before queueing) collapses the
+// burst to a single hook invocation; the drop stays retryable on a LATER
+// storageFor(). This test PROVE-FAILS without the marker (calls === N) and PASSES
+// with it (calls === 1).
+test("a burst of concurrent storageFor() with a DROPPED hook fires it ONCE (not once per queued task)", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    let calls = 0;
+    // Gated hook that DROPS (returns false) once released. This is the real
+    // scenario the reviewers flagged: the catalog's onResolve waits on the
+    // rebuild lock (slow), times out, and returns false. While that hook is
+    // in-flight, a burst of cache hits must collapse to the one in-flight
+    // registration instead of each queueing its own serial lock wait.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const router = new NamespaceStorageRouter(makeConfig(memoryDir), {
+      onResolve: async () => {
+        calls += 1;
+        await gate;
+        return false; // dropped (rebuild-lock timeout analogue)
+      },
+    });
+
+    // A burst of concurrent cache hits while the hook is IN-FLIGHT. Without the
+    // in-flight dedup marker each enqueued task would re-run the dropped hook
+    // once the first settles (N serial lock waits); with it they collapse.
+    const N = 8;
+    await Promise.all(Array.from({ length: N }, () => router.storageFor("project-origin-burst-drop")));
+    // Let the in-flight hook settle as DROPPED.
+    release();
+    await router.whenResolveHooksSettled();
+    assert.equal(calls, 1, "a dropped hook fires ONCE under a burst, not once per queued task");
+
+    // The drop must remain retryable: a later storageFor() re-fires the hook.
+    await router.storageFor("project-origin-burst-drop");
+    await router.whenResolveHooksSettled();
+    assert.equal(calls, 2, "a dropped registration is retried on the next storageFor()");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ── Round 7 (codex P2 — NDxiS): a configured non-default namespace must be seeded
 // with the ROUTER-resolved root, not a blanket tokenized dir. When a legacy raw
 // root (`namespaces/<rawname>`) already exists, the router serves it, so the

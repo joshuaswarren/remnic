@@ -218,6 +218,14 @@ export class NamespaceStorageRouter {
   // hook invocation (the once-per-namespace intent). Recovery is preserved —
   // one rejected hook never poisons subsequent notifications for that key.
   private readonly resolveSerializer = new MutationSerializer();
+  // Namespaces whose resolve hook is currently pending. Set SYNCHRONOUSLY in
+  // notifyResolved (before queueing) so a burst of concurrent storageFor()
+  // cache hits collapses onto the one in-flight hook instead of each enqueuing
+  // its own task. Cleared when the queued hook settles. Without this, a dropped
+  // hook (returns false on a rebuild-lock timeout) leaves notifiedResolved
+  // unset, so every queued sibling task would re-run the hook — N serial lock
+  // waits (cursor Medium 06f58a7c, codex P2).
+  private readonly inFlightResolveHooks = new Set<string>();
   // Tracks every in-flight resolve-hook promise so callers can deterministically
   // await the fire-and-forget registrations that `storageFor()` kicks off (see
   // `whenResolveHooksSettled`). Entries are removed as each hook settles, so the
@@ -318,10 +326,22 @@ export class NamespaceStorageRouter {
     // still re-fires once. The mark is set ONLY AFTER the hook succeeds, so a
     // dropped registration (e.g. rebuild-lock timeout) is RETRIED on the next
     // cache hit instead of being suppressed forever (round 6, cursor Medium —
-    // ND3EJ). A second re-check INSIDE the serialized task closes the in-flight
-    // window — when a queued task runs after the first hook settled, the
-    // now-set `notifiedResolved` short-circuits it without invoking the hook.
+    // ND3EJ).
     if (this.notifiedResolved.get(namespace) === storageDir) return;
+    // In-flight dedup (cursor Medium 06f58a7c, codex P2): if a hook for THIS
+    // namespace is already pending, collapse this call onto it instead of
+    // enqueueing another task. The serializer strictly orders queued tasks, but
+    // ordering alone is not enough — when the first hook returns `false`
+    // (dropped touch, e.g. rebuild-lock timeout), `notifiedResolved` stays
+    // unset, so each queued sibling task would pass its re-check and re-run the
+    // hook. With the real catalog hook each retry can spend the full lock wait,
+    // so N cache hits during a rebuild leave N serial background lock attempts.
+    // Collapsing here means at most ONE hook runs per in-flight registration;
+    // its result (set `notifiedResolved` on success, leave unset on drop)
+    // decides whether a LATER `storageFor()` retries — collapsing loses
+    // nothing because the drop is already retried on the next cache hit.
+    if (this.inFlightResolveHooks.has(namespace)) return;
+    this.inFlightResolveHooks.add(namespace);
     // Queue through the serializer. Concurrent calls for the same namespace
     // strictly order here; the 2nd call's task runs only after the 1st's hook
     // settles, by which point `notifiedResolved` is either set (no-op) or still
@@ -350,7 +370,13 @@ export class NamespaceStorageRouter {
     };
     const queued = this.resolveSerializer.serialize(namespace, task);
     this.pendingResolveHooks.add(queued);
-    const cleanup = (): void => { this.pendingResolveHooks.delete(queued); };
+    // Clear the in-flight marker when the hook settles so a subsequent
+    // storageFor() can retry after a drop, or short-circuit via notifiedResolved
+    // after a success.
+    const cleanup = (): void => {
+      this.inFlightResolveHooks.delete(namespace);
+      this.pendingResolveHooks.delete(queued);
+    };
     void queued.then(cleanup, cleanup);
   }
 
