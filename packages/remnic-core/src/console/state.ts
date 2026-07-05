@@ -59,6 +59,11 @@ export interface ConsoleStateOrchestratorLike {
    * version read from disk.
    */
   getConsoleDaemonInfo?: () => ConsoleDaemonInfo;
+  /**
+   * Optional faithfulness gate distribution (issue #1576). Returns the
+   * per-orchestrator running counters when the gate is active.
+   */
+  getConsoleFaithfulnessDistribution?: () => ConsoleFaithfulnessDistribution;
 }
 
 export interface ConsoleBufferState {
@@ -120,6 +125,18 @@ export interface ConsoleDaemonInfo {
   version: string;
 }
 
+/**
+ * Faithfulness gate verdict distribution (issue #1576). Surfaced via
+ * console_state so `remnic doctor` can render how the gate is performing.
+ */
+export interface ConsoleFaithfulnessDistribution {
+  entailed: number;
+  contradicted: number;
+  unsupported: number;
+  unchecked: number;
+  skippedNoSpan: number;
+}
+
 export interface ConsoleStateSnapshot {
   /** ISO-8601 capture timestamp. */
   capturedAt: string;
@@ -129,6 +146,8 @@ export interface ConsoleStateSnapshot {
   maintenanceLedgerTail: ConsoleMaintenanceLedgerEvent[];
   qmdProbe: ConsoleQmdProbeState;
   daemon: ConsoleDaemonInfo;
+  /** Faithfulness gate distribution (issue #1576). Absent when the gate is off. */
+  faithfulness?: ConsoleFaithfulnessDistribution;
   /**
    * Subsystem read errors. One entry per failed reader keyed by
    * subsystem name (e.g. `"bufferState: ..."`). An empty array means
@@ -163,6 +182,17 @@ export async function gatherConsoleState(
   const qmdProbe = readQmdProbe(orchestrator, errors);
   const daemon = readDaemonInfo(orchestrator, errors);
 
+  // Faithfulness gate distribution (issue #1576). Optional — absent when
+  // the gate is off or the orchestrator does not expose the accessor.
+  let faithfulness: ConsoleFaithfulnessDistribution | undefined;
+  try {
+    if (typeof orchestrator.getConsoleFaithfulnessDistribution === "function") {
+      faithfulness = orchestrator.getConsoleFaithfulnessDistribution();
+    }
+  } catch (err) {
+    errors.push(`faithfulness: ${describeError(err)}`);
+  }
+
   return {
     capturedAt,
     bufferState,
@@ -171,6 +201,7 @@ export async function gatherConsoleState(
     maintenanceLedgerTail,
     qmdProbe,
     daemon,
+    ...(faithfulness ? { faithfulness } : {}),
     errors,
   };
 }

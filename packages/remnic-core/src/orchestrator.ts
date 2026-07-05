@@ -36,6 +36,12 @@ import {
   type JudgeVerdict,
 } from "./extraction-judge.js";
 import {
+  applyFaithfulnessVerdict,
+  createFaithfulnessCounters,
+  runFaithfulnessGateBatch,
+} from "./extraction-faithfulness.js";
+import type { FaithfulnessGateCounters } from "./extraction-faithfulness.js";
+import {
   EXTRACTION_JUDGE_VERDICT_CATEGORY,
   recordJudgeVerdict,
 } from "./extraction-judge-telemetry.js";
@@ -1829,6 +1835,12 @@ export class Orchestrator {
    */
   private readonly judgeDeferCounts: Map<string, number>;
   /**
+   * Faithfulness gate distribution counters (issue #1576). Per-orchestrator
+   * running tally surfaced via console_state telemetry. No module-level state
+   * (rule 11) — these hang off the orchestrator instance.
+   */
+  private faithfulnessCounters: FaithfulnessGateCounters = createFaithfulnessCounters();
+  /**
    * Side-channel: number of facts deferred in the most recent
    * `persistExtraction` call (issue #562, PR 2). The caller reads this after
    * `persistExtraction` returns to decide whether to retain buffer turns for
@@ -1840,6 +1852,16 @@ export class Orchestrator {
 
   get fastGatewayLlm(): FallbackLlmClient | null {
     return this._fastGatewayLlm;
+  }
+
+  /**
+   * Faithfulness gate verdict distribution (issue #1576). Consumed by the
+   * console-state aggregator so `remnic doctor` can render how the gate is
+   * performing. Returns a fresh object so callers cannot mutate the
+   * internal counters.
+   */
+  getConsoleFaithfulnessDistribution(): FaithfulnessGateCounters {
+    return { ...this.faithfulnessCounters };
   }
   readonly modelRegistry: ModelRegistry;
   readonly relevance: RelevanceStore;
@@ -14577,6 +14599,28 @@ export class Orchestrator {
       }
     }
 
+    // Faithfulness gate (issue #1576). Entailment-verification of extracted
+    // facts against their verified source spans from #1575. Placement: after
+    // parse + provenance validation, BEFORE persist/index (rule 44). The
+    // substantive batch logic lives in the pure module; this is thin
+    // delegation (ground rule 4). off → null map (byte-identical pre-feature
+    // pipeline, rule 39); shadow → record only; enforce → pending_review.
+    const faithfulnessMode = this.config.extractionFaithfulnessGate;
+    const faithfulnessResultsByFactIndex =
+      faithfulnessMode === "shadow" || faithfulnessMode === "enforce"
+        ? await runFaithfulnessGateBatch(
+            facts,
+            faithfulnessMode,
+            this.config,
+            this.localLlm,
+            new FallbackLlmClient(
+              this.config.gatewayConfig,
+              fallbackLlmRuntimeContextFromConfig(this.config),
+            ),
+            this.faithfulnessCounters,
+          )
+        : null;
+
     let factLoopIndex = -1;
     for (const fact of facts) {
       factLoopIndex++;
@@ -14812,6 +14856,19 @@ export class Orchestrator {
           continue;
         }
       }
+
+      // Faithfulness gate verdict application (issue #1576). Look up the
+      // pre-computed verdict for this fact and translate it to frontmatter +
+      // an optional enforce-mode pending_review status. Logic lives in the
+      // pure module; this is thin read-through (ground rule 4).
+      const { faithfulness: faithfulnessFm, enforceStatus: faithfulnessEnforceStatus } =
+        applyFaithfulnessVerdict(
+          faithfulnessResultsByFactIndex,
+          factLoopIndex,
+          faithfulnessMode,
+          fact.content,
+          this.faithfulnessCounters,
+        );
 
       // Issue #373 — write-time semantic similarity guard. Hook runs after
       // the exact content-hash miss and the importance gate so that:
@@ -15067,6 +15124,9 @@ export class Orchestrator {
               structuredAttributes: fact.structuredAttributes,
               validAt: sourceContext?.validAt,
               contentHashSource: rawChunkedContent,
+              // Faithfulness gate (issue #1576).
+              ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
+              ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
             },
           );
           try {
@@ -15333,6 +15393,9 @@ export class Orchestrator {
           structuredAttributes: fact.structuredAttributes,
           validAt: sourceContext?.validAt,
           contentHashSource: writeCategory === "fact" ? fact.content : undefined,
+          // Faithfulness gate (issue #1576).
+          ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
+          ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
         },
       );
       if (routedRuleId) {

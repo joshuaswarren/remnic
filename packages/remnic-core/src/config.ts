@@ -2909,6 +2909,36 @@ export function parseConfig(
     collectJudgeTrainingPairs: coerceBool(cfg.collectJudgeTrainingPairs) === true,
     judgeTrainingDir:
       typeof cfg.judgeTrainingDir === "string" ? cfg.judgeTrainingDir : "",
+    // Extraction faithfulness gate (issue #1576). Entailment-verification of
+    // extracted facts against verified source spans (#1575). Default "off"
+    // (rule 39: byte-identical pre-feature pipeline). Invalid values are
+    // rejected listing valid options (rule 51).
+    extractionFaithfulnessGate: (() => {
+      const raw =
+        typeof cfg.extractionFaithfulnessGate === "string"
+          ? cfg.extractionFaithfulnessGate.trim().toLowerCase()
+          : "off";
+      if (raw === "off" || raw === "shadow" || raw === "enforce") return raw;
+      throw new Error(
+        `extractionFaithfulnessGate must be one of "off" | "shadow" | "enforce" (got ${JSON.stringify(cfg.extractionFaithfulnessGate)})`,
+      );
+    })(),
+    extractionFaithfulnessModel:
+      typeof cfg.extractionFaithfulnessModel === "string"
+        ? cfg.extractionFaithfulnessModel
+        : "",
+    extractionFaithfulnessContextChars:
+      typeof cfg.extractionFaithfulnessContextChars === "number" &&
+      Number.isFinite(cfg.extractionFaithfulnessContextChars) &&
+      cfg.extractionFaithfulnessContextChars > 0
+        ? Math.min(Math.round(cfg.extractionFaithfulnessContextChars), 4000)
+        : 400,
+    extractionFaithfulnessTimeoutMs:
+      typeof cfg.extractionFaithfulnessTimeoutMs === "number" &&
+      Number.isFinite(cfg.extractionFaithfulnessTimeoutMs) &&
+      cfg.extractionFaithfulnessTimeoutMs > 0
+        ? Math.min(Math.round(cfg.extractionFaithfulnessTimeoutMs), 60_000)
+        : 8000,
     // Inline source attribution (issue #369). Opt-in to preserve
     // backwards compatibility with existing downstream consumers.
     inlineSourceAttributionEnabled: cfg.inlineSourceAttributionEnabled === true,

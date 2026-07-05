@@ -3658,6 +3658,27 @@
         "default": "",
         "description": "Override directory for judge training-pair collection. Empty string uses the default (~/.remnic/judge-training). Only consulted when collectJudgeTrainingPairs is true."
       },
+      "extractionFaithfulnessGate": {
+        "type": "string",
+        "enum": ["off", "shadow", "enforce"],
+        "default": "off",
+        "description": "Extraction faithfulness gate (issue #1576). Entailment-verification of extracted facts against their verified source spans (#1575). 'off' (default) = byte-identical pre-feature pipeline; 'shadow' = record verdicts in frontmatter + telemetry only; 'enforce' = route unsupported/contradicted to pending_review."
+      },
+      "extractionFaithfulnessModel": {
+        "type": "string",
+        "default": "",
+        "description": "Override model/endpoint for the faithfulness verifier. Empty string = default routing chain (local then fallback)."
+      },
+      "extractionFaithfulnessContextChars": {
+        "type": "number",
+        "default": 400,
+        "description": "Context window (chars) around the verified quote sent to the faithfulness verifier."
+      },
+      "extractionFaithfulnessTimeoutMs": {
+        "type": "number",
+        "default": 8000,
+        "description": "Per-batch timeout in ms for the faithfulness check. Timeout produces a tagged error and never blocks memory writes (graceful degradation)."
+      },
       "inlineSourceAttributionEnabled": {
         "type": "boolean",
         "default": false,
