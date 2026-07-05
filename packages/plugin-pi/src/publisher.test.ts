@@ -643,7 +643,7 @@ test("omp publisher publishes config, wrapper, readme, pre-bundle loader, and ma
   const ompManifest = pkg.omp as { extensions?: string[] } | undefined;
   assert.deepEqual(ompManifest?.extensions, ["./loader.js"]);
   const scripts = pkg.scripts as { postinstall?: string } | undefined;
-  assert.ok(scripts?.postinstall?.includes("build index.ts"), "postinstall must run bun build");
+  assert.equal(scripts?.postinstall, "node postinstall-bundle.cjs", "postinstall must run the cross-platform Node helper");
 
   const loader = fs.readFileSync(loaderPath, "utf8");
   assert.match(loader, /bundleIsStale/, "loader must have staleness check");
@@ -1227,8 +1227,8 @@ test("omp publisher wrapper is bun-buildable (relative import, not file://)", as
 // ── Regression (PR #1641 / #1598): package.json postinstall must reuse the
 // resolved bun path so `npm install` re-bundles on systems where bun is not on
 // the PATH npm inherits.
-test("omp publisher package.json postinstall uses the resolved bun path", async (t) => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-postinstall-bun-"));
+test("omp publisher writes a cross-platform postinstall-bundle.cjs that embeds the resolved bun path", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-postinstall-cjs-"));
   const home = path.join(root, "home");
   fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
 
@@ -1269,20 +1269,148 @@ test("omp publisher package.json postinstall uses the resolved bun path", async 
   const pkg = JSON.parse(fs.readFileSync(path.join(extensionRoot, "package.json"), "utf8")) as {
     scripts: { postinstall: string };
   };
-  const postinstall = pkg.scripts.postinstall;
+  // npm runs scripts via cmd.exe on Windows by default; a Node-only helper is
+  // the only cross-platform shape, so package.json just invokes it.
+  assert.equal(pkg.scripts.postinstall, "node postinstall-bundle.cjs");
+
+  const helperPath = path.join(extensionRoot, "postinstall-bundle.cjs");
+  assert.ok(fs.existsSync(helperPath), "postinstall-bundle.cjs must be written");
+  const helper = fs.readFileSync(helperPath, "utf8");
   assert.ok(
-    postinstall.includes(resolvedBun),
-    `postinstall must reference the resolved bun path (${resolvedBun})`,
+    helper.includes(resolvedBun),
+    `postinstall helper must embed the resolved bun path (${resolvedBun})`,
   );
-  assert.ok(postinstall.includes("build index.ts"), "postinstall must run bun build");
-  assert.match(
-    postinstall,
-    /\|\|\s*BUN=bun/,
-    "postinstall must fall back to PATH bun when the resolved binary is missing",
+  assert.match(helper, /function pickBun/, "helper must resolve bun with a PATH fallback");
+  assert.match(helper, /\.dist-bundle\.bak-/, "helper must swap bundles atomically (backup dir)");
+
+  // The helper must be syntactically valid Node (no shell-specific syntax).
+  const syntaxCheck = spawnSync(process.execPath, ["--check", helperPath], { encoding: "utf-8" });
+  assert.equal(syntaxCheck.status, 0, `postinstall-bundle.cjs fails node --check: ${syntaxCheck.stderr}`);
+
+  // Running the helper must rebuild dist-bundle via the embedded bun path.
+  fs.rmSync(path.join(extensionRoot, "dist-bundle"), { recursive: true, force: true });
+  const run = spawnSync(process.execPath, [helperPath], {
+    cwd: extensionRoot,
+    encoding: "utf-8",
+  });
+  assert.equal(run.status, 0, `postinstall helper failed to rebuild: ${run.stderr ?? run.stdout}`);
+  assert.ok(
+    fs.existsSync(path.join(extensionRoot, "dist-bundle", "index.js")),
+    "postinstall helper must regenerate dist-bundle/index.js",
   );
+});
+
+// ── Regression (PR #1641 / #1598): the official Bun Windows installer ships
+// bun.exe; resolveBunBinary must probe it (fs.existsSync does not apply PATHEXT).
+test("omp publisher resolveBunBinary finds ~/.bun/bin/bun.exe (Windows installer layout)", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-bun-exe-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  // Plant ONLY bun.exe (no bun) under the home, mirroring the Windows installer.
+  fs.mkdirSync(path.join(home, ".bun", "bin"), { recursive: true });
+  const bunExe = path.join(home, ".bun", "bin", "bun.exe");
+  fs.writeFileSync(bunExe, createFakeBunScript(), { mode: 0o755 });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  const previousPath = process.env.PATH;
+  delete process.env.HOME;
+  process.env.USERPROFILE = home;
+  delete process.env.REMNIC_OMP_BUN_BIN;
+  process.env.PATH = "/usr/bin"; // force the PATH probe to fail → candidate lookup
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    restoreEnv("PATH", previousPath);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  const result = await new OmpMemoryExtensionPublisher().publish({
+    config: { memoryDir: path.join(root, "memory") },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+  assert.ok(
+    fs.existsSync(path.join(result.extensionRoot, "dist-bundle", "index.js")),
+    "publish must succeed via the ~/.bun/bin/bun.exe candidate",
+  );
+});
+
+// ── Regression (PR #1641 / #1598): the loader's self-heal rebuild must build to
+// a temp dir and swap (mirroring runBundleBuild), never writing --outdir
+// straight into dist-bundle where a failure could corrupt the working bundle.
+test("omp publisher loader rebuilds via a temp dir swap, not an in-place build", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-loader-swap-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  process.env.REMNIC_OMP_BUN_BIN = createFakeBun(root);
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  await new OmpMemoryExtensionPublisher().publish({
+    config: { memoryDir: path.join(root, "memory") },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+
+  const loader = fs.readFileSync(
+    path.join(home, ".omp", "agent", "extensions", "remnic", "loader.js"),
+    "utf8",
+  );
+  assert.match(loader, /\.dist-bundle\.tmp-/, "loader rebuild must build to a temp dir");
+  assert.match(loader, /\.dist-bundle\.bak-/, "loader rebuild must rename the old bundle aside");
+  assert.match(loader, /renameSync\(tmp, bundleDir\)/, "loader rebuild must swap the temp into place");
+  // The spawn call must target the temp dir, not dist-bundle directly
+  // (the literal "--outdir=dist-bundle" still appears in error-guidance text,
+  // so assert the call site specifically).
   assert.doesNotMatch(
-    postinstall,
-    /^bun build\s/,
-    "postinstall must not invoke a bare bun (would fail when bun is not on PATH)",
+    loader,
+    /spawnSync\(bunForRebuild.*--outdir=dist-bundle/,
+    "loader rebuild spawn must not target dist-bundle directly",
   );
+  // Must still be valid JS.
+  const syntaxCheck = spawnSync(
+    process.execPath,
+    ["--check", path.join(home, ".omp", "agent", "extensions", "remnic", "loader.js")],
+    { encoding: "utf-8" },
+  );
+  assert.equal(syntaxCheck.status, 0, `loader.js fails node --check: ${syntaxCheck.stderr}`);
 });

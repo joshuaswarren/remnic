@@ -381,7 +381,7 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
   }
 
   protected get ownedFileNames(): readonly string[] {
-    return [...BASE_OWNED_FILES, "loader.js", "package.json"];
+    return [...BASE_OWNED_FILES, "loader.js", "package.json", "postinstall-bundle.cjs"];
   }
 
   protected get ownedDirNames(): readonly string[] {
@@ -415,8 +415,14 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
     const loaderPath = path.join(extensionRoot, "loader.js");
     const packageJsonPath = path.join(extensionRoot, "package.json");
 
+    const postinstallPath = path.join(extensionRoot, "postinstall-bundle.cjs");
+
     atomicWriteFile(loaderPath, renderOmpLoader(paths.pluginPiDistPath, bunBin), 0o644);
-    atomicWriteFile(packageJsonPath, renderOmpPackageJson(bunBin), 0o644);
+    // Cross-platform postinstall helper (Node-only) so npm's default cmd.exe
+    // shell on Windows re-bundles after `npm install`; the POSIX one-liner it
+    // replaces only ran under bash.
+    atomicWriteFile(postinstallPath, renderOmpPostinstall(bunBin), 0o644);
+    atomicWriteFile(packageJsonPath, renderOmpPackageJson(), 0o644);
 
     this.runBundleBuild(ctx, extensionRoot, bunBin);
   }
@@ -587,13 +593,14 @@ function renderOmpLoader(pluginPiDistPath: string, bunBin: string): string {
     "// the self-contained bundle here. Rebuilt automatically when index.ts or",
     "// the underlying @remnic/plugin-pi dist changes.",
     "",
-    'import { existsSync, statSync } from "node:fs";',
+    'import { existsSync, renameSync, rmSync, statSync } from "node:fs";',
     'import { spawnSync } from "node:child_process";',
     'import { dirname, join } from "node:path";',
     'import { fileURLToPath, pathToFileURL } from "node:url";',
     "",
     'const here = dirname(fileURLToPath(import.meta.url));',
-    'const bundleEntry = join(here, "dist-bundle", "index.js");',
+    'const bundleDir = join(here, "dist-bundle");',
+    'const bundleEntry = join(bundleDir, "index.js");',
     'const sourceEntry = join(here, "index.ts");',
     `const pluginPiEntry = ${JSON.stringify(pluginPiDistPath)};`,
     // Reuse the bun path resolved at install time (REMNIC_OMP_BUN_BIN, PATH,
@@ -612,18 +619,43 @@ function renderOmpLoader(pluginPiDistPath: string, bunBin: string): string {
     "}",
     "",
     "function rebuildBundle() {",
-    '  const result = spawnSync(bunForRebuild, ["build", sourceEntry, "--target=bun", "--outdir=dist-bundle"], {',
+    "  // Build to a temp dir and swap, mirroring the install-time build, so a",
+    "  // failed self-heal rebuild never corrupts the working bundle.",
+    '  var tmp = join(here, ".dist-bundle.tmp-" + process.pid + "-" + Date.now());',
+    "  var result = spawnSync(bunForRebuild, [",
+    '    "build",',
+    "    sourceEntry,",
+    '    "--target=bun",',
+    '    "--outdir=" + tmp',
+    "  ], {",
     "    cwd: here,",
     '    stdio: "inherit",',
     "  });",
     "  if (result.status !== 0 || result.error) {",
+    "    try { rmSync(tmp, { recursive: true, force: true }); } catch (e) {}",
     "    throw new Error(",
     '      "Remnic omp extension: bundle is stale or missing and could not be rebuilt. " +',
     '      "Install bun (https://bun.sh), then run " +',
     '      "`bun build index.ts --target=bun --outdir=dist-bundle` inside " + here',
     "    );",
     "  }",
+    "  var backup = null;",
+    "  try {",
+    "    if (existsSync(bundleDir)) {",
+    '      backup = join(here, ".dist-bundle.bak-" + process.pid + "-" + Date.now());',
+    "      renameSync(bundleDir, backup);",
+    "    }",
+    "    renameSync(tmp, bundleDir);",
+    "    if (backup) { try { rmSync(backup, { recursive: true, force: true }); } catch (e) {} }",
+    "  } catch (err) {",
+    "    try { rmSync(tmp, { recursive: true, force: true }); } catch (e) {}",
+    "    if (backup && existsSync(backup) && !existsSync(bundleDir)) { try { renameSync(backup, bundleDir); } catch (e) {} }",
+    "    throw new Error(",
+    '      "Remnic omp extension: failed to finalize rebuilt bundle - " + (err && err.message ? err.message : err)',
+    "    );",
+    "  }",
     "}",
+
     "",
     "if (bundleIsStale()) rebuildBundle();",
     "",
@@ -638,16 +670,12 @@ function renderOmpLoader(pluginPiDistPath: string, bunBin: string): string {
  * Generates the `package.json` that tells omp to load `loader.js` (not
  * auto-discover `index.ts`) and re-bundles after `npm install` via postinstall.
  */
-function renderOmpPackageJson(bunBin: string): string {
+function renderOmpPackageJson(): string {
   // Postinstall re-bundles after `npm install` (e.g. a plugin-pi upgrade moved
-  // the dist mtime past the bundle). Reuse the bun path resolved at install
-  // time so postinstall succeeds on systems where bun is reachable only via
-  // REMNIC_OMP_BUN_BIN or a common absolute path that is not on the PATH npm
-  // spawns postinstall with. Fall back to PATH "bun" if the resolved binary no
-  // longer exists (e.g. the extension tree was relocated).
-  const safeBun = bunBin.replace(/'/g, "'\\''");
-  const postinstall =
-    `BUN='${safeBun}'; [ -x "$BUN" ] 2>/dev/null || BUN=bun; "$BUN" build index.ts --target=bun --outdir=dist-bundle`;
+  // the dist mtime past the bundle). It delegates to postinstall-bundle.cjs — a
+  // Node-only helper — so npm's default cmd.exe shell on Windows runs it just as
+  // well as POSIX bash. The helper embeds the resolved bun path with a PATH
+  // fallback and swaps the bundle atomically.
   const manifest = {
     name: "remnic-omp-extension",
     version: "0.0.0",
@@ -657,9 +685,74 @@ function renderOmpPackageJson(bunBin: string): string {
     // Legacy key so older omp builds that only read `pi.extensions` also
     // resolve loader.js instead of falling through to index.ts.
     pi: { extensions: ["./loader.js"] },
-    scripts: { postinstall },
+    scripts: { postinstall: "node postinstall-bundle.cjs" },
   };
   return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+/**
+ * Generates the cross-platform `postinstall-bundle.cjs` helper. Node-only, so
+ * npm's default cmd.exe shell on Windows re-bundles after `npm install` just as
+ * well as POSIX bash. Embeds the bun path resolved at install time with a PATH
+ * fallback and writes the new bundle via a temp-dir swap so a failed rebuild
+ * never corrupts the working bundle. The emitted script uses string
+ * concatenation (no template literals) so it stays parseable everywhere.
+ */
+function renderOmpPostinstall(bunBin: string): string {
+  // Single template literal: the emitted .cjs uses string concatenation (no
+  // template literals of its own), so this body has no backticks and the one
+  // ${JSON.stringify(bunBin)} interpolation is unambiguous.
+  return `// Auto-generated by Remnic's OmpMemoryExtensionPublisher.
+// Re-bundles the omp extension after npm install (e.g. a plugin-pi upgrade)
+// using the bun path resolved at install time, with a PATH fallback. Node-only
+// so it runs under npm's default cmd.exe shell on Windows as well as POSIX bash.
+"use strict";
+var fs = require("node:fs");
+var cp = require("node:child_process");
+var path = require("node:path");
+
+var RESOLVED_BUN = ${JSON.stringify(bunBin)};
+var dir = __dirname;
+var entry = path.join(dir, "index.ts");
+var out = path.join(dir, "dist-bundle");
+
+function pickBun() {
+  var env = process.env.REMNIC_OMP_BUN_BIN;
+  if (env && fs.existsSync(env)) return env;
+  if (RESOLVED_BUN && fs.existsSync(RESOLVED_BUN)) return RESOLVED_BUN;
+  return "bun";
+}
+
+function rebuild() {
+  var bun = pickBun();
+  var tmp = path.join(dir, ".dist-bundle.tmp-" + process.pid + "-" + Date.now());
+  var r = cp.spawnSync(bun, ["build", entry, "--target=bun", "--outdir=" + tmp], { cwd: dir, stdio: "inherit" });
+  if (r.error || r.status !== 0) {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}
+    throw new Error("Remnic omp extension: postinstall bun build failed (bun=" + bun + "). Run bun build index.ts --target=bun --outdir=dist-bundle manually inside " + dir);
+  }
+  var backup = null;
+  try {
+    if (fs.existsSync(out)) {
+      backup = path.join(dir, ".dist-bundle.bak-" + process.pid + "-" + Date.now());
+      fs.renameSync(out, backup);
+    }
+    fs.renameSync(tmp, out);
+    if (backup) { try { fs.rmSync(backup, { recursive: true, force: true }); } catch (e) {} }
+  } catch (err) {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (e) {}
+    if (backup && fs.existsSync(backup) && !fs.existsSync(out)) { try { fs.renameSync(backup, out); } catch (e) {} }
+    throw err;
+  }
+}
+
+try {
+  rebuild();
+} catch (err) {
+  console.error(err && err.message ? err.message : err);
+  process.exit(1);
+}
+`;
 }
 
 /**
@@ -680,8 +773,12 @@ function resolveBunBinary(): string | null {
   // HOME ?? USERPROFILE ?? os.homedir(). Relying on HOME alone breaks the
   // ~/.bun/bin/bun fallback on Windows installs where HOME is unset.
   const home = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
+  // The official Bun installer writes ~/.bun/bin/bun on POSIX and
+  // ~/.bun/bin/bun.exe on Windows; fs.existsSync does not apply PATHEXT, so we
+  // probe both names. The .exe candidate is a harmless no-op on POSIX.
   const candidates = [
     path.join(home ?? "", ".bun", "bin", "bun"),
+    path.join(home ?? "", ".bun", "bin", "bun.exe"),
     "/usr/local/bin/bun",
     "/opt/homebrew/bin/bun",
   ];
