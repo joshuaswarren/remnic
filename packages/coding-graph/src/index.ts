@@ -206,3 +206,64 @@ export {
   type UpsertResult,
   type UpsertSuccess,
 } from "./graph-store.js";
+// ---------------------------------------------------------------------------
+// PR3 (issue #1553): incremental git-based reindex, detect_changes + blast
+// radius, co-change mining, and index-status reporting. Re-exported from
+// the package root so consumers can import them alongside the store.
+// ---------------------------------------------------------------------------
+
+export {
+  planReindex,
+  executeReindex,
+  readLastIndexedHead,
+  readFileHashes,
+  hashContent,
+  META_KEY_LAST_HEAD,
+  type ParseFileFn,
+  type ReadFileFn,
+  type ReindexGitFacts,
+  type ReindexPlan,
+  type ReindexResult,
+  type ReindexState,
+} from "./reindex.js";
+
+export {
+  classifyRisk,
+  computeBlastRadius,
+  findDirectlyAffectedSymbols,
+  byteSpanToLines,
+  rangesOverlap,
+  BLAST_RADIUS_EDGE_TYPES,
+  FAN_IN_ESCALATION_THRESHOLD,
+  DEFAULT_BLAST_RADIUS_DEPTH,
+  type AffectedSymbol,
+  type DetectChangesResult,
+  type RiskLevel,
+} from "./detect-changes.js";
+
+export {
+  mineCoChangeEdges,
+  mineAndStoreCoChanges,
+  DEFAULT_CO_CHANGE_CONFIG,
+  type CoChangeConfig,
+  type CoChangeEdge,
+  type MineCoChangesResult,
+} from "./co-change.js";
+
+export {
+  getIndexStatus,
+  type IndexStatus,
+  type IndexStatusMode,
+} from "./index-status.js";
+
+export {
+  defaultCodingGitInvoker,
+  parseNameStatus,
+  parseHunks,
+  parseLogFiles,
+  type CodingGitInvoker,
+  type DiffHunk,
+  type GitFailure,
+  type LogFilesEntry,
+  type NameStatusEntry,
+} from "./git-invoker.js";

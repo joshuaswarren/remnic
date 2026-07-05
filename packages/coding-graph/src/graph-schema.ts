@@ -223,6 +223,26 @@ function createTables(db: BetterSqlite3Database): void {
     CREATE INDEX IF NOT EXISTS idx_node_attributes_route
       ON node_attributes(is_route_handler) WHERE is_route_handler = 1;
   `);
+  // PR3 (issue #1553): co-change edges — file-level relationships mined
+  // from git history. Stored separately from the symbol-level `edges`
+  // table because co-change is a file-to-file concern, not symbol-to-
+  // symbol. Additive to v1 (CREATE TABLE IF NOT EXISTS — same pattern
+  // as `node_attributes` in PR2, rule 23).
+  //
+  // UNIQUE(file_a, file_b) ensures idempotent upserts; the mining
+  // pipeline clears + repopulates each run so stale edges from history
+  // changes are pruned automatically.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS co_changes (
+      file_a     TEXT NOT NULL,
+      file_b     TEXT NOT NULL,
+      support    INTEGER NOT NULL CHECK (support >= 0),
+      confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+      UNIQUE (file_a, file_b)
+    );
+    CREATE INDEX IF NOT EXISTS idx_co_changes_a ON co_changes(file_a);
+    CREATE INDEX IF NOT EXISTS idx_co_changes_b ON co_changes(file_b);
+  `);
   // repopulate both tables in lockstep without ordering concerns.
   db.exec(`
     CREATE TABLE IF NOT EXISTS fts_index (

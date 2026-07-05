@@ -659,6 +659,162 @@ export class GraphStore {
   async drain(): Promise<void> {
     await this.queue.drain();
   }
+  // ──────────────────────────────────────────────────────────────────────
+  // PR3 (issue #1553): meta-table + file-management methods for the
+  // incremental reindex pipeline.
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Read a value from the `meta` table. Returns `null` when the key is
+   * absent. Synchronous (like the other read primitives) so the reindex
+   * planner can read `last_indexed_head` without an await.
+   */
+  readMeta(key: string): string | null {
+    if (this.closed) return null;
+    try {
+      const row = expectRow<{ value: string }>(
+        this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key),
+        ["value"],
+      );
+      return row ? row.value : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Write a key/value pair to the `meta` table. Synchronous — runs in its
+   * own implicit transaction. The reindex executor calls this AFTER
+   * `upsertFileBatch` resolves (rule 25: head/state updates only after
+   * the data transaction commits). A crash between the two leaves the old
+   * head, and the next run re-ingests idempotently (deterministic node ids).
+   */
+  writeMeta(key: string, value: string): void {
+    if (this.closed) return;
+    this.db
+      .prepare("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)")
+      .run(key, value);
+  }
+
+  /**
+   * Read every file row's path → content_hash. Used by hash_scan mode
+   * to detect content drift without a reachable base commit (issue #1553).
+   */
+  readFileHashes(): Map<string, string> {
+    if (this.closed) return new Map();
+    try {
+      const rows = expectRows<{ path: string; content_hash: string }>(
+        this.db.prepare("SELECT path, content_hash FROM files").all(),
+        ["path", "content_hash"],
+      );
+      const out = new Map<string, string>();
+      for (const r of rows) out.set(r.path, r.content_hash);
+      return out;
+    } catch {
+      return new Map();
+    }
+  }
+
+  /**
+   * Drop file rows by path, cascading to their nodes + edges +
+   * node_attributes (the schema's `ON DELETE CASCADE` from `files(id)`
+   * handles the cascade — `foreign_keys = ON` is set in `open()`).
+   * Used by the reindex executor to prune deleted files.
+   *
+   * Paths are chunked under the SQLite variable limit (rule 23 pattern).
+   */
+  async dropFiles(paths: readonly string[]): Promise<void> {
+    if (this.closed || this.closing || paths.length === 0) return;
+    await this.queue.schedule(async () => {
+      this.runChunkedDelete(
+        "DELETE FROM files WHERE path IN (%PH%)",
+        paths,
+      );
+    });
+  }
+
+  /**
+   * Chunk a parameterized DELETE-with-IN-list under SQLite's variable
+   * bind limit. Mirrors the chunking pattern used by `runChunkedUpdate`
+   * and the stale-edge deletes.
+   */
+  private runChunkedDelete(sqlTemplate: string, params: readonly string[]): void {
+    if (params.length === 0) return;
+    for (let i = 0; i < params.length; i += SQLITE_VARIABLE_LIMIT) {
+      const chunk = params.slice(i, i + SQLITE_VARIABLE_LIMIT);
+      const placeholders = chunk.map(() => "?").join(", ");
+      this.db.prepare(sqlTemplate.replace("%PH%", placeholders)).run(...chunk);
+    }
+  }
+  /**
+   * PR3 (issue #1553): upsert co-change edges into the `co_changes`
+   * table. Clears existing edges then inserts the new set in one
+   * transaction (idempotent — re-running on unchanged history produces
+   * the same table). Serialized through the write queue.
+   */
+  async upsertCoChanges(edges: readonly {
+    readonly fileA: string;
+    readonly fileB: string;
+    readonly support: number;
+    readonly confidence: number;
+  }[]): Promise<void> {
+    if (this.closed || this.closing) return;
+    await this.queue.schedule(async () => {
+      const tx = this.db.transaction(() => {
+        this.db.exec("DELETE FROM co_changes");
+        const insert = this.db.prepare(
+          `INSERT INTO co_changes (file_a, file_b, support, confidence)
+             VALUES (?, ?, ?, ?)
+           ON CONFLICT(file_a, file_b) DO UPDATE SET
+             support = excluded.support,
+             confidence = excluded.confidence`,
+        );
+        for (const e of edges) {
+          insert.run(e.fileA, e.fileB, e.support, e.confidence);
+        }
+      });
+      tx();
+    });
+  }
+
+  /**
+   * PR3 (issue #1553): read co-change edges for a file. Returns edges
+   * where the file is either `file_a` or `file_b`. Synchronous read.
+   */
+  readCoChanges(filePath: string): {
+    fileA: string;
+    fileB: string;
+    support: number;
+    confidence: number;
+  }[] {
+    if (this.closed) return [];
+    try {
+      const rows = expectRows<{
+        file_a: string;
+        file_b: string;
+        support: number;
+        confidence: number;
+      }>(
+        this.db
+          .prepare(
+            `SELECT file_a, file_b, support, confidence
+               FROM co_changes
+              WHERE file_a = ? OR file_b = ?
+              ORDER BY confidence DESC, file_a ASC, file_b ASC`,
+          )
+          .all(filePath, filePath),
+        ["file_a", "file_b", "support", "confidence"],
+      );
+      return rows.map((r) => ({
+        fileA: r.file_a,
+        fileB: r.file_b,
+        support: r.support,
+        confidence: r.confidence,
+      }));
+    } catch {
+      return [];
+    }
+  }
 
   /**
    * Close the SQLite handle after draining the write queue. A batch
