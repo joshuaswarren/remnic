@@ -20,6 +20,7 @@ import { EngramMcpServer } from "../access-mcp.js";
 import {
   ARCHITECTURE_SUBCOMMANDS,
   ARCHITECTURE_CARD_TAG,
+  ARCHITECTURE_CARD_KIND,
   handleCodingArchitecture,
   isArchitectureCardSurfaceEnabled,
   isArchitectureCardSurfaceVisible,
@@ -71,6 +72,7 @@ function makeFrontmatter(overrides: Partial<MemoryFrontmatter> = {}): MemoryFron
     confidence: 1.0,
     confidenceTier: "explicit",
     tags: [ARCHITECTURE_CARD_TAG],
+    structuredAttributes: { cardKind: ARCHITECTURE_CARD_KIND },
     ...overrides,
   };
 }
@@ -419,6 +421,24 @@ test("findArchitectureCardMemory: returns the most recently updated card", async
   const storage = makeStubStorage([older, newer]);
   const result = await findArchitectureCardMemory(storage);
   assert.equal(result?.frontmatter.id, "new");
+});
+
+test("findArchitectureCardMemory: rejects tagged fact without cardKind marker (codex review)", async () => {
+  // A user-created fact that merely happens to be tagged "architecture-card"
+  // must NOT be treated as the managed card (would be overwritten on refresh).
+  const storage = makeStubStorage([
+    makeCardMemory({ frontmatter: { structuredAttributes: {} } }),
+  ]);
+  const result = await findArchitectureCardMemory(storage);
+  assert.equal(result, null, "tagged fact without cardKind=architecture is not the managed card");
+});
+
+test("findArchitectureCardMemory: skips cards with archivedAt set (cursor review)", async () => {
+  const storage = makeStubStorage([
+    makeCardMemory({ frontmatter: { archivedAt: "2026-01-01T00:00:00.000Z" } }),
+  ]);
+  const result = await findArchitectureCardMemory(storage);
+  assert.equal(result, null, "card with archivedAt is not found even without explicit status");
 });
 
 // ──────────────────────────────────────────────────────────────────────────

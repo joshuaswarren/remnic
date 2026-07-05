@@ -29,6 +29,7 @@ import type {
   MemoryFrontmatter,
   MemoryStatus,
 } from "../types.js";
+import type { VersionTrigger, VersioningConfig } from "../page-versioning.js";
 import { ARCHITECTURE_CARD_TRUNCATION_MARKER, type ArchitectureCardBuildResult } from "./architecture-card.js";
 import { log } from "../logger.js";
 
@@ -365,9 +366,16 @@ export async function findArchitectureCardMemory(
     if (m.frontmatter.category !== "fact") return false;
     const tags = m.frontmatter.tags ?? [];
     if (!tags.includes(ARCHITECTURE_CARD_TAG)) return false;
+    // Require the cardKind structured attribute so a user-created fact that
+    // merely happens to be tagged "architecture-card" is NOT mistaken for
+    // the managed card and overwritten on refresh (codex review).
+    if (m.frontmatter.structuredAttributes?.cardKind !== ARCHITECTURE_CARD_KIND) return false;
     // Any outer status other than undefined/"active" means retired.
     const outer = m.frontmatter.status;
     if (outer !== undefined && outer !== "active") return false;
+    // Also skip cards archived via archivedAt without an explicit status
+    // (cursor review: archived cards can still match the tag filter).
+    if (m.frontmatter.archivedAt !== undefined && m.frontmatter.archivedAt !== null) return false;
     return true;
   });
   if (cards.length === 0) return null;
@@ -388,5 +396,55 @@ export async function findArchitectureCardMemory(
 export function architectureCardFrontmatterMarker(): Partial<MemoryFrontmatter> {
   return {
     tags: [ARCHITECTURE_CARD_TAG],
+  };
+}
+
+/** Page-version snapshot writer (decoupled type — matches page-versioning.createVersion's call). */
+type CreatePageVersion = (
+  pagePath: string,
+  content: string,
+  trigger: VersionTrigger,
+  config: VersioningConfig,
+  logger: undefined,
+  note: string,
+  memoryDir: string,
+) => Promise<unknown>;
+
+/**
+ * Build the page-versioning snapshot hook from operator config.
+ *
+ * - Skips entirely when versioning is disabled — no sidecars written for a
+ *   feature the operator turned off (codex review: hardcoded config ignored
+ *   operator settings).
+ * - Reads the FULL file (frontmatter + body) from disk so a revert restores
+ *   the complete memory, not just the body (codex review: snapshot was
+ *   body-only).
+ */
+export function createArchitectureVersioningHook(
+  enabled: boolean,
+  maxVersionsPerPage: number,
+  sidecarDir: string,
+  memoryDir: string,
+  readFile: (path: string) => Promise<string>,
+  writeVersion: CreatePageVersion,
+): ArchitectureVersioningHook {
+  return {
+    async snapshotIfExists(memory) {
+      if (!enabled) return;
+      try {
+        const fullContent = await readFile(memory.path);
+        await writeVersion(
+          memory.path,
+          fullContent,
+          "manual",
+          { enabled: true, maxVersionsPerPage, sidecarDir },
+          undefined,
+          "architecture-card-refresh",
+          memoryDir,
+        );
+      } catch {
+        // Best-effort — a snapshot failure does not block the refresh.
+      }
+    },
   };
 }

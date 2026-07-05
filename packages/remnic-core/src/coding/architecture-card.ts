@@ -23,8 +23,9 @@
  * config side-effects, no namespace wiring. Callers inject the repo
  * root and receive a string.
  */
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile, readdir, lstat } from "node:fs/promises";
 import path from "node:path";
+import { expandTildePath } from "../utils/path.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public types
@@ -172,9 +173,13 @@ export async function buildArchitectureCard(
   if (typeof repoRoot !== "string" || repoRoot.length === 0) {
     return { ok: false, code: "invalid_root", detail: "repoRoot must be a non-empty string" };
   }
-  const absoluteRoot = path.resolve(repoRoot);
+  // Expand `~` per rule 17 — codingContext.rootPath often carries a tilde
+  // that Node's path.resolve does NOT expand (cursor review: tilde not expanded).
+  const absoluteRoot = path.resolve(expandTildePath(repoRoot));
   try {
-    const rootStat = await stat(absoluteRoot);
+    // Use lstat, not stat, so symlinked manifests/dirs are NOT followed
+    // (codex review: symlinks could read outside the repo root).
+    const rootStat = await lstat(absoluteRoot);
     if (!rootStat.isDirectory()) {
       return { ok: false, code: "invalid_root", detail: `not a directory: ${absoluteRoot}` };
     }
@@ -286,7 +291,9 @@ async function readSortedDirEntries(dir: string): Promise<DirEntry[]> {
   const entries: DirEntry[] = [];
   for (const name of sortStrings(names)) {
     try {
-      const s = await stat(path.join(dir, name));
+      const s = await lstat(path.join(dir, name));
+      // Skip symlinks — they could point outside the repo root (codex review).
+      if (s.isSymbolicLink()) continue;
       entries.push({ name, isDirectory: s.isDirectory(), isFile: s.isFile() });
     } catch {
       // vanished between readdir+stat — skip.

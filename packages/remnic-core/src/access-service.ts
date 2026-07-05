@@ -24,6 +24,7 @@ import {
   type ArchitectureSurfaceRequest,
   type ArchitectureSurfaceResponse,
   type ArchitectureSurfaceStorage,
+  createArchitectureVersioningHook,
   ARCHITECTURE_CARD_TAG,
 } from "./coding/architecture-surfaces.js";
 import { buildArchitectureCard } from "./coding/architecture-card.js";
@@ -4508,6 +4509,7 @@ export class EngramAccessService {
     request: ArchitectureSurfaceRequest,
     authenticatedPrincipal?: string,
   ): Promise<ArchitectureSurfaceResponse> {
+    const resolvedConfig = this.orchestrator.config;
     return handleCodingArchitecture(request, {
       codingKnowledge: this.orchestrator.config.codingKnowledge,
       getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
@@ -4527,29 +4529,18 @@ export class EngramAccessService {
         const storage = await this.orchestrator.getStorage(ns);
         return Object.assign(storage, { namespace: ns }) as ArchitectureSurfaceStorage;
       },
-      buildCard: async (repoRoot) => buildArchitectureCard(repoRoot),
-      versioning: {
-        snapshotIfExists: async (memory) => {
-          try {
-            const versioningConfig = {
-              enabled: true,
-              maxVersionsPerPage: 20,
-              sidecarDir: ".versions",
-            };
-            await createVersion(
-              memory.path,
-              memory.content,
-              "manual",
-              versioningConfig,
-              undefined,
-              "architecture-card-refresh",
-              this.orchestrator.config.memoryDir,
-            );
-          } catch (err) {
-            // Best-effort — a snapshot failure does not block the refresh.
-          }
-        },
-      },
+      buildCard: async (repoRoot) =>
+        buildArchitectureCard(repoRoot, {
+          llmSummary: this.orchestrator.config.codingKnowledge?.architectureCardLlmSummary === true,
+        }),
+      versioning: createArchitectureVersioningHook(
+        resolvedConfig.versioningEnabled === true,
+        resolvedConfig.versioningMaxPerPage,
+        resolvedConfig.versioningSidecarDir,
+        resolvedConfig.memoryDir,
+        (p) => nodeFs.readFile(p, "utf-8"),
+        createVersion,
+      ),
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
     });
   }
