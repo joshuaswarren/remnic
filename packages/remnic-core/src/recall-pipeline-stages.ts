@@ -92,6 +92,18 @@ export interface UnifiedRankConfig<TIntent> {
    */
   transformContent?: (content: string, intents: TIntent[]) => string;
   /**
+   * Whether to deduplicate by normalized (transformed) content in addition to
+   * id. Default `true` — matches targeted-fact, response-guidance, and
+   * explicit-cue, which all collapse later items sharing a normalized content
+   * key. Event-order sets this to `false`: its rank pass
+   * (`rankAndSelectEventOrderItems`) deduplicates by turn id only and keeps
+   * distinct turns even when two turns share the same cue-appended body
+   * (legitimate repeated turns in a chronological transcript). Making this a
+   * declared field prevents PR 6's migration from silently dropping valid
+   * turns (cursor bugbot a4299851).
+   */
+  dedupByContent?: boolean;
+  /**
    * Items with `rank` below this threshold are dropped. `undefined` = no
    * filter. Event-order declares `rankThreshold: 6` here instead of
    * inlining an undocumented `.filter((item) => item.rank >= 6)` (the
@@ -178,9 +190,12 @@ export function unifiedDedupeAndRank<TIntent>(
 ): RankedEvidenceItem[] {
   const transformContent = config.transformContent ?? ((content: string) => content);
   const direction: TurnIndexSortDirection = config.turnIndexSortDirection ?? "desc";
+  const dedupByContent = config.dedupByContent !== false;
 
-  // Stage 1: dedup by id + normalized (transformed) content.
-  // First-seen wins, matching every existing pipeline.
+  // Stage 1: dedup by id (+ normalized transformed content when enabled).
+  // First-seen wins, matching every existing pipeline. Event-order opts out
+  // of content dedup (dedupByContent: false) because it keeps distinct turns
+  // even when two turns share the same cue-appended body.
   const seenIds = new Set<string>();
   const seenContent = new Set<string>();
   const survivors: Array<{ original: EvidencePackItem; transformedContent: string }> = [];
@@ -190,10 +205,12 @@ export function unifiedDedupeAndRank<TIntent>(
     if (id && seenIds.has(id)) continue;
 
     const transformedContent = transformContent(item.content, config.intents);
-    const contentKey = transformedContent.toLowerCase().replace(/\s+/g, " ").trim();
-    if (seenContent.has(contentKey)) continue;
+    if (dedupByContent) {
+      const contentKey = transformedContent.toLowerCase().replace(/\s+/g, " ").trim();
+      if (seenContent.has(contentKey)) continue;
+      seenContent.add(contentKey);
+    }
     if (id) seenIds.add(id);
-    seenContent.add(contentKey);
     survivors.push({ original: item, transformedContent });
   }
 

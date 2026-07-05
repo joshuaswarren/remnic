@@ -229,3 +229,41 @@ test("unifiedDedupeAndRank: fallback id uses sessionId:turnIndex when id is abse
   });
   assert.equal(result.length, 1, "fallback id dedup must collapse the two items");
 });
+
+test("unifiedDedupeAndRank: dedupByContent false keeps distinct ids with identical content (event-order shape)", () => {
+  // Event-order's rankAndSelectEventOrderItems deduplicates by turn id only and
+  // keeps distinct turns even when two turns share the same cue-appended body.
+  // The spine must express that as a declared config field so PR 6's migration
+  // does not silently drop valid turns (cursor bugbot a4299851).
+  const items: EvidencePackItem[] = [
+    item(1, "What time is it?", { id: "s1:1" }),
+    item(5, "What time is it?", { id: "s1:5" }),
+  ];
+  const result = unifiedDedupeAndRank(items, {
+    query: "q",
+    intents: NO_INTENTS,
+    scoreEvidence: constantScorer,
+    dedupByContent: false,
+  });
+  assert.equal(result.length, 2, "distinct ids with identical content must both survive when dedupByContent is false");
+});
+
+test("unifiedDedupeAndRank: dedupByContent true (default) still collapses identical content under different ids", () => {
+  const items: EvidencePackItem[] = [
+    item(1, "Duplicate body", { id: "s1:1" }),
+    item(2, "Duplicate body", { id: "s1:2" }),
+  ];
+  const resultDefault = unifiedDedupeAndRank(items, {
+    query: "q",
+    intents: NO_INTENTS,
+    scoreEvidence: constantScorer,
+  });
+  assert.equal(resultDefault.length, 1, "default dedupByContent collapses identical content");
+  const resultExplicit = unifiedDedupeAndRank(items, {
+    query: "q",
+    intents: NO_INTENTS,
+    scoreEvidence: constantScorer,
+    dedupByContent: true,
+  });
+  assert.equal(resultExplicit.length, 1, "explicit dedupByContent: true collapses identical content");
+});
