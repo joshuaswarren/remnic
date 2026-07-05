@@ -202,6 +202,10 @@ export {
   type TraverseHit,
   type TraverseQuery,
   type TraverseResult,
+  type ReadCoChangeEdge,
+  type ReadCoChangesResult,
+  type ReadFileHashesResult,
+  type ReadMetaResult,
   type UpsertBatchResult,
   type UpsertResult,
   type UpsertSuccess,
@@ -238,6 +242,7 @@ export {
   FAN_IN_ESCALATION_THRESHOLD,
   DEFAULT_BLAST_RADIUS_DEPTH,
   type AffectedSymbol,
+  type BlastRadiusResult,
   type DetectChangesResult,
   type RiskLevel,
 } from "./detect-changes.js";

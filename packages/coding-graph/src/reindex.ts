@@ -39,7 +39,13 @@ import path from "node:path";
 import type { ParseFileInput, ParseResult } from "@remnic/core";
 
 import type { CodingGitInvoker, GitFailure, NameStatusEntry } from "./git-invoker.js";
-import type { GraphStore, StoreFileIR } from "./graph-store.js";
+import type {
+  GraphStore,
+  StoreFileIR,
+  ReadMetaResult,
+  ReadFileHashesResult,
+} from "./graph-store.js";
+import type { GraphStoreFailure } from "./graph-store.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public types — the planner's input and output
@@ -213,7 +219,7 @@ export type ReadFileFn = (absPath: string) => Promise<Uint8Array>;
  * Read the persisted `last_indexed_head` from the store's meta table.
  * Returns `null` when the key is absent (fresh DB).
  */
-export function readLastIndexedHead(store: GraphStore): string | null {
+export function readLastIndexedHead(store: GraphStore): ReadMetaResult {
   return store.readMeta(META_KEY_LAST_HEAD);
 }
 
@@ -221,7 +227,7 @@ export function readLastIndexedHead(store: GraphStore): string | null {
  * Read every file row's path → content_hash from the store. Used by
  * hash_scan to detect content drift without a reachable base commit.
  */
-export function readFileHashes(store: GraphStore): Map<string, string> {
+export function readFileHashes(store: GraphStore): ReadFileHashesResult {
   return store.readFileHashes();
 }
 
@@ -366,7 +372,20 @@ async function runReindex(
 ): Promise<ReindexResult> {
 
   // ── Gather git facts ──────────────────────────────────────────────────
-  const lastHead = readLastIndexedHead(store);
+  // readMeta now returns a tagged result (rule 22): a backend failure must
+  // NOT be conflated with "never indexed" (null), which would send the
+  // planner down a full-reindex path against a store it cannot read. Bail
+  // before any mutation (cursor Bugbot: 'readMeta conflates absent key
+  // with db failure').
+  const lastHeadRead = readLastIndexedHead(store);
+  if (!lastHeadRead.ok) {
+    return {
+      ok: false,
+      code: "store_error",
+      message: `read last_indexed_head: ${lastHeadRead.code}`,
+    };
+  }
+  const lastHead = lastHeadRead.value;
   const headResult = git.revParseHead(repoRoot);
   if (!headResult.ok) return headResult;
 
@@ -401,9 +420,26 @@ async function runReindex(
     lastHeadReachable: reachable,
     changedFiles,
   };
+  // Read the file-hash snapshot ONCE. A backend failure here must NOT be
+  // treated as an empty index — that would either skip pruning while head
+  // advances, or prune against a falsely-empty set. Bail before any mutation
+  // (rule 22; cursor Bugbot HIGH: 'readFileHashes conflates error with
+  // empty'). The same snapshot is reused for every prune decision below:
+  // nothing mutates the store between here and the ingest, so a fresh read
+  // at each site would only re-introduce the error/empty conflation.
+  const fileHashesRead = readFileHashes(store);
+  if (!fileHashesRead.ok) {
+    return {
+      ok: false,
+      code: "store_error",
+      message: `readFileHashes: ${fileHashesRead.code}`,
+    };
+  }
+  const fileHashes = fileHashesRead.hashes;
+
   const lastState: ReindexState = {
     lastHead,
-    fileHashes: readFileHashes(store),
+    fileHashes,
   };
 
   const plan = planReindex(lastState, facts);
@@ -412,7 +448,15 @@ async function runReindex(
   // Paths that failed to parse on a prior run must be retried even when
   // HEAD is unchanged (a noop plan would otherwise skip them). Read once;
   // we rewrite this set after every run with the CURRENT run's failures.
-  const pendingRetry = readPendingParseFailures(store);
+  const pendingRetryRead = readPendingParseFailures(store);
+  if (!pendingRetryRead.ok) {
+    return {
+      ok: false,
+      code: "store_error",
+      message: `read pending_parse_failures: ${pendingRetryRead.code}`,
+    };
+  }
+  const pendingRetry = pendingRetryRead.paths;
 
   // ── Execute the plan ──────────────────────────────────────────────────
   switch (plan.mode) {
@@ -474,9 +518,8 @@ async function runReindex(
       // not prune full indexes when candidates are absent').
       let fullDelete: string[] = [];
       if (candidatesProvided) {
-        const knownForFull = readFileHashes(store);
         const fullCandidateSet = new Set(toIngest);
-        fullDelete = [...knownForFull.keys()].filter(
+        fullDelete = [...fileHashes.keys()].filter(
           (p) => !fullCandidateSet.has(p),
         );
       }
@@ -524,7 +567,7 @@ async function runReindex(
       // Determine which paths still exist on disk vs are deleted. Use a
       // probe that distinguishes a confirmed deletion (ENOENT) from a
       // transient I/O error (which must NOT prune the file).
-      const knownFiles = readFileHashes(store);
+      const knownFiles = fileHashes;
       const toDelete: string[] = [];
       const toIngest: string[] = [];
       for (const p2 of seen) {
@@ -592,7 +635,7 @@ async function runReindex(
       ]);
       // Hash every candidate via the canonical+ENOENT-aware probe. A
       // transient read error must NOT be treated as a deletion.
-      const knownFiles = readFileHashes(store);
+      const knownFiles = fileHashes;
       const toDelete: string[] = [];
       const toIngest: string[] = [];
       const hashScanRetry: string[] = [];
@@ -662,15 +705,22 @@ async function runReindex(
  * Read the persisted set of paths that failed to parse on the last run
  * (rule 44). Returns an empty array when the key is absent or malformed.
  */
-function readPendingParseFailures(store: GraphStore): string[] {
-  const raw = store.readMeta(META_KEY_PENDING_PARSE_FAILURES);
-  if (raw === null) return [];
+function readPendingParseFailures(
+  store: GraphStore,
+): { ok: true; paths: string[] } | ({ ok: false } & GraphStoreFailure) {
+  const rawRead = store.readMeta(META_KEY_PENDING_PARSE_FAILURES);
+  if (!rawRead.ok) return rawRead;
+  const raw = rawRead.value;
+  if (raw === null) return { ok: true, paths: [] };
   try {
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((p): p is string => typeof p === "string");
+    if (!Array.isArray(parsed)) return { ok: true, paths: [] };
+    return {
+      ok: true,
+      paths: parsed.filter((p): p is string => typeof p === "string"),
+    };
   } catch {
-    return [];
+    return { ok: true, paths: [] };
   }
 }
 

@@ -49,7 +49,13 @@ export function getIndexStatus(
   git: CodingGitInvoker,
   repoRoot: string,
 ): IndexStatus {
-  const lastIndexedHead = store.readMeta(META_KEY_LAST_HEAD);
+  // readMeta now returns a tagged result (rule 22). index_status is a
+  // best-effort, never-throws display feed (doctor/xray); the load-bearing
+  // reindex prune/head-advance path is independently hardened in reindex.ts.
+  // Degrade an unreadable head to null (reported as "empty"/needs-reindex)
+  // rather than crashing the display.
+  const lastHeadResult = store.readMeta(META_KEY_LAST_HEAD);
+  const lastIndexedHead = lastHeadResult.ok ? lastHeadResult.value : null;
   const headResult = git.revParseHead(repoRoot);
 
   // Gather graph stats for context.
@@ -101,7 +107,8 @@ export function getIndexStatus(
   // graph even though the heads match. Report stale+dirty so doctor/xray
   // surface it instead of pretending freshness (chatgpt-codex-connector:
   // 'Mark pending parse retries as stale').
-  const pendingRaw = store.readMeta(META_KEY_PENDING_PARSE_FAILURES);
+  const pendingResult = store.readMeta(META_KEY_PENDING_PARSE_FAILURES);
+  const pendingRaw = pendingResult.ok ? pendingResult.value : null;
   let hasPendingFailures = false;
   if (pendingRaw !== null) {
     try {

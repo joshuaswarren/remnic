@@ -35,6 +35,23 @@ import {
 } from "./index.js";
 
 // ──────────────────────────────────────────────────────────────────────────
+// Unwrap helpers for characterization tests — the store is always healthy
+// and open in these scenarios, so the tagged read result is always `ok`.
+// Regression tests for the error-vs-empty distinction live further below
+// and assert the tagged shape directly (rule 22).
+// ──────────────────────────────────────────────────────────────────────────
+
+function meta(store: GraphStore, key: string): string | null {
+  const r = store.readMeta(key);
+  return r.ok ? r.value : null;
+}
+
+function fileHashes(store: GraphStore): Map<string, string> {
+  const r = store.readFileHashes();
+  return r.ok ? r.hashes : new Map();
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Fixture helpers — synthetic IR + mock git invoker
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -258,9 +275,9 @@ test("executor: (a) no prior state → full index, head persisted", async () => 
     assert.equal(result.filesIngested, 2);
     assert.equal(result.head, SHA_A);
     // Head persisted to meta.
-    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_A);
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_A);
     // Files are in the store.
-    const hashes = store.readFileHashes();
+    const hashes = fileHashes(store);
     assert.equal(hashes.size, 2);
     assert.ok(hashes.has("src/a.ts"));
     assert.ok(hashes.has("src/b.ts"));
@@ -282,7 +299,7 @@ test("executor: (b) head unchanged → noop, zero writes", async () => {
       parseFile: mockParseFile,
       candidatePaths: ["src/a.ts"],
     });
-    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_A);
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_A);
 
     // Second run: head unchanged → noop.
     const statsBefore = store.schemaStats();
@@ -352,7 +369,7 @@ test("executor: (c) N files changed → exactly those files re-ingested", async 
     assert.equal(result.filesIngested, 2);
     assert.equal(result.head, SHA_B);
     // b.ts and c.ts unchanged; a.ts and d.ts ingested.
-    const hashes = store.readFileHashes();
+    const hashes = fileHashes(store);
     assert.equal(hashes.size, 4);
     assert.ok(hashes.has("src/d.ts"));
   } finally {
@@ -392,7 +409,7 @@ test("executor: force-push (unreachable head) → hash_scan mode", async () => {
     assert.equal(result.mode, "hash_scan");
     assert.equal(result.filesIngested, 1);
     assert.equal(result.head, SHA_B);
-    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_B);
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_B);
   } finally {
     await dispose(store, dir);
   }
@@ -428,9 +445,9 @@ test("executor: coalescing — concurrent triggers coalesce, not corrupt", async
     assert.equal(r1.ok, true);
     assert.equal(r2.ok, true);
     // Head is consistent.
-    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_A);
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_A);
     // No duplicate files.
-    const hashes = store.readFileHashes();
+    const hashes = fileHashes(store);
     assert.equal(hashes.size, 2);
   } finally {
     await dispose(store, dir);
@@ -499,7 +516,7 @@ test("executor: mid-transaction store failure leaves old head (rule 25)", async 
       parseFile: mockParseFile,
       candidatePaths: ["src/a.ts"],
     });
-    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_A);
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_A);
 
     // Close the store to simulate a mid-transaction failure. The
     // executor's upsertFileBatch will return { ok: false, code:
@@ -526,13 +543,72 @@ test("executor: mid-transaction store failure leaves old head (rule 25)", async 
       dbPath: path.join(dir, "graph.sqlite"),
       repoRoot: dir,
     });
-    assert.equal(reopened.readMeta(META_KEY_LAST_HEAD), SHA_A);
+    assert.equal(meta(reopened, META_KEY_LAST_HEAD), SHA_A);
     await reopened.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
 
+
+test("executor: store read failure returns store_error, does NOT prune or advance head (rule 22)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Seed an index at SHA_A with one file.
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    const git1 = mockGit({ head: SHA_A });
+    await executeReindex({
+      store,
+      git: git1,
+      repoRoot: dir,
+      parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts"],
+    });
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_A);
+    assert.equal(fileHashes(store).has("src/a.ts"), true);
+
+    // Close the store: readMeta / readFileHashes now return tagged
+    // store_closed failures (rule 22). Before the fix they returned null /
+    // empty-Map, so the executor treated an unreadable store as "never
+    // indexed + empty index", planned a full reindex, and could advance
+    // head or misjudge pruning. Now the read bails with store_error before
+    // any mutation.
+    await store.close();
+    const git2 = mockGit({
+      head: SHA_B,
+      changedFiles: [{ status: "M", path: "src/a.ts" }],
+    });
+    const result = await executeReindex({
+      store,
+      git: git2,
+      repoRoot: dir,
+      parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts"],
+    });
+    assert.equal(result.ok, false);
+    if (result.ok) throw new Error("expected store_error");
+    assert.equal(result.code, "store_error");
+
+    // Reopen: head unchanged, file still present (NOT pruned).
+    const reopened = await GraphStore.open({
+      dbPath: path.join(dir, "graph.sqlite"),
+      repoRoot: dir,
+    });
+    assert.equal(
+      meta(reopened, META_KEY_LAST_HEAD),
+      SHA_A,
+      "head NOT advanced on read failure",
+    );
+    assert.equal(
+      fileHashes(reopened).has("src/a.ts"),
+      true,
+      "file NOT pruned on read failure",
+    );
+    await reopened.close();
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 // ──────────────────────────────────────────────────────────────────────────
 // cursor Bugbot fixes — characterization tests
@@ -565,7 +641,7 @@ test("executor: parse failure retries on the next noop run (rule 44) (cursor Bug
     assert.equal(r1.ok, true);
     // a.ts failed → pending set records it.
     assert.deepEqual(
-      JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]"),
+      JSON.parse(meta(store, META_KEY_PENDING_PARSE_FAILURES) ?? "[]"),
       ["src/a.ts"],
     );
     // Graph is empty (a.ts never ingested).
@@ -589,7 +665,7 @@ test("executor: parse failure retries on the next noop run (rule 44) (cursor Bug
     assert.equal(stats.stats.nodes, 1);
     // Pending cleared.
     assert.deepEqual(
-      JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]"),
+      JSON.parse(meta(store, META_KEY_PENDING_PARSE_FAILURES) ?? "[]"),
       [],
     );
   } finally {
@@ -611,7 +687,7 @@ test("executor: full mode with empty candidates does NOT advance head (cursor Bu
     // writing last_indexed_head (index_status would otherwise report
     // "fresh" over an empty graph).
     assert.equal(result.mode, "noop");
-    assert.equal(store.readMeta(META_KEY_LAST_HEAD), null);
+    assert.equal(meta(store, META_KEY_LAST_HEAD), null);
   } finally {
     await dispose(store, dir);
   }
@@ -661,10 +737,10 @@ test("executor: incremental delete is atomic with the upsert — dropFiles is no
     // upsertFileBatch's transaction (atomic with the re-ingest).
     assert.equal(dropFilesCalls, 0);
     // a.ts is gone, b.ts is current.
-    const hashes = store.readFileHashes();
+    const hashes = fileHashes(store);
     assert.ok(!hashes.has("src/a.ts"), "a.ts pruned");
     assert.ok(hashes.has("src/b.ts"), "b.ts present");
-    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_B);
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_B);
   } finally {
     await dispose(store, dir);
   }
@@ -722,7 +798,7 @@ test("executor: hash-scan unions caller candidates with stored + pending (chatgp
     if (!result.ok) return;
     assert.equal(result.mode, "hash_scan");
     // b.ts content differs from stored (absent) → ingested.
-    const hashes = store.readFileHashes();
+    const hashes = fileHashes(store);
     assert.ok(hashes.has("src/b.ts"), "new file ingested via candidate union");
   } finally {
     await dispose(store, dir);
@@ -745,7 +821,7 @@ test("executor: non-canonical path (.. traversal) is rejected before disk read (
     assert.equal(result.ok, true);
     // The traversal path must still be in pending (retry-safe) but must
     // NOT have been read — verify it stays pending.
-    const pending = JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]");
+    const pending = JSON.parse(meta(store, META_KEY_PENDING_PARSE_FAILURES) ?? "[]");
     assert.ok(pending.includes("../secret.ts"), "non-canonical path kept pending, not read");
   } finally {
     await dispose(store, dir);
@@ -801,7 +877,7 @@ test("executor: transient read error (EACCES) does NOT delete indexed nodes (cur
     assert.equal(stats.stats.nodes, 1, "transient read error must not delete the indexed node");
     // And a.ts is recorded as pending (retry next run).
     assert.deepEqual(
-      JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]"),
+      JSON.parse(meta(store, META_KEY_PENDING_PARSE_FAILURES) ?? "[]"),
       ["src/a.ts"],
     );
   } finally {
@@ -817,7 +893,7 @@ test("executor: full mode prunes stored files absent from candidates (chatgpt-co
     // is null so the next run plans 'full').
     const { ir: oldIr } = makeIR("src/old.ts", "export function old() {}");
     await store.upsertFileBatch([oldIr]);
-    assert.equal(store.readFileHashes().has("src/old.ts"), true);
+    assert.equal(fileHashes(store).has("src/old.ts"), true);
 
     await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
     const git = mockGit({ head: SHA_A });
@@ -827,8 +903,8 @@ test("executor: full mode prunes stored files absent from candidates (chatgpt-co
     });
     assert.equal(result.ok, true);
     // src/old.ts is absent from candidates → pruned by the full run.
-    assert.equal(store.readFileHashes().has("src/old.ts"), false, "absent stored file pruned by full reindex");
-    assert.equal(store.readFileHashes().has("src/a.ts"), true);
+    assert.equal(fileHashes(store).has("src/old.ts"), false, "absent stored file pruned by full reindex");
+    assert.equal(fileHashes(store).has("src/a.ts"), true);
   } finally {
     await dispose(store, dir);
   }
@@ -855,7 +931,7 @@ test("executor: hash_scan transient read error is retained for retry (chatgpt-co
     assert.equal(result.ok, true);
     // The transient failure must be recorded for retry, not silently
     // dropped while head advances.
-    const pending = JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]");
+    const pending = JSON.parse(meta(store, META_KEY_PENDING_PARSE_FAILURES) ?? "[]");
     assert.ok(pending.includes("src/a.ts"), "transient hash-scan read failure retained for retry");
   } finally {
     await dispose(store, dir);
@@ -868,7 +944,7 @@ test("executor: hash_scan without candidatePaths does NOT advance head (chatgpt-
     // Seed src/a.ts at SHA_A with an authoritative candidate list.
     await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
     await executeReindex({ store, git: mockGit({ head: SHA_A }), repoRoot: dir, parseFile: mockParseFile, candidatePaths: ["src/a.ts"] });
-    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_A);
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_A);
 
     // A file is added in the new HEAD, then force-push makes the base
     // unreachable → hash_scan. The caller OMITS candidatePaths, so the scan
@@ -882,7 +958,7 @@ test("executor: hash_scan without candidatePaths does NOT advance head (chatgpt-
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.equal(result.head, SHA_A, "head must NOT advance without an authoritative candidate list");
-    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_A, "persisted head unchanged");
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_A, "persisted head unchanged");
   } finally {
     await dispose(store, dir);
   }
@@ -907,7 +983,7 @@ test("executor: hash_scan retains a hash-matching pending parse failure (cursor 
       candidatePaths: ["src/a.ts"],
     });
     assert.equal(result.ok, true);
-    const pending = JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]");
+    const pending = JSON.parse(meta(store, META_KEY_PENDING_PARSE_FAILURES) ?? "[]");
     assert.ok(pending.includes("src/a.ts"), "hash-matching pending parse failure must be retained, not silently dropped");
   } finally {
     await dispose(store, dir);

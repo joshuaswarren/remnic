@@ -374,6 +374,45 @@ export type SnippetFailureCode =
 export type SnippetResult = SnippetSuccess | { ok: false; code: SnippetFailureCode };
 
 // ──────────────────────────────────────────────────────────────────────────
+// KV / list read primitives — tagged failures (rule 22). readMeta,
+// readFileHashes, and readCoChanges previously caught every error and
+// returned the empty value (null / new Map() / []), making a SQLITE_BUSY
+// indistinguishable from "key absent" / "empty index" / "no co-change
+// edges". The reindex executor's prune + head-advance decisions depend on
+// readFileHashes, so conflating error with empty could skip pruning while
+// advancing head, or prune against a falsely-empty set. These result types
+// force callers to handle the two cases distinctly (cursor Bugbot HIGH:
+// 'readFileHashes conflates error with empty'; 'readCoChanges swallows
+// store errors'; 'readMeta conflates absent key with db failure').
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Result of readMeta — `{ ok: true; value: null }` is a genuinely absent key;
+ * a tagged failure is a backend error (rule 22). */
+export type ReadMetaResult =
+  | { ok: true; value: string | null }
+  | ({ ok: false } & GraphStoreFailure);
+
+/** Result of readFileHashes — `{ ok: true; hashes: <empty> }` is an empty
+ * index; a tagged failure is a backend error (rule 22). */
+export type ReadFileHashesResult =
+  | { ok: true; hashes: Map<string, string> }
+  | ({ ok: false } & GraphStoreFailure);
+
+/** A co-change edge row returned by readCoChanges. */
+export interface ReadCoChangeEdge {
+  readonly fileA: string;
+  readonly fileB: string;
+  readonly support: number;
+  readonly confidence: number;
+}
+
+/** Result of readCoChanges — `{ ok: true; edges: [] }` means no edges
+ * recorded; a tagged failure is a backend error (rule 22). */
+export type ReadCoChangesResult =
+  | { ok: true; edges: readonly ReadCoChangeEdge[] }
+  | ({ ok: false } & GraphStoreFailure);
+
+// ──────────────────────────────────────────────────────────────────────────
 // PR2 dead-code exclusion — explicit named constant (rule 53 analog).
 // ──────────────────────────────────────────────────────────────────────────
 
@@ -682,16 +721,17 @@ export class GraphStore {
    * absent. Synchronous (like the other read primitives) so the reindex
    * planner can read `last_indexed_head` without an await.
    */
-  readMeta(key: string): string | null {
-    if (this.closed) return null;
+  readMeta(key: string): ReadMetaResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
     try {
       const row = expectRow<{ value: string }>(
         this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key),
         ["value"],
       );
-      return row ? row.value : null;
-    } catch {
-      return null;
+      return { ok: true, value: row ? row.value : null };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyReadError(error);
     }
   }
 
@@ -713,8 +753,8 @@ export class GraphStore {
    * Read every file row's path → content_hash. Used by hash_scan mode
    * to detect content drift without a reachable base commit (issue #1553).
    */
-  readFileHashes(): Map<string, string> {
-    if (this.closed) return new Map();
+  readFileHashes(): ReadFileHashesResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
     try {
       const rows = expectRows<{ path: string; content_hash: string }>(
         this.db.prepare("SELECT path, content_hash FROM files").all(),
@@ -722,9 +762,10 @@ export class GraphStore {
       );
       const out = new Map<string, string>();
       for (const r of rows) out.set(r.path, r.content_hash);
-      return out;
-    } catch {
-      return new Map();
+      return { ok: true, hashes: out };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyReadError(error);
     }
   }
 
@@ -822,13 +863,8 @@ export class GraphStore {
    * PR3 (issue #1553): read co-change edges for a file. Returns edges
    * where the file is either `file_a` or `file_b`. Synchronous read.
    */
-  readCoChanges(filePath: string): {
-    fileA: string;
-    fileB: string;
-    support: number;
-    confidence: number;
-  }[] {
-    if (this.closed) return [];
+  readCoChanges(filePath: string): ReadCoChangesResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
     try {
       const rows = expectRows<{
         file_a: string;
@@ -846,14 +882,18 @@ export class GraphStore {
           .all(filePath, filePath),
         ["file_a", "file_b", "support", "confidence"],
       );
-      return rows.map((r) => ({
-        fileA: r.file_a,
-        fileB: r.file_b,
-        support: r.support,
-        confidence: r.confidence,
-      }));
-    } catch {
-      return [];
+      return {
+        ok: true,
+        edges: rows.map((r) => ({
+          fileA: r.file_a,
+          fileB: r.file_b,
+          support: r.support,
+          confidence: r.confidence,
+        })),
+      };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyReadError(error);
     }
   }
 

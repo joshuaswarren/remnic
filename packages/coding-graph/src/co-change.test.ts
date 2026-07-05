@@ -158,14 +158,17 @@ test("mineAndStoreCoChanges: stores edges + idempotent re-run", async () => {
 
     // Verify edges persisted.
     const coForA = store.readCoChanges("src/a.ts");
-    assert.equal(coForA.length, 1);
-    assert.equal(coForA[0]!.fileB, "src/b.ts");
+    assert.equal(coForA.ok, true);
+    if (!coForA.ok) return;
+    assert.equal(coForA.edges.length, 1);
+    assert.equal(coForA.edges[0]!.fileB, "src/b.ts");
 
     // Re-run: idempotent (clear + repopulate).
     const r2 = await mineAndStoreCoChanges({ store, git, repoRoot: dir });
     assert.equal(r2.ok, true);
     const coForA2 = store.readCoChanges("src/a.ts");
-    assert.equal(coForA2.length, 1);
+    assert.equal(coForA2.ok, true);
+    assert.equal(coForA2.ok ? coForA2.edges.length : -1, 1);
   } finally {
     await dispose(store, dir);
   }

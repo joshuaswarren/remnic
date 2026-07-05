@@ -60,6 +60,17 @@ export type DetectChangesResult =
   | { readonly ok: true; readonly affected: readonly AffectedSymbol[] }
   | { readonly ok: false; readonly code: "git_error" | "store_error" };
 
+/**
+ * Result of computeBlastRadius. A backend/store failure during traversal is
+ * surfaced as `{ ok: false; code: "store_error" }` rather than masked as an
+ * empty result — the blast-radius computation is unreliable when the store
+ * cannot be read (rule 22; cursor Bugbot: 'computeBlastRadius masks traverse
+ * failures'). `{ ok: true; affected: [] }` is a genuinely empty blast radius.
+ */
+export type BlastRadiusResult =
+  | { ok: true; affected: readonly AffectedSymbol[] }
+  | { ok: false; code: "store_error" };
+
 // ──────────────────────────────────────────────────────────────────────────
 // Constants — the risk rubric
 // ──────────────────────────────────────────────────────────────────────────
@@ -84,6 +95,22 @@ export const FAN_IN_ESCALATION_THRESHOLD = 5;
 
 /** Maximum BFS depth for blast-radius traversal. */
 export const DEFAULT_BLAST_RADIUS_DEPTH = 3;
+
+/**
+ * Failure codes that indicate a backend/store problem (rule 22), as opposed
+ * to a logical no-result (unknown_start / ambiguous_start / invalid_query).
+ * Used by computeBlastRadius to decide whether to surface a traverse failure
+ * or merely skip the symbol.
+ */
+const STORE_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "db_locked",
+  "db_corrupt",
+  "db_error",
+  "store_closed",
+]);
+function isStoreFailureCode(code: string): boolean {
+  return STORE_FAILURE_CODES.has(code);
+}
 
 // ──────────────────────────────────────────────────────────────────────────
 // Line-range overlap (rule 35: half-open intervals on both sides)
@@ -213,8 +240,8 @@ export function computeBlastRadius(
   store: GraphStore,
   directlyAffected: ReadonlySet<string>,
   maxDepth: number = DEFAULT_BLAST_RADIUS_DEPTH,
-): AffectedSymbol[] {
-  if (directlyAffected.size === 0) return [];
+): BlastRadiusResult {
+  if (directlyAffected.size === 0) return { ok: true, affected: [] };
 
   // Collect all reachable symbols via inbound traversal from each
   // directly-affected symbol. We traverse from the affected symbol
@@ -232,7 +259,17 @@ export function computeBlastRadius(
       edgeTypes: [...BLAST_RADIUS_EDGE_TYPES],
       maxDepth,
     });
-    if (!result.ok) continue;
+    if (!result.ok) {
+      // A backend failure (db_locked/corrupt/error/store_closed) means the
+      // blast-radius computation is unreliable — surface it instead of
+      // conflating it with "no inbound edges" (rule 22). A logical failure
+      // (unknown_start/ambiguous_start/invalid_query) means this symbol
+      // contributes no traversal, so skip it without aborting the set.
+      if (isStoreFailureCode(result.code)) {
+        return { ok: false, code: "store_error" };
+      }
+      continue;
+    }
     for (const hit of result.hits) {
       const existing = hitByDepth.get(hit.nodeId);
       // Keep the minimum depth (closest to a directly-affected symbol).
@@ -261,9 +298,18 @@ export function computeBlastRadius(
       edgeTypes: [...BLAST_RADIUS_EDGE_TYPES],
       maxDepth: 1,
     });
-    const fanIn = inboundResult.ok
-      ? inboundResult.hits.filter((h) => h.depth > 0).length
-      : 0;
+    let fanIn: number;
+    if (inboundResult.ok) {
+      fanIn = inboundResult.hits.filter((h) => h.depth > 0).length;
+    } else if (isStoreFailureCode(inboundResult.code)) {
+      // Same discipline as the main loop: a store failure on the fan-in
+      // read makes the classification unreliable — surface it (rule 22).
+      return { ok: false, code: "store_error" };
+    } else {
+      // Logical failure (unknown_start/...): this node has no resolvable
+      // inbound neighbors — fan-in is 0 for risk classification only.
+      fanIn = 0;
+    }
     const risk = classifyRisk(depth, fanIn);
     // filePath comes straight from the traverse hit (joined from
     // files.path in the store) — resolving via searchGraph by short
@@ -312,5 +358,5 @@ export function computeBlastRadius(
     return aId.localeCompare(bId);
   });
 
-  return out;
+  return { ok: true, affected: out };
 }

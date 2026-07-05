@@ -24,6 +24,7 @@ import {
 import {
   classifyRisk,
   computeBlastRadius,
+  type AffectedSymbol,
   findDirectlyAffectedSymbols,
   byteSpanToLines,
   rangesOverlap,
@@ -63,6 +64,22 @@ async function tempStore(): Promise<{ store: GraphStore; dir: string }> {
     repoRoot: dir,
   });
   return { store, dir };
+}
+
+/**
+ * Unwrap computeBlastRadius for characterization tests — the store is
+ * healthy here so the result is always ok. Regression tests for the
+ * store-failure path call computeBlastRadius directly and assert the
+ * tagged shape (rule 22).
+ */
+function blast(
+  store: GraphStore,
+  ids: ReadonlySet<string>,
+  depth: number,
+): readonly AffectedSymbol[] {
+  const r = computeBlastRadius(store, ids, depth);
+  if (!r.ok) throw new Error("expected blast radius ok in characterization test");
+  return r.affected;
 }
 
 async function dispose(store: GraphStore, dir: string): Promise<void> {
@@ -175,7 +192,7 @@ test("computeBlastRadius: chain fixture — d changed yields direct/near/transit
     assert.equal(result.ok, true);
 
     // Simulate: `d` is directly affected. Reverse BFS finds who depends on d.
-    const affected = computeBlastRadius(store, new Set(["chain.d"]), 3);
+    const affected = blast(store, new Set(["chain.d"]), 3);
     assert.equal(affected.length, 4);
 
     // d is direct (depth 0).
@@ -211,8 +228,8 @@ test("computeBlastRadius: byte-stable — same input, same output", async () => 
   try {
     await store.upsertFileBatch([CHAIN_FILE]);
 
-    const affected1 = computeBlastRadius(store, new Set(["chain.d"]), 3);
-    const affected2 = computeBlastRadius(store, new Set(["chain.d"]), 3);
+    const affected1 = blast(store, new Set(["chain.d"]), 3);
+    const affected2 = blast(store, new Set(["chain.d"]), 3);
 
     // Deep equal — same order, same classifications.
   assert.deepEqual(
@@ -227,7 +244,7 @@ test("computeBlastRadius: byte-stable — same input, same output", async () => 
 test("computeBlastRadius: empty affected set → empty result", async () => {
   const { store, dir } = await tempStore();
   try {
-    const affected = computeBlastRadius(store, new Set(), 3);
+    const affected = blast(store, new Set(), 3);
     assert.equal(affected.length, 0);
   } finally {
     await dispose(store, dir);
@@ -277,7 +294,7 @@ test("computeBlastRadius: fan-in escalation — mid escalates near→direct", as
     await store.upsertFileBatch([FAN_IN_FILE]);
 
     // Change target. mid is 1 hop away (near) but has fanIn=5 ≥ 5.
-    const affected = computeBlastRadius(store, new Set(["fanin.target"]), 3);
+    const affected = blast(store, new Set(["fanin.target"]), 3);
     const mid = affected.find((a) => a.qualifiedName === "fanin.mid");
     assert.ok(mid, "mid should be in blast radius");
     assert.equal(mid!.depth, 1);
@@ -415,7 +432,7 @@ test("computeBlastRadius: duplicate simple names keep the correct filePath (curs
     await store.upsertFileBatch([DUP_A, DUP_B]);
 
     // b.foo changed directly. Reverse BFS finds a.foo (a calls b).
-    const affected = computeBlastRadius(store, new Set(["b.foo"]), 3);
+    const affected = blast(store, new Set(["b.foo"]), 3);
     // Both symbols appear (b.foo direct, a.foo near).
     assert.equal(affected.length, 2);
 
@@ -468,8 +485,8 @@ test("computeBlastRadius: byte-stable sort with duplicate qualifiedNames (cursor
   const { store, dir } = await tempStore();
   try {
     await store.upsertFileBatch([DUP_A, DUP_B]);
-    const r1 = computeBlastRadius(store, new Set(["b.foo"]), 3);
-    const r2 = computeBlastRadius(store, new Set(["b.foo"]), 3);
+    const r1 = blast(store, new Set(["b.foo"]), 3);
+    const r2 = blast(store, new Set(["b.foo"]), 3);
     // Same risk/qualifiedName for a.foo across runs — order must be
     // identical (filePath + nodeId tiebreaker makes it total).
     assert.deepEqual(
@@ -481,5 +498,36 @@ test("computeBlastRadius: byte-stable sort with duplicate qualifiedNames (cursor
     assert.equal(new Set(r1.map((a) => a.filePath)).size, 2);
   } finally {
     await dispose(store, dir);
+  }
+});
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// Rule 22 — computeBlastRadius surfaces store failures instead of masking
+// them as an empty affected set (cursor Bugbot: 'computeBlastRadius masks
+// traverse failures'). Before the fix, `if (!result.ok) continue` conflated
+// a backend failure with "no inbound edges".
+// ──────────────────────────────────────────────────────────────────────────
+
+test("computeBlastRadius: store failure surfaces as store_error, not masked as empty (rule 22)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await store.upsertFileBatch([CHAIN_FILE]);
+    const ids = new Set(["chain.d"]);
+    // Sanity: a healthy store resolves the blast radius.
+    const ok = computeBlastRadius(store, ids, 3);
+    assert.equal(ok.ok, true);
+
+    // Close the store — traverse now returns store_closed. Before the fix
+    // this was silently skipped (continue), yielding an empty affected set
+    // indistinguishable from "no dependents". Now it surfaces a tagged
+    // store_error so the caller knows the computation is unreliable.
+    await store.close();
+    const failed = computeBlastRadius(store, ids, 3);
+    assert.equal(failed.ok, false);
+    if (failed.ok) throw new Error("expected store_error");
+    assert.equal(failed.code, "store_error");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
