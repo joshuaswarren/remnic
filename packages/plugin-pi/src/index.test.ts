@@ -1625,3 +1625,53 @@ test("/remnic-recall bounds retry to the general request budget instead of unbou
     "command reported the bounded failure",
   );
 });
+
+test("a successful /remnic-recall clears a stale circuit breaker (review cursor)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (input, init) => {
+    calls += 1;
+    const url = String(input);
+    // Manual recall responds OK; automatic context recall hangs until abort.
+    if (url.endsWith("/engram/v1/recall") && init?.body && JSON.parse(String(init.body)).query === "manual") {
+      return new Response(JSON.stringify({ context: "manual context" }), { status: 200 });
+    }
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit, runCommand } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      turnRequestTimeoutMs: 30,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "manual-recall-clears-breaker" },
+  };
+  const autoEvent = { messages: [{ role: "user", content: "auto" }] };
+
+  // 1) automatic context recall times out -> breaker tripped.
+  await emit("context", autoEvent, ctx);
+  // 2) a successful manual /remnic-recall clears the stale breaker.
+  await runCommand("remnic-recall", "manual", ctx);
+  // 3) automatic context recall now runs instead of fast-skipping.
+  const callsBeforeSecondAuto = calls;
+  await emit("context", { messages: [{ role: "user", content: "auto2" }] }, ctx);
+  assert.ok(calls > callsBeforeSecondAuto, "automatic recall ran after the manual recall cleared the breaker");
+});

@@ -199,6 +199,9 @@ function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfi
     description: "Check Remnic daemon status",
     handler: commandHandler(async (_args, _ctx, session) => {
       const health = await client.health();
+      // The daemon responded (any HTTP result), so clear any stale cooldown a
+      // prior timeout left on the shared client (cursor review).
+      client.markReachable();
       session.notify(`Remnic ${health.ok ? "healthy" : "unhealthy"} at ${config.remnicDaemonUrl}`, health.ok ? "success" : "warning");
     }),
   });
@@ -218,6 +221,9 @@ function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfi
       const result = await client.recall(query, session.sessionKey, session.cwd, {
         timeoutMs: config.requestTimeoutMs,
       });
+      // The daemon responded, so clear any stale cooldown a prior timeout left
+      // on the shared client (cursor review).
+      client.markReachable();
       session.notify(trimContext(result.context ?? "(no Remnic context)", MAX_CONTEXT_CHARS), "info");
     }),
   });
