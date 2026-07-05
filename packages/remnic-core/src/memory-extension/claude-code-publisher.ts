@@ -17,6 +17,7 @@ export class ClaudeCodeMemoryExtensionPublisher implements MemoryExtensionPublis
   readonly hostId = "claude-code";
 
   static readonly capabilities: PublisherCapabilities = {
+    isStub: true,
     instructionsMd: false,
     skillsFolder: false,
     citationFormat: false,

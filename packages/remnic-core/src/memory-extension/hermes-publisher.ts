@@ -17,6 +17,7 @@ export class HermesMemoryExtensionPublisher implements MemoryExtensionPublisher 
   readonly hostId = "hermes";
 
   static readonly capabilities: PublisherCapabilities = {
+    isStub: true,
     instructionsMd: false,
     skillsFolder: false,
     citationFormat: false,

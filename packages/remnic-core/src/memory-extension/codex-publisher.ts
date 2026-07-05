@@ -53,6 +53,7 @@ export class CodexMemoryExtensionPublisher implements MemoryExtensionPublisher {
   readonly hostId = "codex";
 
   static readonly capabilities: PublisherCapabilities = {
+    isStub: false,
     instructionsMd: true,
     skillsFolder: false,
     citationFormat: true,

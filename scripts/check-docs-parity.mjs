@@ -580,8 +580,22 @@ const PUBLISHERS = [
 const CAPABILITIES_BLOCK_RE = /static\s+readonly\s+capabilities\s*:[\s\S]*?=\s*\{([\s\S]*?)\}/;
 const STUB_FLAG_KEYS = ["instructionsMd", "skillsFolder", "citationFormat", "readPathTemplate"];
 const HOST_ID_RE = /readonly\s+hostId\s*=\s*"([^"]+)"/;
+const IS_STUB_TRUE_RE = /\bisStub\s*:\s*true\b/;
 
 /**
+ * A publisher is a stub when EITHER:
+ *   (a) it explicitly declares `isStub: true` in its capabilities block
+ *       (the source of truth since #1518 — a real publisher that happens to
+ *       produce no instructions.md/skills/citation/read-path artefacts, like
+ *       the Pi-family host publisher, must declare `isStub: false` so the
+ *       inference backstop does not mis-classify it); OR
+ *   (b) the legacy inference: ALL four artefact flags are false AND no
+ *       explicit `isStub` key is present (backstop for not-yet-migrated
+ *       publishers).
+ *
+ * Once every publisher declares `isStub` explicitly, branch (b) is dead code
+ * kept only as a safety net.
+ *
  * @returns {Map<string, { hostId: string; isStub: boolean; file: string }>}
  */
 function collectPublishers() {
@@ -593,14 +607,16 @@ function collectPublishers() {
     const hostMatch = src.match(HOST_ID_RE);
     if (!hostMatch) continue;
     const hostId = hostMatch[1];
-    // A publisher is a stub when ALL four capability flags are false. Each
-    // flag is tested independently within the capability block so key
-    // order does not matter; a partial publisher (some true, some false)
-    // is not mis-flagged.
     const blockMatch = src.match(CAPABILITIES_BLOCK_RE);
     const body = blockMatch ? blockMatch[1] : "";
-    const allFalse = STUB_FLAG_KEYS.every((k) => new RegExp(`\\b${k}\\s*:\\s*false`).test(body));
-    out.set(hostId, { hostId, isStub: allFalse, file: rel });
+    const hasExplicit = /\bisStub\s*:/.test(body);
+    const explicitStub = IS_STUB_TRUE_RE.test(body);
+    // Legacy inference backstop: all four artefact flags false. Only consulted
+    // when the publisher has not yet declared `isStub` explicitly.
+    const inferredStub =
+      !hasExplicit &&
+      STUB_FLAG_KEYS.every((k) => new RegExp(`\\b${k}\\s*:\\s*false`).test(body));
+    out.set(hostId, { hostId, isStub: explicitStub || inferredStub, file: rel });
   }
   return out;
 }

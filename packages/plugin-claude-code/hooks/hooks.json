@@ -6,7 +6,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./hooks/bin/session-start.sh",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bin/remnic-cc-hook.cjs",
+              "session-start"
+            ],
             "timeout": 45000
           }
         ]
@@ -18,7 +22,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./hooks/bin/post-tool-observe.sh",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bin/remnic-cc-hook.cjs",
+              "post-tool-observe"
+            ],
             "timeout": 10000
           }
         ]
@@ -30,7 +38,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "./hooks/bin/user-prompt-recall.sh",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bin/remnic-cc-hook.cjs",
+              "user-prompt-recall"
+            ],
             "timeout": 20000
           }
         ]

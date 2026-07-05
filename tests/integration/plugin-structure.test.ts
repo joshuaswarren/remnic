@@ -32,7 +32,11 @@ test("plugin-claude-code has hooks.json with required hook events", () => {
 
 test("plugin-claude-code hook scripts are executable", () => {
   const binDir = path.join(PACKAGES, "plugin-claude-code", "hooks", "bin");
-  const required = ["session-start.sh", "user-prompt-recall.sh", "post-tool-observe.sh", "session-end.sh"];
+  // Cross-platform unified runner (#1518): a single Node.js `.cjs` is the
+  // entry point Claude Code invokes (exec form, see hooks.json). The thin
+  // `.sh`/`.ps1` launchers stay for manual/debug invocation and structural
+  // parity with the Codex plugin.
+  const required = ["remnic-cc-hook.cjs", "remnic-cc-hook.sh", "remnic-cc-hook.ps1"];
   for (const script of required) {
     const scriptPath = path.join(binDir, script);
     assert.ok(fs.existsSync(scriptPath), `${script} must exist`);
@@ -230,8 +234,10 @@ test("server imports from @remnic/core, not ../../../src/", () => {
 // ---------------------------------------------------------------------------
 
 test("Claude Code hooks prefer ~/.remnic/tokens.json with Engram fallback", () => {
-  const sessionStart = path.join(PACKAGES, "plugin-claude-code", "hooks", "bin", "session-start.sh");
-  const content = fs.readFileSync(sessionStart, "utf-8");
+  // The token-resolution contract lives in the unified runner, not the
+  // deleted per-event `.sh` scripts (#1518).
+  const runner = path.join(PACKAGES, "plugin-claude-code", "hooks", "bin", "remnic-cc-hook.cjs");
+  const content = fs.readFileSync(runner, "utf-8");
   assert.ok(content.includes("tokens.json"), "Must read from token file");
   assert.ok(content.includes(".remnic"), "Must prefer Remnic token path");
   assert.ok(content.includes(".engram"), "Must preserve Engram token fallback");
