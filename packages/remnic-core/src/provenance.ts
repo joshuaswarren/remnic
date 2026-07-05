@@ -29,6 +29,7 @@ import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 import { readEnvVar } from "./runtime/env.js";
 import { collapseWhitespace } from "./whitespace.js";
 import type { MemoryFrontmatter, ProvenanceConfig, ProvenanceSource } from "./types.js";
+import { isSafeMemoryContent } from "./sanitize.js";
 
 /**
  * Canonical key order for a serialized `ProvenanceSource` (issue #1575).
@@ -195,8 +196,34 @@ function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined
   // below would otherwise resurrect them. Require at least one date/time
   // separator so a plain number never round-trips into a fake epoch.
   if (!/[-:T]/.test(ts)) return undefined;
+  // Reject calendar-overflow dates (chatgpt-codex-connector thread dANc):
+  // Date.parse silently rolls over invalid components — "2026-02-30" becomes
+  // 2026-03-02 — fabricating the observation date. For strings that carry an
+  // explicit numeric Y/M/D prefix (the common import/provider shape), validate
+  // the calendar components are in range before accepting the shifted result.
+  // isStrictIsoTimestamp already does this for full ISO strings; this closes
+  // the gap for the non-ISO normalization path.
+  const ymd = /^(\d{4})\D(\d{1,2})\D(\d{1,2})/.exec(ts);
+  if (ymd) {
+    const [_, ys, ms, ds] = ymd;
+    const y = Number(ys), mo = Number(ms), da = Number(ds);
+    if (!isValidCalendarDate(y, mo, da)) return undefined;
+  }
   const iso = new Date(parsed).toISOString();
   return isStrictIsoTimestamp(iso) ? iso : undefined;
+}
+
+/**
+ * Validate numeric calendar components without Date overflow (review thread
+ * dANc). Date.UTC silently normalizes Feb 30 -> Mar 2; a component round-trip
+ * catches what Date.parse accepts. Mirrors the same technique isStrictIsoTimestamp
+ * uses for full ISO strings, applied here to the non-ISO normalization path.
+ */
+function isValidCalendarDate(y: number, mo: number, da: number): boolean {
+  if (mo < 1 || mo > 12 || da < 1) return false;
+  const leap = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) ? 29 : 28;
+  const daysInMonth = [31, leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return da <= daysInMonth[mo - 1]!;
 }
 
 /**
@@ -560,6 +587,15 @@ export function buildFactProvenance(
   // raw turn content (cursor thread Oc3Z2).
   const quote = stripLeadingRolePrefix(rawQuote);
   if (quote.length === 0) return { provenance: "none" };
+  // Sanitize the quote before persisting it as a provenance span
+  // (chatgpt-codex-connector thread dANZ): the fact body is sanitized via
+  // sanitizeMemoryContent, but sources[].quote was persisted verbatim,
+  // reintroducing unsafe memory text (e.g. "ignore previous instructions")
+  // through the provenance field exposed to memory_get/x-ray/faithfulness.
+  // An unsafe quote cannot serve as evidence — drop the source entirely
+  // (consistent with how the body is sanitized: unsafe text is redacted,
+  // and a redacted quote is useless as a verbatim span).
+  if (!isSafeMemoryContent(quote)) return { provenance: "none" };
 
   try {
     // Search every turn for the quote. Collect verified sources.
