@@ -176,7 +176,7 @@ export function computeSessionDelta(
       // never under-report on large repos (issue #1630 fix 1).
       totalCommits: current.commits.length,
       totalTouchedFiles: current.touchedFiles.length,
-      summaryLine: buildSummaryLine(commits.length, touchedFiles.length, lastSeen.at),
+      summaryLine: buildSummaryLine(current.commits.length, current.touchedFiles.length, lastSeen.at),
     },
     nextState,
   };

@@ -4665,11 +4665,22 @@ export class EngramAccessService {
         // non-default namespaces route to memoryDir/namespaces/<token>, so
         // session-delta markers must read/write from the routed tree, mirroring
         // the decision/architecture siblings (cursor review).
-        // Issue #1630 fix 2: the marker write is a write side-effect, so gate
-        // it on canWriteNamespace — read-only callers get the delta but don't
-        // advance state (the READ ACL let them reach here, e.g. shared ns).
-        const principal = this.resolveRequestPrincipal(req.sessionKey, authenticatedPrincipal);
-        const canAdvanceState = canWriteNamespace(principal, ns, this.orchestrator.config);
+        // Issue #1630 fix 2: gate the marker write on the WRITE-path resolver
+        // — it mirrors memory_store's exact authorization (base ACL for coding
+        // overlays, selectedLayer.writable for scope-profiles), not the raw
+        // canWriteNamespace which misses overlay/profile grants (cursor+codex
+        // review). A throw = read-only caller; delta computed but no advance.
+        let canAdvanceState = false;
+        try {
+          await this.resolveCodingScopedWriteNamespace({
+            namespace: req.namespace,
+            sessionKey: req.sessionKey,
+            authenticatedPrincipal,
+          });
+          canAdvanceState = true;
+        } catch {
+          canAdvanceState = false;
+        }
         return {
           memoryDir: storage.dir,
           namespace: ns,

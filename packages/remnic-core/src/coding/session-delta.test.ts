@@ -193,6 +193,10 @@ test("computeSessionDelta reports uncapped totals alongside capped slices (issue
   // Uncapped totals — the true delta size, NOT the capped slice length.
   assert.equal(result.delta.totalCommits, commitCount);
   assert.equal(result.delta.totalTouchedFiles, fileCount);
+  // The summary line must report the UNCAPPED totals, not the capped slice
+  // length — otherwise the briefing under-reports the delta size (codex review).
+  assert.match(result.delta.summaryLine, /100 commits, 200 files touched/);
+  assert.ok(!result.delta.summaryLine.match(/^.*20 commits, 50 files/), "summary must NOT use capped counts");
 });
 
 test("computeSessionDelta totals equal slice lengths when under the cap (issue #1630 fix 1)", () => {
