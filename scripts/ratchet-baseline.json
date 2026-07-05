@@ -4,18 +4,13 @@
   "oversizeThresholdLoc": 3000,
   "metrics": {
     "watchlistLoc": {
-      "packages/remnic-core/src/orchestrator.ts": 19972,
-      "packages/remnic-core/src/cli.ts": 9853,
+      "packages/remnic-core/src/orchestrator.ts": 20116,
+      "packages/remnic-core/src/cli.ts": 9870,
       "packages/remnic-core/src/access-service.ts": 8412,
       "packages/remnic-core/src/storage.ts": 7340,
       "packages/remnic-core/src/config.ts": 4518
     },
     "oversizedFileCount": 10,
-    "scatteredConfigFlagReads": 553
-  },
-  "justifications": {
-    "packages/remnic-core/src/orchestrator.ts": "+26 (19946->19972, #1578): bi-temporal INJECTION filter in filterSearchResultsByRecallSafety — THE single shared recall-safety point (hot+filesystem-fallback parity); cannot move to a spine stage until #1539 lands. Gated by temporalBiTemporal, status-orthogonal; explicit search bypasses it. Comment expanded in review to document the search bypass.",
-    "packages/remnic-core/src/storage.ts": "+34 (7306->7340, #1578): serializeFrontmatter/parseFrontmatter round-trip for observedAt+eventTimeSource (the frontmatter chokepoint — MUST live here) + writeMemory option wiring; validate-on-write rejects corrupt timestamps.",
-    "packages/remnic-core/src/config.ts": "+13 (4505->4518, #1578): two new gates temporalBiTemporal + temporalExpiredInInjection parsed with ===true (rule 51); comment expanded in review to keep docs honest about the follow-on extraction-wiring PR."
+    "scatteredConfigFlagReads": 559
   }
 }
