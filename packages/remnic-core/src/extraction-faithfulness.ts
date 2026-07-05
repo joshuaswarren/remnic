@@ -443,13 +443,23 @@ export async function checkFaithfulnessBatch(
 
   let timedOut = false;
   const controller = new AbortController();
+  // Race the LLM call against the budget so the batch fails open at
+  // `timeoutMs` regardless of which backend is in flight. The local backend
+  // ignores the batch AbortSignal (it aborts each attempt via its own
+  // controller keyed on `timeoutMs`), so awaiting callFaithfulnessLlm directly
+  // could block past the budget on a slow/retrying local verifier. The timer
+  // both aborts the fallback (which honors the signal) and resolves the race
+  // so the batch returns promptly; the in-flight local call aborts on its own
+  // per-attempt timeoutMs. (codex review PRRT_kwDORJXyws6ObgMJ.)
+  const { promise: racedTimeout, resolve: resolveTimeout } = Promise.withResolvers<true>();
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
+    resolveTimeout(true);
   }, timeoutMs);
 
   try {
-    const llmResult = await callFaithfulnessLlm(
+    const callPromise = callFaithfulnessLlm(
       FAITHFULNESS_SYSTEM_PROMPT,
       userPrompt,
       config,
@@ -458,7 +468,28 @@ export async function checkFaithfulnessBatch(
       timeoutMs,
       controller.signal,
     );
+    const settled = await Promise.race([
+      callPromise.then(
+        (r) => ({ done: true as const, result: r }),
+        // An unexpected throw is treated as "no content" (backend_unavailable)
+        // so the race never rejects and the outer catch is the final safety net.
+        () => ({ done: true as const, result: { content: null, modelUsed: null } }),
+      ),
+      racedTimeout.then(() => ({ done: false as const })),
+    ]);
     const elapsedMs = Date.now() - startedAt;
+
+    if (!settled.done) {
+      // The budget elapsed before any backend returned content. Fail open as
+      // timeout; the orphaned callPromise resolves/rejects harmlessly (the
+      // fallback was aborted; the local client aborts on its own timeoutMs).
+      for (const idx of checkableIndices) {
+        results[idx] = { ok: false, error: { code: "timeout" } };
+      }
+      return { results, elapsedMs };
+    }
+
+    const llmResult = settled.result;
 
     // Cursor review: if the LLM returned usable content, use it even when
     // the abort timer raced — a response that lands just as the timer fires

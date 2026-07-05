@@ -430,20 +430,27 @@ test("checkFaithfulnessBatch: timeout → tagged timeout, not a crash", async ()
   }
 });
 
-test("checkFaithfulnessBatch: content returned as the timer fires is used, not discarded (cursor race)", async () => {
-  // The abort timer fires at 50ms (timedOut=true), but the LLM returns valid
-  // content at 80ms — a response that lands just as the abort propagates. The
-  // race fix must honor the real verdict instead of throwing it away as a
-  // timeout (cursor review PRRT_kwDORJXyws6ObXbj).
+test("checkFaithfulnessBatch: content landing within the budget is used; content past the budget fails open as timeout", async () => {
+  // The batch races the LLM call against extractionFaithfulnessTimeoutMs so a
+  // wedged/slow backend cannot hold the extraction flush past the budget
+  // (codex review PRRT_kwDORJXyws6ObgMJ). Content that lands WITHIN the budget
+  // is used; content that lands AFTER the budget fails open as timeout.
   const inputs = [{ factText: "Fact", quote: "Quote" }];
   const config = parseConfig({ extractionFaithfulnessTimeoutMs: 50 });
   const llm = JSON.stringify([{ index: 0, verdict: "entailed" }]);
-  const result = await checkFaithfulnessBatch(
-    inputs, config, null, racingFallbackLlm(80, llm),
-  );
-  assert.equal(result.results[0]?.ok, true, "racing content must be used, not timed out");
-  if (result.results[0]?.ok) {
-    assert.equal(result.results[0].verdict, "entailed");
+
+  // Within budget (30ms < 50ms): the real verdict is used.
+  const within = await checkFaithfulnessBatch(inputs, config, null, racingFallbackLlm(30, llm));
+  assert.equal(within.results[0]?.ok, true, "content within the budget must be used");
+  if (within.results[0]?.ok) {
+    assert.equal(within.results[0].verdict, "entailed");
+  }
+
+  // Past budget (80ms > 50ms): fail open as timeout, do not block the flush.
+  const past = await checkFaithfulnessBatch(inputs, config, null, racingFallbackLlm(80, llm));
+  assert.equal(past.results[0]?.ok, false, "content past the budget fails open as timeout");
+  if (!past.results[0]?.ok) {
+    assert.equal(past.results[0].error.code, "timeout");
   }
 });
 
@@ -966,4 +973,32 @@ test("runFaithfulnessGateBatch: multi-source facts verify against ALL source spa
     userMsg?.content.includes("It launched in March 2024 at beta status."),
     "second source span must reach the verifier prompt (multi-source fix)",
   );
+});
+
+test("checkFaithfulnessBatch: a wedged local backend that ignores the signal still fails open at the budget (codex P2)", async () => {
+  // LocalLlmClient ignores options.signal and aborts each attempt via its own
+  // controller. A wedged local verifier that never resolves within the budget
+  // must NOT hold the batch past extractionFaithfulnessTimeoutMs — the race
+  // returns timeout promptly so the extraction flush is not blocked
+  // (codex review PRRT_kwDORJXyws6ObgMJ).
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = parseConfig({ extractionFaithfulnessTimeoutMs: 50 });
+  const hungLocal = {
+    // Never resolves within the test window and ignores any signal.
+    chatCompletion: async () => {
+      const { promise } = Promise.withResolvers<never>();
+      return promise;
+    },
+  };
+  const startedAt = Date.now();
+  const result = await checkFaithfulnessBatch(
+    inputs, config, hungLocal as unknown as LocalLlmClient, null,
+  );
+  const elapsed = Date.now() - startedAt;
+  assert.equal(result.results[0]?.ok, false);
+  if (!result.results[0]?.ok) {
+    assert.equal(result.results[0].error.code, "timeout");
+  }
+  // The batch returned near the budget, not after the hung promise.
+  assert.ok(elapsed < 1000, `batch must fail open near the budget, not block (elapsed=${elapsed}ms)`);
 });
