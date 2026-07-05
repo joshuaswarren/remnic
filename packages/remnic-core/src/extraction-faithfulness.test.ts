@@ -20,6 +20,7 @@ import {
   createFaithfulnessCounters,
   locateFactQuote,
   FAITHFULNESS_PROMPT_HASH,
+  extractContextWindow,
 } from "./extraction-faithfulness.js";
 import type { FaithfulnessResult } from "./extraction-faithfulness.js";
 import type { FallbackLlmClient } from "./fallback-llm.js";
@@ -1001,4 +1002,98 @@ test("checkFaithfulnessBatch: a wedged local backend that ignores the signal sti
   }
   // The batch returned near the budget, not after the hung promise.
   assert.ok(elapsed < 1000, `batch must fail open near the budget, not block (elapsed=${elapsed}ms)`);
+});
+
+
+// ---------------------------------------------------------------------------
+// #1576: fallback-locator source context — codex P2 (PRRT_kwDORJXyws6OblI1)
+// extractionFaithfulnessContextChars must actually reach the verifier in the
+// fallback-locator path, otherwise composite facts whose support depends on
+// surrounding source text get misrouted to pending_review in enforce mode.
+// ---------------------------------------------------------------------------
+
+test("extractContextWindow: returns a bounded window centered on the quote", () => {
+  const sourceText =
+    "We started the Acme project earlier this year. It launched in March 2024 at beta status. The team is small.";
+  const quote = "It launched in March 2024 at beta status.";
+  // contextChars=40 must bound the window; the quote itself is 42 chars so the
+  // window is at least the quote plus a sliver of neighbors on each side.
+  const ctx = extractContextWindow(sourceText, quote, 40);
+  assert.ok(ctx, "expected a context window");
+  assert.ok(ctx!.length <= 40, `window must be bounded by contextChars (got ${ctx!.length})`);
+  assert.ok(ctx!.includes("launched"), "window must overlap the quote");
+});
+
+test("extractContextWindow: grows neighbors when budget exceeds quote length", () => {
+  const sourceText =
+    "Earlier the project was unnamed. We started the Acme project earlier this year. Later we renamed it.";
+  const quote = "We started the Acme project earlier this year.";
+  const ctx = extractContextWindow(sourceText, quote, 120);
+  assert.ok(ctx, "expected a context window");
+  assert.ok(ctx!.length <= 120, `window bounded (got ${ctx!.length})`);
+  // Neighboring sentences must be pulled in now that the budget allows it.
+  assert.ok(ctx!.includes("Earlier the project was unnamed"), "preceding context included");
+  assert.ok(ctx!.includes("Later we renamed it"), "following context included");
+});
+
+test("extractContextWindow: returns undefined when quote is absent from sourceText", () => {
+  assert.equal(extractContextWindow("some source", "not present", 400), undefined);
+  assert.equal(extractContextWindow("", "x", 400), undefined);
+  assert.equal(extractContextWindow("source", "s", 0), undefined);
+});
+
+test("runFaithfulnessGateBatch: fallback locator injects CONTEXT into the verifier prompt (codex P2 PRRT_kwDORJXyws6OblI1)", async () => {
+  // No #1575 sources → the fallback locator locates a quote from sourceText.
+  // Previously the input never set `context`, so the surrounding turn text
+  // (and thus extractionFaithfulnessContextChars) was ignored in production.
+  // The verifier prompt must now include a CONTEXT line around the quote.
+  const facts = [{ content: "The Acme project launched in March." }];
+  const sourceText =
+    "We started the Acme project earlier this year. It launched in March at beta status. The team is small.";
+  const captured: Array<{ messages: Array<{ role: string; content: string }>; options: unknown }> = [];
+  const llm = JSON.stringify([{ index: 0, verdict: "entailed" }]);
+  const result = await runFaithfulnessGateBatch(
+    facts,
+    "shadow",
+    baseConfig(),
+    null,
+    stubFallbackLlm(llm, captured),
+    createFaithfulnessCounters(),
+    sourceText,
+  );
+  assert.ok(result instanceof Map);
+  assert.equal(result.size, 1);
+  const userMsg = captured[0]?.messages.find((m) => m.role === "user");
+  assert.ok(userMsg, "verifier was called");
+  assert.match(userMsg!.content, /CONTEXT:/, "fallback-locator prompt must include a CONTEXT line");
+  // The surrounding sentence must be present in the context window.
+  assert.ok(
+    userMsg!.content.includes("We started the Acme project"),
+    "context window must include the neighboring source text",
+  );
+});
+
+test("runFaithfulnessGateBatch: #1575 verified spans do NOT synthesize a context window (regression guard)", async () => {
+  // When per-fact sources are present, the verified span already carries full
+  // evidence — no fallback context window should be synthesized.
+  const facts = [
+    {
+      content: "The Acme project launched in March 2024 at beta status.",
+      sources: [{ quote: "It launched in March 2024 at beta status." }],
+    },
+  ];
+  const captured: Array<{ messages: Array<{ role: string; content: string }>; options: unknown }> = [];
+  const llm = JSON.stringify([{ index: 0, verdict: "entailed" }]);
+  await runFaithfulnessGateBatch(
+    facts,
+    "shadow",
+    baseConfig(),
+    null,
+    stubFallbackLlm(llm, captured),
+    createFaithfulnessCounters(),
+    "We started the Acme project earlier this year. It launched in March 2024 at beta status.",
+  );
+  const userMsg = captured[0]?.messages.find((m) => m.role === "user");
+  assert.ok(userMsg);
+  assert.doesNotMatch(userMsg!.content, /CONTEXT:/, "no context window for #1575 verified spans");
 });

@@ -691,6 +691,35 @@ const LOCATE_QUOTE_MIN_OVERLAP = 0.3;
  * consumes a span, not the whole conversation (issue #1576 design constraint).
  * #1575's NLI-verified per-fact locator will replace this when it lands.
  */
+/**
+ * Extract a bounded window of `sourceText` centered on the located `quote`,
+ * bounded by `contextChars` (the config's "window around the quote" semantics).
+ *
+ * Used by the fallback-locator path in `runFaithfulnessGateBatch` so the
+ * verifier sees surrounding turn text — without it,
+ * `extractionFaithfulnessContextChars` is effectively ignored in the
+ * production path (codex review PRRT_kwDORJXyws6OblI1). Returns undefined when
+ * the quote is absent from sourceText (e.g. it was truncated by maxQuoteChars).
+ */
+export function extractContextWindow(
+  sourceText: string,
+  quote: string,
+  contextChars: number,
+): string | undefined {
+  if (!sourceText || !quote || !(contextChars > 0)) return undefined;
+  const idx = sourceText.indexOf(quote);
+  if (idx < 0) return undefined;
+  const quoteEnd = idx + quote.length;
+  const center = Math.floor((idx + quoteEnd) / 2);
+  const half = Math.floor(contextChars / 2);
+  let start = Math.max(0, center - half);
+  const end = Math.min(sourceText.length, start + contextChars);
+  // Re-anchor start so the window uses the full budget when end clamped.
+  start = Math.max(0, end - contextChars);
+  const window = sourceText.slice(start, end).trim();
+  return window.length > 0 ? window : undefined;
+}
+
 export function locateFactQuote(
   factText: string,
   sourceText: string,
@@ -750,12 +779,32 @@ export async function runFaithfulnessGateBatch(
     const sourceQuotes = sources
       .map((s) => (s && typeof s.quote === "string" ? s.quote.trim() : ""))
       .filter((q) => q.length > 0);
+    const usingFallbackLocator = sourceQuotes.length === 0;
     const quote =
       sourceQuotes.length > 0
         ? sourceQuotes.join("\n")
         : locateFactQuote(f.content, sourceText);
     if (!quote) continue; // no located span — applyFaithfulnessVerdict tags skipped_no_span
-    inputs.push({ factIndex: fi, input: { factText: f.content, quote } });
+    // Pass source context into the verifier so extractionFaithfulnessContextChars
+    // actually applies in the fallback-locator path (codex P2
+    // PRRT_kwDORJXyws6OblI1). #1575 verified spans already carry full evidence,
+    // so context is only synthesized for the fallback locator.
+    const fallbackContext =
+      usingFallbackLocator
+        ? extractContextWindow(
+            sourceText,
+            quote,
+            config.extractionFaithfulnessContextChars,
+          )
+        : undefined;
+    inputs.push({
+      factIndex: fi,
+      input: {
+        factText: f.content,
+        quote,
+        ...(fallbackContext ? { context: fallbackContext } : {}),
+      },
+    });
   }
   const resultsByFactIndex = new Map<number, FaithfulnessResult>();
   if (inputs.length === 0) return resultsByFactIndex;
