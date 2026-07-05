@@ -13,14 +13,14 @@
 import { createHash } from "node:crypto";
 import { Query, type Language, type Node as TSNode } from "web-tree-sitter";
 import type {
-  CodingGraphLanguage,
   CallSiteIR,
   ExportIR,
   FileIR,
   ImportIR,
   RouteIR,
   SymbolIR,
-} from "@remnic/core";
+} from "@remnic/core/coding/coding-graph-types";
+import type { CodingGraphLanguage } from "@remnic/core";
 
 import {
   EXTRACTORS,
