@@ -27,6 +27,7 @@ import { z } from "zod";
 
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 import { readEnvVar } from "./runtime/env.js";
+import { collapseWhitespace } from "./whitespace.js";
 import type { MemoryFrontmatter, ProvenanceConfig, ProvenanceSource } from "./types.js";
 
 /**
@@ -302,4 +303,229 @@ export function parseProvenanceConfig(raw: unknown): ProvenanceConfig {
       return coerced;
     })(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1575 PR 2 — extraction-side post-parse validator.
+// ---------------------------------------------------------------------------
+//
+// This runs once at write time (inside `ExtractionEngine.extract`, after the
+// LLM output is parsed and sanitized, before the result is returned for
+// persistence). Its job: locate each fact's LLM-provided `quote` in the
+// buffered turn texts and build a `ProvenanceSource[]` with verified
+// offsets. Never throws, never drops a fact (rule 34 spirit — an
+// unverifiable span is a tagged state, not a silent failure).
+//
+// Reuses `collapseWhitespace` from `whitespace.ts` for normalization so there
+// is exactly one normalizer in the codebase (issue #1575 pitfall: "do not
+// write a second normalizer").
+// ---------------------------------------------------------------------------
+
+/**
+ * A turn in the buffered conversation, reduced to the fields the provenance
+ * validator needs. `ExtractionEngine.extract` maps its `BufferTurn[]` to this
+ * shape so the validator is pure and testable without the full BufferTurn type.
+ */
+export interface ProvenanceTurnInput {
+  content: string;
+  sessionKey?: string;
+  logicalSessionKey?: string;
+  timestamp: string;
+  turnId?: string;
+}
+
+/**
+ * Result of building provenance for a single extracted fact.
+ */
+export interface ProvenanceBuildResult {
+  /** Verified sources (one per matching turn). Absent when no quote survives. */
+  sources?: ProvenanceSource[];
+  /** Coarse strength tag persisted to frontmatter. */
+  provenance: "verified" | "unverified" | "none";
+}
+
+/**
+ * Cap a quote string at `maxChars`, truncating at the last word boundary that
+ * fits and appending an ellipsis marker. Quotes at or under the cap pass
+ * through unchanged. Operates on Unicode code points (not UTF-16 units) so
+ * emoji and astral-plane characters are not split mid-glyph.
+ */
+function capQuote(quote: string, maxChars: number): string {
+  const glyphs = Array.from(quote);
+  if (glyphs.length <= maxChars) return quote;
+  // Walk backward from the cap to find a word boundary (space). If the entire
+  // span is one long token (no spaces), cut at the cap — a hard cut is better
+  // than no quote at all.
+  let cut = maxChars;
+  while (cut > 0 && !/\s/.test(glyphs[cut - 1]!)) cut--;
+  if (cut === 0) cut = maxChars; // no word boundary found
+  return glyphs.slice(0, cut).join("").trimEnd() + "\u2026";
+}
+
+/**
+ * Casefold a string for normalized matching. Uses `toLowerCase` (not
+ * `toLocaleLowerCase`) for determinism across runtime locales — the existing
+ * `normalizeFactKey` helper in extraction.ts follows the same convention.
+ */
+function casefold(s: string): string {
+  return s.toLowerCase();
+}
+
+/**
+ * Locate `quote` within `text`, returning the half-open `[start, end)` offsets.
+ * Tries exact substring first, then whitespace/case-normalized match.
+ *
+ * For the normalized path, the mapping from the normalized string back to
+ * original offsets is recovered by walking both strings in lockstep: we know
+ * `collapseWhitespace(text)` is a subsequence of `text` with whitespace runs
+ * collapsed, so we can track the original offset as we scan.
+ *
+ * Returns `undefined` when neither match succeeds.
+ */
+function locateQuoteOffsets(
+  quote: string,
+  text: string,
+): { charStart: number; charEnd: number } | undefined {
+  // 1. Exact substring match (handles unicode, curly quotes, emoji verbatim).
+  const exactIdx = text.indexOf(quote);
+  if (exactIdx >= 0) {
+  return { charStart: exactIdx, charEnd: exactIdx + quote.length };
+  }
+
+  // 2. Whitespace/case-normalized match. Collapse runs of whitespace and
+  //    casefold both sides, then find the normalized quote in the normalized
+  //    text. Recover original offsets by scanning forward from the normalized
+  //    match start through the original text, accumulating non-whitespace
+  //    glyphs until we've consumed the normalized quote length.
+  const normQuote = collapseWhitespace(casefold(quote));
+  if (normQuote.length === 0) return undefined;
+  const normText = collapseWhitespace(casefold(text));
+  const normIdx = normText.indexOf(normQuote);
+  if (normIdx < 0) return undefined;
+
+  // Recover original offsets: walk the original text, skipping leading
+  // whitespace to align with the collapsed form, then track how many
+  // normalized chars we've consumed.
+  const normQuoteLen = normQuote.length;
+  let origIdx = 0;
+  // Skip leading whitespace in original text (collapseWhitespace trims both ends).
+  while (origIdx < text.length && /\s/.test(text[origIdx]!)) origIdx++;
+  // Walk through original text, counting normalized chars consumed.
+  // Each non-whitespace char in original = 1 normalized char.
+  // Whitespace runs in original = 1 space in normalized (but only between non-ws).
+  let normPos = 0;
+  let origStart = -1;
+  let origEnd = -1;
+  let prevWasWs = true; // suppress the leading space in collapsed form
+  while (origIdx < text.length && origEnd < 0) {
+    const ch = text[origIdx]!;
+    if (/\s/.test(ch)) {
+      if (!prevWasWs) {
+        // This whitespace run collapses to a single space in normalized text.
+        if (normPos === normIdx) origStart = origIdx; // normalized space aligns
+        normPos++;
+        prevWasWs = true;
+      }
+      origIdx++;
+      continue;
+    }
+    // Non-whitespace char.
+    if (normPos === normIdx && origStart < 0) {
+      origStart = origIdx;
+    }
+    normPos++;
+    prevWasWs = false;
+    origIdx++;
+    if (normPos >= normIdx + normQuoteLen) {
+      origEnd = origIdx;
+    }
+  }
+  if (origStart >= 0 && origEnd >= 0) {
+    return { charStart: origStart, charEnd: origEnd };
+  }
+  // Fallback: offsets not recoverable (edge case in normalized mapping).
+  // Return undefined so consumers tolerate absence (issue pitfall: charStart/
+  // charEnd are best-effort debugging aids).
+  return undefined;
+}
+
+/**
+ * Build provenance sources for a single extracted fact by locating its
+ * LLM-provided `quote` in the buffered turns (issue #1575 PR 2).
+ *
+ * Matching strategy (per issue design):
+ *   1. Exact substring match in a turn → `provenance: "verified"` with
+ *      `charStart`/`charEnd` offsets.
+ *   2. Whitespace/case-normalized match → `"verified"`, offsets recovered
+ *      when possible, else omitted.
+ *   3. No match in any turn → `"unverified"` — the quote survives as a
+ *      source (the LLM vouched for it) but without located offsets.
+ *   4. No quote provided by the LLM → `"none"` — no evidence to record.
+ *
+ * A quote appearing in multiple turns produces multiple sources (one per
+ * matching turn) so a repeated utterance backs the fact from each occurrence.
+ *
+ * The quote is capped at `config.maxQuoteChars` (truncated at a word boundary
+ * with an ellipsis marker) BEFORE storage. Locating uses the original
+ * (untruncated) quote for maximum match fidelity; the capped excerpt is what
+ * gets persisted.
+ *
+ * When `config.enabled === false`, returns `{ provenance: "none" }`
+ * immediately — byte-identical to pre-feature extraction (rule 39).
+ *
+ * Never throws. An unexpected error degrades to `{ provenance: "none" }` so
+ * extraction never crashes on a provenance hiccup (rule 13/18).
+ */
+export function buildFactProvenance(
+  factQuote: string | null | undefined,
+  turns: ReadonlyArray<ProvenanceTurnInput>,
+  config: ProvenanceConfig,
+): ProvenanceBuildResult {
+  if (!config.enabled) return { provenance: "none" };
+  const rawQuote = typeof factQuote === "string" ? factQuote.trim() : "";
+  if (rawQuote.length === 0) return { provenance: "none" };
+
+  try {
+    // Search every turn for the quote. Collect verified sources.
+    const sources: ProvenanceSource[] = [];
+    for (const turn of turns) {
+      if (!turn || typeof turn.content !== "string" || turn.content.length === 0) continue;
+      const located = locateQuoteOffsets(rawQuote, turn.content);
+      if (!located) continue;
+      sources.push({
+        sessionKey: turn.sessionKey ?? turn.logicalSessionKey ?? "unknown",
+        ...(turn.turnId ? { turnId: turn.turnId } : {}),
+        observedAt: turn.timestamp,
+        quote: capQuote(rawQuote, config.maxQuoteChars),
+        charStart: located.charStart,
+        charEnd: located.charEnd,
+      });
+    }
+
+    if (sources.length > 0) {
+      return { sources, provenance: "verified" };
+    }
+
+    // Quote provided but not located in any turn. Keep it as an unverified
+    // source — the LLM vouched for the excerpt even if we can't pin it to a
+    // character offset. Downstream consumers (faithfulness gate #1576) treat
+    // unverified spans as weaker evidence.
+    return {
+      sources: [
+        {
+          sessionKey:
+            turns.length > 0
+              ? (turns[turns.length - 1]!.sessionKey ?? turns[turns.length - 1]!.logicalSessionKey ?? "unknown")
+              : "unknown",
+          observedAt:
+            turns.length > 0 ? turns[turns.length - 1]!.timestamp : new Date(0).toISOString(),
+          quote: capQuote(rawQuote, config.maxQuoteChars),
+        },
+      ],
+      provenance: "unverified",
+    };
+  } catch {
+    // Never crash extraction on a provenance error (rule 13/18).
+    return { provenance: "none" };
+  }
 }

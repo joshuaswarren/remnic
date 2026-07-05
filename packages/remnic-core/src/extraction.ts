@@ -37,6 +37,7 @@ import { ProfilingCollector } from "./profiling.js";
 import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
+import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
 
 type ExtractionQuestion = ExtractionResult["questions"][number];
 type ExtractedFactResult = ExtractionResult["facts"][number];
@@ -269,6 +270,15 @@ export class ExtractionEngine {
                     : null;
               return candidate ? normalizeReasoningTrace(candidate) ?? undefined : undefined;
             })(),
+            // Issue #1575 PR 2: the LLM provides a verbatim supporting quote
+            // per fact. Optional/nullable per repo gotcha 6 (OpenAI Responses
+            // API emits null for absent optional fields). The post-parse
+            // validator (buildFactProvenance) locates this quote in the
+            // buffered turns and builds verified ProvenanceSource[] entries.
+            quote:
+              typeof f?.quote === "string" && f.quote.trim().length > 0
+                ? f.quote
+                : undefined,
           }))
           .filter((f: any) => f.content.length > 0)
       : [];
@@ -963,6 +973,56 @@ export class ExtractionEngine {
     return null;
   }
 
+  /**
+   * Attach claim-level provenance spans to each fact in the extraction result
+   * (issue #1575 PR 2). Runs once at write time, after sanitize + proactive
+   * pass so ALL facts (base + proactive additions) get verified spans before
+   * the result is returned for persistence.
+   *
+   * The validator locates each fact's LLM-provided `quote` in the buffered
+   * turns and builds a `ProvenanceSource[]` with verified offsets. Never
+   * throws, never drops a fact — an unverifiable span is a tagged state, not
+   * a silent failure (rule 34 spirit). When `provenance.enabled` is false,
+   * this is a no-op (byte-identical to pre-feature behavior, rule 39).
+   */
+  private attachProvenanceToResult(
+    result: ExtractionResult,
+    turns: ReadonlyArray<{
+      content: string;
+      sessionKey?: string;
+      logicalSessionKey?: string;
+      timestamp: string;
+      turnFingerprint?: string;
+    }>,
+  ): ExtractionResult {
+    if (!this.config.provenance?.enabled) return result;
+    if (result.facts.length === 0) return result;
+    const provenanceTurns: ProvenanceTurnInput[] = turns.map((t) => ({
+      content: t.content,
+      sessionKey: t.sessionKey,
+      logicalSessionKey: t.logicalSessionKey,
+      timestamp: t.timestamp,
+      turnId: t.turnFingerprint,
+    }));
+    const facts = result.facts.map((fact) => {
+      const built = buildFactProvenance(
+        fact.quote,
+        provenanceTurns,
+        this.config.provenance,
+      );
+      // Strip the transient `quote` field — it has served its purpose (the
+      // validator consumed it) and must NOT leak into the persisted ExtractedFact
+      // shape or the content-hash dedup key (rule 23 / checklist §13).
+      const { quote: _stripped, ...factWithoutQuote } = fact;
+      return {
+        ...factWithoutQuote,
+        ...(built.sources && built.sources.length > 0 ? { sources: built.sources } : {}),
+        ...(built.provenance !== "none" ? { provenance: built.provenance } : {}),
+      };
+    });
+    return { ...result, facts };
+  }
+
   async extract(turns: BufferTurn[], existingEntities?: string[]): Promise<ExtractionResult> {
 
     // Guard: skip if buffer is empty or all turns are whitespace-only
@@ -1037,7 +1097,8 @@ export class ExtractionEngine {
           this.emit({ kind: "llm_end", traceId, model: this.config.localLlmModel, operation: "extraction", durationMs });
           log.debug(`extraction: used local LLM — ${localResult.facts.length} facts, ${localResult.entities.length} entities`);
           const sanitized = this.sanitizeExtractionResult(localResult, messageTimestamp);
-          return await this.applyProactiveQuestionPass(conversation, sanitized);
+          const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized);
+          return this.attachProvenanceToResult(finalResult, boundedTurns);
         }
         // Local failed, fall back if allowed
         if (!this.config.localLlmFallback) {
@@ -1080,7 +1141,8 @@ export class ExtractionEngine {
           this.emit({ kind: "llm_end", traceId, model: this.config.model, operation: "extraction", durationMs });
           log.debug(`extraction: used direct client (${this.config.model}) — ${directResult.facts.length} facts, ${directResult.entities.length} entities`);
           const sanitized = this.sanitizeExtractionResult(directResult, messageTimestamp);
-          return await this.applyProactiveQuestionPass(conversation, sanitized);
+          const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized);
+          return this.attachProvenanceToResult(finalResult, boundedTurns);
         }
         // Emit error event so Opik sees the direct client failure before fallback.
         // Wrapped in try/catch so a subscriber error doesn't break the fallback path.
@@ -1180,7 +1242,8 @@ export class ExtractionEngine {
           questions: result.questions ?? [],
           identityReflection: result.identityReflection ?? undefined,
         } as ExtractionResult, messageTimestamp);
-        return await this.applyProactiveQuestionPass(conversation, sanitized);
+        const finalResult = await this.applyProactiveQuestionPass(conversation, sanitized);
+        return this.attachProvenanceToResult(finalResult, boundedTurns);
       }
 
       this.emit({
@@ -1291,7 +1354,8 @@ These are durable insights - capture them:
 === Rules ===
 - Extract only NEW information worth remembering across sessions
 - Skip transient details (file paths, current errors, temporary states, agent actions)
-- Confidence: Explicit (0.95-1.0), Implied (0.70-0.94), Inferred (0.40-0.69), Speculative (0.00-0.39)
+- Confidence: Explicit (0.95-1.0), Implied (0.70-0.94), Inferred (0.40-0.69), Speculative (0.00-0.39)${this.config.provenance?.enabled ? `
+- Source quotes: For each fact, include a "quote" field with the EXACT verbatim words from the conversation that support the fact (copy a contiguous span from a single turn, not a paraphrase). Cap at ~300 chars.` : ""}
 - Corrections get highest confidence (0.95+)
 - Each fact should be standalone and self-contained
 - Lines labelled [context user] or [context assistant] are reference context only. Use them to resolve pronouns and adjacent question/answer pairs, but do not extract a memory stated only in context lines unless a normal [user] or [assistant] line confirms or completes it.
@@ -1549,7 +1613,8 @@ Rules:
   * Explicit (0.95-1.0): Direct user statements — "I prefer X", "my name is Y"
   * Implied (0.70-0.94): Strong contextual inference — user consistently does X, clear from conversation flow
   * Inferred (0.40-0.69): Pattern recognition — reasonable guess from limited evidence
-  * Speculative (0.00-0.39): Tentative hypothesis — weak signal, needs future confirmation. Speculative memories auto-expire after 30 days if not confirmed.
+  * Speculative (0.00-0.39): Tentative hypothesis — weak signal, needs future confirmation. Speculative memories auto-expire after 30 days if not confirmed.${this.config.provenance?.enabled ? `
+- Source quotes: For each fact, include a "quote" field containing the EXACT verbatim words from the conversation that support the fact. Copy a contiguous span from a single speaker turn (not a paraphrase, not a summary). Cap at ~300 characters. This grounds every memory in the literal utterance that created it.` : ""}
 - For commitments: include any deadline or timeframe mentioned${this.config.extractionScopeClassificationEnabled ? `
 
 Scope classification:

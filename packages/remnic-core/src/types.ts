@@ -2818,6 +2818,21 @@ export interface ExtractedFact {
    * "no verified span" and skip gracefully.
    */
   sources?: ProvenanceSource[];
+  /**
+   * Coarse provenance strength tag (issue #1575 PR 2). Set by the extraction
+   * validator: "verified" when the quote was located in source turns,
+   * "unverified" when the quote survived but no offsets were recoverable.
+   * Absent when `provenance.enabled` is false or no quote was provided —
+   * readers treat absent as "none" (rule 34 spirit).
+   */
+  provenance?: "verified" | "unverified" | "none";
+  /**
+   * Transient LLM-provided supporting quote (issue #1575 PR 2). Consumed by
+   * the post-parse validator to build `sources`, then stripped before the
+   * fact reaches persistence. NEVER included in content-hash dedup (rule 23 /
+   * checklist §13). Absent on facts that have already passed the validator.
+   */
+  quote?: string;
   promptedByQuestion?: string;
   /**
    * Whether this fact is project-scoped or globally applicable.
