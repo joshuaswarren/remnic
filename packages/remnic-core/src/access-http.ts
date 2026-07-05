@@ -2258,9 +2258,9 @@ export class EngramAccessHttpServer {
           sessionKey: typeof body.sessionKey === "string" ? body.sessionKey : undefined,
           targets,
           reason: body.reason,
-          actor: typeof body.actor === "string" ? body.actor : undefined,
         });
-        this.recordWriteRateLimitHit();
+        // actor is derived from the authenticated principal inside adminPromoteMemory;
+        if (result.ok) this.recordWriteRateLimitHit();
         this.respondJson(res, 200, result);
       } catch (err) {
         if (err instanceof EngramAccessInputError) {

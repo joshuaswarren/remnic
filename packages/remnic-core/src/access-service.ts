@@ -8683,7 +8683,7 @@ export class EngramAccessService {
     sessionKey?: string;
     targets: ReadonlyArray<{ kind: MemoryPromotionTargetKind; namespace?: string }>;
     reason: string;
-    actor?: string;
+    actor?: never; // ignored — actor is derived from the authenticated principal
   }) {
     const config = this.orchestrator.config;
     const namespacesEnabled = config.namespacesEnabled === true;
@@ -8765,7 +8765,7 @@ export class EngramAccessService {
         principal: request.principal,
         targets: request.targets,
         reason: request.reason,
-        actor: request.actor ?? request.principal ?? "admin-console",
+        actor: request.principal ?? "admin-console",
         storage,
         scopeProfilePlan,
       });
