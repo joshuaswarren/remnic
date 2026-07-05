@@ -6,8 +6,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/remnic-cc-hook.sh\" session-start",
-            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PLUGIN_ROOT}\\hooks\\bin\\remnic-cc-hook.ps1\" session-start",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bin/remnic-cc-hook.cjs",
+              "session-start"
+            ],
             "timeout": 45000
           }
         ]
@@ -19,8 +22,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/remnic-cc-hook.sh\" post-tool-observe",
-            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PLUGIN_ROOT}\\hooks\\bin\\remnic-cc-hook.ps1\" post-tool-observe",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bin/remnic-cc-hook.cjs",
+              "post-tool-observe"
+            ],
             "timeout": 10000
           }
         ]
@@ -32,8 +38,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/bin/remnic-cc-hook.sh\" user-prompt-recall",
-            "commandWindows": "powershell -NoProfile -ExecutionPolicy Bypass -File \"${CLAUDE_PLUGIN_ROOT}\\hooks\\bin\\remnic-cc-hook.ps1\" user-prompt-recall",
+            "command": "node",
+            "args": [
+              "${CLAUDE_PLUGIN_ROOT}/hooks/bin/remnic-cc-hook.cjs",
+              "user-prompt-recall"
+            ],
             "timeout": 20000
           }
         ]

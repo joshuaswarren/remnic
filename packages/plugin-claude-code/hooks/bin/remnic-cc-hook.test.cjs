@@ -9,7 +9,8 @@
 //   - short prompts skipped, no-token skipped, dead-daemon guidance
 //   - cursor retention on failed final flush (no data loss)
 //   - payload via stdin (not env) so large edits do not E2BIG on Windows
-//   - hooks.json declares commandWindows for every event (Windows parity)
+//   - hooks.json uses exec form (command + args) so Windows works without
+//     Git Bash and shell metacharacters in the plugin root cannot inject
 
 const assert = require("node:assert/strict");
 const test = require("node:test");
@@ -477,38 +478,53 @@ test("token resolution: legacy ~/.engram/tokens.json is the read fallback", asyn
 
 // ── hooks.json Windows parity ─────────────────────────────────────────────
 
-test("hooks.json: every event declares commandWindows via powershell + ${CLAUDE_PLUGIN_ROOT} (#1518)", () => {
+test("hooks.json: every event uses cross-platform exec form with ${CLAUDE_PLUGIN_ROOT} (#1518)", () => {
   const cfg = JSON.parse(
     fs.readFileSync(path.join(__dirname, "..", "hooks.json"), "utf8"),
   );
+  const eventToHookName = (event) => {
+    switch (event) {
+      case "SessionStart": return "session-start";
+      case "PostToolUse": return "post-tool-observe";
+      case "UserPromptSubmit": return "user-prompt-recall";
+      default: throw new Error(`unexpected event ${event}`);
+    }
+  };
   for (const event of ["SessionStart", "PostToolUse", "UserPromptSubmit"]) {
     const matchers = cfg.hooks[event] || [];
     for (const matcher of matchers) {
       for (const hook of matcher.hooks) {
-        // Claude Code substitutes ${CLAUDE_PLUGIN_ROOT}; the path must be
-        // wrapped in double quotes so a plugin root containing spaces (e.g.
-        // C:\Users\Jane Doe) does not word-split.
-        assert.ok(
-          hook.command.startsWith('"${CLAUDE_PLUGIN_ROOT}/hooks/bin/'),
-          `${event}.command must resolve via a quoted \${CLAUDE_PLUGIN_ROOT}, got: ${hook.command}`,
-        );
-        assert.match(
+        // Claude Code hooks do not support `commandWindows` (that field is
+        // specific to the Codex plugin loader). The documented cross-
+        // platform shape is exec form: `command: "node"` with an `args`
+        // vector pointing at the runner. `node.exe` is a real binary on
+        // Windows, so the same entry works on every platform without a
+        // shell, without Git Bash, and without `.sh`/`.ps1` dispatch.
+        // Each `args` element is passed verbatim (no shell tokenization),
+        // so a plugin root containing spaces or metacharacters such as `$`
+        // or backticks cannot be re-interpreted by a shell.
+        assert.equal(
           hook.command,
-          /^"\$\{CLAUDE_PLUGIN_ROOT\}\/hooks\/bin\/remnic-cc-hook\.sh"\s/,
-          `${event}.command path must be wrapped in double quotes`,
+          "node",
+          `${event}.command must be the bare executable "node" (exec form)`,
         );
-        assert.ok(hook.commandWindows, `${event} must declare commandWindows`);
-        assert.match(
-          hook.commandWindows,
-          /-File "\$\{CLAUDE_PLUGIN_ROOT\}\\hooks\\bin\\remnic-cc-hook\.ps1"\s/,
-          `${event}.commandWindows must pass a quoted \${CLAUDE_PLUGIN_ROOT} -File path`,
+        assert.ok(
+          Array.isArray(hook.args) && hook.args.length >= 2,
+          `${event} must declare an args vector [runner, event-name]`,
         );
-        // Use `powershell` not `pwsh` so stock Windows 10/11 works without
-        // PowerShell 7 installed.
-        assert.match(
-          hook.commandWindows,
-          /^powershell\b/,
-          `${event}.commandWindows must invoke powershell (not pwsh) for stock Windows compatibility`,
+        assert.ok(
+          typeof hook.args[0] === "string" &&
+            hook.args[0].startsWith("${CLAUDE_PLUGIN_ROOT}/hooks/bin/remnic-cc-hook.cjs"),
+          `${event}.args[0] must point at the bundled runner via \${CLAUDE_PLUGIN_ROOT}, got: ${hook.args && hook.args[0]}`,
+        );
+        assert.equal(hook.args[1], eventToHookName(event),
+          `${event}.args[1] must be the hook event name`);
+        // The shell-form fields must NOT be present: no `commandWindows`
+        // (unsupported by Claude Code), and `command` must not be a shell
+        // string that would let a shell re-tokenize the plugin root.
+        assert.ok(
+          hook.commandWindows === undefined,
+          `${event} must not declare commandWindows (Claude Code ignores it; exec form is the cross-platform path)`,
         );
       }
     }

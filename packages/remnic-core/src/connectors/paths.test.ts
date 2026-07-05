@@ -10,6 +10,7 @@ import {
   getActiveConnectorsConfigRoot,
   getRegistryPath,
   getConnectorsDir,
+  hasLegacyConnectorEntries,
   REGISTRY_DIR_NAME,
   LEGACY_REGISTRY_DIR_NAME,
 } from "./paths.js";
@@ -144,5 +145,48 @@ test("read-fallback: stray remnic/config.json must not hide legacy engram connec
       getConnectorsDir(),
       path.join(xdg, "engram", ".engram-connectors", "connectors"),
     );
+  });
+});
+
+test("hasLegacyConnectorEntries: fresh canonical install is NOT legacy evidence (#1620 review)", () => {
+  // The codex P2 concern: a fresh post-rename install writes its first
+  // connector under remnic/.remnic-connectors/. That must NOT flip
+  // resolveEmitLegacyTools, because the user never had engram.* aliases.
+  withXdgHome((xdg) => {
+    fs.mkdirSync(
+      path.join(xdg, "remnic", ".remnic-connectors", "connectors"),
+      { recursive: true },
+    );
+    fs.writeFileSync(
+      path.join(xdg, "remnic", ".remnic-connectors", "connectors", "claude-code.json"),
+      "{}\n",
+    );
+    assert.equal(
+      hasLegacyConnectorEntries(),
+      false,
+      "canonical remnic/ connector entries are not legacy evidence",
+    );
+  });
+});
+
+test("hasLegacyConnectorEntries: legacy engram entries ARE sticky-legacy evidence (#1550)", () => {
+  // An unmigrated install with connector data under engram/.engram-connectors
+  // must still report legacy evidence so its clients keep seeing engram_* aliases.
+  withXdgHome((xdg) => {
+    fs.mkdirSync(
+      path.join(xdg, "engram", ".engram-connectors", "connectors"),
+      { recursive: true },
+    );
+    fs.writeFileSync(
+      path.join(xdg, "engram", ".engram-connectors", "connectors", "claude-code.json"),
+      "{}\n",
+    );
+    assert.equal(hasLegacyConnectorEntries(), true);
+  });
+});
+
+test("hasLegacyConnectorEntries: missing legacy dir is not legacy evidence (fresh install)", () => {
+  withXdgHome(() => {
+    assert.equal(hasLegacyConnectorEntries(), false);
   });
 });

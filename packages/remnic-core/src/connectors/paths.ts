@@ -110,18 +110,26 @@ export function getConnectorsDir(): string {
 
 /**
  * Sticky-legacy evidence for `emitLegacyTools` (issue #1550): any persisted
- * connector entry under the active connectors dir means an existing install
- * whose clients may still address engram_* aliases. Missing or unreadable dir
- * means fresh install — no evidence, no aliases.
+ * connector entry under the LEGACY engram registry means an existing install
+ * whose clients may still address engram_* aliases. Missing or unreadable
+ * legacy dir means fresh install — no evidence, no aliases.
  *
- * Because {@link getConnectorsDir} applies the engram read-fallback, an
- * unmigrated install still reports its legacy entries here.
+ * Probes ONLY the legacy engram registry (`$XDG_CONFIG_HOME/engram/.engram-connectors`),
+ * never the active/canonical root. A fresh post-rename install that just
+ * wrote its first connector under `remnic/.remnic-connectors/` is NOT legacy
+ * evidence — counting it would flip `resolveEmitLegacyTools` to true and
+ * advertise deprecated `engram.*` aliases to users who never had them
+ * (#1620 review, codex P2). An unmigrated install still reports its entries
+ * here because its data lives under the engram tree.
  */
 export function hasLegacyConnectorEntries(): boolean {
   try {
-    return fs
-      .readdirSync(getConnectorsDir())
-      .some((name) => name.endsWith(".json"));
+    const legacyDir = path.join(
+      getLegacyConnectorsConfigRoot(),
+      LEGACY_REGISTRY_DIR_NAME,
+      "connectors",
+    );
+    return fs.readdirSync(legacyDir).some((name) => name.endsWith(".json"));
   } catch {
     return false;
   }
