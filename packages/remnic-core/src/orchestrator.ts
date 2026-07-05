@@ -15213,7 +15213,9 @@ export class Orchestrator {
             `chunked memory ${parentId} into ${chunkResult.chunks.length} chunks`,
           );
           trackPersistedId(targetStorage, parentId);
+          // #1576 (cursor Medium): keep pending_review ids out of threadEpisodeIdsForGraph — else later active facts build thread-predecessor edges to an unfaithful memory.
           if (
+            faithfulnessEnforceStatus !== "pending_review" &&
             threadEpisodeIdsForGraph &&
             !threadEpisodeIdsForGraph.includes(parentId)
           ) {
@@ -15479,7 +15481,9 @@ export class Orchestrator {
           }),
         );
         trackPersistedId(targetStorage, memoryId);
+        // #1576 (cursor Medium): same thread-episode guard on the non-chunked path.
         if (
+          faithfulnessEnforceStatus !== "pending_review" &&
           threadEpisodeIdsForGraph &&
           !threadEpisodeIdsForGraph.includes(memoryId)
         ) {
