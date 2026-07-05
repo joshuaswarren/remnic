@@ -82,12 +82,16 @@ export function getIndexStatus(
   }
 
   if (currentHead === null) {
-    // Repo has no commits but the index has a head — edge case.
+    // Repo currently has no commits (unborn HEAD / reset) but the index
+    // still has a last_indexed_head — the index cannot match a repo
+    // with no commits, so it is stale, not fresh. Reporting "fresh"
+    // here would let callers act on a graph that no longer reflects
+    // the repo (cursor Bugbot: 'Index status false fresh').
     return {
       lastIndexedHead,
       currentHead: null,
-      dirty: false,
-      mode: "fresh",
+      dirty: true,
+      mode: "stale",
       fileCount,
       nodeCount,
     };

@@ -219,6 +219,7 @@ export {
   readFileHashes,
   hashContent,
   META_KEY_LAST_HEAD,
+  META_KEY_PENDING_PARSE_FAILURES,
   type ParseFileFn,
   type ReadFileFn,
   type ReindexGitFacts,

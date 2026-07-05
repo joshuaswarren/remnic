@@ -26,6 +26,7 @@ import {
   executeReindex,
   hashContent,
   META_KEY_LAST_HEAD,
+  META_KEY_PENDING_PARSE_FAILURES,
   type CodingGitInvoker,
   type NameStatusEntry,
   type ReindexGitFacts,
@@ -528,5 +529,142 @@ test("executor: mid-transaction store failure leaves old head (rule 25)", async 
     await reopened.close();
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// cursor Bugbot fixes — characterization tests
+// ──────────────────────────────────────────────────────────────────────────
+
+test("executor: parse failure retries on the next noop run (rule 44) (cursor Bugbot: 'Parse skips block future reindex')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    const git = mockGit({ head: SHA_A });
+
+    // First run: full index, but a.ts fails to parse (attempt 1).
+    let parseAttempts = 0;
+    const parseFile = (input: { path: string; content: Uint8Array }) => {
+      parseAttempts += 1;
+      if (parseAttempts <= 1) {
+        return Promise.resolve({
+          ok: false as const,
+          code: "parse_failed" as const,
+          path: input.path,
+          message: "simulated",
+        });
+      }
+      return mockParseFile(input);
+    };
+    const r1 = await executeReindex({
+      store, git, repoRoot: dir, parseFile,
+      candidatePaths: ["src/a.ts"],
+    });
+    assert.equal(r1.ok, true);
+    // a.ts failed → pending set records it.
+    assert.deepEqual(
+      JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]"),
+      ["src/a.ts"],
+    );
+    // Graph is empty (a.ts never ingested).
+    let stats = store.schemaStats();
+    assert.ok(stats.ok);
+    assert.equal(stats.stats.nodes, 0);
+
+    // Second run: HEAD unchanged → plan is noop, but pending is non-empty
+    // so a.ts MUST retry. Without the fix this run is a true noop and
+    // a.ts would stay missing forever.
+    const r2 = await executeReindex({
+      store, git, repoRoot: dir, parseFile,
+      candidatePaths: ["src/a.ts"],
+    });
+    assert.equal(r2.ok, true);
+    if (!r2.ok) return;
+    assert.equal(r2.mode, "noop");
+    assert.equal(r2.filesIngested, 1);
+    stats = store.schemaStats();
+    assert.ok(stats.ok);
+    assert.equal(stats.stats.nodes, 1);
+    // Pending cleared.
+    assert.deepEqual(
+      JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]"),
+      [],
+    );
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("executor: full mode with empty candidates does NOT advance head (cursor Bugbot: 'Empty full run marks indexed')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const git = mockGit({ head: SHA_A });
+    const result = await executeReindex({
+      store, git, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: [],
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    // No candidates → nothing was indexed. Must NOT claim freshness by
+    // writing last_indexed_head (index_status would otherwise report
+    // "fresh" over an empty graph).
+    assert.equal(result.mode, "noop");
+    assert.equal(store.readMeta(META_KEY_LAST_HEAD), null);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("executor: incremental delete is atomic with the upsert — dropFiles is not called separately (cursor Bugbot: 'Deletes commit before ingest fails')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Seed: a.ts (will be deleted) + b.ts (will be modified) at SHA_A.
+    await writeFiles(dir, {
+      "src/a.ts": "export function foo() {}",
+      "src/b.ts": "export function bar() {}",
+    });
+    const git1 = mockGit({ head: SHA_A });
+    await executeReindex({
+      store, git: git1, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts", "src/b.ts"],
+    });
+
+    // Spy on dropFiles — the atomic executor must NOT call it; the
+    // delete rides along inside upsertFileBatch's transaction.
+    let dropFilesCalls = 0;
+    const realDropFiles = store.dropFiles.bind(store);
+    store.dropFiles = ((paths: readonly string[]) => {
+      dropFilesCalls += 1;
+      return realDropFiles(paths);
+    }) as typeof store.dropFiles;
+
+    // Advance: a.ts deleted, b.ts modified.
+    await rm(path.join(dir, "src/a.ts"));
+    await writeFiles(dir, { "src/b.ts": "export function bar() { return 1; }" });
+    const git2 = mockGit({
+      head: SHA_B,
+      changedFiles: [
+        { status: "D", path: "src/a.ts" },
+        { status: "M", path: "src/b.ts" },
+      ],
+    });
+    const result = await executeReindex({
+      store, git: git2, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/b.ts"],
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.mode, "incremental");
+    // dropFiles must never have been called — the prune happened inside
+    // upsertFileBatch's transaction (atomic with the re-ingest).
+    assert.equal(dropFilesCalls, 0);
+    // a.ts is gone, b.ts is current.
+    const hashes = store.readFileHashes();
+    assert.ok(!hashes.has("src/a.ts"), "a.ts pruned");
+    assert.ok(hashes.has("src/b.ts"), "b.ts present");
+    assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_B);
+  } finally {
+    await dispose(store, dir);
   }
 });

@@ -365,3 +365,60 @@ test("findDirectlyAffectedSymbols: hunk NOT overlapping → not affected", () =>
   assert.ok(!affected.has("a::foo"), "foo should NOT be affected");
   assert.ok(affected.has("a::bar"), "bar should be affected");
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// cursor Bugbot fix — filePath resolution for duplicate simple names
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fixture: two files both declaring a symbol named `foo` (same simple
+ * name, different qualified names). a.ts::foo CALLS b.ts::foo. When b's
+ * foo changes, the blast radius must report a.ts::foo with filePath
+ * `src/a.ts` — NOT the wrong file resolved by a name-only search.
+ *
+ * Before the fix, computeBlastRadius resolved filePath via searchGraph
+ * ({ namePattern: "foo", limit: 1 }), which could attach either file's
+ * path to the affected symbol (cursor Bugbot: 'Blast radius wrong file
+ * path'). The fix reads filePath straight from the traverse hit.
+ */
+const DUP_A: StoreFileIR = {
+  path: "src/a.ts",
+  language: "typescript",
+  contentHash: "h-dup-a",
+  symbols: [sym("a.foo", "foo", 0, 30)],
+  edges: [edge("a.foo", "b.foo")], // a.ts::foo calls b.ts::foo
+  exports: [],
+};
+const DUP_B: StoreFileIR = {
+  path: "src/b.ts",
+  language: "typescript",
+  contentHash: "h-dup-b",
+  symbols: [sym("b.foo", "foo", 0, 30)],
+  edges: [],
+  exports: [],
+};
+
+test("computeBlastRadius: duplicate simple names keep the correct filePath (cursor Bugbot: 'Blast radius wrong file path')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await store.upsertFileBatch([DUP_A, DUP_B]);
+
+    // b.foo changed directly. Reverse BFS finds a.foo (a calls b).
+    const affected = computeBlastRadius(store, new Set(["b.foo"]), 3);
+    // Both symbols appear (b.foo direct, a.foo near).
+    assert.equal(affected.length, 2);
+
+    const aHit = affected.find((x) => x.qualifiedName === "a.foo");
+    assert.ok(aHit, "a.foo is in the blast radius (it calls the changed b.foo)");
+    // The load-bearing assertion: a.foo's filePath is src/a.ts, not the
+    // wrong src/b.ts that a name-only search could return.
+    assert.equal(aHit!.filePath, "src/a.ts");
+
+    const bHit = affected.find((x) => x.qualifiedName === "b.foo");
+    assert.ok(bHit);
+    assert.equal(bHit!.filePath, "src/b.ts");
+    assert.equal(bHit!.risk, "direct");
+  } finally {
+    await dispose(store, dir);
+  }
+});

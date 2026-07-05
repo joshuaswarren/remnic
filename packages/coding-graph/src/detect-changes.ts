@@ -216,7 +216,7 @@ export function computeBlastRadius(
   const hitByDepth = new Map<string, number>();
   const hitMeta = new Map<
     string,
-    { qualifiedName: string; name: string; label: string }
+    { qualifiedName: string; name: string; label: string; filePath: string }
   >();
 
   for (const qname of directlyAffected) {
@@ -236,6 +236,7 @@ export function computeBlastRadius(
           qualifiedName: hit.qualifiedName,
           name: hit.name,
           label: hit.label,
+          filePath: hit.filePath,
         });
       }
     }
@@ -258,20 +259,16 @@ export function computeBlastRadius(
       ? inboundResult.hits.filter((h) => h.depth > 0).length
       : 0;
     const risk = classifyRisk(depth, fanIn);
-    // Look up the file path for this node.
-    const searchResult = store.searchGraph({
-      namePattern: meta.name,
-      limit: 1,
-    });
-    let filePath = "";
-    if (searchResult.ok && searchResult.hits.length > 0) {
-      filePath = searchResult.hits[0]?.filePath ?? "";
-    }
+    // filePath comes straight from the traverse hit (joined from
+    // files.path in the store) — resolving via searchGraph by short
+    // name would attach the wrong path when a simple name is declared
+    // in more than one file (cursor Bugbot: 'Blast radius wrong file
+    // path').
     out.push({
       qualifiedName: meta.qualifiedName,
       name: meta.name,
       label: meta.label,
-      filePath,
+      filePath: meta.filePath,
       risk,
       depth,
       fanIn,

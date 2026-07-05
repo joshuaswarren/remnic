@@ -243,6 +243,8 @@ export interface TraverseHit {
   qualifiedName: string;
   name: string;
   label: string;
+  /** Repo-relative file path of the node (joined from files.path). */
+  filePath: string;
   /** BFS depth from the start node (start = 0). */
   depth: number;
 }
@@ -645,14 +647,25 @@ export class GraphStore {
    *     `database disk image is malformed`; the caller must surface and
    *     stop trusting this DB.
    */
-  async upsertFileBatch(files: StoreFileIR[]): Promise<UpsertBatchResult> {
+  async upsertFileBatch(
+    files: StoreFileIR[],
+    /**
+     * Optional paths to delete in the SAME transaction as the upsert
+     * (issue #1553 — the reindex executor prunes deleted files atomically
+     * with the changed-files upsert so a mid-batch failure cannot leave
+     * the graph with committed deletions but no re-ingested replacements).
+     * Cascades to nodes + edges + node_attributes via the schema's
+     * `ON DELETE CASCADE`. Empty/omitted = no deletions.
+     */
+    deletePaths: readonly string[] = [],
+  ): Promise<UpsertBatchResult> {
     if (this.closed || this.closing) {
       return {
         ok: false,
         code: "store_closed",
       };
     }
-    return this.queue.schedule(() => this.runUpsert(files));
+    return this.queue.schedule(() => this.runUpsert(files, deletePaths));
   }
 
   /** Wait for pending writes to drain — test seam. */
@@ -852,7 +865,10 @@ export class GraphStore {
 
   // ────────────── private ──────────────
 
-  private async runUpsert(files: StoreFileIR[]): Promise<UpsertBatchResult> {
+  private async runUpsert(
+    files: StoreFileIR[],
+    deletePaths: readonly string[] = [],
+  ): Promise<UpsertBatchResult> {
     // Guard: duplicate paths in one batch silently corrupt the edge
     // pass — pass 2 deletes the first entry's edges when the second
     // entry's edge pass runs against the same file row. Fail loud so
@@ -971,6 +987,19 @@ export class GraphStore {
       // passes together make the write pipeline order-independent for
       // cross-file edges (chatgpt-codex-connector P1/P2).
       const tx = this.db.transaction((irs: StoreFileIR[]) => {
+        // Pass 0 (issue #1553): prune deleted-file rows in the SAME
+        // transaction as the upsert so a failure rolls both back
+        // atomically (cursor Bugbot: 'Deletes commit before ingest
+        // fails'). Cascades to nodes + edges + node_attributes.
+        if (deletePaths.length > 0) {
+          for (let i = 0; i < deletePaths.length; i += SQLITE_VARIABLE_LIMIT) {
+            const chunk = deletePaths.slice(i, i + SQLITE_VARIABLE_LIMIT);
+            const placeholders = chunk.map(() => "?").join(", ");
+            this.db
+              .prepare("DELETE FROM files WHERE path IN (%PH%)".replace("%PH%", placeholders))
+              .run(...chunk);
+          }
+        }
         // Pass 1a: upsert every file's nodes and collect the per-file
         // prune sets WITHOUT deleting yet. `upsertFileNodes` returns
         // the result plus the node ids it wants to prune; the actual
@@ -1751,10 +1780,11 @@ export class GraphStore {
       qualified_name: string;
       name: string;
       label: string;
+      file_path: string;
     }>(
       this.db
         .prepare(
-          "SELECT id, qualified_name, name, label FROM nodes WHERE id = ?",
+          "SELECT n.id, n.qualified_name, n.name, n.label, f.path AS file_path FROM nodes n JOIN files f ON n.file_id = f.id WHERE n.id = ?",
         )
         .get(startId),
       ["id", "qualified_name", "name", "label"],
@@ -1769,6 +1799,7 @@ export class GraphStore {
       qualifiedName: startRow.qualified_name,
       name: startRow.name,
       label: startRow.label,
+      filePath: startRow.file_path,
       depth: 0,
     });
 
@@ -1810,10 +1841,11 @@ export class GraphStore {
             qualified_name: string;
             name: string;
             label: string;
+            file_path: string;
           }>(
             this.db
               .prepare(
-                "SELECT id, qualified_name, name, label FROM nodes WHERE id = ?",
+                "SELECT n.id, n.qualified_name, n.name, n.label, f.path AS file_path FROM nodes n JOIN files f ON n.file_id = f.id WHERE n.id = ?",
               )
               .get(neighbor),
             ["id", "qualified_name", "name", "label"],
@@ -1824,6 +1856,7 @@ export class GraphStore {
               qualifiedName: hitRow.qualified_name,
               name: hitRow.name,
               label: hitRow.label,
+              filePath: hitRow.file_path,
               depth,
             });
           }

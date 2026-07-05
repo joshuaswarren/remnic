@@ -94,6 +94,24 @@ test("index_status: stale index → mode 'stale', dirty=true", async () => {
   }
 });
 
+test("index_status: repo with no commits but stored head → stale, not fresh (cursor Bugbot: 'Index status false fresh')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // The index was built against a real HEAD, but the repo now reports
+    // no commits (unborn/reset HEAD). The index cannot match a repo with
+    // no commits — it must read as stale, not fresh.
+    store.writeMeta(META_KEY_LAST_HEAD, SHA_A);
+    const status = getIndexStatus(store, mockGit(null), dir);
+    assert.equal(status.mode, "stale");
+    assert.equal(status.dirty, true);
+    assert.equal(status.lastIndexedHead, SHA_A);
+    assert.equal(status.currentHead, null);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+
 // ──────────────────────────────────────────────────────────────────────────
 // git-invoker parsers
 // ──────────────────────────────────────────────────────────────────────────
