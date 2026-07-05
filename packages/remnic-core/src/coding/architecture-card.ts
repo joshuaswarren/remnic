@@ -285,10 +285,25 @@ export async function buildArchitectureCard(
       try {
         const summary = await options.summariser(deterministic, absoluteRoot);
         if (typeof summary === "string" && summary.trim().length > 0) {
-          // Clamp the summary so a misbehaving summariser cannot crowd out
-          // the deterministic card sections (codex review).
-          const clamped = capToBytes(summary.trim(), ARCHITECTURE_CARD_MAX_SUMMARY_BYTES);
-          content = `${clamped.text}\n\n---\n\n${deterministic}`;
+          // Reserve the deterministic card's budget FIRST — it must ALWAYS
+          // survive (rule 34 + codex/kilo review). The final `capToBytes`
+          // truncates from the END, so the summary is prepended only into the
+          // space left after the deterministic card + separator, additionally
+          // clamped to the summary cap. A summary can never crowd out or
+          // truncate the deterministic sections when the card fits the cap.
+          const separator = "\n\n---\n\n";
+          const detBytes = Buffer.byteLength(deterministic, "utf-8");
+          const sepBytes = Buffer.byteLength(separator, "utf-8");
+          const summaryBudget = Math.min(
+            ARCHITECTURE_CARD_MAX_SUMMARY_BYTES,
+            maxBytes - detBytes - sepBytes,
+          );
+          if (summaryBudget > 0) {
+            const clamped = capToBytes(summary.trim(), summaryBudget);
+            content = `${clamped.text}${separator}${deterministic}`;
+          }
+          // else: the deterministic card already fills the cap — ship it
+          // alone rather than prepend a summary that would truncate it.
         }
       } catch (err) {
         // rule 13: LLM failure → deterministic card ships unchanged.

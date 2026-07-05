@@ -359,8 +359,13 @@ test("llm summary: over-long summary clamped so deterministic card survives (cod
     });
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    // The deterministic card must survive — project name and structure markers present.
+    // The deterministic card must FULLY survive — not merely that its leading
+    // project name is present (a truncated tail would still keep the prefix).
+    // Assert the card is not truncated at all and its trailing deterministic
+    // sections are intact (kilo review: prove survival, not just prefix).
+    assert.equal(result.card.truncated, false, "deterministic card not truncated by the summary");
     assert.ok(result.card.content.includes("clamped"), "deterministic project name survived summary clamp");
+    assert.ok(result.card.content.trimEnd().endsWith("clamped") || /##\s/.test(result.card.content), "deterministic section structure intact");
     assert.ok(result.card.byteSize <= ARCHITECTURE_CARD_MAX_BYTES, "card within cap");
   } finally {
     await rm(repo, { recursive: true, force: true });
