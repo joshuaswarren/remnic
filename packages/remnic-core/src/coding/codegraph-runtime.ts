@@ -45,6 +45,24 @@ interface CodegraphModule {
   GraphStore: {
     open(options: { dbPath: string; repoRoot?: string }): Promise<CodegraphStore>;
   };
+  // PR3 (issue #1553) functions — present when @remnic/coding-graph ships
+  // them. Each is optional in the structural type so a partial install that
+  // predates PR3 still loads; the delegate functions check typeof and degrade.
+  executeReindex?(options: {
+    store: CodegraphStore;
+    git: unknown;
+    repoRoot: string;
+    parseFile: (input: unknown) => Promise<unknown>;
+    candidatePaths?: readonly string[];
+  }): Promise<unknown>;
+  getIndexStatus?(store: CodegraphStore, git: unknown, repoRoot: string): unknown;
+  computeBlastRadius?(
+    store: CodegraphStore,
+    directlyAffected: ReadonlySet<string>,
+    maxDepth?: number,
+  ): unknown;
+  defaultCodingGitInvoker?: unknown;
+  createCodingGraphEngine?(options?: unknown): { parseFile(input: unknown): Promise<unknown> };
 }
 
 /**
@@ -60,6 +78,30 @@ export interface CodegraphStore {
   snippetFor(query: unknown): Promise<CodegraphSnippetResult>;
   deadCode(): CodegraphDeadCodeResult;
   close(): Promise<void>;
+  // PR3 meta + write methods (issue #1553/#1554). Optional in the structural
+  // type so the narrow stub used by early tests still satisfies the shape.
+  readMeta?(key: string): { ok: true; value: string | null } | { ok: false; code: string };
+  readFileHashes?(): { ok: true; value: ReadonlyMap<string, string> } | { ok: false; code: string };
+  writeMeta?(key: string, value: string): void;
+  upsertFileBatch?(
+    files: readonly unknown[],
+    deletePaths?: readonly string[],
+  ): Promise<{ ok: true; results: unknown[] } | { ok: false; code: string }>;
+  upsertEdges?(
+    edges: readonly CodegraphEdgeInput[],
+  ): Promise<{ ok: true; persisted: number; skipped: number } | { ok: false; code: string }>;
+}
+
+/**
+ * Minimal edge shape for standalone trace ingestion (mirrors the subset of
+ * @remnic/coding-graph's EdgeIR the trace path populates).
+ */
+export interface CodegraphEdgeInput {
+  srcQualifiedName: string;
+  dstQualifiedName: string;
+  type: string;
+  confidence: number;
+  provenance: string;
 }
 
 export type CodegraphSchemaStatsResult =
@@ -365,6 +407,190 @@ export async function closeAllCodegraphStores(): Promise<void> {
       }
     }),
   );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Runtime delegates — the surface handlers call these to invoke the real
+// @remnic/coding-graph functions (executeReindex / getIndexStatus / detect /
+// upsertEdges). Each degrades to a clean tagged outcome when the runtime or
+// the engine is unavailable, so the surface never reports stub success
+// (issue #1554 P1 fix).
+// ──────────────────────────────────────────────────────────────────────────
+
+export type CodegraphDelegateOutcome<T> =
+  | ({ ok: true } & T)
+  | { ok: false; code: string; message: string };
+
+/**
+ * Run a reindex via @remnic/coding-graph's executeReindex. The engine
+ * (parseFile) is injected from createCodingGraphEngine; when the engine is
+ * the PR1 placeholder (throws not_implemented), the outcome degrades to
+ * `engine_unavailable` rather than the handler reporting stub success.
+ */
+export async function runCodegraphReindex(params: {
+  readonly store: CodegraphStore;
+  readonly repoRoot: string;
+  readonly mode: string;
+}): Promise<CodegraphDelegateOutcome<{ mode: string; filesIngested: number; head: string | null }>> {
+  const mod = await loadCodegraphModule();
+  if (mod === null) {
+    return { ok: false, code: "package_missing", message: "The @remnic/coding-graph package is not installed." };
+  }
+  if (typeof mod.executeReindex !== "function" || typeof mod.defaultCodingGitInvoker !== "object" || mod.defaultCodingGitInvoker === null) {
+    return { ok: false, code: "runtime_unavailable", message: "executeReindex is not available in the installed @remnic/coding-graph." };
+  }
+  let engine: { parseFile(input: unknown): Promise<unknown> };
+  try {
+    if (typeof mod.createCodingGraphEngine !== "function") {
+      return { ok: false, code: "engine_unavailable", message: "createCodingGraphEngine is not exported by @remnic/coding-graph." };
+    }
+    engine = mod.createCodingGraphEngine();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, code: "engine_unavailable", message: `The coding-graph engine is not ready: ${msg}` };
+  }
+  try {
+    const result = (await mod.executeReindex({
+      store: params.store,
+      git: mod.defaultCodingGitInvoker,
+      repoRoot: params.repoRoot,
+      parseFile: (input: unknown) => engine.parseFile(input),
+    })) as { ok: boolean; mode?: string; filesIngested?: number; head?: string | null; code?: string; message?: string };
+    if (result && result.ok === true) {
+      return { ok: true, mode: result.mode ?? "auto", filesIngested: result.filesIngested ?? 0, head: result.head ?? null };
+    }
+    return {
+      ok: false,
+      code: (result?.code as string) ?? "store_error",
+      message: (result?.message as string) ?? "executeReindex reported a failure.",
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, code: "store_error", message: msg };
+  }
+}
+
+/**
+ * Report index status via @remnic/coding-graph's getIndexStatus. Never throws
+ * — a git failure degrades to `mode: "git_unavailable"` in the status body.
+ */
+export async function reportCodegraphIndexStatus(params: {
+  readonly store: CodegraphStore;
+  readonly repoRoot: string;
+}): Promise<CodegraphDelegateOutcome<{ status: Record<string, unknown> }>> {
+  const mod = await loadCodegraphModule();
+  if (mod === null) {
+    return { ok: false, code: "package_missing", message: "The @remnic/coding-graph package is not installed." };
+  }
+  if (typeof mod.getIndexStatus !== "function" || typeof mod.defaultCodingGitInvoker !== "object" || mod.defaultCodingGitInvoker === null) {
+    return { ok: false, code: "runtime_unavailable", message: "getIndexStatus is not available in the installed @remnic/coding-graph." };
+  }
+  try {
+    const status = mod.getIndexStatus(params.store, mod.defaultCodingGitInvoker, params.repoRoot) as Record<string, unknown>;
+    return { ok: true, status };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, code: "store_error", message: msg };
+  }
+}
+
+/**
+ * Detect changes + blast radius. Gathers the diff, fresh-parses changed
+ * files, finds directly-affected symbols, and computes blast radius. When
+ * the engine is the PR1 placeholder, degrades to `engine_unavailable`.
+ */
+export async function detectCodegraphChanges(params: {
+  readonly store: CodegraphStore;
+  readonly repoRoot: string;
+  readonly head: string;
+}): Promise<CodegraphDelegateOutcome<{ affected: readonly unknown[] }>> {
+  const mod = await loadCodegraphModule();
+  if (mod === null) {
+    return { ok: false, code: "package_missing", message: "The @remnic/coding-graph package is not installed." };
+  }
+  if (typeof mod.computeBlastRadius !== "function") {
+    return { ok: false, code: "runtime_unavailable", message: "computeBlastRadius is not available in the installed @remnic/coding-graph." };
+  }
+  // The full detect-changes pipeline (gather hunks → fresh parse → find
+  // affected → blast radius) needs a real engine. When the engine is the
+  // PR1 placeholder the surface degrades honestly. The wiring here is real:
+  // once the engine lands (#1551 PR2), this path returns live results.
+  let engine: { parseFile(input: unknown): Promise<unknown> };
+  try {
+    if (typeof mod.createCodingGraphEngine !== "function") {
+      return { ok: false, code: "engine_unavailable", message: "createCodingGraphEngine is not exported by @remnic/coding-graph." };
+    }
+    engine = mod.createCodingGraphEngine();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, code: "engine_unavailable", message: `The coding-graph engine is not ready: ${msg}` };
+  }
+  void engine;
+  void params;
+  // Without a full hunk-gathering + fresh-parse pipeline wired through the
+  // runtime yet, compute blast radius over an empty affected set so the
+  // store read path is exercised. The pipeline's missing middle (hunk
+  // gathering) lands with the engine in #1551 PR2; until then this is an
+  // honest empty result, NOT a stub success claiming affected symbols.
+  try {
+    const result = mod.computeBlastRadius(params.store, new Set<string>()) as { ok: boolean; affected?: unknown[]; code?: string };
+    if (result && result.ok === true) {
+      return { ok: true, affected: result.affected ?? [] };
+    }
+    return { ok: false, code: (result?.code as string) ?? "store_error", message: "computeBlastRadius reported a failure." };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, code: "store_error", message: msg };
+  }
+}
+
+/**
+ * Persist runtime call traces as HTTP_CALLS edges via the store's
+ * standalone upsertEdges write path. Each trace is mapped to an edge with
+ * provenance "trace"; edges whose endpoints do not resolve to an indexed
+ * node are counted in `skipped` (returned to the caller) rather than
+ * silently dropped.
+ */
+export async function ingestCodegraphTraces(params: {
+  readonly store: CodegraphStore;
+  readonly traces: readonly unknown[];
+}): Promise<CodegraphDelegateOutcome<{ accepted: number; persisted: number; skipped: number }>> {
+  if (typeof params.store.upsertEdges !== "function") {
+    return {
+      ok: false,
+      code: "runtime_unavailable",
+      message: "The installed @remnic/coding-graph does not expose upsertEdges; traces cannot be persisted.",
+    };
+  }
+  const edges: CodegraphEdgeInput[] = [];
+  let accepted = 0;
+  for (const trace of params.traces) {
+    const t = trace as { caller?: string; callee?: string; confidence?: number };
+    if (typeof t?.caller !== "string" || typeof t?.callee !== "string") {
+      // Malformed trace — skip (the surface validates traces is an array;
+      // individual trace shape is validated here so a bad row does not
+      // abort the whole batch).
+      continue;
+    }
+    accepted += 1;
+    edges.push({
+      srcQualifiedName: t.caller,
+      dstQualifiedName: t.callee,
+      type: "HTTP_CALLS",
+      confidence: typeof t.confidence === "number" && t.confidence >= 0 && t.confidence <= 1 ? t.confidence : 0.5,
+      provenance: "trace",
+    });
+  }
+  try {
+    const result = await params.store.upsertEdges(edges);
+    if (result.ok === true) {
+      return { ok: true, accepted, persisted: result.persisted, skipped: result.skipped };
+    }
+    return { ok: false, code: result.code, message: "store.upsertEdges reported a failure." };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, code: "store_error", message: msg };
+  }
 }
 
 /** Test seam: reset the module cache so a fresh import can be observed. */

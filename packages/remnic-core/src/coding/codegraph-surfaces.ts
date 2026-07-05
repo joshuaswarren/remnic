@@ -139,19 +139,13 @@ export type CodegraphReindexOutcome =
   | { ok: true; mode: string; filesIngested: number; head: string | null }
   | { ok: false; code: string; message: string };
 
-/** Outcome of an index-status probe (mirrors IndexStatus). */
+/** Outcome of an index-status probe (mirrors IndexStatus). The status body
+ * is opaque at the surface layer — the runtime delegate returns the real
+ * IndexStatus shape from @remnic/coding-graph and the surface passes it
+ * through as `result: unknown` (core must not depend on the optional
+ * package's exact type). */
 export type CodegraphIndexStatusOutcome =
-  | {
-      ok: true;
-      status: {
-        lastIndexedHead: string | null;
-        currentHead: string | null;
-        dirty: boolean;
-        mode: string;
-        fileCount: number;
-        nodeCount: number;
-      };
-    }
+  | { ok: true; status: Record<string, unknown> }
   | { ok: false; code: string; message: string };
 
 /** Outcome of a detect_changes / blast-radius computation. */

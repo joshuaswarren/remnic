@@ -38,6 +38,10 @@ import {
 import {
   codegraphSurfaceVisible,
   getCodegraphStore,
+  runCodegraphReindex,
+  reportCodegraphIndexStatus,
+  detectCodegraphChanges,
+  ingestCodegraphTraces,
   type CodegraphStore,
 } from "./coding/codegraph-runtime.js";
 import { createVersion } from "./page-versioning.js";
@@ -4536,6 +4540,10 @@ export class EngramAccessService {
           summariser: createArchitectureCardSummariser(this.fallbackLlmRef ?? this.localLlmRef),
         });
       },
+      runReindex: (store, repoRoot, mode) => runCodegraphReindex({ store, repoRoot, mode }),
+      reportIndexStatus: (store, repoRoot) => reportCodegraphIndexStatus({ store, repoRoot }),
+      detectChanges: (store, repoRoot, head) => detectCodegraphChanges({ store, repoRoot, head }),
+      ingestTraces: (store, traces) => ingestCodegraphTraces({ store, traces }),
     };
     return handleCodegraphTool(request, ctx);
   }
