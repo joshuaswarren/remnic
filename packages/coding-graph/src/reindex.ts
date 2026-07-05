@@ -459,12 +459,23 @@ async function runReindex(
       // upsertFileBatch rejects duplicate paths in one batch (cursor
       // Bugbot: 'Full reindex duplicate ingest paths').
       const toIngest = [...new Set([...candidates, ...pendingRetry])];
+      // Prune stored files that are absent from the candidate set so a
+      // full reindex against a pre-existing store (v1 store, or a crash
+      // before the first meta write) does not leave deleted-file symbols
+      // behind while marking the index current (chatgpt-codex-connector:
+      // 'Prune absent files during full reindex').
+      const knownForFull = readFileHashes(store);
+      const fullCandidateSet = new Set(toIngest);
+      const fullDelete = [...knownForFull.keys()].filter(
+        (p) => !fullCandidateSet.has(p),
+      );
       const ingestResult = await ingestFiles(
         store,
         repoRoot,
         parseFile,
         readFile,
         toIngest,
+        fullDelete,
       );
       if (!ingestResult.ok) return ingestResult;
       store.writeMeta(
@@ -555,6 +566,7 @@ async function runReindex(
       const knownFiles = readFileHashes(store);
       const toDelete: string[] = [];
       const toIngest: string[] = [];
+      const hashScanRetry: string[] = [];
       for (const candidatePath of candidateSet) {
         const probe = await probeRead(repoRoot, candidatePath, readFile);
         if (probe.kind === "skip") continue;
@@ -563,8 +575,11 @@ async function runReindex(
           continue;
         }
         if (probe.kind === "unknown") {
-          // Transient error — keep the stored entry; do not prune. It
-          // will be re-evaluated next run.
+          // Transient read error — keep the stored entry, do not prune,
+          // and record the path for a pending retry so it is re-tried on
+          // the next run even when HEAD is unchanged (chatgpt-codex-
+          // connector: 'Retain hash-scan read failures for retry').
+          hashScanRetry.push(candidatePath);
           continue;
         }
         // exists — compare content hash.
@@ -586,7 +601,7 @@ async function runReindex(
       if (!ingestResult.ok) return ingestResult;
       store.writeMeta(
         META_KEY_PENDING_PARSE_FAILURES,
-        JSON.stringify(ingestResult.parseFailedPaths),
+        JSON.stringify([...ingestResult.parseFailedPaths, ...hashScanRetry]),
       );
       // Rule 25: persist head ONLY after data commits.
       store.writeMeta(META_KEY_LAST_HEAD, headResult.head ?? "");

@@ -808,3 +808,56 @@ test("executor: transient read error (EACCES) does NOT delete indexed nodes (cur
     await dispose(store, dir);
   }
 });
+
+test("executor: full mode prunes stored files absent from candidates (chatgpt-codex-connector: 'Prune absent files during full reindex')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Pre-seed the store with src/old.ts via a direct upsert (simulating a
+    // v1 store or a crash before the first meta write — last_indexed_head
+    // is null so the next run plans 'full').
+    const { ir: oldIr } = makeIR("src/old.ts", "export function old() {}");
+    await store.upsertFileBatch([oldIr]);
+    assert.equal(store.readFileHashes().has("src/old.ts"), true);
+
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    const git = mockGit({ head: SHA_A });
+    const result = await executeReindex({
+      store, git, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts"],
+    });
+    assert.equal(result.ok, true);
+    // src/old.ts is absent from candidates → pruned by the full run.
+    assert.equal(store.readFileHashes().has("src/old.ts"), false, "absent stored file pruned by full reindex");
+    assert.equal(store.readFileHashes().has("src/a.ts"), true);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("executor: hash_scan transient read error is retained for retry (chatgpt-codex-connector: 'Retain hash-scan read failures for retry')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Seed src/a.ts at SHA_A.
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    const git1 = mockGit({ head: SHA_A });
+    await executeReindex({ store, git: git1, repoRoot: dir, parseFile: mockParseFile, candidatePaths: ["src/a.ts"] });
+
+    // Force-push; reads of a.ts now fail with EACCES (transient).
+    const eaccRead = (absPath: string): Promise<Uint8Array> =>
+      absPath.endsWith("src/a.ts")
+        ? Promise.reject(Object.assign(new Error("denied"), { code: "EACCES" }))
+        : import("node:fs/promises").then((fs) => fs.readFile(absPath));
+    const git2 = mockGit({ head: SHA_B, reachable: false });
+    const result = await executeReindex({
+      store, git: git2, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts"], readFile: eaccRead,
+    });
+    assert.equal(result.ok, true);
+    // The transient failure must be recorded for retry, not silently
+    // dropped while head advances.
+    const pending = JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]");
+    assert.ok(pending.includes("src/a.ts"), "transient hash-scan read failure retained for retry");
+  } finally {
+    await dispose(store, dir);
+  }
+});

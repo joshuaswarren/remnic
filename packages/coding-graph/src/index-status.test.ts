@@ -272,3 +272,32 @@ test("revParseHead: non-git directory returns git_error, not head:null (chatgpt-
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("parseHunks: deleted file (+++ /dev/null) does not leak its hunks to the previous file (chatgpt-codex-connector: 'Clear hunk path for deleted files')", () => {
+  // a.ts is modified, then b.ts is deleted (+++ /dev/null). A following
+  // @@ hunk for b.ts must NOT be attributed to a.ts.
+  const stdout = [
+    "diff --git a/src/a.ts b/src/a.ts",
+    "+++ b/src/a.ts",
+    "@@ -1 +1,2 @@",
+    "diff --git a/src/b.ts b/src/b.ts",
+    "deleted file mode 100644",
+    "--- a/src/b.ts",
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+  ].join("\n");
+  const hunks = parseHunks(stdout);
+  // b.ts's deletion hunk followed `+++ /dev/null`, which clears
+  // currentPath → the @@ hunk is dropped entirely, NOT attributed to
+  // a.ts. Exactly one hunk survives: a.ts's own +1,2 hunk.
+  assert.equal(hunks.length, 1, "b.ts deletion hunk dropped after /dev/null");
+  assert.equal(hunks[0].path, "src/a.ts");
+  assert.equal(hunks[0].newRange.startLine, 1);
+  assert.equal(hunks[0].newRange.endLine, 3); // +1,2 → [1,3)
+  // Defensive: no surviving hunk may carry a path that leaked from a
+  // prior file across a /dev/null boundary.
+  assert.ok(
+    hunks.every((h) => h.path === "src/a.ts"),
+    "no hunk leaked a foreign path across /dev/null",
+  );
+});

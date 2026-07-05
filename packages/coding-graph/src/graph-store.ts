@@ -781,27 +781,41 @@ export class GraphStore {
     readonly fileB: string;
     readonly support: number;
     readonly confidence: number;
-  }[]): Promise<{ ok: true } | { ok: false; code: "store_closed" }> {
+  }[]): Promise<
+    | { ok: true }
+    | { ok: false; code: "store_closed" }
+    | { ok: false; code: "db_error" }
+  > {
     if (this.closed || this.closing) {
       return { ok: false, code: "store_closed" };
     }
-    await this.queue.schedule(async () => {
-      const tx = this.db.transaction(() => {
-        this.db.exec("DELETE FROM co_changes");
-        const insert = this.db.prepare(
-          `INSERT INTO co_changes (file_a, file_b, support, confidence)
-             VALUES (?, ?, ?, ?)
-           ON CONFLICT(file_a, file_b) DO UPDATE SET
-             support = excluded.support,
-             confidence = excluded.confidence`,
-        );
-        for (const e of edges) {
-          insert.run(e.fileA, e.fileB, e.support, e.confidence);
-        }
+    try {
+      await this.queue.schedule(async () => {
+        const tx = this.db.transaction(() => {
+          this.db.exec("DELETE FROM co_changes");
+          const insert = this.db.prepare(
+            `INSERT INTO co_changes (file_a, file_b, support, confidence)
+               VALUES (?, ?, ?, ?)
+             ON CONFLICT(file_a, file_b) DO UPDATE SET
+               support = excluded.support,
+               confidence = excluded.confidence`,
+          );
+          for (const e of edges) {
+            insert.run(e.fileA, e.fileB, e.support, e.confidence);
+          }
+        });
+        tx();
       });
-      tx();
-    });
-    return { ok: true };
+      return { ok: true };
+    } catch (error) {
+      // A locked/corrupt DB would otherwise throw out of the queued
+      // callback and crash the caller even though the public type only
+      // advertises tagged failures. Surface a tagged db_error instead
+      // (chatgpt-codex-connector: 'Return a tagged co-change store
+      // failure').
+      logWriteFailure(error);
+      return { ok: false, code: "db_error" };
+    }
   }
 
   /**

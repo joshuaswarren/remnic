@@ -312,7 +312,15 @@ export function parseHunks(stdout: string): DiffHunk[] {
   for (const line of lines) {
     // `+++ b/path` — the new-version path (post-rename). Prefer this
     // over `diff --git` because it correctly handles renames.
-    if (line.startsWith("+++ ") && !line.startsWith("+++ /dev/null")) {
+    if (line.startsWith("+++ ")) {
+      if (line.startsWith("+++ /dev/null")) {
+        // The new side of this file is empty → it was DELETED. Clear
+        // currentPath so a following `@@` hunk is not mis-attributed to
+        // the previous file (chatgpt-codex-connector: 'Clear hunk path
+        // for deleted files').
+        currentPath = null;
+        continue;
+      }
       // Strip the leading `+++ b/` (or `+++ ` for non-`b/` forms).
       const raw = line.slice(4);
       currentPath = raw.startsWith("b/") ? raw.slice(2) : raw;

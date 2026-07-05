@@ -463,3 +463,23 @@ test("findDirectlyAffectedSymbols: duplicate qualifiedName across files yields d
   assert.ok(affected.has(idA), "a.ts node affected");
   assert.ok(affected.has(idB), "b.ts node affected");
 });
+
+test("computeBlastRadius: byte-stable sort with duplicate qualifiedNames (cursor Bugbot: 'Blast radius sort not byte-stable')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await store.upsertFileBatch([DUP_A, DUP_B]);
+    const r1 = computeBlastRadius(store, new Set(["b.foo"]), 3);
+    const r2 = computeBlastRadius(store, new Set(["b.foo"]), 3);
+    // Same risk/qualifiedName for a.foo across runs — order must be
+    // identical (filePath + nodeId tiebreaker makes it total).
+    assert.deepEqual(
+      r1.map((a) => ({ q: a.qualifiedName, f: a.filePath, r: a.risk })),
+      r2.map((a) => ({ q: a.qualifiedName, f: a.filePath, r: a.risk })),
+    );
+    // Both files' foo are present and distinguishable.
+    assert.equal(r1.length, 2);
+    assert.equal(new Set(r1.map((a) => a.filePath)).size, 2);
+  } finally {
+    await dispose(store, dir);
+  }
+});

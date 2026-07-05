@@ -281,18 +281,35 @@ export function computeBlastRadius(
     });
   }
 
-  // Sort for byte-stability: by risk (direct > near > transitive), then
-  // by qualified name. This makes the output deterministic given the same
-  // graph + diff, regardless of Set iteration order.
+  // Sort for byte-stability: by risk, then qualifiedName, then filePath,
+  // then nodeId. A total order is required so two symbols that share a
+  // qualifiedName across files (different filePaths / node ids) still
+  // sort deterministically (cursor Bugbot: 'Blast radius sort not
+  // byte-stable').
   const riskOrder: Record<RiskLevel, number> = {
     direct: 0,
     near: 1,
     transitive: 2,
   };
+  // Build a (qualifiedName   filePath) -> nodeId lookup so the comparator
+  // can resolve each AffectedSymbol back to its node id for the final
+  // tiebreaker.
+  const nodeIdByQFile = new Map<string, string>();
+  for (const [nodeId, depth] of hitByDepth) {
+    const m = hitMeta.get(nodeId);
+    if (m) nodeIdByQFile.set(`${m.qualifiedName}\0${m.filePath}`, nodeId);
+    void depth;
+  }
   out.sort((a, b) => {
     const riskDiff = riskOrder[a.risk] - riskOrder[b.risk];
     if (riskDiff !== 0) return riskDiff;
-    return a.qualifiedName.localeCompare(b.qualifiedName);
+    const qCmp = a.qualifiedName.localeCompare(b.qualifiedName);
+    if (qCmp !== 0) return qCmp;
+    const fCmp = a.filePath.localeCompare(b.filePath);
+    if (fCmp !== 0) return fCmp;
+    const aId = nodeIdByQFile.get(`${a.qualifiedName}\0${a.filePath}`) ?? "";
+    const bId = nodeIdByQFile.get(`${b.qualifiedName}\0${b.filePath}`) ?? "";
+    return aId.localeCompare(bId);
   });
 
   return out;
