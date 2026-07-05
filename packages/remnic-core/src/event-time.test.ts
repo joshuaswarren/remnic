@@ -470,3 +470,45 @@ test("until <bare season> from before the season rolls back (codex review r2)", 
   assert.equal(r.ok, true);
   assert.equal(r.validUntil, "2025-06-01T00:00:00.000Z");
 });
+
+// ── Review r5c+ : bare winter end-bound wraparound + since-quarter pin ────
+
+test("until <winter> from January resolves to the current winter's end (codex r5c)", () => {
+  // Anchor Jan 2026 sits in the winter that started Dec 2025. The exclusive
+  // end of THAT winter is March 1 2026 — not March 2027 (the next winter).
+  // Without the winter-wraparound year adjustment, the season start was built
+  // as Dec 2026, pushing the exclusive end a full year too far forward.
+  const r = resolveEventTime("until winter", "2026-01-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2026-03-01T00:00:00.000Z");
+});
+
+test("until <winter> from February resolves to the current winter's end (codex r5c)", () => {
+  const r = resolveEventTime("until winter", "2026-02-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2026-03-01T00:00:00.000Z");
+});
+
+test("through <winter> is an alias for until and wraps the same way (codex r5c)", () => {
+  const r = resolveEventTime("through winter", "2026-01-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2026-03-01T00:00:00.000Z");
+});
+
+test("until <winter> from December stays in the upcoming March (inside-winter regression)", () => {
+  // Anchor Dec 2026 is inside the winter that started Dec 2026; its exclusive
+  // end is March 1 2027. The wraparound fix must NOT over-roll this case.
+  const r = resolveEventTime("until winter", "2026-12-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2027-03-01T00:00:00.000Z");
+});
+
+test("since <quarter> rolls back like a bare month — 'since' is backwards-looking", () => {
+  // "since Q2" from January 2026: Q2 2026 (April) is still in the future, and
+  // "since" denotes an already-true interval, so the most recent PAST Q2 — Q2
+  // 2025 = April 1 2025 — is the correct validFrom. Quarter tokens are treated
+  // consistently with bare month/season names under the since-rollback guard.
+  const r = resolveEventTime("since Q2", "2026-01-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-04-01T00:00:00.000Z");
+});

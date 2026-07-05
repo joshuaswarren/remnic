@@ -522,12 +522,19 @@ function resolveEndBound(anchorMs: number, period: string): number | null {
   const seasonMonth = SEASON_TO_MONTH[lower];
   if (typeof seasonMonth === "number") {
     const d = new Date(anchorMs);
-    const startMs = buildDateMs(d.getUTCFullYear(), seasonMonth, 1);
+    const anchorMonth = d.getUTCMonth() + 1;
+    let year = d.getUTCFullYear();
+    // Winter (Dec) from Jan/Feb: the current winter started in prev Dec,
+    // so build the season start from the previous year (codex review r2:
+    // bare winter end bounds used the anchor year's December, producing
+    // an exclusive end one year too far forward).
+    if (seasonMonth === 12 && anchorMonth <= 2) year -= 1;
+    const startMs = buildDateMs(year, seasonMonth, 1);
     if (startMs === null) return null;
     const nd = new Date(startMs);
     nd.setUTCMonth(nd.getUTCMonth() + 3);
     let endMs = startOfDayUtc(nd.getTime());
-    if (endMs > anchorMs && !isInSeason(seasonMonth, d.getUTCMonth() + 1)) {
+    if (endMs > anchorMs && !isInSeason(seasonMonth, anchorMonth)) {
       nd.setUTCFullYear(nd.getUTCFullYear() - 1);
       endMs = startOfDayUtc(nd.getTime());
     }
