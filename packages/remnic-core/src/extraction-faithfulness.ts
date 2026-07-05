@@ -718,9 +718,26 @@ export function extractContextWindow(
   sourceText: string,
   quote: string,
   contextChars: number,
+  /**
+   * Character offset of `quote` within `sourceText` (from `locateFactQuote`).
+   * When the quote string appears more than once — e.g. repeated anaphoric
+   * lines after different entities — pass the matched occurrence's offset so
+   * the context window centers on the actual match, not the first occurrence
+   * (issue #1633, codex PRRT_kwDORJXyws6ObzwI). Defaults to the first
+   * occurrence via indexOf for backward compatibility.
+   */
+  matchedOffset?: number,
 ): string | undefined {
   if (!sourceText || !quote || !(contextChars > 0)) return undefined;
-  const idx = sourceText.indexOf(quote);
+  let idx: number;
+  if (matchedOffset !== undefined && matchedOffset >= 0) {
+    const at = sourceText.indexOf(quote, matchedOffset);
+    // Fall back to the first occurrence if the matched offset is stale (e.g.
+    // the quote was bounded and is not a literal substring at that offset).
+    idx = at >= 0 ? at : sourceText.indexOf(quote);
+  } else {
+    idx = sourceText.indexOf(quote);
+  }
   if (idx < 0) return undefined;
   const quoteEnd = idx + quote.length;
   const center = Math.floor((idx + quoteEnd) / 2);
@@ -733,31 +750,136 @@ export function extractContextWindow(
   return window.length > 0 ? window : undefined;
 }
 
+/**
+ * A located fallback quote plus the offset it begins at in the source text.
+ * `offset` lets `extractContextWindow` disambiguate repeated occurrences of
+ * the same quote string (issue #1633).
+ */
+export interface LocatedQuote {
+  /** Verbatim source span, centered on the matched terms when truncated. */
+  quote: string;
+  /** Character offset of `quote` within sourceText. */
+  offset: number;
+}
+
+interface SourceCandidate {
+  /** Trimmed candidate text. */
+  text: string;
+  /** Character offset of `text` within the source string. */
+  start: number;
+}
+
+/**
+ * Split source text into candidate spans (sentences, then line segments as a
+ * fallback for transcripts without sentence punctuation), tracking each
+ * candidate's start offset so repeated occurrences can be disambiguated
+ * (issue #1633).
+ */
+function splitSourceCandidates(sourceText: string): SourceCandidate[] {
+  const candidates: SourceCandidate[] = [];
+  const re = /(?<=[.!?])\s+|\n+/g;
+  let lastEnd = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sourceText)) !== null) {
+    pushCandidate(candidates, sourceText, lastEnd, m.index);
+    lastEnd = re.lastIndex;
+  }
+  pushCandidate(candidates, sourceText, lastEnd, sourceText.length);
+  return candidates;
+}
+
+function pushCandidate(
+  out: SourceCandidate[],
+  source: string,
+  begin: number,
+  end: number,
+): void {
+  const seg = source.slice(begin, end);
+  const leadingWS = seg.length - seg.trimStart().length;
+  const trimmed = seg.trim();
+  if (trimmed.length > 0) {
+    out.push({ text: trimmed, start: begin + leadingWS });
+  }
+}
+
+/**
+ * Locate the min/max character range of fact-token matches inside a candidate.
+ * Used by `locateFactQuote` to center truncation on the actual evidence when a
+ * candidate exceeds `maxQuoteChars` (issue #1633, codex PRRT_kwDORJXyws6Obrwe).
+ * Returns the full candidate span when no token matches (defensive — overlap
+ * scoring already accepted the candidate).
+ */
+function locateMatchedSpan(
+  factTokens: Set<string>,
+  candidate: string,
+): { start: number; end: number } {
+  const lower = candidate.toLowerCase();
+  const wordRe = /[a-z0-9]+/g;
+  let min = candidate.length;
+  let max = 0;
+  let found = false;
+  let m: RegExpExecArray | null;
+  while ((m = wordRe.exec(lower)) !== null) {
+    const word = m[0];
+    if (word.length <= 1) continue;
+    if (STOPWORDS.has(word)) continue;
+    if (factTokens.has(crudeStem(word))) {
+      found = true;
+      if (m.index < min) min = m.index;
+      const wordEnd = m.index + word.length;
+      if (wordEnd > max) max = wordEnd;
+    }
+  }
+  if (!found) return { start: 0, end: candidate.length };
+  return { start: min, end: max };
+}
+
+/**
+ * Build a bounded window of `maxChars` from `text`, centered on `span`.
+ * Returns the window text and its start offset within `text` so callers can
+ * translate the in-candidate offset back to a source-text offset.
+ */
+function boundedWindow(
+  text: string,
+  span: { start: number; end: number },
+  maxChars: number,
+): { text: string; start: number } {
+  const center = Math.floor((span.start + span.end) / 2);
+  const half = Math.floor(maxChars / 2);
+  let start = Math.max(0, center - half);
+  const end = Math.min(text.length, start + maxChars);
+  // Re-anchor start so the window uses the full budget when end clamped.
+  start = Math.max(0, end - maxChars);
+  return { text: text.slice(start, end), start };
+}
+
 export function locateFactQuote(
   factText: string,
   sourceText: string,
   maxQuoteChars = 600,
-): string | undefined {
+): LocatedQuote | undefined {
   if (!factText || !sourceText) return undefined;
   const factTokens = tokenize(factText);
   if (factTokens.size === 0) return undefined;
-  // Split source into candidate spans: sentences, then line segments as a
-  // fallback for transcripts without sentence punctuation.
-  const candidates: string[] = [];
-  for (const sentence of sourceText.split(/(?<=[.!?])\s+|\n+/)) {
-    const s = sentence.trim();
-    if (s.length > 0) candidates.push(s);
-  }
+  const candidates = splitSourceCandidates(sourceText);
   if (candidates.length === 0) return undefined;
-  let best: { quote: string; score: number } | null = null;
+  let best: { candidate: SourceCandidate; score: number } | null = null;
   for (const candidate of candidates) {
-    const score = overlapCoefficient(factTokens, tokenize(candidate));
-    if (!best || score > best.score) best = { quote: candidate, score };
+    const score = overlapCoefficient(factTokens, tokenize(candidate.text));
+    if (!best || score > best.score) best = { candidate, score };
   }
   if (!best || best.score < LOCATE_QUOTE_MIN_OVERLAP) return undefined;
-  return best.quote.length > maxQuoteChars
-    ? best.quote.slice(0, maxQuoteChars)
-    : best.quote;
+  const { text, start } = best.candidate;
+  if (text.length <= maxQuoteChars) {
+    return { quote: text, offset: start };
+  }
+  // Center the bounded window on the matched-term span instead of returning
+  // the first maxQuoteChars prefix (issue #1633). Returning the prefix drops
+  // supporting words that fall after char ~600, routing actually-entailed
+  // facts to pending_review in enforce mode.
+  const matched = locateMatchedSpan(factTokens, text);
+  const win = boundedWindow(text, matched, maxQuoteChars);
+  return { quote: win.text, offset: start + win.start };
 }
 export async function runFaithfulnessGateBatch(
   facts: readonly FaithfulnessGateFact[],
@@ -793,11 +915,19 @@ export async function runFaithfulnessGateBatch(
       .map((s) => (s && typeof s.quote === "string" ? s.quote.trim() : ""))
       .filter((q) => q.length > 0);
     const usingFallbackLocator = sourceQuotes.length === 0;
-    const quote =
-      sourceQuotes.length > 0
-        ? sourceQuotes.join("\n")
-        : locateFactQuote(f.content, sourceText);
-    if (!quote) continue; // no located span — applyFaithfulnessVerdict tags skipped_no_span
+    let quote: string;
+    let matchedOffset: number | undefined;
+    if (sourceQuotes.length > 0) {
+      quote = sourceQuotes.join("\n");
+    } else {
+      // Fallback locator returns the matched span AND its offset so the
+      // context window centers on the occurrence that actually matched the
+      // fact, not the first indexOf hit (issue #1633).
+      const located = locateFactQuote(f.content, sourceText);
+      if (!located) continue; // no located span — applyFaithfulnessVerdict tags skipped_no_span
+      quote = located.quote;
+      matchedOffset = located.offset;
+    }
     // Pass source context into the verifier so extractionFaithfulnessContextChars
     // actually applies in the fallback-locator path (codex P2
     // PRRT_kwDORJXyws6OblI1). #1575 verified spans already carry full evidence,
@@ -808,6 +938,7 @@ export async function runFaithfulnessGateBatch(
             sourceText,
             quote,
             config.extractionFaithfulnessContextChars,
+            matchedOffset,
           )
         : undefined;
     inputs.push({

@@ -794,12 +794,13 @@ test("applyFaithfulnessVerdict: per-fact backend failure (ok:false) → unchecke
   assert.equal(r.enforceStatus, undefined);
 });
 
-test("locateFactQuote: finds the best-overlap sentence", () => {
+test("locateFactQuote: finds the best-overlap sentence (returns LocatedQuote, issue #1633)", () => {
   const src = "I drove to Berlin yesterday. My favorite editor is Vim.";
-  assert.equal(
-    locateFactQuote("The user likes Vim.", src),
-    "My favorite editor is Vim.",
-  );
+  const located = locateFactQuote("The user likes Vim.", src);
+  assert.ok(located, "expected a located quote");
+  assert.equal(located!.quote, "My favorite editor is Vim.");
+  // offset must point at the matched candidate's actual position in sourceText.
+  assert.equal(located!.offset, src.indexOf("My favorite editor is Vim."));
 });
 
 test("locateFactQuote: returns undefined below the overlap threshold", () => {
@@ -810,6 +811,57 @@ test("locateFactQuote: returns undefined below the overlap threshold", () => {
 test("locateFactQuote: empty inputs → undefined", () => {
   assert.equal(locateFactQuote("", "text"), undefined);
   assert.equal(locateFactQuote("fact", ""), undefined);
+});
+
+test("locateFactQuote: centers the bounded window on matched terms for >maxQuoteChars candidates (issue #1633, codex :747)", () => {
+  // The supporting terms ("PostgreSQL", "migration") fall well past the
+  // ~maxQuoteChars prefix. Returning the prefix would drop the evidence and
+  // route an actually-entailed fact to pending_review in enforce mode.
+  const filler = "Lorem ipsum dolor sit amet ".repeat(28); // ~728-char preamble
+  const sourceText = filler + "The team completed the PostgreSQL migration last quarter.";
+  const located = locateFactQuote(
+    "The team finished the PostgreSQL migration.",
+    sourceText,
+    200,
+  );
+  assert.ok(located, "expected a located quote");
+  assert.ok(
+    located!.quote.length <= 200,
+    `bounded quote must respect maxQuoteChars (got ${located!.quote.length})`,
+  );
+  // The matched evidence must survive truncation — the whole point of centering.
+  assert.ok(located!.quote.includes("PostgreSQL"), "bounded quote keeps 'PostgreSQL'");
+  assert.ok(located!.quote.includes("migration"), "bounded quote keeps 'migration'");
+  // offset must locate the returned (possibly bounded) quote within sourceText.
+  assert.equal(
+    sourceText.slice(located!.offset, located!.offset + located!.quote.length),
+    located!.quote,
+    "offset must point at the returned quote within sourceText",
+  );
+});
+
+test("locateFactQuote: tracks the matched occurrence offset for repeated anaphoric lines (issue #1633, codex :710)", () => {
+  // Two entities, same anaphoric sentence pattern — the fact is about Zeta,
+  // which appears SECOND. The locator's offset must point at the Zeta clause so
+  // extractContextWindow centers on Zeta, not the first (Acme) occurrence.
+  const sourceText =
+    "We started the Acme project in January. It launched in March at beta. " +
+    "Then we began the Zeta initiative in February. It launched in March at general availability.";
+  const located = locateFactQuote(
+    "The Zeta initiative launched in March at general availability.",
+    sourceText,
+  );
+  assert.ok(located, "expected a located quote");
+  // offset must fall within the Zeta clause, AFTER the Acme clause.
+  const acmeClauseEnd = sourceText.indexOf("at beta.") + "at beta.".length;
+  assert.ok(
+    located!.offset >= acmeClauseEnd,
+    `offset must point past the Acme clause (offset=${located!.offset}, acmeEnd=${acmeClauseEnd})`,
+  );
+  assert.ok(
+    sourceText.slice(located!.offset).startsWith(located!.quote),
+    "offset must point at the start of the matched quote",
+  );
 });
 
 test("applyFaithfulnessVerdict: bumps verdict counters at apply time (cursor review)", () => {
@@ -1040,6 +1092,35 @@ test("extractContextWindow: returns undefined when quote is absent from sourceTe
   assert.equal(extractContextWindow("some source", "not present", 400), undefined);
   assert.equal(extractContextWindow("", "x", 400), undefined);
   assert.equal(extractContextWindow("source", "s", 0), undefined);
+});
+
+test("extractContextWindow: matchedOffset selects the matched occurrence, not the first (issue #1633, codex :710)", () => {
+  // The same anaphoric line appears twice — once about Acme, once about Zeta.
+  // Without matchedOffset, indexOf centers context on Acme (the first hit).
+  // With the locator's offset, the window must center on the matched (Zeta) hit.
+  const sourceText =
+    "Acme context before. It launched in March. Acme context after. " +
+    "Zeta context before. It launched in March. Zeta context after.";
+  const quote = "It launched in March.";
+  const firstOccurrence = sourceText.indexOf(quote);
+  const zetaOccurrence = sourceText.indexOf("Zeta context before");
+  assert.ok(firstOccurrence >= 0 && zetaOccurrence > firstOccurrence);
+  // Budget 50 captures the surrounding entity tag without spanning both
+  // occurrences (which would make them indistinguishable).
+  const ctxDefault = extractContextWindow(sourceText, quote, 50);
+  const ctxMatched = extractContextWindow(sourceText, quote, 50, zetaOccurrence);
+  const ctxFirst = extractContextWindow(sourceText, quote, 50, firstOccurrence);
+  assert.ok(ctxDefault && ctxMatched && ctxFirst, "all windows must resolve");
+  assert.ok(
+    ctxDefault!.includes("Acme") && !ctxDefault!.includes("Zeta"),
+    "default (no offset) centers on the first (Acme) occurrence, not Zeta",
+  );
+  assert.ok(
+    ctxMatched!.includes("Zeta") && !ctxMatched!.includes("Acme"),
+    "matchedOffset centers on the matched (Zeta) occurrence, not Acme",
+  );
+  assert.notEqual(ctxMatched, ctxDefault, "windows must differ when offset disambiguates");
+  assert.equal(ctxFirst, ctxDefault, "explicit first-occurrence offset equals the default");
 });
 
 test("runFaithfulnessGateBatch: fallback locator injects CONTEXT into the verifier prompt (codex P2 PRRT_kwDORJXyws6OblI1)", async () => {
