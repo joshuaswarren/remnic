@@ -510,14 +510,20 @@ test("divergence: event-order ranks ASC (turnIndex ascending after the score gat
   );
 });
 
-test("divergence: undefined turnIndex handled (DESC: -1 sentinel; ASC: MAX_SAFE_INTEGER sentinel)", async () => {
-  // When `turnIndex` is undefined, the DESC comparator falls back to -1
-  // (sorts to the bottom of a DESC list); the ASC comparator falls back to
-  // Number.MAX_SAFE_INTEGER (also sorts to the bottom of an ASC list). Both
-  // sentinels pin the same contract: missing turn_index never wins ordering.
-  // Here we pin the DESC behavior via targeted-fact: a search hit on turn 5
-  // (numeric fact, high score) must rank above any item that loses on the
-  // rank/turnIndex/score tuple.
+test("divergence: DESC tertiary tiebreaker is score DESC among numbered turns", async () => {
+  // When rank ties AND turnIndex ties, the DESC comparator falls back to
+  // `score DESC`. Here we pin that behavior: two search hits on distinct
+  // sessions but the SAME turn_index produce two candidates whose rank
+  // ties (same scorer input shape); the higher-scoring one ranks first.
+  //
+  // (The undefined-turnIndex sentinel behavior — DESC: -1, ASC:
+  // Number.MAX_SAFE_INTEGER — is a property of the COMPARATOR that the
+  // spine centralizes, not of the end-to-end pipeline. Real engine items
+  // always carry a numeric `turn_index`, so the sentinel is unreachable
+  // through the builder surface. It is tested directly against the spine
+  // module in `packages/remnic-core/src/recall-pipeline-stages.test.ts`
+  // — tests "undefined turnIndex sorts to the bottom of DESC (-1 sentinel)"
+  // and "undefined turnIndex sorts to the bottom of ASC (MAX sentinel)".)
   const sessions = new Map<string, FixtureMessage[]>([
     [FIXTURE_SESSION_PRIMARY, [
       { turn_index: 5, role: "user", content: TARGETED_FACT_CONTENT },
@@ -718,6 +724,33 @@ test("divergence: zero-limit contracts (0 maxResults / 0 maxItems / 0 maxChars a
     maxSearchResults: 0,
   });
   assert.equal(guidanceEmptyResults, "", "response-guidance maxSearchResults=0 must yield empty");
+
+  const guidanceEmptyBudget = await buildResponseGuidanceRecallSection({
+    engine,
+    sessionId: FIXTURE_SESSION_PRIMARY,
+    query: "How should I approach editting my draft?",
+    maxChars: 0,
+    maxSearchResults: 8,
+  });
+  assert.equal(guidanceEmptyBudget, "", "response-guidance maxChars=0 must yield empty");
+
+  const explicitEmptyReferences = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: FIXTURE_SESSION_PRIMARY,
+    query: "What did I say at turn 1?",
+    maxChars: 4_000,
+    maxReferences: 0,
+  });
+  assert.equal(explicitEmptyReferences, "", "explicit-cue maxReferences=0 must yield empty");
+
+  const explicitEmptyBudget = await buildExplicitCueRecallSection({
+    engine,
+    sessionId: FIXTURE_SESSION_PRIMARY,
+    query: "What did I say at turn 1?",
+    maxChars: 0,
+    maxReferences: 4,
+  });
+  assert.equal(explicitEmptyBudget, "", "explicit-cue maxChars=0 must yield empty");
 });
 
 test("divergence: planner-mode gating contract (null/undefined engine yields empty for every pipeline)", async () => {
