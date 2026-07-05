@@ -39,6 +39,7 @@ import {
 } from "./source-attribution.js";
 import {
   TombstoneStore,
+  collectRetiredMemoriesForRebuild,
   type TombstoneStoreOptions,
   type TombstoneFileIo,
   type TombstoneReason,
@@ -2320,8 +2321,6 @@ export class StorageManager {
   // every other cache layer via invalidateAllMemoriesCache (rule 25).
   private tombstoneStore: TombstoneStore | null = null;
   private tombstoneStoreLoadPromise: Promise<TombstoneStore> | null = null;
-  /** Last-seen mtime of tombstones.jsonl; used by the cross-process staleness probe. */
-  private tombstoneStoreFileMtimeMs = 0;
   private tombstonesConfig: {
     enabled: boolean;
     semanticMatch: boolean;
@@ -3131,6 +3130,8 @@ export class StorageManager {
       read: (filePath) => this.readStorageSecureFile(filePath),
       append: (filePath, content) => this.appendStorageSecureFile(filePath, content),
       write: (filePath, content) => this.writeStorageSecureFile(filePath, content),
+      // stat lets the store own its cross-process staleness probe (#1579).
+      stat: (filePath) => statSync(filePath),
     };
     return new TombstoneStore(
       this.tombstonesPath,
@@ -3141,44 +3142,21 @@ export class StorageManager {
   }
 
   /**
-   * Cross-process staleness probe (#1579 review). If tombstones.jsonl's mtime
-   * advanced since the last load, invalidate the in-memory index so the next
-   * access reloads from disk. Best-effort: a stat error is swallowed (the
-   * existing loaded index is retained rather than crashing the write path).
-   */
-  private maybeInvalidateTombstoneStoreForPeerAppend(): void {
-    if (!this.tombstoneStore) return;
-    try {
-      const stat = statSync(this.tombstonesPath);
-      const mtimeMs = Math.floor(stat.mtimeMs);
-      if (mtimeMs !== this.tombstoneStoreFileMtimeMs) {
-        this.tombstoneStore.invalidate();
-        this.tombstoneStore = null;
-        this.tombstoneStoreLoadPromise = null;
-        this.tombstoneStoreFileMtimeMs = mtimeMs;
-      }
-    } catch {
-      // ENOENT / permission — keep the loaded index (fail-open, rule 34 spirit).
-    }
-  }
-
-  /**
    * Lazily load the tombstone store. Mirrors the fact-hash-index lazy-load
    * pattern: a single in-flight load promise dedups concurrent first-access.
+   * The cross-process staleness probe lives inside the store now (#1579): on
+   * each cached access it stats its own file and invalidates if a peer process
+   * appended, so the next lookup reloads from disk. If the probe just
+   * invalidated the store, fall through to the reload branch — returning null
+   * here was the original regression (the chokepoint threw and failed OPEN).
    */
   getTombstoneStore(): Promise<TombstoneStore> {
     if (this.tombstoneStore) {
-      // Cross-process staleness guard (#1579 review): if another process
-      // appended to tombstones.jsonl, our in-memory index is stale. A cheap
-      // mtime probe detects peer appends and reloads so the next writeMemory
-      // lookup does not admit resurrected content. The probe MAY null out
-      // `this.tombstoneStore` (it just invalidated it) — in that case we fall
-      // through to the reload branch below instead of returning null. Returning
-      // Promise.resolve(null) here was the regression: the chokepoint then
-      // threw on `.lookup` and failed OPEN, so every resurrected fact slipped
-      // through (#1579 matrix a–e).
-      this.maybeInvalidateTombstoneStoreForPeerAppend();
-      if (this.tombstoneStore) return Promise.resolve(this.tombstoneStore);
+      // The store owns the staleness probe + reload (#1579): on a cached hit it
+      // stats its own file and, if a peer process appended, invalidates + reloads
+      // in place. We await it so the chokepoint's lookup always sees a fresh index.
+      const cached = this.tombstoneStore;
+      return cached.ensureFreshAgainstDisk().then(() => cached);
     }
     if (!this.tombstoneStoreLoadPromise) {
       const store = this.buildTombstoneStore();
@@ -3186,14 +3164,6 @@ export class StorageManager {
         .load()
         .then(() => {
           this.tombstoneStore = store;
-          // Record the file's mtime so the staleness probe does not immediately
-          // invalidate on the next access (tombstoneStoreFileMtimeMs starts at 0;
-          // without this, any non-zero mtime would trigger a spurious reload).
-          try {
-            this.tombstoneStoreFileMtimeMs = Math.floor(statSync(this.tombstonesPath).mtimeMs);
-          } catch {
-            // ENOENT — fresh store with no file yet; mtime stays 0.
-          }
           return store;
         })
         .catch((err) => {
@@ -3231,13 +3201,9 @@ export class StorageManager {
       // citation-stripped contentHashSource. Idempotent on already-stripped
       // text, so callers that pre-strip (e.g. recordSupersession) are unaffected.
       const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate);
-      const id = await store.appendTombstone({ ...input, rawContent: strippedRawContent });
-      // Record the file's new mtime so the staleness probe does not treat our
-      // OWN append as a peer append and throw away the (correct) in-memory
-      // index on the next access (#1579 — avoids a needless invalidate+reload
-      // in the hot write path).
-      this.refreshTombstoneStoreMtimeAfterOwnWrite();
-      return id;
+      // The store records its own mtime after the append (markWritten) so the
+      // staleness probe does not treat this write as a peer append (#1579).
+      return await store.appendTombstone({ ...input, rawContent: strippedRawContent });
     } catch (err) {
       log.warn(`tombstone append failed (memory=${input.sourceMemoryId}): ${err}`);
       return null;
@@ -3252,9 +3218,7 @@ export class StorageManager {
     if (!this.tombstonesConfig.enabled) return null;
     try {
       const store = await this.getTombstoneStore();
-      const id = await store.revoke(tombstoneId, createdBy);
-      this.refreshTombstoneStoreMtimeAfterOwnWrite();
-      return id;
+      return await store.revoke(tombstoneId, createdBy);
     } catch (err) {
       log.warn(`tombstone revoke failed (id=${tombstoneId}): ${err}`);
       return null;
@@ -3281,74 +3245,12 @@ export class StorageManager {
     if (!this.tombstonesConfig.enabled) return 0;
     const store = await this.getTombstoneStore();
     const all = [...(await this.readAllMemories()), ...(await this.readAllColdMemories())];
-    type Retired = {
-      memoryId: string;
-      rawContent: string;
-      entityRef?: string;
-      supersessionKey?: string;
-      reason: TombstoneReason;
-      createdBy: TombstoneCreatedBy;
-      createdAt: string;
-      /**
-       * Canonical contentHash from the retired memory's frontmatter (#1579).
-       * Threads through to TombstoneStore.rebuild so the rebuilt tombstone's
-       * exact tier matches re-extraction (citation-hash alignment).
-       */
-      contentHash?: string;
-    };
-    const retired: Retired[] = [];
-    for (const m of all) {
-      const status = m.frontmatter.status ?? "active";
-      if (status !== "superseded" && status !== "rejected" && status !== "forgotten") continue;
-      // Only facts participate in the dedup/tombstone invariant — entities,
-      // questions, and artifacts have their own lifecycle.
-      if (m.frontmatter.category !== "fact") continue;
-      const reason: TombstoneReason =
-        status === "superseded" ? "supersession" : status === "forgotten" ? "retraction" : "correction";
-      const createdBy: TombstoneCreatedBy =
-        reason === "supersession" ? "supersession" : "user_correction";
-      const entityRef = m.frontmatter.entityRef;
-      // Derive the supersession key from structured attributes when present
-      // (the SAME helper the write-time supersession uses — one helper).
-      const keys =
-        entityRef && m.frontmatter.structuredAttributes
-          ? supersessionKeysForFact({
-              entityRef,
-              structuredAttributes: m.frontmatter.structuredAttributes,
-            })
-          : [];
-      retired.push({
-        memoryId: m.frontmatter.id,
-        rawContent: stripCitationForTemplate(m.content, this.citationTemplate),
-        // Pass the canonical contentHash so the rebuilt tombstone's exact tier
-        // matches re-extraction (issue #1579 review: citation-hash alignment).
-        contentHash: m.frontmatter.contentHash,
-        ...(entityRef ? { entityRef } : {}),
-        ...(keys.length > 0 ? { supersessionKey: keys[0] } : {}),
-        reason,
-        createdBy,
-        createdAt: m.frontmatter.updated || m.frontmatter.created,
-      });
-    }
-    const rebuilt = await store.rebuild(retired);
-    this.refreshTombstoneStoreMtimeAfterOwnWrite();
-    return rebuilt;
-  }
-
-  /**
-   * After this instance writes to tombstones.jsonl (append / revoke / rebuild),
-   * record the file's new mtime so the cross-process staleness probe treats the
-   * next access as fresh rather than as a peer append. The in-memory index the
-   * store just updated is already correct; without this the probe would
-   * invalidate it and force a needless disk reload on every write (#1579).
-   */
-  private refreshTombstoneStoreMtimeAfterOwnWrite(): void {
-    try {
-      this.tombstoneStoreFileMtimeMs = Math.floor(statSync(this.tombstonesPath).mtimeMs);
-    } catch {
-      // ENOENT — the write should have created the file; if stat still fails,
-      // leave the recorded mtime as-is (fail-open, rule 34 spirit).
-    }
+    // Pure projection (lifecycle/tombstones.ts) keeps this method thin (#1520).
+    const retired = collectRetiredMemoriesForRebuild(all, {
+      stripCitation: (text) => stripCitationForTemplate(text, this.citationTemplate),
+      supersessionKeysForFact,
+    });
+    return await store.rebuild(retired);
   }
 
   private async getFactHashIndex(): Promise<ContentHashIndex> {

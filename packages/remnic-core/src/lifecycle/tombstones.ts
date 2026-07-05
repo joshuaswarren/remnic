@@ -121,11 +121,14 @@ export interface TombstoneStoreOptions {
 }
 
 /** Injected file I/O — the StorageManager wires its secure-store-aware
- * implementations so tombstones are encrypted at rest alongside other state. */
+ * implementations so tombstones are encrypted at rest alongside other state.
+ * `stat` is optional; when provided the store tracks the file mtime itself and
+ * runs a cross-process staleness probe on each access (#1579). */
 export interface TombstoneFileIo {
   read: (filePath: string) => Promise<string>;
   append: (filePath: string, content: string) => Promise<void>;
   write: (filePath: string, content: string) => Promise<void>;
+  stat?: (filePath: string) => { mtimeMs: number };
 }
 
 /** Aggregate stats for `remnic doctor`. */
@@ -228,6 +231,13 @@ export class TombstoneStore {
   private loadPromise: Promise<void> | null = null;
   private corruptedLines = 0;
   private lastAppendAt: string | null = null;
+  /**
+   * Last-seen mtime of the JSONL file (cross-process staleness probe, #1579).
+   * Tracked inside the store so the StorageManager wiring stays thin. When the
+   * file's mtime advances past this value between accesses, the in-memory index
+   * is stale (a peer process appended) and is reloaded before the next lookup.
+   */
+  private fileMtimeMs = 0;
 
   constructor(
     private readonly filePath: string,
@@ -249,6 +259,11 @@ export class TombstoneStore {
   }
 
   private async loadInternal(): Promise<void> {
+    // Record the file's mtime so the staleness probe does not immediately
+    // invalidate on the next access (fileMtimeMs starts at 0; without this,
+    // any non-zero mtime would trigger a spurious reload). Done before the
+    // read so an ENOENT still records 0.
+    this.recordFileMtime();
     let raw: string;
     try {
       raw = await this.io.read(this.filePath);
@@ -318,6 +333,49 @@ export class TombstoneStore {
   }
 
   /**
+   * Cross-process staleness probe (#1579). If the file's mtime advanced since
+   * the last load/own-write, a peer process appended and our in-memory index is
+   * stale — invalidate AND reload in place so the next lookup sees the new
+   * entries. Best-effort: a stat error is swallowed (the loaded index is
+   * retained rather than crashing the write path). No-op when no `stat` was
+   * injected or when the mtime is unchanged. After our own append/revoke/rebuild
+   * `markWritten` records the new mtime, so this probe does not fire for our
+   * own writes (only for peer-process appends).
+   */
+  async ensureFreshAgainstDisk(): Promise<void> {
+    if (!this.io.stat) return;
+    let mtimeMs: number;
+    try {
+      mtimeMs = Math.floor(this.io.stat(this.filePath).mtimeMs);
+    } catch {
+      return; // ENOENT / permission — keep the loaded index (fail-open).
+    }
+    if (mtimeMs === this.fileMtimeMs && this.loaded) return;
+    this.fileMtimeMs = mtimeMs;
+    this.invalidate();
+    await this.load();
+  }
+
+  /**
+   * Record the file mtime after THIS process writes (append / revoke / rebuild)
+   * so `ensureFreshAgainstDisk` does not treat our own write as a peer append
+   * and throw away the just-updated in-memory index (#1579 — avoids a needless
+   * invalidate+reload in the hot write path).
+   */
+  private markWritten(): void {
+    this.recordFileMtime();
+  }
+
+  private recordFileMtime(): void {
+    if (!this.io.stat) return;
+    try {
+      this.fileMtimeMs = Math.floor(this.io.stat(this.filePath).mtimeMs);
+    } catch {
+      // ENOENT — fresh store with no file yet; mtime stays at its current value.
+    }
+  }
+
+  /**
    * Append a tombstone entry. Serialized via `serializeMutations` keyed by
    * file path so concurrent appends do not interleave, with rejection recovery
    * (rule 40 — a single failed append never poisons the chain). The in-memory
@@ -360,6 +418,7 @@ export class TombstoneStore {
     };
     await this.serializeAppend(entry);
     this.indexEntry(entry);
+    this.markWritten();
     return id;
   }
 
@@ -385,6 +444,7 @@ export class TombstoneStore {
     };
     await this.serializeAppend(entry);
     this.indexEntry(entry);
+    this.markWritten();
     return id;
   }
 
@@ -492,22 +552,7 @@ export class TombstoneStore {
    *
    * Returns the count of tombstone entries written.
    */
-  async rebuild(
-    retiredMemories: ReadonlyArray<{
-      memoryId: string;
-      rawContent: string;
-      entityRef?: string;
-      supersessionKey?: string;
-      reason: TombstoneReason;
-      createdBy: TombstoneCreatedBy;
-      createdAt: string;
-      /**
-       * Pre-computed canonical contentHash from the retired memory's
-       * frontmatter (issue #1579 review: avoids the citation-hash mismatch).
-       */
-      contentHash?: string;
-    }>,
-  ): Promise<number> {
+  async rebuild(retiredMemories: ReadonlyArray<RetiredMemoryRecord>): Promise<number> {
     // Preserve existing revocations so a rebuild does not silently un-revoke.
     const existingRevocations = this.entries.filter((e) => e.kind === "revocation");
     // Reuse existing tombstone ids for source-equivalent entries so a prior
@@ -549,6 +594,83 @@ export class TombstoneStore {
     for (const entry of all) this.indexEntry(entry);
     this.corruptedLines = 0;
     this.loaded = true;
+    this.markWritten();
     return rebuilt.length;
   }
+}
+
+/** A retired memory projected into the shape `TombstoneStore.rebuild` consumes. */
+export interface RetiredMemoryRecord {
+  memoryId: string;
+  rawContent: string;
+  entityRef?: string;
+  supersessionKey?: string;
+  reason: TombstoneReason;
+  createdBy: TombstoneCreatedBy;
+  createdAt: string;
+  /** Canonical contentHash from the retired memory's frontmatter (#1579). */
+  contentHash?: string;
+}
+
+/**
+ * Project a corpus of memories into the retired-memory records `rebuild`
+ * consumes. Pure (no I/O) so the StorageManager wiring stays thin (#1579,
+ * #1520 god-file ratchet). Only superseded / forgotten / rejected FACTS
+ * participate — entities, questions, and artifacts have their own lifecycle
+ * (issue pitfall). The supersession key is derived from structured attributes
+ * via the injected helper so there is one keyed-tier definition (rule 23).
+ */
+export function collectRetiredMemoriesForRebuild(
+  memories: ReadonlyArray<{
+    frontmatter: {
+      id: string;
+      status?: string;
+      category?: string;
+      contentHash?: string;
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+      updated?: string;
+      created?: string;
+    };
+    content: string;
+  }>,
+  deps: {
+    /** Strip citation annotations from the body before hashing/normalizing. */
+    stripCitation: (text: string) => string;
+    /** Derive the keyed-tier supersession key (one helper, rule 23). */
+    supersessionKeysForFact: (spec: {
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+    }) => string[];
+  },
+): RetiredMemoryRecord[] {
+  const retired: RetiredMemoryRecord[] = [];
+  for (const m of memories) {
+    const status = m.frontmatter.status;
+    if (status !== "superseded" && status !== "rejected" && status !== "forgotten") continue;
+    if (m.frontmatter.category !== "fact") continue;
+    const reason: TombstoneReason =
+      status === "superseded" ? "supersession" : status === "forgotten" ? "retraction" : "correction";
+    const createdBy: TombstoneCreatedBy =
+      reason === "supersession" ? "supersession" : "user_correction";
+    const entityRef = m.frontmatter.entityRef;
+    const keys =
+      entityRef && m.frontmatter.structuredAttributes
+        ? deps.supersessionKeysForFact({
+            entityRef,
+            structuredAttributes: m.frontmatter.structuredAttributes,
+          })
+        : [];
+    retired.push({
+      memoryId: m.frontmatter.id,
+      rawContent: deps.stripCitation(m.content),
+      contentHash: m.frontmatter.contentHash,
+      ...(entityRef ? { entityRef } : {}),
+      ...(keys.length > 0 ? { supersessionKey: keys[0] } : {}),
+      reason,
+      createdBy,
+      createdAt: m.frontmatter.updated || m.frontmatter.created || new Date().toISOString(),
+    });
+  }
+  return retired;
 }
