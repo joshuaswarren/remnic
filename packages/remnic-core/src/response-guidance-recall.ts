@@ -5,6 +5,11 @@ import {
   resolveLcmReadSessionIds,
 } from "./lcm-fallback-read.js";
 
+import {
+  unifiedDedupeAndRank,
+  type RankedEvidenceItem,
+} from "./recall-pipeline-stages.js";
+
 export interface ResponseGuidanceRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
   sessionId?: string;
@@ -22,10 +27,6 @@ export interface ResponseGuidanceRecallOptions {
   maxScanWindowTokens?: number;
   title?: string;
   forceGeneric?: boolean;
-}
-
-interface RankedGuidanceItem extends EvidencePackItem {
-  rank: number;
 }
 
 type GuidanceIntent =
@@ -341,42 +342,37 @@ async function collectGuidanceScanItems(
   return items;
 }
 
+/**
+ * Issue #1539 PR4: response-guidance now routes dedup/score/threshold/sort through
+ * the unified spine (`unifiedDedupeAndRank`). The divergence that lived inline
+ * here — append-guidance-cues content transform (two-arg: content + intents),
+ * relevance scoring on ORIGINAL content, default DESC turn-index ordering with
+ * -1 sentinel for missing turns — is now declared config on the spine. The score
+ * and appendGuidanceCues helpers stay in this module because they are genuinely
+ * per-tier policy; only the duplicated dedup/sort/threshold machinery moved out.
+ *
+ * Behavior is byte-for-byte identical to the inline implementation it replaces
+ * (the spine was extracted to match it exactly; see recall-pipeline-stages.ts).
+ * The response-guidance-recall.test.ts suite is the characterization.
+ *
+ * Note: response-guidance (like the pre-migration code) dedups on the TRANSFORMED
+ * (cue-appended) content, not the original — this matches the spine's default
+ * (transform-then-dedup) exactly. No divergence from prior behavior.
+ */
 function rankAndDedupeGuidanceItems(
   items: EvidencePackItem[],
   query: string,
   intents: readonly GuidanceIntent[],
-): RankedGuidanceItem[] {
-  const seenIds = new Set<string>();
-  const seenContent = new Set<string>();
-  const ranked: RankedGuidanceItem[] = [];
-
-  for (const item of items) {
-    const id = item.id ?? (
-      item.sessionId && typeof item.turnIndex === "number"
-        ? `${item.sessionId}:${item.turnIndex}`
-        : undefined
-    );
-    if (id && seenIds.has(id)) continue;
-
-    const enhancedContent = appendGuidanceCues(item.content, intents);
-    const contentKey = enhancedContent.toLowerCase().replace(/\s+/g, " ").trim();
-    if (seenContent.has(contentKey)) continue;
-
-    if (id) seenIds.add(id);
-    seenContent.add(contentKey);
-    ranked.push({
-      ...item,
-      content: enhancedContent,
-      rank: scoreGuidanceEvidence(item, query, intents),
-    });
-  }
-
-  return ranked.sort((left, right) => {
-    if (right.rank !== left.rank) return right.rank - left.rank;
-    const leftTurn = typeof left.turnIndex === "number" ? left.turnIndex : -1;
-    const rightTurn = typeof right.turnIndex === "number" ? right.turnIndex : -1;
-    if (rightTurn !== leftTurn) return rightTurn - leftTurn;
-    return (right.score ?? 0) - (left.score ?? 0);
+): RankedEvidenceItem[] {
+  // The spine's config.intents is typed TIntent[] (readability contract — it is
+  // never mutated). Cast the readonly array through; safe because the spine only
+  // forwards intents to the score/transform callbacks.
+  const mutableIntents = intents as GuidanceIntent[];
+  return unifiedDedupeAndRank(items, {
+    query,
+    intents: mutableIntents,
+    scoreEvidence: (item, q, intentArr) => scoreGuidanceEvidence(item, q, intentArr),
+    transformContent: (content, intentArr) => appendGuidanceCues(content, intentArr),
   });
 }
 
