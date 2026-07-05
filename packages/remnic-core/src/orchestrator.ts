@@ -14970,7 +14970,14 @@ export class Orchestrator {
       // memory without user confirmation).
       let contradictionDetected = false;
 
-      if (this.config.contradictionDetectionEnabled && this.qmd.isAvailable()) {
+      // Faithfulness gate (#1576, chatgpt P2): skip contradiction detection
+      // for a pending_review fact — an unfaithful extraction in the review queue
+      // must not trigger auto-resolve and retire an existing active memory.
+      if (
+        this.config.contradictionDetectionEnabled &&
+        this.qmd.isAvailable() &&
+        faithfulnessEnforceStatus !== "pending_review"
+      ) {
         const targetNamespace = this.namespaceFromStorageDir(targetStorage.dir);
         const contradiction = await this.checkForContradiction(
           fact.content,
