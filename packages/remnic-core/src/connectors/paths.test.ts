@@ -110,14 +110,39 @@ test("read-fallback: once remnic/ exists, it wins over engram (post-migration)",
   });
 });
 
-test("read-fallback: empty engram dir is not enough — only a real config tree triggers fallback", () => {
+test("read-fallback: a bare config-root dir without its registry subdir does NOT trigger fallback (#1620 round 1)", () => {
   withXdgHome((xdg) => {
-    // A stray empty engram/ dir (no registry content) still counts as "exists"
-    // for the fallback — this is intentional, since the connectors dir may be
-    // empty between a fresh `engram connectors install` and the first config
-    // write. The fallback is about path stability for existing installs, not
-    // about probing content.
+    // A stray engram/ dir (no .engram-connectors inside) is NOT evidence of a
+    // connector install. The probe targets the registry subdir, so this falls
+    // through to the canonical remnic root.
     fs.mkdirSync(path.join(xdg, "engram"), { recursive: true });
+    assert.equal(
+      getActiveConnectorsConfigRoot(),
+      path.join(xdg, "remnic"),
+      "bare engram/ without .engram-connectors must not trigger the legacy fallback",
+    );
+  });
+});
+
+test("read-fallback: stray remnic/config.json must not hide legacy engram connector data (#1620 round 1 regression)", () => {
+  // The cursor-reported bug: the daemon creates ~/.config/remnic/config.json
+  // for its own setup, so the bare remnic/ config root exists on a machine
+  // that has NEVER installed a connector under remnic. The active root must
+  // still resolve to engram when connector data lives there, otherwise
+  // loadRegistry would read an empty remnic tree and legacy installs would
+  // look uninstalled.
+  withXdgHome((xdg) => {
+    // Daemon setup created remnic/config.json (no .remnic-connectors).
+    fs.mkdirSync(path.join(xdg, "remnic"), { recursive: true });
+    fs.writeFileSync(path.join(xdg, "remnic", "config.json"), "{}\n");
+    // Real connector data still lives under the legacy engram tree.
+    fs.mkdirSync(path.join(xdg, "engram", ".engram-connectors", "connectors"), {
+      recursive: true,
+    });
     assert.equal(getActiveConnectorsConfigRoot(), path.join(xdg, "engram"));
+    assert.equal(
+      getConnectorsDir(),
+      path.join(xdg, "engram", ".engram-connectors", "connectors"),
+    );
   });
 });

@@ -58,12 +58,21 @@ export function getLegacyConnectorsConfigRoot(): string {
  * Read-time fallback: pick the config root that actually holds (or will hold)
  * the connector registry.
  *
- *   1. Canonical `remnic/` root when it already exists (post-migration, or a
- *      fresh install that has already written its first connector).
- *   2. Legacy `engram/` root when ONLY that exists — an existing install we
- *      keep reading in place until the user runs `remnic migrate`.
- *   3. Canonical `remnic/` root otherwise (fresh install with nothing on
+ *   1. Canonical `remnic/` root when its `.remnic-connectors` registry dir
+ *      already exists (post-migration, or a fresh install that has already
+ *      written its first connector).
+ *   2. Legacy `engram/` root when ONLY its `.engram-connectors` registry dir
+ *      exists — an existing install we keep reading in place until the user
+ *      runs `remnic migrate`.
+ *   3. Canonical `remnic/` root otherwise (fresh install with no registry on
  *      disk yet) so the first write lands at the new path.
+ *
+ * The probe looks for the REGISTRY SUBDIR (`.remnic-connectors` /
+ * `.engram-connectors`), not the bare config root. The config root
+ * `~/.config/remnic/` is created by unrelated daemon setup (e.g. the daemon's
+ * own `config.json`), so probing the bare root would falsely resolve to
+ * remnic and hide connector data that still lives under
+ * `~/.config/engram/.engram-connectors/` (cursor review round 1, #1620).
  *
  * This is a READ-time fallback. Writes go to whichever root this returns, so
  * a legacy install keeps its data colocated for the active session; a fresh
@@ -71,9 +80,9 @@ export function getLegacyConnectorsConfigRoot(): string {
  */
 export function getActiveConnectorsConfigRoot(): string {
   const canonical = getConnectorsConfigRoot();
-  if (fs.existsSync(canonical)) return canonical;
+  if (fs.existsSync(path.join(canonical, REGISTRY_DIR_NAME))) return canonical;
   const legacy = getLegacyConnectorsConfigRoot();
-  if (fs.existsSync(legacy)) return legacy;
+  if (fs.existsSync(path.join(legacy, LEGACY_REGISTRY_DIR_NAME))) return legacy;
   return canonical;
 }
 
