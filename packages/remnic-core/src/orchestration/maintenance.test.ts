@@ -57,7 +57,7 @@ function buildScheduler(opts: {
 }): MaintenanceScheduler {
   return new MaintenanceScheduler({
     config: opts.config,
-    qmd: stubQmd(),
+    getQmd: () => stubQmd(),
     namespaceSearchRouter: opts.router,
     namespaceCatalog: opts.catalog,
   });
@@ -670,5 +670,69 @@ test("runQmdMaintenance falls back to configured namespaces when the catalog is 
   } finally {
     scheduler.dispose();
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("MaintenanceScheduler reads a runtime-swapped qmd backend via getQmd (regression for captured-by-value)", async () => {
+  // Regression for issue #1526 PR1: when MaintenanceSchedulerDeps.qmd was a
+  // fixed reference captured at construction, the orchestrator's runtime swap
+  // `this.qmd = new NoopSearchBackend()` (initialize / startupSearchSync,
+  // invoked when the collection is missing) left the scheduler running
+  // debounced maintenance against the disposed/stale backend. The live
+  // `getQmd: () => this.qmd` accessor must observe the swap so maintenance
+  // short-circuits once the backend reports unavailable.
+  const calls: string[] = [];
+  const liveBackend = {
+    isAvailable: () => true,
+    async update() {
+      calls.push("live.update");
+    },
+    async embed() {
+      calls.push("live.embed");
+    },
+  } as unknown as SearchBackend;
+  const noopBackend = {
+    isAvailable: () => false,
+    async update() {
+      calls.push("noop.update");
+    },
+    async embed() {
+      calls.push("noop.embed");
+    },
+  } as unknown as SearchBackend;
+  const holder: { backend: SearchBackend } = { backend: liveBackend };
+
+  const config = fixtureConfig({
+    namespacesEnabled: false,
+    qmdAutoEmbedEnabled: false,
+  });
+  const catalog = { enabled: false } as unknown as NamespaceCatalog;
+  const router = {} as unknown as NamespaceSearchRouter;
+  const scheduler = new MaintenanceScheduler({
+    config,
+    getQmd: () => holder.backend,
+    namespaceSearchRouter: router,
+    namespaceCatalog: catalog,
+  });
+
+  try {
+    // Sanity: arming + running while the live backend is present invokes it.
+    scheduler.requestQmdMaintenanceForTool("test");
+    await scheduler.runQmdMaintenance();
+    assert.deepEqual(calls, ["live.update"]);
+
+    // The orchestrator swaps to a Noop backend at runtime when the collection
+    // is missing — the scheduler must observe the new reference, not the one
+    // captured at construction.
+    holder.backend = noopBackend;
+    scheduler.requestQmdMaintenanceForTool("test");
+    await scheduler.runQmdMaintenance();
+    assert.deepEqual(
+      calls,
+      ["live.update"],
+      "after the swap to NoopSearchBackend, requestQmdMaintenance must short-circuit (isAvailable===false) and never touch the disposed backend",
+    );
+  } finally {
+    scheduler.dispose();
   }
 });

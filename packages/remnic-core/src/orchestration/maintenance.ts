@@ -60,7 +60,10 @@ function qmdMaintenanceSkipReasonForError(
 /** Dependencies injected by the orchestrator. All stable references. */
 export interface MaintenanceSchedulerDeps {
   config: PluginConfig;
-  qmd: SearchBackend;
+  /** Live accessor — the orchestrator can reassign its qmd backend after
+   *  construction (e.g. swap to NoopSearchBackend when the collection is
+   *  missing), and the scheduler must always observe the current backend. */
+  getQmd: () => SearchBackend;
   namespaceSearchRouter: NamespaceSearchRouter;
   namespaceCatalog: NamespaceCatalog;
 }
@@ -386,7 +389,7 @@ export class MaintenanceScheduler {
 
   /** Internal: queue a debounced QMD maintenance pass. */
   private requestQmdMaintenance(): void {
-    if (!this.deps.qmd.isAvailable()) return;
+    if (!this.deps.getQmd().isAvailable()) return;
     if (!this.deps.config.qmdMaintenanceEnabled) return;
 
     this.qmdMaintenancePending = true;
@@ -495,13 +498,13 @@ export class MaintenanceScheduler {
           },
         );
       } else {
-        await this.deps.qmd.update();
+        await this.deps.getQmd().update();
         const now = Date.now();
         if (
           this.deps.config.qmdAutoEmbedEnabled &&
           now - this.lastQmdEmbedAtMs >= this.deps.config.qmdEmbedMinIntervalMs
         ) {
-          await this.deps.qmd.embed();
+          await this.deps.getQmd().embed();
           this.lastQmdEmbedAtMs = now;
         }
       }

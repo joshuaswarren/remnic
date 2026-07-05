@@ -2722,7 +2722,11 @@ export class Orchestrator {
     this.qmd = createSearchBackend(config);
     this.maintenanceScheduler = new MaintenanceScheduler({
       config,
-      qmd: this.qmd,
+      // Live accessor: the orchestrator reassigns this.qmd to NoopSearchBackend
+      // after construction when the collection is missing (initialize /
+      // startupSearchSync); the scheduler must read the current backend so
+      // debounced maintenance never runs against a stale/disposed one.
+      getQmd: () => this.qmd,
       namespaceSearchRouter: this.namespaceSearchRouter,
       namespaceCatalog: this.namespaceCatalog,
     });
