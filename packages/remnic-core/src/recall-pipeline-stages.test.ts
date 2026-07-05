@@ -267,3 +267,46 @@ test("unifiedDedupeAndRank: dedupByContent true (default) still collapses identi
   });
   assert.equal(resultExplicit.length, 1, "explicit dedupByContent: true collapses identical content");
 });
+
+test("unifiedDedupeAndRank: preserveInsertionOrder skips the sort stage (explicit-cue shape)", () => {
+  // Insertion order is turn-index 3, 1, 2. A DESC sort would reorder to 3, 2, 1.
+  // preserveInsertionOrder must keep the original (post-dedup) order: 3, 1, 2.
+  const items: EvidencePackItem[] = [
+    item(3, "turn ref", { id: "s:3" }),
+    item(1, "content cue", { id: "s:1" }),
+    item(2, "lexical hit", { id: "s:2" }),
+  ];
+  const result = unifiedDedupeAndRank(items, {
+    query: "q",
+    intents: NO_INTENTS,
+    scoreEvidence: () => 0, // explicit-cue does not score
+    dedupByContent: false, // explicit-cue dedupes by id only (seenTurns)
+    preserveInsertionOrder: true,
+  });
+  assert.deepEqual(
+    result.map((r) => r.id),
+    ["s:3", "s:1", "s:2"],
+    "insertion order is preserved — no sort applied",
+  );
+});
+
+test("unifiedDedupeAndRank: preserveInsertionOrder still applies threshold filter", () => {
+  const items: EvidencePackItem[] = [
+    item(1, "strong", { id: "s:1" }),
+    item(2, "weak", { id: "s:2" }),
+    item(3, "medium", { id: "s:3" }),
+  ];
+  const result = unifiedDedupeAndRank(items, {
+    query: "q",
+    intents: NO_INTENTS,
+    scoreEvidence: (original) => (original.content === "strong" ? 10 : original.content === "medium" ? 5 : 1),
+    rankThreshold: 5,
+    dedupByContent: false,
+    preserveInsertionOrder: true,
+  });
+  // threshold drops "weak" (rank 1); insertion order of survivors preserved.
+  assert.deepEqual(
+    result.map((r) => r.id),
+    ["s:1", "s:3"],
+  );
+});

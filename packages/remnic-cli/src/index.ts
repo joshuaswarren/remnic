@@ -235,6 +235,7 @@ import {
   filterBenchWorkItemsForPreviousStatus,
   parseBenchActionArgs,
   parseBenchArgs,
+  readBenchOptionValue,
 } from "./bench-args.js";
 import {
   createBenchStatusPath,
@@ -722,6 +723,31 @@ type PackageBenchModule = {
     | { ok: true; expectedModel: string; discoveredModels: unknown[] }
     | { ok: false; reason: string; expectedModel: string; discoveredModels?: unknown[] }
   >;
+  /**
+   * Load a previously persisted judge-calibration state for a benchmark (issue
+   * #1573 PR3). Returns the artifact-relevant subset (`{ kappa, sampleSize,
+   * threshold, warning }`) plus optional judge identities, or `undefined` when
+   * no calibration has been run. Wired into the run path so subsequent local
+   * artifacts carry the persisted kappa after `remnic bench judge-calibrate`,
+   * but ONLY when the run's judge matches the calibrated pair (codex P2 review:
+   * the loader was previously dead code — only tests called it).
+   */
+  loadJudgeCalibrationState?: (
+    benchmarkId: string,
+    calibrationDir: string,
+  ) => Promise<
+    | {
+        kappa: number;
+        sampleSize: number;
+        threshold: number;
+        warning: boolean;
+        localJudgeProvider?: string;
+        localJudgeModel?: string;
+        frontierJudgeProvider?: string;
+        frontierJudgeModel?: string;
+      }
+    | undefined
+  >;
 };
 
 interface TrainingExportOptions {
@@ -873,8 +899,8 @@ export interface PackageBenchExecutionPlan {
 }
 
 export function getBenchUsageText(): string {
-  return `Usage: remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers> [options] [benchmark...]
-       remnic benchmark <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|check|report> [options] [benchmark...]
+  return `Usage: remnic bench <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate> [options] [benchmark...]
+       remnic benchmark <list|run|published|datasets|runs|compare|results|baseline|export|publish|ui|providers|judge-calibrate|check|report> [options] [benchmark...]
 
 Commands:
   list                     List published benchmark packs
@@ -902,6 +928,11 @@ Commands:
                            Generate the Remnic.ai benchmark feed from stored runs
   ui                       Launch the local benchmark overview UI
   providers discover       Auto-detect available local provider backends
+  judge-calibrate --benchmark <id> --local-lab-manifest <path> --judge-provider <p> --judge-model <m>
+                           Cross-tier judge calibration (issue #1573): runs the
+                           local + frontier judges over a benchmark's cached
+                           answers, reports Cohen's kappa, and persists it so
+                           subsequent local artifacts carry the kappa + warning.
   check                    Legacy latency regression gate (compatibility)
   report                   Legacy latency report generator (compatibility)
   procedural-ablation --out <path> [--fixture <path>]
@@ -2399,6 +2430,211 @@ async function discoverBenchProviders(parsed: ParsedBenchArgs): Promise<void> {
   }
 }
 
+/**
+ * `remnic bench judge-calibrate` — cross-tier judge calibration (issue #1573 PR3).
+ *
+ * Runs the local judge (resolved from `--local-lab-manifest`) and the frontier
+ * judge (resolved from `--judge-provider`/`--judge-model`) over the cached
+ * answers for a benchmark, computes Cohen's kappa, prints it, and persists the
+ * result so subsequent local artifacts carry the kappa + warning. The actual
+ * full-mode run that consumes live endpoints is a separate operator step; this
+ * command wires the software end-to-end.
+ */
+async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]): Promise<void> {
+  const benchmarkId =
+    readBenchOptionValue(rawArgs, "--benchmark") ?? parsed.benchmarks[0];
+  if (!benchmarkId) {
+    console.error(
+      "ERROR: judge-calibrate requires a benchmark. Usage: remnic bench judge-calibrate --benchmark <id> [--local-lab-manifest <path>] [--judge-provider <p> --judge-model <m>] [--results-dir <path>] [--json]",
+    );
+    process.exit(1);
+  }
+  // Package-aware validation (codex P2 review): use the same resolver the run
+  // command uses, so package-registered benchmarks (memoryagentbench, membench,
+  // personamem, ...) calibrate instead of being rejected as "unknown" by the
+  // static CLI catalog (`BENCHMARK_IDS`).
+  const knownBenchmarkIds = await resolveKnownBenchmarkIds();
+  if (!knownBenchmarkIds.has(benchmarkId)) {
+    console.error(
+      `ERROR: unknown benchmark "${benchmarkId}". Known: ${[...knownBenchmarkIds].sort().join(", ")}.`,
+    );
+    process.exit(1);
+  }
+
+  const manifestPath = parsed.localLabManifestPath;
+  if (!manifestPath) {
+    console.error(
+      "ERROR: judge-calibrate requires --local-lab-manifest <path> (the Tier L judge source). Provide a local-lab manifest whose judge role names the local model.",
+    );
+    process.exit(1);
+  }
+  if (!parsed.judgeProvider || !parsed.judgeModel) {
+    console.error(
+      "ERROR: judge-calibrate requires --judge-provider <p> and --judge-model <m> (the Tier F gold-standard judge).",
+    );
+    process.exit(1);
+  }
+
+  const bench = await loadBenchModule();
+  const resultsDir = expandTilde(
+    parsed.resultsDir ?? path.join(resolveHomeDir(), ".remnic", "bench", "results"),
+  );
+
+  // Build the calibration answers from the most recent stored result for the
+  // benchmark. `actual` is the responder's predicted answer; `expected` is the
+  // gold. Both judges re-score the same (question, predicted, expected) triple.
+  const stored = await bench.listBenchmarkResults(resultsDir);
+  // Calibration needs a full run's cached answers — a quick run (mode "quick")
+  // is a 1-task sample whose agreement is meaningless (often kappa=1 on a
+  // single agreeing pair), so a stale quick result must never be selected as
+  // the calibration source (codex P2 review).
+  const allForBenchmark = stored.filter((entry) => entry.benchmark === benchmarkId);
+  const candidates = allForBenchmark
+    .filter((entry) => entry.mode === "full")
+    .sort((a, b) => {
+      // Descending by timestamp with a 3-way comparator (cursor review: the
+      // previous `< b ? 1 : -1` never returned 0, so tied timestamps produced
+      // an unstable order that could pick a non-latest run). The id breaks
+      // remaining ties deterministically.
+      if (a.timestamp !== b.timestamp) {
+        return a.timestamp < b.timestamp ? 1 : -1;
+      }
+      return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+    });
+  const latest = candidates[0];
+  if (!latest) {
+    const quickCount = allForBenchmark.filter((entry) => entry.mode === "quick").length;
+    console.error(
+      quickCount > 0
+        ? `ERROR: no full stored results for "${benchmarkId}" in ${resultsDir} (found ${quickCount} quick run(s); a 1-task quick sample cannot calibrate the judge). Run a full benchmark first (remnic bench run ${benchmarkId}).`
+        : `ERROR: no stored benchmark results for "${benchmarkId}" in ${resultsDir}. Run the benchmark first (remnic bench run ${benchmarkId}) so cached answers exist to calibrate against.`,
+    );
+    process.exit(1);
+  }
+  // Prefer the latest COMPLETE full run — a partial full run (interrupted)
+  // would otherwise seed calibration from an incomplete slice even when an
+  // older complete full run exists (codex P2 review). `status` lives on the
+  // loaded result, not the summary, so load newest-first and keep the first
+  // complete one; if every candidate is partial we keep the newest (the only
+  // option available to the operator).
+  let loaded = await bench.loadBenchmarkResult(latest.path);
+  if (loaded.meta.status === "partial") {
+    for (const candidate of candidates.slice(1)) {
+      const candidateResult = await bench.loadBenchmarkResult(candidate.path);
+      if (candidateResult.meta.status !== "partial") {
+        loaded = candidateResult;
+        break;
+      }
+    }
+  }
+  // Codex P2 review: a `--limit 1` (or `--trial-limit 1`) full run produces
+  // mode === "full" with a single task, yielding a degenerate one-sample κ
+  // (often 1.0). Require enough completed tasks for a meaningful calibration.
+  // Count UNIQUE task ids — runJudgeCalibration dedupes by questionId, so
+  // raw task count can overstate the sample (codex P2 review: a stored result
+  // with duplicate taskIds could pass the minimum while producing a smaller κ).
+  const uniqueTaskIds = new Set(loaded.results.tasks.map((task) => task.taskId));
+  const sourceTaskCount = uniqueTaskIds.size;
+  if (sourceTaskCount < bench.MIN_CALIBRATION_SOURCE_TASKS) {
+    console.error(
+      `ERROR: stored result for "${benchmarkId}" has only ${sourceTaskCount} task(s) — too few for a meaningful calibration (minimum ${bench.MIN_CALIBRATION_SOURCE_TASKS}). Run a full uncapped benchmark first (remnic bench run ${benchmarkId}).`,
+    );
+    process.exit(1);
+  }
+  const answers = loaded.results.tasks.map((task) => ({
+    questionId: task.taskId,
+    question: task.question,
+    predicted: task.actual,
+    expected: task.expected,
+  }));
+
+  // Resolve the two judges. The local judge comes from the manifest's judge
+  // role (Tier L); the frontier judge from the --judge-* flags (Tier F gold).
+  const manifest = await bench.loadLocalLabManifest(expandTilde(manifestPath));
+  const resolvedProfile = bench.resolveLocalLabProfile(manifest);
+  // Both judges resolve to a `ProviderFactoryConfig` — a discriminated union
+  // keyed on a literal `provider`. The local judge's config arrives already
+  // typed from the resolved local-lab profile; the frontier judge is assembled
+  // from CLI flags whose `provider` is the broad `BuiltInProvider` union, so
+  // it is narrowed through the same cast the local judge uses.
+  type ProviderFactoryConfig = Parameters<typeof bench.createProviderBackedJudge>[0];
+  const localJudgeConfig = resolvedProfile.judge.providerConfig as ProviderFactoryConfig;
+  const localJudge = bench.createProviderBackedJudge(localJudgeConfig);
+  const frontierJudge = bench.createProviderBackedJudge({
+    provider: parsed.judgeProvider,
+    model: parsed.judgeModel,
+    ...(parsed.judgeBaseUrl ? { baseUrl: parsed.judgeBaseUrl } : {}),
+    ...(parsed.judgeApiKey ? { apiKey: parsed.judgeApiKey } : {}),
+  } as ProviderFactoryConfig);
+
+  const result = await bench.runJudgeCalibration({
+    benchmarkId,
+    localJudge,
+    frontierJudge,
+    answers,
+  });
+
+  const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
+  // Bind the persisted kappa to the calibrated judge pair (codex P2 review):
+  // without these identities, a later run that swaps the local-lab manifest
+  // or the frontier judge would inherit a stale kappa for a different pair.
+  const calibrationIdentities = {
+    localJudgeProvider: String(localJudgeConfig.provider),
+    localJudgeModel: String(localJudgeConfig.model),
+    frontierJudgeProvider: parsed.judgeProvider,
+    frontierJudgeModel: parsed.judgeModel,
+  };
+  const statePath = await bench.writeJudgeCalibrationState(result, calibrationDir, calibrationIdentities);
+  // Read the persisted state straight back. This exercises the load path the
+  // artifact builder will use (cursor review + codex P1: loadJudgeCalibration-
+  // State was previously dead code — only tests called it). A mismatch here
+  // would mean the persisted kappa is not what subsequent local artifacts
+  // would carry, which is an operator-visible failure.
+  const persisted = await bench.loadJudgeCalibrationState(benchmarkId, calibrationDir);
+  if (!persisted || persisted.kappa !== result.kappa || persisted.warning !== result.warning) {
+    console.error(
+      `ERROR: calibration state round-trip failed for ${benchmarkId} (wrote kappa ${result.kappa}, read back ${persisted ? persisted.kappa : "nothing"}). Re-run judge-calibrate.`,
+    );
+    process.exit(1);
+  }
+
+  if (parsed.json) {
+    console.log(
+      JSON.stringify(
+        {
+          benchmarkId: result.benchmarkId,
+          kappa: result.kappa,
+          observedAgreement: result.observedAgreement,
+          expectedAgreement: result.expectedAgreement,
+          sampleSize: result.sampleSize,
+          threshold: result.threshold,
+          warning: result.warning,
+          categories: result.categories,
+          statePath,
+        },
+        null,
+        2,
+      ),
+    );
+    return;
+  }
+
+  console.log(`Judge calibration: ${benchmarkId}`);
+  console.log(`  Cohen's kappa: ${result.kappa.toFixed(4)} (threshold ${result.threshold})`);
+  console.log(`  Sample size:   ${result.sampleSize}`);
+  console.log(`  Observed agreement: ${result.observedAgreement.toFixed(4)}`);
+  console.log(`  Expected agreement: ${result.expectedAgreement.toFixed(4)}`);
+  if (result.warning) {
+    console.log(
+      `  WARNING: local judge unreliable for ${benchmarkId} (kappa ${result.kappa.toFixed(4)} < ${result.threshold}). Tier L numbers for this benchmark should not be trusted for regression until the judge improves.`,
+    );
+  } else {
+    console.log(`  OK: local judge agrees with frontier above threshold.`);
+  }
+  console.log(`  Calibration state written + verified (round-trip ok): ${statePath}`);
+  console.log(`  Subsequent local artifacts for ${benchmarkId} will carry kappa ${persisted.kappa.toFixed(4)}.`);
+}
+
 async function publishBenchPackageResults(parsed: ParsedBenchArgs): Promise<void> {
   if (parsed.benchmarks.length > 0) {
     console.error(
@@ -3074,6 +3310,12 @@ async function runBenchViaPackage(
     });
     result.config.remnicConfig = plan.runtime.remnicConfig;
     result.config.internalProvider = plan.runtime.internalProvider;
+    // Issue #1573 PR3 (cursor + codex High/P1 review): load the persisted
+    // judge-calibration state for this benchmark so the stored local artifact
+    // carries the kappa + warning after `remnic bench judge-calibrate`. Absent
+    // calibration (file missing) is the common case — the result is written
+    // unchanged, preserving backwards compatibility.
+    await attachPersistedJudgeCalibration(benchModule, benchmarkId, result);
     const writtenPath = await benchModule.writeBenchmarkResult(result, outputDir);
     if (parsed.json) {
       console.log(JSON.stringify(redactBenchResultForStdout(benchModule, result), null, 2));
@@ -3094,6 +3336,9 @@ async function runBenchViaPackage(
         err instanceof Error ? err.message : String(err),
         parsed.quick ? "quick" : "full",
       );
+      // Attach persisted calibration to partial results too — the kappa
+      // reflects judge reliability, independent of whether the run finished.
+      await attachPersistedJudgeCalibration(benchModule, benchmarkId, partialResult);
       try {
         const partialPath = await benchModule.writeBenchmarkResult(partialResult, outputDir);
         console.error(`  Partial results (${partialTasks.length} tasks) written to ${partialPath}`);
@@ -3116,6 +3361,66 @@ async function runBenchViaPackage(
       );
     }
   }
+}
+/**
+ * Attach a previously persisted judge-calibration state to a benchmark result
+ * before it is written (issue #1573 PR3). The calibration dir mirrors the one
+ * `calibrateBenchJudges` writes to (`~/.remnic/bench/calibration`). When a
+ * calibration file exists for the benchmark, its `{ kappa, sampleSize,
+ * threshold, warning }` lands in `result.config.benchmarkOptions.judgeCalibration`
+ * — the same `benchmarkOptions` envelope that already carries
+ * `leaderboardArtifacts`, so the persisted kappa travels with every stored
+ * local artifact and is visible to the publish/feed/leaderboard readers.
+ *
+ * Absent calibration is the common case (operator has not run
+ * `judge-calibrate` yet): the result is returned unchanged. A corrupt state
+ * file is a silent miss inside `loadJudgeCalibrationState` (rule 34) — the run
+ * is never failed by stale calibration.
+ *
+ * Judge binding (codex P2 review): when the persisted state records the
+ * calibrated judge identities, the kappa is attached ONLY when the run's judge
+ * matches the calibrated local or frontier judge — a run that swapped the
+ * local-lab manifest or the frontier judge must not inherit a stale kappa for
+ * a different pair. State files predating identities have none and are treated
+ * as unbound (attach anyway) for backwards compatibility. Only the artifact
+ * subset is stashed — never the judge identities (those are bookkeeping).
+ */
+async function attachPersistedJudgeCalibration(
+  benchModule: PackageBenchModule,
+  benchmarkId: string,
+  result: {
+    config: {
+      benchmarkOptions?: Record<string, unknown>;
+      judgeProvider?: { provider?: string; model?: string } | null;
+    };
+  },
+): Promise<void> {
+  const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
+  const state = await benchModule.loadJudgeCalibrationState?.(benchmarkId, calibrationDir);
+  if (!state) return;
+  if (state.localJudgeModel !== undefined && state.frontierJudgeModel !== undefined) {
+    const runJudgeProvider = result.config.judgeProvider?.provider;
+    const runJudgeModel = result.config.judgeProvider?.model;
+    const matchesLocal =
+      runJudgeProvider === state.localJudgeProvider && runJudgeModel === state.localJudgeModel;
+    // Only attach when the run uses the LOCAL judge the kappa was computed for
+    // (codex P2 + cursor Low review). A frontier-tier run that happens to
+    // reuse the stored frontier judge identity must NOT inherit the local
+    // judge's reliability kappa — the kappa measures the local judge's
+    // agreement with the frontier, not the frontier judge's self-consistency.
+    if (!matchesLocal) {
+      return;
+    }
+  }
+  result.config.benchmarkOptions = {
+    ...(result.config.benchmarkOptions ?? {}),
+    judgeCalibration: {
+      kappa: state.kappa,
+      sampleSize: state.sampleSize,
+      threshold: state.threshold,
+      warning: state.warning,
+    },
+  };
 }
 
 function restoreOptionalEnv(key: string, previousValue: string | undefined): void {
@@ -9273,6 +9578,11 @@ async function cmdBench(rest: string[]): Promise<void> {
 
   if (parsed.action === "export") {
     await exportBenchPackageResult(parsed);
+    return;
+  }
+
+  if (parsed.action === "judge-calibrate") {
+    await calibrateBenchJudges(parsed, benchAction.args);
     return;
   }
 

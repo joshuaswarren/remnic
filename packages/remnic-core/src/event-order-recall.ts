@@ -1,6 +1,11 @@
 import { buildEvidencePack, type EvidencePackItem } from "./evidence-pack.js";
 import type { ExplicitCueRecallEngine } from "./explicit-cue-recall.js";
 
+import {
+  unifiedDedupeAndRank,
+  type RankedEvidenceItem,
+} from "./recall-pipeline-stages.js";
+
 export interface EventOrderRecallOptions {
   engine: ExplicitCueRecallEngine | null | undefined;
   // event-order reads a SINGLE LCM session key. Unlike the relevance-ranked
@@ -16,10 +21,6 @@ export interface EventOrderRecallOptions {
   maxScanWindowTokens?: number;
   maxItems?: number;
   title?: string;
-}
-
-interface RankedEventItem extends EvidencePackItem {
-  rank: number;
 }
 
 const DEFAULT_SCAN_WINDOW_TURNS = 12;
@@ -67,15 +68,14 @@ export async function buildEventOrderRecallSection(
   }
 
   const title = options.title ?? "Chronological event evidence";
-  const evidence = buildEvidencePack(ranked, {
-    title,
-    maxChars: budget,
-    maxItemChars: options.maxItemChars,
-  });
-  if (!evidence) {
-    return "";
-  }
 
+  // Issue #1539 step 4 (the ONE declared behavior change): budget the outline
+  // BEFORE building evidence, matching guidance/targeted-fact. Previously
+  // event-order built the evidence pack at the FULL budget, then appended the
+  // chronology outline, then clipped the total — which could silently exceed
+  // maxChars (the outline consumed space the evidence pack had already filled).
+  // Now the summary (incl. outline) is computed first and its length subtracted
+  // from the evidence budget, so evidence + summary = budget exactly.
   const requested = parseRequestedItemCount(options.query);
   const outlineSource = requested
     ? rankEventOrderItemsForOutline(items, options.query).slice(0, maxItems)
@@ -87,8 +87,20 @@ export async function buildEventOrderRecallSection(
     outline,
     "Use these turns to preserve the order in which the user raised the topics.",
   ].filter(Boolean).join(" ");
+  const summaryInsert = `\n\n${summary}`;
+  const evidenceBudget = Math.max(0, budget - summaryInsert.length);
+  const evidence = buildEvidencePack(ranked, {
+    title,
+    maxChars: evidenceBudget,
+    maxItemChars: options.maxItemChars,
+  });
+  if (!evidence) {
+    // If no evidence fit the residual budget, still emit the summary clipped to
+    // budget (matches targeted-fact's empty-evidence-with-summary fallback).
+    return clipSectionToBudget(`## ${title}${summaryInsert}`, budget);
+  }
   return clipSectionToBudget(
-    evidence.replace(`## ${title}`, `## ${title}\n\n${summary}`),
+    evidence.replace(`## ${title}`, `## ${title}${summaryInsert}`),
     budget,
   );
 }
@@ -148,23 +160,28 @@ function rankAndSelectEventOrderItems(
   items: EvidencePackItem[],
   options: EventOrderRecallOptions,
   maxItems: number,
-): RankedEventItem[] {
+): RankedEvidenceItem[] {
   const requested = parseRequestedItemCount(options.query);
-  const rankedByScore = items
-    .map((item) => ({
-      ...item,
-      rank: scoreEventOrderItem(item, options.query),
-    }))
-    .filter((item) => item.rank >= 6)
-    .sort((left, right) => {
-      if (right.rank !== left.rank) return right.rank - left.rank;
-      const leftTurn = typeof left.turnIndex === "number" ? left.turnIndex : Number.MAX_SAFE_INTEGER;
-      const rightTurn = typeof right.turnIndex === "number" ? right.turnIndex : Number.MAX_SAFE_INTEGER;
-      if (leftTurn !== rightTurn) return leftTurn - rightTurn;
-      return left.content.localeCompare(right.content);
-    });
+  // Issue #1539 PR6: rank + threshold-filter + sort now route through the
+  // unified spine. Event-order's three declared divergences are named config
+  // fields: rankThreshold:6 (was an undocumented inline .filter), ASC sort
+  // direction (was a byte-identical comparator copy with flipped direction),
+  // and dedupByContent:false (event-order keeps distinct turns — turn_index is
+  // local to each session_id, so chronology must not collapse same-body turns).
+  // The spine's id-dedup is a no-op here: event-order reads a single session
+  // with unique per-turn ids (no cross-key merge, per the #1505 opt-out).
+  // Content is already cue-appended during collection; the spine scores on the
+  // (already-transformed) item.content, matching the prior inline behavior.
+  const rankedByScore = unifiedDedupeAndRank(items, {
+    query: options.query,
+    intents: [],
+    scoreEvidence: (item, q) => scoreEventOrderItem(item, q),
+    rankThreshold: 6,
+    dedupByContent: false,
+    turnIndexSortDirection: "asc",
+  });
 
-  const selectedById = new Map<string, RankedEventItem>();
+  const selectedById = new Map<string, RankedEvidenceItem>();
   if (requested) {
     const queryTerms = extractEventOrderTerms(options.query);
     const tailReserve = Math.min(
@@ -254,13 +271,20 @@ function rankAndSelectEventOrderItems(
 function rankEventOrderItemsForOutline(
   items: readonly EvidencePackItem[],
   query: string,
-): RankedEventItem[] {
-  return items
-    .map((item) => ({
-      ...item,
-      rank: scoreEventOrderItem(item, query),
-    }))
-    .filter((item) => item.rank >= 6);
+): RankedEvidenceItem[] {
+  // Issue #1539 PR6: the outline source uses the same declared config as the
+  // main rank pass (rankThreshold:6, dedupByContent:false) but preserves
+  // collection order via preserveInsertionOrder — the outline renders turns in
+  // the order they were collected (chronological by session scan), not in
+  // rank-sorted order.
+  return unifiedDedupeAndRank(items, {
+    query,
+    intents: [],
+    scoreEvidence: (item, q) => scoreEventOrderItem(item, q),
+    rankThreshold: 6,
+    dedupByContent: false,
+    preserveInsertionOrder: true,
+  });
 }
 
 function eventItemSelectionKey(item: EvidencePackItem): string {
@@ -527,7 +551,7 @@ function appendChronologicalCues(content: string, query: string): string {
 }
 
 function buildChronologyOutline(
-  items: readonly RankedEventItem[],
+  items: readonly RankedEvidenceItem[],
   query: string,
   requested?: number,
 ): string {
@@ -584,7 +608,7 @@ function buildChronologyOutline(
 }
 
 function collectChronologyOutlineCandidates(
-  items: readonly RankedEventItem[],
+  items: readonly RankedEvidenceItem[],
   query: string,
 ): Array<{ turn: number; label: string; priority: number }> {
   const terms = extractEventOrderTerms(query);

@@ -16,6 +16,7 @@ export type BenchAction =
   | "providers"
   | "publish"
   | "published"
+  | "judge-calibrate"
   | "check"
   | "report";
 
@@ -282,6 +283,7 @@ export function readBenchOptionValue(argv: string[], flag: string): string | und
 
 const BENCH_VALUE_FLAGS = Object.freeze([
   "--dataset-dir",
+  "--benchmark",
   "--results-dir",
   "--baselines-dir",
   "--runtime-profile",
@@ -484,6 +486,18 @@ const BENCH_ACTION_FLAGS: Record<
     value: ["--results-dir", "--target", "--output"],
     boolean: ["--json", "--help", "-h"],
   },
+  "judge-calibrate": {
+    value: [
+      "--results-dir",
+      "--benchmark",
+      "--local-lab-manifest",
+      "--judge-provider",
+      "--judge-model",
+      "--judge-base-url",
+      "--judge-api-key",
+    ],
+    boolean: ["--json", "--help", "-h"],
+  },
   published: {
     value: PUBLISHED_VALUE_FLAGS,
     boolean: PUBLISHED_BOOLEAN_FLAGS,
@@ -604,6 +618,7 @@ export function parseBenchActionArgs(argv: string[]): {
     first === "providers" ||
     first === "publish" ||
     first === "published" ||
+    first === "judge-calibrate" ||
     first === "check" ||
     first === "report"
       ? first
