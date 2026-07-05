@@ -1088,6 +1088,16 @@ export interface PluginConfig {
    * location.
    */
   judgeTrainingDir: string;
+  // Extraction faithfulness gate (issue #1576). Entailment-verification of
+  // extracted facts against their verified source spans from #1575.
+  /** Gate mode: "off" (default, byte-identical pre-feature), "shadow" (record only), "enforce" (route to pending_review). */
+  extractionFaithfulnessGate: "off" | "shadow" | "enforce";
+  /** Override model/endpoint; empty string = default routing chain. */
+  extractionFaithfulnessModel: string;
+  /** Context window (chars) around the quote sent to the verifier. Default 400. */
+  extractionFaithfulnessContextChars: number;
+  /** Per-batch timeout in ms; timeout → tagged error, never blocks writes. Default 8000. */
+  extractionFaithfulnessTimeoutMs: number;
   // Hourly summaries
   hourlySummariesEnabled: boolean;
   daySummaryEnabled: boolean;
@@ -2617,6 +2627,35 @@ export interface MemoryFrontmatter {
    * recorded). Readers treat absent as `"none"` for legacy memories.
    */
   provenance?: "verified" | "unverified" | "none";
+
+  // Faithfulness gate (issue #1576). When the extraction faithfulness gate
+  // runs (mode "shadow" or "enforce"), this field records the verdict. Absent
+  // when the gate is off or the fact predates #1576 — readers MUST treat
+  // absent as "not checked" (rule 34 spirit).
+  //
+  // This field is its own frontmatter island — it never feeds mw_*/trust
+  // fields. Consumed by #1577 (TrustScore) as one input among many.
+  /** Entailment verdict from the faithfulness gate (issue #1576). */
+  faithfulness?: FaithfulnessFrontmatter;
+}
+
+/**
+ * Faithfulness gate frontmatter (issue #1576).
+ *
+ * Serialized as a single JSON line so it round-trips through the existing
+ * YAML parser. `verdict: "unchecked"` marks a fact that entered the gate but
+ * could not be evaluated (backend failure, timeout). `verdict:
+ * "skipped_no_span"` marks a legacy fact without a verified source span.
+ * Both are distinct from the field being absent (gate was off entirely).
+ */
+export interface FaithfulnessFrontmatter {
+  verdict: "entailed" | "contradicted" | "unsupported" | "unchecked" | "skipped_no_span";
+  /** Model/endpoint that produced the verdict, when known. */
+  model?: string;
+  /** One-sentence rationale from the verifier. */
+  rationale?: string;
+  /** ISO-8601 timestamp the check ran. */
+  at?: string;
 }
 
 /** Memory link relationship types */
@@ -2771,6 +2810,14 @@ export interface ExtractedFact {
   tags: string[];
   entityRef?: string;
   source?: ExtractionPassSource;
+  /**
+   * Claim-level provenance spans backing this fact (issue #1575).
+   * Populated by the PR 2 extraction validator when `provenance.enabled`
+   * is true. Absent for legacy extractions — downstream consumers (the
+   * faithfulness gate #1576, TrustScore #1577) MUST treat absent as
+   * "no verified span" and skip gracefully.
+   */
+  sources?: ProvenanceSource[];
   promptedByQuestion?: string;
   /**
    * Whether this fact is project-scoped or globally applicable.

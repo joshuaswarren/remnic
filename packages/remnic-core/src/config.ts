@@ -2909,6 +2909,36 @@ export function parseConfig(
     collectJudgeTrainingPairs: coerceBool(cfg.collectJudgeTrainingPairs) === true,
     judgeTrainingDir:
       typeof cfg.judgeTrainingDir === "string" ? cfg.judgeTrainingDir : "",
+    // Extraction faithfulness gate (issue #1576). Entailment-verification of
+    // extracted facts against verified source spans (#1575). Default "off"
+    // (rule 39: byte-identical pre-feature pipeline). Invalid values are
+    // rejected listing valid options (rule 51).
+    extractionFaithfulnessGate: (() => {
+      const v = cfg.extractionFaithfulnessGate;
+      if (v === undefined || v === null) return "off";
+      // Present-but-invalid (true/1/{}) must reject, not silently disable the gate (Ob4RQ).
+      const raw = typeof v === "string" ? v.trim().toLowerCase() : v;
+      if (raw === "off" || raw === "shadow" || raw === "enforce") return raw;
+      throw new Error(
+        `extractionFaithfulnessGate must be one of "off" | "shadow" | "enforce" (got ${JSON.stringify(v)})`,
+      );
+    })(),
+    extractionFaithfulnessModel:
+      typeof cfg.extractionFaithfulnessModel === "string"
+        ? cfg.extractionFaithfulnessModel
+        : "",
+    // Numeric knobs go through coerceNumber so CLI operators can pass
+    // --config extractionFaithfulnessTimeoutMs=4000 without the string
+    // silently dropping to the default. Matches the coercion contract applied
+    // to other numeric config keys (CLAUDE.md rule #28 / gotcha #36).
+    extractionFaithfulnessContextChars: (() => {
+      const n = coerceNumber(cfg.extractionFaithfulnessContextChars);
+      return n !== undefined && n > 0 ? Math.min(Math.round(n), 4000) : 400;
+    })(),
+    extractionFaithfulnessTimeoutMs: (() => {
+      const n = coerceNumber(cfg.extractionFaithfulnessTimeoutMs);
+      return n !== undefined && n > 0 ? Math.min(Math.round(n), 60_000) : 8000;
+    })(),
     // Inline source attribution (issue #369). Opt-in to preserve
     // backwards compatibility with existing downstream consumers.
     inlineSourceAttributionEnabled: cfg.inlineSourceAttributionEnabled === true,

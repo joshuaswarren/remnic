@@ -36,6 +36,12 @@ import {
   type JudgeVerdict,
 } from "./extraction-judge.js";
 import {
+  applyFaithfulnessVerdict,
+  createFaithfulnessCounters,
+  runFaithfulnessGateBatch,
+} from "./extraction-faithfulness.js";
+import type { FaithfulnessGateCounters } from "./extraction-faithfulness.js";
+import {
   EXTRACTION_JUDGE_VERDICT_CATEGORY,
   recordJudgeVerdict,
 } from "./extraction-judge-telemetry.js";
@@ -1829,6 +1835,12 @@ export class Orchestrator {
    */
   private readonly judgeDeferCounts: Map<string, number>;
   /**
+   * Faithfulness gate distribution counters (issue #1576). Per-orchestrator
+   * running tally surfaced via console_state telemetry. No module-level state
+   * (rule 11) — these hang off the orchestrator instance.
+   */
+  private faithfulnessCounters: FaithfulnessGateCounters = createFaithfulnessCounters();
+  /**
    * Side-channel: number of facts deferred in the most recent
    * `persistExtraction` call (issue #562, PR 2). The caller reads this after
    * `persistExtraction` returns to decide whether to retain buffer turns for
@@ -1840,6 +1852,20 @@ export class Orchestrator {
 
   get fastGatewayLlm(): FallbackLlmClient | null {
     return this._fastGatewayLlm;
+  }
+
+  /**
+   * Faithfulness gate verdict distribution (issue #1576). Consumed by the
+   * console-state aggregator so `remnic doctor` can render how the gate is
+   * performing. Returns a fresh object so callers cannot mutate the
+   * internal counters. Returns `undefined` when the gate is off so the
+   * console-state snapshot omits the faithfulness block entirely (cursor
+   * review: an all-zero block would otherwise always be truthy and leak
+   * into snapshots that document it as absent-when-off).
+   */
+  getConsoleFaithfulnessDistribution(): FaithfulnessGateCounters | undefined {
+    if (this.config.extractionFaithfulnessGate === "off") return undefined;
+    return { ...this.faithfulnessCounters };
   }
   readonly modelRegistry: ModelRegistry;
   readonly relevance: RelevanceStore;
@@ -13247,6 +13273,9 @@ export class Orchestrator {
       // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,
       scopeProfileGatePlan,
+      // Verbatim source turns for the faithfulness gate (#1576) so it can
+      // locate a quote per fact when #1575 spans are absent.
+      normalizedTurns.map((t) => t.content).join("\n\n"),
     );
     let postPersistMetadataFailed = false;
     meta ??= await storage.loadMeta();
@@ -13693,6 +13722,8 @@ export class Orchestrator {
     sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
+    /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */
+    sourceText?: string,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
@@ -14577,6 +14608,29 @@ export class Orchestrator {
       }
     }
 
+    // Faithfulness gate (issue #1576). Entailment-verification of extracted
+    // facts against their verified source spans from #1575. Placement: after
+    // parse + provenance validation, BEFORE persist/index (rule 44). The
+    // substantive batch logic lives in the pure module; this is thin
+    // delegation (ground rule 4). off → null map (byte-identical pre-feature
+    // pipeline, rule 39); shadow → record only; enforce → pending_review.
+    const faithfulnessMode = this.config.extractionFaithfulnessGate;
+    const faithfulnessResultsByFactIndex =
+      faithfulnessMode === "shadow" || faithfulnessMode === "enforce"
+        ? await runFaithfulnessGateBatch(
+            facts,
+            faithfulnessMode,
+            this.config,
+            this.localLlm,
+            new FallbackLlmClient(
+              this.config.gatewayConfig,
+              fallbackLlmRuntimeContextFromConfig(this.config),
+            ),
+            this.faithfulnessCounters,
+            sourceText,
+          )
+        : null;
+
     let factLoopIndex = -1;
     for (const fact of facts) {
       factLoopIndex++;
@@ -14813,6 +14867,19 @@ export class Orchestrator {
         }
       }
 
+      // Faithfulness gate verdict application (issue #1576). Look up the
+      // pre-computed verdict for this fact and translate it to frontmatter +
+      // an optional enforce-mode pending_review status. Logic lives in the
+      // pure module; this is thin read-through (ground rule 4).
+      const { faithfulness: faithfulnessFm, enforceStatus: faithfulnessEnforceStatus } =
+        applyFaithfulnessVerdict(
+          faithfulnessResultsByFactIndex,
+          factLoopIndex,
+          faithfulnessMode,
+          fact.content,
+          this.faithfulnessCounters,
+        );
+
       // Issue #373 — write-time semantic similarity guard. Hook runs after
       // the exact content-hash miss and the importance gate so that:
       //   (a) paraphrased near-duplicates never reach writeMemory(), and
@@ -14903,7 +14970,14 @@ export class Orchestrator {
       // memory without user confirmation).
       let contradictionDetected = false;
 
-      if (this.config.contradictionDetectionEnabled && this.qmd.isAvailable()) {
+      // Faithfulness gate (#1576, chatgpt P2): skip contradiction detection
+      // for a pending_review fact — an unfaithful extraction in the review queue
+      // must not trigger auto-resolve and retire an existing active memory.
+      if (
+        this.config.contradictionDetectionEnabled &&
+        this.qmd.isAvailable() &&
+        faithfulnessEnforceStatus !== "pending_review"
+      ) {
         const targetNamespace = this.namespaceFromStorageDir(targetStorage.dir);
         const contradiction = await this.checkForContradiction(
           fact.content,
@@ -14968,7 +15042,16 @@ export class Orchestrator {
       // dropped, leaving a stale fact active. writeCategory (not fact.category)
       // is used because routing rules may have overridden the raw category.
       const isCorrection = writeCategory === "correction";
-      if (pendingSemanticSkip && !contradictionDetected && !isCorrection) {
+      // Faithfulness gate (#1576, cursor High): a pending_review fact must
+      // bypass the semantic-dedup skip so it reaches the review queue — the
+      // gate's contract is "persists with status: pending_review, never
+      // silently dropped" (issue #1576).
+      if (
+        pendingSemanticSkip &&
+        !contradictionDetected &&
+        !isCorrection &&
+        faithfulnessEnforceStatus !== "pending_review"
+      ) {
         log.debug(
           `dedup: skipping semantic near-duplicate fact "${fact.content
             .slice(0, 60)
@@ -15067,6 +15150,9 @@ export class Orchestrator {
               structuredAttributes: fact.structuredAttributes,
               validAt: sourceContext?.validAt,
               contentHashSource: rawChunkedContent,
+              // Faithfulness gate (issue #1576).
+              ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
+              ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
             },
           );
           try {
@@ -15102,6 +15188,11 @@ export class Orchestrator {
                   intentEntityTypes: inferredIntent?.entityTypes,
                   memoryKind,
                   validAt: sourceContext?.validAt,
+                  // Faithfulness gate (issue #1576): propagate the parent
+                  // fact's verdict + enforce status so a pending_review fact
+                  // is not indexed as active through its chunks (chatgpt P2).
+                  ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
+                  ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
                 },
               );
             }
@@ -15122,7 +15213,9 @@ export class Orchestrator {
             `chunked memory ${parentId} into ${chunkResult.chunks.length} chunks`,
           );
           trackPersistedId(targetStorage, parentId);
+          // #1576 (cursor Medium): keep pending_review ids out of threadEpisodeIdsForGraph — else later active facts build thread-predecessor edges to an unfaithful memory.
           if (
+            faithfulnessEnforceStatus !== "pending_review" &&
             threadEpisodeIdsForGraph &&
             !threadEpisodeIdsForGraph.includes(parentId)
           ) {
@@ -15132,23 +15225,31 @@ export class Orchestrator {
           // PR #402 Thread 1 fix: run source-namespace temporal supersession for
           // chunked writes, matching the non-chunked path.  Without this the
           // source namespace retains stale facts that should have been superseded.
-          try {
-            const supersessionEntityRef =
-              typeof (fact as any).entityRef === "string"
-                ? ((fact as any).entityRef as string)
-                : undefined;
-            await applyTemporalSupersession({
-              storage: targetStorage,
-              newMemoryId: parentId,
-              entityRef: supersessionEntityRef,
-              structuredAttributes: fact.structuredAttributes,
-              createdAt: supersessionOrderingAt(sourceContext?.validAt),
-              enabled: this.config.temporalSupersessionEnabled,
-            });
-          } catch (err) {
-            log.warn(`temporal-supersession (chunked): unexpected error: ${err}`);
+          // Faithfulness gate (#1576, cursor High): skip supersession for a
+          // pending_review fact — an unfaithful extraction in the review queue
+          // must NOT retire older active memories.
+          if (faithfulnessEnforceStatus !== "pending_review") {
+            try {
+              const supersessionEntityRef =
+                typeof (fact as any).entityRef === "string"
+                  ? ((fact as any).entityRef as string)
+                  : undefined;
+              await applyTemporalSupersession({
+                storage: targetStorage,
+                newMemoryId: parentId,
+                entityRef: supersessionEntityRef,
+                structuredAttributes: fact.structuredAttributes,
+                createdAt: supersessionOrderingAt(sourceContext?.validAt),
+                enabled: this.config.temporalSupersessionEnabled,
+              });
+            } catch (err) {
+              log.warn(`temporal-supersession (chunked): unexpected error: ${err}`);
+            }
           }
-          await promoteMemoryToShared({
+          // Faithfulness gate (#1576, chatgpt P2): do not promote a
+          // pending_review fact to shared/profile — it must enter the review
+          // queue without active copies that bypass the gate.
+          if (faithfulnessEnforceStatus !== "pending_review") await promoteMemoryToShared({
             sourceStorage: targetStorage,
             category: writeCategory,
             content: fact.content,
@@ -15193,7 +15294,8 @@ export class Orchestrator {
             if (
               this.config.verbatimArtifactsEnabled &&
               this.config.verbatimArtifactCategories.includes(writeCategory) &&
-              fact.confidence >= this.config.verbatimArtifactsMinConfidence
+              fact.confidence >= this.config.verbatimArtifactsMinConfidence &&
+              faithfulnessEnforceStatus !== "pending_review"
             ) {
               // Reuse citedChunkedContent so the artifact carries the same citation
               // timestamp as the parent memory write above (Fix #3 — duplicate-citation).
@@ -15207,8 +15309,8 @@ export class Orchestrator {
                 intentEntityTypes: inferredIntent?.entityTypes,
               });
             }
-            // v8.2: graph edge building for chunked memories
-            if (graphCaps.multiGraphMemory) {
+            // v8.2: graph edge building for chunked memories. #1576: skip pending_review.
+            if (graphCaps.multiGraphMemory && faithfulnessEnforceStatus !== "pending_review") {
               try {
                 const graphContext = await ensureGraphContext(targetStorage);
                 const entityRef =
@@ -15333,6 +15435,9 @@ export class Orchestrator {
           structuredAttributes: fact.structuredAttributes,
           validAt: sourceContext?.validAt,
           contentHashSource: writeCategory === "fact" ? fact.content : undefined,
+          // Faithfulness gate (issue #1576).
+          ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
+          ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
         },
       );
       if (routedRuleId) {
@@ -15342,22 +15447,26 @@ export class Orchestrator {
       }
       // Temporal supersession (issue #375): when the new fact has structured
       // attributes, retire any older fact with the same entity + attribute
-      // key that has a conflicting value.
-      try {
-        const supersessionEntityRef =
-          typeof (fact as any).entityRef === "string"
-            ? ((fact as any).entityRef as string)
-            : undefined;
-        await applyTemporalSupersession({
-          storage: targetStorage,
-          newMemoryId: memoryId,
-          entityRef: supersessionEntityRef,
-          structuredAttributes: fact.structuredAttributes,
-          createdAt: supersessionOrderingAt(sourceContext?.validAt),
-          enabled: this.config.temporalSupersessionEnabled,
-        });
-      } catch (err) {
-        log.warn(`temporal-supersession: unexpected error: ${err}`);
+      // key that has a conflicting value. Faithfulness gate (#1576, cursor
+      // High): skip for a pending_review fact — an unfaithful extraction in
+      // the review queue must NOT retire older active memories.
+      if (faithfulnessEnforceStatus !== "pending_review") {
+        try {
+          const supersessionEntityRef =
+            typeof (fact as any).entityRef === "string"
+              ? ((fact as any).entityRef as string)
+              : undefined;
+          await applyTemporalSupersession({
+            storage: targetStorage,
+            newMemoryId: memoryId,
+            entityRef: supersessionEntityRef,
+            structuredAttributes: fact.structuredAttributes,
+            createdAt: supersessionOrderingAt(sourceContext?.validAt),
+            enabled: this.config.temporalSupersessionEnabled,
+          });
+        } catch (err) {
+          log.warn(`temporal-supersession: unexpected error: ${err}`);
+        }
       }
       try {
         trackBehaviorSignals(
@@ -15372,14 +15481,18 @@ export class Orchestrator {
           }),
         );
         trackPersistedId(targetStorage, memoryId);
+        // #1576 (cursor Medium): same thread-episode guard on the non-chunked path.
         if (
+          faithfulnessEnforceStatus !== "pending_review" &&
           threadEpisodeIdsForGraph &&
           !threadEpisodeIdsForGraph.includes(memoryId)
         ) {
           threadEpisodeIdsForGraph.push(memoryId);
         }
         await this.indexPersistedMemory(targetStorage, memoryId);
-        await promoteMemoryToShared({
+        // Faithfulness gate (#1576, chatgpt P2): skip promotion for a
+        // pending_review fact so no active shared/profile copy bypasses the gate.
+        if (faithfulnessEnforceStatus !== "pending_review") await promoteMemoryToShared({
           sourceStorage: targetStorage,
           category: writeCategory,
           content: fact.content,
@@ -15399,8 +15512,8 @@ export class Orchestrator {
           validAt: sourceContext?.validAt,
           source: extractionWriteSource,
         });
-        // v8.2: graph edge building (fail-open — errors caught inside GraphIndex)
-        if (graphCaps.multiGraphMemory) {
+        // v8.2: graph edge building (fail-open). #1576: skip pending_review facts.
+        if (graphCaps.multiGraphMemory && faithfulnessEnforceStatus !== "pending_review") {
           try {
             const graphContext = await ensureGraphContext(targetStorage);
             const entityRef =
@@ -15443,7 +15556,8 @@ export class Orchestrator {
         if (
           this.config.verbatimArtifactsEnabled &&
           this.config.verbatimArtifactCategories.includes(writeCategory) &&
-          fact.confidence >= this.config.verbatimArtifactsMinConfidence
+          fact.confidence >= this.config.verbatimArtifactsMinConfidence &&
+          faithfulnessEnforceStatus !== "pending_review"
         ) {
           // Reuse citedFactContent so the artifact carries the same citation
           // timestamp as the memory write above (Fix #3 — duplicate-citation).
@@ -16296,9 +16410,8 @@ export class Orchestrator {
         const tmtEntries = allMemories
           .filter(
             (m) =>
-              m.frontmatter.status !== "superseded" &&
-              m.frontmatter.status !== "archived" &&
-              m.frontmatter.status !== "forgotten",
+              m.frontmatter.status !== "superseded" && m.frontmatter.status !== "archived" &&
+              m.frontmatter.status !== "forgotten" && m.frontmatter.status !== "pending_review", // #1576: unfaithful queue items must not feed TMT clusters
           )
           .map((m) => ({
             path: m.path,
@@ -18965,7 +19078,18 @@ export class Orchestrator {
       }
       const memory = memoryByPath.get(r.path);
       if (memory) {
-        if (memory.frontmatter.status === "forgotten") {
+        // Review-lifecycle statuses never enter active recall injection
+        // (forgotten, pending_review, rejected, quarantined). Superseded and
+        // archived have dedicated filters below. #1576: the faithfulness gate
+        // routes unsupported/contradicted facts to pending_review — they must
+        // not leak back via the QMD/embedding path. chatgpt P2.
+        const recallStatus = memory.frontmatter.status;
+        if (
+          recallStatus === "forgotten" ||
+          recallStatus === "pending_review" ||
+          recallStatus === "rejected" ||
+          recallStatus === "quarantined"
+        ) {
           forgottenFilteredCount += 1;
           continue;
         }

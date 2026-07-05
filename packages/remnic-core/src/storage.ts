@@ -10,6 +10,7 @@ import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./mem
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import { serializeProvenanceFields, parseProvenanceSources, parseProvenanceTag, reconcileProvenanceRead } from "./provenance.js";
+import { serializeFaithfulnessFields, parseFaithfulnessField } from "./extraction-faithfulness.js";
 import { createVersion as createPageVersion, type VersioningConfig, type VersionTrigger } from "./page-versioning.js";
 import { isValidTranscriptDate, WEARABLES_DIR_NAME } from "./wearables/day-store.js";
 import {
@@ -458,6 +459,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     lines.push(`last_reinforced_at: ${fm.last_reinforced_at}`);
   }
   serializeProvenanceFields(fm, lines);
+  serializeFaithfulnessFields(fm, lines);
   lines.push("---");
   return lines.join("\n");
 }
@@ -872,6 +874,7 @@ function parseFrontmatter(
       last_reinforced_at: fm.last_reinforced_at || undefined,
       sources: parseProvenanceSources(fm.sources),
       provenance: reconcileProvenanceRead(parseProvenanceTag(fm.provenance), parseProvenanceSources(fm.sources)),
+      faithfulness: parseFaithfulnessField(fm.faithfulness),
     },
     content,
   };
@@ -3384,6 +3387,12 @@ export class StorageManager {
        */
       derivedFrom?: string[];
       derivedVia?: ConsolidationOperator;
+      /**
+       * Faithfulness gate verdict (issue #1576). When provided, persisted to
+       * frontmatter so downstream readers (TrustScore #1577, review queue)
+       * can consume it. Absent = gate was off or fact predates #1576.
+       */
+      faithfulness?: import("./types.js").FaithfulnessFrontmatter;
     } = {},
   ): Promise<string> {
     await this.ensureDirectories();
@@ -3452,6 +3461,10 @@ export class StorageManager {
     }
     if (options.derivedVia !== undefined) {
       fm.derived_via = options.derivedVia;
+    }
+    // Faithfulness gate frontmatter (issue #1576).
+    if (options.faithfulness !== undefined) {
+      fm.faithfulness = options.faithfulness;
     }
 
     // Append structured attributes as searchable suffix so QMD indexes them.
@@ -7016,6 +7029,10 @@ export class StorageManager {
       intentEntityTypes?: string[];
       memoryKind?: MemoryFrontmatter["memoryKind"];
       validAt?: string;
+      /** Lifecycle status (issue #1576): pending_review chunks stay out of active recall. */
+      status?: import("./types.js").MemoryStatus;
+      /** Faithfulness gate verdict (issue #1576), propagated from the parent fact. */
+      faithfulness?: import("./types.js").FaithfulnessFrontmatter;
     } = {},
   ): Promise<string> {
     await this.ensureDirectories();
@@ -7045,6 +7062,8 @@ export class StorageManager {
       intentEntityTypes: options.intentEntityTypes,
       memoryKind: options.memoryKind,
       valid_at: validAt,
+      ...(options.status ? { status: options.status } : {}),
+      ...(options.faithfulness ? { faithfulness: options.faithfulness } : {}),
     };
 
     const sanitized = sanitizeMemoryContent(content);
