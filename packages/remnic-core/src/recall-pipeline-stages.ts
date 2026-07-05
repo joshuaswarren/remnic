@@ -125,6 +125,21 @@ export interface UnifiedRankConfig<TIntent> {
    * The rank primary key is ALWAYS DESC regardless of this setting.
    */
   turnIndexSortDirection?: TurnIndexSortDirection;
+  /**
+   * When `true`, skip the sort stage entirely and return items in their
+   * post-dedup insertion order (first-seen first). Used by explicit-cue,
+   * whose deliberate value ordering — turn references → content cues →
+   * lexical cues, gathered by evidence TYPE then read-key priority — is the
+   * pipeline's highest-value design choice. A rank-based sort would invert
+   * it (turn references are deliberately UNSCORED while lexical hits carry
+   * numeric scores; sorting by score would demote turn references below
+   * weak lexical hits — cursor[bot] / codex P2 on #1505).
+   *
+   * Score and threshold-filter still apply when declared; only the sort is
+   * skipped. The constant scorer (`scoreEvidence: () => 0`) makes the
+   * no-scoring policy explicit alongside this flag.
+   */
+  preserveInsertionOrder?: boolean;
 }
 
 /**
@@ -232,6 +247,13 @@ export function unifiedDedupeAndRank<TIntent>(
   // turnIndex direction is configurable: DESC (relevance) or ASC (chronology).
   // The tertiary tiebreaker follows the direction:
   //   DESC → score DESC; ASC → content.localeCompare.
+  //
+  // explicit-cue opts out of sorting entirely (preserveInsertionOrder) — its
+  // deliberate value ordering is the collection order (turn references →
+  // content cues → lexical cues), and a rank-based sort would invert it.
+  if (config.preserveInsertionOrder) {
+    return filtered;
+  }
   return filtered.sort(makeComparator(direction));
 }
 

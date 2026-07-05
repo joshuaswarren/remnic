@@ -3,6 +3,7 @@ import {
   gatherAcrossReadSessions,
   resolveLcmReadSessionIds,
 } from "./lcm-fallback-read.js";
+import { unifiedDedupeAndRank } from "./recall-pipeline-stages.js";
 
 export interface ExplicitCueRecallEngine {
   expandContext(
@@ -410,7 +411,26 @@ export async function buildExplicitCueRecallSection(
     includeContentLexicalCues: options.includeContentLexicalCues,
     includeStructuredPlanCues: options.includeStructuredPlanCues,
   });
-  return buildEvidencePack(evidenceItems, {
+  // Issue #1539 PR5: route through the unified spine to declare explicit-cue's
+  // policy explicitly. The call is behavior-idempotent — items are already
+  // deduped by `seenTurns` during collection (so the spine's id-dedup matches
+  // exactly), the constant scorer assigns rank=0 which `buildEvidencePack`
+  // ignores, and `preserveInsertionOrder` skips the sort so the deliberate
+  // value ordering (turn references -> content cues -> lexical cues, by evidence
+  // type then read-key priority) is preserved byte-for-byte.
+  //
+  // The value is the DECLARED config: a fifth recall pipeline would be a config
+  // file, and this config documents explicit-cue's opt-outs (no scoring, id-only
+  // dedup, insertion-order preservation) as named fields instead of embedded
+  // code. See recall-pipeline-stages.ts for the spine contract.
+  const rankedEvidenceItems = unifiedDedupeAndRank(evidenceItems, {
+    query: "",
+    intents: [],
+    scoreEvidence: () => 0,
+    dedupByContent: false,
+    preserveInsertionOrder: true,
+  });
+  return buildEvidencePack(rankedEvidenceItems, {
     title: "Explicit Cue Evidence",
     query: evidenceFocusQuery,
     maxChars,

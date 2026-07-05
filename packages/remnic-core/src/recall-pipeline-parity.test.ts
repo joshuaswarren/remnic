@@ -139,25 +139,48 @@ test("parity response-guidance: rank primary key always DESC regardless of turnI
 });
 
 // ---------------------------------------------------------------------------
-// PR5 — explicit-cue shape: no scoring (constant scorer — the "intentional
-// no-scoring behavior" made explicit by the config), DESC default, content-dedup.
+// PR5 — explicit-cue shape: the pipeline that OPTS OUT of scoring AND sorting.
+// Its deliberate value ordering (turn references -> content cues -> lexical
+// cues, by evidence type then read-key priority) is the highest-value design
+// choice — preserved verbatim via preserveInsertionOrder + constant scorer +
+// id-only dedup (the spine call is behavior-idempotent; items are already
+// deduped by seenTurns during collection).
 // ---------------------------------------------------------------------------
 
-test("parity explicit-cue: constant scorer reduces to turnIndex DESC ordering", () => {
+test("parity explicit-cue: preserveInsertionOrder keeps collection order intact", () => {
+  // Insertion order is 2, 4, 1. A default sort would reorder to 4, 2, 1.
+  // explicit-cue must NOT reorder — the collection order IS the value order.
   const items = [
-    item(2, "explicit cue b"),
-    item(4, "explicit cue a"),
-    item(1, "explicit cue c"),
+    item(2, "explicit cue b", { id: "s:2" }),
+    item(4, "explicit cue a", { id: "s:4" }),
+    item(1, "explicit cue c", { id: "s:1" }),
   ];
   const ranked = unifiedDedupeAndRank(items, {
     query: "",
     intents: [],
-    scoreEvidence: () => 1, // explicit-cue does not score
+    scoreEvidence: () => 0,
+    dedupByContent: false,
+    preserveInsertionOrder: true,
   });
   assert.deepEqual(
     ranked.map((r) => r.turnIndex),
-    [4, 2, 1],
+    [2, 4, 1],
   );
+});
+
+test("parity explicit-cue: id-only dedup (dedupByContent false) keeps distinct turns", () => {
+  const items = [
+    item(1, "same body", { id: "s:1" }),
+    item(2, "same body", { id: "s:2" }),
+  ];
+  const ranked = unifiedDedupeAndRank(items, {
+    query: "",
+    intents: [],
+    scoreEvidence: () => 0,
+    dedupByContent: false,
+    preserveInsertionOrder: true,
+  });
+  assert.equal(ranked.length, 2);
 });
 
 // ---------------------------------------------------------------------------
