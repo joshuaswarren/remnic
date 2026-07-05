@@ -435,9 +435,9 @@ export function isTransientNetworkError(err: unknown): boolean {
 }
 
 function sleep(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
+  // Plain Promise constructor: avoids Promise.withResolvers (ES2024 / Node 22+),
+  // so retry backoff works on Node 20 and other runtimes that load plugin-pi.
+  return new Promise<void>(resolve => setTimeout(resolve, ms));
 }
 
 function jsonBytes(value: unknown): number {
