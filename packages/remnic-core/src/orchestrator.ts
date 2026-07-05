@@ -1858,9 +1858,13 @@ export class Orchestrator {
    * Faithfulness gate verdict distribution (issue #1576). Consumed by the
    * console-state aggregator so `remnic doctor` can render how the gate is
    * performing. Returns a fresh object so callers cannot mutate the
-   * internal counters.
+   * internal counters. Returns `undefined` when the gate is off so the
+   * console-state snapshot omits the faithfulness block entirely (cursor
+   * review: an all-zero block would otherwise always be truthy and leak
+   * into snapshots that document it as absent-when-off).
    */
-  getConsoleFaithfulnessDistribution(): FaithfulnessGateCounters {
+  getConsoleFaithfulnessDistribution(): FaithfulnessGateCounters | undefined {
+    if (this.config.extractionFaithfulnessGate === "off") return undefined;
     return { ...this.faithfulnessCounters };
   }
   readonly modelRegistry: ModelRegistry;
@@ -15203,21 +15207,26 @@ export class Orchestrator {
           // PR #402 Thread 1 fix: run source-namespace temporal supersession for
           // chunked writes, matching the non-chunked path.  Without this the
           // source namespace retains stale facts that should have been superseded.
-          try {
-            const supersessionEntityRef =
-              typeof (fact as any).entityRef === "string"
-                ? ((fact as any).entityRef as string)
-                : undefined;
-            await applyTemporalSupersession({
-              storage: targetStorage,
-              newMemoryId: parentId,
-              entityRef: supersessionEntityRef,
-              structuredAttributes: fact.structuredAttributes,
-              createdAt: supersessionOrderingAt(sourceContext?.validAt),
-              enabled: this.config.temporalSupersessionEnabled,
-            });
-          } catch (err) {
-            log.warn(`temporal-supersession (chunked): unexpected error: ${err}`);
+          // Faithfulness gate (#1576, cursor High): skip supersession for a
+          // pending_review fact — an unfaithful extraction in the review queue
+          // must NOT retire older active memories.
+          if (faithfulnessEnforceStatus !== "pending_review") {
+            try {
+              const supersessionEntityRef =
+                typeof (fact as any).entityRef === "string"
+                  ? ((fact as any).entityRef as string)
+                  : undefined;
+              await applyTemporalSupersession({
+                storage: targetStorage,
+                newMemoryId: parentId,
+                entityRef: supersessionEntityRef,
+                structuredAttributes: fact.structuredAttributes,
+                createdAt: supersessionOrderingAt(sourceContext?.validAt),
+                enabled: this.config.temporalSupersessionEnabled,
+              });
+            } catch (err) {
+              log.warn(`temporal-supersession (chunked): unexpected error: ${err}`);
+            }
           }
           // Faithfulness gate (#1576, chatgpt P2): do not promote a
           // pending_review fact to shared/profile — it must enter the review
@@ -15420,22 +15429,26 @@ export class Orchestrator {
       }
       // Temporal supersession (issue #375): when the new fact has structured
       // attributes, retire any older fact with the same entity + attribute
-      // key that has a conflicting value.
-      try {
-        const supersessionEntityRef =
-          typeof (fact as any).entityRef === "string"
-            ? ((fact as any).entityRef as string)
-            : undefined;
-        await applyTemporalSupersession({
-          storage: targetStorage,
-          newMemoryId: memoryId,
-          entityRef: supersessionEntityRef,
-          structuredAttributes: fact.structuredAttributes,
-          createdAt: supersessionOrderingAt(sourceContext?.validAt),
-          enabled: this.config.temporalSupersessionEnabled,
-        });
-      } catch (err) {
-        log.warn(`temporal-supersession: unexpected error: ${err}`);
+      // key that has a conflicting value. Faithfulness gate (#1576, cursor
+      // High): skip for a pending_review fact — an unfaithful extraction in
+      // the review queue must NOT retire older active memories.
+      if (faithfulnessEnforceStatus !== "pending_review") {
+        try {
+          const supersessionEntityRef =
+            typeof (fact as any).entityRef === "string"
+              ? ((fact as any).entityRef as string)
+              : undefined;
+          await applyTemporalSupersession({
+            storage: targetStorage,
+            newMemoryId: memoryId,
+            entityRef: supersessionEntityRef,
+            structuredAttributes: fact.structuredAttributes,
+            createdAt: supersessionOrderingAt(sourceContext?.validAt),
+            enabled: this.config.temporalSupersessionEnabled,
+          });
+        } catch (err) {
+          log.warn(`temporal-supersession: unexpected error: ${err}`);
+        }
       }
       try {
         trackBehaviorSignals(

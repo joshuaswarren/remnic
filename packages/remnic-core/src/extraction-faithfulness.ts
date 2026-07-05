@@ -680,25 +680,29 @@ export async function runFaithfulnessGateBatch(
    */
   sourceText = "",
 ): Promise<Map<number, FaithfulnessResult> | null> {
+  // Phase 1 — build the checkable inputs. This is pure (no LLM, no throw):
+  // locateFactQuote and the source/span selection never reject. Keeping it
+  // outside the try lets the catch walk the same inputs to tag a pipeline
+  // failure as "unchecked" rather than dropping it on the floor.
+  const inputs: { factIndex: number; input: FaithfulnessCheckInput }[] = [];
+  for (let fi = 0; fi < facts.length; fi++) {
+    const f = facts[fi];
+    if (!f || typeof f.content !== "string" || !f.content.trim()) continue;
+    // Prefer a #1575 verified span; fall back to a located quote from the
+    // source turn text so the gate runs even before per-fact sources are
+    // attached. Without either, the fact is skipped_no_span (never gated).
+    const sources = Array.isArray(f.sources) ? f.sources : [];
+    const firstSource = sources[0];
+    const quote =
+      firstSource && typeof firstSource.quote === "string" && firstSource.quote.trim()
+        ? firstSource.quote
+        : locateFactQuote(f.content, sourceText);
+    if (!quote) continue; // no located span — applyFaithfulnessVerdict tags skipped_no_span
+    inputs.push({ factIndex: fi, input: { factText: f.content, quote } });
+  }
   const resultsByFactIndex = new Map<number, FaithfulnessResult>();
+  if (inputs.length === 0) return resultsByFactIndex;
   try {
-    const inputs: { factIndex: number; input: FaithfulnessCheckInput }[] = [];
-    for (let fi = 0; fi < facts.length; fi++) {
-      const f = facts[fi];
-      if (!f || typeof f.content !== "string" || !f.content.trim()) continue;
-      // Prefer a #1575 verified span; fall back to a located quote from the
-      // source turn text so the gate runs even before per-fact sources are
-      // attached. Without either, the fact is skipped_no_span (never gated).
-      const sources = Array.isArray(f.sources) ? f.sources : [];
-      const firstSource = sources[0];
-      const quote =
-        firstSource && typeof firstSource.quote === "string" && firstSource.quote.trim()
-          ? firstSource.quote
-          : locateFactQuote(f.content, sourceText);
-      if (!quote) continue; // no located span — applyFaithfulnessVerdict tags skipped_no_span
-      inputs.push({ factIndex: fi, input: { factText: f.content, quote } });
-    }
-    if (inputs.length === 0) return resultsByFactIndex;
     const batch = await checkFaithfulnessBatch(
       inputs.map((x) => x.input),
       config,
@@ -717,14 +721,18 @@ export async function runFaithfulnessGateBatch(
       `extraction-faithfulness[${mode}]: ${inputs.length} facts checked, ${batch.elapsedMs}ms`,
     );
   } catch (err) {
-    // Fail-open: a pipeline error never blocks writes (checklist §4). Return
-    // null so applyFaithfulnessVerdict records nothing (the gate did not run),
-    // mirroring mode=off — distinct from the empty-map case where facts had no
-    // sources and should be tagged skipped_no_span.
+    // Fail-open: a pipeline error never blocks writes (checklist §4). Tag each
+    // checkable fact as backend_unavailable so applyFaithfulnessVerdict records
+    // "unchecked" (issue spec: backend failure → unchecked). Returning null
+    // here would make a shadow/enforce batch failure indistinguishable from
+    // gate-off, losing the telemetry signal (cursor review). Facts with no
+    // located span stay absent → skipped_no_span at apply time.
     log.warn(
-      `extraction-faithfulness: pipeline error, proceeding without gating (fail-open): ${err instanceof Error ? err.message : String(err)}`,
+      `extraction-faithfulness: pipeline error, tagging ${inputs.length} checkable facts as unchecked (fail-open): ${err instanceof Error ? err.message : String(err)}`,
     );
-    return null;
+    for (const { factIndex } of inputs) {
+      resultsByFactIndex.set(factIndex, { ok: false, error: { code: "backend_unavailable" } });
+    }
   }
   return resultsByFactIndex;
 }

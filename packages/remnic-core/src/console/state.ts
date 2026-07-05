@@ -61,9 +61,10 @@ export interface ConsoleStateOrchestratorLike {
   getConsoleDaemonInfo?: () => ConsoleDaemonInfo;
   /**
    * Optional faithfulness gate distribution (issue #1576). Returns the
-   * per-orchestrator running counters when the gate is active.
+   * per-orchestrator running counters when the gate is active, or undefined
+   * when the gate is off (so the snapshot omits the block).
    */
-  getConsoleFaithfulnessDistribution?: () => ConsoleFaithfulnessDistribution;
+  getConsoleFaithfulnessDistribution?: () => ConsoleFaithfulnessDistribution | undefined;
 }
 
 export interface ConsoleBufferState {

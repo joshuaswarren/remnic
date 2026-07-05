@@ -761,3 +761,4 @@ test("applyFaithfulnessVerdict: bumps verdict counters at apply time (cursor rev
   assert.equal(counters.unsupported, 1);
   assert.equal(counters.unchecked, 1);
 });
+
