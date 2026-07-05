@@ -3261,6 +3261,12 @@ export class StorageManager {
       reason: TombstoneReason;
       createdBy: TombstoneCreatedBy;
       createdAt: string;
+      /**
+       * Canonical contentHash from the retired memory's frontmatter (#1579).
+       * Threads through to TombstoneStore.rebuild so the rebuilt tombstone's
+       * exact tier matches re-extraction (citation-hash alignment).
+       */
+      contentHash?: string;
     };
     const retired: Retired[] = [];
     for (const m of all) {
