@@ -100,6 +100,7 @@ import {
   type ScopeProfileLayerResolution,
   type ScopeProfilePromotionResolution,
 } from "./namespaces/scope-profiles.js";
+import { type ScopePlan, resolveScopePlan } from "./scopes/scope-plan.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
@@ -8621,10 +8622,11 @@ export class EngramAccessService {
    * admin filters the console exposes.
    */
   async adminListNamespaces(filter?: AdminNamespaceFilter) {
-    return listAdminNamespaces({
+    const result = await listAdminNamespaces({
       catalog: this.orchestrator.namespaceCatalog,
       filter,
     });
+    return redactSensitive(result);
   }
 
   /**
@@ -8632,7 +8634,7 @@ export class EngramAccessService {
    * the orchestrator's search health accessor (one probe per namespace).
    */
   async adminMaintenanceHealth() {
-    return gatherMaintenanceHealth({
+    const report = await gatherMaintenanceHealth({
       catalog: this.orchestrator.namespaceCatalog,
       qmdHealthProvider: async (namespace): Promise<AdminNamespaceQmdHealth | null> => {
         try {
@@ -8656,6 +8658,7 @@ export class EngramAccessService {
         }
       },
     });
+    return redactSensitive(report);
   }
 
   /**
@@ -8663,7 +8666,8 @@ export class EngramAccessService {
    * and legacy stranded directories. Never applies a migration.
    */
   async adminTranscriptAudit() {
-    return auditTranscripts(this.orchestrator.config.memoryDir);
+    const result = await auditTranscripts(this.orchestrator.config.memoryDir);
+    return redactSensitive(result);
   }
 
   /**
@@ -8676,20 +8680,57 @@ export class EngramAccessService {
     sourceMemoryId: string;
     namespace?: string;
     principal?: string;
+    sessionKey?: string;
     targets: ReadonlyArray<{ kind: MemoryPromotionTargetKind; namespace?: string }>;
     reason: string;
     actor?: string;
   }) {
     const config = this.orchestrator.config;
-    const sourceNamespace = this.resolveReadableNamespace(
-      request.namespace,
-      request.principal,
-    );
+    const namespacesEnabled = config.namespacesEnabled === true;
+    // Fix OdCl3: when no namespace is supplied, resolve the source via the
+    // scope plan (principal self / scope-profile write layer / coding overlay)
+    // instead of falling through to config.defaultNamespace. This matches the
+    // runtime observe/write path.
+    let sourceNamespace: string;
+    if (request.namespace) {
+      sourceNamespace = this.resolveReadableNamespace(
+        request.namespace,
+        request.principal,
+      );
+    } else {
+      const codingContext = request.sessionKey
+        ? this.orchestrator.getCodingContextForSession(request.sessionKey) ?? null
+        : null;
+      const plan = resolveScopePlan({
+        config,
+        sessionKey: request.sessionKey,
+        principalOverride: request.principal,
+        codingContext,
+        namespacesEnabled,
+      });
+      sourceNamespace = this.resolveReadableNamespace(
+        plan.baseNamespace,
+        request.principal,
+      );
+    }
+    // Fix OdB0c: thread coding context into the scope-profile plan so
+    // userProject/teamProject promotion targets resolve for project-scoped
+    // sessions (previously hard-coded to null).
+    const codingContext = request.sessionKey
+      ? this.orchestrator.getCodingContextForSession(request.sessionKey) ?? null
+      : null;
+    const codingOverlay = codingContext
+      ? resolveCodingNamespaceOverlay(
+          codingContext,
+          config.codingMode,
+          config.defaultNamespace,
+        )
+      : null;
     const scopeProfilePlan = resolveScopeProfilePlan({
       config,
       principal: request.principal,
-      codingContext: null,
-      codingOverlay: null,
+      codingContext,
+      codingOverlay,
     });
     const storage: PromotionStorageProvider = {
       readMemory: async (namespace, memoryId) => {
@@ -8708,7 +8749,7 @@ export class EngramAccessService {
           confidence: memory.confidence,
           tags: memory.tags,
           entityRef: memory.entityRef,
-          source: `admin-promotion-${memory.sourceNamespace}`,
+          source: `admin-promotion:${memory.sourceNamespace}:${memory.reason.slice(0, 120)}`,
           lineage: memory.lineage,
           sourceMemoryId: memory.sourceMemoryId,
           actor: memory.actor,

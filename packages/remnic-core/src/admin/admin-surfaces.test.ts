@@ -238,8 +238,8 @@ test("gatherMaintenanceHealth reports degraded mode when QMD probe fails", async
     assert.equal(report.enabled, true);
     assert.equal(report.degradedMode, true);
     assert.ok(
-      report.perNamespace.some((entry) => entry.qmdDegraded && entry.qmdError?.includes("unreachable")),
-      "the failing namespace must be flagged degraded with the error message",
+      report.perNamespace.some((entry) => entry.qmdDegraded && entry.qmdError === "QMD health probe failed"),
+      "the failing namespace must be flagged degraded with a sanitized error message",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

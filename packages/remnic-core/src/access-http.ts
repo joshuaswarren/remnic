@@ -2247,14 +2247,20 @@ export class EngramAccessHttpServer {
         });
       }
       try {
+        // Rate-limit the promotion write, matching every other write route
+        // (observe, trust-zone promotion, etc.). The check throws on limit
+        // exceeded; the hit is recorded after the write succeeds.
+        this.ensureWriteRateLimitAvailable();
         const result = await this.service.adminPromoteMemory({
           sourceMemoryId: body.sourceMemoryId,
           namespace: typeof body.namespace === "string" ? body.namespace : undefined,
           principal: this.resolveRequestPrincipal(req),
+          sessionKey: typeof body.sessionKey === "string" ? body.sessionKey : undefined,
           targets,
           reason: body.reason,
           actor: typeof body.actor === "string" ? body.actor : undefined,
         });
+        this.recordWriteRateLimitHit();
         this.respondJson(res, 200, result);
       } catch (err) {
         if (err instanceof EngramAccessInputError) {

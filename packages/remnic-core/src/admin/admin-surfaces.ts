@@ -494,11 +494,17 @@ export async function gatherMaintenanceHealth(options: MaintenanceHealthOptions)
           const qmd = await qmdHealthProvider(record.namespace);
           if (qmd) {
             entry.qmd = qmd;
-            entry.qmdDegraded = !qmd.available || qmd.collectionState === "missing";
+            entry.qmdDegraded =
+    !qmd.available ||
+    qmd.collectionState === "missing" ||
+    qmd.collectionState === "unknown";
           }
         } catch (err) {
           entry.qmdDegraded = true;
-          entry.qmdError = err instanceof Error ? err.message : String(err);
+          // Sanitize: never echo raw error messages to the dashboard. The
+          // generic diagnostic is sufficient for operators; the full error
+          // is logged by the qmdHealthProvider's caller (access-service).
+          entry.qmdError = "QMD health probe failed";
         }
       }
       if (entry.qmdDegraded) degradedMode = true;
@@ -785,7 +791,10 @@ export async function promoteMemory(options: PromoteMemoryOptions): Promise<Memo
       target.promotedMemoryId = promotedId;
       auditTargets.push({ target: target.target, namespace: target.namespace, promoted: true });
     } catch (err) {
-      target.reason = `promotion write failed: ${err instanceof Error ? err.message : String(err)}`;
+      // Sanitize: never echo raw error messages in the promotion result.
+      // The operator sees a generic failure indicator; the full error is
+      // logged server-side by the storage provider.
+      target.reason = "promotion write failed";
       auditTargets.push({ target: target.target, namespace: target.namespace, promoted: false });
     }
   }
