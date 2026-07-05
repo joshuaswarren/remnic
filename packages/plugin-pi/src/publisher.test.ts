@@ -1483,3 +1483,84 @@ test("resolveOmpWrapperImportSpecifier fails fast with an actionable error for c
     "cross-drive omp layout must fail fast instead of emitting an invalid ./D:\\… specifier",
   );
 });
+
+// ── Regression (PR #1641 / #1598): when bun is found via the PATH probe,
+// resolveBunBinary must resolve it to an absolute executable path so the
+// embedded loader/postinstall don't depend on omp's runtime PATH (GUI/service
+// launches often strip PATH, which would make a bare "bun" self-heal spawn
+// fail even though install found a working binary).
+test("omp publisher resolveBunBinary resolves the PATH-found bun to an absolute path", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-bun-path-resolve-"));
+  const binDir = path.join(root, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  // Fake bun that satisfies BOTH the `--version` PATH probe (exit 0) and the
+  // `build --outdir` bundle step (writes a stub index.js).
+  const fakeBun = path.join(binDir, "bun");
+  fs.writeFileSync(
+    fakeBun,
+    [
+      `#!${process.execPath}`,
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      "const args = process.argv.slice(2);",
+      'if (args[0] === "--version") process.exit(0);',
+      'const outdirArg = args.find((a) => a.startsWith("--outdir="));',
+      'if (!outdirArg) { console.error("fake-bun: --outdir missing"); process.exit(1); }',
+      'const outdir = outdirArg.slice("--outdir=".length);',
+      "fs.mkdirSync(outdir, { recursive: true });",
+      'fs.writeFileSync(path.join(outdir, "index.js"), "export default async function remnicPiExtension() {}\\n");',
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  const previousPath = process.env.PATH;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  delete process.env.REMNIC_OMP_BUN_BIN;
+  // Only the fake bun is on PATH, so the PATH probe resolves to it.
+  process.env.PATH = binDir;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    restoreEnv("PATH", previousPath);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  const result = await new OmpMemoryExtensionPublisher().publish({
+    config: { memoryDir: path.join(root, "memory") },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+
+  const loader = fs.readFileSync(path.join(result.extensionRoot, "loader.js"), "utf8");
+  const resolvedFakeBun = fs.realpathSync(fakeBun);
+  assert.ok(
+    loader.includes(JSON.stringify(resolvedFakeBun)),
+    `loader must embed the absolute PATH-resolved bun path (${resolvedFakeBun}), not the bare string "bun"`,
+  );
+  assert.doesNotMatch(
+    loader,
+    /var bunForRebuild\s*=\s*"bun"\s*;/,
+    "loader must not fall back to the bare 'bun' string when an absolute binary was available on PATH",
+  );
+});

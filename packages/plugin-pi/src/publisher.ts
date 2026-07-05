@@ -789,6 +789,36 @@ try {
 }
 
 /**
+ * Walks `PATH` the way a shell does and returns the first `bun` executable it
+ * finds, as a realpath-resolved absolute path (or null when nothing on PATH
+ * is an executable `bun`). Used so the install-time PATH probe can embed an
+ * absolute bun path in the generated loader/postinstall instead of the bare
+ * string `"bun"`, which would break self-heal rebuilds under a stripped
+ * runtime PATH (GUI/service launches). Mirrors `which(1)`; no dependency.
+ */
+function resolveBunOnPath(): string | null {
+  const pathVar = process.env.PATH ?? process.env.Path ?? process.env.path ?? "";
+  const separator = process.platform === "win32" ? ";" : ":";
+  const candidateNames =
+    process.platform === "win32" ? ["bun.exe", "bun"] : ["bun"];
+  for (const dir of pathVar.split(separator)) {
+    if (!dir) continue;
+    for (const name of candidateNames) {
+      const candidate = path.isAbsolute(dir)
+        ? path.join(dir, name)
+        : path.resolve(dir, name);
+      try {
+        const stat = fs.statSync(candidate);
+        if (stat.isFile()) return fs.realpathSync(candidate);
+      } catch {
+        // Missing dir or permission error — try the next candidate.
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Resolves the `bun` binary for the install-time pre-bundle. Honours
  * `REMNIC_OMP_BUN_BIN` (test/override seam), then PATH, then common locations.
  * Returns null when bun is unavailable so the caller can fail with guidance.
@@ -800,7 +830,15 @@ function resolveBunBinary(): string | null {
   }
 
   const pathProbe = spawnSync("bun", ["--version"], { encoding: "utf-8" });
-  if (!pathProbe.error && pathProbe.status === 0) return "bun";
+  if (!pathProbe.error && pathProbe.status === 0) {
+    // Resolve the PATH-found bun to an absolute executable so the embedded
+    // loader/postinstall don't depend on omp's runtime PATH — GUI/service
+    // launches commonly inherit a stripped PATH, which would make a bare
+    // "bun" self-heal spawn fail even though install found a working binary.
+    // Fall back to "bun" only if the PATH walk can't locate it (e.g. a shell
+    // function/alias that isn't an actual file on PATH).
+    return resolveBunOnPath() ?? "bun";
+  }
 
   // Mirror omp's path helpers, which resolve the agent home as
   // HOME ?? USERPROFILE ?? os.homedir(). Relying on HOME alone breaks the
