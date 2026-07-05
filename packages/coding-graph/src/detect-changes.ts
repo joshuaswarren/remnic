@@ -343,7 +343,7 @@ export function computeBlastRadius(
   const nodeIdByQFile = new Map<string, string>();
   for (const [nodeId, depth] of hitByDepth) {
     const m = hitMeta.get(nodeId);
-    if (m) nodeIdByQFile.set(`${m.qualifiedName}\0${m.filePath}`, nodeId);
+    if (m) nodeIdByQFile.set(`${m.qualifiedName}\0${m.filePath}\0${m.label}`, nodeId);
     void depth;
   }
   out.sort((a, b) => {
@@ -353,8 +353,13 @@ export function computeBlastRadius(
     if (qCmp !== 0) return qCmp;
     const fCmp = a.filePath.localeCompare(b.filePath);
     if (fCmp !== 0) return fCmp;
-    const aId = nodeIdByQFile.get(`${a.qualifiedName}\0${a.filePath}`) ?? "";
-    const bId = nodeIdByQFile.get(`${b.qualifiedName}\0${b.filePath}`) ?? "";
+    // Node identity is (qualifiedName, filePath, label); include label so two
+    // distinct nodes sharing qualifiedName+filePath do not collapse to one key
+    // (chatgpt-codex-connector: 'Include label in blast-radius tiebreaker').
+    const lCmp = a.label.localeCompare(b.label);
+    if (lCmp !== 0) return lCmp;
+    const aId = nodeIdByQFile.get(`${a.qualifiedName}\0${a.filePath}\0${a.label}`) ?? "";
+    const bId = nodeIdByQFile.get(`${b.qualifiedName}\0${b.filePath}\0${b.label}`) ?? "";
     return aId.localeCompare(bId);
   });
 

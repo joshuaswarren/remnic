@@ -603,6 +603,10 @@ async function runReindex(
       const knownFiles = fileHashes;
       const toDelete: string[] = [];
       const toIngest: string[] = [];
+      // New candidate paths that probe missing on disk (sparse checkout /
+      // partial worktree / list-vs-disk race): retained in pending so a later
+      // run indexes them instead of advancing head as if done.
+      const missingNew: string[] = [];
       for (const p2 of seen) {
         const probe = await probeRead(repoRoot, p2, readFile);
         if (probe.kind === "skip") {
@@ -619,8 +623,11 @@ async function runReindex(
           // ingest so ingestFiles records it as a pending retry if the
           // read still fails, WITHOUT deleting the existing nodes.
           toIngest.push(p2);
-        } else if (probe.kind === "missing" && knownFiles.has(p2)) {
-          toDelete.push(p2);
+        } else if (probe.kind === "missing") {
+          // Confirmed deletion → prune if known; a NEW absent path → retain in
+          // pending (cursor Bugbot: 'Missing new paths skip pending').
+          if (knownFiles.has(p2)) toDelete.push(p2);
+          else missingNew.push(p2);
         }
       }
 
@@ -642,6 +649,7 @@ async function runReindex(
           computeNextPending({
             priorPending: pendingRetry,
             parseFailedPaths: ingestResult.parseFailedPaths,
+            extraRetry: missingNew,
             ingestedCandidates: toIngest,
             deleted: toDelete,
           }),
@@ -691,7 +699,12 @@ async function runReindex(
           continue;
         }
         if (probe.kind === "missing") {
+          // Confirmed deletion of a known file → prune. A NEW candidate absent
+          // on disk (sparse checkout / list-vs-disk race) → retain in pending so
+          // a later run indexes it rather than advancing head as if done
+          // (cursor Bugbot: 'Missing new paths skip pending').
           if (knownFiles.has(candidatePath)) toDelete.push(candidatePath);
+          else hashScanRetry.push(candidatePath);
           continue;
         }
         if (probe.kind === "unknown") {
