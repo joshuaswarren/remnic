@@ -209,6 +209,18 @@ function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined
     const y = Number(ys), mo = Number(ms), da = Number(ds);
     if (!isValidCalendarDate(y, mo, da)) return undefined;
   }
+  // Also validate M/D/Y or D/M/Y formats (provider/import common shapes:
+  // 02/30/2026, 30-02-2026, etc.). Date.parse silently shifts overflow in
+  // these too. Try both month-first and day-first interpretations; if
+  // neither is a valid calendar date, reject (chatgpt-codex-connector thread
+  // dH47 — non-YMD overflow timestamps).
+  const mdy = /^(\d{1,2})\D(\d{1,2})\D(\d{4})/.exec(ts);
+  if (mdy) {
+    const a = Number(mdy[1]), b = Number(mdy[2]), yr = Number(mdy[3]);
+    if (!isValidCalendarDate(yr, a, b) && !isValidCalendarDate(yr, b, a)) {
+      return undefined;
+    }
+  }
   const iso = new Date(parsed).toISOString();
   return isStrictIsoTimestamp(iso) ? iso : undefined;
 }

@@ -998,7 +998,23 @@ export class ExtractionEngine {
       turnFingerprint?: string;
     }>,
   ): ExtractionResult {
-    if (!this.config.provenance?.enabled) return result;
+    // Even when provenance is disabled, strip the transient LLM-provided
+    // `quote` field so it does not leak through the persist pipeline (the
+    // enabled path strips it after validation; the disabled path must match).
+    // quote is never persisted to frontmatter, but carrying it risks it
+    // surfacing in content-hash dedup or downstream in-memory consumers
+    // (cursor thread dHiY).
+    if (!this.config.provenance?.enabled) {
+      if (result.facts.length === 0) return result;
+      return {
+        ...result,
+        facts: result.facts.map((fact) => {
+          if (fact.quote === undefined) return fact;
+          const { quote: _stripped, ...rest } = fact;
+          return rest;
+        }),
+      };
+    }
     if (result.facts.length === 0) return result;
     const provenanceTurns: ProvenanceTurnInput[] = turns.map((t) => ({
       content: t.content,

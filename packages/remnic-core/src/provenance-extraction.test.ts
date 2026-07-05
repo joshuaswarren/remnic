@@ -770,3 +770,69 @@ test("buildFactProvenance: prompt-label quote falls back to stripped when raw do
     "prompt-label quote that doesn't match raw must fall back to stripped",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Regression: thread dH47 — non-YMD overflow timestamps (M/D/Y, D/M/Y) must
+// also be rejected, not silently shifted by Date.parse.
+// ---------------------------------------------------------------------------
+
+test("toStrictIsoTimestamp path: overflowed MM/DD/YYYY is rejected (thread dH47)", () => {
+  // Feb 30 in MM/DD/YYYY format — Date.parse shifts to March 2.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "02/30/2026 10:01:30" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    "2026-03-02T10:01:30.000Z",
+    "MM/DD/YYYY overflow must not be silently shifted",
+  );
+});
+
+test("toStrictIsoTimestamp path: overflowed DD/MM/YYYY is rejected (thread dH47)", () => {
+  // 30/02/2026 (30 Feb) in DD/MM/YYYY — Date.parse shifts.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "30/02/2026 10:01:30" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    "2026-03-02T10:01:30.000Z",
+    "DD/MM/YYYY overflow must not be silently shifted",
+  );
+});
+
+test("toStrictIsoTimestamp path: valid MM/DD/YYYY still normalizes (thread dH47 non-regression)", () => {
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "05/03/2026 10:01:30" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified");
+  assert.ok(result.sources);
+  assert.match(
+    result.sources![0]!.observedAt,
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+  );
+});
