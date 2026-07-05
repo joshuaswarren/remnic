@@ -265,6 +265,14 @@ function withNamespace(body) {
   return body;
 }
 
+// Base path from the daemon URL (for reverse-proxy subpath mounts, e.g.
+// REMNIC_DAEMON_URL=http://gw/remnic). Mirrors plugin-pi's daemon-URL + route
+// concatenation — without this, a path-qualified base URL has its prefix
+// silently dropped and requests hit the host root (#1571 review). Trailing
+// slashes are stripped so "/remnic/" + "/engram/v1/observe" becomes
+// "/remnic/engram/v1/observe"; a bare root ("/") yields "" (no prefix).
+const DAEMON_BASE_PATH = DAEMON_URL ? DAEMON_URL.pathname.replace(/\/+$/, "") : "";
+
 // ── HTTP helpers — return a real success signal (2xx) so callers can decide
 // whether to advance/clear the cursor (fixes the data-loss bug in #1442).
 //
@@ -292,7 +300,7 @@ function httpPost(urlPath, token, bodyObj, timeoutMs) {
         protocol: DAEMON_URL.protocol,
         hostname: DAEMON_URL.hostname,
         port: DAEMON_URL.port || (DAEMON_URL.protocol === "https:" ? 443 : 80),
-        path: urlPath,
+        path: DAEMON_BASE_PATH + urlPath,
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -335,7 +343,7 @@ function httpHealthy(timeoutMs) {
         protocol: DAEMON_URL.protocol,
         hostname: DAEMON_URL.hostname,
         port: DAEMON_URL.port || (DAEMON_URL.protocol === "https:" ? 443 : 80),
-        path: "/engram/v1/health",
+        path: DAEMON_BASE_PATH + "/engram/v1/health",
         method: "GET",
       },
       (res) => {

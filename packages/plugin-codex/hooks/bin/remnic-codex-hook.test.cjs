@@ -992,3 +992,44 @@ test("pre-compact: REMNIC_PRECOMPACT_LOCK_RETRIES=0 is honored, not coerced to 1
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("session-start: a path-prefixed REMNIC_DAEMON_URL routes under the prefix (#1571 review)", async () => {
+  // cursor: a reverse-proxy mount (e.g. http://gw/remnic) must keep its path
+  // prefix — httpPost/httpHealthy prepend DAEMON_BASE_PATH so requests hit
+  // /remnic/engram/v1/... not /engram/v1/... at the host root (parity with
+  // plugin-pi's daemon-URL + route concatenation).
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/remnic/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/remnic/engram/v1/recall") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end(
+        JSON.stringify({ context: "prefixed recall", count: 1, mode: "auto" }),
+      );
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook(
+      "session-start",
+      { session_id: "prefixed-1", cwd: home },
+      {
+        port: 1,
+        home,
+        env: { extra: { REMNIC_DAEMON_URL: `http://127.0.0.1:${port}/remnic` } },
+      },
+    );
+    assert.equal(json.continue, true);
+    assert.match(json.hookSpecificOutput.additionalContext, /prefixed recall/);
+    assert.ok(
+      calls.some((c) => c.url === "/remnic/engram/v1/recall"),
+      "recall honored the /remnic path prefix",
+    );
+    assert.ok(
+      calls.some((c) => c.url === "/remnic/engram/v1/health"),
+      "health check honored the /remnic path prefix",
+    );
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
