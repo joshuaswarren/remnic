@@ -112,9 +112,10 @@ export interface CodingGitInvoker {
   ): { ok: true; entries: readonly NameStatusEntry[] } | GitFailure;
 
   /**
-   * `git diff --unified=0 <paths>` — hunks with zero context lines for the
-   * working tree (staged + unstaged). Each hunk carries its new-version
-   * line range. Used by `detect_changes` to map hunks → symbol spans.
+   * Working-tree diff hunks with zero context lines. Captures BOTH staged
+   * and unstaged changes (compared against HEAD) so `detect_changes` maps
+   * every uncommitted edit to a symbol span. Each hunk carries its
+   * new-version line range.
    */
   diffHunks(
     cwd: string,
@@ -195,18 +196,30 @@ export function defaultCodingGitInvoker(): CodingGitInvoker {
     },
 
     diffHunks(cwd: string, paths: readonly string[]) {
+      // `git diff HEAD` compares the working tree (staged + unstaged)
+      // against the last commit, so BOTH staged and unstaged edits are
+      // captured (chatgpt-codex-connector: 'Include staged hunks in
+      // diffHunks'). Plain `git diff` would miss staged-only changes.
       // --unified=0 → zero context lines so hunks are tight.
       // --no-color → no ANSI escape codes in output.
       // -- separator before paths to disambiguate refs from paths.
-      const args = ["diff", "--unified=0", "--no-color"];
+      const pathArgs: string[] = [];
       if (paths.length > 0) {
-        args.push("--");
-        for (const p of paths) args.push(p);
+        pathArgs.push("--");
+        for (const p of paths) pathArgs.push(p);
       }
-      const r = runGit(cwd, args);
+      const r = runGit(cwd, ["diff", "HEAD", "--unified=0", "--no-color", ...pathArgs]);
       if (!r.ok) return r;
       if (r.exitCode !== 0) {
-        return { ok: false, code: "git_error" };
+        // HEAD may not exist (unborn repo, no commits yet). Fall back to
+        // unstaged-only diff — an acceptable degradation for a repo that
+        // has never been indexed (there are no committed symbols anyway).
+        const fallback = runGit(cwd, ["diff", "--unified=0", "--no-color", ...pathArgs]);
+        if (!fallback.ok) return fallback;
+        if (fallback.exitCode !== 0) {
+          return { ok: false, code: "git_error" };
+        }
+        return { ok: true, hunks: parseHunks(fallback.stdout) };
       }
       return { ok: true, hunks: parseHunks(r.stdout) };
     },

@@ -9,7 +9,8 @@
  * functions tested with synthetic output strings.
  */
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -18,6 +19,7 @@ import { GraphStore } from "./graph-store.js";
 import { getIndexStatus } from "./index-status.js";
 import { META_KEY_LAST_HEAD } from "./reindex.js";
 import {
+  defaultCodingGitInvoker,
   parseNameStatus,
   parseHunks,
   parseLogFiles,
@@ -111,6 +113,31 @@ test("index_status: repo with no commits but stored head → stale, not fresh (c
   }
 });
 
+
+test("diffHunks: captures staged changes via git diff HEAD (chatgpt-codex-connector: 'Include staged hunks in diffHunks')", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "git-staged-"));
+  try {
+    const exec = (cmd: string) =>
+      execSync(cmd, { cwd: dir, stdio: "ignore" });
+    exec("git init -q");
+    exec('git config user.email "t@t.t"');
+    exec('git config user.name "t"');
+    await import("node:fs/promises").then((fs) => fs.mkdir(path.join(dir, "src"), { recursive: true }));
+    await writeFile(path.join(dir, "src/a.ts"), "export function foo() {}\n");
+    exec("git add src/a.ts");
+    exec('git -c commit.gpgsign=false commit -q -m init');
+    // Stage a change (git add) — plain `git diff` would miss this.
+    await writeFile(path.join(dir, "src/a.ts"), "export function foo() { return 1; }\n");
+    exec("git add src/a.ts");
+    const invoker = defaultCodingGitInvoker();
+    const result = invoker.diffHunks(dir, ["src/a.ts"]);
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(result.hunks.length > 0, "staged hunks must be captured (git diff HEAD)");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 // ──────────────────────────────────────────────────────────────────────────
 // git-invoker parsers
