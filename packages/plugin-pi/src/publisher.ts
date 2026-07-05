@@ -113,6 +113,11 @@ function ompRemovalAgentHomes(env: NodeJS.ProcessEnv): string[] {
  */
 export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
   static readonly capabilities: PublisherCapabilities = {
+    // Real publisher: writes host config + wrapper + readme, just no
+    // instructions.md/skills/citation/read-path-template artefacts. The
+    // explicit flag prevents the parity gate from mis-inferring "all flags
+    // false ⇒ stub" for this host (#1518).
+    isStub: false,
     instructionsMd: false,
     skillsFolder: false,
     citationFormat: false,

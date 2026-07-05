@@ -12,6 +12,7 @@ import {
   installConnector,
   removeConnector,
   locatePluginCodexExtensionSource,
+  getConnectorsDir,
 } from "../packages/remnic-core/src/connectors/index.js";
 
 async function makeTempCodexHome(): Promise<string> {
@@ -415,8 +416,12 @@ test("installConnector(codex-cli) rolls back extension when config write fails",
   // Use a temp XDG_CONFIG_HOME so the config dir is predictable.
   const xdg = await makeTempRemnicConfigHome();
 
-  // Derive the connectors dir from XDG_CONFIG_HOME (same logic as getConnectorsDir()).
-  const connectorsDir = path.join(xdg, "engram", ".engram-connectors", "connectors");
+  // Derive the connectors dir from the same helper the code uses (issue #1518:
+  // the canonical path is now remnic/.remnic-connectors, with engram as a
+  // read-fallback). Resolve BEFORE creating the trap so we get the canonical
+  // fresh-install path; creating a subdir under it then makes the active root
+  // resolve there for the install too.
+  const connectorsDir = getConnectorsDir();
   fs.mkdirSync(connectorsDir, { recursive: true });
   const configPath = path.join(connectorsDir, "codex-cli.json");
   // Create a directory at the config path so writeFileSync throws EISDIR.
@@ -458,9 +463,11 @@ test("removeConnector(codex-cli) with malformed config leaves config and extensi
       force: true,
     });
 
-    // Corrupt the saved config file using the same dir derivation as getConnectorsDir().
-    const connectorsDir = path.join(xdg, "engram", ".engram-connectors", "connectors");
-    const configPath = path.join(connectorsDir, "codex-cli.json");
+    // Corrupt the saved config file at the path the install actually wrote
+    // (issue #1518: fresh installs now write to remnic/.remnic-connectors;
+    // use getConnectorsDir() so the test tracks the code's resolution
+    // instead of a hardcoded path).
+    const configPath = path.join(getConnectorsDir(), "codex-cli.json");
     fs.writeFileSync(configPath, "{ this is not valid JSON !!!!");
 
     const remnicDir = path.join(codexHome, "memories_extensions", "remnic");
