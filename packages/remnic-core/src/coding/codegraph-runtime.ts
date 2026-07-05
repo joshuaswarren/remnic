@@ -410,6 +410,25 @@ export async function closeAllCodegraphStores(): Promise<void> {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
+// Context delegate factory — returns the 4 runtime delegates bound to the
+// access-service's store resolution, so the service can spread them into the
+// CodegraphSurfaceContext in a single line (keeps access-service.ts thin —
+// ratchet rule 4: god files gain registration/delegation only).
+// ──────────────────────────────────────────────────────────────────────────
+
+export function makeCodegraphRuntimeDelegates(): Pick<
+  import("./codegraph-surfaces.js").CodegraphSurfaceContext,
+  "runReindex" | "reportIndexStatus" | "detectChanges" | "ingestTraces"
+> {
+  return {
+    runReindex: (store, repoRoot, mode) => runCodegraphReindex({ store, repoRoot, mode }),
+    reportIndexStatus: (store, repoRoot) => reportCodegraphIndexStatus({ store, repoRoot }),
+    detectChanges: (store, repoRoot, head) => detectCodegraphChanges({ store, repoRoot, head }),
+    ingestTraces: (store, traces) => ingestCodegraphTraces({ store, traces }),
+  };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
 // Runtime delegates — the surface handlers call these to invoke the real
 // @remnic/coding-graph functions (executeReindex / getIndexStatus / detect /
 // upsertEdges). Each degrades to a clean tagged outcome when the runtime or

@@ -38,10 +38,7 @@ import {
 import {
   codegraphSurfaceVisible,
   getCodegraphStore,
-  runCodegraphReindex,
-  reportCodegraphIndexStatus,
-  detectCodegraphChanges,
-  ingestCodegraphTraces,
+  makeCodegraphRuntimeDelegates,
   type CodegraphStore,
 } from "./coding/codegraph-runtime.js";
 import { createVersion } from "./page-versioning.js";
@@ -4520,14 +4517,7 @@ export class EngramAccessService {
           return [];
         }
       },
-      removeFile: (filePath) => {
-        // Propagate unlink failures so deleteCodegraphProject can classify
-        // them (ENOENT → idempotent deleted=true; EACCES/EISDIR/EBUSY →
-        // deleted=false). The previous bare catch swallowed real failures
-        // and delete_project reported deleted=true while the DB stayed on
-        // disk (issue #1554 review thread).
-        unlinkSync(filePath);
-      },
+      removeFile: (filePath) => unlinkSync(filePath), // propagate failures → deleteCodegraphProject classifies (thread 7)
       throwInputError: (msg) => {
         throw new EngramAccessInputError(msg);
       },
@@ -4540,10 +4530,7 @@ export class EngramAccessService {
           summariser: createArchitectureCardSummariser(this.fallbackLlmRef ?? this.localLlmRef),
         });
       },
-      runReindex: (store, repoRoot, mode) => runCodegraphReindex({ store, repoRoot, mode }),
-      reportIndexStatus: (store, repoRoot) => reportCodegraphIndexStatus({ store, repoRoot }),
-      detectChanges: (store, repoRoot, head) => detectCodegraphChanges({ store, repoRoot, head }),
-      ingestTraces: (store, traces) => ingestCodegraphTraces({ store, traces }),
+      ...makeCodegraphRuntimeDelegates(),
     };
     return handleCodegraphTool(request, ctx);
   }
