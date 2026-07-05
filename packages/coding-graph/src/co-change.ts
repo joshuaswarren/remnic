@@ -35,7 +35,8 @@ export interface CoChangeEdge {
 /** Result of co-change mining. */
 export type MineCoChangesResult =
   | { readonly ok: true; readonly edges: readonly CoChangeEdge[] }
-  | GitFailure;
+  | GitFailure
+  | { readonly ok: false; readonly code: "store_closed" };
 
 /** Configuration for co-change mining. */
 export interface CoChangeConfig {
@@ -153,8 +154,14 @@ export async function mineAndStoreCoChanges(options: {
 
   const edges = mineCoChangeEdges(logResult.entries, config);
 
-  // Persist: clear + repopulate in one transaction.
-  await store.upsertCoChanges(edges);
+  // Persist: clear + repopulate in one transaction. Propagate a
+  // store_closed failure so the caller does not believe mining
+  // succeeded while nothing was persisted (cursor Bugbot: 'Co-change
+  // store reports false success').
+  const persistResult = await store.upsertCoChanges(edges);
+  if (!persistResult.ok) {
+    return { ok: false, code: "store_closed" };
+  }
 
   return { ok: true, edges };
 }

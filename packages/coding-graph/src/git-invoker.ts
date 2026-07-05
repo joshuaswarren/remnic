@@ -320,11 +320,16 @@ export function parseHunks(stdout: string): DiffHunk[] {
       const countStr = match[2] ?? "";
       const count = countStr.length > 0 ? parseInt(countStr, 10) : 1;
       if (!currentPath) continue;
+      // A deletion-only hunk emits a zero new-count (e.g. `@@ -2 +1,0 @@`).
+      // An empty [startLine, startLine) range can never overlap a symbol
+      // span, so pure deletions inside a function/class were missed.
+      // Treat zero-count as covering the adjacent new line (chatgpt-
+      // codex-connector: 'Map deletion-only hunks to a non-empty range').
       out.push({
         path: currentPath,
         newRange: {
           startLine,
-          endLine: startLine + count,
+          endLine: startLine + Math.max(count, 1),
         },
       });
     }
@@ -333,29 +338,44 @@ export function parseHunks(stdout: string): DiffHunk[] {
 }
 
 /**
- * Parse `git log --format=%H --name-only` output. Each commit is
- * separated by a blank line; the first line of each block is the SHA,
- * subsequent lines are file paths (until the next blank line).
+ * Parse `git log --format=%H --name-only` output into one entry per
+ * commit. Real git emits a blank line AFTER each SHA (before the file
+ * names) AND between commits, so a naive `\n\n` block split puts the
+ * SHA alone in one block and the file names in the next — the SHA-only
+ * block yields a commit with zero files and the file-name block fails
+ * SHA validation and is dropped. Walk line-by-line instead: a 40-hex
+ * line starts a new commit; subsequent non-empty lines are its files
+ * until the next SHA (chatgpt-codex-connector: 'Parse real git log
+ * records before mining co-changes'). Robust to both the synthetic
+ * (no blank-after-SHA) and real (blank-after-SHA) layouts.
  */
 export function parseLogFiles(stdout: string): LogFilesEntry[] {
   const out: LogFilesEntry[] = [];
-  const blocks = stdout.split("\n\n");
-  for (const block of blocks) {
-    const lines = block.split("\n").filter((l) => l.length > 0);
-    if (lines.length === 0) continue;
-    const sha = lines[0] ?? "";
-    // Validate SHA is 40 hex chars (full SHA from `--format=%H`).
-    if (!/^[0-9a-f]{40}$/.test(sha)) continue;
-    const files: string[] = [];
-    const seen = new Set<string>();
-    for (let i = 1; i < lines.length; i += 1) {
-      const f = lines[i] ?? "";
-      if (f.length > 0 && !seen.has(f)) {
-        seen.add(f);
-        files.push(f);
+  let currentSha: string | null = null;
+  let currentFiles: string[] = [];
+  const seenInCommit = new Set<string>();
+  const flush = (): void => {
+    if (currentSha !== null) {
+      out.push({ sha: currentSha, files: currentFiles });
+    }
+    currentSha = null;
+    currentFiles = [];
+    seenInCommit.clear();
+  };
+  for (const line of stdout.split("\n")) {
+    if (/^[0-9a-f]{40}$/.test(line)) {
+      flush();
+      currentSha = line;
+    } else if (line.length > 0 && currentSha !== null) {
+      if (!seenInCommit.has(line)) {
+        seenInCommit.add(line);
+        currentFiles.push(line);
       }
     }
-    out.push({ sha, files });
+    // blank lines are ignored — they do not terminate a commit; the
+    // next SHA does.
   }
+  flush();
   return out;
 }
+

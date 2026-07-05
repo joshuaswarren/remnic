@@ -216,3 +216,46 @@ test("parseLogFiles: dedupes files within a commit", () => {
   assert.equal(entries.length, 1);
   assert.equal(entries[0]!.files.length, 2); // a.ts appears once after dedupe
 });
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// Round-2 review fixes — git-invoker parsers + index_status
+// ──────────────────────────────────────────────────────────────────────────
+
+test("parseLogFiles: real git layout (blank line after SHA) (chatgpt-codex-connector: 'Parse real git log records')", () => {
+  const sha1 = "1".repeat(40);
+  const sha2 = "2".repeat(40);
+  // Real git log --format=%H --name-only emits a blank line AFTER the
+  // SHA before the file names. The old blank-line block split put the SHA
+  // alone in one block (zero files) and the names in the next (failed).
+  const stdout = `${sha1}\n\nsrc/a.ts\nsrc/b.ts\n\n${sha2}\n\nsrc/c.ts\n`;
+  const entries = parseLogFiles(stdout);
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]!.sha, sha1);
+  assert.deepEqual(entries[0]!.files, ["src/a.ts", "src/b.ts"]);
+  assert.equal(entries[1]!.sha, sha2);
+  assert.deepEqual(entries[1]!.files, ["src/c.ts"]);
+});
+
+test("parseHunks: deletion-only hunk (zero new-count) covers the adjacent line (chatgpt-codex-connector: 'Map deletion-only hunks')", () => {
+  // `@@ -2 +1,0 @@` = delete old line 2; new side has 0 lines at line 1.
+  const stdout = ["+++ b/src/a.ts", "@@ -2 +1,0 @@"].join("\n");
+  const hunks = parseHunks(stdout);
+  assert.equal(hunks.length, 1);
+  assert.equal(hunks[0]!.newRange.startLine, 1);
+  // Must be a non-empty range so it can overlap a symbol span.
+  assert.ok(hunks[0]!.newRange.endLine > hunks[0]!.newRange.startLine);
+});
+
+test("index_status: pending parse failures report stale even when heads match (chatgpt-codex-connector: 'Mark pending parse retries as stale')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    store.writeMeta(META_KEY_LAST_HEAD, SHA_A);
+    store.writeMeta("pending_parse_failures", JSON.stringify(["src/broken.ts"]));
+    const status = getIndexStatus(store, mockGit(SHA_A), dir);
+    assert.equal(status.mode, "stale");
+    assert.equal(status.dirty, true);
+  } finally {
+    await dispose(store, dir);
+  }
+});

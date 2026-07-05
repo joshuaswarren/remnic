@@ -26,7 +26,7 @@
  *   `startLine < symEndLine && symStartLine < endLine`.
  * Boundary lines (exact hit on startLine or endLine-1) are tested.
  */
-import type { GraphStore, TraverseHit } from "./graph-store.js";
+import { nodeIdFor, type GraphStore, type TraverseHit } from "./graph-store.js";
 import type { DiffHunk } from "./git-invoker.js";
 import type { SymbolIR, FileIR } from "@remnic/core";
 
@@ -172,6 +172,12 @@ export function findDirectlyAffectedSymbols(
   freshIRs: ReadonlyMap<string, FileIR>,
   contentsByPath: ReadonlyMap<string, Uint8Array>,
 ): Set<string> {
+  // Returns NODE IDS (not qualified names). Node identity is the full
+  // (qualifiedName, filePath, label) triple, so two files that emit the
+  // same qualifiedName produce distinct ids and downstream traversal
+  // resolves unambiguously by id instead of returning 'ambiguous_start'
+  // (chatgpt-codex-connector: 'Preserve node identity for direct
+  // blast-radius hits').
   const affected = new Set<string>();
   for (const [filePath, hunks] of hunksByPath) {
     const ir = freshIRs.get(filePath);
@@ -186,7 +192,7 @@ export function findDirectlyAffectedSymbols(
       );
       for (const hunk of hunks) {
         if (rangesOverlap(symLines, hunk.newRange)) {
-          affected.add(sym.qualifiedName);
+          affected.add(nodeIdFor({ qualifiedName: sym.qualifiedName, filePath, label: sym.kind }));
           break;
         }
       }

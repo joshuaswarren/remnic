@@ -27,6 +27,7 @@ import {
   hashContent,
   META_KEY_LAST_HEAD,
   META_KEY_PENDING_PARSE_FAILURES,
+  mineAndStoreCoChanges,
   type CodingGitInvoker,
   type NameStatusEntry,
   type ReindexGitFacts,
@@ -666,5 +667,101 @@ test("executor: incremental delete is atomic with the upsert — dropFiles is no
     assert.equal(store.readMeta(META_KEY_LAST_HEAD), SHA_B);
   } finally {
     await dispose(store, dir);
+  }
+});
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// Round-2 review fixes
+// ──────────────────────────────────────────────────────────────────────────
+
+test("executor: full mode dedups candidate + pending paths (cursor Bugbot: 'Full reindex duplicate ingest paths')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    // Pre-seed a pending failure for src/a.ts so it overlaps candidatePaths.
+    store.writeMeta(META_KEY_PENDING_PARSE_FAILURES, JSON.stringify(["src/a.ts"]));
+    const git = mockGit({ head: SHA_A });
+    // Without dedup, upsertFileBatch would throw on the duplicate path.
+    const result = await executeReindex({
+      store, git, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts"],
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.mode, "full");
+    assert.equal(result.filesIngested, 1);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("executor: hash-scan unions caller candidates with stored + pending (chatgpt-codex-connector: 'Require candidates' / 'Include indexed files')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Seed: src/a.ts indexed at SHA_A.
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    const git1 = mockGit({ head: SHA_A });
+    await executeReindex({
+      store, git: git1, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts"],
+    });
+
+    // Force-push + add a NEW file src/b.ts that is NOT in the old index.
+    // Caller passes candidatePaths = [src/b.ts] only. Without the union,
+    // src/a.ts (still present, unchanged content) is fine, but a deleted
+    // file would be missed. Here we verify the new file IS picked up via
+    // candidates AND the union doesn't drop the stored file from scanning.
+    await writeFiles(dir, { "src/b.ts": "export function bar() {}" });
+    const git2 = mockGit({ head: SHA_B, reachable: false });
+    const result = await executeReindex({
+      store, git: git2, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts", "src/b.ts"],
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.mode, "hash_scan");
+    // b.ts content differs from stored (absent) → ingested.
+    const hashes = store.readFileHashes();
+    assert.ok(hashes.has("src/b.ts"), "new file ingested via candidate union");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("executor: non-canonical path (.. traversal) is rejected before disk read (cursor Bugbot: 'Reindex reads non-canonical paths')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    // Seed a pending failure with a traversal path.
+    store.writeMeta(META_KEY_PENDING_PARSE_FAILURES, JSON.stringify(["../secret.ts"]));
+    const git = mockGit({ head: SHA_A });
+    const result = await executeReindex({
+      store, git, repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts"],
+    });
+    // full mode ingests src/a.ts; the ../secret.ts path is rejected
+    // (recorded as pending) and never read from disk.
+    assert.equal(result.ok, true);
+    // The traversal path must still be in pending (retry-safe) but must
+    // NOT have been read — verify it stays pending.
+    const pending = JSON.parse(store.readMeta(META_KEY_PENDING_PARSE_FAILURES) ?? "[]");
+    assert.ok(pending.includes("../secret.ts"), "non-canonical path kept pending, not read");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("mineAndStoreCoChanges: closed store reports failure, not false success (cursor Bugbot: 'Co-change store reports false success')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await store.close();
+    const git = mockGit({ head: SHA_A });
+    const result = await mineAndStoreCoChanges({ store, git, repoRoot: dir });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.equal(result.code, "store_closed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

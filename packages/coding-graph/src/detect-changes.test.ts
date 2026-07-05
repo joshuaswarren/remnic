@@ -16,6 +16,7 @@ import test from "node:test";
 
 import {
   GraphStore,
+  nodeIdFor,
   type EdgeIR,
   type StoreFileIR,
   type SymbolIR,
@@ -318,7 +319,11 @@ test("findDirectlyAffectedSymbols: hunk overlapping a symbol span", () => {
   const irs = new Map([["src/a.ts", ir]]);
   const contents = new Map([["src/a.ts", content]]);
   const affected = findDirectlyAffectedSymbols(hunks, irs, contents);
-  assert.ok(affected.has("a::foo"));
+  // Returns node ids (qualifiedName + filePath + label identity).
+  assert.ok(
+    affected.has(nodeIdFor({ qualifiedName: "a::foo", filePath: "src/a.ts", label: "function" })),
+    "foo's node id is affected",
+  );
 });
 
 test("findDirectlyAffectedSymbols: hunk NOT overlapping → not affected", () => {
@@ -362,8 +367,14 @@ test("findDirectlyAffectedSymbols: hunk NOT overlapping → not affected", () =>
   const irs = new Map([["src/a.ts", ir]]);
   const contents = new Map([["src/a.ts", content]]);
   const affected = findDirectlyAffectedSymbols(hunks, irs, contents);
-  assert.ok(!affected.has("a::foo"), "foo should NOT be affected");
-  assert.ok(affected.has("a::bar"), "bar should be affected");
+  assert.ok(
+    !affected.has(nodeIdFor({ qualifiedName: "a::foo", filePath: "src/a.ts", label: "function" })),
+    "foo should NOT be affected",
+  );
+  assert.ok(
+    affected.has(nodeIdFor({ qualifiedName: "a::bar", filePath: "src/a.ts", label: "function" })),
+    "bar should be affected",
+  );
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -421,4 +432,34 @@ test("computeBlastRadius: duplicate simple names keep the correct filePath (curs
   } finally {
     await dispose(store, dir);
   }
+});
+
+
+test("findDirectlyAffectedSymbols: duplicate qualifiedName across files yields distinct node ids (chatgpt-codex-connector: 'Preserve node identity')", () => {
+  // Two files both declaring a symbol with the SAME qualifiedName "dup::fn".
+  // findDirectlyAffectedSymbols must return BOTH node ids (distinct because
+  // identity includes filePath), not collapse them into one.
+  const content = new TextEncoder().encode("function fn() {}\n");
+  const irA: FileIR = {
+    path: "src/a.ts", language: "typescript", contentHash: "h",
+    symbols: [{ kind: "function", name: "fn", qualifiedName: "dup::fn", span: { startByte: 0, endByte: 16 } }],
+    imports: [], exports: [], callSites: [], routes: [],
+  };
+  const irB: FileIR = {
+    path: "src/b.ts", language: "typescript", contentHash: "h",
+    symbols: [{ kind: "function", name: "fn", qualifiedName: "dup::fn", span: { startByte: 0, endByte: 16 } }],
+    imports: [], exports: [], callSites: [], routes: [],
+  };
+  const hunks = new Map<string, readonly DiffHunk[]>([
+    ["src/a.ts", [{ path: "src/a.ts", newRange: { startLine: 1, endLine: 2 } }]],
+    ["src/b.ts", [{ path: "src/b.ts", newRange: { startLine: 1, endLine: 2 } }]],
+  ]);
+  const irs = new Map([["src/a.ts", irA], ["src/b.ts", irB]]);
+  const contents = new Map([["src/a.ts", content], ["src/b.ts", content]]);
+  const affected = findDirectlyAffectedSymbols(hunks, irs, contents);
+  const idA = nodeIdFor({ qualifiedName: "dup::fn", filePath: "src/a.ts", label: "function" });
+  const idB = nodeIdFor({ qualifiedName: "dup::fn", filePath: "src/b.ts", label: "function" });
+  assert.notEqual(idA, idB, "node ids must differ by filePath");
+  assert.ok(affected.has(idA), "a.ts node affected");
+  assert.ok(affected.has(idB), "b.ts node affected");
 });

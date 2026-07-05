@@ -15,7 +15,7 @@
  */
 import type { CodingGitInvoker } from "./git-invoker.js";
 import type { GraphStore } from "./graph-store.js";
-import { META_KEY_LAST_HEAD } from "./reindex.js";
+import { META_KEY_LAST_HEAD, META_KEY_PENDING_PARSE_FAILURES } from "./reindex.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public types
@@ -97,12 +97,31 @@ export function getIndexStatus(
     };
   }
 
-  const dirty = lastIndexedHead !== currentHead;
+  // Pending parse failures mean some changed paths are missing from the
+  // graph even though the heads match. Report stale+dirty so doctor/xray
+  // surface it instead of pretending freshness (chatgpt-codex-connector:
+  // 'Mark pending parse retries as stale').
+  const pendingRaw = store.readMeta(META_KEY_PENDING_PARSE_FAILURES);
+  let hasPendingFailures = false;
+  if (pendingRaw !== null) {
+    try {
+      const parsed = JSON.parse(pendingRaw);
+      hasPendingFailures = Array.isArray(parsed) && parsed.length > 0;
+    } catch {
+      hasPendingFailures = false;
+    }
+  }
+  const dirty = lastIndexedHead !== currentHead || hasPendingFailures;
+  const mode: IndexStatusMode = hasPendingFailures
+    ? "stale"
+    : dirty
+      ? "stale"
+      : "fresh";
   return {
     lastIndexedHead,
     currentHead,
     dirty,
-    mode: dirty ? "stale" : "fresh",
+    mode,
     fileCount,
     nodeCount,
   };

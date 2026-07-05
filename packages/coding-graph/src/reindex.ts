@@ -233,6 +233,21 @@ export function hashContent(content: Uint8Array): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
+/**
+ * Reject non-canonical repo-relative paths before they reach the disk.
+ * Git diff output is always canonical, but defense-in-depth prevents a
+ * crafted `..` path from reading outside repoRoot (cursor Bugbot:
+ * 'Reindex reads non-canonical paths'). Mirrors the store's
+ * `assertCanonicalFilePath` boundary.
+ */
+function isCanonicalRelativePath(p: string): boolean {
+  if (typeof p !== "string" || p.length === 0) return false;
+  if (p.includes("\\")) return false; // backslash → Windows separator
+  if (p.startsWith("/") || /^[A-Za-z]:[\\/]/.test(p)) return false; // absolute
+  if (p.split("/").some((seg) => seg === "." || seg === "..")) return false;
+  return true;
+}
+
 /** Resolve a repo-relative forward-slash path to an absolute OS path. */
 function resolveRepoPath(repoRoot: string, relPath: string): string {
   // Split on forward slashes and re-join with the platform separator so
@@ -367,7 +382,10 @@ export async function executeReindex(options: {
         // (cursor Bugbot: 'Empty full run marks indexed'.)
         return { ok: true, mode: "noop", filesIngested: 0, head: lastHead };
       }
-      const toIngest = [...candidates, ...pendingRetry];
+      // Dedup: a path can appear in both candidates and pendingRetry;
+      // upsertFileBatch rejects duplicate paths in one batch (cursor
+      // Bugbot: 'Full reindex duplicate ingest paths').
+      const toIngest = [...new Set([...candidates, ...pendingRetry])];
       const ingestResult = await ingestFiles(
         store,
         repoRoot,
@@ -446,11 +464,18 @@ export async function executeReindex(options: {
       // Hash every candidate, re-parse only mismatches. This path is
       // taken when last_head is unreachable (rebase/force-push) or when
       // the incremental diff itself failed.
-      const candidates = options.candidatePaths ?? [
+      // Union caller-supplied candidates WITH the previously-indexed
+      // files AND pending retries. Omitting stored files would miss
+      // newly-deleted files (their symbols would linger while head
+      // advances); omitting candidates would miss newly-added files not
+      // yet in the index (chatgpt-codex-connector: 'Require candidates
+      // before completing hash-scan' / 'Include indexed files in
+      // hash-scan candidates').
+      const candidateSet = new Set<string>([
+        ...(options.candidatePaths ?? []),
         ...lastState.fileHashes.keys(),
-      ];
-      // Pending parse-failures are always re-considered.
-      const candidateSet = new Set<string>([...candidates, ...pendingRetry]);
+        ...pendingRetry,
+      ]);
       const mismatched: string[] = [];
       for (const candidatePath of candidateSet) {
         let content: Uint8Array;
@@ -562,12 +587,23 @@ async function ingestFiles(
   const batch: StoreFileIR[] = [];
   const parseFailedPaths: string[] = [];
   for (const relPath of paths) {
+    if (!isCanonicalRelativePath(relPath)) {
+      // Non-canonical path would read outside repoRoot / be rejected by
+      // the store anyway. Record + skip (rule 44 — retry-safe).
+      parseFailedPaths.push(relPath);
+      continue;
+    }
     let content: Uint8Array;
     try {
       content = await readFile(resolveRepoPath(repoRoot, relPath));
     } catch {
-      // File unreadable (deleted between plan and execution). Skip —
-      // it will be pruned by deletePaths if the caller knew it was gone.
+      // File unreadable (deleted between plan and execution, or a
+      // transient I/O error). Record it for retry so a transient read
+      // failure does not silently drop a path that was never ingested
+      // (cursor Bugbot: 'Read errors drop pending retries'). A truly
+      // deleted file is pruned via deletePaths when the caller detected
+      // the deletion; here we only keep it retrying.
+      parseFailedPaths.push(relPath);
       continue;
     }
     const parseResult = await parseFile({ path: relPath, content });

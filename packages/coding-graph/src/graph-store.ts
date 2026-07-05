@@ -765,13 +765,26 @@ export class GraphStore {
    * transaction (idempotent — re-running on unchanged history produces
    * the same table). Serialized through the write queue.
    */
+  /**
+   * PR3 (issue #1553): upsert co-change edges into the `co_changes`
+   * table. Clears existing edges then inserts the new set in one
+   * transaction (idempotent — re-running on unchanged history produces
+   * the same table). Serialized through the write queue.
+   *
+   * Returns `{ ok: false, code: "store_closed" }` when the store is
+   * closed/closing so the caller does NOT believe mining succeeded
+   * while nothing was persisted (cursor Bugbot: 'Co-change store
+   * reports false success').
+   */
   async upsertCoChanges(edges: readonly {
     readonly fileA: string;
     readonly fileB: string;
     readonly support: number;
     readonly confidence: number;
-  }[]): Promise<void> {
-    if (this.closed || this.closing) return;
+  }[]): Promise<{ ok: true } | { ok: false; code: "store_closed" }> {
+    if (this.closed || this.closing) {
+      return { ok: false, code: "store_closed" };
+    }
     await this.queue.schedule(async () => {
       const tx = this.db.transaction(() => {
         this.db.exec("DELETE FROM co_changes");
@@ -788,6 +801,7 @@ export class GraphStore {
       });
       tx();
     });
+    return { ok: true };
   }
 
   /**
