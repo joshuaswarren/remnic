@@ -14,13 +14,11 @@ permissions:
 
 jobs:
   unresolved-review-threads:
-    # Coalesce, never force-cancel (mirrors ai-review-gate). No concurrency here
-    # meant every push/review/comment event spawned its own run. cancel-in-progress:
-    # false collapses bursts to the latest pending run without leaving a `cancelled`
-    # required check on the head SHA; the check is cheap so serialized runs are fine.
-    concurrency:
-      group: review-thread-guard-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
-      cancel-in-progress: false
+    # Intentionally NO concurrency group: check-unsticker reruns EVERY failed
+    # review-thread-guard suite in one sweep (the ruleset blocks on each latest
+    # failed/cancelled suite), and GitHub Actions concurrency is single-pending —
+    # a group here would cancel intermediate reruns so some blocking suites never
+    # get a passing attempt (codex P1). The check is cheap; per-event runs are fine.
     runs-on: ubuntu-latest
     steps:
       - name: Fail on unresolved review threads

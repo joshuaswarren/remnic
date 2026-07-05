@@ -441,29 +441,21 @@ jobs:
             // reviewer has spoken on the current head. Explicit negative
             // signals (blockers) fail immediately — waiting on a blocker buys
             // nothing because a new push or review re-fires the gate; this run
-            // self-supersedes below when the head advances (concurrency is
-            // cancel-in-progress:false, so runs are never force-cancelled).
+            // self-supersedes at the top of the poll loop when the head advances
+            // (concurrency is cancel-in-progress:false, so runs are never force-cancelled).
             const POLL_INTERVAL_MS = 20_000;
             const POLL_DEADLINE_MS = 7 * 60_000;
             const startedAt = Date.now();
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
             for (;;) {
-              const { failures, evaluatedCount, hasBlockers } = await evaluatePullRequests();
-
-              if (evaluatedCount === 0) {
-                core.setFailed('AI review gate did not evaluate any non-draft pull requests.');
-                return;
-              }
-
-              if (failures.length === 0) {
-                return;
-              }
-
-              // Self-supersession: if the head advanced past the SHA that
-              // triggered this run, a newer run now owns the current head's gate.
-              // Exit without blocking (neutral) instead of polling a stale head —
-              // this is what keeps cancel-in-progress:false cheap under push bursts.
+              // Self-supersession, checked BEFORE evaluating so the SUCCESS path
+              // also respects the head anchor (cursor ObzZ5): if the head advanced
+              // past the SHA that triggered this run, a newer run now owns the
+              // current head's gate — exit neutral rather than validate or claim
+              // success for a commit that is no longer head. cancel-in-progress:false
+              // never force-cancels us, so this is how a superseded run yields
+              // instead of polling a stale head to the deadline.
               if (triggerHeadSha) {
                 const current = await github.rest.pulls.get({
                   owner,
@@ -477,6 +469,16 @@ jobs:
                   );
                   return;
                 }
+              }
+              const { failures, evaluatedCount, hasBlockers } = await evaluatePullRequests();
+
+              if (evaluatedCount === 0) {
+                core.setFailed('AI review gate did not evaluate any non-draft pull requests.');
+                return;
+              }
+
+              if (failures.length === 0) {
+                return;
               }
 
               const elapsedMs = Date.now() - startedAt;
