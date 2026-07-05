@@ -14,6 +14,11 @@ permissions:
 
 jobs:
   unresolved-review-threads:
+    # Intentionally NO concurrency group: check-unsticker reruns EVERY failed
+    # review-thread-guard suite in one sweep (the ruleset blocks on each latest
+    # failed/cancelled suite), and GitHub Actions concurrency is single-pending —
+    # a group here would cancel intermediate reruns so some blocking suites never
+    # get a passing attempt (codex P1). The check is cheap; per-event runs are fine.
     runs-on: ubuntu-latest
     steps:
       - name: Fail on unresolved review threads
