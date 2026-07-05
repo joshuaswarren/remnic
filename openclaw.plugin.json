@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.3.694",
+  "version": "9.3.695",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -3660,7 +3660,11 @@
       },
       "extractionFaithfulnessGate": {
         "type": "string",
-        "enum": ["off", "shadow", "enforce"],
+        "enum": [
+          "off",
+          "shadow",
+          "enforce"
+        ],
         "default": "off",
         "description": "Extraction faithfulness gate (issue #1576). Entailment-verification of extracted facts against their verified source spans (#1575). 'off' (default) = byte-identical pre-feature pipeline; 'shadow' = record verdicts in frontmatter + telemetry only; 'enforce' = route unsupported/contradicted to pending_review."
       },
