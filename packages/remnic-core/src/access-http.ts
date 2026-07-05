@@ -2249,15 +2249,20 @@ export class EngramAccessHttpServer {
     const codingArchitectureWrite =
       (toolName === "engram.coding_architecture" || toolName === "remnic.coding_architecture") &&
       toolArgsSubcommand === "refresh";
-    // codegraph parity tools (issue #1554): index, delete_project, and
-    // manage_adr(record|supersede) + ingest_traces are mutating.
+    // codegraph parity tools (issue #1554): only mutating tools count as
+    // writes — index, delete_project, ingest_traces, and manage_adr
+    // (record|supersede). Read-only tools (search_graph, get_schema,
+    // list_projects, etc.) must NOT hit the write quota.
+    const CODEGRAPH_WRITE_TOOLS = new Set([
+      "engram.codegraph_index", "remnic.codegraph_index",
+      "engram.codegraph_delete_project", "remnic.codegraph_delete_project",
+      "engram.codegraph_ingest_traces", "remnic.codegraph_ingest_traces",
+    ]);
+    const isCodegraphManageAdr =
+      toolName === "engram.codegraph_manage_adr" || toolName === "remnic.codegraph_manage_adr";
     const codegraphWrite =
-      toolName.startsWith("engram.codegraph_") ||
-      toolName.startsWith("remnic.codegraph_");
-    const codegraphWriteSubcommand =
-      toolName !== "engram.codegraph_manage_adr" && toolName !== "remnic.codegraph_manage_adr"
-        ? true
-        : toolArgsSubcommand === "record" || toolArgsSubcommand === "supersede";
+      CODEGRAPH_WRITE_TOOLS.has(toolName) ||
+      (isCodegraphManageAdr && (toolArgsSubcommand === "record" || toolArgsSubcommand === "supersede"));
     const isMcpWrite =
       request.method === "tools/call" &&
       (
@@ -2288,7 +2293,7 @@ export class EngramAccessHttpServer {
         ) ||
         codingDecisionWrite ||
         codingArchitectureWrite ||
-        (codegraphWrite && codegraphWriteSubcommand)
+        codegraphWrite
       );
     if (isMcpWrite) {
       this.ensureWriteRateLimitAvailable();

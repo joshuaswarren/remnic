@@ -97,6 +97,9 @@ export type CodegraphDeadCodeResult =
  */
 export function codegraphSurfaceVisible(config: PluginConfig): boolean {
   const ck = config.codingKnowledge;
+  // Guard: some code paths (test stubs, partially-constructed configs) may
+  // not have codingKnowledge populated. Fail closed — tools hidden.
+  if (ck === undefined || ck === null) return false;
   return ck.enabled === true && ck.codegraphTools === true;
 }
 
@@ -328,8 +331,15 @@ export async function deleteCodegraphProject(params: {
   try {
     removeFile(dbPath);
     deleted = true;
-  } catch {
-    deleted = false;
+  } catch (err) {
+    // ENOENT means the file was already absent — treat as deleted (idempotent).
+    // All other errors (EACCES, EISDIR, ...) surface as deleted=false.
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT") {
+      deleted = true;
+    } else {
+      deleted = false;
+    }
   }
   return { deleted, projectId };
 }

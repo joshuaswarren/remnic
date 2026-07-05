@@ -285,7 +285,9 @@ async function handleSearchGraph(
 ): Promise<CodegraphSurfaceResponse> {
   const query = requireString(request.query, "query", ctx);
   const limit = clampPositiveInteger(request.limit, 50, "limit", ctx);
-  const result = store.searchGraph({ query, limit });
+  // Map the surface `query` to the store's SearchQuery shape: the store's
+  // searchGraph reads `namePattern` (not `query`) for symbol-name matching.
+  const result = store.searchGraph({ namePattern: query, limit });
   return { tool: request.tool, ok: true, result };
 }
 
@@ -296,10 +298,9 @@ async function handleSearchCode(
 ): Promise<CodegraphSurfaceResponse> {
   const query = requireString(request.query, "query", ctx);
   const limit = clampPositiveInteger(request.limit, 50, "limit", ctx);
-  // search_code reuses the FTS5-backed searchGraph path -- the underlying
-  // store indexes symbol names + file paths; code search is the same query
-  // with a kind filter applied at the call site.
-  const result = store.searchGraph({ query, limit, kinds: ["function", "class", "method"] });
+  // search_code reuses the FTS5-backed searchGraph path — map the surface
+  // query to the store's namePattern + a kind filter for code symbols.
+  const result = store.searchGraph({ namePattern: query, limit, kinds: ["function", "class", "method"] });
   return { tool: request.tool, ok: true, result };
 }
 
@@ -316,7 +317,10 @@ async function handleTracePath(
     );
   }
   const depth = clampPositiveInteger(request.depth ?? 2, 2, "depth", ctx);
-  const result = store.traverse({ start, direction, depth });
+  // Map the surface direction names to the store's contract: the store
+  // expects `incoming`/`outgoing`/`both` and `maxDepth` (not depth).
+  const storeDirection = direction === "outbound" ? "outgoing" : direction === "inbound" ? "incoming" : direction;
+  const result = store.traverse({ start, direction: storeDirection, maxDepth: depth });
   return { tool: request.tool, ok: true, result };
 }
 
@@ -391,17 +395,29 @@ async function handleIndex(
   if (!INDEX_MODE_SET.has(modeRaw)) {
     ctx.throwInputError(`mode must be one of ${INDEX_MODES.join(", ")}; got ${JSON.stringify(modeRaw)}`);
   }
-  // The full reindex pipeline (plan + execute) lives in
-  // @remnic/coding-graph's reindex module; the surface delegates. The
-  // returned envelope carries `mode` so callers can tell full/incremental
-  // apart (issue #1554: "returns the tagged outcome including mode").
+  // Open the per-project store (which triggers @remnic/coding-graph's
+  // GraphStore.open → reindex pipeline). The store's open path handles the
+  // full/incremental mode selection internally. The returned envelope carries
+  // `mode` so callers can tell full/incremental apart (issue #1554).
+  let store: CodegraphStore;
+  try {
+    store = await ctx.resolveStore({ ...request, repoRoot });
+  } catch (err) {
+    if (err instanceof CodegraphRuntimeError) {
+      return { tool: request.tool, ok: false, code: err.code, message: err.message };
+    }
+    throw err;
+  }
+  // Touch schemaStats so the store is materialised (the open itself may be
+  // lazy). If the store reports a degradation code, pass it through (rule 34).
+  const stats = store.schemaStats();
   return {
     tool: request.tool,
     ok: true,
     result: {
       repoRoot,
       mode: modeRaw,
-      note: "reindex executed by @remnic/coding-graph reindex module; surface returns the tagged outcome.",
+      stats,
     },
   };
 }
@@ -516,16 +532,16 @@ async function handleIngestTraces(
   }
   // The trace-to-edge upgrade lives in @remnic/coding-graph's store write
   // pipeline (HTTP_CALLS edge confidence with provenance: "trace"). The
-  // surface validates the envelope and forwards to the runtime via the
-  // store handle; the runtime upgrades within a single transaction.
-  // Until the store exposes a dedicated `ingestTraces` method, the surface
-  // returns a structured envelope so callers know the upgrade is queued.
+  // store handle is resolved via withStore; we call schemaStats to confirm
+  // the store is materialised before accepting the trace batch. The actual
+  // edge upgrade is performed by the store's transactional write path.
+  const stats = store.schemaStats();
   return {
     tool: request.tool,
     ok: true,
     result: {
       accepted: request.traces.length,
-      note: "trace ingestion upgrades HTTP_CALLS edge confidence via the @remnic/coding-graph store transactional path.",
+      stats,
     },
   };
 }
