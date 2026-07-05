@@ -550,6 +550,41 @@ function resolveExtensionModulePath(): string {
   return built;
 }
 
+/**
+ * Resolves the import specifier the omp wrapper uses to reach the
+ * `@remnic/plugin-pi` dist entry from the generated `index.ts`. omp pre-bundles
+ * that wrapper with `bun build`, whose bundler cannot resolve `file://`
+ * specifiers ("Could not resolve: file://…" on Bun 1.2–1.3, verified), so the
+ * specifier must be a relative path. On Windows, when the extension directory
+ * and the plugin-pi install sit on different drives, `path.relative` cannot
+ * express a relative path and returns an absolute drive path (e.g. `D:\…`);
+ * prefixing `./` then yields an invalid module specifier that fails `bun build`
+ * with a cryptic error. Detect that layout and fail fast with an actionable
+ * message instead. (Cross-drive omp installs are unsupported because neither a
+ * relative specifier nor a `file://` URL is acceptable to `bun build`.)
+ *
+ * Exported so the cross-drive guard can be exercised on non-Windows hosts via
+ * `path.win32`.
+ */
+export function resolveOmpWrapperImportSpecifier(
+  extensionModulePath: string,
+  wrapperDir: string,
+  pathApi: typeof path = path,
+): string {
+  if (pathApi.parse(wrapperDir).root !== pathApi.parse(extensionModulePath).root) {
+    throw new Error(
+      "Remnic omp extension cannot pre-bundle: the extension directory " +
+        `(${wrapperDir}) and the @remnic/plugin-pi install (${extensionModulePath}) ` +
+        "are on different drives, so no relative import specifier can be generated " +
+        "for `bun build` (and `bun build` cannot resolve a `file://` specifier). " +
+        "Move the omp agent home and the Remnic install onto the same drive.",
+    );
+  }
+  let rel = pathApi.relative(wrapperDir, extensionModulePath);
+  rel = rel.split(pathApi.sep).join("/");
+  return rel.startsWith(".") ? rel : `./${rel}`;
+}
+
 function renderWrapper(
   extensionModulePath: string,
   configPath: string,
@@ -563,9 +598,7 @@ function renderWrapper(
   // URL is retained.
   let importSpecifier: string;
   if (wrapperDir) {
-    let rel = path.relative(wrapperDir, extensionModulePath);
-    if (process.platform === "win32") rel = rel.split(path.sep).join("/");
-    importSpecifier = rel.startsWith(".") ? rel : `./${rel}`;
+    importSpecifier = resolveOmpWrapperImportSpecifier(extensionModulePath, wrapperDir);
   } else {
     importSpecifier = pathToFileURL(extensionModulePath).href;
   }

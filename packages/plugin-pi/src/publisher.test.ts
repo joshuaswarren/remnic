@@ -2,12 +2,16 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import os from "node:os";
-import path from "node:path";
+import path, { win32 } from "node:path";
 import test from "node:test";
 
 import { type PublishContext, loadTokenStore, saveTokenStore } from "@remnic/core";
 
-import { OmpMemoryExtensionPublisher, PiMemoryExtensionPublisher } from "./publisher.js";
+import {
+  OmpMemoryExtensionPublisher,
+  PiMemoryExtensionPublisher,
+  resolveOmpWrapperImportSpecifier,
+} from "./publisher.js";
 
 class FailingPiPublisher extends PiMemoryExtensionPublisher {
   async renderInstructions(ctx: PublishContext): Promise<string> {
@@ -1446,5 +1450,36 @@ test("omp extension runtime closure imports core only via leaf submodules, not t
       "not the @remnic/core barrel — the barrel pulls the search backends " +
       "(LanceDB native asset) into the omp extension bundle. Offenders: " +
       offenders.join(", "),
+  );
+});
+
+// ── Regression (PR #1641 / #1598): the omp wrapper import specifier must stay
+// a valid relative module specifier even on Windows cross-drive layouts. When
+// the extension dir and the plugin-pi install are on different drives,
+// path.relative returns an absolute drive path; prefixing "./" then yields an
+// invalid specifier that fails `bun build` cryptically. `bun build` also
+// cannot resolve a `file://` specifier (verified on Bun 1.3), so the only safe
+// response is to fail fast with an actionable error.
+test("resolveOmpWrapperImportSpecifier emits a ./ relative specifier for same-drive paths", () => {
+  const specifier = resolveOmpWrapperImportSpecifier(
+    path.join(path.sep, "opt", "remnic", "plugin-pi", "dist", "index.js"),
+    path.join(path.sep, "home", "me", ".omp", "agent", "extensions", "remnic"),
+  );
+  assert.ok(
+    specifier.startsWith("./") || specifier.startsWith("../"),
+    `expected a relative (./ or ../) specifier, got ${specifier}`,
+  );
+  assert.doesNotMatch(specifier, /^[A-Za-z]:[\\/]/, "specifier must not be a bare absolute drive path");
+  assert.doesNotMatch(specifier, /^\/[^/]/, "specifier must not be a bare absolute posix path");
+});
+test("resolveOmpWrapperImportSpecifier fails fast with an actionable error for cross-drive Windows layouts", () => {
+  const wrapperDir = "C:\\Users\\me\\.omp\\agent\\extensions\\remnic";
+  const modulePath = "D:\\remnic\\plugin-pi\\dist\\index.js";
+  // Sanity-check the cross-drive premise: different roots under win32 semantics.
+  assert.notEqual(win32.parse(wrapperDir).root, win32.parse(modulePath).root);
+  assert.throws(
+    () => resolveOmpWrapperImportSpecifier(modulePath, wrapperDir, win32),
+    /different drives/i,
+    "cross-drive omp layout must fail fast instead of emitting an invalid ./D:\\… specifier",
   );
 });
