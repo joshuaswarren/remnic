@@ -15035,7 +15035,16 @@ export class Orchestrator {
       // dropped, leaving a stale fact active. writeCategory (not fact.category)
       // is used because routing rules may have overridden the raw category.
       const isCorrection = writeCategory === "correction";
-      if (pendingSemanticSkip && !contradictionDetected && !isCorrection) {
+      // Faithfulness gate (#1576, cursor High): a pending_review fact must
+      // bypass the semantic-dedup skip so it reaches the review queue — the
+      // gate's contract is "persists with status: pending_review, never
+      // silently dropped" (issue #1576).
+      if (
+        pendingSemanticSkip &&
+        !contradictionDetected &&
+        !isCorrection &&
+        faithfulnessEnforceStatus !== "pending_review"
+      ) {
         log.debug(
           `dedup: skipping semantic near-duplicate fact "${fact.content
             .slice(0, 60)

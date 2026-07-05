@@ -266,6 +266,7 @@ async function callFaithfulnessLlm(
   localLlm: LocalLlmClient | null,
   fallbackLlm: FallbackLlmClient | null,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<LlmCallResult> {
   const messages: Array<{ role: "system" | "user"; content: string }> = [
     { role: "system", content: systemPrompt },
@@ -291,6 +292,7 @@ async function callFaithfulnessLlm(
         timeoutMs,
         operation: "extraction-faithfulness",
         ...(modelOverride ? { model: modelOverride } : {}),
+        ...(signal ? { signal } : {}),
       });
       if (result.content) {
         return { content: result.content, modelUsed: result.modelUsed ?? "local" };
@@ -313,6 +315,7 @@ async function callFaithfulnessLlm(
           timeoutMs,
           ...(modelOverride ? { model: modelOverride } : {}),
           ...gatewayChain,
+          ...(signal ? { signal } : {}),
         },
       );
       if (result?.content) {
@@ -341,6 +344,7 @@ interface LocalLlmCallOptions {
   timeoutMs: number;
   operation: string;
   model?: string;
+  signal?: AbortSignal;
 }
 
 interface LocalLlmCallResponse {
@@ -446,6 +450,7 @@ export async function checkFaithfulnessBatch(
       localLlm,
       fallbackLlm,
       timeoutMs,
+      controller.signal,
     );
     const elapsedMs = Date.now() - startedAt;
 
