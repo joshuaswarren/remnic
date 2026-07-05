@@ -94,12 +94,23 @@ export interface TombstoneMatch {
   reason: TombstoneReason;
 }
 
-/** Inputs to a lookup. At least one discriminator must be present. */
+/** Inputs to a lookup. At least one discriminator must be present.
+ *
+ * Issue #1579 thread Ociag/Oci-W: `supersessionKeys` (plural) lets the write
+ * chokepoint check EVERY derived key, not just the first. Emitters register
+ * one tombstone per matched key (temporal-supersession, rebuild), so a block
+ * can live on any later key; querying only `supersessionKeys[0]` missed it
+ * and the retired fact resurrected as active. `supersessionKey` (singular)
+ * remains for direct/unit callers; `lookup` checks the union of both. */
 export interface TombstoneLookupQuery {
   contentHash?: string;
   normalizedText?: string;
   entityRef?: string;
+  /** Single supersession key (direct/unit callers). */
   supersessionKey?: string;
+  /** All derived supersession keys (write chokepoint). The keyed tier is
+   *  checked for each; the first active match wins. */
+  supersessionKeys?: string[];
   namespace: string;
 }
 
@@ -494,13 +505,28 @@ export class TombstoneStore {
         }
       }
     }
-    // Tier 3: keyed (entityRef + supersessionKey).
-    if (query.entityRef && query.supersessionKey) {
-      const id = this.byKey.get(keyedTierKey(query.entityRef, query.supersessionKey));
-      if (id && !this.revokedIds.has(id)) {
-        const entry = this.byId.get(id);
-        if (entry && entry.namespace === query.namespace) {
-          return { tombstoneId: id, matchedTier: "keyed", reason: entry.reason };
+    // Tier 3: keyed (entityRef + supersessionKey). Issue #1579 thread
+    // Ociag/Oci-W: check EVERY supplied key, not just the first — emitters
+    // append one tombstone per matched supersession key, so the active block
+    // can live on any later key. The union of `supersessionKey` (singular,
+    // direct callers) and `supersessionKeys` (array, write chokepoint) is
+    // checked; the first active match wins (tiers are equality-based, so
+    // ordering across keys does not affect correctness).
+    if (query.entityRef) {
+      const keysToCheck: string[] = [];
+      if (query.supersessionKey) keysToCheck.push(query.supersessionKey);
+      if (query.supersessionKeys) {
+        for (const k of query.supersessionKeys) {
+          if (!keysToCheck.includes(k)) keysToCheck.push(k);
+        }
+      }
+      for (const key of keysToCheck) {
+        const id = this.byKey.get(keyedTierKey(query.entityRef, key));
+        if (id && !this.revokedIds.has(id)) {
+          const entry = this.byId.get(id);
+          if (entry && entry.namespace === query.namespace) {
+            return { tombstoneId: id, matchedTier: "keyed", reason: entry.reason };
+          }
         }
       }
     }
@@ -558,12 +584,27 @@ export class TombstoneStore {
     // Reuse existing tombstone ids for source-equivalent entries so a prior
     // revocation (which references the tombstone id) survives rebuild — minting
     // fresh ids would orphan the revocation and silently un-revoke the content.
+    // Issue #1579 thread Oci-T: key the reuse map by (sourceMemoryId,
+    // supersessionKey), not just sourceMemoryId. A retired fact with multiple
+    // structured-attribute keys emits one record per key (see
+    // collectRetiredMemoriesForRebuild); keying only by sourceMemoryId made
+    // every rebuilt record share one id, so a revocation of key A silently
+    // revoked key B (over-revoke) — or, if a prior single-key tombstone was
+    // revoked, the new multi-key records all inherited a revoked id and
+    // silently un-blocked (orphan). Including the supersession-key
+    // discriminator keeps each keyed tombstone's id (and thus its revocation)
+    // independent. Records without a supersession key fall back to a stable
+    // empty-string discriminator so they still reuse by sourceMemoryId alone.
     const existingBySource = new Map<string, string>();
     for (const e of this.entries) {
-      if (e.kind === "tombstone") existingBySource.set(e.sourceMemoryId, e.id);
+      if (e.kind === "tombstone") {
+        existingBySource.set(`${e.sourceMemoryId}\u{0000}${e.supersessionKey ?? ""}`, e.id);
+      }
     }
     const rebuilt: TombstoneEntry[] = retiredMemories.map((m) => ({
-      id: existingBySource.get(m.memoryId) ?? newTombstoneId(),
+      id:
+        existingBySource.get(`${m.memoryId}\u{0000}${m.supersessionKey ?? ""}`) ??
+        newTombstoneId(),
       kind: "tombstone" as const,
       reason: m.reason,
       sourceMemoryId: m.memoryId,
@@ -681,4 +722,62 @@ export function collectRetiredMemoriesForRebuild(
     }
   }
   return retired;
+}
+
+/**
+ * Build the live-emission tombstone inputs for a single retired FACT — one
+ * input per derived supersession key (or a single keyless record when no
+ * structured attributes are present). Pure (no I/O) so the emitters in
+ * `StorageManager.supersedeMemory` (contradiction) and `forgetMemory`
+ * (retraction) stay thin (#1579, #1520 god-file ratchet). Mirrors the
+ * temporal-supersession emitter and `collectRetiredMemoriesForRebuild` so
+ * every retire path emits the same keyed-tombstone shape (issue #1579
+ * threads Oci-Y / OchiF: without per-key tombstones, a paraphrased
+ * re-observation missed the keyed tier and the fact resurrected active).
+ */
+export function buildRetiredFactTombstoneInputs(
+  memory: {
+    id: string;
+    content: string;
+    contentHash?: string;
+    entityRef?: string;
+    structuredAttributes?: Record<string, string>;
+  },
+  opts: {
+    reason: TombstoneReason;
+    createdBy: TombstoneCreatedBy;
+    createdAt: string;
+    supersessionKeysForFact: (spec: {
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+    }) => string[];
+  },
+): Array<{
+  reason: TombstoneReason;
+  createdBy: TombstoneCreatedBy;
+  sourceMemoryId: string;
+  rawContent: string;
+  contentHash?: string;
+  entityRef?: string;
+  supersessionKey?: string;
+  createdAt: string;
+}> {
+  const keys =
+    memory.entityRef && memory.structuredAttributes
+      ? opts.supersessionKeysForFact({
+          entityRef: memory.entityRef,
+          structuredAttributes: memory.structuredAttributes,
+        })
+      : [];
+  const keysToEmit = keys.length > 0 ? keys : [undefined];
+  return keysToEmit.map((key) => ({
+    reason: opts.reason,
+    createdBy: opts.createdBy,
+    sourceMemoryId: memory.id,
+    rawContent: memory.content,
+    ...(memory.contentHash ? { contentHash: memory.contentHash } : {}),
+    ...(memory.entityRef ? { entityRef: memory.entityRef } : {}),
+    ...(key ? { supersessionKey: key } : {}),
+    createdAt: opts.createdAt,
+  }));
 }

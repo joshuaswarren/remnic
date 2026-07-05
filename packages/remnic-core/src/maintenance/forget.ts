@@ -22,6 +22,8 @@
  */
 
 import type { StorageManager } from "../storage.js";
+import { buildRetiredFactTombstoneInputs } from "../lifecycle/tombstones.js";
+import { supersessionKeysForFact } from "../temporal-supersession.js";
 import type { MemoryFile } from "../types.js";
 
 export interface ForgetMemoryRequest {
@@ -100,6 +102,45 @@ export async function forgetMemory(
     actor: "remnic-forget",
     reasonCode: "operator_forget",
   });
+  // Issue #1579 thread OchiF: emit a LIVE tombstone at forget time so a
+  // forgotten FACT cannot resurrect via re-extraction/import before an
+  // operator runs `remnic doctor --rebuild-tombstones`. Without this, the
+  // non-resurrection chokepoint in writeMemory has nothing to match — the
+  // forgotten fact's content hash is gone from the active index but no
+  // tombstone exists until a manual rebuild derives one — so the same fact
+  // written again through writeMemory becomes active. Mirrors supersedeMemory
+  // (contradiction) and applyTemporalSupersession via the shared
+  // buildRetiredFactTombstoneInputs helper. Best-effort (rule 34): a tombstone
+  // append failure must not fail the forget, which already succeeded on disk.
+  if (memory.frontmatter.category === "fact") {
+    for (const input of buildRetiredFactTombstoneInputs(
+      {
+        id,
+        content: memory.content,
+        ...(memory.frontmatter.contentHash
+          ? { contentHash: memory.frontmatter.contentHash }
+          : {}),
+        ...(memory.frontmatter.entityRef
+          ? { entityRef: memory.frontmatter.entityRef }
+          : {}),
+        ...(memory.frontmatter.structuredAttributes
+          ? { structuredAttributes: memory.frontmatter.structuredAttributes }
+          : {}),
+      },
+      {
+        reason: "retraction",
+        createdBy: "user_correction",
+        createdAt: forgottenAt,
+        supersessionKeysForFact,
+      },
+    )) {
+      try {
+        await storage.appendTombstone(input);
+      } catch {
+        // Best-effort — the forget already succeeded on disk.
+      }
+    }
+  }
   return {
     id,
     path: memory.path,

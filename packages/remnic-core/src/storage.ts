@@ -41,6 +41,7 @@ import {
 import {
   TombstoneStore,
   collectRetiredMemoriesForRebuild,
+  buildRetiredFactTombstoneInputs,
   type TombstoneStoreOptions,
   type TombstoneFileIo,
   type TombstoneReason,
@@ -3738,11 +3739,12 @@ export class StorageManager {
                 structuredAttributes: options.structuredAttributes,
               })
             : [];
+        // Issue #1579 thread Ociag/Oci-W: pass EVERY key — emitters register one tombstone per key, so the block can be on any later key.
         const match = tombstoneStore.lookup({
           contentHash: fm.contentHash,
           normalizedText: ContentHashIndex.normalizeContent(factHashSourceForTombstone),
           ...(options.entityRef ? { entityRef: options.entityRef } : {}),
-          ...(keyedSupersession.length > 0 ? { supersessionKey: keyedSupersession[0] } : {}),
+          ...(keyedSupersession.length > 0 ? { supersessionKeys: keyedSupersession } : {}),
           namespace: this.tombstonesConfig.namespace,
         });
         if (match) {
@@ -7434,25 +7436,23 @@ export class StorageManager {
       // Issue #1579 — emit a tombstone so the superseded fact cannot
       // resurrect. Contradiction resolution verbs (keep-a/keep-b/merge) all
       // funnel through supersedeMemory, so emitting here covers every verb
-      // exactly once (rule 22). Only facts participate (entities/questions/
-      // artifacts have their own lifecycle and are not dedup-tombstoned).
+      // exactly once (rule 22). Only facts participate. Thread Oci-Y: emit
+      // one tombstone PER derived supersession key (buildRetiredFactTombstoneInputs)
+      // so a paraphrased re-write is caught on the keyed tier — a single
+      // entityRef-only record missed and the fact resurrected until rebuild.
       if (oldMemory.frontmatter.category === "fact") {
-        await this.appendTombstone({
-          reason: "contradiction_resolution",
-          createdBy: "contradiction_resolution",
-          sourceMemoryId: oldMemoryId,
-          // Issue #1579 review: hash the CANONICAL source, not the citation-
-          // annotated body. Re-extraction looks up by the contentHashSource /
-          // citation-stripped hash; passing the stored frontmatter.contentHash
-          // guarantees the exact tier matches. rawContent is the stripped body
-          // so the normalized fallback tier also aligns.
-          contentHash: oldMemory.frontmatter.contentHash,
-          rawContent: stripCitationForTemplate(oldMemory.content, this.citationTemplate),
-          ...(oldMemory.frontmatter.entityRef
-            ? { entityRef: oldMemory.frontmatter.entityRef }
-            : {}),
-          createdAt: now,
-        });
+        for (const input of buildRetiredFactTombstoneInputs(
+          {
+            id: oldMemoryId,
+            content: stripCitationForTemplate(oldMemory.content, this.citationTemplate),
+            contentHash: oldMemory.frontmatter.contentHash,
+            entityRef: oldMemory.frontmatter.entityRef,
+            structuredAttributes: oldMemory.frontmatter.structuredAttributes,
+          },
+          { reason: "contradiction_resolution", createdBy: "contradiction_resolution", createdAt: now, supersessionKeysForFact },
+        )) {
+          await this.appendTombstone(input);
+        }
       }
 
       // Also write a correction entry for the audit trail

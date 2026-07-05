@@ -5702,18 +5702,42 @@ async function cmdReview(action: string, rest: string[]): Promise<void> {
     // revokeTombstone() returns null (enabled defaults to false) and the
     // approved content is blocked again on the next write. Parse the same
     // config the daemon uses and apply it before revoking.
+    //
+    // Issue #1579 thread Ocial: parseConfig in an ISOLATED catch. parseConfig
+    // error strings can embed raw config values (including API keys — CodeQL
+    // js/clear-text-logging), so a failure must NOT propagate to the CLI
+    // top-level handler which prints err.message. Mirror the wearables
+    // command's constant-message pattern. With no usable config, tombstones
+    // stay at their safe default (enabled=false) and the approval still
+    // clears blockedBy on disk; only the revocation is skipped, which the
+    // doctor/rebuild path recovers.
     const configPath = resolveConfigPath();
-    const rawCfg = fs.existsSync(configPath)
-      ? JSON.parse(fs.readFileSync(configPath, "utf8"))
-      : {};
-    const remnicCfg = rawCfg.remnic ?? rawCfg.engram ?? rawCfg;
-    const config = parseConfig(remnicCfg);
-    storage.setTombstonesConfig({
-      enabled: config.tombstonesEnabled,
-      semanticMatch: config.tombstonesSemanticMatch,
-      semanticThreshold: config.tombstonesSemanticThreshold,
-      namespace: config.defaultNamespace,
-    });
+    let tombstonesConfig: {
+      enabled: boolean;
+      semanticMatch: boolean;
+      semanticThreshold: number;
+      namespace: string;
+    } | null = null;
+    try {
+      const rawCfg = fs.existsSync(configPath)
+        ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+        : {};
+      const remnicCfg = rawCfg.remnic ?? rawCfg.engram ?? rawCfg;
+      const config = parseConfig(remnicCfg);
+      tombstonesConfig = {
+        enabled: config.tombstonesEnabled,
+        semanticMatch: config.tombstonesSemanticMatch,
+        semanticThreshold: config.tombstonesSemanticThreshold,
+        namespace: config.defaultNamespace,
+      };
+    } catch {
+      console.error(
+        "review: failed to load the Remnic config — run `remnic doctor` and check the config file for errors",
+      );
+    }
+    if (tombstonesConfig) {
+      storage.setTombstonesConfig(tombstonesConfig);
+    }
     const result = performReview(memoryDir, id, action as ReviewAction, {
       onApproveBlockedMemory: (tombstoneId) => {
         // Fire-and-forget for long-running callers; the CLI also awaits

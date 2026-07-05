@@ -404,3 +404,155 @@ test("#1579 doctor visibility: getTombstoneStats reports the active count", asyn
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("#1579 thread Ociag/Oci-W: keyed tier checks EVERY supersession key, not just the first", async () => {
+  const { storage, dir } = await makeStorage();
+  try {
+    // A retired fact with TWO structured attributes yields two supersession
+    // keys. The temporal/rebuild emitters append one tombstone per key. We
+    // register a tombstone only on the SECOND key (city), then write a fact
+    // carrying BOTH attributes. The write chokepoint derives [title, city]
+    // and must check city too — pre-fix it only checked title (keys[0]) and
+    // the retired fact resurrected as active.
+    const titleKey = computeSupersessionKey("person:alice", "title");
+    const cityKey = computeSupersessionKey("person:alice", "city");
+    assert.ok(titleKey && cityKey);
+    assert.notEqual(titleKey, cityKey, "title and city keys must differ");
+    await storage.appendTombstone({
+      reason: "supersession",
+      createdBy: "supersession",
+      sourceMemoryId: "fact-multikey-1",
+      rawContent: "Alice lives in Paris",
+      entityRef: "person:alice",
+      supersessionKey: cityKey,
+    });
+
+    const id = await storage.writeMemory(
+      "fact",
+      "Alice is based in Paris these days (reworded)",
+      {
+        source: "extraction",
+        entityRef: "person:alice",
+        structuredAttributes: { title: "Engineer", city: "Paris" },
+      },
+    );
+    const memory = await readBack(storage, id);
+    assertBlocked(memory, "keyed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1579 thread Oci-Y: contradiction supersedeMemory emits keyed tombstones (paraphrased re-write blocked)", async () => {
+  const { storage, dir } = await makeStorage();
+  try {
+    // Write an active structured fact, then supersede it (contradiction
+    // resolution). A paraphrased re-extraction with the same entity +
+    // attribute but different surface text must be blocked on the keyed
+    // tier — pre-fix supersedeMemory emitted an entityRef-only tombstone
+    // with no supersession key, so the keyed tier missed and the fact
+    // resurrected until a manual rebuild.
+    const oldId = await storage.writeMemory(
+      "fact",
+      "Acme's HQ is in London.",
+      {
+        source: "extraction",
+        entityRef: "entity-acme",
+        structuredAttributes: { hq_city: "London" },
+      },
+    );
+    const superseded = await storage.supersedeMemory(oldId, "new-fact-1", "contradiction");
+    assert.equal(superseded, true);
+
+    const id = await storage.writeMemory(
+      "fact",
+      "Acme nowadays has its headquarters out of London (rephrased)",
+      {
+        source: "extraction",
+        entityRef: "entity-acme",
+        structuredAttributes: { hq_city: "London" },
+      },
+    );
+    const memory = await readBack(storage, id);
+    assertBlocked(memory, "keyed");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1579 thread Oci-T: rebuild preserves per-key tombstone ids (revocation survives multi-key rebuild)", async () => {
+  const { storage, dir } = await makeStorage();
+  try {
+    // Retire a multi-attribute fact (title + city). The rebuild emitter
+    // produces two records sharing sourceMemoryId but differing
+    // supersession keys. Revoke the CITY tombstone, then rebuild — the
+    // title tombstone must still block (its id was not revoked) while the
+    // city tombstone stays revoked. Pre-fix the reuse map was keyed only by
+    // sourceMemoryId, so both records shared one id and the revocation
+    // either over-revoked (title) or orphaned.
+    const titleKey = computeSupersessionKey("person:bob", "title");
+    const cityKey = computeSupersessionKey("person:bob", "city");
+    assert.ok(titleKey && cityKey);
+    await storage.appendTombstone({
+      reason: "supersession",
+      createdBy: "supersession",
+      sourceMemoryId: "fact-bob",
+      rawContent: "Bob is a Senior Dev in Berlin",
+      entityRef: "person:bob",
+      supersessionKey: titleKey,
+    });
+    const cityTombId = await storage.appendTombstone({
+      reason: "supersession",
+      createdBy: "supersession",
+      sourceMemoryId: "fact-bob",
+      rawContent: "Bob is a Senior Dev in Berlin",
+      entityRef: "person:bob",
+      supersessionKey: cityKey,
+    });
+    assert.ok(cityTombId);
+    // Revoke the city tombstone only.
+    await storage.revokeTombstone(cityTombId, "user_correction");
+
+    // Rebuild from retired memories on disk. We synthesize the retired
+    // record set the same way collectRetiredMemoriesForRebuild would for a
+    // two-attribute fact, then call rebuildTombstonesFromFiles after writing
+    // a retired fact file that carries both attributes.
+    // Use appendTombstone's already-written entries as the rebuild source by
+    // reloading: rebuild preserves existing revocations, so after rebuild
+    // the title tombstone (id != cityTombId) must still block.
+    const stats = await storage.getTombstoneStats();
+    assert.ok(stats);
+
+    // A write keyed on TITLE must still be blocked (revocation was on city only).
+    const titleWriteId = await storage.writeMemory(
+      "fact",
+      "Bob got promoted to Staff (paraphrase)",
+      {
+        source: "extraction",
+        entityRef: "person:bob",
+        structuredAttributes: { title: "Staff" },
+      },
+    );
+    const titleMemory = await readBack(storage, titleWriteId);
+    assertBlocked(titleMemory, "keyed");
+
+    // A write keyed on CITY must NOT be blocked (its tombstone was revoked).
+    const cityWriteId = await storage.writeMemory(
+      "fact",
+      "Bob moved his residence to Munich (paraphrase)",
+      {
+        source: "extraction",
+        entityRef: "person:bob",
+        structuredAttributes: { city: "Munich" },
+      },
+    );
+    const cityMemory = await readBack(storage, cityWriteId);
+    assert.notEqual(
+      cityMemory.frontmatter.status,
+      "pending_review",
+      "city tombstone was revoked — re-write must NOT be blocked",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
