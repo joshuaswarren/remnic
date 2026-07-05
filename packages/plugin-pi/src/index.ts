@@ -709,6 +709,12 @@ function trimContext(value: string, budget: number): string {
 function isDaemonUnreachableError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   if (/Remnic request timed out/.test(err.message)) return true;
+  // Retry-budget exhaustion means transient failures ate the whole per-turn
+  // deadline inside requestWithRetry — the daemon is effectively unreachable
+  // for this turn, so trip the breaker and cool down instead of burning another
+  // full budget on the next hook (codex review). This error only arises from
+  // transient connection failures, never from a semantic HTTP response.
+  if (/Remnic request exceeded the .* budget before retry/.test(err.message)) return true;
   return isTransientNetworkError(err);
 }
 

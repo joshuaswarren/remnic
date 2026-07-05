@@ -1472,3 +1472,47 @@ test("session_shutdown observe uses the general request budget, not the per-turn
   assert.ok(observeFail, "shutdown observe ran and timed out");
   assert.match(observeFail!.message, /timed out after 150ms/);
 });
+
+test("retry-budget exhaustion trips the circuit breaker so the next turn cools down (review codex)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new Error("The socket connection was closed unexpectedly.");
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      // Per-turn budget below the first 200ms backoff, so a transient failure
+      // exhausts the retry budget and throws the budget-exceeded error.
+      turnRequestTimeoutMs: 30,
+      observeMaxRetries: 2,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as any);
+
+  const message = { role: "assistant", content: "done" };
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "budget-breaker-test", getEntries: () => [], getBranch: () => [] },
+  };
+
+  // First turn: transient socket close exhausts the retry budget. The
+  // budget-exceeded error must trip the breaker (not fall through silently).
+  await emit("turn_end", { message }, ctx);
+  const callsAfterFirst = calls;
+  assert.ok(callsAfterFirst >= 1, "first turn attempted an observe");
+
+  // Second turn: breaker is in cooldown -> observe is skipped, no new fetch.
+  await emit("turn_end", { message }, ctx);
+  assert.equal(calls, callsAfterFirst, "breaker skipped the second turn after budget exhaustion");
+});
