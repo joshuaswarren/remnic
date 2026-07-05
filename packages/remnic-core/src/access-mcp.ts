@@ -126,6 +126,7 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.codegraph_search_code": "codegraph_search_code",
   "engram.codegraph_manage_adr": "codegraph_manage_adr",
   "engram.codegraph_ingest_traces": "codegraph_ingest_traces",
+  "engram.coding_delta": "coding_delta",
 };
 
 function resolveChatGptInspectorRecallSessionKey(
@@ -352,6 +353,7 @@ export class EngramMcpServer {
    * time. When false the tools array is byte-identical to pre-feature.
    */
   private readonly codegraphVisible: boolean;
+  private readonly sessionDeltaVisible: boolean;
 
   constructor(
     private readonly service: EngramAccessService,
@@ -363,6 +365,7 @@ export class EngramMcpServer {
       codingDecisionVisible?: boolean;
       architectureCardVisible?: boolean;
       codegraphVisible?: boolean;
+      sessionDeltaVisible?: boolean;
     } = {},
   ) {
     this.citationsEnabled = options.citationsEnabled === true;
@@ -371,6 +374,7 @@ export class EngramMcpServer {
     this.codingDecisionVisible = options.codingDecisionVisible === true;
     this.architectureCardVisible = options.architectureCardVisible === true;
     this.codegraphVisible = options.codegraphVisible === true;
+    this.sessionDeltaVisible = options.sessionDeltaVisible === true;
     this.authenticatedPrincipal =
       options.principal?.trim() ||
       readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() ||
@@ -2119,6 +2123,31 @@ export class EngramMcpServer {
         );
         this.tools = [...this.tools, ...tools];
       }
+    }
+    if (this.sessionDeltaVisible) {
+      const deltaTools = withToolAliases(
+        {
+          name: "engram.coding_delta",
+          description:
+            "Get the session delta (commits + touched files since last seen) for the session's coding namespace (issue #1548 Track A PR 4). Subcommand: get.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              subcommand: {
+                type: "string",
+                enum: ["get"],
+                description: "Which delta operation to run.",
+              },
+              sessionKey: { type: "string", description: "Session identifier whose coding context scopes the operation." },
+              namespace: { type: "string", description: "Optional explicit namespace (overrides coding-context overlay)." },
+            },
+            required: ["subcommand"],
+            additionalProperties: false,
+          },
+        },
+        this.emitLegacyTools,
+      );
+      this.tools = [...this.tools, ...deltaTools];
     }
   }
 

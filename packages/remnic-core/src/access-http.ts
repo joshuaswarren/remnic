@@ -318,6 +318,7 @@ export class EngramAccessHttpServer {
       codingDecisionVisible: this.service.decisionRecordSurfaceVisible,
       architectureCardVisible: this.service.architectureCardSurfaceVisible,
       codegraphVisible: this.service.codegraphSurfaceVisible,
+      sessionDeltaVisible: this.service.sessionDeltaSurfaceVisible,
     });
   }
 
@@ -1383,6 +1384,25 @@ export class EngramAccessHttpServer {
       if (isWriteSubcommand) {
         this.recordWriteRateLimitHit();
       }
+      this.respondJson(res, 200, output.result);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/engram/v1/coding/delta") {
+      // Migrated through the access boundary (issue #1525/#1548 PR4):
+      // get is read-only with respect to user memory content. It DOES write
+      // the operator-side state file (last-seen-head marker), but that is
+      // bookkeeping — the same way calibration.ts writes are uncounted. No
+      // write-quota enforcement.
+      const body = await this.readJsonBody(req);
+      const op = getOperation("coding_delta");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: coding_delta");
+      }
+      const output = (await op.run(body, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      })) as { result: unknown };
       this.respondJson(res, 200, output.result);
       return;
     }

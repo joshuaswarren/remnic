@@ -2804,6 +2804,7 @@ export async function runAccessMcpServeCliCommand(
       codingDecisionVisible: service.decisionRecordSurfaceVisible,
       architectureCardVisible: service.architectureCardSurfaceVisible,
       codegraphVisible: service.codegraphSurfaceVisible,
+      sessionDeltaVisible: service.sessionDeltaSurfaceVisible,
     });
   await server.runStdio(options.stdin ?? process.stdin, options.stdout ?? process.stdout);
   return { ok: true };

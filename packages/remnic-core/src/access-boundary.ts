@@ -52,7 +52,8 @@ export type OperationName =
   | "codegraph_get_architecture"
   | "codegraph_search_code"
   | "codegraph_manage_adr"
-  | "codegraph_ingest_traces";
+  | "codegraph_ingest_traces"
+  | "coding_delta";
 
 // ---------------------------------------------------------------------------
 // Operation context — what every handler receives
