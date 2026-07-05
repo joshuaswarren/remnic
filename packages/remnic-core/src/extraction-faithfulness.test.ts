@@ -840,27 +840,59 @@ test("locateFactQuote: centers the bounded window on matched terms for >maxQuote
   );
 });
 
-test("locateFactQuote: tracks the matched occurrence offset for repeated anaphoric lines (issue #1633, codex :710)", () => {
-  // Two entities, same anaphoric sentence pattern — the fact is about Zeta,
-  // which appears SECOND. The locator's offset must point at the Zeta clause so
-  // extractContextWindow centers on Zeta, not the first (Acme) occurrence.
+test("locateFactQuote: tracks the matched occurrence offset for repeated anaphoric lines (issue #1633, codex :710, :710-thread-S)", () => {
+  // Two entities with the EXACT SAME anaphoric sentence afterward — the
+  // fact is about Zeta, which appears SECOND. Both "It launched in March."
+  // candidates score identically on own-overlap, so the locator must use the
+  // preceding-neighbor tiebreak to pick the occurrence whose neighbor ("Zeta")
+  // names the fact's entity. The offset must then point at the Zeta clause.
   const sourceText =
-    "We started the Acme project in January. It launched in March at beta. " +
-    "Then we began the Zeta initiative in February. It launched in March at general availability.";
+    "We started the Acme project in January. It launched in March. " +
+    "Then we began the Zeta initiative in February. It launched in March.";
+  const located = locateFactQuote("The Zeta initiative launched in March.", sourceText);
+  assert.ok(located, "expected a located quote");
+  // The matched quote is the (identical) anaphoric line; offset must point at
+  // the SECOND occurrence (the one after the Zeta clause), not the first.
+  const firstOccurrence = sourceText.indexOf("It launched in March.");
+  const secondOccurrence = sourceText.indexOf("It launched in March.", firstOccurrence + 1);
+  assert.ok(secondOccurrence > firstOccurrence, "test fixture must contain two occurrences");
+  assert.equal(
+    located!.offset,
+    secondOccurrence,
+    "offset must point at the second (Zeta) occurrence, not the first (Acme)",
+  );
+  assert.equal(
+    sourceText.slice(located!.offset, located!.offset + located!.quote.length),
+    located!.quote,
+    "offset must point at the start of the matched quote",
+  );
+});
+
+test("locateFactQuote: bounded window keeps the densest evidence cluster when matches span wider than maxQuoteChars (codex :747-thread-O)", () => {
+  // Fact tokens appear at BOTH ENDS of a long candidate with filler between.
+  // A naive midpoint-centered window would land in the filler and contain no
+  // evidence. The densest-cluster window must capture actual matched terms.
+  const head = "PostgreSQL migration completed. "; // matches at the very start
+  const filler = "and ".repeat(220); // ~880 chars of filler (no fact tokens)
+  const tail = " for the user."; // matches at the very end
+  const sourceText = head + filler + tail; // one long sentence, no period inside
+  // Fact spans tokens from both ends: postgresql, migration (head) + user (tail).
   const located = locateFactQuote(
-    "The Zeta initiative launched in March at general availability.",
+    "The user completed the PostgreSQL migration.",
     sourceText,
+    120,
   );
   assert.ok(located, "expected a located quote");
-  // offset must fall within the Zeta clause, AFTER the Acme clause.
-  const acmeClauseEnd = sourceText.indexOf("at beta.") + "at beta.".length;
   assert.ok(
-    located!.offset >= acmeClauseEnd,
-    `offset must point past the Acme clause (offset=${located!.offset}, acmeEnd=${acmeClauseEnd})`,
+    located!.quote.length <= 120,
+    `bounded quote must respect maxQuoteChars (got ${located!.quote.length})`,
   );
+  // The densest cluster is the head (2 matches: postgresql, migration); the
+  // window must contain at least one of them. (user appears alone at the tail,
+  // so a tail-anchored window would be sparser and is not chosen.)
   assert.ok(
-    sourceText.slice(located!.offset).startsWith(located!.quote),
-    "offset must point at the start of the matched quote",
+    located!.quote.includes("PostgreSQL") || located!.quote.includes("migration"),
+    "bounded window must include matched evidence, not pure filler",
   );
 });
 

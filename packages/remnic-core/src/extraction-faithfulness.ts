@@ -803,48 +803,70 @@ function pushCandidate(
 }
 
 /**
- * Locate the min/max character range of fact-token matches inside a candidate.
- * Used by `locateFactQuote` to center truncation on the actual evidence when a
- * candidate exceeds `maxQuoteChars` (issue #1633, codex PRRT_kwDORJXyws6Obrwe).
- * Returns the full candidate span when no token matches (defensive — overlap
- * scoring already accepted the candidate).
+ * Locate the start offsets of fact-token matches inside a candidate. Used by
+ * `locateFactQuote` to build a bounded window that is guaranteed to contain
+ * real evidence (issue #1633, codex PRRT_kwDORJXyws6Obrwe / PRRT_kwDORJXyws6Oce-O).
  */
-function locateMatchedSpan(
-  factTokens: Set<string>,
-  candidate: string,
-): { start: number; end: number } {
+function locateMatchedTokens(factTokens: Set<string>, candidate: string): number[] {
   const lower = candidate.toLowerCase();
   const wordRe = /[a-z0-9]+/g;
-  let min = candidate.length;
-  let max = 0;
-  let found = false;
+  const positions: number[] = [];
   let m: RegExpExecArray | null;
   while ((m = wordRe.exec(lower)) !== null) {
     const word = m[0];
     if (word.length <= 1) continue;
     if (STOPWORDS.has(word)) continue;
     if (factTokens.has(crudeStem(word))) {
-      found = true;
-      if (m.index < min) min = m.index;
-      const wordEnd = m.index + word.length;
-      if (wordEnd > max) max = wordEnd;
+      positions.push(m.index);
     }
   }
-  if (!found) return { start: 0, end: candidate.length };
-  return { start: min, end: max };
+  return positions;
 }
 
 /**
- * Build a bounded window of `maxChars` from `text`, centered on `span`.
- * Returns the window text and its start offset within `text` so callers can
- * translate the in-candidate offset back to a source-text offset.
+ * Build a bounded window of `maxChars` from `text` that contains the densest
+ * cluster of matched-token positions. Slides a maxChars-wide window anchored
+ * at each matched token and keeps the one that captures the most matches
+ * (tiebreak: earliest anchor). This guarantees the window includes real
+ * evidence even when the matched span is wider than `maxChars` (e.g. fact
+ * tokens at both ends of a long sentence with filler between). Centering on
+ * the densest cluster's midpoint then uses any leftover budget as leading and
+ * trailing context. Returns the window text and its start offset within `text`
+ * so callers can translate the in-candidate offset back to a source-text offset.
  */
 function boundedWindow(
   text: string,
-  span: { start: number; end: number },
+  matchedPositions: number[],
   maxChars: number,
 ): { text: string; start: number } {
-  const center = Math.floor((span.start + span.end) / 2);
+  if (matchedPositions.length === 0) {
+    // Defensive: overlap scoring accepted the candidate but no individual
+    // token matched (e.g. all matches were stopwords). Fall back to prefix.
+    const end = Math.min(text.length, maxChars);
+    return { text: text.slice(0, end), start: 0 };
+  }
+  let bestAnchor = matchedPositions[0]!;
+  let bestCount = 0;
+  let bestLast = bestAnchor;
+  for (const anchor of matchedPositions) {
+    const winEnd = anchor + maxChars;
+    let count = 0;
+    let last = anchor;
+    for (const p of matchedPositions) {
+      if (p >= anchor && p < winEnd) {
+        count++;
+        last = p;
+      }
+    }
+    if (count > bestCount) {
+      bestCount = count;
+      bestAnchor = anchor;
+      bestLast = last;
+    }
+  }
+  // The densest cluster [bestAnchor, bestLast] fits within maxChars by
+  // construction; center a maxChars window on its midpoint, clamped to text.
+  const center = Math.floor((bestAnchor + bestLast) / 2);
   const half = Math.floor(maxChars / 2);
   let start = Math.max(0, center - half);
   const end = Math.min(text.length, start + maxChars);
@@ -863,21 +885,37 @@ export function locateFactQuote(
   if (factTokens.size === 0) return undefined;
   const candidates = splitSourceCandidates(sourceText);
   if (candidates.length === 0) return undefined;
-  let best: { candidate: SourceCandidate; score: number } | null = null;
-  for (const candidate of candidates) {
+  // Pick the best-overlap candidate. Tiebreak equal own-overlap scores by a
+  // "context" score that includes the immediately PRECEDING candidate's text,
+  // so a repeated anaphoric line ("It launched in March") resolves to the
+  // occurrence whose neighbor names the fact's entity (issue #1633, codex
+  // PRRT_kwDORJXyws6Oce-S). Without this tiebreak the first occurrence wins
+  // even when the second is the one the fact refers to.
+  let best: { candidate: SourceCandidate; score: number; contextScore: number } | null = null;
+  for (let i = 0; i < candidates.length; i++) {
+    const candidate = candidates[i]!;
     const score = overlapCoefficient(factTokens, tokenize(candidate.text));
-    if (!best || score > best.score) best = { candidate, score };
+    const prevText = i > 0 ? candidates[i - 1]!.text : "";
+    const contextText = prevText ? `${prevText} ${candidate.text}` : candidate.text;
+    const contextScore = overlapCoefficient(factTokens, tokenize(contextText));
+    if (
+      !best ||
+      score > best.score ||
+      (score === best.score && contextScore > best.contextScore)
+    ) {
+      best = { candidate, score, contextScore };
+    }
   }
   if (!best || best.score < LOCATE_QUOTE_MIN_OVERLAP) return undefined;
   const { text, start } = best.candidate;
   if (text.length <= maxQuoteChars) {
     return { quote: text, offset: start };
   }
-  // Center the bounded window on the matched-term span instead of returning
-  // the first maxQuoteChars prefix (issue #1633). Returning the prefix drops
-  // supporting words that fall after char ~600, routing actually-entailed
-  // facts to pending_review in enforce mode.
-  const matched = locateMatchedSpan(factTokens, text);
+  // Build a bounded window around the densest cluster of matched terms instead
+  // of returning the first maxQuoteChars prefix (issue #1633). Returning the
+  // prefix drops supporting words that fall after char ~600, routing
+  // actually-entailed facts to pending_review in enforce mode.
+  const matched = locateMatchedTokens(factTokens, text);
   const win = boundedWindow(text, matched, maxQuoteChars);
   return { quote: win.text, offset: start + win.start };
 }
