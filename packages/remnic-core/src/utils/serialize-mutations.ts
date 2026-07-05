@@ -670,10 +670,14 @@ async function lockHeldBySelf(held: HeldLock): Promise<boolean> {
 }
 
 function sleep(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  // NOT unref'd: this polls inside an awaited acquire loop, so the caller's
-  // await chain keeps the loop alive; unref would let Node exit mid-poll when
-  // nothing else is pending (the heartbeat interval IS unref'd separately).
-  setTimeout(resolve, ms);
-  return promise;
+  // Manual deferred instead of Promise.withResolvers (ES2024) — plugin-openclaw's
+  // standalone tsconfig targets ES2022 lib and this module is reachable from its
+  // type graph, so withResolvers would TS2550 there (same fix as
+  // extraction-faithfulness.ts:467).
+  return new Promise<void>((resolve) => {
+    // NOT unref'd: this polls inside an awaited acquire loop, so the caller's
+    // await chain keeps the loop alive; unref would let Node exit mid-poll when
+    // nothing else is pending (the heartbeat interval IS unref'd separately).
+    setTimeout(resolve, ms);
+  });
 }
