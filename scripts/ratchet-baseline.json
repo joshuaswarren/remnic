@@ -4,13 +4,25 @@
   "oversizeThresholdLoc": 3000,
   "metrics": {
     "watchlistLoc": {
-      "packages/remnic-core/src/orchestrator.ts": 19946,
-      "packages/remnic-core/src/cli.ts": 9853,
+      "packages/remnic-core/src/orchestrator.ts": 20090,
+      "packages/remnic-core/src/cli.ts": 9870,
       "packages/remnic-core/src/access-service.ts": 8412,
       "packages/remnic-core/src/storage.ts": 7306,
       "packages/remnic-core/src/config.ts": 4505
     },
     "oversizedFileCount": 10,
-    "scatteredConfigFlagReads": 553
-  }
+    "scatteredConfigFlagReads": 559
+  },
+  "justifications": [
+    {
+      "pr": "#1500 namespace maintenance fanout",
+      "date": "2026-07-05",
+      "deltas": {
+        "orchestrator.ts": "19946 -> 20090 (+144; +132 initial fanout wiring + +12 review cadence-skip fix)",
+        "cli.ts": "9853 -> 9870 (+17)",
+        "scatteredConfigFlagReads": "553 -> 559 (+6; +5 initial per-job gates + +1 review default-collapse gate)"
+      },
+      "reason": "Irreducible per-job/per-seam wiring authorized by #1500 and the execution plan's per-job-wiring exception. Orchestrator +132 = 6 thin fanout delegator methods; each delegates per-namespace execution to existing methods via this.getStorage(namespace) and no maintenance logic moved into the orchestrator. The +12 review fix (20078->20090) adds the cadence-skip signal branch in runPatternReinforcementFanout (cursor-bugbot finding). cli.ts +17 = the read-only `remnic namespaces maintenance` status command. The +6 config.*Enabled reads are: the per-job gates each fanout honors (patternReinforcementEnabled, lifecyclePolicyEnabled, semanticConsolidationEnabled), the fanout-module health summary (maintenanceNamespaceFanoutEnabled, namespacesEnabled), and the planner default-collapse gate (namespacesEnabled, added in the review to prevent double-processing when namespaces are disabled). All are the per-job gating #1500 mandates; listed for the #1566 CapabilitySet migration inventory. Remaining standard jobs (graph-decay, fact-archival, tier-migration, contradiction-scan) are enumerated in NAMESPACE_MAINTENANCE_JOBS and wire identically when their per-namespace runners are extracted (#1526)."
+    }
+  ]
 }

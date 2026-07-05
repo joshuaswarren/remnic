@@ -57,6 +57,7 @@ import {
 } from "./maintenance/rebuild-memory-projection.js";
 import { rebuildObservations } from "./maintenance/rebuild-observations.js";
 import { migrateObservations } from "./maintenance/migrate-observations.js";
+import { formatNamespaceMaintenanceHealthText } from "./maintenance/namespace-maintenance-fanout.js";
 import {
   listNamespaces,
   runNamespaceMigration,
@@ -4290,6 +4291,22 @@ export function registerCli(
               "\nNOT APPLIED: another rebuild holds the lock; the catalog was NOT rewritten. Retry shortly.",
             );
             process.exitCode = 1;
+          }
+        });
+
+      namespacesCmd
+        .command("maintenance")
+        .description(
+          "Show per-namespace maintenance status (issue #1500). Reports which namespaces were maintained, skipped, or failed for each standard job.",
+        )
+        .option("--json", "Emit machine-readable JSON only")
+        .action(async (...args: unknown[]) => {
+          const options = (args[0] ?? {}) as Record<string, unknown>;
+          const summary = await orchestrator.readNamespaceMaintenanceHealth();
+          if (reportHasMachineReadableOutput(options)) {
+            console.log(JSON.stringify(summary, null, 2));
+          } else {
+            console.log(formatNamespaceMaintenanceHealthText(summary));
           }
         });
 
