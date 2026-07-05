@@ -63,7 +63,7 @@ function restoreEnv(name: string, value: string | undefined): void {
 function createFakeBun(root: string): string {
   const binPath = path.join(root, "fake-bun");
   const script = [
-    "#!/usr/bin/env node",
+    `#!${process.execPath}`,
     'const fs = require("node:fs");',
     'const path = require("node:path");',
     "const args = process.argv.slice(2);",
@@ -921,3 +921,236 @@ test("omp publisher loader.js embeds the plugin-pi dist path for mtime self-heal
     `loader must embed the plugin-pi dist path (${wrapperPath}) for mtime comparison`,
   );
 });
+
+// ── Regression (PR #1641 / #1598): the pre-existing dist-bundle must survive a
+// failed final swap. runBundleBuild renames the old bundle aside, moves the new
+// one in, and restores the backup if the final rename fails — it never removes
+// the working bundle before the new one is in place.
+test("omp publisher preserves the existing dist-bundle when the final bundle swap fails", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-bundle-swap-fail-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  // Stand up an extension root whose existing dist-bundle holds a working bundle.
+  const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
+  fs.mkdirSync(extensionRoot, { recursive: true });
+  fs.mkdirSync(path.join(extensionRoot, "dist-bundle"), { recursive: true });
+  fs.writeFileSync(
+    path.join(extensionRoot, "dist-bundle", "index.js"),
+    "export default async function prior() { return \"prior-bundle\"; }\n",
+  );
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  process.env.REMNIC_OMP_BUN_BIN = createFakeBun(root);
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  // Sabotage only the final tmp->dist-bundle rename so the new build succeeds
+  // but the swap fails. The backup rename (dist-bundle -> .bak-*) still works.
+  const realRenameSync = fs.renameSync;
+  let swapFailed = false;
+  fs.renameSync = function sabotagedRenameSync(from, to) {
+    if (typeof to === "string" && to.endsWith(path.join(extensionRoot, "dist-bundle")) &&
+        typeof from === "string" && from.includes(".dist-bundle.tmp-")) {
+      swapFailed = true;
+      throw Object.assign(new Error("simulated swap failure"), { code: "EUNKNOWN" });
+    }
+    return realRenameSync.call(fs, from, to);
+  };
+  t.after(() => { fs.renameSync = realRenameSync; });
+
+  const publisher = new OmpMemoryExtensionPublisher();
+  await assert.rejects(
+    () =>
+      publisher.publish({
+        config: { memoryDir: path.join(root, "memory") },
+        skillsRoot: path.join(root, "memory", "skills"),
+        log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      }),
+    /failed to finalize bundle output/i,
+  );
+
+  assert.ok(swapFailed, "the final swap must have been attempted and failed");
+  // The working bundle must still be in place — the install is never left bundle-less.
+  assert.equal(
+    fs.readFileSync(path.join(extensionRoot, "dist-bundle", "index.js"), "utf8"),
+    'export default async function prior() { return "prior-bundle"; }\n',
+    "pre-existing dist-bundle must be restored after a failed swap",
+  );
+  // No leftover tmp or backup dirs.
+  for (const entry of fs.readdirSync(extensionRoot)) {
+    assert.ok(
+      !entry.startsWith(".dist-bundle.tmp-") && !entry.startsWith(".dist-bundle.bak-"),
+      `leftover bundle temp/backup dir not cleaned: ${entry}`,
+    );
+  }
+});
+
+// ── Regression (PR #1641 / #1598): the generated loader.js must reuse the bun
+// path resolved at install time so self-healing works when bun is reachable
+// only via REMNIC_OMP_BUN_BIN or a common absolute path that is not on omp's
+// runtime PATH.
+test("omp publisher loader.js embeds the resolved bun path for self-healing rebuilds", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-loader-bun-path-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  const resolvedBun = createFakeBun(root);
+  process.env.REMNIC_OMP_BUN_BIN = resolvedBun;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  await new OmpMemoryExtensionPublisher().publish({
+    config: { memoryDir: path.join(root, "memory") },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+
+  const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
+  const loader = fs.readFileSync(path.join(extensionRoot, "loader.js"), "utf8");
+
+  // The resolved absolute bun path must be embedded and used by the rebuild.
+  assert.ok(
+    loader.includes(JSON.stringify(resolvedBun)),
+    `loader must embed the resolved bun path (${resolvedBun}) for self-healing`,
+  );
+  assert.match(loader, /resolvedBunBin/, "loader must declare resolvedBunBin");
+  assert.match(
+    loader,
+    /spawnSync\(bunForRebuild/,
+    "loader's rebuildBundle must spawn bunForRebuild, not a hardcoded \"bun\"",
+  );
+  assert.doesNotMatch(
+    loader,
+    /spawnSync\(\"bun\"/,
+    "loader must not hardcode spawnSync(\"bun\", ...) for rebuilds",
+  );
+});
+
+// ── Regression (PR #1641 / #1598): resolveBunBinary must honour USERPROFILE
+// (matching omp's path helpers) so the ~/.bun/bin/bun fallback resolves on
+// Windows installs where HOME is unset.
+test("omp publisher resolveBunBinary falls back to USERPROFILE/.bun when HOME is unset", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-bun-userprofile-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  // Plant a bun binary under the USERPROFILE home so the candidate lookup finds it.
+  fs.mkdirSync(path.join(home, ".bun", "bin"), { recursive: true });
+  const userprofileBun = path.join(home, ".bun", "bin", "bun");
+  fs.writeFileSync(
+    userprofileBun,
+    createFakeBunScript(),
+    { mode: 0o755 },
+  );
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  const previousPath = process.env.PATH;
+  // Force the PATH probe to fail so resolveBunBinary must use the USERPROFILE
+  // candidate. Empty PATH only affects spawnSync("bun") (ENOENT); the candidate
+  // is invoked as an absolute path and needs no PATH.
+  delete process.env.HOME;
+  process.env.USERPROFILE = home;
+  delete process.env.REMNIC_OMP_BUN_BIN;
+  process.env.PATH = "/usr/bin";
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    restoreEnv("PATH", previousPath);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  // Publish must succeed: resolveBunBinary found the USERPROFILE-relative bun,
+  // pre-bundled, and wrote loader.js + dist-bundle.
+  const result = await new OmpMemoryExtensionPublisher().publish({
+    config: { memoryDir: path.join(root, "memory") },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+
+  const extensionRoot = result.extensionRoot;
+  assert.ok(fs.existsSync(path.join(extensionRoot, "dist-bundle", "index.js")), "dist-bundle produced via USERPROFILE-resolved bun");
+  const loader = fs.readFileSync(path.join(extensionRoot, "loader.js"), "utf8");
+  assert.ok(
+    loader.includes(JSON.stringify(userprofileBun)),
+    "loader must embed the USERPROFILE-resolved bun path",
+  );
+});
+
+/**
+ * Returns the fake-bun script body (writes a stub index.js into --outdir),
+ * matching createFakeBun but without writing to disk. Used by tests that need
+ * to plant the binary at a specific absolute path (e.g. ~/.bun/bin/bun).
+ */
+function createFakeBunScript(): string {
+  return [
+    `#!${process.execPath}`,
+    'const fs = require("node:fs");',
+    'const path = require("node:path");',
+    "const args = process.argv.slice(2);",
+    'const outdirArg = args.find((a) => a.startsWith("--outdir="));',
+    'if (!outdirArg) { console.error("fake-bun: --outdir missing"); process.exit(1); }',
+    'const outdir = outdirArg.slice("--outdir=".length);',
+    "fs.mkdirSync(outdir, { recursive: true });",
+    'fs.writeFileSync(path.join(outdir, "index.js"), "export default async function remnicPiExtension() {}\\n");',
+    "",
+  ].join("\n");
+}

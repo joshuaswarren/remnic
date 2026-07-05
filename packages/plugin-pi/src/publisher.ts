@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import os from "node:os";
 
 import {
   type MemoryExtensionPublisher,
@@ -370,25 +371,10 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
     extensionRoot: string,
     paths: { configPath: string; wrapperPath: string; pluginPiDistPath: string },
   ): void {
-    const loaderPath = path.join(extensionRoot, "loader.js");
-    const packageJsonPath = path.join(extensionRoot, "package.json");
-
-    atomicWriteFile(loaderPath, renderOmpLoader(paths.pluginPiDistPath), 0o644);
-    atomicWriteFile(packageJsonPath, renderOmpPackageJson(), 0o644);
-
-    this.runBundleBuild(ctx, extensionRoot);
-  }
-
-  /**
-   * Pre-bundles the omp extension with `bun build` so omp's embedded runtime
-   * never resolves bare npm specifiers (e.g. @sinclair/typebox) from the
-   * extension's node_modules at load time. The bundle is written to a temp
-   * directory and atomically swapped into dist-bundle/ on success; a failure
-   * leaves any pre-existing dist-bundle untouched.
-   *
-   * Override in tests to skip the real bun invocation.
-   */
-  protected runBundleBuild(ctx: PublishContext, extensionRoot: string): void {
+    // Resolve once so the install-time build and the generated loader share the
+    // same bun path — a loader that hardcodes "bun" cannot self-heal when bun
+    // is reachable only via REMNIC_OMP_BUN_BIN or a common absolute install
+    // path that is not on omp's PATH at runtime.
     const bunBin = resolveBunBinary();
     if (!bunBin) {
       throw new Error(
@@ -398,6 +384,27 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
       );
     }
 
+    const loaderPath = path.join(extensionRoot, "loader.js");
+    const packageJsonPath = path.join(extensionRoot, "package.json");
+
+    atomicWriteFile(loaderPath, renderOmpLoader(paths.pluginPiDistPath, bunBin), 0o644);
+    atomicWriteFile(packageJsonPath, renderOmpPackageJson(), 0o644);
+
+    this.runBundleBuild(ctx, extensionRoot, bunBin);
+  }
+
+  /**
+   * Pre-bundles the omp extension with `bun build` so omp's embedded runtime
+   * never resolves bare npm specifiers (e.g. @sinclair/typebox) from the
+   * extension's node_modules at load time. The bundle is written to a temp
+   * directory and swapped into dist-bundle/ on success. The pre-existing
+   * dist-bundle is renamed aside (not removed) before the swap, so a failure
+   * during the final rename restores the previously working bundle rather than
+   * leaving the install with no bundle at all.
+   *
+   * Override in tests to skip the real bun invocation.
+   */
+  protected runBundleBuild(ctx: PublishContext, extensionRoot: string, bunBin: string): void {
     const sourceEntry = path.join(extensionRoot, "index.ts");
     const tmpOutDir = path.join(extensionRoot, `.dist-bundle.tmp-${process.pid}-${Date.now()}`);
     const finalOutDir = path.join(extensionRoot, "dist-bundle");
@@ -425,16 +432,40 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
       );
     }
 
+    // Swap the freshly built bundle into place without ever leaving the install
+    // bundle-less. Rename the existing dist-bundle aside, move the new one in,
+    // and only then discard the backup. On any failure mid-swap, restore the
+    // backup so the previously working bundle survives (the publish-level
+    // rollback only removes newly created dirs — it never restores a removed
+    // dist-bundle, so we must not remove it here).
+    let backupDir: string | null = null;
     try {
       if (fs.existsSync(finalOutDir)) {
-        fs.rmSync(finalOutDir, { recursive: true, force: true });
+        backupDir = path.join(extensionRoot, `.dist-bundle.bak-${process.pid}-${Date.now()}`);
+        fs.renameSync(finalOutDir, backupDir);
       }
       fs.renameSync(tmpOutDir, finalOutDir);
+      if (backupDir) {
+        try {
+          fs.rmSync(backupDir, { recursive: true, force: true });
+        } catch {
+          // best-effort backup cleanup; leaving it does not break the install
+        }
+      }
     } catch (err) {
       try {
-        fs.rmSync(tmpOutDir, { recursive: true, force: true });
+        if (fs.existsSync(tmpOutDir)) fs.rmSync(tmpOutDir, { recursive: true, force: true });
       } catch {
         // best-effort tmp cleanup
+      }
+      // Restore the previously working bundle if we moved it aside and the
+      // final swap did not land.
+      if (backupDir && fs.existsSync(backupDir) && !fs.existsSync(finalOutDir)) {
+        try {
+          fs.renameSync(backupDir, finalOutDir);
+        } catch {
+          // best-effort restore; the loader's self-heal rebuilds on next start
+        }
       }
       throw new Error(
         `Remnic omp extension: failed to finalize bundle output — ${err instanceof Error ? err.message : String(err)}.`,
@@ -503,7 +534,7 @@ function renderWrapper(extensionModulePath: string, configPath: string): string 
  * imports the self-contained bundle so omp's embedded runtime never resolves
  * bare npm specifiers at load time.
  */
-function renderOmpLoader(pluginPiDistPath: string): string {
+function renderOmpLoader(pluginPiDistPath: string, bunBin: string): string {
   return [
     "// Auto-generated by Remnic's OmpMemoryExtensionPublisher.",
     "// omp's embedded runtime cannot resolve bare npm specifiers from this",
@@ -520,6 +551,12 @@ function renderOmpLoader(pluginPiDistPath: string): string {
     'const bundleEntry = join(here, "dist-bundle", "index.js");',
     'const sourceEntry = join(here, "index.ts");',
     `const pluginPiEntry = ${JSON.stringify(pluginPiDistPath)};`,
+    // Reuse the bun path resolved at install time (REMNIC_OMP_BUN_BIN, PATH,
+    // or a common absolute location). Fall back to "bun" on PATH if the
+    // resolved path no longer exists (e.g. the extension tree was moved), so
+    // self-healing still works when bun is reachable only via PATH.
+    `const resolvedBunBin = ${JSON.stringify(bunBin)};`,
+    'const bunForRebuild = resolvedBunBin && existsSync(resolvedBunBin) ? resolvedBunBin : "bun";',
     "",
     "function bundleIsStale() {",
     "  if (!existsSync(bundleEntry)) return true;",
@@ -530,7 +567,7 @@ function renderOmpLoader(pluginPiDistPath: string): string {
     "}",
     "",
     "function rebuildBundle() {",
-    '  const result = spawnSync("bun", ["build", sourceEntry, "--target=bun", "--outdir=dist-bundle"], {',
+    '  const result = spawnSync(bunForRebuild, ["build", sourceEntry, "--target=bun", "--outdir=dist-bundle"], {',
     "    cwd: here,",
     '    stdio: "inherit",',
     "  });",
@@ -587,8 +624,12 @@ function resolveBunBinary(): string | null {
   const pathProbe = spawnSync("bun", ["--version"], { encoding: "utf-8" });
   if (!pathProbe.error && pathProbe.status === 0) return "bun";
 
+  // Mirror omp's path helpers, which resolve the agent home as
+  // HOME ?? USERPROFILE ?? os.homedir(). Relying on HOME alone breaks the
+  // ~/.bun/bin/bun fallback on Windows installs where HOME is unset.
+  const home = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
   const candidates = [
-    path.join(process.env.HOME ?? "", ".bun", "bin", "bun"),
+    path.join(home ?? "", ".bun", "bin", "bun"),
     "/usr/local/bin/bun",
     "/opt/homebrew/bin/bun",
   ];
