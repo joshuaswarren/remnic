@@ -17,6 +17,7 @@ import { createCodingGraphEngine } from "./engine.js";
 import { FIXTURES } from "./fixtures.js";
 import { hashContent } from "./emit.js";
 import { sniffLanguage } from "./language-sniff.js";
+import { WasmTreeSitterBackend } from "./parser-backend.js";
 
 // ---------------------------------------------------------------------------
 // Deterministic IR serialization — sorts every collection and object key so
@@ -374,6 +375,145 @@ test("fixture-IR: Java has class/interface/method structure", async () => {
   assert.ok(ir.imports.some((i) => i.module === "java.util.List"), "Java: should import java.util.List");
 
   await engine.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// 2b. Review-thread fixes (#1551 PR2 — PR #1652).
+//   - CommonJS require() imports (threads PRRT_kwDORJXyws6Oc9au / -M8)
+//   - Arrow/function-expression declarators as symbols (thread -M-)
+//   - Full C# qualified_name in using directives (thread -NB)
+//   - Failed grammar load allows retry, not a cached rejection (thread 9at)
+// ---------------------------------------------------------------------------
+
+test("require-imports: CommonJS require() produces an import edge", async () => {
+  const engine = createCodingGraphEngine();
+  const fixture = FIXTURES.javascript; // starts with: const express = require("express");
+  const result = await engine.parseFile({
+    path: fixture.path,
+    content: Buffer.from(fixture.code, "utf-8"),
+  });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  assert.ok(
+    result.ir.imports.some((i) => i.module === "express"),
+    `JS: require("express") must produce an import, got modules: ${result.ir.imports.map((i) => i.module).join(", ")}`,
+  );
+
+  await engine.dispose();
+});
+
+test("require-imports: CommonJS require with destructuring variants", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    'const path = require("path");',
+    'const { readFile } = require("fs");',
+    "",
+    "function main() { readFile('x'); }",
+    "",
+    "module.exports = { main };",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "lib/cjs.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const modules = result.ir.imports.map((i) => i.module);
+  assert.ok(modules.includes("path"), `should import path via require, got: ${modules.join(", ")}`);
+  assert.ok(modules.includes("fs"), `should import fs via require, got: ${modules.join(", ")}`);
+
+  await engine.dispose();
+});
+
+test("arrow-fn-decls: const handler = () => {} indexed as function symbol", async () => {
+  const engine = createCodingGraphEngine();
+  const fixture = FIXTURES.tsx; // contains: export const Container = () => { ... };
+  const result = await engine.parseFile({
+    path: fixture.path,
+    content: Buffer.from(fixture.code, "utf-8"),
+  });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const container = result.ir.symbols.find((s) => s.name === "Container");
+ assert.ok(container, "TSX: Container arrow-fn symbol must exist");
+ assert.equal(container!.kind, "function", "TSX: Container should be a function symbol");
+
+  await engine.dispose();
+});
+
+test("arrow-fn-decls: function-expression declarators also indexed", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    'import { Router } from "express";',
+    "",
+    "const handler = function () { return 42; };",
+    "const arrow = () => { return handler(); };",
+    "",
+    "export { handler, arrow };",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/fns.ts", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const names = result.ir.symbols.map((s) => s.name);
+  assert.ok(names.includes("handler"), `TS: function-expression declarator should be a symbol, got: ${names.join(", ")}`);
+  assert.ok(names.includes("arrow"), `TS: arrow-function declarator should be a symbol, got: ${names.join(", ")}`);
+
+  await engine.dispose();
+});
+
+test("csharp-usings: qualified namespace captured in full", async () => {
+  const engine = createCodingGraphEngine();
+  const fixture = FIXTURES.csharp; // contains: using System.Collections.Generic;
+  const result = await engine.parseFile({
+    path: fixture.path,
+    content: Buffer.from(fixture.code, "utf-8"),
+  });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const modules = result.ir.imports.map((i) => i.module);
+  assert.ok(
+    modules.includes("System.Collections.Generic"),
+    `C#: using System.Collections.Generic must capture the full qualified name, got: ${modules.join(", ")}`,
+  );
+  assert.ok(modules.includes("System"), "C#: simple using System should still work");
+
+  await engine.dispose();
+});
+
+test("retry: failed grammar load allows a fresh retry, not a cached rejection", async () => {
+  // Point the backend at a nonexistent grammar dir so Language.load rejects.
+  const backend = new WasmTreeSitterBackend(`/nonexistent-grammar-${Date.now()}`);
+  await backend.init(); // Parser.init() succeeds without grammar files.
+
+  // First load attempt fails — the wasm file doesn't exist.
+  const p1 = backend.ensureLanguage("javascript");
+  try {
+    await p1;
+    assert.fail("first ensureLanguage should have rejected on a missing grammar");
+  } catch {
+    // expected ENOENT / load failure
+  }
+
+  // Second attempt: before the fix, loadingLanguages was never cleaned on
+  // failure, so this returned the SAME cached rejected promise. After the
+  // fix, the finally block clears the cache, so this is a FRESH attempt
+  // (a brand-new promise that re-runs Language.load).
+  const p2 = backend.ensureLanguage("javascript");
+  try {
+    await p2;
+  } catch {
+    // expected to fail again (still the same bad dir)
+  }
+
+  assert.notStrictEqual(
+    p1,
+    p2,
+    "retry must return a fresh promise, not the cached rejection — loadingLanguages should be cleared on failure",
+  );
+
+  await backend.dispose();
 });
 
 // ---------------------------------------------------------------------------

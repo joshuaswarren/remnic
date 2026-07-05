@@ -44,6 +44,13 @@ const JS_FAMILY_DEFINITIONS = `
 (interface_declaration name: (type_identifier) @name) @def.interface
 (enum_declaration name: (identifier) @name) @def.enum
 (type_alias_declaration name: (type_identifier) @name) @def.type
+
+; const handler = () => {} / const handler = function () {}
+; Indexes arrow-function and function-expression declarations so route
+; handlers and React components defined this way appear as symbols.
+(variable_declarator
+  name: (identifier) @name
+  value: [(arrow_function) (function_expression)]) @def.function
 `.trim();
 
 const JS_IMPORTS = `
@@ -58,6 +65,13 @@ const JS_IMPORTS = `
 (import_statement
   (import_clause (named_imports (import_specifier name: (identifier) @import.name)))
   source: (string (string_fragment) @import.module)) @__import.stmt
+
+; CommonJS require("...") — capture the module specifier so dependency
+; edges exist for Node/CommonJS codebases, not just ES-module imports.
+(call_expression
+  function: (identifier) @__import.require
+  arguments: (arguments (string (string_fragment) @import.module))
+  (#eq? @__import.require "require")) @__import.stmt
 `.trim();
 
 // TS/TSX exports — class/interface names use type_identifier.
@@ -117,6 +131,11 @@ const JAVASCRIPT_EXTRACTOR: LanguageExtractor = {
 (function_declaration name: (identifier) @name) @def.function
 (method_definition name: (property_identifier) @name) @def.method
 (class_declaration name: (identifier) @name) @def.class
+
+; const handler = () => {} / const handler = function () {}
+(variable_declarator
+  name: (identifier) @name
+  value: [(arrow_function) (function_expression)]) @def.function
 `.trim(),
   importsQuery: JS_IMPORTS,
   exportsQuery: JS_EXPORTS,
@@ -256,7 +275,7 @@ const CSHARP_EXTRACTOR: LanguageExtractor = {
 `.trim(),
   importsQuery: `
 (using_directive (identifier) @import.module) @__import.stmt
-(using_directive (qualified_name (identifier) @import.module)) @__import.stmt
+(using_directive (qualified_name) @import.module) @__import.stmt
 `.trim(),
   exportsQuery: ``,
   callSitesQuery: `

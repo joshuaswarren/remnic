@@ -98,10 +98,17 @@ export class WasmTreeSitterBackend implements ParserBackend {
     if (this.initialized) return;
     if (this.initializing) return this.initializing;
     this.initializing = (async () => {
-      await Parser.init();
-      this.parser = new Parser();
-      this.initialized = true;
-      this.initializing = null;
+      try {
+        await Parser.init();
+        this.parser = new Parser();
+        this.initialized = true;
+      } finally {
+        // Clear the in-flight promise on BOTH success and failure. Without
+        // this, a transient Parser.init() rejection leaves the rejected
+        // promise cached in `initializing`, so every subsequent call
+        // re-awaits the same failure instead of retrying.
+        this.initializing = null;
+      }
     })();
     return this.initializing;
   }
@@ -111,10 +118,18 @@ export class WasmTreeSitterBackend implements ParserBackend {
     if (this.languages.has(lang)) return;
     if (this.loadingLanguages.has(lang)) return this.loadingLanguages.get(lang)!;
     const p = (async () => {
-      const wasmPath = path.join(this.grammarDir, grammarFileName(lang));
-      const language = await Language.load(wasmPath);
-      this.languages.set(lang, language);
-      this.loadingLanguages.delete(lang);
+      try {
+        const wasmPath = path.join(this.grammarDir, grammarFileName(lang));
+        const language = await Language.load(wasmPath);
+        this.languages.set(lang, language);
+      } finally {
+        // Drop the in-flight promise on BOTH success and failure. Without
+        // this, a transient Language.load() rejection leaves the rejected
+        // promise cached in `loadingLanguages`, permanently bricking that
+        // language until dispose() — the next call would re-await the same
+        // failure instead of retrying the load.
+        this.loadingLanguages.delete(lang);
+      }
     })();
     this.loadingLanguages.set(lang, p);
     return p;
