@@ -175,12 +175,20 @@ async function withSummarySnapshotLock<T>(
         heartbeatMs: summarySnapshotLockHeartbeatMs,
       },
       async (acquired) => {
-        // Strict-fail on timeout: the upsert is a read-merge-write, so a
-        // best-effort unlocked run would clobber a concurrent writer. Surface
-        // the same error the bespoke lock threw so upstream callers (runHourly)
-        // keep their existing fail-open behavior.
+        // Strict-fail when the lock could not be acquired: the upsert is a
+        // read-merge-write, so a best-effort unlocked run would clobber a
+        // concurrent writer. The utility's `acquired === false` covers BOTH a
+        // genuine contention timeout AND a filesystem acquire failure (lock-dir
+        // mkdir/open/permission errors — the advisory lock is best-effort, so
+        // the util degrades rather than throwing). The bespoke lock this
+        // replaced propagated fs errors verbatim and reserved the timeout
+        // message for contention; we no longer claim "timed out" for an fs
+        // failure (cursor Low 25143f4f) — the message names both causes so
+        // upstream fail-open (runHourly) is unchanged but debugging is honest.
         if (!acquired) {
-          throw new Error("timed out acquiring summary snapshot lock");
+          throw new Error(
+            "could not acquire summary snapshot lock (contention timeout or filesystem error)",
+          );
         }
         return work();
       },
