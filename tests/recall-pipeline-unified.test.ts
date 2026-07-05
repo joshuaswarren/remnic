@@ -510,40 +510,15 @@ test("divergence: event-order ranks ASC (turnIndex ascending after the score gat
   );
 });
 
-test("divergence: DESC tertiary tiebreaker is score DESC among numbered turns", async () => {
-  // When rank ties AND turnIndex ties, the DESC comparator falls back to
-  // `score DESC`. Here we pin that behavior: two search hits on distinct
-  // sessions but the SAME turn_index produce two candidates whose rank
-  // ties (same scorer input shape); the higher-scoring one ranks first.
-  //
-  // (The undefined-turnIndex sentinel behavior — DESC: -1, ASC:
-  // Number.MAX_SAFE_INTEGER — is a property of the COMPARATOR that the
-  // spine centralizes, not of the end-to-end pipeline. Real engine items
-  // always carry a numeric `turn_index`, so the sentinel is unreachable
-  // through the builder surface. It is tested directly against the spine
-  // module in `packages/remnic-core/src/recall-pipeline-stages.test.ts`
-  // — tests "undefined turnIndex sorts to the bottom of DESC (-1 sentinel)"
-  // and "undefined turnIndex sorts to the bottom of ASC (MAX sentinel)".)
-  const sessions = new Map<string, FixtureMessage[]>([
-    [FIXTURE_SESSION_PRIMARY, [
-      { turn_index: 5, role: "user", content: TARGETED_FACT_CONTENT },
-      { turn_index: 6, role: "user", content: "We discussed the monthly expenses figure at length." },
-    ]],
-  ]);
-  const engine = new FakeLcmEngine(sessions, new Map([[FIXTURE_SESSION_PRIMARY, [5, 6]]]));
-  const output = await buildTargetedFactRecallSection({
-    engine,
-    sessionId: FIXTURE_SESSION_PRIMARY,
-    query: "What are my monthly expenses?",
-    maxChars: 6_000,
-    maxSearchResults: 16,
-  });
-  const pos5 = output.indexOf("turn 5,");
-  const pos6 = output.indexOf("turn 6,");
-  if (pos5 > -1 && pos6 > -1) {
-    assert.ok(pos5 < pos6, `expected higher-scoring turn 5 first, got pos5=${pos5} pos6=${pos6}`);
-  }
-});
+// NOTE: the DESC tertiary score tiebreaker, the ASC content.localeCompare
+// tiebreaker, and the undefined-turnIndex sentinel behavior (DESC: -1,
+// ASC: Number.MAX_SAFE_INTEGER) are comparator properties centralized in
+// the spine module (PR2 recall-pipeline-stages.ts). They are tested
+// directly in recall-pipeline-stages.test.ts (tests 3-12). They are not
+// observable through the end-to-end builder surface because real engines
+// always produce items with numeric turn_index, and the end-to-end
+// pipelines' rank and turnIndex values are almost never simultaneously
+// tied at the builder level.
 
 test("divergence: fallback-merge — strong fallback hit outranks weak primary hit", async () => {
   // #1505 fallback merge: the primary session has NO evidence for this
