@@ -714,7 +714,7 @@ function isDaemonUnreachableError(err: unknown): boolean {
   // for this turn, so trip the breaker and cool down instead of burning another
   // full budget on the next hook (codex review). This error only arises from
   // transient connection failures, never from a semantic HTTP response.
-  if (/Remnic request exceeded the .* budget before retry/.test(err.message)) return true;
+  if (/Remnic request exceeded the \d+ms budget before retry/.test(err.message)) return true;
   return isTransientNetworkError(err);
 }
 
