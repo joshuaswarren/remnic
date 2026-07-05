@@ -16410,9 +16410,8 @@ export class Orchestrator {
         const tmtEntries = allMemories
           .filter(
             (m) =>
-              m.frontmatter.status !== "superseded" &&
-              m.frontmatter.status !== "archived" &&
-              m.frontmatter.status !== "forgotten",
+              m.frontmatter.status !== "superseded" && m.frontmatter.status !== "archived" &&
+              m.frontmatter.status !== "forgotten" && m.frontmatter.status !== "pending_review", // #1576: unfaithful queue items must not feed TMT clusters
           )
           .map((m) => ({
             path: m.path,

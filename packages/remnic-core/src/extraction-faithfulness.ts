@@ -220,7 +220,20 @@ function parseEntries(
   data: unknown,
   expectedCount: number,
 ): Map<number, ParsedFaithfulnessEntry> | null {
-  if (!Array.isArray(data)) return null;
+  if (!Array.isArray(data)) {
+    // Accept object-wrapped arrays — {"results":[...]}, {"verdicts":[...]},
+    // {"entries":[...]}, {"facts":[...]} — a common JSON-object prompt shape the
+    // extraction-judge parser already accepts. Rejecting them marked the whole
+    // batch malformed_output; in enforce mode those facts then wrote as ACTIVE
+    // (gate bypass — codex Ob4RO).
+    if (data && typeof data === "object") {
+      for (const key of ["results", "verdicts", "entries", "facts"]) {
+        const inner = (data as Record<string, unknown>)[key];
+        if (Array.isArray(inner)) return parseEntries(inner, expectedCount);
+      }
+    }
+    return null;
+  }
   const map = new Map<number, ParsedFaithfulnessEntry>();
   for (const entry of data) {
     if (!entry || typeof entry !== "object") continue;

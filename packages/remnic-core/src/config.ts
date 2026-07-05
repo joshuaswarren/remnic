@@ -2914,13 +2914,13 @@ export function parseConfig(
     // (rule 39: byte-identical pre-feature pipeline). Invalid values are
     // rejected listing valid options (rule 51).
     extractionFaithfulnessGate: (() => {
-      const raw =
-        typeof cfg.extractionFaithfulnessGate === "string"
-          ? cfg.extractionFaithfulnessGate.trim().toLowerCase()
-          : "off";
+      const v = cfg.extractionFaithfulnessGate;
+      if (v === undefined || v === null) return "off";
+      // Present-but-invalid (true/1/{}) must reject, not silently disable the gate (Ob4RQ).
+      const raw = typeof v === "string" ? v.trim().toLowerCase() : v;
       if (raw === "off" || raw === "shadow" || raw === "enforce") return raw;
       throw new Error(
-        `extractionFaithfulnessGate must be one of "off" | "shadow" | "enforce" (got ${JSON.stringify(cfg.extractionFaithfulnessGate)})`,
+        `extractionFaithfulnessGate must be one of "off" | "shadow" | "enforce" (got ${JSON.stringify(v)})`,
       );
     })(),
     extractionFaithfulnessModel:

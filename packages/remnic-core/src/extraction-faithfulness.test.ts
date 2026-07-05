@@ -1097,3 +1097,16 @@ test("runFaithfulnessGateBatch: #1575 verified spans do NOT synthesize a context
   assert.ok(userMsg);
   assert.doesNotMatch(userMsg!.content, /CONTEXT:/, "no context window for #1575 verified spans");
 });
+
+test("parseFaithfulnessResponse: object-wrapped arrays unwrap (results/verdicts/entries/facts) — gate-bypass fix #1576 Ob4RO", () => {
+  // Before the fix these object-wrapped shapes were rejected as malformed, so in
+  // enforce mode the batch went `unchecked` and unsupported facts wrote ACTIVE.
+  for (const key of ["results", "verdicts", "entries", "facts"]) {
+    const raw = JSON.stringify({ [key]: [{ index: 0, verdict: "unsupported", rationale: "x" }] });
+    const map = parseFaithfulnessResponse(raw, 1);
+    assert.ok(map, `${key}-wrapped array should parse, not be rejected as malformed`);
+    assert.equal(map.get(0)?.verdict, "unsupported");
+  }
+  // A wrapper object with no recognized array key still returns null (no over-match).
+  assert.equal(parseFaithfulnessResponse('{"data": {"nested": []}}', 1), null);
+});
