@@ -31,7 +31,7 @@ The package is **data + one small runtime materializer** (no runtime JS beyond t
 | File / dir | Purpose |
 |---|---|
 | `.codex-plugin/plugin.json` | Plugin manifest |
-| `hooks/hooks.json` + `hooks/bin/remnic-codex-hook.{cjs,sh,ps1}` | Codex session-lifecycle hooks (recall, observe, session-end). A single cross-platform Node.js runner (`.cjs`) with thin POSIX (`.sh`) and Windows PowerShell (`.ps1`) launchers; `hooks.json` wires each event with both `command` and `commandWindows` so hooks work on macOS, Linux, and Windows. |
+| `hooks/hooks.json` + `hooks/bin/remnic-codex-hook.{cjs,sh,ps1}` | Codex session-lifecycle hooks (recall, observe, session-end, **pre-compact LCM flush**). A single cross-platform Node.js runner (`.cjs`) with thin POSIX (`.sh`) and Windows PowerShell (`.ps1`) launchers; `hooks.json` wires each event with both `command` and `commandWindows` so hooks work on macOS, Linux, and Windows. |
 | `skills/` | `remnic-recall`, `remnic-remember`, `remnic-search`, `remnic-status`, `remnic-entities`, `remnic-memory-workflow` — invocable from Codex chats |
 | `memories_extensions/remnic/` | Codex phase-2 consolidation instructions — tells the Codex compactor sub-agent to treat Remnic's on-disk Markdown as an authoritative local memory source when it builds `MEMORY.md`. Local-only (no MCP, no network); runtime recall/observe still flow through the hooks above. |
 | `.mcp.json` | MCP server config pointing Codex at `http://localhost:4318/mcp` |
@@ -43,6 +43,7 @@ Once installed and a Remnic daemon is running (`remnic daemon start`):
 
 - **Auto-recall** on `SessionStart` and on every `UserPromptSubmit` — relevant memories are injected before Codex's first turn and before each subsequent user turn.
 - **Auto-observe** on `PostToolUse` for the `Bash` tool and on `Stop` (session end) — new facts, decisions, and entities touched by shell work (or accumulated through the session) are buffered for extraction automatically.
+- **Compaction coordination** on `PreCompact` — before Codex summarizes the conversation, the hook POSTs `/engram/v1/lcm/compaction/flush` so the daemon drains the in-flight observe buffer into long-term memory first. This mirrors `@remnic/plugin-pi`'s `session_before_compact` handler and is fail-open: a flush failure never blocks compaction.
 - **Memory skills** — invoke `/remnic-recall`, `/remnic-search`, `/remnic-remember`, `/remnic-entities`, `/remnic-status` directly in Codex chats.
 - **Cross-agent sharing** — the same memory store is shared with every other Remnic-connected agent (Claude Code, OpenClaw, Replit, Hermes, etc.), so what one agent learns is available to all.
 
@@ -81,6 +82,56 @@ export REMNIC_AUTH_TOKEN=$(remnic token generate codex-cli | awk '/^ *Token:/ {p
 ```
 
 See `docs/integration/connector-setup.md` in the Remnic repo for the canonical snippet.
+
+## Remote / network daemon
+
+The hooks default to a local daemon at `127.0.0.1:4318`, but the whole point of
+this plugin is that a Codex host can talk to a **shared central Remnic daemon**
+over Tailscale, a LAN, or a VPN — the same remote/central topology
+`@remnic/plugin-pi` supports. Set `REMNIC_DAEMON_URL` (full base URL) and the
+hooks route every recall / observe / compaction call there:
+
+```bash
+# Point this Codex install at the central daemon on `macstudio` over Tailscale.
+export REMNIC_DAEMON_URL="http://macstudio.tail-XXXX.ts.net:4318"
+```
+
+- `REMNIC_DAEMON_URL` (primary) / `ENGRAM_DAEMON_URL` (legacy alias) — full base
+  URL, e.g. `http://host:4318` or `https://remnic.internal:443`. An explicit
+  `http:` / `https:` scheme is required; an HTTPS URL selects the TLS transport
+  so daemons behind a reverse proxy work without extra config.
+- `REMNIC_HOST` / `REMNIC_PORT` (and `ENGRAM_*` aliases) — still honored as a
+  backward-compat fallback when no full URL is set. Existing installs and CI
+  that set only the host/port pair keep working unchanged.
+- `REMNIC_NAMESPACE` / `ENGRAM_NAMESPACE` — optional. When set, attaches a
+  namespace to the compaction flush (parity with `@remnic/plugin-pi`'s
+  `config.namespace`). Unset → the daemon resolves the default namespace.
+
+The bearer token still comes from the per-plugin token store
+(`remnic connectors install codex-cli` writes `~/.remnic/tokens.json`) or the
+`OPENCLAW_REMNIC_ACCESS_TOKEN` / `OPENCLAW_ENGRAM_ACCESS_TOKEN` env vars.
+
+## Hook trust (one-time review)
+
+Codex does not run non-managed command hooks until a human reviews and trusts
+them. The first time these hooks are enabled, Codex prints a startup warning
+directing you to run `/hooks` in the CLI; review the four Remnic entries
+(SessionStart / UserPromptSubmit / Stop / PreCompact) and approve them. Codex
+records trust against the current hook hash, so updates to `hooks.json` will
+re-trigger a review.
+
+For fleet / headless automation there is no non-interactive trust CLI today;
+pick one of:
+
+- **Managed / pre-trusted hooks** (enterprise/MDM) — ship the hooks under a
+  `managed_dir` declared in `requirements.toml`. Codex marks managed hooks as
+  trusted by policy. This is the supported path for rolling the integration out
+  across many machines.
+- **`--dangerously-bypass-hook-trust`** per invocation — runs enabled hooks
+  without persisted trust for that one run. Useful for a spike, not a fleet.
+
+The hooks themselves are fail-open everywhere, so an untrusted hook is a
+no-op (Codex skips it), never a crash.
 
 ## Agent note
 

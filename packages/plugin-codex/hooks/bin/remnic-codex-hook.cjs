@@ -26,11 +26,41 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const http = require("http");
+const https = require("https");
 const { execFileSync, spawn, spawnSync } = require("child_process");
 
 const HOME = process.env.HOME || process.env.USERPROFILE || os.homedir();
+
+// Daemon base URL resolution (issue #1571 — remote/network parity with
+// @remnic/plugin-pi's `remnicDaemonUrl`). A full REMNIC_DAEMON_URL
+// (e.g. "http://macstudio.tailnet:4318" or "https://remnic.internal:443")
+// takes precedence and lets a Codex host talk to a shared central daemon
+// over Tailscale/LAN/VPN. The legacy REMNIC_HOST/REMNIC_PORT pair remains
+// supported as a backward-compat fallback so existing installs and the
+// test harness (which spins a mock on 127.0.0.1:<port>) keep working.
+const RAW_DAEMON_URL = process.env.REMNIC_DAEMON_URL || process.env.ENGRAM_DAEMON_URL || "";
 const HOST = process.env.REMNIC_HOST || process.env.ENGRAM_HOST || "127.0.0.1";
 const PORT = process.env.REMNIC_PORT || process.env.ENGRAM_PORT || "4318";
+
+// Parse once. `protocol` is "http:" or "https:" so https.request is selected
+// for TLS daemons (common for remote/private deployments behind a proxy).
+const DAEMON_URL = (function resolveDaemonUrl() {
+  if (RAW_DAEMON_URL) {
+    try {
+      const parsed = new URL(RAW_DAEMON_URL);
+      // Require an explicit scheme — a bare "macstudio:4318" parses as
+      // pathname-only and would silently route to localhost.
+      if (parsed.protocol === "http:" || parsed.protocol === "https:") return parsed;
+    } catch {
+      /* fall through to host/port */
+    }
+  }
+  try {
+    return new URL(`http://${HOST}:${PORT}`);
+  } catch {
+    return new URL("http://127.0.0.1:4318");
+  }
+})();
 
 // Internal re-entrant mode: post-tool-observe spawns a detached copy of itself
 // so the (slow) observe runs in the background and never blocks Codex past the
@@ -42,12 +72,14 @@ const LOG_FILES = {
   "user-prompt-recall": "remnic-user-prompt-recall.log",
   "post-tool-observe": "remnic-post-tool-observe.log",
   "session-end": "remnic-codex-session-end.log",
+  "pre-compact": "remnic-pre-compact.log",
 };
 const LOG_TAGS = {
   "session-start": "codex-session-start",
   "user-prompt-recall": "codex-user-prompt",
   "post-tool-observe": "codex-post-tool",
   "session-end": "codex-stop",
+  "pre-compact": "codex-pre-compact",
 };
 
 function makeLogger(event) {
@@ -191,8 +223,14 @@ function resolveToken() {
 }
 
 // ── HTTP helpers — return a real success signal (2xx) so callers can decide
-// whether to advance/clear the cursor (fixes the data-loss bug in #1442). ───
+// whether to advance/clear the cursor (fixes the data-loss bug in #1442).
+//
+// All requests route through the parsed DAEMON_URL (#1571), so a Codex host
+// can target a remote/central daemon (Tailscale/LAN/VPN, plain or TLS) by
+// setting REMNIC_DAEMON_URL — same transport contract as @remnic/plugin-pi. ─
+
 function httpPost(urlPath, token, bodyObj, timeoutMs) {
+  const transport = DAEMON_URL.protocol === "https:" ? https : http;
   return new Promise((resolve) => {
     let data;
     try {
@@ -201,10 +239,11 @@ function httpPost(urlPath, token, bodyObj, timeoutMs) {
       resolve({ ok: false, status: 0, body: "" });
       return;
     }
-    const req = http.request(
+    const req = transport.request(
       {
-        host: HOST,
-        port: PORT,
+        protocol: DAEMON_URL.protocol,
+        hostname: DAEMON_URL.hostname,
+        port: DAEMON_URL.port || (DAEMON_URL.protocol === "https:" ? 443 : 80),
         path: urlPath,
         method: "POST",
         headers: {
@@ -240,9 +279,16 @@ function httpPost(urlPath, token, bodyObj, timeoutMs) {
 }
 
 function httpHealthy(timeoutMs) {
+  const transport = DAEMON_URL.protocol === "https:" ? https : http;
   return new Promise((resolve) => {
-    const req = http.request(
-      { host: HOST, port: PORT, path: "/engram/v1/health", method: "GET" },
+    const req = transport.request(
+      {
+        protocol: DAEMON_URL.protocol,
+        hostname: DAEMON_URL.hostname,
+        port: DAEMON_URL.port || (DAEMON_URL.protocol === "https:" ? 443 : 80),
+        path: "/engram/v1/health",
+        method: "GET",
+      },
       (res) => {
         res.resume();
         resolve(res.statusCode >= 200 && res.statusCode < 300);
@@ -849,6 +895,37 @@ async function handleSessionEnd(input, token, log) {
   runMaterialize(log);
 }
 
+// PreCompact (#1571) — coordinate with Remnic's LCM layer before Codex
+// compacts the conversation. Mirrors @remnic/plugin-pi's session_before_compact
+// handler: POST /engram/v1/lcm/compaction/flush so the daemon flushes the
+// in-flight observe buffer into long-term memory before the transcript is
+// summarized. ALWAYS returns continue:true — a hook failure must never block
+// Codex's compaction (the upstream contract notes continue:false stops the
+// compact entirely), so this handler is fail-open end to end.
+async function handlePreCompact(input, token, log) {
+  const sessionId = input.session_id || "";
+  const trigger = input.trigger || "auto";
+  // Acknowledge first so Codex never waits on the network for compaction to
+  // proceed — the flush is best-effort coordination, not a gate.
+  emit({ continue: true });
+  if (!token) {
+    log(`skipping LCM flush: no token (session=${sessionId} trigger=${trigger})`);
+    return;
+  }
+  const body = { sessionKey: sessionId };
+  // Optional namespace override (parity with @remnic/plugin-pi's config.namespace).
+  // Unset → the daemon resolves the default namespace for this principal.
+  const ns = process.env.REMNIC_NAMESPACE || process.env.ENGRAM_NAMESPACE || "";
+  if (ns) body.namespace = ns;
+  const res = await httpPost("/engram/v1/lcm/compaction/flush", token, body, 20000);
+  if (res.ok) {
+    log(`LCM compaction flush OK (session=${sessionId} trigger=${trigger})`);
+  } else {
+    // Fail-open: log and move on. Compaction proceeds regardless.
+    log(`LCM compaction flush failed (http=${res.status}) — compaction proceeds`);
+  }
+}
+
 // ── Codex-native memory materialization (#378) ─────────────────────────────
 function runMaterialize(log) {
   if (process.env.REMNIC_CODEX_MATERIALIZE === "0") return;
@@ -951,6 +1028,9 @@ async function main() {
         break;
       case "session-end":
         await handleSessionEnd(input, token, log);
+        break;
+      case "pre-compact":
+        await handlePreCompact(input, token, log);
         break;
     }
   } catch (err) {

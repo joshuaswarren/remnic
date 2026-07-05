@@ -48,6 +48,13 @@ function mkHome() {
 // stays free to answer the runner's requests while it runs.
 function runHook(event, input, { port, home, env = {} } = {}) {
   return new Promise((resolve) => {
+    // When a test asks for "no token" (env.token === null) we must clear BOTH
+    // token env vars — the runner's resolveToken() falls through from
+    // OPENCLAW_REMNIC_ACCESS_TOKEN to OPENCLAW_ENGRAM_ACCESS_TOKEN, and the
+    // parent process (a real dev shell) often has the latter set, which
+    // previously leaked through `...process.env` and made the no-token
+    // assertions fail outside CI (#1571 test-harness hygiene).
+    const noToken = env.token === null;
     const child = spawn(process.execPath, [RUNNER, event], {
       env: {
         ...process.env,
@@ -57,8 +64,8 @@ function runHook(event, input, { port, home, env = {} } = {}) {
         REMNIC_HOST: "127.0.0.1",
         REMNIC_PORT: String(port),
         REMNIC_CODEX_MATERIALIZE: "0",
-        // Default to an env token unless a test overrides it.
-        OPENCLAW_REMNIC_ACCESS_TOKEN: env.token === null ? "" : env.token || "test-token",
+        OPENCLAW_REMNIC_ACCESS_TOKEN: noToken ? "" : env.token || "test-token",
+        OPENCLAW_ENGRAM_ACCESS_TOKEN: noToken ? "" : "",
         ...env.extra,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -338,7 +345,7 @@ test("hooks.json: every event resolves via ${PLUGIN_ROOT} and uses powershell (#
   const cfg = JSON.parse(
     fs.readFileSync(path.join(__dirname, "..", "hooks.json"), "utf8"),
   );
-  for (const event of ["SessionStart", "PostToolUse", "UserPromptSubmit", "Stop"]) {
+  for (const event of ["SessionStart", "PostToolUse", "UserPromptSubmit", "Stop", "PreCompact"]) {
     for (const matcher of cfg.hooks[event]) {
       for (const hook of matcher.hooks) {
         // Codex runs plugin hooks from the session cwd via sh -lc / cmd /C and
@@ -509,4 +516,198 @@ test("post-tool worker reads its payload from STDIN end-to-end", async () => {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });
   }
+});
+
+// ── #1571: PreCompact LCM flush + remote/network daemon URL ────────────────
+
+test("pre-compact: POSTs /engram/v1/lcm/compaction/flush and returns continue:true (#1571)", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/lcm/compaction/flush") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end(
+        JSON.stringify({ ok: true, flushed: 3 }),
+      );
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook(
+      "pre-compact",
+      { session_id: "compact-1", trigger: "manual", turn_id: "t1", cwd: home },
+      { port, home },
+    );
+    assert.deepEqual(json, { continue: true });
+    const flush = calls.find((c) => c.url === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush, "compaction/flush was called");
+    assert.equal(flush.body.sessionKey, "compact-1");
+    assert.equal(flush.method, "POST");
+    // Auth gating is covered by the no-token test below; the mock helper
+    // does not record headers, so we assert the call happened, not the header.
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pre-compact: no token → bare continue, no flush call (#1571)", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) =>
+    res.writeHead(200).end("{}"),
+  );
+  try {
+    const { json } = await runHook(
+      "pre-compact",
+      { session_id: "compact-2", trigger: "auto", cwd: home },
+      { port, home, env: { token: null } },
+    );
+    assert.deepEqual(json, { continue: true });
+    assert.equal(
+      calls.filter((c) => c.url === "/engram/v1/lcm/compaction/flush").length,
+      0,
+      "no flush call without a token",
+    );
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pre-compact: HTTP failure still returns continue:true — never blocks compaction (#1571)", async () => {
+  const home = mkHome();
+  // Daemon up but flush endpoint 500s.
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/lcm/compaction/flush") {
+      return res.writeHead(500).end(JSON.stringify({ error: "boom" }));
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    const { json } = await runHook(
+      "pre-compact",
+      { session_id: "compact-3", trigger: "auto", cwd: home },
+      { port, home },
+    );
+    // Critical invariant: a flush failure MUST NOT set continue:false, which
+    // (per the upstream Codex contract) would stop compaction entirely.
+    assert.deepEqual(json, { continue: true });
+    assert.equal(
+      calls.filter((c) => c.url === "/engram/v1/lcm/compaction/flush").length,
+      1,
+      "flush was attempted",
+    );
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pre-compact: dead daemon still returns continue:true (#1571)", async () => {
+  const home = mkHome();
+  const dead = await startServer(() => {});
+  const port = dead.port;
+  dead.server.close();
+  await new Promise((r) => setTimeout(r, 50));
+  const { json } = await runHook(
+    "pre-compact",
+    { session_id: "compact-4", trigger: "auto", cwd: home },
+    { port, home },
+  );
+  assert.deepEqual(json, { continue: true });
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test("pre-compact: REMNIC_NAMESPACE attaches a namespace to the flush (#1571)", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) =>
+    res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}'),
+  );
+  try {
+    await runHook(
+      "pre-compact",
+      { session_id: "compact-ns", trigger: "manual", cwd: home },
+      { port, home, env: { extra: { REMNIC_NAMESPACE: "team/fleet" } } },
+    );
+    const flush = calls.find((c) => c.url === "/engram/v1/lcm/compaction/flush");
+    assert.ok(flush, "flush called");
+    assert.equal(flush.body.namespace, "team/fleet");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-start: REMNIC_DAEMON_URL routes recall to the remote base URL (#1571)", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/recall") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end(
+        JSON.stringify({ context: "remote recall", count: 1, mode: "auto" }),
+      );
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    // A full REMNIC_DAEMON_URL must take precedence over the (wrong) PORT.
+    // This proves a Codex host can reach a remote/central daemon over
+    // Tailscale/LAN/VPN — the core #1571 parity ask.
+    const { json } = await runHook(
+      "session-start",
+      { session_id: "remote-1", cwd: home },
+      {
+        port: 1, // deliberately unused; daemon URL wins
+        home,
+        env: { extra: { REMNIC_DAEMON_URL: `http://127.0.0.1:${port}` } },
+      },
+    );
+    assert.equal(json.continue, true);
+    assert.match(json.hookSpecificOutput.additionalContext, /remote recall/);
+    assert.ok(
+      calls.some((c) => c.url === "/engram/v1/recall"),
+      "recall reached the REMNIC_DAEMON_URL host",
+    );
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pre-compact: REMNIC_DAEMON_URL routes the flush to the remote base URL (#1571)", async () => {
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) =>
+    res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}'),
+  );
+  try {
+    await runHook(
+      "pre-compact",
+      { session_id: "remote-flush", trigger: "auto", cwd: home },
+      {
+        port: 1,
+        home,
+        env: { extra: { REMNIC_DAEMON_URL: `http://127.0.0.1:${port}` } },
+      },
+    );
+    assert.ok(
+      calls.some((c) => c.url === "/engram/v1/lcm/compaction/flush"),
+      "flush reached the REMNIC_DAEMON_URL host",
+    );
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("runner source: DAEMON_URL honors https:// remotes and falls back to HOST/PORT (#1571)", () => {
+  const src = fs.readFileSync(path.join(__dirname, "remnic-codex-hook.cjs"), "utf8");
+  // Both transports are wired so a TLS remote daemon is reachable.
+  assert.match(src, /const https = require\("https"\)/, "https transport is required");
+  assert.match(
+    src,
+    /DAEMON_URL\.protocol === "https:" \? https : http/,
+    "transport selection honors the daemon URL protocol",
+  );
+  // REMNIC_DAEMON_URL is the primary knob; ENGRAM_DAEMON_URL is the legacy alias.
+  assert.match(src, /REMNIC_DAEMON_URL \|\| process\.env\.ENGRAM_DAEMON_URL/, "daemon URL env precedence");
+  // HOST/PORT remain as a backward-compat fallback.
+  assert.match(src, /new URL\(`http:\/\/\$\{HOST\}:\$\{PORT\}`\)/, "HOST/PORT fallback preserved");
 });
