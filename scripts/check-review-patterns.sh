@@ -3,6 +3,7 @@
 # Codex, CodeQL) repeatedly flagged across PRs #343-#408 (700+ review comments).
 # Run this before pushing. Zero exit = clean.
 # Updated: 2026-04-12 (added checks 7-10 from iteration 2, 11-14 from iteration 3, 15-17 from iteration 4, 18-21 from iteration 5, 22-23 from iteration 7, 24-26 from iteration 8, 27-29 from iteration 10, 30-34 from iteration 12).
+# 2026-07-05: check 15 graduated to BLOCKING + added codex-* prefix + maxdepth-1 scope (rule 31, PR #TBD).
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -336,14 +337,21 @@ if [[ -n "$FLUSH_NO_SKIP" ]]; then
   done <<< "$FLUSH_NO_SKIP"
 fi
 
-# ---- 15. Host-prefixed files in core package (architecture boundary) ----
-echo "[check] Host-prefixed files in @remnic/core..."
+# ---- 15. Host-prefixed files in core package (architecture boundary, CLAUDE.md rule 31) ----
+echo "[check] Host-prefixed files in @remnic/core (BLOCKING)..."
 
-HOST_PREFIXED=$(find packages/remnic-core/src -name "openclaw-*" -o -name "hermes-*" 2>/dev/null || true)
+# Rule 31: generic modules in @remnic/core must use generic names; host
+# adapters wrap core, not the other way around. Legitimate host adapters
+# (publishers, connectors) live in subdirectories (memory-extension/,
+# connectors/, adapters/) and are excluded by -maxdepth 1, which scopes the
+# check to top-level generic modules where a host prefix is always a violation.
+HOST_PREFIXED=$(find packages/remnic-core/src -maxdepth 1 -type f \
+  \( -name "openclaw-*" -o -name "hermes-*" -o -name "codex-*" \) \
+  2>/dev/null || true)
 
 if [[ -n "$HOST_PREFIXED" ]]; then
   while IFS= read -r file; do
-    warn "$file — host-prefixed file in @remnic/core violates architecture boundary. Use a generic name."
+    fail "$file — host-prefixed file in @remnic/core violates rule 31 (architecture boundary). Rename to a generic name; host adapters belong in subdirectories."
   done <<< "$HOST_PREFIXED"
 fi
 

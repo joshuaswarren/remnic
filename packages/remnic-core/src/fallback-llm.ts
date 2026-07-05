@@ -14,7 +14,7 @@ import {
   type ResolveApiKeyFn,
 } from "./resolve-provider-secret.js";
 import { loadModelsJsonProviders } from "./models-json.js";
-import { callCodexCliFallback } from "./codex-cli-fallback.js";
+import { callCodexCliFallback } from "./cli-fallback.js";
 import { resolveHomeDir } from "./runtime/env.js";
 import { expandTildePath } from "./utils/path.js";
 
