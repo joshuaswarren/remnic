@@ -51,13 +51,23 @@ async function makeTempDir(): Promise<string> {
 test("redactSensitive redacts bearer-token-shaped values and sensitive keys", () => {
   const redacted = redactSensitive({
     namespace: "default",
-    authToken: "sk-live-abc123",
+    // The KEY name triggers redaction (contains "token"); value is an inert fixture.
+    authToken: "test-auth-token-fixture",
     nested: {
-      bearer: "Bearer xyz",
+      // The KEY name triggers redaction (matches "bearer"); value is inert.
+      bearer: "test-bearer-fixture",
       safe: "keep me",
-      password: "hunter2",
+      // The KEY name triggers redaction (matches "password"); value is inert.
+      password: "test-password-fixture",
     },
-    array: ["bearer sk-secret", "normal value"],
+    // A value matching BEARER_VALUE_RE under a non-sensitive key exercises the
+    // value-based branch independently. "bearer-test" is obviously not a real
+    // credential — it just matches the prefix regex.
+    description: "bearer-test-fixture",
+    // A ≥40-char opaque string under a non-sensitive key exercises the long-
+    // opaque branch. All-a's has zero entropy so it won't trip secret scanners.
+    opaqueField: "a".repeat(46),
+    array: ["bearer-test-array-value", "normal value"],
     identityToken: "abcdef0123456789", // 16-hex — NOT redacted (storage token)
   });
   assert.equal(redacted.namespace, "default");
@@ -74,6 +84,11 @@ test("redactSensitive redacts bearer-token-shaped values and sensitive keys", ()
     ((redacted as Record<string, unknown>).nested as Record<string, unknown>).password,
     REDACTED,
   );
+  // Value-based branch: "bearer-test-fixture" matches BEARER_VALUE_RE even under
+  // a non-sensitive key.
+  assert.equal((redacted as Record<string, unknown>).description, REDACTED);
+  // Long-opaque branch: 46-char alphanumeric string under a non-sensitive key.
+  assert.equal((redacted as Record<string, unknown>).opaqueField, REDACTED);
   // The 16-hex identity token must survive (it's a routing token, not a credential).
   assert.equal((redacted as Record<string, unknown>).identityToken, "abcdef0123456789");
 });
