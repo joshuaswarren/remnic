@@ -582,11 +582,36 @@ export function buildFactProvenance(
 ): ProvenanceBuildResult {
   if (!config.enabled) return { provenance: "none" };
   const rawQuote = typeof factQuote === "string" ? factQuote.trim() : "";
-  if (rawQuote.length === 0) return { provenance: "none" };
-  // Strip a leading prompt role label so a faithful quote verifies against the
-  // raw turn content (cursor thread Oc3Z2).
-  const quote = stripLeadingRolePrefix(rawQuote);
-  if (quote.length === 0) return { provenance: "none" };
+  // requireSpans (chatgpt-codex-connector thread dEsu + cursor thread dGKJ):
+  // every early exit that drops a fact's span (no quote, empty after label
+  // strip, or unsafe quote) must flag requireSpansPending when the operator
+  // opted into requireSpans, so the persist path routes the fact to
+  // pending_review instead of active. Only the disabled-feature exit (above)
+  // and the unexpected-error catch (below) omit the flag — those are
+  // policy-neutral degradations, not a missing-span decision.
+  const noneResult = (): ProvenanceBuildResult =>
+    config.requireSpans === true
+      ? { provenance: "none", requireSpansPending: true }
+      : { provenance: "none" };
+  if (rawQuote.length === 0) return noneResult();
+  // Strip a leading prompt role label so a faithful quote verifies against
+  // the raw turn content (cursor thread Oc3Z2). Prefer the RAW quote when it
+  // matches at least one turn — an utterance that literally begins with
+  // [user]/[assistant] must verify as-is, not be truncated to the post-label
+  // text (cursor/codex thread dEsw). The strip handles the common case where
+  // the LLM includes the prompt label; this preserves the rare case where the
+  // utterance itself starts with that text.
+  const strippedQuote = stripLeadingRolePrefix(rawQuote);
+  const useRawQuote =
+    rawQuote === strippedQuote ||
+    turns.some(
+      (t) =>
+        typeof t?.content === "string" &&
+        t.content.length > 0 &&
+        locateQuoteOffsets(rawQuote, t.content).matched,
+    );
+  const quote = useRawQuote ? rawQuote : strippedQuote;
+  if (quote.length === 0) return noneResult();
   // Sanitize the quote before persisting it as a provenance span
   // (chatgpt-codex-connector thread dANZ): the fact body is sanitized via
   // sanitizeMemoryContent, but sources[].quote was persisted verbatim,
@@ -595,7 +620,7 @@ export function buildFactProvenance(
   // An unsafe quote cannot serve as evidence — drop the source entirely
   // (consistent with how the body is sanitized: unsafe text is redacted,
   // and a redacted quote is useless as a verbatim span).
-  if (!isSafeMemoryContent(quote)) return { provenance: "none" };
+  if (!isSafeMemoryContent(quote)) return noneResult();
 
   try {
     // Search every turn for the quote. Collect verified sources.
