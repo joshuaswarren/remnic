@@ -35,7 +35,8 @@ export type OperationName =
   | "memory_search"
   | "memory_store"
   | "coding_decision"
-  | "coding_architecture";
+  | "coding_architecture"
+  | "coding_delta";
 
 // ---------------------------------------------------------------------------
 // Operation context — what every handler receives

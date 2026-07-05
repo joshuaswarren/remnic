@@ -28,6 +28,13 @@ import {
   ARCHITECTURE_CARD_TAG,
 } from "./coding/architecture-surfaces.js";
 import { buildArchitectureCard, createArchitectureCardSummariser } from "./coding/architecture-card.js";
+import {
+  handleCodingDelta,
+  type DeltaSurfaceRequest,
+  type DeltaSurfaceResponse,
+  type DeltaSurfaceStorage,
+} from "./coding/session-delta-surfaces.js";
+import { defaultGitInvoker } from "./coding/git-context.js";
 import { createVersion } from "./page-versioning.js";
 import { WorkStorage } from "./work/storage.js";
 import {
@@ -4541,6 +4548,51 @@ export class EngramAccessService {
         (p) => nodeFs.readFile(p, "utf-8"),
         createVersion,
       ),
+      throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+    });
+  }
+
+  /** Whether the coding_delta tool should appear in tools/list (rule 39). */
+  get sessionDeltaSurfaceVisible(): boolean {
+    return this.orchestrator.config.codingKnowledge?.enabled === true
+      && this.orchestrator.config.codingKnowledge?.sessionDelta === true;
+  }
+  /**
+   * Thin delegate — handler logic in coding/session-delta-surfaces.ts (#1548 PR4).
+   * All three surfaces (MCP/HTTP/CLI) arrive here via the boundary operation.
+   * Namespace resolution uses the SAME coding-scoped read path as the other
+   * coding surfaces; the delta state file lives under
+   * `<memoryDir>/state/coding-knowledge/<namespace>.json`.
+   */
+  async codingDelta(
+    request: DeltaSurfaceRequest,
+    authenticatedPrincipal?: string,
+  ): Promise<DeltaSurfaceResponse> {
+    return handleCodingDelta(request, {
+      codingKnowledge: this.orchestrator.config.codingKnowledge,
+      getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
+      resolveStorage: async (req) => {
+        const ns = await this.resolveCodingScopedReadableNamespace({
+          namespace: req.namespace,
+          sessionKey: req.sessionKey,
+          authenticatedPrincipal,
+        });
+        const storage = await this.orchestrator.getStorage(ns);
+        // Delta only needs memoryDir + namespace (no readAllMemories); build
+        // the narrow storage shape from the orchestrator config + resolved ns.
+        return {
+          memoryDir: this.orchestrator.config.memoryDir,
+          namespace: ns,
+        } satisfies DeltaSurfaceStorage;
+      },
+      gitInvoker: (cwd, args) => {
+        // Reuse the existing defaultGitInvoker (2s timeout, never throws —
+        // the discipline git-context.ts already established). It returns
+        // { stdout, exitCode } so the handler can recover from non-zero
+        // exits without a try/catch.
+        const invoker = defaultGitInvoker();
+        return invoker(cwd, args);
+      },
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
     });
   }

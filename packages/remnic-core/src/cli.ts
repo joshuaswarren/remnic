@@ -2803,6 +2803,7 @@ export async function runAccessMcpServeCliCommand(
       emitLegacyTools: options.emitLegacyTools,
       codingDecisionVisible: service.decisionRecordSurfaceVisible,
       architectureCardVisible: service.architectureCardSurfaceVisible,
+      sessionDeltaVisible: service.sessionDeltaSurfaceVisible,
     });
   await server.runStdio(options.stdin ?? process.stdin, options.stdout ?? process.stdout);
   return { ok: true };

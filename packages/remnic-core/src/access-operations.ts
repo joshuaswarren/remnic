@@ -29,6 +29,11 @@ import {
   type ArchitectureSurfaceRequest,
   type ArchitectureSurfaceResponse,
 } from "./coding/architecture-surfaces.js";
+import {
+  DELTA_SUBCOMMANDS,
+  type DeltaSurfaceRequest,
+  type DeltaSurfaceResponse,
+} from "./coding/session-delta-surfaces.js";
 
 // ---------------------------------------------------------------------------
 // memory_get — fetch one memory by id
@@ -251,6 +256,46 @@ export const codingArchitectureOperation = defineOperation<
 });
 
 // ---------------------------------------------------------------------------
+// coding_delta — session-delta surface (issue #1548 Track A PR 4)
+// ---------------------------------------------------------------------------
+
+const codingDeltaSchema = z.preprocess(
+  (data) => {
+    if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+      const obj = data as Record<string, unknown>;
+      const cleaned: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(obj)) {
+        if (value !== null) cleaned[key] = value;
+      }
+      return cleaned;
+    }
+    return data;
+  },
+  z.object({
+    subcommand: z.enum(DELTA_SUBCOMMANDS),
+    sessionKey: z.string().trim().max(512).optional(),
+    namespace: z.string().trim().max(256).optional(),
+  }),
+);
+
+export type CodingDeltaInput = DeltaSurfaceRequest;
+export type CodingDeltaOutput = { result: DeltaSurfaceResponse };
+
+export const codingDeltaOperation = defineOperation<
+  CodingDeltaInput,
+  CodingDeltaOutput
+>({
+  name: "coding_delta",
+  description:
+    "Get the session delta (commits + touched files since last seen) for the session's coding namespace (issue #1548 Track A PR 4).",
+  schema: codingDeltaSchema as z.ZodType<CodingDeltaInput>,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codingDelta(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Surface registration map — what each transport calls the pilot ops
 // ---------------------------------------------------------------------------
 
@@ -265,4 +310,5 @@ export const REGISTERED_OPERATIONS = [
   memoryStoreOperation.spec.name,
   codingDecisionOperation.spec.name,
   codingArchitectureOperation.spec.name,
+  codingDeltaOperation.spec.name,
 ] as const;

@@ -15,7 +15,7 @@ import { projectTagProjectId } from "./coding/coding-namespace.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
-type CommandName = "browse" | "store" | "decision" | "architecture";
+type CommandName = "browse" | "store" | "decision" | "architecture" | "delta";
 
 type ParsedArgs = {
   command: CommandName;
@@ -138,6 +138,7 @@ function usage(): string {
     "  engram-access store [options]",
     "  engram-access decision [options]",
     "  engram-access architecture [options]",
+    "  engram-access delta [options]",
     "",
     "Browse options:",
     "  --namespace <name>",
@@ -248,6 +249,17 @@ const COMMAND_SPECS: Record<CommandName, CommandSpec> = {
     ]),
     flagOptions: new Set(),
   },
+  delta: {
+    valueOptions: new Set([
+      "subcommand",
+      "namespace",
+      "session-key",
+      "principal",
+      "project-tag",
+      "repo-root",
+    ]),
+    flagOptions: new Set(),
+  },
 };
 const BROWSE_SORT_VALUES = Object.freeze([
   "updated_desc",
@@ -265,7 +277,7 @@ type BrowseSort = (typeof BROWSE_SORT_VALUES)[number];
  * `command: commandRaw` assignment below (codex review P2).
  */
 function isCommandName(value: string): value is CommandName {
-  return value === "browse" || value === "store" || value === "decision" || value === "architecture";
+  return value === "browse" || value === "store" || value === "decision" || value === "architecture" || value === "delta";
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -636,6 +648,53 @@ async function runArchitecture(args: ParsedArgs, preferredId?: string): Promise<
   console.log(JSON.stringify(output.result, null, 2));
 }
 
+/**
+ * Session-delta surface (issue #1548 Track A PR 4). Dispatches through the
+ * same `coding_delta` operation as the MCP tool and HTTP route — one
+ * validation boundary, three transports.
+ */
+async function runDelta(args: ParsedArgs, preferredId?: string): Promise<void> {
+  const subcommand = requireOption(args, "subcommand");
+  const { config, service } = buildRuntime(preferredId);
+  // Same coding-context attachment as runArchitecture/runDecision: the CLI's
+  // fresh Orchestrator has an empty session coding-context map, so attach a
+  // context BEFORE dispatching so the gate passes.
+  const projectTag = getLastOption(args, "project-tag");
+  const sessionKey = getLastOption(args, "session-key");
+  if (sessionKey && sessionKey.trim().length > 0) {
+    const repoRoot = expandOptionalPath(getLastOption(args, "repo-root")) ?? process.cwd();
+    const projectId =
+      projectTag && projectTag.trim().length > 0
+        ? projectTagProjectId(projectTag.trim())
+        : projectTagProjectId(path.basename(repoRoot));
+    service.setCodingContext({
+      sessionKey,
+      codingContext: {
+        projectId,
+        branch: null,
+        rootPath: repoRoot,
+        defaultBranch: null,
+      },
+    });
+  }
+  const op = getOperation("coding_delta");
+  if (!op) {
+    throw new Error("access-boundary: operation not registered: coding_delta");
+  }
+  const output = (await op.run(
+    {
+      subcommand,
+      namespace: getLastOption(args, "namespace"),
+      sessionKey,
+    },
+    {
+      service,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
+    },
+  )) as { result: unknown };
+  console.log(JSON.stringify(output.result, null, 2));
+}
+
 export async function main(
   argv: string[] = process.argv.slice(2),
   options: AccessCliOptions = {},
@@ -651,6 +710,10 @@ export async function main(
   }
   if (args.command === "architecture") {
     await runArchitecture(args, options.preferredId);
+    return;
+  }
+  if (args.command === "delta") {
+    await runDelta(args, options.preferredId);
     return;
   }
   await runStore(args, options.preferredId);
