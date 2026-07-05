@@ -512,6 +512,21 @@ function locateQuoteOffsets(quote: string, text: string): LocateQuoteResult {
  * Never throws. An unexpected error degrades to `{ provenance: "none" }` so
  * extraction never crashes on a provenance hiccup (rule 13/18).
  */
+/**
+ * Strip a leading extraction-prompt role label from a quote (cursor thread Oc3Z2
+ * — "Quote prompt mismatches validator"). The extraction prompt renders each
+ * buffered turn as `[role] content` (or `[context role] content`), so a
+ * faithful LLM may include that prefix in its verbatim quote. buildFactProvenance
+ * searches the raw `turn.content` (no prefix), so a quote carrying the label
+ * would never match. Stripping the leading label lets the actual utterance
+ * verify against the turn text. Only a SINGLE leading label is stripped — a
+ * multi-turn quote (with embedded labels) is left untouched and will simply
+ * fail to match a single turn, as before.
+ */
+function stripLeadingRolePrefix(quote: string): string {
+  return quote.replace(/^\s*\[(?:context\s+)?[^\]]+\]\s+/, "");
+}
+
 export function buildFactProvenance(
   factQuote: string | null | undefined,
   turns: ReadonlyArray<ProvenanceTurnInput>,
@@ -520,13 +535,17 @@ export function buildFactProvenance(
   if (!config.enabled) return { provenance: "none" };
   const rawQuote = typeof factQuote === "string" ? factQuote.trim() : "";
   if (rawQuote.length === 0) return { provenance: "none" };
+  // Strip a leading prompt role label so a faithful quote verifies against the
+  // raw turn content (cursor thread Oc3Z2).
+  const quote = stripLeadingRolePrefix(rawQuote);
+  if (quote.length === 0) return { provenance: "none" };
 
   try {
     // Search every turn for the quote. Collect verified sources.
     const sources: ProvenanceSource[] = [];
     for (const turn of turns) {
       if (!turn || typeof turn.content !== "string" || turn.content.length === 0) continue;
-      const located = locateQuoteOffsets(rawQuote, turn.content);
+      const located = locateQuoteOffsets(quote, turn.content);
       // cursor thread Ocver: a normalized match counts as verified even when
       // original offsets are unrecoverable — record the source without
       // charStart/charEnd instead of skipping the turn.
@@ -541,7 +560,7 @@ export function buildFactProvenance(
         sessionKey: turn.sessionKey ?? turn.logicalSessionKey ?? "unknown",
         ...(turn.turnId ? { turnId: turn.turnId } : {}),
         observedAt,
-        quote: capQuote(rawQuote, config.maxQuoteChars),
+        quote: capQuote(quote, config.maxQuoteChars),
         ...(located.offsets
           ? { charStart: located.offsets.charStart, charEnd: located.offsets.charEnd }
           : {}),
@@ -571,7 +590,7 @@ export function buildFactProvenance(
         {
           sessionKey: fallbackSessionKey,
           observedAt: fallbackObservedAt,
-          quote: capQuote(rawQuote, config.maxQuoteChars),
+          quote: capQuote(quote, config.maxQuoteChars),
         },
       ],
       provenance: "unverified",

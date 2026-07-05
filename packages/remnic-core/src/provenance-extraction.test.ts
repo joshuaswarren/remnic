@@ -408,3 +408,44 @@ test("buildFactProvenance: normalized match (case + whitespace) records a verifi
     "quote excerpt must survive even when offsets are best-effort",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Regression: cursor thread Oc3Z2 — quote carrying the prompt role prefix must still verify
+// ---------------------------------------------------------------------------
+
+test("buildFactProvenance: quote with a leading [role] prefix verifies against turn content (thread Oc3Z2)", () => {
+  // The extraction prompt renders each turn as `[role] content`, so a faithful
+  // LLM may include the label in its verbatim quote. buildFactProvenance
+  // searches raw turn.content (no prefix) — pre-fix the quote never matched
+  // and the fact stayed unverified despite valid evidence in the buffer.
+  const turns = [makeTurn("We migrated the production database to pgBouncer yesterday.")];
+  const result = buildFactProvenance(
+    "[user] We migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "role-prefixed quote must verify against the raw turn");
+  assert.ok(result.sources, "a verified source must be recorded");
+  assert.equal(result.sources!.length, 1);
+  // The stored excerpt is the de-prefixed utterance, not the prompt formatting.
+  assert.equal(
+    result.sources![0]!.quote,
+    "We migrated the production database to pgBouncer",
+    "stored quote must be the utterance, not the [role]-prefixed prompt line",
+  );
+});
+
+test("buildFactProvenance: quote with a [context role] prefix verifies (thread Oc3Z2)", () => {
+  const turns = [makeTurn("The API rate limit is 100 requests per minute.")];
+  const result = buildFactProvenance(
+    "[context assistant] The API rate limit is 100 requests per minute",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified");
+  assert.ok(result.sources);
+  assert.equal(
+    result.sources![0]!.quote,
+    "The API rate limit is 100 requests per minute",
+  );
+});
