@@ -1431,3 +1431,44 @@ test("session_shutdown replays the branch even when the daemon breaker is trippe
   await emit("session_shutdown", {}, ctx);
   assert.equal(observeBodies.length, 1, "shutdown bypassed the breaker and observed the branch");
 });
+
+test("session_shutdown observe uses the general request budget, not the per-turn budget (review cursor)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      turnRequestTimeoutMs: 30,
+      requestTimeoutMs: 150,
+    },
+  });
+  await extension(pi as any);
+
+  const stale = makeStaleCtx({
+    sessionId: "shutdown-budget-test",
+    branch: [{ id: "entry-1", message: { role: "user", content: "x".repeat(50) } }],
+  });
+
+  await emit("session_shutdown", {}, stale.ctx);
+
+  // Shutdown replay is teardown (no host handler window), so it must use the
+  // general request budget (150ms), NOT the per-turn budget (30ms). The timeout
+  // error embeds the budget actually used, so this deterministically proves
+  // which budget governed the forced replay.
+  const observeFail = stale.notifications.find((n) => /Remnic observe failed/.test(n.message));
+  assert.ok(observeFail, "shutdown observe ran and timed out");
+  assert.match(observeFail!.message, /timed out after 150ms/);
+});

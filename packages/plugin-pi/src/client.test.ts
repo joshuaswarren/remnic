@@ -386,3 +386,22 @@ test("single-chunk observe is bounded by the turn budget, not the general reques
   );
   assert.equal(calls, 1);
 });
+
+test("chunkObservePayload truncates oversize messages even when the per-message budget is tiny (review cursor)", () => {
+  const config = baseConfig();
+  // Tight cap chosen so the envelope overhead leaves a small-but-positive
+  // per-message budget (<=1024). Previously this returned ONE untruncated
+  // envelope and could overshoot the cap; now each message is truncated/packed.
+  const huge: ObserveMessage = { role: "assistant", content: "a".repeat(50000) };
+  const chunks = chunkObservePayload(config, "sess", "/cwd", [huge], 800);
+  assert.ok(chunks.length >= 1);
+  for (const chunk of chunks) {
+    const bytes = new TextEncoder().encode(JSON.stringify(chunk)).length;
+    assert.ok(bytes <= 800, `truncated chunk ${bytes} bytes exceeds 800 cap`);
+  }
+  assert.match(
+    chunks[0].messages[0].content,
+    /\[Remnic observe truncated/,
+    "oversize message was truncated rather than passed through",
+  );
+});

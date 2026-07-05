@@ -441,7 +441,14 @@ async function observeMessagesForSession(
   // session tears down, so force the attempt even mid-cooldown; a failure
   // still trips the breaker normally (codex review).
   if (config && !forceAttempt && !client.isReachable()) return;
-  const observeOptions = config ? { timeoutMs: config.turnRequestTimeoutMs } : undefined;
+  // Live turn hooks are bounded by the per-turn budget to protect the host's
+  // ~30s handler window (#1626). Shutdown is teardown with no such constraint,
+  // so the forced replay uses the general request budget — otherwise a large
+  // unobserved branch would time out exactly when forceAttempt tried to save it
+  // (cursor review).
+  const observeOptions = config
+    ? { timeoutMs: forceAttempt ? config.requestTimeoutMs : config.turnRequestTimeoutMs }
+    : undefined;
   try {
     await client.observe(session.sessionKey, session.cwd, messages, observeOptions);
     if (config) client.markReachable();

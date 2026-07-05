@@ -449,9 +449,13 @@ export function chunkObservePayload(
 ): ObserveBody[] {
   const envelopeOverhead = jsonBytes(buildObserveEnvelope(config, sessionKey, cwd, []));
   const messageBudget = maxBytes - envelopeOverhead;
-  if (messageBudget <= 1024) {
-    // The envelope itself is too large to fit a meaningful message; return a
-    // single chunk and let the daemon/server reject it visibly.
+  if (messageBudget <= 0) {
+    // The envelope overhead alone meets/exceeds the cap, so no valid body can
+    // fit — return a single chunk and let the daemon reject it visibly (this is
+    // a degenerate/misconfigured cap, not the common case). A small-but-positive
+    // budget (<=1024) is NOT degenerate: truncate/pack normally so oversized
+    // messages are shrunk to fit instead of bypassing the #1600 safeguards
+    // (cursor review).
     return [buildObserveEnvelope(config, sessionKey, cwd, messages)];
   }
   const chunks: ObserveMessage[][] = [];
