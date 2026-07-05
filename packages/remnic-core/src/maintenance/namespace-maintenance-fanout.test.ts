@@ -488,3 +488,45 @@ test("formatNamespaceMaintenanceHealthText handles empty state", async () => {
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("fanout records runner-reported skip as skipped (cadence-skip accuracy, review #1622)", async () => {
+  // Regression: when a job's own cadence gate throttles a namespace, the
+  // runner resolves without throwing. Before the fix the planner recorded
+  // state:"ran" and bumped lastMaintenanceAt, so a throttled namespace
+  // looked maintained. Now the runner signals { skipped: true } and the
+  // planner records state:"skipped" without touching lastMaintenanceAt.
+  const memoryDir = await mkMemoryDir();
+  try {
+    // Default-only config (namespaces disabled): the planner runs the job
+    // exactly once against the default namespace, isolating the skip-signal
+    // contract from catalog namespace discovery.
+    const config = makeConfig(memoryDir);
+
+    const summary = await runNamespaceMaintenanceFanout({
+      config,
+      jobName: "pattern-reinforcement",
+      resolveStorage: async () => ({}),
+      runner: async () => ({ skipped: true, skipReason: "cadence" }),
+    });
+
+    // Configured namespaces (default + shared) are both processed; the
+    // contract under test is that NONE are recorded as ran and EVERY
+    // status carries the runner's skip reason — no phantom lastMaintenanceAt.
+    assert.equal(summary.ran, 0, "no namespace should be recorded as ran");
+    assert.equal(summary.failed, 0);
+    assert.equal(summary.skipped, summary.statuses.length, "every processed namespace recorded as skipped");
+    assert.ok(summary.statuses.length >= 1, "at least one namespace was processed");
+    for (const status of summary.statuses) {
+      assert.equal(status.state, "skipped", `namespace ${status.namespace} state`);
+      assert.equal(status.reason, "cadence", `namespace ${status.namespace} skipReason propagated`);
+      assert.equal(status.itemCount, undefined, `namespace ${status.namespace} no itemCount on skip`);
+    }
+
+    // Health summary reflects the skips, not phantom runs.
+    const health = await summarizeNamespaceMaintenanceHealth(config);
+    assert.equal(health.totalRan, 0);
+    assert.equal(health.totalSkipped, summary.statuses.length);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});

@@ -80,9 +80,17 @@ export interface NamespaceMaintenanceFanoutRunnerContext {
 /**
  * Result returned by a fanout job runner. `itemCount` is optional and
  * domain-specific (e.g. memories scanned, edges decayed, embeddings updated).
+ *
+ * `skipped`/`skipReason`: when a runner performs no work for a namespace
+ * (e.g. the job's own cadence gate throttled it), set `skipped: true`. The
+ * planner records the namespace as `state: "skipped"` and does NOT touch
+ * the catalog's `lastMaintenanceAt`, so a throttled namespace is not
+ * falsely reported as maintained.
  */
 export interface NamespaceMaintenanceFanoutRunnerResult {
   itemCount?: number;
+  skipped?: boolean;
+  skipReason?: string;
 }
 
 export type NamespaceMaintenanceFanoutRunner = (

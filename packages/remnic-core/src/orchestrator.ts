@@ -4057,9 +4057,21 @@ export class Orchestrator {
           namespace: ctx.candidate.namespace,
           force: options.force,
         });
+        // runPatternReinforcement has its own per-namespace cadence gate
+        // (lastPatternReinforcementAtByNs). When it throttles (ran:false),
+        // signal skip so the planner records state:"skipped" and does NOT
+        // touch lastMaintenanceAt — otherwise a throttled namespace would
+        // look maintained while pattern reinforcement never ran (#1500
+        // review: cadence-skip accuracy).
+        if (!result.ran) {
+          return {
+            skipped: true,
+            skipReason: result.skippedReason ?? "throttled",
+          };
+        }
         return result.result
           ? { itemCount: result.result.clustersFound }
-          : undefined;
+          : { itemCount: 0 };
       },
       { enabled: this.config.patternReinforcementEnabled },
     );

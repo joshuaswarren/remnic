@@ -640,10 +640,24 @@ export async function readNamespaceMaintenanceStatuses(config: PluginConfig): Pr
   });
 }
 
+export type NamespaceMaintenancePlanRunnerResult = {
+  itemCount?: number;
+  /**
+   * When `true`, the runner performed NO work for this namespace (e.g. the
+   * job's own cadence gate throttled it). The planner records the namespace
+   * as `state: "skipped"` with the given reason and does NOT touch the
+   * catalog's `lastMaintenanceAt`, so a throttled namespace is not falsely
+   * reported as maintained. Without this signal a runner that resolves
+   * without throwing is always recorded as `state: "ran"`.
+   */
+  skipped?: boolean;
+  skipReason?: string;
+} | undefined;
+
 export async function runNamespaceMaintenancePlan(
   config: PluginConfig,
   plan: NamespaceMaintenancePlan,
-  runner: (candidate: NamespaceMaintenanceCandidate) => Promise<{ itemCount?: number } | undefined>,
+  runner: (candidate: NamespaceMaintenanceCandidate) => Promise<NamespaceMaintenancePlanRunnerResult>,
   catalog?: NamespaceCatalog
 ): Promise<NamespaceMaintenanceSummary> {
   const statuses: NamespaceMaintenanceRunStatus[] = [];
@@ -683,20 +697,37 @@ export async function runNamespaceMaintenancePlan(
     try {
       const result = await withNamespaceMaintenanceLockHeartbeat(config, lock, () => runner(candidate));
       const completedAt = new Date().toISOString();
-      const status: NamespaceMaintenanceRunStatus = {
-        namespace: candidate.namespace,
-        jobName: plan.jobName,
-        state: "ran",
-        startedAt,
-        completedAt,
-        itemCount: result?.itemCount,
-      };
-      statuses.push(status);
-      await recordNamespaceMaintenanceStatusSafely(config, status);
-      try {
-        await catalog?.markMaintenance(candidate.namespace, plan.jobName, new Date(completedAt));
-      } catch {
-        // Catalog maintenance touches are best-effort status metadata.
+      if (result?.skipped) {
+        // The runner performed no work (e.g. the job's own cadence gate
+        // throttled this namespace). Record skipped WITHOUT touching the
+        // catalog's lastMaintenanceAt so a throttled namespace is not
+        // falsely reported as maintained.
+        const status: NamespaceMaintenanceRunStatus = {
+          namespace: candidate.namespace,
+          jobName: plan.jobName,
+          state: "skipped",
+          reason: (result.skipReason ?? "throttled") as NamespaceMaintenanceSkipReason,
+          startedAt,
+          completedAt,
+        };
+        statuses.push(status);
+        await recordNamespaceMaintenanceStatusSafely(config, status);
+      } else {
+        const status: NamespaceMaintenanceRunStatus = {
+          namespace: candidate.namespace,
+          jobName: plan.jobName,
+          state: "ran",
+          startedAt,
+          completedAt,
+          itemCount: result?.itemCount,
+        };
+        statuses.push(status);
+        await recordNamespaceMaintenanceStatusSafely(config, status);
+        try {
+          await catalog?.markMaintenance(candidate.namespace, plan.jobName, new Date(completedAt));
+        } catch {
+          // Catalog maintenance touches are best-effort status metadata.
+        }
       }
     } catch (error) {
       const completedAt = new Date().toISOString();

@@ -1,22 +1,10 @@
 {
   "version": 1,
   "note": "Structural ratchets (issue #1529, epic #1520). Counts may only decrease. Regenerate with: node scripts/check-ratchets.mjs --update",
-  "justifications": [
-    {
-      "pr": "#1500 namespace maintenance fanout",
-      "date": "2026-07-05",
-      "deltas": {
-        "orchestrator.ts": "19946 -> 20078 (+132)",
-        "cli.ts": "9853 -> 9870 (+17)",
-        "scatteredConfigFlagReads": "553 -> 558 (+5)"
-      },
-      "reason": "Irreducible per-job/per-seam wiring authorized by #1500 and the execution plan's per-job-wiring exception. Orchestrator +132 = 6 thin fanout delegator methods (runNamespaceMaintenanceFanoutForJob, readNamespaceMaintenanceHealth, runPatternReinforcementFanout, runLifecyclePolicyFanout, runSemanticConsolidationFanout, runDeepSleepGovernanceFanout); each delegates per-namespace execution to existing methods via this.getStorage(namespace) and no maintenance logic moved into the orchestrator. cli.ts +17 = the read-only `remnic namespaces maintenance` status command (doctor/dashboard parity). The +5 config.*Enabled reads are the per-job gates each fanout honors (patternReinforcementEnabled, lifecyclePolicyEnabled, semanticConsolidationEnabled) plus the fanout-module health summary (maintenanceNamespaceFanoutEnabled, namespacesEnabled) — exactly the per-job gating #1500 mandates. Listed for the #1566 CapabilitySet migration inventory; collapsing them now needs #1566 landed first, which is not a #1500 dependency. Remaining standard jobs (graph-decay, fact-archival, tier-migration, contradiction-scan) are enumerated in NAMESPACE_MAINTENANCE_JOBS and wire identically when their per-namespace runners are extracted (#1526)."
-    }
-  ],
   "oversizeThresholdLoc": 3000,
   "metrics": {
     "watchlistLoc": {
-      "packages/remnic-core/src/orchestrator.ts": 20078,
+      "packages/remnic-core/src/orchestrator.ts": 20090,
       "packages/remnic-core/src/cli.ts": 9870,
       "packages/remnic-core/src/access-service.ts": 8412,
       "packages/remnic-core/src/storage.ts": 7306,
@@ -24,5 +12,17 @@
     },
     "oversizedFileCount": 10,
     "scatteredConfigFlagReads": 558
-  }
+  },
+  "justifications": [
+    {
+      "pr": "#1500 namespace maintenance fanout",
+      "date": "2026-07-05",
+      "deltas": {
+        "orchestrator.ts": "19946 -> 20090 (+144; +132 initial fanout wiring + +12 review cadence-skip fix)",
+        "cli.ts": "9853 -> 9870 (+17)",
+        "scatteredConfigFlagReads": "553 -> 558 (+5)"
+      },
+      "reason": "Irreducible per-job/per-seam wiring authorized by #1500 and the execution plan's per-job-wiring exception. Orchestrator +132 = 6 thin fanout delegator methods (runNamespaceMaintenanceFanoutForJob, readNamespaceMaintenanceHealth, runPatternReinforcementFanout, runLifecyclePolicyFanout, runSemanticConsolidationFanout, runDeepSleepGovernanceFanout); each delegates per-namespace execution to existing methods via this.getStorage(namespace) and no maintenance logic moved into the orchestrator. The additional +12 (20078 -> 20090) is the PR #1622 review fix: runPatternReinforcementFanout now signals {skipped:true} when runPatternReinforcement returns a cadence skip (ran:false), so the planner records state:\"skipped\" and does NOT bump lastMaintenanceAt — fixing cursor-bugbot's cadence-skip accuracy finding. cli.ts +17 = the read-only `remnic namespaces maintenance` status command (doctor/dashboard parity). The +5 config.*Enabled reads are the per-job gates each fanout honors (patternReinforcementEnabled, lifecyclePolicyEnabled, semanticConsolidationEnabled) plus the fanout-module health summary (maintenanceNamespaceFanoutEnabled, namespacesEnabled) — exactly the per-job gating #1500 mandates. Listed for the #1566 CapabilitySet migration inventory; collapsing them now needs #1566 landed first, which is not a #1500 dependency. Remaining standard jobs (graph-decay, fact-archival, tier-migration, contradiction-scan) are enumerated in NAMESPACE_MAINTENANCE_JOBS and wire identically when their per-namespace runners are extracted (#1526)."
+    }
+  ]
 }
