@@ -449,3 +449,144 @@ test("buildFactProvenance: quote with a [context role] prefix verifies (thread O
     "The API rate limit is 100 requests per minute",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Regression: cursor thread 4Pj — located quote with un-coercible timestamp
+// must attribute the fallback to the LOCATED turn, not the last turn.
+// ---------------------------------------------------------------------------
+
+test("buildFactProvenance: located quote with bad timestamp attributes fallback to the located turn (thread 4Pj)", () => {
+  // Quote is located in turn[0] but its timestamp cannot be coerced to strict
+  // ISO. turn[1] has a good timestamp but does NOT contain the quote. Pre-fix
+  // the loop skipped turn[0] (bad ts) and the fallback used turn[1] — the LAST
+  // turn — mislabeling the source origin session.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      sessionKey: "session-A",
+      timestamp: "not-a-real-date",
+    }),
+    makeTurn("Completely unrelated small talk.", {
+      sessionKey: "session-B",
+      timestamp: "2026-05-10T14:00:00Z",
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  // No verified source (turn[0] had a bad timestamp), so this is unverified.
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources, "fallback source must be present");
+  // The fallback MUST be attributed to session-A (where the quote was located),
+  // not session-B (the last turn). This is the core of the 4Pj fix.
+  assert.equal(
+    result.sources![0]!.sessionKey,
+    "session-A",
+    "located-but-bad-timestamp quote must attribute to the located turn session, not the last turn",
+  );
+  // Epoch fallback for the un-coercible timestamp of the located turn.
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "un-coercible timestamp falls back to epoch",
+  );
+  // A located quote (even one whose source was dropped) satisfies requireSpans:
+  // the span WAS found, so this is NOT a requireSpans-pending case.
+  assert.equal(
+    result.requireSpansPending,
+    undefined,
+    "located quote must not set requireSpansPending even when its source was dropped",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Regression: chatgpt-codex-connector thread 4xA — role-prefix stripping must
+// only match actual prompt labels, not arbitrary bracketed utterance text.
+// ---------------------------------------------------------------------------
+
+test("buildFactProvenance: bracketed non-role utterance text is preserved (thread 4xA)", () => {
+  // A real utterance starting with bracketed text that is NOT a prompt role
+  // label must be matched verbatim — the regex must not strip it.
+  const turns = [makeTurn("[do not] deploy before approval is signed off.")];
+  const result = buildFactProvenance(
+    "[do not] deploy before approval",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "bracketed non-role text must verify as-is");
+  assert.ok(result.sources);
+  assert.equal(
+    result.sources![0]!.quote,
+    "[do not] deploy before approval",
+    "stored quote must retain the bracketed utterance text",
+  );
+});
+
+test("buildFactProvenance: bracketed priority-marker utterance is preserved (thread 4xA)", () => {
+  const turns = [makeTurn("[P1] fix the cache invalidation bug today.")];
+  const result = buildFactProvenance("[P1] fix the cache", turns, DEFAULT_CONFIG);
+  assert.equal(result.provenance, "verified");
+  assert.equal(result.sources![0]!.quote, "[P1] fix the cache");
+});
+
+test("buildFactProvenance: actual role labels still strip and verify (thread 4xA non-regression)", () => {
+  // The constrained regex must still strip real prompt labels.
+  const prefixes = ["[user] ", "[assistant] ", "[context user] ", "[context assistant] "];
+  for (const prefix of prefixes) {
+    const turns = [makeTurn("The deploy gate is green.")];
+    const result = buildFactProvenance(prefix + "The deploy gate is green", turns, DEFAULT_CONFIG);
+    assert.equal(
+      result.provenance,
+      "verified",
+      "real role label " + JSON.stringify(prefix) + " must still strip and verify",
+    );
+    assert.equal(result.sources![0]!.quote, "The deploy gate is green");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Regression: chatgpt-codex-connector thread 4xB — requireSpans routes
+// unlocatable quotes to pending_review via the requireSpansPending signal.
+// ---------------------------------------------------------------------------
+
+test("buildFactProvenance: requireSpans flags unlocated quote as requireSpansPending (thread 4xB)", () => {
+  const requireSpansConfig: ProvenanceConfig = { ...DEFAULT_CONFIG, requireSpans: true };
+  const turns = [makeTurn("The weather is nice today.")];
+  const result = buildFactProvenance(
+    "a quote that does not appear in any turn",
+    turns,
+    requireSpansConfig,
+  );
+  // The quote was not located → unverified with the requireSpans signal set.
+  assert.equal(result.provenance, "unverified");
+  assert.equal(
+    result.requireSpansPending,
+    true,
+    "requireSpans + unlocated quote must set the pending-review signal",
+  );
+});
+
+test("buildFactProvenance: requireSpans off does not set the pending signal (thread 4xB)", () => {
+  const turns = [makeTurn("The weather is nice today.")];
+  const result = buildFactProvenance(
+    "a quote that does not appear in any turn",
+    turns,
+    DEFAULT_CONFIG, // requireSpans: false
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.equal(result.requireSpansPending, undefined);
+});
+
+test("buildFactProvenance: requireSpans on but quote LOCATED does not set pending (thread 4xB)", () => {
+  // Even with requireSpans on, a located quote satisfies the requirement.
+  const requireSpansConfig: ProvenanceConfig = { ...DEFAULT_CONFIG, requireSpans: true };
+  const turns = [makeTurn("We use PostgreSQL 15 for the primary store.")];
+  const result = buildFactProvenance("use PostgreSQL 15", turns, requireSpansConfig);
+  assert.equal(result.provenance, "verified");
+  assert.equal(
+    result.requireSpansPending,
+    undefined,
+    "a located quote satisfies requireSpans — no pending signal",
+  );
+});

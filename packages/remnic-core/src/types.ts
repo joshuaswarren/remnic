@@ -2867,6 +2867,15 @@ export interface ExtractedFact {
    * checklist §13). Absent on facts that have already passed the validator.
    */
   quote?: string;
+  /**
+   * Transient requireSpans signal (issue #1575 PR 2). Set by the provenance
+   * validator (`ProvenanceBuildResult.requireSpansPending`) when
+   * `provenance.requireSpans` is enabled and the quote could not be located
+   * in any source turn. Read by the persist path to route the fact to
+   * `pending_review` instead of `active`. Stripped before persistence —
+   * it never reaches frontmatter (chatgpt-codex-connector thread 4xB).
+   */
+  requireSpansPending?: boolean;
   promptedByQuestion?: string;
   /**
    * Whether this fact is project-scoped or globally applicable.

@@ -1021,6 +1021,7 @@ export class ExtractionEngine {
         ...factWithoutQuote,
         ...(built.sources && built.sources.length > 0 ? { sources: built.sources } : {}),
         ...(built.provenance !== "none" ? { provenance: built.provenance } : {}),
+        ...(built.requireSpansPending ? { requireSpansPending: true } : {}),
       };
     });
     return { ...result, facts };

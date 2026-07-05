@@ -14894,7 +14894,7 @@ export class Orchestrator {
       // pre-computed verdict for this fact and translate it to frontmatter +
       // an optional enforce-mode pending_review status. Logic lives in the
       // pure module; this is thin read-through (ground rule 4).
-      const { faithfulness: faithfulnessFm, enforceStatus: faithfulnessEnforceStatus } =
+      const { faithfulness: faithfulnessFm, enforceStatus: faithfulnessGateStatus } =
         applyFaithfulnessVerdict(
           faithfulnessResultsByFactIndex,
           factLoopIndex,
@@ -14902,6 +14902,22 @@ export class Orchestrator {
           fact.content,
           this.faithfulnessCounters,
         );
+
+      // requireSpans enforcement (issue #1575 PR 2): when an operator opts
+      // into provenance.requireSpans, a fact whose quote could not be located
+      // in any source turn (carried as the transient requireSpansPending
+      // signal from the extraction validator) routes to pending_review — the
+      // same review queue an unsupported faithfulness verdict uses. This is
+      // the persist-path wiring ProvenanceConfig.requireSpans documents.
+      // Faithfulness takes precedence when it already routed the fact; both
+      // gates agree on pending_review so the merge is a simple coalesce
+      // (chatgpt-codex-connector thread 4xB).
+      const requireSpansPendingStatus =
+        this.config.provenance?.requireSpans === true &&
+        fact.requireSpansPending === true
+          ? ("pending_review" as const)
+          : undefined;
+      const faithfulnessEnforceStatus = faithfulnessGateStatus ?? requireSpansPendingStatus;
 
       // Issue #373 — write-time semantic similarity guard. Hook runs after
       // the exact content-hash miss and the importance gate so that:

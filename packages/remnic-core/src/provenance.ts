@@ -369,6 +369,18 @@ export interface ProvenanceBuildResult {
   sources?: ProvenanceSource[];
   /** Coarse strength tag persisted to frontmatter. */
   provenance: "verified" | "unverified" | "none";
+  /**
+   * Transient signal (never persisted): `true` when `config.requireSpans`
+   * is enabled and the LLM-provided quote could not be located in ANY source
+   * turn (the strict case `ProvenanceConfig.requireSpans` documents: "facts
+   * whose quote cannot be located are routed to `pending_review`"). The
+   * extraction consumer carries this onto the in-memory `ExtractedFact` so
+   * the persist path can route the fact to the review queue. A quote that
+   * WAS located but whose source was dropped (e.g. un-coercible timestamp)
+   * does NOT set this flag — the span was found, so requireSpans is
+   * satisfied (chatgpt-codex-connector thread 4xB).
+   */
+  requireSpansPending?: boolean;
 }
 
 /**
@@ -522,9 +534,18 @@ function locateQuoteOffsets(quote: string, text: string): LocateQuoteResult {
  * verify against the turn text. Only a SINGLE leading label is stripped — a
  * multi-turn quote (with embedded labels) is left untouched and will simply
  * fail to match a single turn, as before.
+ *
+ * The regex is constrained to the labels the prompt actually emits — `user`,
+ * `assistant`, optionally prefixed with `context ` (extraction.ts renders
+ * `[user]`, `[assistant]`, `[context user]`, `[context assistant]`). A
+ * real utterance that happens to start with other bracketed text (e.g.
+ * `[do not] deploy before approval`, `[P1] fix the cache`) is preserved
+ * verbatim so the quote can match the turn and the persisted span retains its
+ * original meaning (chatgpt-codex-connector thread 4xA — limiting role-prefix
+ * stripping to actual prompt labels).
  */
 function stripLeadingRolePrefix(quote: string): string {
-  return quote.replace(/^\s*\[(?:context\s+)?[^\]]+\]\s+/, "");
+  return quote.replace(/^\s*\[(?:context\s+)?(?:user|assistant)\]\s+/i, "");
 }
 
 export function buildFactProvenance(
@@ -543,6 +564,14 @@ export function buildFactProvenance(
   try {
     // Search every turn for the quote. Collect verified sources.
     const sources: ProvenanceSource[] = [];
+    // Track the first turn where the quote was located even when its
+    // timestamp can't be coerced (cursor thread 4Pj — "Bad timestamp drops
+    // matched source"). Without this, a located-but-unverifiable quote falls
+    // through to the unverified branch and is attributed to the *last* turn's
+    // session, mislabeling the source's origin session. Also drives the
+    // requireSpans signal: only a quote that was NOT located in any turn
+    // qualifies for pending_review routing under requireSpans (thread 4xB).
+    let locatedTurn: ProvenanceTurnInput | undefined;
     for (const turn of turns) {
       if (!turn || typeof turn.content !== "string" || turn.content.length === 0) continue;
       const located = locateQuoteOffsets(quote, turn.content);
@@ -550,6 +579,7 @@ export function buildFactProvenance(
       // original offsets are unrecoverable — record the source without
       // charStart/charEnd instead of skipping the turn.
       if (!located.matched) continue;
+      if (!locatedTurn) locatedTurn = turn;
       // cursor thread Ocveu: normalize the turn timestamp to strict ISO so
       // the write-path ProvenanceSourceSchema keeps the source. Skip the turn
       // when the timestamp can't be coerced — pushing it would guarantee a
@@ -571,20 +601,32 @@ export function buildFactProvenance(
       return { sources, provenance: "verified" };
     }
 
-    // Quote provided but not located in any turn. Keep it as an unverified
-    // source — the LLM vouched for the excerpt even if we can't pin it to a
-    // character offset. Downstream consumers (faithfulness gate #1576) treat
-    // unverified spans as weaker evidence. Normalize the timestamp (thread
-    // Ocveu); fall back to epoch when no turn supplies a coercible timestamp
-    // so the unverified source still survives the write-path schema.
-    const fallbackSessionKey =
-      turns.length > 0
-        ? (turns[turns.length - 1]!.sessionKey ?? turns[turns.length - 1]!.logicalSessionKey ?? "unknown")
-        : "unknown";
-    const fallbackObservedAt =
-      turns.length > 0
-        ? (toStrictIsoTimestamp(turns[turns.length - 1]!.timestamp) ?? new Date(0).toISOString())
-        : new Date(0).toISOString();
+    // Quote provided but could not be turned into a verified source.
+    // Determine the session to attribute: prefer the turn where the quote was
+    // LOCATED even if its timestamp couldn't be coerced (cursor thread 4Pj — a
+    // located quote must not be tied to the *last* turn's session). If the
+    // quote was not located in any turn at all, fall back to the last turn's
+    // session (the documented unverified behavior: the LLM vouched for the
+    // excerpt but we couldn't pin it to a character offset). Normalize the
+    // timestamp (thread Ocveu); fall back to epoch when no turn supplies a
+    // coercible timestamp so the unverified source still survives the
+    // write-path schema.
+    const fallbackTurn = locatedTurn ?? turns[turns.length - 1];
+    const fallbackSessionKey = fallbackTurn
+      ? (fallbackTurn.sessionKey ?? fallbackTurn.logicalSessionKey ?? "unknown")
+      : "unknown";
+    const fallbackObservedAt = fallbackTurn
+      ? (toStrictIsoTimestamp(fallbackTurn.timestamp) ?? new Date(0).toISOString())
+      : new Date(0).toISOString();
+    // requireSpans signal (chatgpt-codex-connector thread 4xB): when an
+    // operator opts into provenance.requireSpans, a fact whose quote could
+    // not be located in ANY turn (locatedTurn undefined) is flagged so the
+    // persist path routes it to pending_review instead of active. A quote
+    // that WAS located (locatedTurn set) satisfies requireSpans even when
+    // its source was dropped for an un-coercible timestamp — the span was
+    // found, so the fact has the grounding requireSpans demands.
+    const requireSpansPending =
+      config.requireSpans === true && locatedTurn === undefined;
     return {
       sources: [
         {
@@ -594,6 +636,7 @@ export function buildFactProvenance(
         },
       ],
       provenance: "unverified",
+      ...(requireSpansPending ? { requireSpansPending: true } : {}),
     };
   } catch {
     // Never crash extraction on a provenance error (rule 13/18).
