@@ -723,6 +723,18 @@ type PackageBenchModule = {
     | { ok: true; expectedModel: string; discoveredModels: unknown[] }
     | { ok: false; reason: string; expectedModel: string; discoveredModels?: unknown[] }
   >;
+  /**
+   * Load a previously persisted judge-calibration state for a benchmark (issue
+   * #1573 PR3). Returns the artifact-relevant subset (`{ kappa, sampleSize,
+   * threshold, warning }`) or `undefined` when no calibration has been run.
+   * Wired into the run path so subsequent local artifacts carry the persisted
+   * kappa after `remnic bench judge-calibrate` (cursor + codex review: the
+   * loader was previously dead code — only tests called it).
+   */
+  loadJudgeCalibrationState?: (
+    benchmarkId: string,
+    calibrationDir: string,
+  ) => Promise<{ kappa: number; sampleSize: number; threshold: number; warning: boolean } | undefined>;
 };
 
 interface TrainingExportOptions {
@@ -2424,9 +2436,14 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     );
     process.exit(1);
   }
-  if (!BENCHMARK_IDS.has(benchmarkId)) {
+  // Package-aware validation (codex P2 review): use the same resolver the run
+  // command uses, so package-registered benchmarks (memoryagentbench, membench,
+  // personamem, ...) calibrate instead of being rejected as "unknown" by the
+  // static CLI catalog (`BENCHMARK_IDS`).
+  const knownBenchmarkIds = await resolveKnownBenchmarkIds();
+  if (!knownBenchmarkIds.has(benchmarkId)) {
     console.error(
-      `ERROR: unknown benchmark "${benchmarkId}". Known: ${[...BENCHMARK_IDS].sort().join(", ")}.`,
+      `ERROR: unknown benchmark "${benchmarkId}". Known: ${[...knownBenchmarkIds].sort().join(", ")}.`,
     );
     process.exit(1);
   }
@@ -2454,8 +2471,13 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   // benchmark. `actual` is the responder's predicted answer; `expected` is the
   // gold. Both judges re-score the same (question, predicted, expected) triple.
   const stored = await bench.listBenchmarkResults(resultsDir);
-  const candidates = stored
-    .filter((entry) => entry.benchmark === benchmarkId)
+  // Calibration needs a full run's cached answers — a quick run (mode "quick")
+  // is a 1-task sample whose agreement is meaningless (often kappa=1 on a
+  // single agreeing pair), so a stale quick result must never be selected as
+  // the calibration source (codex P2 review).
+  const allForBenchmark = stored.filter((entry) => entry.benchmark === benchmarkId);
+  const candidates = allForBenchmark
+    .filter((entry) => entry.mode === "full")
     .sort((a, b) => {
       // Descending by timestamp with a 3-way comparator (cursor review: the
       // previous `< b ? 1 : -1` never returned 0, so tied timestamps produced
@@ -2468,8 +2490,11 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     });
   const latest = candidates[0];
   if (!latest) {
+    const quickCount = allForBenchmark.filter((entry) => entry.mode === "quick").length;
     console.error(
-      `ERROR: no stored benchmark results for "${benchmarkId}" in ${resultsDir}. Run the benchmark first (remnic bench run ${benchmarkId}) so cached answers exist to calibrate against.`,
+      quickCount > 0
+        ? `ERROR: no full stored results for "${benchmarkId}" in ${resultsDir} (found ${quickCount} quick run(s); a 1-task quick sample cannot calibrate the judge). Run a full benchmark first (remnic bench run ${benchmarkId}).`
+        : `ERROR: no stored benchmark results for "${benchmarkId}" in ${resultsDir}. Run the benchmark first (remnic bench run ${benchmarkId}) so cached answers exist to calibrate against.`,
     );
     process.exit(1);
   }
@@ -3235,6 +3260,12 @@ async function runBenchViaPackage(
     });
     result.config.remnicConfig = plan.runtime.remnicConfig;
     result.config.internalProvider = plan.runtime.internalProvider;
+    // Issue #1573 PR3 (cursor + codex High/P1 review): load the persisted
+    // judge-calibration state for this benchmark so the stored local artifact
+    // carries the kappa + warning after `remnic bench judge-calibrate`. Absent
+    // calibration (file missing) is the common case — the result is written
+    // unchanged, preserving backwards compatibility.
+    await attachPersistedJudgeCalibration(benchModule, benchmarkId, result);
     const writtenPath = await benchModule.writeBenchmarkResult(result, outputDir);
     if (parsed.json) {
       console.log(JSON.stringify(redactBenchResultForStdout(benchModule, result), null, 2));
@@ -3255,6 +3286,9 @@ async function runBenchViaPackage(
         err instanceof Error ? err.message : String(err),
         parsed.quick ? "quick" : "full",
       );
+      // Attach persisted calibration to partial results too — the kappa
+      // reflects judge reliability, independent of whether the run finished.
+      await attachPersistedJudgeCalibration(benchModule, benchmarkId, partialResult);
       try {
         const partialPath = await benchModule.writeBenchmarkResult(partialResult, outputDir);
         console.error(`  Partial results (${partialTasks.length} tasks) written to ${partialPath}`);
@@ -3276,6 +3310,35 @@ async function runBenchViaPackage(
         previousCodexDiagnosticsMode,
       );
     }
+  }
+}
+/**
+ * Attach a previously persisted judge-calibration state to a benchmark result
+ * before it is written (issue #1573 PR3). The calibration dir mirrors the one
+ * `calibrateBenchJudges` writes to (`~/.remnic/bench/calibration`). When a
+ * calibration file exists for the benchmark, its `{ kappa, sampleSize,
+ * threshold, warning }` lands in `result.config.benchmarkOptions.judgeCalibration`
+ * — the same `benchmarkOptions` envelope that already carries
+ * `leaderboardArtifacts`, so the persisted kappa travels with every stored
+ * local artifact and is visible to the publish/feed/leaderboard readers.
+ *
+ * Absent calibration is the common case (operator has not run
+ * `judge-calibrate` yet): the result is returned unchanged. A corrupt state
+ * file is a silent miss inside `loadJudgeCalibrationState` (rule 34) — the run
+ * is never failed by stale calibration.
+ */
+async function attachPersistedJudgeCalibration(
+  benchModule: PackageBenchModule,
+  benchmarkId: string,
+  result: { config: { benchmarkOptions?: Record<string, unknown> } },
+): Promise<void> {
+  const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
+  const calibration = await benchModule.loadJudgeCalibrationState?.(benchmarkId, calibrationDir);
+  if (calibration) {
+    result.config.benchmarkOptions = {
+      ...(result.config.benchmarkOptions ?? {}),
+      judgeCalibration: calibration,
+    };
   }
 }
 

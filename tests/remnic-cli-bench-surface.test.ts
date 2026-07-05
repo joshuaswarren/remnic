@@ -350,7 +350,7 @@ test("bench providers discovery is exposed as a package-backed CLI surface", asy
   const readme = await readFile("packages/remnic-cli/README.md", "utf8");
 
   assert.match(source, /\bdiscoverAllProviders\b/);
-  assert.match(source, /Usage: remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers>/);
+  assert.match(source, /Usage: remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate>/);
   assert.match(source, /remnic bench providers discover/);
   assert.match(source, /async function discoverBenchProviders\(parsed: ParsedBenchArgs\): Promise<void>/);
   assert.match(source, /providers discover does not accept positional arguments/);
@@ -361,6 +361,33 @@ test("bench providers discovery is exposed as a package-backed CLI surface", asy
   assert.match(parserSource, /first === "providers"/);
   assert.match(parserSource, /const providerAction =[\s\S]*args\[0\] === "discover"/);
   assert.match(readme, /remnic bench providers discover/);
+});
+/**
+ * Issue #1573 PR3: judge-calibrate wires the persisted calibration state into
+ * the run path so subsequent local artifacts carry the kappa, validates against
+ * the package-aware benchmark set (not the static catalog), and only
+ * calibrates from full runs. Source-text assertions mirror the rest of this
+ * file's "CLI surface" style.
+ */
+test("judge-calibrate calibration reaches artifacts, resolves package benchmarks, and requires full runs (#1573)", async () => {
+  const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
+
+  // High/P1 (cursor + codex): loadJudgeCalibrationState must be a real
+  // production consumer — the run path loads persisted calibration and
+  // attaches it to the stored result so subsequent artifacts carry the kappa.
+  assert.match(source, /loadJudgeCalibrationState\?:/);
+  assert.match(source, /async function attachPersistedJudgeCalibration\(/);
+  assert.match(source, /await attachPersistedJudgeCalibration\(benchModule, benchmarkId, result\);/);
+  assert.match(source, /judgeCalibration: calibration,/);
+
+  // P2 (codex): judge-calibrate validates against the package-aware resolver
+  // (same as `bench run`), not the static BENCHMARK_IDS catalog.
+  assert.match(source, /const knownBenchmarkIds = await resolveKnownBenchmarkIds\(\);/);
+  assert.match(source, /if \(!knownBenchmarkIds\.has\(benchmarkId\)\)/);
+
+  // P2 (codex): calibration candidates are filtered to full runs so a stale
+  // 1-task quick result cannot seed a meaningless kappa.
+  assert.match(source, /\.filter\(\(entry\) => entry\.mode === "full"\)/);
 });
 
 test("bench run exits non-zero after a mixed success/failure run", async () => {
