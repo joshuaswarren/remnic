@@ -242,7 +242,7 @@ test("handler/get: changed head → real delta", async () => {
     ].join("\n");
     const invoker2 = makeInvoker([
       { args: ["rev-parse", "HEAD"], stdout: "headB\n" },
-      { args: ["log", "--pretty=format:%H\x1f%s", "--name-only", "headA..headB"], stdout: log },
+      { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "headA..headB"], stdout: log },
     ]);
     const result = await handleCodingDelta(
       { subcommand: "get", sessionKey: "s1" },
@@ -275,7 +275,7 @@ test("handler/get: unreachable prior head → tagged failure, state advances", a
     // Now head is headB but `git log headA..headB` fails (force-push).
     const invoker2 = makeInvoker([
       { args: ["rev-parse", "HEAD"], stdout: "headB\n" },
-      { args: ["log", "--pretty=format:%H\x1f%s", "--name-only", "headA..headB"], stdout: "", exitCode: 128 },
+      { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "headA..headB"], stdout: "", exitCode: 128 },
     ]);
     const result = await handleCodingDelta(
       { subcommand: "get", sessionKey: "s1" },
@@ -308,6 +308,46 @@ test("handler/get: git rev-parse failure → git_failed, no state advance", asyn
     }
     // No nextState when the head itself was unreadable.
     assert.equal(result.nextState, undefined);
+  } finally {
+    await cleanup();
+  }
+});
+
+test("handler/get: transient git log failure (exit 127) → git_failed, state NOT advanced", async () => {
+  const { storage, cleanup } = await makeTempStorage();
+  try {
+    // Seed headA.
+    const invoker1 = makeInvoker([
+      { args: ["rev-parse", "HEAD"], stdout: "headA\n" },
+    ]);
+    await handleCodingDelta(
+      { subcommand: "get", sessionKey: "s1" },
+      makeContext({ resolveStorage: async () => storage, gitInvoker: invoker1 }),
+    );
+
+    // Head is headB but git log times out (exit 127 = spawn/timeout).
+    const invoker2 = makeInvoker([
+      { args: ["rev-parse", "HEAD"], stdout: "headB\n" },
+      { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "headA..headB"], stdout: "", exitCode: 127 },
+    ]);
+    const result = await handleCodingDelta(
+      { subcommand: "get", sessionKey: "s1" },
+      makeContext({ resolveStorage: async () => storage, gitInvoker: invoker2 }),
+    );
+    if (!("ok" in result) || result.ok || result.code !== "git_failed") {
+      assert.fail(`expected git_failed, got ${JSON.stringify(result)}`);
+      return;
+    }
+    // State marker must NOT advance — headA preserved for retry on next call.
+    // Read the state file back to verify.
+    const { readFile } = await import("node:fs/promises");
+    const { sessionDeltaStatePath } = await import("./session-delta.js");
+    const raw = await readFile(
+      sessionDeltaStatePath(storage.memoryDir, storage.namespace),
+      "utf8",
+    );
+    const persisted = JSON.parse(raw);
+    assert.equal(persisted.head, "headA", "transient failure must not advance the state marker");
   } finally {
     await cleanup();
   }

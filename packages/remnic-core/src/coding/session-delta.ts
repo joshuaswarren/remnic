@@ -360,17 +360,35 @@ export function resolveSlice(
   // separator (\x1f) is the next-best thing and is rejected by sanitize if
   // it ever leaks into memory content.
   const SEP = "\x1f";
+  // --reverse makes git emit oldest-first, so the commits array reads in
+  // chronological order and capCommits' slice(-max) keeps the NEWEST entries
+  // (the ones a returning agent cares about). Without --reverse, git log is
+  // newest-first and slice(-max) would drop exactly the commits we want.
   const logResult = invoker(repoRoot, [
     "log",
+    "--reverse",
     `--pretty=format:%H${SEP}%s`,
     "--name-only",
     `${sinceHead}..${currentHead}`,
   ]);
   if (logResult.exitCode !== 0) {
-    // Most likely the prior head is unreachable (force-push/rebase erased it).
-    // Return an empty slice; the differ converts zero-commits-with-a-head-change
-    // into the `unreachable_head` tagged failure.
-    return { ok: true, slice: { commits: [], touchedFiles: [], currentHead } };
+    // Exit code 128 is git's "bad revision" / "object not found" — the prior
+    // head is genuinely unreachable (force-push/rebase erased it). Return an
+    // empty slice so the differ labels it `unreachable_head`; the state marker
+    // advances so the next call sees the new head as the baseline.
+    if (logResult.exitCode === 128) {
+      return { ok: true, slice: { commits: [], touchedFiles: [], currentHead } };
+    }
+    // Other non-zero exit codes (127 = spawn failure / 2s timeout, 129+ =
+    // signal, etc.) are TRANSIENT — the old head is probably still valid. Do
+    // NOT treat these as unreachable and do NOT let the caller advance the
+    // state marker. Return `git_failed` so the surface preserves the old
+    // marker and the next session retries.
+    return {
+      ok: false,
+      code: "git_failed",
+      detail: 'git log exited ' + logResult.exitCode + ' (transient — state marker preserved)',
+    };
   }
 
   const { commits, touchedFiles } = parseLogOutput(logResult.stdout, SEP);

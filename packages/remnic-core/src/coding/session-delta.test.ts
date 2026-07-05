@@ -313,7 +313,7 @@ test("resolveSlice: real delta with commits + files", () => {
   ].join("\n");
   const invoker = makeInvoker([
     { args: ["rev-parse", "HEAD"], stdout: "bbb\n" },
-    { args: ["log", "--pretty=format:%H\x1f%s", "--name-only", "aaa..bbb"], stdout: logOutput },
+    { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "aaa..bbb"], stdout: logOutput },
   ]);
   const result = resolveSlice("/repo", "aaa", invoker);
   assert.equal(result.ok, true);
@@ -335,10 +335,10 @@ test("resolveSlice: rev-parse failure → git_failed / no_head", () => {
   assert.equal(result.code, "no_head");
 });
 
-test("resolveSlice: git log non-zero exit → empty slice (differ flags unreachable)", () => {
+test("resolveSlice: git log exit 128 → empty slice (unreachable head) → empty slice (differ flags unreachable)", () => {
   const invoker = makeInvoker([
     { args: ["rev-parse", "HEAD"], stdout: "newhead\n" },
-    { args: ["log", "--pretty=format:%H\x1f%s", "--name-only", "oldhead..newhead"], stdout: "", exitCode: 128 },
+    { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "oldhead..newhead"], stdout: "", exitCode: 128 },
   ]);
   const result = resolveSlice("/repo", "oldhead", invoker);
   // Returns ok with empty slice; the differ converts this to unreachable_head.
@@ -346,6 +346,20 @@ test("resolveSlice: git log non-zero exit → empty slice (differ flags unreacha
   if (!result.ok) return;
   assert.equal(result.slice.commits.length, 0);
   assert.equal(result.slice.currentHead, "newhead");
+});
+
+test("resolveSlice: git log exit 127 (timeout/spawn) \u2192 git_failed, not unreachable", () => {
+  const invoker = makeInvoker([
+    { args: ["rev-parse", "HEAD"], stdout: "newhead\n" },
+    { args: ["log", "--reverse", "--pretty=format:%H\x1f%s", "--name-only", "oldhead..newhead"], stdout: "", exitCode: 127 },
+  ]);
+  const result = resolveSlice("/repo", "oldhead", invoker);
+  // Transient failure \u2192 git_failed, NOT empty-slice/unreachable.
+  // The state marker must NOT advance so the next call retries.
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.code, "git_failed");
+  assert.match(result.detail, /127/);
 });
 
 // ──────────────────────────────────────────────────────────────────────────
