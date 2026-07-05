@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import path from "node:path";
 
+import type { BenchJudge, BenchPhaseControl } from "../adapters/types.ts";
 import {
   CALIBRATION_SLICE_SIZE,
   JUDGE_CALIBRATION_KAPPA_THRESHOLD,
