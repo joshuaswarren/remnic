@@ -595,8 +595,16 @@ export class TombstoneStore {
    * Returns the count of tombstone entries written.
    */
   async rebuild(retiredMemories: ReadonlyArray<RetiredMemoryRecord>): Promise<number> {
-    // Preserve existing revocations so a rebuild does not silently un-revoke.
+    // Preserve existing revocations (all namespaces — ids are globally
+    // unique) so a rebuild does not silently un-revoke.
     const existingRevocations = this.entries.filter((e) => e.kind === "revocation");
+    // Preserve tombstone entries from OTHER namespaces when the backing file
+    // is shared (issue #1579 thread Oc2MJ). rebuild rewrites the entire file;
+    // without preserving foreign entries, rebuilding namespace A would
+    // silently delete namespace B's tombstones, allowing resurrection in B.
+    const foreignTombstones = this.entries.filter(
+      (e) => e.kind === "tombstone" && e.namespace !== this.namespace,
+    );
     // Reuse existing tombstone ids for source-equivalent entries so a prior
     // revocation (which references the tombstone id) survives rebuild — minting
     // fresh ids would orphan the revocation and silently un-revoke the content.
@@ -638,7 +646,7 @@ export class TombstoneStore {
         ? a.id < b.id ? -1 : a.id > b.id ? 1 : 0
         : a.createdAt < b.createdAt ? -1 : 1,
     );
-    const all = [...rebuilt, ...existingRevocations].sort((a, b) =>
+    const all = [...rebuilt, ...existingRevocations, ...foreignTombstones].sort((a, b) =>
       a.createdAt === b.createdAt
         ? a.id < b.id ? -1 : a.id > b.id ? 1 : 0
         : a.createdAt < b.createdAt ? -1 : 1,

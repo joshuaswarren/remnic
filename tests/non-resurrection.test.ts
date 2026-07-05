@@ -666,3 +666,39 @@ test("#1579 threads OcuDx/Ocu1l: promoteWearableMemory refuses tombstone-blocked
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── Issue #1579 thread Oc2MJ: rebuild preserves foreign-namespace tombstones ─
+// rebuild rewrites the entire tombstones.jsonl. When two namespaces share the
+// same backing file, rebuilding one namespace must NOT delete the other's
+// tombstones — otherwise the other namespace loses its non-resurrection guard.
+test("#1579 thread Oc2MJ: rebuild preserves other namespaces' tombstones in a shared file", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-tombstone-rebuild-ns-"));
+  try {
+    const storageA = new StorageManager(dir);
+    await storageA.ensureDirectories();
+    enableTombstones(storageA, "ns-a");
+
+    const storageB = new StorageManager(dir);
+    await storageB.ensureDirectories();
+    enableTombstones(storageB, "ns-b");
+
+    const contentB = "Namespace B fact that must survive A's rebuild";
+    await storageB.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "fact-b-rebuild",
+      rawContent: contentB,
+    });
+
+    // Rebuild namespace A (no retired memories for A → A's tombstones become
+    // empty, but B's must survive the file rewrite).
+    await storageA.rebuildTombstonesFromFiles();
+
+    // Namespace B's tombstone must still block a re-extraction.
+    const idB = await storageB.writeMemory("fact", contentB, { source: "extraction" });
+    const memoryB = await readBack(storageB, idB);
+    assertBlocked(memoryB, "exact");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
