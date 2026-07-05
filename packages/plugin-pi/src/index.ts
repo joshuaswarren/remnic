@@ -1,7 +1,7 @@
 import { Type, type TSchema } from "@sinclair/typebox";
 
 import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./config.js";
-import { RemnicClient, type McpTool, type ObserveMessage } from "./client.js";
+import { RemnicClient, isTransientNetworkError, type McpTool, type ObserveMessage } from "./client.js";
 import {
   hashObservedMessage,
   latestUserRecallTarget,
@@ -71,6 +71,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const session = snapshotPiContext(ctx);
       if (!session) return;
       if (!config.recallEnabled || !config.authToken) return;
+      // Circuit breaker: skip recall fast while the daemon is known-down so a
+      // dead host doesn't block every turn on a doomed request (#1626).
+      if (!client.isReachable()) return;
       const recallTarget = latestUserRecallTarget(Array.isArray(event.messages) ? event.messages : []);
       if (!recallTarget) return;
       const { query } = recallTarget;
@@ -78,7 +81,10 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (recallTarget.dedupeKey === state.lastInjectedRecallKey) return;
 
       try {
-        const recalled = await client.recall(query, session.sessionKey, session.cwd);
+        const recalled = await client.recall(query, session.sessionKey, session.cwd, {
+          timeoutMs: config.turnRequestTimeoutMs,
+        });
+        client.markReachable();
         const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
         if (!context) return;
         state.lastInjectedRecallKey = recallTarget.dedupeKey;
@@ -94,6 +100,10 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
           ],
         };
       } catch (err) {
+        // Only trip the breaker when the daemon is genuinely unreachable
+        // (timeout or connection-level failure) — not on a transient HTTP
+        // error, so a one-off failure still retries on the next turn (#1626).
+        if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
         session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
       }
     });
@@ -103,7 +113,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       if (!config.observeEnabled || !isUserMessage(event.message)) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
-      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys);
+      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config);
     });
 
     pi.on("turn_end", async (event, ctx) => {
@@ -112,7 +122,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!config.observeEnabled) return;
       const messages = [event.message, ...(Array.isArray(event.toolResults) ? event.toolResults : [])];
       const { state } = getSessionState(session.sessionKey, sessionStates);
-      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys);
+      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys, config);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
@@ -123,7 +133,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         const branchMessages = branchMessagesWithEntryIdentity(session.branch);
         const unobservedBranchMessages = skipLiveObservedReplayMessages(session.sessionKey, branchMessages, state.liveObservedReplayKeys);
         if (unobservedBranchMessages.length > 0) {
-          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes);
+          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config);
         }
       }
       persistObservedState(pi, state.observedHashes);
@@ -410,6 +420,7 @@ async function observeMessagesForSession(
   rawMessages: unknown[],
   observedHashes: Set<string>,
   liveObservedReplayKeys?: Map<string, number>,
+  config?: RemnicPiConfig,
 ): Promise<void> {
   const messages: ObserveMessage[] = [];
   const pendingHashes = new Set<string>();
@@ -422,8 +433,14 @@ async function observeMessagesForSession(
     messages.push(message);
   }
   if (messages.length === 0) return;
+  // Circuit breaker: when config is wired (the live Pi handlers always pass
+  // it), skip observe fast while the daemon is known-down so a dead host
+  // doesn't burn the full per-turn budget on every turn (#1626).
+  if (config && !client.isReachable()) return;
+  const observeOptions = config ? { timeoutMs: config.turnRequestTimeoutMs } : undefined;
   try {
-    await client.observe(session.sessionKey, session.cwd, messages);
+    await client.observe(session.sessionKey, session.cwd, messages, observeOptions);
+    if (config) client.markReachable();
     for (const hash of pendingHashes) rememberObservedHash(observedHashes, hash);
     if (liveObservedReplayKeys) {
       for (const message of messages) {
@@ -431,6 +448,7 @@ async function observeMessagesForSession(
       }
     }
   } catch (err) {
+    if (config && isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
     session.notify(`Remnic observe failed: ${errorMessage(err)}`, "warning");
   }
 }
@@ -674,6 +692,13 @@ function trimContext(value: string, budget: number): string {
   if (value.length <= budget) return value;
   if (budget <= TRUNCATION_NOTICE.length) return TRUNCATION_NOTICE.slice(0, budget);
   return `${value.slice(0, budget - TRUNCATION_NOTICE.length)}${TRUNCATION_NOTICE}`;
+}
+
+
+function isDaemonUnreachableError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (/Remnic request timed out/.test(err.message)) return true;
+  return isTransientNetworkError(err);
 }
 
 function errorMessage(err: unknown): string {

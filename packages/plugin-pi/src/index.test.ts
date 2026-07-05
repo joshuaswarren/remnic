@@ -1231,6 +1231,10 @@ function baseConfig(): RemnicPiConfig {
     statusEnabled: true,
     requestTimeoutMs: 60000,
     startupRequestTimeoutMs: 1000,
+    turnRequestTimeoutMs: 20000,
+    observeMaxBytes: 102400,
+    observeMaxRetries: 2,
+    daemonCooldownMs: 5000,
   };
 }
 
@@ -1330,3 +1334,48 @@ function makeStaleCtx(options: {
     statuses,
   };
 }
+
+
+test("recall circuit breaker skips subsequent turns after a timeout against an unreachable daemon (#1626)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  // fetch hangs until the AbortController fires, simulating an unreachable host.
+  globalThis.fetch = async (_input, init) => {
+    fetchCalls += 1;
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      turnRequestTimeoutMs: 30,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "cb-session" },
+  };
+  const event = { messages: [{ role: "user", content: "any prompt" }] };
+
+  // First turn: recall times out → daemon enters cooldown.
+  await emit("context", event, ctx);
+  assert.equal(fetchCalls, 1, "first turn issued a recall that timed out");
+
+  // Second turn: daemon is known-down → recall is skipped fast, no fetch.
+  await emit("context", event, ctx);
+  assert.equal(fetchCalls, 1, "circuit breaker skipped recall during cooldown");
+});

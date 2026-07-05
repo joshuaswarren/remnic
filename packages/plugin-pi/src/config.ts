@@ -20,6 +20,32 @@ export interface RemnicPiConfig {
   statusEnabled: boolean;
   requestTimeoutMs: number;
   startupRequestTimeoutMs: number;
+  /**
+   * Per-turn request budget for observe/recall. MUST stay below the host's
+   * in-handler kill budget (Pi/omp kills handlers at 30 s). Defaults to 20 s,
+   * capped at 25 s so a misconfiguration can never produce a structurally
+   * unsatisfiable timeout (issue #1626).
+   */
+  turnRequestTimeoutMs: number;
+  /**
+   * Soft cap on a single observe POST body in bytes. The client chunks observe
+   * batches to stay under this; individual oversized messages are truncated
+   * with a marker. Defaults to 100 KiB, safely under the daemon's default
+   * 128 KiB `maxBodyBytes` (issue #1600).
+   */
+  observeMaxBytes: number;
+  /**
+   * Maximum retry attempts for observe/recall on transient connection-level
+   * failures (socket close, ECONNRESET, EPIPE). Observe is dedupe-safe so
+   * retrying is harmless (issue #1602).
+   */
+  observeMaxRetries: number;
+  /**
+   * Cooldown base for the daemon-reachability circuit breaker. When observe/
+   * recall fails on a timeout or connection error, subsequent turns skip fast
+   * for an exponentially growing window starting at this value (issue #1626).
+   */
+  daemonCooldownMs: number;
 }
 
 export interface LoadConfigOptions {
@@ -40,6 +66,13 @@ const DEFAULT_CONFIG: RemnicPiConfig = {
   statusEnabled: true,
   requestTimeoutMs: 60000,
   startupRequestTimeoutMs: 1000,
+  // Default 20 s is comfortably under the Pi/omp 30 s handler budget (#1626).
+  turnRequestTimeoutMs: 20000,
+  // Default 100 KiB leaves headroom under the daemon's 128 KiB default (#1600).
+  observeMaxBytes: 102400,
+  observeMaxRetries: 2,
+  // Base cooldown for the circuit breaker; doubles on consecutive failures (#1626).
+  daemonCooldownMs: 5000,
 };
 
 function defaultConfigPath(env: NodeJS.ProcessEnv): string {
@@ -187,5 +220,19 @@ export function loadConfig(options: LoadConfigOptions = {}): RemnicPiConfig {
       60_000,
       "startupRequestTimeoutMs",
     ),
+    turnRequestTimeoutMs: coercePositiveInt(
+      fileConfig.turnRequestTimeoutMs,
+      DEFAULT_CONFIG.turnRequestTimeoutMs,
+      25_000,
+      "turnRequestTimeoutMs",
+    ),
+    observeMaxBytes: coercePositiveInt(
+      fileConfig.observeMaxBytes,
+      DEFAULT_CONFIG.observeMaxBytes,
+      8_388_608,
+      "observeMaxBytes",
+    ),
+    observeMaxRetries: coercePositiveInt(fileConfig.observeMaxRetries, DEFAULT_CONFIG.observeMaxRetries, 5, "observeMaxRetries"),
+    daemonCooldownMs: coercePositiveInt(fileConfig.daemonCooldownMs, DEFAULT_CONFIG.daemonCooldownMs, 60_000, "daemonCooldownMs"),
   };
 }
