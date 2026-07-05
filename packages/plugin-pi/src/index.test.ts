@@ -1582,3 +1582,46 @@ test("a successful startup health probe clears a stale circuit breaker (review c
   await emit("context", event, ctx);
   assert.ok(calls > callsBeforeSecondRecall, "recall ran after the health probe cleared the breaker");
 });
+
+test("/remnic-recall bounds retry to the general request budget instead of unbounded retries (review cursor)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new Error("The socket connection was closed unexpectedly.");
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, runCommand } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      requestTimeoutMs: 40,
+      observeMaxRetries: 2,
+    },
+  });
+  await extension(pi as any);
+
+  const notifications: Array<{ message: string; level: string }> = [];
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { notify: (m: string, l: string) => notifications.push({ message: m, level: l }) },
+    sessionManager: { getSessionId: () => "recall-command-budget" },
+  };
+
+  await runCommand("remnic-recall", "any query", ctx);
+  // The command passes the general request budget as a shared deadline, so the
+  // 40ms budget (below the first 200ms backoff) stops retries after one call
+  // instead of looping through the full retry chain unbounded.
+  assert.equal(calls, 1, "manual recall did not loop through unbounded retries");
+  assert.ok(
+    notifications.some((n) => /Remnic command failed/.test(n.message)),
+    "command reported the bounded failure",
+  );
+});

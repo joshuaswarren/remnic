@@ -211,7 +211,13 @@ function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfi
         session.notify("Usage: /remnic-recall <query>", "warning");
         return;
       }
-      const result = await client.recall(query, session.sessionKey, session.cwd);
+      // Pass the general request budget so requestWithRetry shares ONE deadline
+      // across retries (total <= requestTimeoutMs) instead of looping through
+      // observeMaxRetries full timeouts and blocking the interactive command
+      // for several minutes on a flaky connection (cursor review).
+      const result = await client.recall(query, session.sessionKey, session.cwd, {
+        timeoutMs: config.requestTimeoutMs,
+      });
       session.notify(trimContext(result.context ?? "(no Remnic context)", MAX_CONTEXT_CHARS), "info");
     }),
   });
