@@ -216,6 +216,59 @@ test("event order recall keeps summary within the section budget", async () => {
   assert.match(recalled, /^## Chronological event evidence/);
 });
 
+test("event order recall budgets the outline BEFORE evidence so the total never exceeds maxChars (#1539 fix)", async () => {
+  // Issue #1539 step 4 (the ONE declared behavior change): pre-fix, event-order
+  // built the evidence pack at the FULL budget, then appended the chronology
+  // outline + summary, then clipped — which could silently exceed maxChars
+  // (the outline consumed space the evidence pack had already filled). Post-fix,
+  // the summary (incl. outline) is computed FIRST and its length subtracted from
+  // the evidence budget, so evidence + summary = budget exactly.
+  //
+  // This test uses a fixture rich enough to produce a non-empty chronology
+  // outline, then asserts the total fits the budget with the outline present.
+  const sessionId = "event-order-outline-budget-fix";
+  const engine = new FakeEventOrderEngine(sessionId, [
+    {
+      turn_index: 10,
+      role: "user",
+      content:
+        "I first brought up passive voice reduction and checklist in my writing process.",
+    },
+    {
+      turn_index: 30,
+      role: "user",
+      content:
+        "Later I discussed webinar planning and promotion for the workshop series.",
+    },
+    {
+      turn_index: 50,
+      role: "user",
+      content:
+        "After that I focused on engagement and incentives discussion with the team.",
+    },
+  ]);
+
+  const maxChars = 600;
+  const recalled = await buildEventOrderRecallSection({
+    engine,
+    sessionId,
+    query:
+      "Can you walk me through the order in which I brought up different aspects of my personal and professional progress throughout our conversations, in order? Mention ONLY and ONLY three items.",
+    maxChars,
+    maxScanWindowTurns: 4,
+  });
+
+  assert.ok(recalled.length > 0);
+  // The fix guarantees the total (evidence + summary + outline) fits the budget.
+  assert.ok(
+    recalled.length <= maxChars,
+    `expected recalled section length ${recalled.length} to fit ${maxChars}`,
+  );
+  // The outline must be present — the fix guarantees it is budgeted for, not
+  // clipped away by evidence that consumed the full budget.
+  assert.match(recalled, /Chronology outline:/);
+});
+
 test("event order recall returns relevant user turns in chronological order", async () => {
   const sessionId = "event-order-core";
   const engine = new FakeEventOrderEngine(sessionId, [
