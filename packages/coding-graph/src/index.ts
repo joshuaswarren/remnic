@@ -275,3 +275,27 @@ export {
   type LogFilesEntry,
   type NameStatusEntry,
 } from "./git-invoker.js";
+
+// ---------------------------------------------------------------------------
+// PR3 (issue #1552): openCypher read-subset — parser + executor. Re-exported
+// from the package root so consumers can `import { executeCypher } from
+// "@remnic/coding-graph"` (the subpath export `./cypher` remains for callers
+// that want only this layer).
+// ---------------------------------------------------------------------------
+
+export {
+  executeCypher,
+  executeAst,
+  parseCypher,
+  VALID_CYPHER_LABELS,
+  type CypherAst,
+  type CypherFailure,
+  type CypherFailureCode,
+  type CypherNodeValue,
+  type CypherParseResult,
+  type CypherResult,
+  type CypherRow,
+  type CypherScalar,
+  type CypherSuccess,
+  type CypherValue,
+} from "./cypher/query-parser.js";
