@@ -763,6 +763,16 @@
             "type": "string",
             "default": "",
             "description": "Absolute path to the subprocess binary when structuralProvider = \"subprocess\". Empty string = no command configured. The consumer validates existence at boot (rule 24)."
+          },
+          "codegraphTools": {
+            "type": "boolean",
+            "default": false,
+            "description": "Gate for the 14 codegraph parity tools (issue #1554). Off by default — tools/list, HTTP routes, and CLI help are byte-identical to pre-feature until this is true. Also requires @remnic/coding-graph to be installed."
+          },
+          "codegraphDbDir": {
+            "type": "string",
+            "default": "",
+            "description": "Root directory for per-project graph SQLite DBs. Empty string = derive from memoryDir (<memoryDir>/codegraph/<principal>/<projectId>.sqlite). Absolute path required when set explicitly (rule 11)."
           }
         }
       },

@@ -29,6 +29,11 @@ import {
   type ArchitectureSurfaceRequest,
   type ArchitectureSurfaceResponse,
 } from "./coding/architecture-surfaces.js";
+import {
+  type CodegraphSurfaceRequest,
+  type CodegraphSurfaceResponse,
+  isCodegraphToolName,
+} from "./coding/codegraph-surfaces.js";
 
 // ---------------------------------------------------------------------------
 // memory_get — fetch one memory by id
@@ -250,6 +255,50 @@ export const codingArchitectureOperation = defineOperation<
   },
 });
 
+const codegraphSurfaceSchema = z.preprocess(
+  (data) => {
+    if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+      const obj = data as Record<string, unknown>;
+      const cleaned: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(obj)) {
+        if (value !== null) cleaned[key] = value;
+      }
+      return cleaned;
+    }
+    return data;
+  },
+  z.object({
+    tool: z.string().refine(isCodegraphToolName, {
+      message: "tool must be one of the codegraph tool names",
+    }),
+    sessionKey: z.string().max(512).optional(),
+    principal: z.string().max(256).optional(),
+    project: z.string().max(256).optional(),
+    query: z.string().max(2048).optional(),
+    limit: z.number().int().positive().max(200).optional(),
+    start: z.string().max(512).optional(),
+    direction: z.string().max(64).optional(),
+    depth: z.number().int().positive().max(10).optional(),
+    qualifiedName: z.string().max(1024).optional(),
+    path: z.string().max(2048).optional(),
+    structuredQuery: z.record(z.string(), z.unknown()).optional(),
+    head: z.string().max(256).optional(),
+    repoRoot: z.string().max(2048).optional(),
+    mode: z.string().max(64).optional(),
+    confirm: z.boolean().optional(),
+    subcommand: z.string().max(64).optional(),
+    id: z.string().max(512).optional(),
+    title: z.string().max(512).optional(),
+    status: z.string().max(64).optional(),
+    context: z.string().max(8192).optional(),
+    decision: z.string().max(8192).optional(),
+    consequences: z.string().max(8192).optional(),
+    entityRefs: z.array(z.string().max(256)).optional(),
+    supersedesId: z.string().max(512).optional(),
+    traces: z.array(z.unknown()).optional(),
+  }),
+) as z.ZodType<CodegraphSurfaceRequest>;
+
 // ---------------------------------------------------------------------------
 // Surface registration map — what each transport calls the pilot ops
 // ---------------------------------------------------------------------------
@@ -259,10 +308,220 @@ export const codingArchitectureOperation = defineOperation<
  * the boundary owns today. The fitness test treats this set as the migrated
  * set; everything else on a surface is unmigrated and counted by the ratchet.
  */
+export const codegraphIndexOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_index",
+  description:
+    "Codegraph parity tool (issue #1554): index. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphListProjectsOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_list_projects",
+  description:
+    "Codegraph parity tool (issue #1554): list_projects. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphDeleteProjectOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_delete_project",
+  description:
+    "Codegraph parity tool (issue #1554): delete_project. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphIndexStatusOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_index_status",
+  description:
+    "Codegraph parity tool (issue #1554): index_status. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphSearchGraphOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_search_graph",
+  description:
+    "Codegraph parity tool (issue #1554): search_graph. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphTracePathOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_trace_path",
+  description:
+    "Codegraph parity tool (issue #1554): trace_path. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphDetectChangesOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_detect_changes",
+  description:
+    "Codegraph parity tool (issue #1554): detect_changes. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphQueryGraphOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_query_graph",
+  description:
+    "Codegraph parity tool (issue #1554): query_graph. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphGetSchemaOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_get_schema",
+  description:
+    "Codegraph parity tool (issue #1554): get_schema. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphGetSnippetOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_get_snippet",
+  description:
+    "Codegraph parity tool (issue #1554): get_snippet. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphGetArchitectureOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_get_architecture",
+  description:
+    "Codegraph parity tool (issue #1554): get_architecture. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphSearchCodeOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_search_code",
+  description:
+    "Codegraph parity tool (issue #1554): search_code. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphManageAdrOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_manage_adr",
+  description:
+    "Codegraph parity tool (issue #1554): manage_adr. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+export const codegraphIngestTracesOperation = defineOperation<
+  CodegraphSurfaceRequest,
+  { result: CodegraphSurfaceResponse }
+>({
+  name: "codegraph_ingest_traces",
+  description:
+    "Codegraph parity tool (issue #1554): ingest_traces. Delegates to the shared codegraph surface handler.",
+  schema: codegraphSurfaceSchema,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
 export const REGISTERED_OPERATIONS = [
   memoryGetOperation.spec.name,
   memorySearchOperation.spec.name,
   memoryStoreOperation.spec.name,
   codingDecisionOperation.spec.name,
   codingArchitectureOperation.spec.name,
+  codegraphIndexOperation.spec.name,
+  codegraphListProjectsOperation.spec.name,
+  codegraphDeleteProjectOperation.spec.name,
+  codegraphIndexStatusOperation.spec.name,
+  codegraphSearchGraphOperation.spec.name,
+  codegraphTracePathOperation.spec.name,
+  codegraphDetectChangesOperation.spec.name,
+  codegraphQueryGraphOperation.spec.name,
+  codegraphGetSchemaOperation.spec.name,
+  codegraphGetSnippetOperation.spec.name,
+  codegraphGetArchitectureOperation.spec.name,
+  codegraphSearchCodeOperation.spec.name,
+  codegraphManageAdrOperation.spec.name,
+  codegraphIngestTracesOperation.spec.name,
 ] as const;

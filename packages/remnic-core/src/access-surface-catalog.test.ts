@@ -67,7 +67,7 @@ function shortToolName(advertised: string): string {
 /** Spin up a server with emitLegacyTools=true and read the deduped short names. */
 async function liveMcpToolShortNames(): Promise<ReadonlySet<string>> {
   const stub = { briefingEnabled: true } as unknown as EngramAccessService;
-  const server = new EngramMcpServer(stub, { emitLegacyTools: true, codingDecisionVisible: true, architectureCardVisible: true });
+  const server = new EngramMcpServer(stub, { emitLegacyTools: true, codingDecisionVisible: true, architectureCardVisible: true, codegraphVisible: true });
   const response = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" });
   const result = (response as { result?: { tools?: Array<{ name: string }> } }).result;
   const names = new Set<string>();

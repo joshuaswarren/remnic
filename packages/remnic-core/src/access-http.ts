@@ -317,6 +317,7 @@ export class EngramAccessHttpServer {
       emitLegacyTools: options.emitLegacyTools,
       codingDecisionVisible: this.service.decisionRecordSurfaceVisible,
       architectureCardVisible: this.service.architectureCardSurfaceVisible,
+      codegraphVisible: this.service.codegraphSurfaceVisible,
     });
   }
 
@@ -2248,6 +2249,15 @@ export class EngramAccessHttpServer {
     const codingArchitectureWrite =
       (toolName === "engram.coding_architecture" || toolName === "remnic.coding_architecture") &&
       toolArgsSubcommand === "refresh";
+    // codegraph parity tools (issue #1554): index, delete_project, and
+    // manage_adr(record|supersede) + ingest_traces are mutating.
+    const codegraphWrite =
+      toolName.startsWith("engram.codegraph_") ||
+      toolName.startsWith("remnic.codegraph_");
+    const codegraphWriteSubcommand =
+      toolName !== "engram.codegraph_manage_adr" && toolName !== "remnic.codegraph_manage_adr"
+        ? true
+        : toolArgsSubcommand === "record" || toolArgsSubcommand === "supersede";
     const isMcpWrite =
       request.method === "tools/call" &&
       (
@@ -2277,7 +2287,8 @@ export class EngramAccessHttpServer {
           )
         ) ||
         codingDecisionWrite ||
-        codingArchitectureWrite
+        codingArchitectureWrite ||
+        (codegraphWrite && codegraphWriteSubcommand)
       );
     if (isMcpWrite) {
       this.ensureWriteRateLimitAvailable();

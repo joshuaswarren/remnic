@@ -1329,6 +1329,8 @@ test("parseConfig codingKnowledge: defaults match the documented contract (issue
     architectureCardLlmSummary: false,
     structuralProvider: "none",
     structuralProviderCommand: "",
+    codegraphTools: false,
+    codegraphDbDir: "",
   });
 });
 
