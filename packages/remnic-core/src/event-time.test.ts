@@ -398,3 +398,47 @@ test("until <month> <year> still advances by 1 month (season fix regression)", (
   assert.equal(r.ok, true);
   assert.equal(r.validUntil, "2025-04-01T00:00:00.000Z");
 });
+
+test("last summer from July rolls back a year — anchor inside season (codex review r2)", () => {
+  const r = resolveEventTime("last summer", "2026-07-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-06-01T00:00:00.000Z");
+});
+
+test("last summer from March rolls back — season not yet started (codex review r2)", () => {
+  const r = resolveEventTime("last summer", "2026-03-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-06-01T00:00:00.000Z");
+});
+
+test("last summer from September stays current year — season already passed (codex review r2)", () => {
+  const r = resolveEventTime("last summer", "2026-09-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2026-06-01T00:00:00.000Z");
+});
+
+test("last winter from January rolls back two years — inside winter tail (codex review r2)", () => {
+  const r = resolveEventTime("last winter", "2026-01-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2024-12-01T00:00:00.000Z");
+});
+
+test("since <bare month> from before that month rolls back (codex review r2)", () => {
+  // "since March" from January 2026 → March 2025 (most recent past March).
+  const r = resolveEventTime("since March", "2026-01-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-03-01T00:00:00.000Z");
+});
+
+test("since <bare month> from after that month stays current year (codex review r2 regression)", () => {
+  // "since March" from June 2026 → March 2026 (already happened).
+  const r = resolveEventTime("since March", "2026-06-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2026-03-01T00:00:00.000Z");
+});
+
+test("since <month> <year> with explicit year does not roll back (codex review r2 regression)", () => {
+  const r = resolveEventTime("since March 2026", "2026-01-15T12:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2026-03-01T00:00:00.000Z");
+});

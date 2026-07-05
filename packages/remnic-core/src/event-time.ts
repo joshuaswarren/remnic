@@ -209,6 +209,19 @@ function resolveBareYear(token: string): number | null {
   return buildDateMs(Number(m[1]), 1, 1);
 }
 
+
+/**
+ * Check whether the anchor month falls inside a season's 3-month span.
+ * Seasons start at `baseMonth` and span 3 months (e.g. summer = Jun–Aug).
+ * Winter (Dec=12) wraps: Dec, Jan, Feb.
+ */
+function isInSeason(baseMonth: number, anchorMonth: number): boolean {
+  for (let i = 0; i < 3; i++) {
+    if (((baseMonth - 1 + i) % 12) + 1 === anchorMonth) return true;
+  }
+  return false;
+}
+
 function resolveSeasonYear(
   anchorMs: number,
   seasonToken: string,
@@ -219,12 +232,27 @@ function resolveSeasonYear(
   const d = new Date(anchorMs);
   let year = d.getUTCFullYear();
   const anchorMonth = d.getUTCMonth() + 1;
-  if (direction === -1 && baseMonth > anchorMonth) year -= 1;
-  else if (direction === +1 && baseMonth < anchorMonth) year += 1;
-  // "this winter" (direction 0) from Jan/Feb: winter started in the previous
-  // December. Without this, the resolver stamps facts almost a year in the
-  // future (codex review r2). Only winter (Dec) spans the year boundary.
-  else if (direction === 0 && baseMonth === 12 && anchorMonth <= 2) year -= 1;
+
+  if (direction === -1) {
+    // "last <season>": go to the previous occurrence.
+    // If the season hasn't started yet this year (baseMonth > anchorMonth)
+    // or the anchor is currently INSIDE the season, roll back a year.
+    if (baseMonth > anchorMonth || isInSeason(baseMonth, anchorMonth)) year -= 1;
+    // Winter tail (Jan/Feb): current winter started prev Dec, so "last"
+    // needs one more year back.
+    if (baseMonth === 12 && anchorMonth <= 2) year -= 1;
+  } else if (direction === +1) {
+    // "next <season>": go to the next occurrence.
+    // Winter from Jan/Feb: current winter started prev Dec; next is this Dec.
+    if (baseMonth === 12 && anchorMonth <= 2) {
+      // no year change — next winter is December of the anchor year
+    } else if (baseMonth < anchorMonth || isInSeason(baseMonth, anchorMonth)) {
+      year += 1;
+    }
+  } else if (direction === 0 && baseMonth === 12 && anchorMonth <= 2) {
+    // "this winter" from Jan/Feb: winter started in the previous December.
+    year -= 1;
+  }
   return buildDateMs(year, baseMonth, 1);
 }
 
@@ -301,11 +329,24 @@ export function resolveEventTime(
   const sinceMatch = lower.match(/^since\s+(.+)$/);
   if (sinceMatch) {
     const inner = sinceMatch[1].trim();
-    const fromMs =
+    let fromMs =
       resolveRelativePeriod(anchorMs, inner) ??
       resolveExplicitMonthYear(inner) ??
       resolveBareYear(inner) ??
       resolveAbsolute(inner);
+    // "since <bare month/season>": if the resolved start is future and the
+    // expression carries no explicit 4-digit year, the fact meant the most
+    // recent PAST occurrence of that period (codex review r2: "since March"
+    // from January produced a future validFrom).
+    if (
+      fromMs !== null &&
+      fromMs > anchorMs &&
+      !/\d{4}/.test(inner)
+    ) {
+      const nd = new Date(fromMs);
+      nd.setUTCFullYear(nd.getUTCFullYear() - 1);
+      fromMs = nd.getTime();
+    }
     const fromIso = toIsoUtc(fromMs);
     if (!fromIso) return fallback;
     return { validFrom: fromIso, ok: true };
