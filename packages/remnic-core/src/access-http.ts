@@ -317,6 +317,7 @@ export class EngramAccessHttpServer {
       emitLegacyTools: options.emitLegacyTools,
       codingDecisionVisible: this.service.decisionRecordSurfaceVisible,
       architectureCardVisible: this.service.architectureCardSurfaceVisible,
+      codegraphVisible: this.service.codegraphSurfaceVisible,
       sessionDeltaVisible: this.service.sessionDeltaSurfaceVisible,
     });
   }
@@ -2268,6 +2269,20 @@ export class EngramAccessHttpServer {
     const codingArchitectureWrite =
       (toolName === "engram.coding_architecture" || toolName === "remnic.coding_architecture") &&
       toolArgsSubcommand === "refresh";
+    // codegraph parity tools (issue #1554): only mutating tools count as
+    // writes — index, delete_project, ingest_traces, and manage_adr
+    // (record|supersede). Read-only tools (search_graph, get_schema,
+    // list_projects, etc.) must NOT hit the write quota.
+    const CODEGRAPH_WRITE_TOOLS = new Set([
+      "engram.codegraph_index", "remnic.codegraph_index",
+      "engram.codegraph_delete_project", "remnic.codegraph_delete_project",
+      "engram.codegraph_ingest_traces", "remnic.codegraph_ingest_traces",
+    ]);
+    const isCodegraphManageAdr =
+      toolName === "engram.codegraph_manage_adr" || toolName === "remnic.codegraph_manage_adr";
+    const codegraphWrite =
+      CODEGRAPH_WRITE_TOOLS.has(toolName) ||
+      (isCodegraphManageAdr && (toolArgsSubcommand === "record" || toolArgsSubcommand === "supersede"));
     const isMcpWrite =
       request.method === "tools/call" &&
       (
@@ -2297,7 +2312,8 @@ export class EngramAccessHttpServer {
           )
         ) ||
         codingDecisionWrite ||
-        codingArchitectureWrite
+        codingArchitectureWrite ||
+        codegraphWrite
       );
     if (isMcpWrite) {
       this.ensureWriteRateLimitAvailable();
@@ -2320,8 +2336,16 @@ export class EngramAccessHttpServer {
     if (isMcpWrite && response !== null) {
       const result = (response as Record<string, unknown>).result as Record<string, unknown> | undefined;
       const isError = result?.isError === true;
-      const structured = result?.structuredContent as { dryRun?: boolean; idempotencyReplay?: boolean } | undefined;
-      if (!isError && structured && this.shouldCountWriteRateLimit(structured)) {
+      const structured = result?.structuredContent as
+        | { dryRun?: boolean; idempotencyReplay?: boolean; ok?: boolean }
+        | undefined;
+      // Rejected codegraph calls carry { ok: false } in structuredContent
+      // (confirm_required, package_missing, runtime_unavailable, ...). The
+      // MCP layer sets isError:false for these, so without this guard they
+      // would consume the write quota despite no mutation occurring
+      // (issue #1554 review thread: don't bill rejected calls as writes).
+      const isRejectedCodegraph = structured?.ok === false;
+      if (!isError && !isRejectedCodegraph && structured && this.shouldCountWriteRateLimit(structured)) {
         this.recordWriteRateLimitHit();
       }
     }

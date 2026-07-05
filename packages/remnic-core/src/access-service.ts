@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import * as nodeFs from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
+import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
@@ -28,6 +29,19 @@ import {
   ARCHITECTURE_CARD_TAG,
 } from "./coding/architecture-surfaces.js";
 import { buildArchitectureCard, createArchitectureCardSummariser } from "./coding/architecture-card.js";
+import {
+  handleCodegraphTool,
+  type CodegraphSurfaceContext,
+  type CodegraphSurfaceRequest,
+  type CodegraphSurfaceResponse,
+} from "./coding/codegraph-surfaces.js";
+import {
+  codegraphSurfaceVisible,
+  getCodegraphStore,
+  makeCodegraphRuntimeDelegates,
+  resolveCodegraphProjectId,
+  type CodegraphStore,
+} from "./coding/codegraph-runtime.js";
 import {
   handleCodingDelta,
   type DeltaSurfaceRequest,
@@ -4463,6 +4477,65 @@ export class EngramAccessService {
     };
   }
 
+  /**
+   * Codegraph parity tool delegate (issue #1554). All three surfaces (MCP,
+   * HTTP, CLI) arrive here via the codegraph_* boundary operations. The
+   * handler lives in coding/codegraph-surfaces.ts; this method just wires
+   * the context. Memory dir + principal + coding-context lookup come from
+   * the orchestrator/access-service fabric -- no handler-side state.
+   */
+  async codegraphTool(
+    request: CodegraphSurfaceRequest,
+    authenticatedPrincipal?: string,
+  ): Promise<CodegraphSurfaceResponse> {
+    const principal = authenticatedPrincipal ?? "default";
+    const memoryDir = this.orchestrator.config.memoryDir;
+    const ctx: CodegraphSurfaceContext = {
+      config: this.orchestrator.config,
+      memoryDir,
+      principal,
+      getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
+      // Project resolution chokepoint lives in codegraph-runtime.ts so every
+      // store-backed tool derives the same id and the tagged error flows back
+      // as a structured response (issue #1554 threads 7/9/11). Thin wiring.
+      resolveStore: async (req) => {
+        const projectId = resolveCodegraphProjectId({
+          request: req,
+          getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
+        });
+        return getCodegraphStore({
+          config: this.orchestrator.config,
+          memoryDir,
+          principal,
+          projectId,
+          repoRoot: req.repoRoot,
+        }) as Promise<CodegraphStore>;
+      },
+      listDirs: (dir) => {
+        try {
+          return readdirSync(dir) as readonly string[];
+        } catch {
+          return [];
+        }
+      },
+      removeFile: (filePath) => unlinkSync(filePath), // propagate failures → deleteCodegraphProject classifies (thread 7)
+      throwInputError: (msg) => {
+        throw new EngramAccessInputError(msg);
+      },
+      delegateDecisionRecord: async (decisionRequest) => {
+        return this.codingDecision(decisionRequest, authenticatedPrincipal);
+      },
+      buildArchitectureCard: async (repoRoot) => {
+        return buildArchitectureCard(repoRoot, {
+          llmSummary: this.orchestrator.config.codingKnowledge?.architectureCardLlmSummary === true,
+          summariser: createArchitectureCardSummariser(this.fallbackLlmRef ?? this.localLlmRef),
+        });
+      },
+      ...makeCodegraphRuntimeDelegates(),
+    };
+    return handleCodegraphTool(request, ctx);
+  }
+
   /** Whether the coding_decision tool should appear in tools/list (rule 39). */
   get decisionRecordSurfaceVisible(): boolean {
     return this.orchestrator.config.codingKnowledge?.enabled === true
@@ -4506,6 +4579,15 @@ export class EngramAccessService {
   get architectureCardSurfaceVisible(): boolean {
     return this.orchestrator.config.codingKnowledge?.enabled === true
       && this.orchestrator.config.codingKnowledge?.architectureCard === true;
+  }
+
+  /**
+   * Whether the 14 codegraph parity tools should appear in tools/list
+   * (rule 39). Config-only -- runtime availability is checked at call time.
+   * When false the tools array is byte-identical to pre-feature.
+   */
+  get codegraphSurfaceVisible(): boolean {
+    return codegraphSurfaceVisible(this.orchestrator.config);
   }
   /**
    * Thin delegate — handler logic in coding/architecture-surfaces.ts (#1548 PR3).

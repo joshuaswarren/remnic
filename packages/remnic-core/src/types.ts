@@ -478,6 +478,20 @@ export interface CodingKnowledgeConfig {
    * check at boot, not at every call.
    */
   structuralProviderCommand: string;
+  /**
+   * Gate for the 14 codegraph parity tools (issue #1554). Off by default --
+   * tools/list, HTTP routes, and CLI help are byte-identical to pre-feature
+   * until this is true. The runtime also requires the @remnic/coding-graph
+   * package to be installed (rule 39: single gate predicate
+   * codegraphSurfaceVisible(config) && isCodingGraphInstalled()).
+   */
+  codegraphTools: boolean;
+  /**
+   * Root directory for per-project graph SQLite DBs. Empty string = derive
+   * from memoryDir (<memoryDir>/codegraph/<principal>/<projectId>.sqlite).
+   * Absolute path required when set explicitly (rule 11 -- no relative paths).
+   */
+  codegraphDbDir: string;
 }
 
 /**

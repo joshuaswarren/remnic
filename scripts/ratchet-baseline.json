@@ -5,8 +5,8 @@
   "metrics": {
     "watchlistLoc": {
       "packages/remnic-core/src/orchestrator.ts": 19730,
-      "packages/remnic-core/src/cli.ts": 9871,
-      "packages/remnic-core/src/access-service.ts": 8464,
+      "packages/remnic-core/src/cli.ts": 9872,
+      "packages/remnic-core/src/access-service.ts": 8549,
       "packages/remnic-core/src/storage.ts": 7340,
       "packages/remnic-core/src/config.ts": 4518
     },

@@ -53,6 +53,8 @@ const DEFAULT_CONFIG: CodingKnowledgeConfig = {
   architectureCardLlmSummary: false,
   structuralProvider: "none",
   structuralProviderCommand: "",
+  codegraphTools: false,
+  codegraphDbDir: "",
 };
 
 const CODING_CONTEXT: CodingContext = {

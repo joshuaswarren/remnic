@@ -32,6 +32,8 @@ export const CODING_KNOWLEDGE_DEFAULTS = Object.freeze({
   architectureCardLlmSummary: false,
   structuralProvider: "none",
   structuralProviderCommand: "",
+  codegraphTools: false,
+  codegraphDbDir: "",
 } satisfies Record<keyof CodingKnowledgeConfig, boolean | string>);
 
 const VALID_STRUCTURAL_PROVIDERS = ["none", "subprocess", "native"] as const;
@@ -62,6 +64,11 @@ export function parseCodingKnowledgeConfig(raw: unknown): CodingKnowledgeConfig 
     structuralProviderCommand:
       typeof record.structuralProviderCommand === "string"
         ? record.structuralProviderCommand.trim()
+        : "",
+    codegraphTools: readStrictBool(record.codegraphTools, "codegraphTools", /* default */ false),
+    codegraphDbDir:
+      typeof record.codegraphDbDir === "string"
+        ? record.codegraphDbDir.trim()
         : "",
   };
 }

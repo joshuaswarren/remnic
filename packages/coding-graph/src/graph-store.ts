@@ -193,6 +193,19 @@ export interface UpsertSuccess {
 
 export type UpsertBatchResult = UpsertSuccess | GraphStoreFailure;
 
+/**
+ * Result of {@link GraphStore.upsertEdges} — a standalone-edge write used by
+ * the codegraph ingest_traces surface (issue #1554). `persisted` counts
+ * edges actually inserted/updated; `skipped` counts edges whose src or dst
+ * did not resolve to exactly one node (dangling-edge policy).
+ */
+export interface UpsertEdgesSuccess {
+  ok: true;
+  persisted: number;
+  skipped: number;
+}
+export type UpsertEdgesResult = UpsertEdgesSuccess | GraphStoreFailure;
+
 // ──────────────────────────────────────────────────────────────────────────
 // PR2 read primitives — query / result types (issue #1552 steps 4–5).
 // Tagged failures share the {@link GraphStoreFailureCode} set so callers
@@ -707,6 +720,32 @@ export class GraphStore {
     return this.queue.schedule(() => this.runUpsert(files, deletePaths));
   }
 
+  /**
+   * Upsert standalone edges whose endpoints are resolved from the FULL
+   * database (not just a per-file batch). Used by the codegraph
+   * ingest_traces surface (issue #1554) to persist runtime HTTP_CALLS
+   * observations as edges with `provenance: "trace"` — upgrading
+   * confidence on existing edges and inserting new ones.
+   *
+   * Both `src` and `dst` are resolved by qualified_name via the global
+   * `resolveNodeId` fallback (unambiguous single-match policy). Edges
+   * whose endpoints do not resolve to exactly one node are skipped (and
+   * counted in `skipped`) rather than attached to the wrong node — the
+   * dangling-edge policy from `upsertFileBatch` applies.
+   *
+   * Serialized on the store's write queue like `upsertFileBatch` so a
+   * concurrent file-batch upsert and a trace upsert cannot interleave
+   * (rule 40).
+   */
+  async upsertEdges(
+    edges: readonly EdgeIR[],
+  ): Promise<UpsertEdgesResult> {
+    if (this.closed || this.closing) {
+      return { ok: false, code: "store_closed" };
+    }
+    return this.queue.schedule(() => this.runUpsertEdges(edges));
+  }
+
   /** Wait for pending writes to drain — test seam. */
   async drain(): Promise<void> {
     await this.queue.drain();
@@ -1119,6 +1158,61 @@ export class GraphStore {
       });
       tx(files);
       return { ok: true, results };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyError(error);
+    }
+  }
+
+  /**
+   * Standalone-edge upsert body (runs under the write queue). Resolves
+   * both endpoints from the full DB via the unambiguous single-match
+   * `resolveNodeId` fallback, then upserts each edge with the same
+   * ON CONFLICT(src,dst,type) policy as the file-batch path. Edges whose
+   * src or dst do not resolve to exactly one node are skipped (counted
+   * in `skipped`) per the dangling-edge policy.
+   */
+  private async runUpsertEdges(
+    edges: readonly EdgeIR[],
+  ): Promise<UpsertEdgesResult> {
+    const emptyBatch: Map<string, string> = new Map();
+    const insertEdge = this.db.prepare(
+      `INSERT INTO edges (src, dst, type, confidence, provenance)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(src, dst, type) DO UPDATE SET
+           confidence = excluded.confidence,
+           provenance = excluded.provenance`,
+    );
+    try {
+      let persisted = 0;
+      let skipped = 0;
+      this.db.transaction(() => {
+        for (const edge of edges) {
+          if (!isEdgeProvenance(edge.provenance)) {
+            throw new Error(
+              `graph-store: edge has invalid provenance ${JSON.stringify(edge.provenance)}`,
+            );
+          }
+          if (
+            !Number.isFinite(edge.confidence) ||
+            edge.confidence < 0 ||
+            edge.confidence > 1
+          ) {
+            throw new Error(
+              `graph-store: edge confidence ${edge.confidence} is out of range [0, 1] for edge ${edge.srcQualifiedName} → ${edge.dstQualifiedName}`,
+            );
+          }
+          const srcId = resolveNodeId(edge.srcQualifiedName, emptyBatch, this.db);
+          const dstId = resolveNodeId(edge.dstQualifiedName, emptyBatch, this.db);
+          if (!srcId || !dstId) {
+            skipped += 1;
+            continue;
+          }
+          const r = insertEdge.run(srcId, dstId, edge.type, edge.confidence, edge.provenance);
+          persisted += r.changes;
+        }
+      })();
+      return { ok: true, persisted, skipped };
     } catch (error) {
       logWriteFailure(error);
       return classifyError(error);

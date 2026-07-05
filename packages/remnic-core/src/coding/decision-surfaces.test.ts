@@ -41,6 +41,8 @@ const GATE_OFF_CONFIG: CodingKnowledgeConfig = {
   architectureCardLlmSummary: false,
   structuralProvider: "none",
   structuralProviderCommand: "",
+  codegraphTools: false,
+  codegraphDbDir: "",
 };
 
 const GATE_ON_CONFIG: CodingKnowledgeConfig = {
