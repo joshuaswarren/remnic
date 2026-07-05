@@ -47,6 +47,15 @@ export const ARCHITECTURE_CARD_MAX_BYTES = 4096;
 export const ARCHITECTURE_CARD_TRUNCATION_MARKER = "… card truncated to fit size cap …";
 
 /**
+ * Maximum byte size of the LLM summary prefix. The summary is additive —
+ * the deterministic card (manifests, languages, entry points) must ALWAYS
+ * survive truncation. Clamping the summary before prepending prevents a
+ * misbehaving or prompt-injected summariser from crowding out the
+ * deterministic sections (codex review).
+ */
+export const ARCHITECTURE_CARD_MAX_SUMMARY_BYTES = 1024;
+
+/**
  * Manifest files the scanner knows how to parse for project metadata
  * (name, entry points). Single source of truth (rule 53 analog).
  */
@@ -276,7 +285,10 @@ export async function buildArchitectureCard(
       try {
         const summary = await options.summariser(deterministic, absoluteRoot);
         if (typeof summary === "string" && summary.trim().length > 0) {
-          content = `${summary.trim()}\n\n---\n\n${deterministic}`;
+          // Clamp the summary so a misbehaving summariser cannot crowd out
+          // the deterministic card sections (codex review).
+          const clamped = capToBytes(summary.trim(), ARCHITECTURE_CARD_MAX_SUMMARY_BYTES);
+          content = `${clamped.text}\n\n---\n\n${deterministic}`;
         }
       } catch (err) {
         // rule 13: LLM failure → deterministic card ships unchanged.

@@ -347,6 +347,26 @@ test("llm summary: null return → deterministic card unchanged", async () => {
   }
 });
 
+test("llm summary: over-long summary clamped so deterministic card survives (codex review)", async () => {
+  const repo = await makeFixtureRepo({
+    files: [{ path: "package.json", content: JSON.stringify({ name: "clamped" }) }],
+  });
+  try {
+    const result = await buildArchitectureCard(repo, {
+      now: NOW,
+      llmSummary: true,
+      summariser: async () => "X".repeat(8192),
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    // The deterministic card must survive — project name and structure markers present.
+    assert.ok(result.card.content.includes("clamped"), "deterministic project name survived summary clamp");
+    assert.ok(result.card.byteSize <= ARCHITECTURE_CARD_MAX_BYTES, "card within cap");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // createArchitectureCardSummariser — factory wiring (rule 48)
 // ──────────────────────────────────────────────────────────────────────────

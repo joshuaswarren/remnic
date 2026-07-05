@@ -596,13 +596,18 @@ async function runArchitecture(args: ParsedArgs, preferredId?: string): Promise<
   // given, so the gate passes and writes resolve to the right namespace.
   const projectTag = getLastOption(args, "project-tag");
   const sessionKey = getLastOption(args, "session-key");
-  if (projectTag && projectTag.trim().length > 0 && sessionKey && sessionKey.trim().length > 0) {
-    const projectId = projectTagProjectId(projectTag.trim());
+  if (sessionKey && sessionKey.trim().length > 0) {
     // refresh scans codingContext.rootPath, so it must be a REAL checkout
-    // path — the synthetic tag:* projectId is not. Default to the CWD (or an
-    // explicit --repo-root) so a one-shot CLI refresh scans the caller's
-    // repo, not a non-existent tag path (codex review: refresh → invalid_root).
+    // path. Default to the CWD (or an explicit --repo-root) so a one-shot
+    // CLI refresh scans the caller's repo, not a non-existent tag path.
     const repoRoot = expandOptionalPath(getLastOption(args, "repo-root")) ?? process.cwd();
+    // --project-tag supplies the context id (namespace); when absent, derive
+    // a default from the repo-root basename so refresh works with just
+    // --session-key + --repo-root (codex review).
+    const projectId =
+      projectTag && projectTag.trim().length > 0
+        ? projectTagProjectId(projectTag.trim())
+        : projectTagProjectId(path.basename(repoRoot));
     service.setCodingContext({
       sessionKey,
       codingContext: {
