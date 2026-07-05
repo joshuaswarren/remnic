@@ -39,6 +39,7 @@ import {
   codegraphSurfaceVisible,
   getCodegraphStore,
   makeCodegraphRuntimeDelegates,
+  resolveCodegraphProjectId,
   type CodegraphStore,
 } from "./coding/codegraph-runtime.js";
 import {
@@ -4494,21 +4495,14 @@ export class EngramAccessService {
       memoryDir,
       principal,
       getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
+      // Project resolution chokepoint lives in codegraph-runtime.ts so every
+      // store-backed tool derives the same id and the tagged error flows back
+      // as a structured response (issue #1554 threads 7/9/11). Thin wiring.
       resolveStore: async (req) => {
-        const projectId =
-          typeof req.project === "string" && req.project.trim().length > 0
-            ? req.project.trim()
-            : (() => {
-                const cc = req.sessionKey
-                  ? this.orchestrator.getCodingContextForSession(req.sessionKey)
-                  : null;
-                if (cc === null) {
-                  throw new Error(
-                    "codegraph: project must be supplied explicitly or via a session coding context",
-                  );
-                }
-                return cc.projectId;
-              })();
+        const projectId = resolveCodegraphProjectId({
+          request: req,
+          getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
+        });
         return getCodegraphStore({
           config: this.orchestrator.config,
           memoryDir,

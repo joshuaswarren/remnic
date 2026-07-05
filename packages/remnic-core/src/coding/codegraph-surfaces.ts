@@ -18,7 +18,6 @@
  * Track A's architecture card with live graph stats. Zero duplicated ADR
  * or architecture-card logic.
  */
-import { createHash } from "node:crypto";
 import type { PluginConfig, CodingContext } from "../types.js";
 import {
   codegraphRuntimeAvailable,
@@ -516,19 +515,16 @@ async function handleIndex(
   // schema; it does NOT parse or ingest files (P1 fix: previously the
   // handler returned ok:true after open + schemaStats without reindexing).
   //
-  // Thread 7 (issue #1554): the schema advertises codegraph_index as
-  // callable with only repoRoot, but resolveStore requires a project id or
-  // a session coding context. Derive a stable project id from repoRoot when
-  // the caller supplied neither, so a standalone stdio-MCP index call works
-  // (matches the root:<hex> id convention used by coding contexts).
-  // Build a mutable resolve request: project may be derived below (thread 7).
-  const resolveReq = { ...request, repoRoot } as CodegraphSurfaceRequest & { project?: string };
-  if (
-    (typeof resolveReq.project !== "string" || resolveReq.project.trim().length === 0) &&
-    !hasCodingContext(resolveReq, ctx)
-  ) {
-    resolveReq.project = `root:${projectIdHash(repoRoot)}`;
-  }
+  // Open the per-project store. The reindex itself is invoked explicitly
+  // via ctx.runReindex below — GraphStore.open only creates/applies the
+  // schema; it does NOT parse or ingest files (P1 fix: previously the
+  // handler returned ok:true after open + schemaStats without reindexing).
+  //
+  // Project derivation for repoRoot-only callers lives in the SHARED
+  // resolveStore (access-service.ts) so every store-backed tool — index,
+  // search_graph, get_schema, index_status — reopens the SAME DB. No
+  // per-handler duplication (issue #1554 review threads 7/9/11).
+  const resolveReq = { ...request, repoRoot } as CodegraphSurfaceRequest;
   let store: CodegraphStore;
   try {
     store = await ctx.resolveStore(resolveReq);
@@ -756,29 +752,6 @@ function resolveRepoRoot(request: CodegraphSurfaceRequest, ctx: CodegraphSurface
     return request.repoRoot.trim();
   }
   return resolveCodingContext(request, ctx).rootPath;
-}
-
-/**
- * Whether the request carries a usable coding context (non-empty sessionKey
- * with an attached context). Used by handleIndex to decide whether to derive
- * a project id from repoRoot: when a coding context IS present, resolveStore
- * uses its projectId, so derivation must not run (thread 7).
- */
-function hasCodingContext(request: CodegraphSurfaceRequest, ctx: CodegraphSurfaceContext): boolean {
-  if (typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
-    return false;
-  }
-  return ctx.getCodingContext(request.sessionKey) !== null;
-}
-
-/**
- * Derive a stable, filesystem-safe project id from a repo root path
- * (thread 7). SHA-256 keeps it fixed-length and collision-resistant; the
- * `root:` prefix matches the coding-context id convention so a derived id
- * is distinguishable from an `origin:<hex>` remote id in tools/list output.
- */
-function projectIdHash(repoRoot: string): string {
-  return createHash("sha256").update(repoRoot).digest("hex").slice(0, 16);
 }
 
 /**

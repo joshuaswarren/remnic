@@ -30,6 +30,12 @@ import {
   type CodegraphSurfaceResponse,
 } from "./codegraph-surfaces.js";
 import type { CodegraphStore } from "./codegraph-runtime.js";
+import {
+  deriveCodegraphProjectId,
+  resolveCodegraphProjectId,
+  resolveCodegraphDbPath,
+  CodegraphRuntimeError,
+} from "./codegraph-runtime.js";
 import type { DecisionSurfaceRequest, DecisionSurfaceResponse } from "./decision-surfaces.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -769,41 +775,38 @@ test("read-failure propagation: query_graph surfaces structured-query failure as
 });
 
 // ──────────────────────────────────────────────────────────────────────────
-// Thread 7 (issue #1554): codegraph_index derives a project id from repoRoot
-// when the caller supplies neither a project nor a session coding context,
-// so a standalone stdio-MCP index call works (the schema advertises
-// repoRoot-only). When a coding context IS present, its projectId is used.
+// Project resolution chokepoint (issue #1554 review threads 7/9/11).
+// handleIndex no longer derives the project itself — it forwards repoRoot to
+// resolveStore, and the SHARED resolver (access-service.ts) derives root:<hex>
+// so every store-backed tool reopens the same DB. These tests pin the new
+// contract: handleIndex delegates, and deriveCodegraphProjectId is the single
+// deterministic derivation. The relative-root rejection (thread 12) is also
+// pinned at resolveCodegraphDbPath.
 // ──────────────────────────────────────────────────────────────────────────
 
-test("index: derives root:<hash> project from repoRoot when no project/context (thread 7)", async () => {
-  let resolvedProject: unknown = undefined;
+test("index: forwards repoRoot to resolveStore without pre-setting project (chokepoint delegation)", async () => {
+  let observed: { project?: unknown; repoRoot?: unknown } = {};
   const ctx = makeEnabledCtx({
-    // No coding context attached to any session.
     getCodingContext: () => null,
     resolveStore: async (req) => {
-      resolvedProject = req.project;
+      observed = { project: req.project, repoRoot: req.repoRoot };
       return MOCK_STORE;
     },
     runReindex: async () => ({ ok: true, mode: "full", filesIngested: 3, head: "abc123" }),
   });
-  const response = await handleCodegraphTool(
-    { tool: "index", repoRoot: "/repos/my-repo" },
-    ctx,
-  );
+  const response = await handleCodegraphTool({ tool: "index", repoRoot: "/repos/my-repo" }, ctx);
   assert.equal(response.ok, true);
-  assert.equal(typeof resolvedProject, "string");
-  assert.ok(
-    typeof resolvedProject === "string" && resolvedProject.startsWith("root:"),
-    `derived project must be root:<hash>, got ${JSON.stringify(resolvedProject)}`,
-  );
+  // handleIndex must NOT set project itself — the shared resolver owns derivation.
+  assert.equal(observed.project, undefined, "handleIndex must not pre-derive project");
+  assert.equal(observed.repoRoot, "/repos/my-repo", "repoRoot is forwarded for the resolver to derive from");
 });
 
-test("index: prefers an explicit project over repoRoot derivation (thread 7)", async () => {
-  let resolvedProject: unknown = undefined;
+test("index: forwards an explicit project unchanged (resolver still owns it)", async () => {
+  let observed: { project?: unknown } = {};
   const ctx = makeEnabledCtx({
     getCodingContext: () => null,
     resolveStore: async (req) => {
-      resolvedProject = req.project;
+      observed = { project: req.project };
       return MOCK_STORE;
     },
     runReindex: async () => ({ ok: true, mode: "full", filesIngested: 1, head: "abc" }),
@@ -812,5 +815,66 @@ test("index: prefers an explicit project over repoRoot derivation (thread 7)", a
     { tool: "index", repoRoot: "/repos/my-repo", project: "my-explicit-project" },
     ctx,
   );
-  assert.equal(resolvedProject, "my-explicit-project");
+  assert.equal(observed.project, "my-explicit-project");
+});
+
+test("deriveCodegraphProjectId: deterministic, root:-prefixed, distinct per repoRoot", () => {
+  const a = deriveCodegraphProjectId("/repos/alpha");
+  const b = deriveCodegraphProjectId("/repos/alpha");
+  const c = deriveCodegraphProjectId("/repos/beta");
+  assert.ok(a.startsWith("root:"), `got ${a}`);
+  assert.equal(a, b, "same repoRoot must derive the same id");
+  assert.notEqual(a, c, "different repoRoots must derive distinct ids");
+});
+
+test("resolveCodegraphProjectId: explicit project wins", () => {
+  const id = resolveCodegraphProjectId({
+    request: { project: "my-proj", sessionKey: "s1", repoRoot: "/r" },
+    getCodingContext: () => ({ projectId: "ctx-proj" }),
+  });
+  assert.equal(id, "my-proj");
+});
+
+test("resolveCodegraphProjectId: session coding context used when no explicit project", () => {
+  const id = resolveCodegraphProjectId({
+    request: { sessionKey: "s1", repoRoot: "/r" },
+    getCodingContext: (sk) => (sk === "s1" ? { projectId: "ctx-proj" } : null),
+  });
+  assert.equal(id, "ctx-proj");
+});
+
+test("resolveCodegraphProjectId: derives root:<hash> from repoRoot for standalone callers (threads 7/11)", () => {
+  const id = resolveCodegraphProjectId({
+    request: { repoRoot: "/repos/my-repo" },
+    getCodingContext: () => null,
+  });
+  assert.ok(typeof id === "string" && id.startsWith("root:"), `got ${id}`);
+  assert.equal(id, deriveCodegraphProjectId("/repos/my-repo"));
+});
+
+test("resolveCodegraphProjectId: throws tagged project_required (not plain Error) when nothing resolves (thread 9)", () => {
+  assert.throws(
+    () => resolveCodegraphProjectId({ request: {}, getCodingContext: () => null }),
+    (err: unknown) => err instanceof CodegraphRuntimeError && err.code === "project_required",
+    "missing project must surface as a tagged CodegraphRuntimeError, not a plain Error",
+  );
+});
+
+test("resolveCodegraphDbPath: rejects a relative codegraphDbDir with a tagged store_error (thread 12)", () => {
+  const config = {
+    codingKnowledge: { ...GATE_ON_CONFIG, codegraphDbDir: "relative/codegraph" },
+  } as unknown as PluginConfig;
+  assert.throws(
+    () => resolveCodegraphDbPath({ config, memoryDir: "/tmp/m", principal: "alice", projectId: "p1" }),
+    (err: unknown) => err instanceof CodegraphRuntimeError && err.code === "store_error",
+  );
+});
+
+test("resolveCodegraphDbPath: accepts an absolute codegraphDbDir", () => {
+  const config = {
+    codingKnowledge: { ...GATE_ON_CONFIG, codegraphDbDir: "/var/lib/remnic/codegraph" },
+  } as unknown as PluginConfig;
+  const p = resolveCodegraphDbPath({ config, memoryDir: "/tmp/m", principal: "alice", projectId: "p1" });
+  assert.ok(p.startsWith("/var/lib/remnic/codegraph/"), p);
+  assert.ok(p.endsWith(".sqlite"), p);
 });

@@ -23,6 +23,7 @@
  * by the surface handler via a context seam.
  */
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { expandTildePath } from "../utils/path.js";
 
 import type { PluginConfig, CodingKnowledgeConfig, CodingContext } from "../types.js";
@@ -178,6 +179,26 @@ export async function codegraphRuntimeAvailable(config: PluginConfig): Promise<b
  * cannot escape the codegraph root. The function never touches the
  * filesystem -- callers create the parent directory before opening the DB.
  */
+/**
+ * Resolve the codegraph root directory (issue #1554 review thread: reject
+ * relative roots). An explicit `codegraphDbDir` may be a `~\`-prefixed path;
+ * the default is memoryDir/codegraph. The result MUST be absolute —
+ * GraphStore.open rejects relative dbPath with "dbPath must be absolute",
+ * and list_projects would otherwise silently read a CWD-relative directory.
+ * Failing early here gives callers a tagged, actionable error.
+ */
+function resolveCodegraphRoot(config: PluginConfig, memoryDir: string): string {
+  const rawDir = config.codingKnowledge.codegraphDbDir.trim();
+  const root = rawDir.length > 0 ? expandTildePath(rawDir) : path.join(memoryDir, "codegraph");
+  if (!path.isAbsolute(root)) {
+    throw new CodegraphRuntimeError(
+      "store_error",
+      "codegraph DB root must be an absolute path; set codingKnowledge.codegraphDbDir (or memoryDir) to an absolute path",
+    );
+  }
+  return root;
+}
+
 export function resolveCodegraphDbPath(params: {
   readonly config: PluginConfig;
   readonly memoryDir: string;
@@ -185,11 +206,7 @@ export function resolveCodegraphDbPath(params: {
   readonly projectId: string;
 }): string {
   const { config, memoryDir, principal, projectId } = params;
-  const rawDir = config.codingKnowledge.codegraphDbDir.trim();
-  const root =
-    rawDir.length > 0
-      ? expandTildePath(rawDir)
-      : path.join(memoryDir, "codegraph");
+  const root = resolveCodegraphRoot(config, memoryDir);
   const principalSafe = sanitizePathSegment(principal);
   const projectSafe = sanitizePathSegment(projectId);
   return path.join(root, principalSafe, `${projectSafe}.sqlite`);
@@ -344,11 +361,14 @@ export function listCodegraphProjects(params: {
 }): readonly string[] {
   const { config, memoryDir, principal, listDir } = params;
   if (!codegraphSurfaceVisible(config)) return [];
-  const rawDir = config.codingKnowledge.codegraphDbDir.trim();
-  const root =
-    rawDir.length > 0
-      ? expandTildePath(rawDir)
-      : path.join(memoryDir, "codegraph");
+  let root: string;
+  try {
+    root = resolveCodegraphRoot(config, memoryDir);
+  } catch {
+    // A relative/misconfigured root means no projects are listable; the
+    // open path reports the tagged error, list degrades to empty.
+    return [];
+  }
   const principalSafe = sanitizePathSegment(principal);
   const principalDir = path.join(root, principalSafe);
   let entries: readonly string[];
@@ -678,6 +698,54 @@ export function __resetCodegraphRuntimeForTest(): void {
   storeCache.clear();
 }
 
+/**
+ * Derive a stable per-repo project id from an absolute repoRoot (issue #1554
+ * review threads 7/9/11). Used by the shared store resolver when a caller
+ * invokes a codegraph tool with repoRoot but no explicit project and no
+ * session coding context (e.g. a standalone stdio-MCP call). The `root:<hex>`
+ * form matches the coding-context id convention so a derived id is
+ * distinguishable from an `origin:<hex>` remote id. Centralized here so every
+ * store-backed tool derives the SAME id and can reopen the DB index created.
+ */
+export function deriveCodegraphProjectId(repoRoot: string): string {
+  return `root:${createHash("sha256").update(repoRoot).digest("hex").slice(0, 16)}`;
+}
+
+/**
+ * Resolve the project id for a store-backed codegraph tool from a surface
+ * request (issue #1554 review threads 7/9/11). This is the SHARED chokepoint
+ * every store-backed tool funnels through, so index / search_graph /
+ * get_schema / index_status all reopen the SAME DB:
+ *   1. an explicit `project` wins;
+ *   2. else a session coding context's projectId;
+ *   3. else a stable `root:<hex>` derived from `repoRoot` (standalone callers);
+ *   4. else a TAGGED `project_required` error (never a plain Error, so the
+ *      surface maps it into a structured response rather than an unstructured
+ *      tool error).
+ *
+ * The request shape is structural (not the surfaces' CodegraphSurfaceRequest
+ * type) to keep this module free of a runtime import cycle with the surfaces.
+ */
+export function resolveCodegraphProjectId(params: {
+  readonly request: { readonly project?: unknown; readonly sessionKey?: unknown; readonly repoRoot?: unknown };
+  readonly getCodingContext: (sessionKey: string) => { readonly projectId: string } | null;
+}): string {
+  const { request, getCodingContext } = params;
+  const explicit = typeof request.project === "string" ? request.project.trim() : "";
+  if (explicit.length > 0) return explicit;
+  const sessionKey = typeof request.sessionKey === "string" ? request.sessionKey.trim() : "";
+  if (sessionKey.length > 0) {
+    const cc = getCodingContext(sessionKey);
+    if (cc !== null) return cc.projectId;
+  }
+  const repoRoot = typeof request.repoRoot === "string" ? request.repoRoot.trim() : "";
+  if (repoRoot.length > 0) return deriveCodegraphProjectId(repoRoot);
+  throw new CodegraphRuntimeError(
+    "project_required",
+    "codegraph: project must be supplied explicitly, via a session coding context, or alongside a repoRoot",
+  );
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Tagged runtime error -- `code` is the load-bearing signal (rule 34)
 // ──────────────────────────────────────────────────────────────────────────
@@ -687,6 +755,7 @@ export type CodegraphRuntimeErrorCode =
   | "package_missing"
   | "repo_root_conflict"
   | "confirm_required"
+  | "project_required"
   | "project_not_found"
   | "store_error";
 
