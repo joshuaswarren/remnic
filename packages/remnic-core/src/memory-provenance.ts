@@ -328,6 +328,18 @@ function inferSafetyReasons(input: {
   if (frontmatter.verificationState === "disputed") {
     reasons.push("verification=disputed");
   }
+  // Issue #1579 — x-ray visibility (rule 34: never a silent drop). When a
+  // memory carries `blockedBy`, it was tombstone-blocked at the storage
+  // chokepoint. Surface the tombstone id (and the matched tier when known)
+  // in the safety reasons so every recall x-ray consumer (CLI / HTTP / MCP)
+  // can attribute the pending_review state to a tombstone rather than a
+  // generic low-confidence review.
+  if (typeof frontmatter.blockedBy === "string" && frontmatter.blockedBy.length > 0) {
+    reasons.push(`tombstone-blocked=${frontmatter.blockedBy}`);
+    if (frontmatter.tombstoneBlockTier) {
+      reasons.push(`tombstone-tier=${frontmatter.tombstoneBlockTier}`);
+    }
+  }
   if (stale) reasons.push("stale=true");
 
   const boundaryScopes = userContextScopes.filter(isUserBoundaryScope);

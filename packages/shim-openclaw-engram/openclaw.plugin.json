@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.3.697",
+  "version": "9.3.700",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -2385,6 +2385,21 @@
         "type": "boolean",
         "default": true,
         "description": "Apply temporal decay to older memories during recall scoring."
+      },
+      "tombstonesEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Master gate for the tombstone non-resurrection invariant (#1579). When true, a fact that matches an active tombstone at the storage chokepoint is persisted as pending_review + blockedBy instead of becoming active — visible, never a silent drop. Off restores pre-feature behavior for rollback safety."
+      },
+      "tombstonesSemanticMatch": {
+        "type": "boolean",
+        "default": false,
+        "description": "Tier-4 semantic tombstone matching (#1579). Off by default; when true the tombstone lookup also checks embedding cosine similarity against tombstoned normalized text. Ships dark until MemCorrect (#1584) shows an acceptable false-block rate."
+      },
+      "tombstonesSemanticThreshold": {
+        "type": "number",
+        "default": 0.9,
+        "description": "Cosine threshold for tier-4 semantic tombstone matching. Only consulted when tombstonesSemanticMatch is true."
       },
       "tagMemoryEnabled": {
         "type": "boolean",

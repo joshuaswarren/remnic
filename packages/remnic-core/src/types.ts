@@ -821,6 +821,29 @@ export interface PluginConfig {
    * deployments prefer the older (always-inject) behavior. Default `false`.
    */
   temporalExpiredInInjection: boolean;
+  // Tombstones — non-resurrection invariant (issue #1579).
+  /**
+   * Master gate for the tombstone non-resurrection invariant. When `true`
+   * (default), a fact that matches an active tombstone at the storage
+   * chokepoint is persisted as `status: "pending_review"` + `blockedBy`
+   * instead of becoming active — visible, never a silent drop (rule 34).
+   * When `false`, pre-feature behavior: the chokepoint check is a no-op and
+   * retired facts can resurrect through re-extraction / import / consolidation
+   * / dreams / pattern-reinforcement. Off = rollback safety (rule 30).
+   */
+  tombstonesEnabled: boolean;
+  /**
+   * Tier-4 semantic tombstone matching (issue #1579). Off by default — ships
+   * dark until MemCorrect (#1584) shows an acceptable false-block rate
+   * (rule 48). When `true`, the tombstone lookup also checks embedding cosine
+   * similarity against tombstoned normalized text.
+   */
+  tombstonesSemanticMatch: boolean;
+  /**
+   * Cosine threshold for tier-4 semantic tombstone matching. Default `0.9`.
+   * Only consulted when `tombstonesSemanticMatch` is `true`.
+   */
+  tombstonesSemanticThreshold: number;
   // Direct-answer retrieval tier (issue #518)
   /**
    * When true, recall checks whether a single validated memory in a
@@ -2441,6 +2464,17 @@ export interface MemoryFrontmatter {
   lineage?: string[];
   /** Memory status: active (default), pending_review, rejected, quarantined, superseded, archived, or forgotten */
   status?: MemoryStatus;
+  /**
+   * Tombstone block marker (issue #1579). When a new fact matches an active
+   * tombstone at the storage chokepoint, it is persisted with
+   * `status: "pending_review"` and this field set to the tombstone id — making
+   * the block VISIBLE (rule 34: never a silent drop) rather than silently
+   * discarding the extraction. Approving the memory through the review queue
+   * emits a revocation that re-allows the content.
+   */
+  blockedBy?: string;
+  /** Which tombstone tier matched (`exact`/`normalized`/`keyed`/`semantic`). */
+  tombstoneBlockTier?: "exact" | "normalized" | "keyed" | "semantic";
   /** ID of memory that superseded this one */
   supersededBy?: string;
   /** Timestamp when superseded */

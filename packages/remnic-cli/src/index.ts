@@ -5674,7 +5674,7 @@ async function cmdCurate(targetPath: string, json: boolean): Promise<void> {
   console.log(`Duration: ${result.durationMs}ms`);
 }
 
-function cmdReview(action: string, rest: string[]): void {
+async function cmdReview(action: string, rest: string[]): Promise<void> {
   const memoryDir = resolveMemoryDir();
   if (action === "list") {
     const result = listReviewItems({ memoryDir });
@@ -5696,7 +5696,75 @@ function cmdReview(action: string, rest: string[]): void {
       console.error("Usage: remnic review <approve|dismiss|flag> <id>");
       process.exit(1);
     }
-    const result = performReview(memoryDir, id, action as ReviewAction);
+    const storage = new StorageManager(memoryDir);
+    // Issue #1579 review threads Oblq_ / ObnTy: the standalone CLI storage
+    // must mirror the orchestrator's tombstone config, otherwise
+    // revokeTombstone() returns null (enabled defaults to false) and the
+    // approved content is blocked again on the next write. Parse the same
+    // config the daemon uses and apply it before revoking.
+    //
+    // Issue #1579 thread Ocial: parseConfig in an ISOLATED catch. parseConfig
+    // error strings can embed raw config values (including API keys — CodeQL
+    // js/clear-text-logging), so a failure must NOT propagate to the CLI
+    // top-level handler which prints err.message. Mirror the wearables
+    // command's constant-message pattern. With no usable config, tombstones
+    // stay at their safe default (enabled=false) and the approval still
+    // clears blockedBy on disk; only the revocation is skipped, which the
+    // doctor/rebuild path recovers.
+    const configPath = resolveConfigPath();
+    let tombstonesConfig: {
+      enabled: boolean;
+      semanticMatch: boolean;
+      semanticThreshold: number;
+      namespace: string;
+    } | null = null;
+    try {
+      const rawCfg = fs.existsSync(configPath)
+        ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+        : {};
+      const remnicCfg = rawCfg.remnic ?? rawCfg.engram ?? rawCfg;
+      const config = parseConfig(remnicCfg);
+      tombstonesConfig = {
+        enabled: config.tombstonesEnabled,
+        semanticMatch: config.tombstonesSemanticMatch,
+        semanticThreshold: config.tombstonesSemanticThreshold,
+        namespace: config.defaultNamespace,
+      };
+    } catch {
+      console.error(
+        "review: failed to load the Remnic config — run `remnic doctor` and check the config file for errors",
+      );
+    }
+    if (tombstonesConfig) {
+      storage.setTombstonesConfig(tombstonesConfig);
+    }
+    const result = performReview(memoryDir, id, action as ReviewAction, {
+      onApproveBlockedMemory: (tombstoneId) => {
+        // Fire-and-forget for long-running callers; the CLI also awaits
+        // result.clearedTombstoneId below so the revocation lands before exit.
+        void storage.revokeTombstone(tombstoneId, "user_correction").catch(() => undefined);
+      },
+    });
+    // Issue #1579: await the revocation so it lands before the CLI exits.
+    // The fire-and-forget hook covers long-running callers; this await covers
+    // the short-lived CLI process (without it the revocation could be lost).
+    // Issue #1579: await the revocation so it lands before the CLI exits, and
+    // re-register the now-active fact's contentHash in the dedup index (thread
+    // ObnTy). writeMemory skipped registration while the fact was tombstone-
+    // blocked (rule 44); without this, the next extraction of the same content
+    // would create a second active fact.
+    if (result.clearedTombstoneId) {
+      try {
+        await storage.revokeTombstone(result.clearedTombstoneId, "user_correction");
+      } catch {
+        /* best-effort — approval already succeeded */
+      }
+      try {
+        await storage.restoreFactHashAfterApproval(id);
+      } catch {
+        /* best-effort — approval + revocation already succeeded */
+      }
+    }
     console.log(result.message);
   } else {
     console.log("Usage: remnic review <list|approve|dismiss|flag> [id]");
@@ -11462,7 +11530,7 @@ Options:
 
     case "review": {
       const action = rest[0] ?? "list";
-      cmdReview(action, rest.slice(1));
+      await cmdReview(action, rest.slice(1));
       break;
     }
 

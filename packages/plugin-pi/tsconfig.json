@@ -9,7 +9,16 @@
     "declaration": true,
     "outDir": "dist",
     "rootDir": "src",
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "ES2024",
+      "DOM",
+      "DOM.Iterable"
+    ]
   },
-  "include": ["src"]
+  "include": [
+    "src"
+  ]
 }

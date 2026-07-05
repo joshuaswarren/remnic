@@ -1,7 +1,7 @@
 import { Type, type TSchema } from "@sinclair/typebox";
 
 import { loadConfig, type LoadConfigOptions, type RemnicPiConfig } from "./config.js";
-import { RemnicClient, type McpTool, type ObserveMessage } from "./client.js";
+import { RemnicClient, isTransientNetworkError, type McpTool, type ObserveMessage } from "./client.js";
 import {
   hashObservedMessage,
   latestUserRecallTarget,
@@ -71,6 +71,9 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       const session = snapshotPiContext(ctx);
       if (!session) return;
       if (!config.recallEnabled || !config.authToken) return;
+      // Circuit breaker: skip recall fast while the daemon is known-down so a
+      // dead host doesn't block every turn on a doomed request (#1626).
+      if (!client.isReachable()) return;
       const recallTarget = latestUserRecallTarget(Array.isArray(event.messages) ? event.messages : []);
       if (!recallTarget) return;
       const { query } = recallTarget;
@@ -78,7 +81,10 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (recallTarget.dedupeKey === state.lastInjectedRecallKey) return;
 
       try {
-        const recalled = await client.recall(query, session.sessionKey, session.cwd);
+        const recalled = await client.recall(query, session.sessionKey, session.cwd, {
+          timeoutMs: config.turnRequestTimeoutMs,
+        });
+        client.markReachable();
         const context = trimContext(recalled.context ?? "", config.recallBudgetChars);
         if (!context) return;
         state.lastInjectedRecallKey = recallTarget.dedupeKey;
@@ -94,6 +100,10 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
           ],
         };
       } catch (err) {
+        // Only trip the breaker when the daemon is genuinely unreachable
+        // (timeout or connection-level failure) — not on a transient HTTP
+        // error, so a one-off failure still retries on the next turn (#1626).
+        if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
         session.notify(`Remnic recall unavailable: ${errorMessage(err)}`, "warning");
       }
     });
@@ -103,7 +113,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!session) return;
       if (!config.observeEnabled || !isUserMessage(event.message)) return;
       const { state } = getSessionState(session.sessionKey, sessionStates);
-      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys);
+      await observeMessagesForSession(session, client, [event.message], state.observedHashes, state.liveObservedReplayKeys, config);
     });
 
     pi.on("turn_end", async (event, ctx) => {
@@ -112,7 +122,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
       if (!config.observeEnabled) return;
       const messages = [event.message, ...(Array.isArray(event.toolResults) ? event.toolResults : [])];
       const { state } = getSessionState(session.sessionKey, sessionStates);
-      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys);
+      await observeMessagesForSession(session, client, messages, state.observedHashes, state.liveObservedReplayKeys, config);
     });
 
     pi.on("session_shutdown", async (_event, ctx) => {
@@ -123,7 +133,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         const branchMessages = branchMessagesWithEntryIdentity(session.branch);
         const unobservedBranchMessages = skipLiveObservedReplayMessages(session.sessionKey, branchMessages, state.liveObservedReplayKeys);
         if (unobservedBranchMessages.length > 0) {
-          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes);
+          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config, true);
         }
       }
       persistObservedState(pi, state.observedHashes);
@@ -189,6 +199,9 @@ function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfi
     description: "Check Remnic daemon status",
     handler: commandHandler(async (_args, _ctx, session) => {
       const health = await client.health();
+      // The daemon responded (any HTTP result), so clear any stale cooldown a
+      // prior timeout left on the shared client (cursor review).
+      client.markReachable();
       session.notify(`Remnic ${health.ok ? "healthy" : "unhealthy"} at ${config.remnicDaemonUrl}`, health.ok ? "success" : "warning");
     }),
   });
@@ -201,7 +214,16 @@ function registerCommands(pi: PiApi, client: RemnicClient, config: RemnicPiConfi
         session.notify("Usage: /remnic-recall <query>", "warning");
         return;
       }
-      const result = await client.recall(query, session.sessionKey, session.cwd);
+      // Pass the general request budget so requestWithRetry shares ONE deadline
+      // across retries (total <= requestTimeoutMs) instead of looping through
+      // observeMaxRetries full timeouts and blocking the interactive command
+      // for several minutes on a flaky connection (cursor review).
+      const result = await client.recall(query, session.sessionKey, session.cwd, {
+        timeoutMs: config.requestTimeoutMs,
+      });
+      // The daemon responded, so clear any stale cooldown a prior timeout left
+      // on the shared client (cursor review).
+      client.markReachable();
       session.notify(trimContext(result.context ?? "(no Remnic context)", MAX_CONTEXT_CHARS), "info");
     }),
   });
@@ -410,6 +432,8 @@ async function observeMessagesForSession(
   rawMessages: unknown[],
   observedHashes: Set<string>,
   liveObservedReplayKeys?: Map<string, number>,
+  config?: RemnicPiConfig,
+  forceAttempt = false,
 ): Promise<void> {
   const messages: ObserveMessage[] = [];
   const pendingHashes = new Set<string>();
@@ -422,8 +446,24 @@ async function observeMessagesForSession(
     messages.push(message);
   }
   if (messages.length === 0) return;
+  // Circuit breaker: when config is wired (the live Pi handlers always pass
+  // it), skip observe fast while the daemon is known-down so a dead host
+  // doesn't burn the full per-turn budget on every turn (#1626). Shutdown is
+  // the exception — it is the last chance to observe the branch before the
+  // session tears down, so force the attempt even mid-cooldown; a failure
+  // still trips the breaker normally (codex review).
+  if (config && !forceAttempt && !client.isReachable()) return;
+  // Live turn hooks are bounded by the per-turn budget to protect the host's
+  // ~30s handler window (#1626). Shutdown is teardown with no such constraint,
+  // so the forced replay uses the general request budget — otherwise a large
+  // unobserved branch would time out exactly when forceAttempt tried to save it
+  // (cursor review).
+  const observeOptions = config
+    ? { timeoutMs: forceAttempt ? config.requestTimeoutMs : config.turnRequestTimeoutMs }
+    : undefined;
   try {
-    await client.observe(session.sessionKey, session.cwd, messages);
+    await client.observe(session.sessionKey, session.cwd, messages, observeOptions);
+    if (config) client.markReachable();
     for (const hash of pendingHashes) rememberObservedHash(observedHashes, hash);
     if (liveObservedReplayKeys) {
       for (const message of messages) {
@@ -431,6 +471,7 @@ async function observeMessagesForSession(
       }
     }
   } catch (err) {
+    if (config && isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
     session.notify(`Remnic observe failed: ${errorMessage(err)}`, "warning");
   }
 }
@@ -545,8 +586,18 @@ function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
 async function setStatus(session: PiContextSnapshot, client: RemnicClient, config: RemnicPiConfig): Promise<void> {
   try {
     await client.health({ timeoutMs: config.startupRequestTimeoutMs });
+    // A successful health probe means the daemon is reachable, so clear any
+    // stale cooldown a prior recall/observe timeout left on the shared client —
+    // otherwise the next live hook fast-skips even though the daemon is up
+    // (codex review).
+    client.markReachable();
     session.setStatus("remnic", `Remnic ${config.namespace ? `(${config.namespace})` : "ready"}`);
-  } catch {
+  } catch (err) {
+    // Startup just proved the daemon is unreachable, so trip the fast-skip
+    // breaker too — otherwise the first live context/observe hook still spends
+    // the full turn budget on a doomed request before the breaker would trip
+    // on its own (codex review).
+    if (isDaemonUnreachableError(err)) client.markUnreachable(config.daemonCooldownMs);
     session.setStatus("remnic", "Remnic offline");
   }
 }
@@ -674,6 +725,24 @@ function trimContext(value: string, budget: number): string {
   if (value.length <= budget) return value;
   if (budget <= TRUNCATION_NOTICE.length) return TRUNCATION_NOTICE.slice(0, budget);
   return `${value.slice(0, budget - TRUNCATION_NOTICE.length)}${TRUNCATION_NOTICE}`;
+}
+
+
+export function isDaemonUnreachableError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (/Remnic request timed out/.test(err.message)) return true;
+  // Retry-budget exhaustion means transient failures ate the whole per-turn
+  // deadline inside requestWithRetry — the daemon is effectively unreachable
+  // for this turn, so trip the breaker and cool down instead of burning another
+  // full budget on the next hook (codex review). This error only arises from
+  // transient connection failures, never from a semantic HTTP response.
+  if (/Remnic request exceeded the \d+ms budget before retry/.test(err.message)) return true;
+  // Multi-chunk observe throws its own budget-exceeded message when the shared
+  // per-turn deadline is exhausted across chunks; that is also an effectively-
+  // unreachable condition for the turn, so trip the breaker and fast-skip
+  // subsequent turns instead of piling on more doomed chunked observes (cursor).
+  if (/Remnic observe exceeded the per-turn budget of \d+ms/.test(err.message)) return true;
+  return isTransientNetworkError(err);
 }
 
 function errorMessage(err: unknown): string {

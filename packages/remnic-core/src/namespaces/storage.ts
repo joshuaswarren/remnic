@@ -297,6 +297,9 @@ export class NamespaceStorageRouter {
     // #1522: install the post-write catalog touch at the chokepoint — every
     // successful write on this StorageManager records the namespace touch.
     this.bindCatalogWriteHook(sm, ns);
+    // #1579: apply the tombstone non-resurrection config so every namespace
+    // storage enforces the invariant at its own writeMemory chokepoint.
+    this.applyTombstonesConfig(sm, ns);
     this.cache.set(ns, sm);
     this.notifyResolved(ns, root);
     return sm;
@@ -385,6 +388,36 @@ export class NamespaceStorageRouter {
    */
   bindCatalogWriteHook(sm: StorageManager, namespace: string): void {
     sm.onCatalogWrite = () => this.touchCatalogWrite(namespace, sm.dir);
+  }
+
+  /**
+   * Install the tombstone config on an externally-constructed StorageManager
+   * (issue #1579). Mirrors `bindCatalogWriteHook` — used for the legacy
+   * default-namespace storage that bypasses the router. Router-created
+   * storages are wired inline in `storageFor()` via `applyTombstonesConfig`.
+   */
+  bindTombstonesConfig(
+    sm: StorageManager,
+    namespace: string,
+    config: { enabled: boolean; semanticMatch: boolean; semanticThreshold: number },
+  ): void {
+    this.tombstonesGlobalConfig = { ...config };
+    sm.setTombstonesConfig({ ...config, namespace });
+  }
+
+  private tombstonesGlobalConfig: {
+    enabled: boolean;
+    semanticMatch: boolean;
+    semanticThreshold: number;
+  } = { enabled: false, semanticMatch: false, semanticThreshold: 0.9 };
+
+  /**
+   * Apply the tombstone config to a router-created StorageManager. Called
+   * inline in `storageFor()` so every namespace storage enforces the
+   * non-resurrection invariant, namespace-scoped (rule 42).
+   */
+  private applyTombstonesConfig(sm: StorageManager, namespace: string): void {
+    sm.setTombstonesConfig({ ...this.tombstonesGlobalConfig, namespace });
   }
 
   /**
