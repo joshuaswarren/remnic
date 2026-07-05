@@ -22,18 +22,19 @@ jobs:
       (github.event_name == 'check_run' &&
         contains(fromJSON('["cursor-bugbot","cursor"]'), github.event.check_run.app.slug)) ||
       (github.event_name != 'check_run' && github.event.pull_request.draft == false)
-    # Coalesce, never force-cancel. cancel-in-progress:false keeps the in-flight
-    # HEAD evaluation running to a terminal conclusion, so a required `ai-reviewers`
-    # check is never left `cancelled` on the head SHA — the stuck-merge failure mode
-    # that check-unsticker was reactively clearing. Bursts still collapse: GitHub
-    # keeps only the latest *pending* run per group (cancelling earlier pending
-    # ones), and a superseded run self-exits below via the head-SHA guard so it
-    # never holds the slot for a full poll. Reviewer coverage is unchanged — the
-    # head SHA always gets a complete evaluation before it can merge. JOB-level
-    # group so unrelated check_run completions (CI, CodeQL, ...) self-skipped by
-    # the `if` above never queue here.
+    # Coalesce within an event type, never force-cancel, never let a non-PR-head
+    # run evict the PR-head run. cancel-in-progress:false keeps the in-flight HEAD
+    # evaluation running to a terminal conclusion, so a required `ai-reviewers`
+    # check is never left `cancelled` on the head SHA (the stuck-merge mode
+    # check-unsticker was reactively clearing). The group key includes event_name
+    # so a `check_run`/review completion — whose run lands on the default branch,
+    # not the PR head, and cannot satisfy the required check — can never replace a
+    # pending `pull_request` PR-head run (codex OcD1Z). pull_request bursts still
+    # collapse to the latest pending run within their own group, and a superseded
+    # run self-exits via the head-SHA guard. Coverage is unchanged: the PR-head
+    # `pull_request` run always completes a full evaluation before merge.
     concurrency:
-      group: ai-review-gate-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.run_id }}
+      group: ai-review-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.run_id }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
