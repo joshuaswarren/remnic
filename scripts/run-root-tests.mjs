@@ -23,6 +23,7 @@ import process from "node:process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { ensurePackageBuild } from "./build-staleness.mjs";
 import { appendNodeOption } from "./root-test-runner-env.mjs";
 import {
   chunkArgsByLength,
@@ -73,6 +74,28 @@ if (emptyPatterns.length > 0) {
   process.exit(1);
 }
 
+// Tests under packages/remnic-cli load @remnic/bench through the CLI's
+// optional-bench loader (packages/remnic-cli/src/optional-bench.ts). When
+// bench/dist is absent that loader falls back to tsx/esm/api's tsImport,
+// whose scoped-loader registration poisons subsequent dynamic .ts imports
+// in the same process — so tests/remnic-cli-dataset-resolution.test.ts
+// fails on a fresh clone that never built bench (#1609). Ensure bench dist
+// exists here so the fallback never fires in the test path. This makes the
+// runner self-sufficient: `pnpm test` and a direct
+// `node scripts/run-root-tests.mjs` both work without a prior
+// `check-types`/`build` side-effect. Idempotent — skips instantly when dist
+// exists and no source is newer.
+ensurePackageBuild(
+  repoRoot,
+  "@remnic/bench",
+  join(repoRoot, "packages", "bench", "dist", "index.js"),
+  [
+    join(repoRoot, "packages", "bench", "src"),
+    join(repoRoot, "packages", "bench", "package.json"),
+    join(repoRoot, "packages", "bench", "tsup.config.ts"),
+    join(repoRoot, "packages", "bench", "tsconfig.json"),
+  ],
+);
 let filesToRun = files;
 let probe = probeBetterSqlite3(repoRoot);
 if (!probe.ok) {
