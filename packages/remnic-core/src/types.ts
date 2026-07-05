@@ -2852,6 +2852,30 @@ export interface ExtractedFact {
    * "no verified span" and skip gracefully.
    */
   sources?: ProvenanceSource[];
+  /**
+   * Coarse provenance strength tag (issue #1575 PR 2). Set by the extraction
+   * validator: "verified" when the quote was located in source turns,
+   * "unverified" when the quote survived but no offsets were recoverable.
+   * Absent when `provenance.enabled` is false or no quote was provided —
+   * readers treat absent as "none" (rule 34 spirit).
+   */
+  provenance?: "verified" | "unverified" | "none";
+  /**
+   * Transient LLM-provided supporting quote (issue #1575 PR 2). Consumed by
+   * the post-parse validator to build `sources`, then stripped before the
+   * fact reaches persistence. NEVER included in content-hash dedup (rule 23 /
+   * checklist §13). Absent on facts that have already passed the validator.
+   */
+  quote?: string;
+  /**
+   * Transient requireSpans signal (issue #1575 PR 2). Set by the provenance
+   * validator (`ProvenanceBuildResult.requireSpansPending`) when
+   * `provenance.requireSpans` is enabled and the quote could not be located
+   * in any source turn. Read by the persist path to route the fact to
+   * `pending_review` instead of `active`. Stripped before persistence —
+   * it never reaches frontmatter (chatgpt-codex-connector thread 4xB).
+   */
+  requireSpansPending?: boolean;
   promptedByQuestion?: string;
   /**
    * Whether this fact is project-scoped or globally applicable.

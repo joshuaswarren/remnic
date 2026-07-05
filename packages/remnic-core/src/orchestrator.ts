@@ -343,7 +343,7 @@ import {
   lcmReadSessionIdsForNamespaces,
   resolveCodingNamespaceOverlay,
 } from "./coding/coding-namespace.js";
-import type { CodingContext } from "./types.js";
+import type { CodingContext, ProvenanceSource } from "./types.js";
 import {
   NamespaceSearchRouter,
   type NamespaceSearchHealth,
@@ -13923,6 +13923,8 @@ export class Orchestrator {
       memoryKind?: MemoryFrontmatter["memoryKind"];
       validAt?: string;
       source: string;
+      sources?: ProvenanceSource[];
+      provenance?: "verified" | "unverified" | "none";
     }): Promise<void> => {
       if (
         !scopeProfileWritePlan ||
@@ -13979,6 +13981,8 @@ export class Orchestrator {
               memoryKind: options.memoryKind,
               validAt: options.validAt,
               contentHashSource: options.category === "fact" ? dedupContent : rawContent,
+              ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
+              ...(options.provenance ? { provenance: options.provenance } : {}),
             },
           );
           if (
@@ -14039,6 +14043,9 @@ export class Orchestrator {
       memoryKind?: MemoryFrontmatter["memoryKind"];
       validAt?: string;
       source: string;
+      /** Claim-level provenance spans (issue #1575 PR 2). */
+      sources?: ProvenanceSource[];
+      provenance?: "verified" | "unverified" | "none";
     }): Promise<void> => {
       await promoteMemoryToProfileTargets(options);
       if (
@@ -14264,10 +14271,10 @@ export class Orchestrator {
             intentEntityTypes: options.intentEntityTypes,
             memoryKind: options.memoryKind,
             validAt: options.validAt,
-            // Index the same canonical body used by hasFactContentHash above.
-            // For structured facts this includes the normalized Attributes
-            // suffix, matching StorageManager.writeMemory enrichment.
             contentHashSource: options.category === "fact" ? dedupContent : rawContent,
+            // Claim-level provenance spans (issue #1575 PR 2).
+            ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
+            ...(options.provenance ? { provenance: options.provenance } : {}),
           },
         );
         // PR #402 Finding 3 fix: run temporal supersession against the shared
@@ -14887,7 +14894,7 @@ export class Orchestrator {
       // pre-computed verdict for this fact and translate it to frontmatter +
       // an optional enforce-mode pending_review status. Logic lives in the
       // pure module; this is thin read-through (ground rule 4).
-      const { faithfulness: faithfulnessFm, enforceStatus: faithfulnessEnforceStatus } =
+      const { faithfulness: faithfulnessFm, enforceStatus: faithfulnessGateStatus } =
         applyFaithfulnessVerdict(
           faithfulnessResultsByFactIndex,
           factLoopIndex,
@@ -14895,6 +14902,22 @@ export class Orchestrator {
           fact.content,
           this.faithfulnessCounters,
         );
+
+      // requireSpans enforcement (issue #1575 PR 2): when an operator opts
+      // into provenance.requireSpans, a fact whose quote could not be located
+      // in any source turn (carried as the transient requireSpansPending
+      // signal from the extraction validator) routes to pending_review — the
+      // same review queue an unsupported faithfulness verdict uses. This is
+      // the persist-path wiring ProvenanceConfig.requireSpans documents.
+      // Faithfulness takes precedence when it already routed the fact; both
+      // gates agree on pending_review so the merge is a simple coalesce
+      // (chatgpt-codex-connector thread 4xB).
+      const requireSpansPendingStatus =
+        this.config.provenance?.requireSpans === true &&
+        fact.requireSpansPending === true
+          ? ("pending_review" as const)
+          : undefined;
+      const faithfulnessEnforceStatus = faithfulnessGateStatus ?? requireSpansPendingStatus;
 
       // Issue #373 — write-time semantic similarity guard. Hook runs after
       // the exact content-hash miss and the importance gate so that:
@@ -15169,6 +15192,9 @@ export class Orchestrator {
               // Faithfulness gate (issue #1576).
               ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
               ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
+              // Claim-level provenance spans (issue #1575 PR 2).
+              ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
+              ...(fact.provenance ? { provenance: fact.provenance } : {}),
             },
           );
           try {
@@ -15209,6 +15235,12 @@ export class Orchestrator {
                   // is not indexed as active through its chunks (chatgpt P2).
                   ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
                   ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
+                  // Claim-level provenance (issue #1575 PR 2): mirror the
+                  // parent's spans onto each chunk so a chunk surfaced
+                  // independently (memory_get/x-ray on a chunk ID) preserves
+                  // the verified span (chatgpt-codex-connector thread Ocvmo).
+                  ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
+                  ...(fact.provenance ? { provenance: fact.provenance } : {}),
                 },
               );
             }
@@ -15281,6 +15313,8 @@ export class Orchestrator {
             memoryKind,
             validAt: sourceContext?.validAt,
             source: extractionWriteSource,
+            ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
+            ...(fact.provenance ? { provenance: fact.provenance } : {}),
           });
           // Register chunked content in the target storage hash index too.
           // Thread 3 fix: canonicalize by stripping any pre-existing citation
@@ -15454,6 +15488,11 @@ export class Orchestrator {
           // Faithfulness gate (issue #1576).
           ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
           ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
+          // Claim-level provenance spans (issue #1575 PR 2). Carry verified
+          // sources + the coarse strength tag from the extraction validator
+          // through to frontmatter so they survive end-to-end.
+          ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
+          ...(fact.provenance ? { provenance: fact.provenance } : {}),
         },
       );
       if (routedRuleId) {
@@ -15527,6 +15566,8 @@ export class Orchestrator {
           memoryKind,
           validAt: sourceContext?.validAt,
           source: extractionWriteSource,
+          ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
+          ...(fact.provenance ? { provenance: fact.provenance } : {}),
         });
         // v8.2: graph edge building (fail-open). #1576: skip pending_review facts.
         if (graphCaps.multiGraphMemory && faithfulnessEnforceStatus !== "pending_review") {

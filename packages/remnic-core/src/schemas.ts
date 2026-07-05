@@ -93,6 +93,13 @@ export const ExtractedFactSchema = z.object({
     .describe(
       'Scope classification: "global" for cross-project knowledge (framework bugs, library behavior, API patterns, user preferences, tool configs, general coding patterns); "project" for project-specific knowledge (file paths, env configs, deployment details, project workarounds). Defaults to "project" when a coding context is active.',
     ),
+  quote: z
+    .string()
+    .optional()
+    .nullable()
+    .describe(
+      "The EXACT verbatim words from the conversation that support this fact. Copy a contiguous span from a single speaker turn (not a paraphrase). Cap at ~300 characters. This is the grounding evidence for downstream faithfulness verification (issue #1575).",
+    ),
   structuredAttributes: z
     .record(z.string(), z.string())
     .optional()

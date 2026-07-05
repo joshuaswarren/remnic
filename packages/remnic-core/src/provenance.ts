@@ -27,7 +27,9 @@ import { z } from "zod";
 
 import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 import { readEnvVar } from "./runtime/env.js";
+import { collapseWhitespace } from "./whitespace.js";
 import type { MemoryFrontmatter, ProvenanceConfig, ProvenanceSource } from "./types.js";
+import { isSafeMemoryContent } from "./sanitize.js";
 
 /**
  * Canonical key order for a serialized `ProvenanceSource` (issue #1575).
@@ -172,6 +174,71 @@ function isStrictIsoTimestamp(s: string): boolean {
 }
 
 /**
+ * Coerce a turn timestamp to a strict ISO-8601 string (cursor thread Ocveu —
+ * "Non-ISO turn timestamps drop sources"). The write-path `ProvenanceSourceSchema`
+ * rejects anything `isStrictIsoTimestamp` fails, so a turn whose `timestamp`
+ * parses via `new Date(...)` but isn't already strict ISO (e.g.
+ * `"2026/01/15 12:00:00"` or `"Jan 15 2026"`) would be silently dropped at
+ * serialization — clearing the whole `sources` array and downgrading the tag
+ * to `"none"`. Normalizing at extraction time preserves the source.
+ *
+ * Returns the strict ISO string when the timestamp already passes or
+ * `Date.parse` can round-trip it; `undefined` for empty / unparseable input
+ * so callers can decide whether to skip the source or fall back.
+ */
+function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined {
+  if (typeof ts !== "string" || ts.length === 0) return undefined;
+  if (isStrictIsoTimestamp(ts)) return ts;
+  const parsed = Date.parse(ts);
+  if (Number.isNaN(parsed)) return undefined;
+  // Reject bare-year / numeric-only strings that Date.parse accepts (e.g.
+  // "123") — isStrictIsoTimestamp already rejected them, and the round-trip
+  // below would otherwise resurrect them. Require at least one date/time
+  // separator so a plain number never round-trips into a fake epoch.
+  if (!/[-:T]/.test(ts)) return undefined;
+  // Reject calendar-overflow dates (chatgpt-codex-connector thread dANc):
+  // Date.parse silently rolls over invalid components — "2026-02-30" becomes
+  // 2026-03-02 — fabricating the observation date. For strings that carry an
+  // explicit numeric Y/M/D prefix (the common import/provider shape), validate
+  // the calendar components are in range before accepting the shifted result.
+  // isStrictIsoTimestamp already does this for full ISO strings; this closes
+  // the gap for the non-ISO normalization path.
+  const ymd = /^(\d{4})\D(\d{1,2})\D(\d{1,2})/.exec(ts);
+  if (ymd) {
+    const [_, ys, ms, ds] = ymd;
+    const y = Number(ys), mo = Number(ms), da = Number(ds);
+    if (!isValidCalendarDate(y, mo, da)) return undefined;
+  }
+  // Also validate M/D/Y or D/M/Y formats (provider/import common shapes:
+  // 02/30/2026, 30-02-2026, etc.). Date.parse silently shifts overflow in
+  // these too. Try both month-first and day-first interpretations; if
+  // neither is a valid calendar date, reject (chatgpt-codex-connector thread
+  // dH47 — non-YMD overflow timestamps).
+  const mdy = /^(\d{1,2})\D(\d{1,2})\D(\d{4})/.exec(ts);
+  if (mdy) {
+    const a = Number(mdy[1]), b = Number(mdy[2]), yr = Number(mdy[3]);
+    if (!isValidCalendarDate(yr, a, b) && !isValidCalendarDate(yr, b, a)) {
+      return undefined;
+    }
+  }
+  const iso = new Date(parsed).toISOString();
+  return isStrictIsoTimestamp(iso) ? iso : undefined;
+}
+
+/**
+ * Validate numeric calendar components without Date overflow (review thread
+ * dANc). Date.UTC silently normalizes Feb 30 -> Mar 2; a component round-trip
+ * catches what Date.parse accepts. Mirrors the same technique isStrictIsoTimestamp
+ * uses for full ISO strings, applied here to the non-ISO normalization path.
+ */
+function isValidCalendarDate(y: number, mo: number, da: number): boolean {
+  if (mo < 1 || mo > 12 || da < 1) return false;
+  const leap = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) ? 29 : 28;
+  const daysInMonth = [31, leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return da <= daysInMonth[mo - 1]!;
+}
+
+/**
  * Zod schema for a single `ProvenanceSource` entry (issue #1575).  Parsed
  * JSON from frontmatter is external data, so each entry is validated here
  * rather than trusted via a cast (rule: no inline-cast-access on parsed
@@ -302,4 +369,350 @@ export function parseProvenanceConfig(raw: unknown): ProvenanceConfig {
       return coerced;
     })(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1575 PR 2 — extraction-side post-parse validator.
+// ---------------------------------------------------------------------------
+//
+// This runs once at write time (inside `ExtractionEngine.extract`, after the
+// LLM output is parsed and sanitized, before the result is returned for
+// persistence). Its job: locate each fact's LLM-provided `quote` in the
+// buffered turn texts and build a `ProvenanceSource[]` with verified
+// offsets. Never throws, never drops a fact (rule 34 spirit — an
+// unverifiable span is a tagged state, not a silent failure).
+//
+// Reuses `collapseWhitespace` from `whitespace.ts` for normalization so there
+// is exactly one normalizer in the codebase (issue #1575 pitfall: "do not
+// write a second normalizer").
+// ---------------------------------------------------------------------------
+
+/**
+ * A turn in the buffered conversation, reduced to the fields the provenance
+ * validator needs. `ExtractionEngine.extract` maps its `BufferTurn[]` to this
+ * shape so the validator is pure and testable without the full BufferTurn type.
+ */
+export interface ProvenanceTurnInput {
+  content: string;
+  sessionKey?: string;
+  logicalSessionKey?: string;
+  timestamp: string;
+  turnId?: string;
+}
+
+/**
+ * Result of building provenance for a single extracted fact.
+ */
+export interface ProvenanceBuildResult {
+  /** Verified sources (one per matching turn). Absent when no quote survives. */
+  sources?: ProvenanceSource[];
+  /** Coarse strength tag persisted to frontmatter. */
+  provenance: "verified" | "unverified" | "none";
+  /**
+   * Transient signal (never persisted): `true` when `config.requireSpans`
+   * is enabled and the LLM-provided quote could not be located in ANY source
+   * turn (the strict case `ProvenanceConfig.requireSpans` documents: "facts
+   * whose quote cannot be located are routed to `pending_review`"). The
+   * extraction consumer carries this onto the in-memory `ExtractedFact` so
+   * the persist path can route the fact to the review queue. A quote that
+   * WAS located but whose source was dropped (e.g. un-coercible timestamp)
+   * does NOT set this flag — the span was found, so requireSpans is
+   * satisfied (chatgpt-codex-connector thread 4xB).
+   */
+  requireSpansPending?: boolean;
+}
+
+/**
+ * Cap a quote string at `maxChars`, truncating at the last word boundary that
+ * fits and appending an ellipsis marker. Quotes at or under the cap pass
+ * through unchanged. Operates on Unicode code points (not UTF-16 units) so
+ * emoji and astral-plane characters are not split mid-glyph.
+ */
+function capQuote(quote: string, maxChars: number): string {
+  const glyphs = Array.from(quote);
+  if (glyphs.length <= maxChars) return quote;
+  // Walk backward from the cap to find a word boundary (space). If the entire
+  // span is one long token (no spaces), cut at the cap — a hard cut is better
+  // than no quote at all.
+  let cut = maxChars;
+  while (cut > 0 && !/\s/.test(glyphs[cut - 1]!)) cut--;
+  if (cut === 0) cut = maxChars; // no word boundary found
+  return glyphs.slice(0, cut).join("").trimEnd() + "\u2026";
+}
+
+/**
+ * Casefold a string for normalized matching. Uses `toLowerCase` (not
+ * `toLocaleLowerCase`) for determinism across runtime locales — the existing
+ * `normalizeFactKey` helper in extraction.ts follows the same convention.
+ */
+function casefold(s: string): string {
+  return s.toLowerCase();
+}
+
+/**
+ * Locate `quote` within `text`, returning whether a match was found and, when
+ * recoverable, the half-open `[start, end)` offsets. Tries exact substring
+ * first, then whitespace/case-normalized match.
+ *
+ * For the normalized path, the mapping from the normalized string back to
+ * original offsets is recovered by walking both strings in lockstep: we know
+ * `collapseWhitespace(text)` is a subsequence of `text` with whitespace runs
+ * collapsed, so we can track the original offset as we scan.
+ *
+ * Returns `{ matched: false }` when neither match succeeds. Returns
+ * `{ matched: true, offsets }` when offsets are recoverable. Returns
+ * `{ matched: true }` (offsets omitted) when the normalized substring was
+ * found but original offsets could not be recovered — callers still treat
+ * this as a verified match and record a source without offsets (cursor
+ * thread Ocver — "Normalized match drops verified provenance").
+ */
+type LocateQuoteResult =
+  | { matched: false }
+  | { matched: true; offsets?: { charStart: number; charEnd: number } };
+
+function locateQuoteOffsets(quote: string, text: string): LocateQuoteResult {
+  // 1. Exact substring match (handles unicode, curly quotes, emoji verbatim).
+  const exactIdx = text.indexOf(quote);
+  if (exactIdx >= 0) {
+    return { matched: true, offsets: { charStart: exactIdx, charEnd: exactIdx + quote.length } };
+  }
+
+  // 2. Whitespace/case-normalized match. Collapse runs of whitespace and
+  //    casefold both sides, then find the normalized quote in the normalized
+  //    text. Recover original offsets by scanning forward from the normalized
+  //    match start through the original text, accumulating non-whitespace
+  //    glyphs until we've consumed the normalized quote length.
+  const normQuote = collapseWhitespace(casefold(quote));
+  if (normQuote.length === 0) return { matched: false };
+  const normText = collapseWhitespace(casefold(text));
+  const normIdx = normText.indexOf(normQuote);
+  if (normIdx < 0) return { matched: false };
+
+  // Recover original offsets: walk the original text, skipping leading
+  // whitespace to align with the collapsed form, then track how many
+  // normalized chars we've consumed.
+  const normQuoteLen = normQuote.length;
+  let origIdx = 0;
+  // Skip leading whitespace in original text (collapseWhitespace trims both ends).
+  while (origIdx < text.length && /\s/.test(text[origIdx]!)) origIdx++;
+  // Walk through original text, counting normalized chars consumed.
+  // Each non-whitespace char in original = 1 normalized char.
+  // Whitespace runs in original = 1 space in normalized (but only between non-ws).
+  let normPos = 0;
+  let origStart = -1;
+  let origEnd = -1;
+  let prevWasWs = true; // suppress the leading space in collapsed form
+  while (origIdx < text.length && origEnd < 0) {
+    const ch = text[origIdx]!;
+    if (/\s/.test(ch)) {
+      if (!prevWasWs) {
+        // This whitespace run collapses to a single space in normalized text.
+        if (normPos === normIdx) origStart = origIdx; // normalized space aligns
+        normPos++;
+        prevWasWs = true;
+      }
+      origIdx++;
+      continue;
+    }
+    // Non-whitespace char.
+    if (normPos === normIdx && origStart < 0) {
+      origStart = origIdx;
+    }
+    normPos++;
+    prevWasWs = false;
+    origIdx++;
+    if (normPos >= normIdx + normQuoteLen) {
+      origEnd = origIdx;
+    }
+  }
+  if (origStart >= 0 && origEnd >= 0) {
+    return { matched: true, offsets: { charStart: origStart, charEnd: origEnd } };
+  }
+  // Normalized substring was found, but original offsets are not recoverable
+  // (edge case in the normalized mapping). The match still counts as verified
+  // — record a source without offsets rather than dropping the turn entirely
+  // (cursor thread Ocver). charStart/charEnd are best-effort debugging aids,
+  // not a precondition for a verified source.
+  return { matched: true };
+}
+
+/**
+ * Build provenance sources for a single extracted fact by locating its
+ * LLM-provided `quote` in the buffered turns (issue #1575 PR 2).
+ *
+ * Matching strategy (per issue design):
+ *   1. Exact substring match in a turn → `provenance: "verified"` with
+ *      `charStart`/`charEnd` offsets.
+ *   2. Whitespace/case-normalized match → `"verified"`, offsets recovered
+ *      when possible, else omitted.
+ *   3. No match in any turn → `"unverified"` — the quote survives as a
+ *      source (the LLM vouched for it) but without located offsets.
+ *   4. No quote provided by the LLM → `"none"` — no evidence to record.
+ *
+ * A quote appearing in multiple turns produces multiple sources (one per
+ * matching turn) so a repeated utterance backs the fact from each occurrence.
+ *
+ * The quote is capped at `config.maxQuoteChars` (truncated at a word boundary
+ * with an ellipsis marker) BEFORE storage. Locating uses the original
+ * (untruncated) quote for maximum match fidelity; the capped excerpt is what
+ * gets persisted.
+ *
+ * When `config.enabled === false`, returns `{ provenance: "none" }`
+ * immediately — byte-identical to pre-feature extraction (rule 39).
+ *
+ * Never throws. An unexpected error degrades to `{ provenance: "none" }` so
+ * extraction never crashes on a provenance hiccup (rule 13/18).
+ */
+/**
+ * Strip a leading extraction-prompt role label from a quote (cursor thread Oc3Z2
+ * — "Quote prompt mismatches validator"). The extraction prompt renders each
+ * buffered turn as `[role] content` (or `[context role] content`), so a
+ * faithful LLM may include that prefix in its verbatim quote. buildFactProvenance
+ * searches the raw `turn.content` (no prefix), so a quote carrying the label
+ * would never match. Stripping the leading label lets the actual utterance
+ * verify against the turn text. Only a SINGLE leading label is stripped — a
+ * multi-turn quote (with embedded labels) is left untouched and will simply
+ * fail to match a single turn, as before.
+ *
+ * The regex is constrained to the labels the prompt actually emits — `user`,
+ * `assistant`, optionally prefixed with `context ` (extraction.ts renders
+ * `[user]`, `[assistant]`, `[context user]`, `[context assistant]`). A
+ * real utterance that happens to start with other bracketed text (e.g.
+ * `[do not] deploy before approval`, `[P1] fix the cache`) is preserved
+ * verbatim so the quote can match the turn and the persisted span retains its
+ * original meaning (chatgpt-codex-connector thread 4xA — limiting role-prefix
+ * stripping to actual prompt labels).
+ */
+function stripLeadingRolePrefix(quote: string): string {
+  return quote.replace(/^\s*\[(?:context\s+)?(?:user|assistant)\]\s+/i, "");
+}
+
+export function buildFactProvenance(
+  factQuote: string | null | undefined,
+  turns: ReadonlyArray<ProvenanceTurnInput>,
+  config: ProvenanceConfig,
+): ProvenanceBuildResult {
+  if (!config.enabled) return { provenance: "none" };
+  const rawQuote = typeof factQuote === "string" ? factQuote.trim() : "";
+  // requireSpans (chatgpt-codex-connector thread dEsu + cursor thread dGKJ):
+  // every early exit that drops a fact's span (no quote, empty after label
+  // strip, or unsafe quote) must flag requireSpansPending when the operator
+  // opted into requireSpans, so the persist path routes the fact to
+  // pending_review instead of active. Only the disabled-feature exit (above)
+  // and the unexpected-error catch (below) omit the flag — those are
+  // policy-neutral degradations, not a missing-span decision.
+  const noneResult = (): ProvenanceBuildResult =>
+    config.requireSpans === true
+      ? { provenance: "none", requireSpansPending: true }
+      : { provenance: "none" };
+  if (rawQuote.length === 0) return noneResult();
+  // Strip a leading prompt role label so a faithful quote verifies against
+  // the raw turn content (cursor thread Oc3Z2). Prefer the RAW quote when it
+  // matches at least one turn — an utterance that literally begins with
+  // [user]/[assistant] must verify as-is, not be truncated to the post-label
+  // text (cursor/codex thread dEsw). The strip handles the common case where
+  // the LLM includes the prompt label; this preserves the rare case where the
+  // utterance itself starts with that text.
+  const strippedQuote = stripLeadingRolePrefix(rawQuote);
+  const useRawQuote =
+    rawQuote === strippedQuote ||
+    turns.some(
+      (t) =>
+        typeof t?.content === "string" &&
+        t.content.length > 0 &&
+        locateQuoteOffsets(rawQuote, t.content).matched,
+    );
+  const quote = useRawQuote ? rawQuote : strippedQuote;
+  if (quote.length === 0) return noneResult();
+  // Sanitize the quote before persisting it as a provenance span
+  // (chatgpt-codex-connector thread dANZ): the fact body is sanitized via
+  // sanitizeMemoryContent, but sources[].quote was persisted verbatim,
+  // reintroducing unsafe memory text (e.g. "ignore previous instructions")
+  // through the provenance field exposed to memory_get/x-ray/faithfulness.
+  // An unsafe quote cannot serve as evidence — drop the source entirely
+  // (consistent with how the body is sanitized: unsafe text is redacted,
+  // and a redacted quote is useless as a verbatim span).
+  if (!isSafeMemoryContent(quote)) return noneResult();
+
+  try {
+    // Search every turn for the quote. Collect verified sources.
+    const sources: ProvenanceSource[] = [];
+    // Track the first turn where the quote was located even when its
+    // timestamp can't be coerced (cursor thread 4Pj — "Bad timestamp drops
+    // matched source"). Without this, a located-but-unverifiable quote falls
+    // through to the unverified branch and is attributed to the *last* turn's
+    // session, mislabeling the source's origin session. Also drives the
+    // requireSpans signal: only a quote that was NOT located in any turn
+    // qualifies for pending_review routing under requireSpans (thread 4xB).
+    let locatedTurn: ProvenanceTurnInput | undefined;
+    for (const turn of turns) {
+      if (!turn || typeof turn.content !== "string" || turn.content.length === 0) continue;
+      const located = locateQuoteOffsets(quote, turn.content);
+      // cursor thread Ocver: a normalized match counts as verified even when
+      // original offsets are unrecoverable — record the source without
+      // charStart/charEnd instead of skipping the turn.
+      if (!located.matched) continue;
+      if (!locatedTurn) locatedTurn = turn;
+      // cursor thread Ocveu: normalize the turn timestamp to strict ISO so
+      // the write-path ProvenanceSourceSchema keeps the source. Skip the turn
+      // when the timestamp can't be coerced — pushing it would guarantee a
+      // serialization drop (and the tag downgrade) for this source.
+      const observedAt = toStrictIsoTimestamp(turn.timestamp);
+      if (!observedAt) continue;
+      sources.push({
+        sessionKey: turn.sessionKey ?? turn.logicalSessionKey ?? "unknown",
+        ...(turn.turnId ? { turnId: turn.turnId } : {}),
+        observedAt,
+        quote: capQuote(quote, config.maxQuoteChars),
+        ...(located.offsets
+          ? { charStart: located.offsets.charStart, charEnd: located.offsets.charEnd }
+          : {}),
+      });
+    }
+
+    if (sources.length > 0) {
+      return { sources, provenance: "verified" };
+    }
+
+    // Quote provided but could not be turned into a verified source.
+    // Determine the session to attribute: prefer the turn where the quote was
+    // LOCATED even if its timestamp couldn't be coerced (cursor thread 4Pj — a
+    // located quote must not be tied to the *last* turn's session). If the
+    // quote was not located in any turn at all, fall back to the last turn's
+    // session (the documented unverified behavior: the LLM vouched for the
+    // excerpt but we couldn't pin it to a character offset). Normalize the
+    // timestamp (thread Ocveu); fall back to epoch when no turn supplies a
+    // coercible timestamp so the unverified source still survives the
+    // write-path schema.
+    const fallbackTurn = locatedTurn ?? turns[turns.length - 1];
+    const fallbackSessionKey = fallbackTurn
+      ? (fallbackTurn.sessionKey ?? fallbackTurn.logicalSessionKey ?? "unknown")
+      : "unknown";
+    const fallbackObservedAt = fallbackTurn
+      ? (toStrictIsoTimestamp(fallbackTurn.timestamp) ?? new Date(0).toISOString())
+      : new Date(0).toISOString();
+    // requireSpans signal (chatgpt-codex-connector thread 4xB): when an
+    // operator opts into provenance.requireSpans, a fact whose quote could
+    // not be located in ANY turn (locatedTurn undefined) is flagged so the
+    // persist path routes it to pending_review instead of active. A quote
+    // that WAS located (locatedTurn set) satisfies requireSpans even when
+    // its source was dropped for an un-coercible timestamp — the span was
+    // found, so the fact has the grounding requireSpans demands.
+    const requireSpansPending =
+      config.requireSpans === true && locatedTurn === undefined;
+    return {
+      sources: [
+        {
+          sessionKey: fallbackSessionKey,
+          observedAt: fallbackObservedAt,
+          quote: capQuote(quote, config.maxQuoteChars),
+        },
+      ],
+      provenance: "unverified",
+      ...(requireSpansPending ? { requireSpansPending: true } : {}),
+    };
+  } catch {
+    // Never crash extraction on a provenance error (rule 13/18).
+    return { provenance: "none" };
+  }
 }
