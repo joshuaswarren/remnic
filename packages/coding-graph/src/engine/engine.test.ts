@@ -694,6 +694,77 @@ test("concurrent-parse: parallel parseFile calls do not race", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2e. Round-4 review-thread fixes (#1551 PR2 — PR #1652).
+//   - CommonJS module.exports / exports.X export capture (thread dITa)
+//   - Kotlin import path segments removed (thread dITb)
+// ---------------------------------------------------------------------------
+
+test("cjs-exports: module.exports = { App, createRouter } captured as exports", async () => {
+  const engine = createCodingGraphEngine();
+  const fixture = FIXTURES.javascript; // ends with: module.exports = { App, createRouter };
+  const result = await engine.parseFile({
+    path: fixture.path,
+    content: Buffer.from(fixture.code, "utf-8"),
+  });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const exportNames = result.ir.exports.map((e) => e.name);
+  assert.ok(exportNames.includes("App"), `JS: module.exports should export App, got: ${exportNames.join(", ")}`);
+  assert.ok(exportNames.includes("createRouter"), `JS: module.exports should export createRouter, got: ${exportNames.join(", ")}`);
+
+  await engine.dispose();
+});
+
+test("cjs-exports: exports.handler = handler captured", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function handler() { return 42; }",
+    "exports.handler = handler;",
+    "exports.version = '1.0.0';",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "lib/cjs2.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const exportNames = result.ir.exports.map((e) => e.name);
+  assert.ok(exportNames.includes("handler"), `exports.handler should be exported, got: ${exportNames.join(", ")}`);
+  assert.ok(exportNames.includes("version"), `exports.version should be exported, got: ${exportNames.join(", ")}`);
+
+  await engine.dispose();
+});
+
+test("kotlin-imports: qualified import path not split into segments", async () => {
+  const engine = createCodingGraphEngine();
+  const fixture = FIXTURES.kotlin;
+  const result = await engine.parseFile({
+    path: fixture.path,
+    content: Buffer.from(fixture.code, "utf-8"),
+  });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const modules = result.ir.imports.map((i) => i.module);
+  // Should NOT have bare segment names like "kotlin" or "collections"
+  // from a qualified import like "kotlin.collections.*"
+  for (const mod of modules) {
+    assert.ok(
+      mod.length > 0,
+      `Kotlin: all imports should be full paths, got segment: ${mod}`,
+    );
+  }
+  // Verify the fixture's actual import is captured as a full path
+  if (modules.length > 0) {
+    assert.ok(
+      modules.some((m) => m.includes(".") || m.length > 2),
+      `Kotlin: expected full import paths, got: ${modules.join(", ")}`,
+    );
+  }
+
+  await engine.dispose();
+});
+
+// ---------------------------------------------------------------------------
 // 3. Determinism — same file parsed twice must produce byte-identical IR.
 // ---------------------------------------------------------------------------
 

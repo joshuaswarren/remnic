@@ -85,11 +85,33 @@ const TS_EXPORTS = `
 `.trim();
 
 // JavaScript exports — class names use identifier (no type_identifier in JS grammar).
+// Includes CommonJS export patterns (module.exports / exports.X) so
+// Node/CommonJS public APIs are not marked unexported.
 const JS_EXPORTS = `
 (export_statement declaration: (function_declaration name: (identifier) @export.name))
 (export_statement declaration: (class_declaration name: (identifier) @export.name))
 (export_statement (lexical_declaration (variable_declarator name: (identifier) @export.name)))
 (export_statement (export_clause (export_specifier name: (identifier) @export.name)))
+
+; CommonJS: module.exports = { App, createRouter }
+(assignment_expression
+  left: (member_expression object: (identifier) @__cjs.mod property: (property_identifier) @__cjs.exp)
+  right: (object (shorthand_property_identifier) @export.name)
+  (#eq? @__cjs.mod "module") (#eq? @__cjs.exp "exports"))
+; CommonJS: module.exports = { foo: bar }
+(assignment_expression
+  left: (member_expression object: (identifier) @__cjs.mod2 property: (property_identifier) @__cjs.exp2)
+  right: (object (pair key: (property_identifier) @export.name))
+  (#eq? @__cjs.mod2 "module") (#eq? @__cjs.exp2 "exports"))
+; CommonJS: module.exports = App
+(assignment_expression
+  left: (member_expression object: (identifier) @__cjs.mod3 property: (property_identifier) @__cjs.exp3)
+  right: (identifier) @export.name
+  (#eq? @__cjs.mod3 "module") (#eq? @__cjs.exp3 "exports"))
+; CommonJS: exports.handler = handler
+(assignment_expression
+  left: (member_expression object: (identifier) @__cjs.exp4 property: (property_identifier) @export.name)
+  (#eq? @__cjs.exp4 "exports"))
 `.trim();
 
 const JS_CALLS = `
@@ -348,8 +370,10 @@ const KOTLIN_EXTRACTOR: LanguageExtractor = {
 (function_declaration (simple_identifier) @name) @def.function
 `.trim(),
   importsQuery: `
+; Capture the full identifier node — its .text is the complete import
+; path (e.g. "kotlin.collections"). Do NOT capture nested simple_identifier
+; children, which would emit bogus segment-level modules.
 (import_header (identifier) @import.module) @__import.stmt
-(import_header (identifier (simple_identifier) @import.module)) @__import.stmt
 `.trim(),
   exportsQuery: ``,
   callSitesQuery: `
