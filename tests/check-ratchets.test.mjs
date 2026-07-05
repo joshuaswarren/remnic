@@ -189,6 +189,49 @@ test("watchlist/baseline drift fails in both directions", () => {
   });
 });
 
+test("--update counts ad-hoc namespace-resolution call sites outside scope-plan.ts", () => {
+  withFixture((fixture) => {
+    // Add a file with two ad-hoc resolution call sites.
+    writeFileSync(
+      path.join(fixture.src, "gadget.ts"),
+      "const a = this.resolveWritableNamespace(ns);\n" +
+        "const b = this.namespaceFromStorageDir(dir);\n" +
+        "const c = this.configuredNamespaces();\n",
+    );
+    // scope-plan.ts is excluded — its call sites must NOT count.
+    mkdirSync(path.join(fixture.src, "scopes"), { recursive: true });
+    writeFileSync(
+      path.join(fixture.src, "scopes", "scope-plan.ts"),
+      "const x = this.resolveWritableNamespace(ns);\n",
+    );
+
+    const update = runRatchets(["--update"], fixture);
+    assert.equal(update.status, 0, update.stderr);
+    const baseline = JSON.parse(readFileSync(fixture.baseline, "utf8"));
+    assert.equal(baseline.metrics.adHocNamespaceResolutions, 3);
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 0, check.stderr);
+    assert.match(check.stdout, /\[ratchet\] OK/);
+  });
+});
+
+test("new ad-hoc namespace-resolution call sites fail the check", () => {
+  withFixture((fixture) => {
+    writeFileSync(
+      path.join(fixture.src, "gadget.ts"),
+      "const a = this.resolveWritableNamespace(ns);\n",
+    );
+    assert.equal(runRatchets(["--update"], fixture).status, 0);
+
+    appendFileSync(path.join(fixture.src, "gadget.ts"), "const b = this.configuredNamespaces();\n");
+
+    const check = runRatchets([], fixture);
+    assert.equal(check.status, 1);
+    assert.match(check.stderr, /ad-hoc namespace-resolution call sites grew from 1 to 2/);
+  });
+});
+
 test("unknown arguments are rejected with usage", () => {
   withFixture((fixture) => {
     const result = runRatchets(["--bogus"], fixture);
