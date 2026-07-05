@@ -516,7 +516,14 @@ async function runReindex(
     }
 
     case "full": {
-      const candidatesProvided = options.candidatePaths !== undefined;
+      // An EMPTY explicit list is as insufficient as an omitted one: it is not
+      // an authoritative "the repo has zero files" signal, so it must NOT drive
+      // pruning or head advancement (cursor Bugbot HIGH: 'Empty candidate list
+      // prunes graph'). Require a non-empty list to treat candidates as
+      // authoritative. The genuine empty-repo case (no candidates, no retries)
+      // is handled below as a noop.
+      const candidatesProvided =
+        options.candidatePaths !== undefined && options.candidatePaths.length > 0;
       const candidates = options.candidatePaths ?? [];
       if (candidates.length === 0 && pendingRetry.length === 0) {
         // Nothing to index and nothing to retry. Do NOT advance
@@ -598,7 +605,15 @@ async function runReindex(
       const toIngest: string[] = [];
       for (const p2 of seen) {
         const probe = await probeRead(repoRoot, p2, readFile);
-        if (probe.kind === "skip") continue;
+        if (probe.kind === "skip") {
+          // A previously-indexed path that is now non-canonical or an escaping
+          // symlink (probe skip) is no longer a readable repo file — prune its
+          // stale nodes rather than leaving them while head advances
+          // (chatgpt-codex-connector: 'Retain skipped symlink paths before
+          // advancing').
+          if (knownFiles.has(p2)) toDelete.push(p2);
+          continue;
+        }
         if (probe.kind === "exists" || probe.kind === "unknown") {
           // exists → re-ingest; unknown (transient error) → route to
           // ingest so ingestFiles records it as a pending retry if the
@@ -652,8 +667,10 @@ async function runReindex(
       // advances); omitting candidates would miss newly-added files not
       // yet in the index (chatgpt-codex-connector: 'Require candidates
       // before completing hash-scan' / 'Include indexed files in
-      // hash-scan candidates').
-      const hashScanCandidatesProvided = options.candidatePaths !== undefined;
+      // hash-scan candidates'). An EMPTY explicit list is as insufficient
+      // as an omitted one, so it must not drive head advancement.
+      const hashScanCandidatesProvided =
+        options.candidatePaths !== undefined && options.candidatePaths.length > 0;
       const candidateSet = new Set<string>([
         ...(options.candidatePaths ?? []),
         ...lastState.fileHashes.keys(),
@@ -667,7 +684,12 @@ async function runReindex(
       const hashScanRetry: string[] = [];
       for (const candidatePath of candidateSet) {
         const probe = await probeRead(repoRoot, candidatePath, readFile);
-        if (probe.kind === "skip") continue;
+        if (probe.kind === "skip") {
+          // Previously-indexed path now non-canonical / escaping symlink →
+          // prune stale nodes rather than leave them while head advances.
+          if (knownFiles.has(candidatePath)) toDelete.push(candidatePath);
+          continue;
+        }
         if (probe.kind === "missing") {
           if (knownFiles.has(candidatePath)) toDelete.push(candidatePath);
           continue;

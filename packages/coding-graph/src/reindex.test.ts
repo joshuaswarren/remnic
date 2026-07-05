@@ -1011,3 +1011,25 @@ test("executor: full reindex does NOT ingest a symlink that escapes repoRoot (ch
     await dispose(store, dir);
   }
 });
+
+test("executor: explicit empty candidatePaths ([]) is treated as insufficient — does NOT advance head in hash_scan (cursor Bugbot HIGH: 'Empty candidate list prunes graph')", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await writeFiles(dir, { "src/a.ts": "export function foo() {}" });
+    await executeReindex({ store, git: mockGit({ head: SHA_A }), repoRoot: dir, parseFile: mockParseFile, candidatePaths: ["src/a.ts"] });
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_A);
+    // Force-push → hash_scan with an EXPLICIT empty list. An empty list is not
+    // an authoritative "zero files" signal, so head must NOT advance (same as
+    // omitted).
+    const result = await executeReindex({
+      store, git: mockGit({ head: SHA_B, reachable: false }), repoRoot: dir, parseFile: mockParseFile,
+      candidatePaths: [],
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.head, SHA_A, "explicit [] must not advance head");
+    assert.equal(meta(store, META_KEY_LAST_HEAD), SHA_A);
+  } finally {
+    await dispose(store, dir);
+  }
+});
