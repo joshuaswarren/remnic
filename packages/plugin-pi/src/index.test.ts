@@ -9,6 +9,7 @@ import { Kind } from "@sinclair/typebox";
 import remnicPiExtension, {
   buildCompactionSummary,
   createRemnicPiExtension,
+  isDaemonUnreachableError,
   observeMessages,
   stripSessionOwnedSchemaFields,
   stripSessionOwnedRuntimeFields,
@@ -1231,6 +1232,10 @@ function baseConfig(): RemnicPiConfig {
     statusEnabled: true,
     requestTimeoutMs: 60000,
     startupRequestTimeoutMs: 1000,
+    turnRequestTimeoutMs: 20000,
+    observeMaxBytes: 102400,
+    observeMaxRetries: 2,
+    daemonCooldownMs: 5000,
   };
 }
 
@@ -1330,3 +1335,392 @@ function makeStaleCtx(options: {
     statuses,
   };
 }
+
+
+test("recall circuit breaker skips subsequent turns after a timeout against an unreachable daemon (#1626)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  // fetch hangs until the AbortController fires, simulating an unreachable host.
+  globalThis.fetch = async (_input, init) => {
+    fetchCalls += 1;
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      turnRequestTimeoutMs: 30,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as unknown as Parameters<typeof extension>[0]);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "cb-session" },
+  };
+  const event = { messages: [{ role: "user", content: "any prompt" }] };
+
+  // First turn: recall times out → daemon enters cooldown.
+  await emit("context", event, ctx);
+  assert.equal(fetchCalls, 1, "first turn issued a recall that timed out");
+
+  // Second turn: daemon is known-down → recall is skipped fast, no fetch.
+  await emit("context", event, ctx);
+  assert.equal(fetchCalls, 1, "circuit breaker skipped recall during cooldown");
+});
+
+test("session_shutdown replays the branch even when the daemon breaker is tripped (#1626, review codex)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const observeBodies: Array<Record<string, any>> = [];
+  let call = 0;
+  globalThis.fetch = async (input, init) => {
+    call += 1;
+    if (String(input).endsWith("/engram/v1/observe")) {
+      // Fail the ENTIRE turn_end retry chain (1 initial + observeMaxRetries=2
+      // retries = 3 calls) so the breaker actually trips; the next observe
+      // (shutdown) then succeeds, proving shutdown bypasses the breaker.
+      if (call <= 3) {
+        throw new Error("The socket connection was closed unexpectedly.");
+      }
+      observeBodies.push(JSON.parse(String(init?.body ?? "{}")));
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const message = { role: "assistant", content: "done" };
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: {
+      getSessionId: () => "shutdown-breaker-test",
+      getEntries: () => [],
+      getBranch: () => [{ id: "entry-1", message }],
+    },
+  };
+
+  // turn_end observe fails transiently -> breaker tripped, nothing recorded.
+  await emit("turn_end", { message }, ctx);
+  assert.equal(observeBodies.length, 0, "turn_end observe failed and recorded nothing");
+
+  // shutdown runs while the breaker is in cooldown; forceAttempt must still
+  // replay the branch (the last chance to observe before teardown).
+  await emit("session_shutdown", {}, ctx);
+  assert.equal(observeBodies.length, 1, "shutdown bypassed the breaker and observed the branch");
+});
+
+test("session_shutdown observe uses the general request budget, not the per-turn budget (review cursor)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (_input, init) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      turnRequestTimeoutMs: 30,
+      requestTimeoutMs: 150,
+    },
+  });
+  await extension(pi as any);
+
+  const stale = makeStaleCtx({
+    sessionId: "shutdown-budget-test",
+    branch: [{ id: "entry-1", message: { role: "user", content: "x".repeat(50) } }],
+  });
+
+  await emit("session_shutdown", {}, stale.ctx);
+
+  // Shutdown replay is teardown (no host handler window), so it must use the
+  // general request budget (150ms), NOT the per-turn budget (30ms). The timeout
+  // error embeds the budget actually used, so this deterministically proves
+  // which budget governed the forced replay.
+  const observeFail = stale.notifications.find((n) => /Remnic observe failed/.test(n.message));
+  assert.ok(observeFail, "shutdown observe ran and timed out");
+  assert.match(observeFail!.message, /timed out after 150ms/);
+});
+
+test("retry-budget exhaustion trips the circuit breaker so the next turn cools down (review codex)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new Error("The socket connection was closed unexpectedly.");
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      // Per-turn budget below the first 200ms backoff, so a transient failure
+      // exhausts the retry budget and throws the budget-exceeded error.
+      turnRequestTimeoutMs: 30,
+      observeMaxRetries: 2,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as any);
+
+  const message = { role: "assistant", content: "done" };
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: { getSessionId: () => "budget-breaker-test", getEntries: () => [], getBranch: () => [] },
+  };
+
+  // First turn: transient socket close exhausts the retry budget. The
+  // budget-exceeded error must trip the breaker (not fall through silently).
+  await emit("turn_end", { message }, ctx);
+  const callsAfterFirst = calls;
+  assert.ok(callsAfterFirst >= 1, "first turn attempted an observe");
+
+  // Second turn: breaker is in cooldown -> observe is skipped, no new fetch.
+  await emit("turn_end", { message }, ctx);
+  assert.equal(calls, callsAfterFirst, "breaker skipped the second turn after budget exhaustion");
+});
+
+test("isDaemonUnreachableError recognizes both budget-exceeded wordings so the breaker trips (review cursor)", () => {
+  // requestWithRetry retry-budget exhaustion:
+  assert.ok(
+    isDaemonUnreachableError(new Error("Remnic request exceeded the 50ms budget before retry 1 (POST /engram/v1/observe)")),
+    "retry-budget exhaustion is unreachable",
+  );
+  // Multi-chunk observe per-turn budget exhaustion:
+  assert.ok(
+    isDaemonUnreachableError(new Error("Remnic observe exceeded the per-turn budget of 20ms across 3 chunks (completed 1)")),
+    "multi-chunk observe budget exhaustion is unreachable",
+  );
+  // A semantic HTTP-style error is NOT classified as unreachable:
+  assert.ok(!isDaemonUnreachableError(new Error("Internal Server Error")), "HTTP errors stay reachable");
+});
+
+test("a successful startup health probe clears a stale circuit breaker (review codex)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (input, init) => {
+    calls += 1;
+    const url = String(input);
+    if (url.endsWith("/engram/v1/health")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    // recall hangs until the AbortController fires, simulating an unreachable daemon.
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+      turnRequestTimeoutMs: 30,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "status-clear-breaker" },
+  };
+  const event = { messages: [{ role: "user", content: "hi" }] };
+
+  // 1) recall times out -> breaker tripped.
+  await emit("context", event, ctx);
+  // 2) session_start health succeeds -> clears the stale breaker.
+  await emit("session_start", {}, ctx);
+  // 3) recall now runs instead of fast-skipping.
+  const callsBeforeSecondRecall = calls;
+  await emit("context", event, ctx);
+  assert.ok(calls > callsBeforeSecondRecall, "recall ran after the health probe cleared the breaker");
+});
+
+test("an offline startup health probe trips the circuit breaker so the first turn fast-skips (review codex)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let recallCalls = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/engram/v1/health")) {
+      // Daemon is offline: a connection-level failure fails fast (health() does not retry).
+      throw new Error("The socket connection was closed unexpectedly.");
+    }
+    // If the breaker let recall through, this would hang until the AbortController fires.
+    recallCalls += 1;
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+      turnRequestTimeoutMs: 30,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "status-trip-breaker" },
+  };
+  const event = { messages: [{ role: "user", content: "hi" }] };
+
+  // 1) session_start health fails because the daemon is offline -> trips the breaker.
+  await emit("session_start", {}, ctx);
+  // 2) context (recall) fast-skips because the breaker is tripped, so the doomed
+  //    recall never costs the full turn budget.
+  await emit("context", event, ctx);
+  assert.equal(recallCalls, 0, "recall fast-skipped after the offline startup probe tripped the breaker");
+});
+
+test("/remnic-recall bounds retry to the general request budget instead of unbounded retries (review cursor)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new Error("The socket connection was closed unexpectedly.");
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, runCommand } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      requestTimeoutMs: 40,
+      observeMaxRetries: 2,
+    },
+  });
+  await extension(pi as any);
+
+  const notifications: Array<{ message: string; level: string }> = [];
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { notify: (m: string, l: string) => notifications.push({ message: m, level: l }) },
+    sessionManager: { getSessionId: () => "recall-command-budget" },
+  };
+
+  await runCommand("remnic-recall", "any query", ctx);
+  // The command passes the general request budget as a shared deadline, so the
+  // 40ms budget (below the first 200ms backoff) stops retries after one call
+  // instead of looping through the full retry chain unbounded.
+  assert.equal(calls, 1, "manual recall did not loop through unbounded retries");
+  assert.ok(
+    notifications.some((n) => /Remnic command failed/.test(n.message)),
+    "command reported the bounded failure",
+  );
+});
+
+test("a successful /remnic-recall clears a stale circuit breaker (review cursor)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (input, init) => {
+    calls += 1;
+    const url = String(input);
+    // Manual recall responds OK; automatic context recall hangs until abort.
+    if (url.endsWith("/engram/v1/recall") && init?.body && JSON.parse(String(init.body)).query === "manual") {
+      return new Response(JSON.stringify({ context: "manual context" }), { status: 200 });
+    }
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit, runCommand } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+      turnRequestTimeoutMs: 30,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "manual-recall-clears-breaker" },
+  };
+  const autoEvent = { messages: [{ role: "user", content: "auto" }] };
+
+  // 1) automatic context recall times out -> breaker tripped.
+  await emit("context", autoEvent, ctx);
+  // 2) a successful manual /remnic-recall clears the stale breaker.
+  await runCommand("remnic-recall", "manual", ctx);
+  // 3) automatic context recall now runs instead of fast-skipping.
+  const callsBeforeSecondAuto = calls;
+  await emit("context", { messages: [{ role: "user", content: "auto2" }] }, ctx);
+  assert.ok(calls > callsBeforeSecondAuto, "automatic recall ran after the manual recall cleared the breaker");
+});
