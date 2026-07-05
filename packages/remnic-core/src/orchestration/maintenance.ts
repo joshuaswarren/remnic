@@ -383,6 +383,19 @@ export class MaintenanceScheduler {
     return this.consolidationInFlight;
   }
 
+  /** Whether a debounced QMD maintenance pass is armed and waiting for the
+   *  debounce timer. Exposed so drain/teardown diagnostics (e.g. the bench
+   *  adapter) can observe scheduler idle state after the #1526 PR1 extraction
+   *  moved this flag off the orchestrator. */
+  isQmdMaintenancePending(): boolean {
+    return this.qmdMaintenancePending;
+  }
+
+  /** Whether a QMD maintenance pass is currently running (singleflight guard).
+   *  Exposed for drain/teardown diagnostics (see isQmdMaintenancePending). */
+  isQmdMaintenanceInFlight(): boolean {
+    return this.qmdMaintenanceInFlight;
+  }
   // ───────────────────────────────────────────────────────────────────────
   // QMD maintenance scheduling (debounced + singleflight)
   // ───────────────────────────────────────────────────────────────────────
