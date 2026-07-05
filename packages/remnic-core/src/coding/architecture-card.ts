@@ -299,8 +299,10 @@ export async function buildArchitectureCard(
             maxBytes - detBytes - sepBytes,
           );
           if (summaryBudget > 0) {
-            const clamped = capToBytes(summary.trim(), summaryBudget);
-            content = `${clamped.text}${separator}${deterministic}`;
+            const clampedSummary = clampSummaryToBytes(summary.trim(), summaryBudget);
+            if (clampedSummary.length > 0) {
+              content = `${clampedSummary}${separator}${deterministic}`;
+            }
           }
           // else: the deterministic card already fills the cap — ship it
           // alone rather than prepend a summary that would truncate it.
@@ -653,4 +655,29 @@ function capToBytes(text: string, maxBytes: number): { text: string; truncated: 
     cut = i + 1;
   }
   return { text: chars.slice(0, cut).join("") + marker, truncated: true };
+}
+
+/**
+ * Clamp an LLM SUMMARY to `maxBytes` of UTF-8. Unlike {@link capToBytes}, this
+ * uses a neutral trailing ellipsis (never the card-truncation marker) and keeps
+ * the result — ellipsis included — within `maxBytes`. A clamped summary must
+ * never imply the deterministic CARD was truncated, nor spill past its reserved
+ * budget into the deterministic sections (cursor/codex review).
+ */
+function clampSummaryToBytes(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  if (Buffer.byteLength(text, "utf-8") <= maxBytes) return text;
+  const ellipsis = " …";
+  const budget = maxBytes - Buffer.byteLength(ellipsis, "utf-8");
+  if (budget <= 0) return "";
+  let cut = 0;
+  let running = 0;
+  const chars = [...text];
+  for (let i = 0; i < chars.length; i++) {
+    const charBytes = Buffer.byteLength(chars[i], "utf-8");
+    if (running + charBytes > budget) break;
+    running += charBytes;
+    cut = i + 1;
+  }
+  return chars.slice(0, cut).join("") + ellipsis;
 }
