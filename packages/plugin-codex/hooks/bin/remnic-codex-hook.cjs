@@ -248,6 +248,21 @@ function resolveToken() {
   );
 }
 
+// ── Namespace chokepoint (#1571) ─────────────────────────────────────────────
+// Single source of truth for the optional namespace override. EVERY observe and
+// flush body MUST go through withNamespace() so a namespaced Codex install
+// archives + flushes under one key — without it, buffered observations land on
+// the default key while a namespaced flush drains a different (empty) queue, and
+// most in-session memory never flushes before compaction.
+function resolveNamespace() {
+  return process.env.REMNIC_NAMESPACE || process.env.ENGRAM_NAMESPACE || "";
+}
+function withNamespace(body) {
+  const ns = resolveNamespace();
+  if (ns) body.namespace = ns;
+  return body;
+}
+
 // ── HTTP helpers — return a real success signal (2xx) so callers can decide
 // whether to advance/clear the cursor (fixes the data-loss bug in #1442).
 //
@@ -818,7 +833,7 @@ async function observeWorker(input, token, log) {
     const res = await httpPost(
       "/engram/v1/observe",
       token,
-      { sessionKey: sessionId, messages: newMessages },
+      withNamespace({ sessionKey: sessionId, messages: newMessages }),
       120000,
     );
     if (res.ok) {
@@ -891,7 +906,7 @@ async function handleSessionEnd(input, token, log) {
         const res = await httpPost(
           "/engram/v1/observe",
           token,
-          { sessionKey: sessionId, messages: newMessages },
+          withNamespace({ sessionKey: sessionId, messages: newMessages }),
           30000,
         );
         if (res.ok) {
@@ -952,10 +967,9 @@ async function handleSessionEnd(input, token, log) {
 // flush already-queued work. Always fail-open.
 //
 // `lockRetries` (100ms each) bounds how long to wait for a busy worker.
-// `namespace` (when set) scopes the observe to the same key the LCM flush
-// drains — without it, a namespaced install queues the tail under the default
-// key while the flush drains the namespaced key, leaving the tail unflushed.
-async function drainTranscriptTail(sessionId, transcriptPath, token, log, lockRetries = 50, namespace = "") {
+// The observe body is scoped via withNamespace() so the tail lands on the same
+// key the LCM flush drains (see the namespace chokepoint above).
+async function drainTranscriptTail(sessionId, transcriptPath, token, log, lockRetries = 50) {
   const safe = sessionId !== "" && !/[^A-Za-z0-9._-]/.test(sessionId);
   if (!safe || !token || !transcriptPath || !fs.existsSync(transcriptPath)) {
     return false;
@@ -990,12 +1004,10 @@ async function drainTranscriptTail(sessionId, transcriptPath, token, log, lockRe
     }
     if (newMessages.length === 0) return true;
     log(`transcript tail drain: ${newMessages.length} new message(s) for ${sessionId}`);
-    const observeBody = { sessionKey: sessionId, messages: newMessages };
-    if (namespace) observeBody.namespace = namespace;
     const res = await httpPost(
       "/engram/v1/observe",
       token,
-      observeBody,
+      withNamespace({ sessionKey: sessionId, messages: newMessages }),
       30000,
     );
     if (res.ok) {
@@ -1033,11 +1045,6 @@ async function handlePreCompact(input, token, log) {
     log(`skipping pre-compact drain+flush: no token (session=${sessionId} trigger=${trigger})`);
     return;
   }
-  // Optional namespace override (parity with @remnic/plugin-pi's config.namespace).
-  // Unset → the daemon resolves the default namespace for this principal. The
-  // same namespace is passed to the tail drain so the observe and the flush
-  // target the same key (#1571 review).
-  const ns = process.env.REMNIC_NAMESPACE || process.env.ENGRAM_NAMESPACE || "";
   // 1. Drain any unobserved transcript tail so it's archived before compaction.
   //    Wait up to PRECOMPACT_LOCK_RETRIES for a concurrent observe worker to
   //    release the session lock, so the flush below sees the worker's queued
@@ -1051,16 +1058,19 @@ async function handlePreCompact(input, token, log) {
     token,
     log,
     PRECOMPACT_LOCK_RETRIES,
-    ns,
   );
   if (drainResult === "busy") {
     log(`skipping LCM flush: tail drain lock busy (session=${sessionId} trigger=${trigger}); deferring to next cycle`);
     return;
   }
-  // 2. Ask the LCM layer to flush the (now-complete) observe buffer.
-  const body = { sessionKey: sessionId };
-  if (ns) body.namespace = ns;
-  const res = await httpPost("/engram/v1/lcm/compaction/flush", token, body, 20000);
+  // 2. Ask the LCM layer to flush the (now-complete) observe buffer. The body is
+  //    scoped via withNamespace() so it drains the same key the observes wrote.
+  const res = await httpPost(
+    "/engram/v1/lcm/compaction/flush",
+    token,
+    withNamespace({ sessionKey: sessionId }),
+    20000,
+  );
   if (res.ok) {
     log(`LCM compaction flush OK (session=${sessionId} trigger=${trigger})`);
   } else {

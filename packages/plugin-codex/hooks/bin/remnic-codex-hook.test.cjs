@@ -66,6 +66,11 @@ function runHook(event, input, { port, home, env = {} } = {}) {
         REMNIC_CODEX_MATERIALIZE: "0",
         OPENCLAW_REMNIC_ACCESS_TOKEN: noToken ? "" : env.token || "test-token",
         OPENCLAW_ENGRAM_ACCESS_TOKEN: noToken ? "" : "",
+        // Clear daemon URL env so a developer shell with REMNIC_DAEMON_URL set
+        // can't route tests away from the mock server. Tests that WANT a daemon
+        // URL override it via env.extra (which spreads last).
+        REMNIC_DAEMON_URL: "",
+        ENGRAM_DAEMON_URL: "",
         ...env.extra,
       },
       stdio: ["pipe", "pipe", "pipe"],
@@ -898,6 +903,55 @@ test("pre-compact: when the session lock stays held, the drain returns busy and 
       !calls.some((c) => c.url === "/engram/v1/observe"),
       "tail drain /observe was skipped because the lock was held",
     );
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("observe worker: REMNIC_NAMESPACE scopes the PostToolUse /observe (#1571 review)", async () => {
+  // The namespace chokepoint (withNamespace) must cover EVERY observe path, not
+  // just PreCompact. The PostToolUse detached worker archives the bulk of
+  // in-session turns — if it omits namespace while the flush uses it, those
+  // turns land on the default key and never flush before compaction.
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => res.writeHead(200).end("{}"));
+  try {
+    const tpath = transcript(home, [
+      { role: "user", content: "tool turn one" },
+      { role: "assistant", content: "tool reply one" },
+    ]);
+    await runHook(
+      "__observe-worker__",
+      JSON.stringify({ session_id: "sObsNs", transcript_path: tpath }),
+      { port, home, env: { extra: { REMNIC_NAMESPACE: "fleet/alpha" } } },
+    );
+    const observe = calls.find((c) => c.url === "/engram/v1/observe");
+    assert.ok(observe, "observe was called");
+    assert.equal(observe.body.namespace, "fleet/alpha", "worker observe carries the namespace");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("session-end: REMNIC_NAMESPACE scopes the final-flush /observe (#1571 review)", async () => {
+  // The Stop/session-end final flush must also carry the namespace so the
+  // last tail is archived on the same key everything else uses.
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => res.writeHead(200).end("{}"));
+  try {
+    const tpath = transcript(home, [{ role: "user", content: "pending tail at session end" }]);
+    fs.mkdirSync(path.join(home, "state", "remnic", "hooks"), { recursive: true });
+    fs.writeFileSync(cursorPath(home, "sEndNs"), "0\n");
+    await runHook(
+      "session-end",
+      { session_id: "sEndNs", transcript_path: tpath },
+      { port, home, env: { extra: { REMNIC_NAMESPACE: "fleet/beta" } } },
+    );
+    const observe = calls.find((c) => c.url === "/engram/v1/observe");
+    assert.ok(observe, "final flush observed");
+    assert.equal(observe.body.namespace, "fleet/beta", "session-end observe carries the namespace");
   } finally {
     server.close();
     fs.rmSync(home, { recursive: true, force: true });
