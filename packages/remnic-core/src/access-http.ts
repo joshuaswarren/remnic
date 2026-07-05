@@ -316,6 +316,7 @@ export class EngramAccessHttpServer {
       citationsAutoDetect: options.citationsAutoDetect,
       emitLegacyTools: options.emitLegacyTools,
       codingDecisionVisible: this.service.decisionRecordSurfaceVisible,
+      architectureCardVisible: this.service.architectureCardSurfaceVisible,
     });
   }
 
@@ -1361,6 +1362,30 @@ export class EngramAccessHttpServer {
       return;
     }
 
+    if (req.method === "POST" && pathname === "/engram/v1/coding/architecture") {
+      // Migrated through the access boundary (issue #1525/#1548 PR3):
+      // refresh persists the card, so it is gated by the 30/min write quota;
+      // get is a pure read and stays uncounted.
+      const body = await this.readJsonBody(req);
+      const isWriteSubcommand = body.subcommand === "refresh";
+      if (isWriteSubcommand) {
+        this.ensureWriteRateLimitAvailable();
+      }
+      const op = getOperation("coding_architecture");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: coding_architecture");
+      }
+      const output = (await op.run(body, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      })) as { result: unknown };
+      if (isWriteSubcommand) {
+        this.recordWriteRateLimitHit();
+      }
+      this.respondJson(res, 200, output.result);
+      return;
+    }
+
     if (req.method === "POST" && pathname === "/engram/v1/suggestions") {
       const body = await this.readValidatedBody(req, "suggestionSubmit");
       const request = {
@@ -2213,13 +2238,16 @@ export class EngramAccessHttpServer {
       typeof toolArgs === "object" &&
       !Array.isArray(toolArgs) &&
       (toolArgs as { dryRun?: unknown }).dryRun === true;
+    const toolArgsSubcommand =
+      toolArgs !== null && typeof toolArgs === "object" && !Array.isArray(toolArgs) && "subcommand" in toolArgs
+        ? toolArgs.subcommand
+        : undefined;
     const codingDecisionWrite =
       (toolName === "engram.coding_decision" || toolName === "remnic.coding_decision") &&
-      toolArgs !== null &&
-      typeof toolArgs === "object" &&
-      !Array.isArray(toolArgs) &&
-      ((toolArgs as { subcommand?: unknown }).subcommand === "record" ||
-        (toolArgs as { subcommand?: unknown }).subcommand === "supersede");
+      (toolArgsSubcommand === "record" || toolArgsSubcommand === "supersede");
+    const codingArchitectureWrite =
+      (toolName === "engram.coding_architecture" || toolName === "remnic.coding_architecture") &&
+      toolArgsSubcommand === "refresh";
     const isMcpWrite =
       request.method === "tools/call" &&
       (
@@ -2248,7 +2276,8 @@ export class EngramAccessHttpServer {
             toolName === "remnic.memory_action_apply"
           )
         ) ||
-        codingDecisionWrite
+        codingDecisionWrite ||
+        codingArchitectureWrite
       );
     if (isMcpWrite) {
       this.ensureWriteRateLimitAvailable();

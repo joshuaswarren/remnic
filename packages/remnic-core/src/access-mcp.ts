@@ -110,6 +110,7 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.memory_search": "memory_search",
   "engram.memory_store": "memory_store",
   "engram.coding_decision": "coding_decision",
+  "engram.coding_architecture": "coding_architecture",
 };
 
 function resolveChatGptInspectorRecallSessionKey(
@@ -324,6 +325,12 @@ export class EngramMcpServer {
    * pre-feature.
    */
   private readonly codingDecisionVisible: boolean;
+  /**
+   * Whether the `coding_architecture` tool should appear in `tools/list`.
+   * Gated on `codingKnowledge.enabled && codingKnowledge.architectureCard`
+   * (issue #1548 Track A PR 3, rule 39).
+   */
+  private readonly architectureCardVisible: boolean;
 
   constructor(
     private readonly service: EngramAccessService,
@@ -333,12 +340,14 @@ export class EngramMcpServer {
       citationsAutoDetect?: boolean;
       emitLegacyTools?: boolean;
       codingDecisionVisible?: boolean;
+      architectureCardVisible?: boolean;
     } = {},
   ) {
     this.citationsEnabled = options.citationsEnabled === true;
     this.citationsAutoDetect = options.citationsAutoDetect !== false;
     this.emitLegacyTools = options.emitLegacyTools !== false;
     this.codingDecisionVisible = options.codingDecisionVisible === true;
+    this.architectureCardVisible = options.architectureCardVisible === true;
     this.authenticatedPrincipal =
       options.principal?.trim() ||
       readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() ||
@@ -1998,6 +2007,31 @@ export class EngramMcpServer {
         this.emitLegacyTools,
       );
       this.tools = [...this.tools, ...codingDecisionTools];
+    }
+    if (this.architectureCardVisible) {
+      const architectureTools = withToolAliases(
+        {
+          name: "engram.coding_architecture",
+          description:
+            "Get or refresh the architecture card for the session's coding namespace (issue #1548 Track A PR 3). Subcommands: get, refresh.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              subcommand: {
+                type: "string",
+                enum: ["get", "refresh"],
+                description: "Which architecture-card operation to run.",
+              },
+              sessionKey: { type: "string", description: "Session identifier whose coding context scopes the operation." },
+              namespace: { type: "string", description: "Optional explicit namespace (overrides coding-context overlay)." },
+            },
+            required: ["subcommand"],
+            additionalProperties: false,
+          },
+        },
+        this.emitLegacyTools,
+      );
+      this.tools = [...this.tools, ...architectureTools];
     }
   }
 

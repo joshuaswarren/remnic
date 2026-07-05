@@ -25,6 +25,10 @@ import {
   type DecisionSurfaceRequest,
   type DecisionSurfaceResponse,
 } from "./coding/decision-surfaces.js";
+import {
+  type ArchitectureSurfaceRequest,
+  type ArchitectureSurfaceResponse,
+} from "./coding/architecture-surfaces.js";
 
 // ---------------------------------------------------------------------------
 // memory_get — fetch one memory by id
@@ -207,6 +211,46 @@ export const codingDecisionOperation = defineOperation<
 });
 
 // ---------------------------------------------------------------------------
+// coding_architecture — architecture-card surfaces (issue #1548 Track A PR 3)
+// ---------------------------------------------------------------------------
+
+const codingArchitectureSchema = z.preprocess(
+  (data) => {
+    if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+      const obj = data as Record<string, unknown>;
+      const cleaned: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(obj)) {
+        if (value !== null) cleaned[key] = value;
+      }
+      return cleaned;
+    }
+    return data;
+  },
+  z.object({
+    subcommand: z.enum(["get", "refresh"]),
+    sessionKey: z.string().optional(),
+    namespace: z.string().optional(),
+  }),
+);
+
+export type CodingArchitectureInput = ArchitectureSurfaceRequest;
+export type CodingArchitectureOutput = { result: ArchitectureSurfaceResponse };
+
+export const codingArchitectureOperation = defineOperation<
+  CodingArchitectureInput,
+  CodingArchitectureOutput
+>({
+  name: "coding_architecture",
+  description:
+    "Get or refresh the architecture card for the session's coding namespace (issue #1548 Track A PR 3).",
+  schema: codingArchitectureSchema as z.ZodType<CodingArchitectureInput>,
+  handler: async (input, ctx) => {
+    const result = await ctx.service.codingArchitecture(input, ctx.authenticatedPrincipal);
+    return { result };
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Surface registration map — what each transport calls the pilot ops
 // ---------------------------------------------------------------------------
 
@@ -220,4 +264,5 @@ export const REGISTERED_OPERATIONS = [
   memorySearchOperation.spec.name,
   memoryStoreOperation.spec.name,
   codingDecisionOperation.spec.name,
+  codingArchitectureOperation.spec.name,
 ] as const;

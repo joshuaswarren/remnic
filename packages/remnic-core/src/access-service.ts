@@ -19,6 +19,15 @@ import {
   type DecisionSurfaceRequest,
   type DecisionSurfaceResponse,
 } from "./coding/decision-surfaces.js";
+import {
+  handleCodingArchitecture,
+  type ArchitectureSurfaceRequest,
+  type ArchitectureSurfaceResponse,
+  type ArchitectureSurfaceStorage,
+  ARCHITECTURE_CARD_TAG,
+} from "./coding/architecture-surfaces.js";
+import { buildArchitectureCard } from "./coding/architecture-card.js";
+import { createVersion } from "./page-versioning.js";
 import { WorkStorage } from "./work/storage.js";
 import {
   exportWorkBoardMarkdown,
@@ -4480,6 +4489,66 @@ export class EngramAccessService {
           });
         const storage = await this.orchestrator.getStorage(ns);
         return Object.assign(storage, { namespace: ns });
+      },
+      throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+    });
+  }
+
+  /** Whether the coding_architecture tool should appear in tools/list (rule 39). */
+  get architectureCardSurfaceVisible(): boolean {
+    return this.orchestrator.config.codingKnowledge?.enabled === true
+      && this.orchestrator.config.codingKnowledge?.architectureCard === true;
+  }
+  /**
+   * Thin delegate — handler logic in coding/architecture-surfaces.ts (#1548 PR3).
+   * All three surfaces (MCP/HTTP/CLI) arrive here via the boundary operation.
+   * Namespace resolution uses the SAME coding-scoped path as decision records.
+   */
+  async codingArchitecture(
+    request: ArchitectureSurfaceRequest,
+    authenticatedPrincipal?: string,
+  ): Promise<ArchitectureSurfaceResponse> {
+    return handleCodingArchitecture(request, {
+      codingKnowledge: this.orchestrator.config.codingKnowledge,
+      getCodingContext: (sk) => this.orchestrator.getCodingContextForSession(sk),
+      resolveStorage: async (req) => {
+        const isWrite = req.subcommand === "refresh";
+        const ns = isWrite
+          ? await this.resolveCodingScopedWriteNamespace({
+              namespace: req.namespace,
+              sessionKey: req.sessionKey,
+              authenticatedPrincipal,
+            })
+        : await this.resolveCodingScopedReadableNamespace({
+            namespace: req.namespace,
+            sessionKey: req.sessionKey,
+            authenticatedPrincipal,
+          });
+        const storage = await this.orchestrator.getStorage(ns);
+        return Object.assign(storage, { namespace: ns }) as ArchitectureSurfaceStorage;
+      },
+      buildCard: async (repoRoot) => buildArchitectureCard(repoRoot),
+      versioning: {
+        snapshotIfExists: async (memory) => {
+          try {
+            const versioningConfig = {
+              enabled: true,
+              maxVersionsPerPage: 20,
+              sidecarDir: ".versions",
+            };
+            await createVersion(
+              memory.path,
+              memory.content,
+              "manual",
+              versioningConfig,
+              undefined,
+              "architecture-card-refresh",
+              this.orchestrator.config.memoryDir,
+            );
+          } catch (err) {
+            // Best-effort — a snapshot failure does not block the refresh.
+          }
+        },
       },
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
     });
