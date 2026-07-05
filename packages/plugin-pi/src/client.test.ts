@@ -428,3 +428,20 @@ test("requestWithRetry bails before the backoff sleep when the budget is smaller
   assert.ok(elapsed < 150, `bailed before the 200ms backoff (elapsed ${elapsed}ms)`);
   assert.equal(calls, 1);
 });
+
+test("recall shares a per-turn deadline across retries even when the caller omits timeoutMs (review cursor)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new Error("The socket connection was closed unexpectedly.");
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const client = new RemnicClient({ ...baseConfig(), turnRequestTimeoutMs: 50, observeMaxRetries: 3 });
+  await assert.rejects(
+    () => client.recall("query", "sess", "/cwd"),
+    /exceeded the 50ms budget before retry/,
+  );
+  assert.equal(calls, 1, "recall defaulted to the turn budget and stopped retries instead of looping unbounded");
+});

@@ -105,8 +105,16 @@ export class RemnicClient {
     options: RequestOptions = {},
   ): Promise<RecallResponse> {
     // Recall is a read-only query; retry transient connection failures with the
-    // same budget as observe (#1602).
-    const merged: RequestOptions = { ...options, maxRetries: options.maxRetries ?? this.config.observeMaxRetries };
+    // same budget as observe (#1602). Default to the per-turn budget when the
+    // caller omits timeoutMs so the retries share one deadline (like observe)
+    // instead of each attempt reusing the full general request timeout (cursor
+    // review). Callers that need more (e.g. the manual /remnic-recall command)
+    // pass an explicit timeoutMs.
+    const merged: RequestOptions = {
+      ...options,
+      timeoutMs: options.timeoutMs ?? this.config.turnRequestTimeoutMs,
+      maxRetries: options.maxRetries ?? this.config.observeMaxRetries,
+    };
     return this.requestWithRetry(
       "POST",
       "/engram/v1/recall",
