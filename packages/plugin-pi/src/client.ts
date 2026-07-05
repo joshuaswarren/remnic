@@ -341,6 +341,18 @@ export class RemnicClient {
       } catch (err) {
         if (attempt >= maxRetries || !isTransientNetworkError(err)) throw err;
         const delayMs = RETRY_BASE_DELAY_MS * 2 ** attempt;
+        if (hasDeadline) {
+          // The backoff sleep counts against the shared deadline; bail BEFORE
+          // sleeping if the sleep alone would overshoot the remaining budget,
+          // so a sub-backoff timeoutMs never blocks for the full backoff only
+          // to then throw (cursor review).
+          const remainingBeforeSleep = deadline - Date.now();
+          if (remainingBeforeSleep <= delayMs) {
+            throw new Error(
+              `Remnic request exceeded the ${budgetMs}ms budget before retry ${attempt + 1} (${method} ${pathname})`,
+            );
+          }
+        }
         await sleep(delayMs);
         attempt += 1;
         if (hasDeadline) {

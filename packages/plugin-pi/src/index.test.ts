@@ -9,6 +9,7 @@ import { Kind } from "@sinclair/typebox";
 import remnicPiExtension, {
   buildCompactionSummary,
   createRemnicPiExtension,
+  isDaemonUnreachableError,
   observeMessages,
   stripSessionOwnedSchemaFields,
   stripSessionOwnedRuntimeFields,
@@ -1515,4 +1516,69 @@ test("retry-budget exhaustion trips the circuit breaker so the next turn cools d
   // Second turn: breaker is in cooldown -> observe is skipped, no new fetch.
   await emit("turn_end", { message }, ctx);
   assert.equal(calls, callsAfterFirst, "breaker skipped the second turn after budget exhaustion");
+});
+
+test("isDaemonUnreachableError recognizes both budget-exceeded wordings so the breaker trips (review cursor)", () => {
+  // requestWithRetry retry-budget exhaustion:
+  assert.ok(
+    isDaemonUnreachableError(new Error("Remnic request exceeded the 50ms budget before retry 1 (POST /engram/v1/observe)")),
+    "retry-budget exhaustion is unreachable",
+  );
+  // Multi-chunk observe per-turn budget exhaustion:
+  assert.ok(
+    isDaemonUnreachableError(new Error("Remnic observe exceeded the per-turn budget of 20ms across 3 chunks (completed 1)")),
+    "multi-chunk observe budget exhaustion is unreachable",
+  );
+  // A semantic HTTP-style error is NOT classified as unreachable:
+  assert.ok(!isDaemonUnreachableError(new Error("Internal Server Error")), "HTTP errors stay reachable");
+});
+
+test("a successful startup health probe clears a stale circuit breaker (review codex)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (input, init) => {
+    calls += 1;
+    const url = String(input);
+    if (url.endsWith("/engram/v1/health")) {
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    // recall hangs until the AbortController fires, simulating an unreachable daemon.
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      observeEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: true,
+      turnRequestTimeoutMs: 30,
+      daemonCooldownMs: 60000,
+    },
+  });
+  await extension(pi as any);
+
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    ui: { setStatus: () => {}, notify: () => {} },
+    sessionManager: { getSessionId: () => "status-clear-breaker" },
+  };
+  const event = { messages: [{ role: "user", content: "hi" }] };
+
+  // 1) recall times out -> breaker tripped.
+  await emit("context", event, ctx);
+  // 2) session_start health succeeds -> clears the stale breaker.
+  await emit("session_start", {}, ctx);
+  // 3) recall now runs instead of fast-skipping.
+  const callsBeforeSecondRecall = calls;
+  await emit("context", event, ctx);
+  assert.ok(calls > callsBeforeSecondRecall, "recall ran after the health probe cleared the breaker");
 });

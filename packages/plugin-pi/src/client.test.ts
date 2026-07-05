@@ -405,3 +405,26 @@ test("chunkObservePayload truncates oversize messages even when the per-message 
     "oversize message was truncated rather than passed through",
   );
 });
+
+test("requestWithRetry bails before the backoff sleep when the budget is smaller than the backoff (review cursor)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new Error("The socket connection was closed unexpectedly.");
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const client = new RemnicClient({ ...baseConfig(), observeMaxRetries: 3 });
+  // Budget (50ms) is far below the first 200ms exponential backoff. The old
+  // code slept the full 200ms before detecting the overshoot; the fix checks
+  // before sleeping, so we bail in well under the backoff.
+  const start = Date.now();
+  await assert.rejects(
+    () => client.recall("query", "sess", "/cwd", { timeoutMs: 50, maxRetries: 3 }),
+    /exceeded the 50ms budget before retry/,
+  );
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 150, `bailed before the 200ms backoff (elapsed ${elapsed}ms)`);
+  assert.equal(calls, 1);
+});

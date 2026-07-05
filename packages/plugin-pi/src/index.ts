@@ -574,6 +574,11 @@ function persistObservedState(pi: PiApi, observedHashes: Set<string>): void {
 async function setStatus(session: PiContextSnapshot, client: RemnicClient, config: RemnicPiConfig): Promise<void> {
   try {
     await client.health({ timeoutMs: config.startupRequestTimeoutMs });
+    // A successful health probe means the daemon is reachable, so clear any
+    // stale cooldown a prior recall/observe timeout left on the shared client —
+    // otherwise the next live hook fast-skips even though the daemon is up
+    // (codex review).
+    client.markReachable();
     session.setStatus("remnic", `Remnic ${config.namespace ? `(${config.namespace})` : "ready"}`);
   } catch {
     session.setStatus("remnic", "Remnic offline");
@@ -706,7 +711,7 @@ function trimContext(value: string, budget: number): string {
 }
 
 
-function isDaemonUnreachableError(err: unknown): boolean {
+export function isDaemonUnreachableError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   if (/Remnic request timed out/.test(err.message)) return true;
   // Retry-budget exhaustion means transient failures ate the whole per-turn
@@ -715,6 +720,11 @@ function isDaemonUnreachableError(err: unknown): boolean {
   // full budget on the next hook (codex review). This error only arises from
   // transient connection failures, never from a semantic HTTP response.
   if (/Remnic request exceeded the \d+ms budget before retry/.test(err.message)) return true;
+  // Multi-chunk observe throws its own budget-exceeded message when the shared
+  // per-turn deadline is exhausted across chunks; that is also an effectively-
+  // unreachable condition for the turn, so trip the breaker and fast-skip
+  // subsequent turns instead of piling on more doomed chunked observes (cursor).
+  if (/Remnic observe exceeded the per-turn budget of \d+ms/.test(err.message)) return true;
   return isTransientNetworkError(err);
 }
 
