@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -642,7 +643,7 @@ test("omp publisher publishes config, wrapper, readme, pre-bundle loader, and ma
   const ompManifest = pkg.omp as { extensions?: string[] } | undefined;
   assert.deepEqual(ompManifest?.extensions, ["./loader.js"]);
   const scripts = pkg.scripts as { postinstall?: string } | undefined;
-  assert.ok(scripts?.postinstall?.includes("bun build"), "postinstall must run bun build");
+  assert.ok(scripts?.postinstall?.includes("build index.ts"), "postinstall must run bun build");
 
   const loader = fs.readFileSync(loaderPath, "utf8");
   assert.match(loader, /bundleIsStale/, "loader must have staleness check");
@@ -911,14 +912,21 @@ test("omp publisher loader.js embeds the plugin-pi dist path for mtime self-heal
   const loader = fs.readFileSync(path.join(extensionRoot, "loader.js"), "utf8");
   const wrapper = fs.readFileSync(path.join(extensionRoot, "index.ts"), "utf8");
 
-  // The loader must reference the same plugin-pi dist path that the wrapper imports from,
-  // so mtime self-healing detects npm updates of @remnic/plugin-pi.
-  const wrapperImportMatch = wrapper.match(/from\s+"(file:\/\/.+plugin-pi\/(?:src|dist)\/index\.(?:ts|js))"/);
-  assert.ok(wrapperImportMatch, "wrapper must import from plugin-pi dist");
-  const wrapperPath = wrapperImportMatch[1].replace(/^file:\/\//, "");
+  // omp pre-bundles the wrapper with `bun build`, whose bundler cannot resolve
+  // file:// specifiers (verified Bun 1.2–1.3: "Could not resolve: file://...").
+  // The wrapper must therefore use a relative import specifier; the loader
+  // still embeds the absolute plugin-pi dist path for mtime self-healing.
+  assert.doesNotMatch(
+    wrapper,
+    /from\s+"file:\/\//,
+    "omp wrapper must not use a file:// import (bun build cannot resolve it)",
+  );
+  const relMatch = wrapper.match(/from\s+"(\.\.?\/[^"]+)"/);
+  assert.ok(relMatch, "omp wrapper must use a relative import specifier for bun build");
+  const resolvedPluginPiEntry = path.resolve(extensionRoot, relMatch[1]);
   assert.ok(
-    loader.includes(JSON.stringify(wrapperPath)),
-    `loader must embed the plugin-pi dist path (${wrapperPath}) for mtime comparison`,
+    loader.includes(JSON.stringify(resolvedPluginPiEntry)),
+    `loader must embed the plugin-pi dist path (${resolvedPluginPiEntry}) for mtime comparison`,
   );
 });
 
@@ -1154,3 +1162,127 @@ function createFakeBunScript(): string {
     "",
   ].join("\n");
 }
+
+// ── Regression (PR #1641 / #1598, P1): omp pre-bundles index.ts with
+// `bun build`, whose bundler cannot resolve file:// import specifiers. The
+// generated wrapper must use a relative specifier so a real bun build produces
+// dist-bundle (the fake-bun tests never parse the entry, so this is the only
+// guard against the file:// regression).
+test("omp publisher wrapper is bun-buildable (relative import, not file://)", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-wrapper-bunbuild-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  process.env.REMNIC_OMP_BUN_BIN = createFakeBun(root);
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  await new OmpMemoryExtensionPublisher().publish({
+    config: { memoryDir: path.join(root, "memory") },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+
+  const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
+  const wrapperPath = path.join(extensionRoot, "index.ts");
+  const wrapper = fs.readFileSync(wrapperPath, "utf8");
+  assert.doesNotMatch(
+    wrapper,
+    /from\s+"file:\/\//,
+    "omp wrapper must not use a file:// import (bun build cannot resolve it)",
+  );
+  assert.match(wrapper, /from\s+"\.\.?\//, "omp wrapper must use a relative import specifier");
+
+  // Live `bun build` of the generated wrapper is not feasible in this
+  // isolated test: plugin-pi's transitive bare-specifier imports (e.g.
+  // `@remnic/core`) need the real omp node_modules layout to resolve. The
+  // specifier fix itself was verified during development with a self-contained
+  // target — `file://` fails with "Could not resolve" on Bun 1.2–1.3 while a
+  // relative specifier produces the bundle — so here we guard the mechanism
+  // (relative, not file://) that makes a real install buildable.
+});
+
+// ── Regression (PR #1641 / #1598): package.json postinstall must reuse the
+// resolved bun path so `npm install` re-bundles on systems where bun is not on
+// the PATH npm inherits.
+test("omp publisher package.json postinstall uses the resolved bun path", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-postinstall-bun-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  const resolvedBun = createFakeBun(root);
+  process.env.REMNIC_OMP_BUN_BIN = resolvedBun;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  await new OmpMemoryExtensionPublisher().publish({
+    config: { memoryDir: path.join(root, "memory") },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+  });
+
+  const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
+  const pkg = JSON.parse(fs.readFileSync(path.join(extensionRoot, "package.json"), "utf8")) as {
+    scripts: { postinstall: string };
+  };
+  const postinstall = pkg.scripts.postinstall;
+  assert.ok(
+    postinstall.includes(resolvedBun),
+    `postinstall must reference the resolved bun path (${resolvedBun})`,
+  );
+  assert.ok(postinstall.includes("build index.ts"), "postinstall must run bun build");
+  assert.match(
+    postinstall,
+    /\|\|\s*BUN=bun/,
+    "postinstall must fall back to PATH bun when the resolved binary is missing",
+  );
+  assert.doesNotMatch(
+    postinstall,
+    /^bun build\s/,
+    "postinstall must not invoke a bare bun (would fail when bun is not on PATH)",
+  );
+});

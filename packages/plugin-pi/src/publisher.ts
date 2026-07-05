@@ -153,6 +153,16 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
   }
 
   /**
+   * Whether the generated wrapper must use a bun-buildable import specifier
+   * (relative path) instead of a file:// URL. omp pre-bundles the wrapper with
+   * `bun build`, which cannot resolve file:// specifiers; pi loads the wrapper
+   * directly via tsx and keeps the file:// URL.
+   */
+  protected get usesBundledWrapper(): boolean {
+    return false;
+  }
+
+  /**
    * Hook for subclasses to write host-specific files and run install-time
    * build steps after the shared config/wrapper/readme are written. Runs
    * inside the publish try-block: a throw triggers full rollback.
@@ -266,7 +276,15 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
       atomicWriteFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
       filesWritten.push(configPath);
 
-      atomicWriteFile(wrapperPath, renderWrapper(pluginPiDistPath, configPath), 0o644);
+      atomicWriteFile(
+        wrapperPath,
+        renderWrapper(
+          pluginPiDistPath,
+          configPath,
+          this.usesBundledWrapper ? extensionRoot : undefined,
+        ),
+        0o644,
+      );
       filesWritten.push(wrapperPath);
 
       atomicWriteFile(readmePath, `${await this.renderInstructions(ctx)}\n`, 0o644);
@@ -278,8 +296,12 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
       }
     } catch (err) {
       try {
-        restorePublishSnapshot(extensionRoot, rootExisted, fileSnapshots);
+        // Remove newly created owned dirs (e.g. dist-bundle) BEFORE
+        // restorePublishSnapshot's removeEmptyDirectory check, otherwise a
+        // first-time publish that created dist-bundle would leave an empty
+        // extension root behind on rollback.
         restoreDirSnapshots(dirSnapshots);
+        restorePublishSnapshot(extensionRoot, rootExisted, fileSnapshots);
       } catch (restoreErr) {
         ctx.log.warn(
           `${this.host.displayName} extension rollback failed: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`,
@@ -366,6 +388,12 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
     return ["dist-bundle"];
   }
 
+  // omp pre-bundles index.ts with `bun build`; the wrapper must use a relative
+  // import specifier (bun's bundler cannot resolve file:// URLs).
+  protected get usesBundledWrapper(): boolean {
+    return true;
+  }
+
   protected finalizePublish(
     ctx: PublishContext,
     extensionRoot: string,
@@ -388,7 +416,7 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
     const packageJsonPath = path.join(extensionRoot, "package.json");
 
     atomicWriteFile(loaderPath, renderOmpLoader(paths.pluginPiDistPath, bunBin), 0o644);
-    atomicWriteFile(packageJsonPath, renderOmpPackageJson(), 0o644);
+    atomicWriteFile(packageJsonPath, renderOmpPackageJson(bunBin), 0o644);
 
     this.runBundleBuild(ctx, extensionRoot, bunBin);
   }
@@ -516,10 +544,27 @@ function resolveExtensionModulePath(): string {
   return built;
 }
 
-function renderWrapper(extensionModulePath: string, configPath: string): string {
-  const moduleUrl = pathToFileURL(extensionModulePath).href;
+function renderWrapper(
+  extensionModulePath: string,
+  configPath: string,
+  wrapperDir?: string,
+): string {
+  // omp pre-bundles this entry with `bun build`, whose bundler cannot resolve
+  // `file://` specifiers — it exits with "Could not resolve: file://..." on
+  // Bun 1.2–1.3 (verified). When the wrapper will be bun-built, emit a relative
+  // specifier resolved against the wrapper's directory; bun, tsx, and Node ESM
+  // all resolve relative specifiers. For tsx-loaded wrappers (pi) the file://
+  // URL is retained.
+  let importSpecifier: string;
+  if (wrapperDir) {
+    let rel = path.relative(wrapperDir, extensionModulePath);
+    if (process.platform === "win32") rel = rel.split(path.sep).join("/");
+    importSpecifier = rel.startsWith(".") ? rel : `./${rel}`;
+  } else {
+    importSpecifier = pathToFileURL(extensionModulePath).href;
+  }
   return [
-    `import { createRemnicPiExtension } from ${JSON.stringify(moduleUrl)};`,
+    `import { createRemnicPiExtension } from ${JSON.stringify(importSpecifier)};`,
     "",
     `export default createRemnicPiExtension({ configPath: ${JSON.stringify(configPath)} });`,
     "",
@@ -593,7 +638,16 @@ function renderOmpLoader(pluginPiDistPath: string, bunBin: string): string {
  * Generates the `package.json` that tells omp to load `loader.js` (not
  * auto-discover `index.ts`) and re-bundles after `npm install` via postinstall.
  */
-function renderOmpPackageJson(): string {
+function renderOmpPackageJson(bunBin: string): string {
+  // Postinstall re-bundles after `npm install` (e.g. a plugin-pi upgrade moved
+  // the dist mtime past the bundle). Reuse the bun path resolved at install
+  // time so postinstall succeeds on systems where bun is reachable only via
+  // REMNIC_OMP_BUN_BIN or a common absolute path that is not on the PATH npm
+  // spawns postinstall with. Fall back to PATH "bun" if the resolved binary no
+  // longer exists (e.g. the extension tree was relocated).
+  const safeBun = bunBin.replace(/'/g, "'\\''");
+  const postinstall =
+    `BUN='${safeBun}'; [ -x "$BUN" ] 2>/dev/null || BUN=bun; "$BUN" build index.ts --target=bun --outdir=dist-bundle`;
   const manifest = {
     name: "remnic-omp-extension",
     version: "0.0.0",
@@ -603,9 +657,7 @@ function renderOmpPackageJson(): string {
     // Legacy key so older omp builds that only read `pi.extensions` also
     // resolve loader.js instead of falling through to index.ts.
     pi: { extensions: ["./loader.js"] },
-    scripts: {
-      postinstall: "bun build index.ts --target=bun --outdir=dist-bundle",
-    },
+    scripts: { postinstall },
   };
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
