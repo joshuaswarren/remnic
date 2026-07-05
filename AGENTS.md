@@ -96,6 +96,27 @@ These rules are the default workflow for all agents and contributors.
 Reference workflow:
 `docs/ops/pr-review-hardening-playbook.md`
 
+## CI Review-Gate Scheduling (Read Before Iterating on a PR)
+
+The `ai-reviewers` (AI Review Gate) and `unresolved-review-threads` (Review Thread
+Guard) required checks are **coalescing, not force-cancelling**
+(`concurrency.cancel-in-progress: false`). Work with this, not against it:
+
+1. Do not push per-fix. Every push re-triggers the gates; runs coalesce to the
+   latest and the AI gate self-supersedes when the head advances, so only the
+   settled head SHA pays a full review. Batch all bot findings into ONE commit,
+   then push once. This is the existing anti-churn rule, now enforced by
+   scheduling instead of discipline alone.
+2. A superseded AI-gate run exits neutral by design. An older `neutral`/skipped
+   run is expected and never blocks merge — the head SHA's own run is what
+   gates. Do not "rerun" a superseded older run; push the settled fix and let
+   the head run complete.
+3. Commit + push after every green sub-step. Background finisher agents are
+   killed at a runtime cap; work held uncommitted across that cap is lost and
+   must be re-derived from scratch (the dominant source of wasted cycles). Never
+   audit-then-hold — commit incrementally so a killed worker leaves recoverable
+   state on the branch.
+
 ## Why Stateful PRs Churn (Read Before Touching Lifecycle Logic)
 
 PRs in retrieval, session identity, compaction, cache, or reset/end-of-session code
