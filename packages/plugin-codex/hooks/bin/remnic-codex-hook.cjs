@@ -599,8 +599,13 @@ function migrateTmpCursor(sessionId, cursorFile, log) {
 // suits foreground hooks; PreCompact's tail drain passes a larger budget so it
 // can outlast a detached PostToolUse observe worker holding the lock, ensuring
 // the subsequent flush sees the worker's queued messages instead of racing.
+// 0 means "try once, don't wait/retry" — a free lock is still taken; only a
+// busy lock is skipped immediately (used by the 0-retry test/fleet path). This
+// avoids the degenerate "0 retries skips acquisition entirely" case (#1571
+// review) where a free lock would be wastefully bypassed.
 function acquireLock(lockFile, log, retries = 50) {
-  for (let i = 0; i < retries; i++) {
+  const attempts = Math.max(1, retries);
+  for (let i = 0; i < attempts; i++) {
     try {
       fs.mkdirSync(lockFile);
       return true;
@@ -712,7 +717,7 @@ async function handleSessionStart(input, token, log) {
   let res = await httpPost(
     "/engram/v1/recall",
     token,
-    { query, sessionKey: sessionId, topK: 12, mode: "auto", codingContext },
+    withNamespace({ query, sessionKey: sessionId, topK: 12, mode: "auto", codingContext }),
     45000,
   );
   if (!res.ok || !res.body) {
@@ -720,7 +725,7 @@ async function handleSessionStart(input, token, log) {
     res = await httpPost(
       "/engram/v1/recall",
       token,
-      { query, sessionKey: sessionId, topK: 8, mode: "minimal", codingContext },
+      withNamespace({ query, sessionKey: sessionId, topK: 8, mode: "minimal", codingContext }),
       20000,
     );
     log(res.ok && res.body ? "minimal recall succeeded" : "minimal recall also failed");
@@ -769,7 +774,7 @@ async function handleUserPromptRecall(input, token, log) {
   const res = await httpPost(
     "/engram/v1/recall",
     token,
-    { query: prompt, sessionKey: sessionId, topK: 8, mode: "minimal" },
+    withNamespace({ query: prompt, sessionKey: sessionId, topK: 8, mode: "minimal" }),
     20000,
   );
   if (!res.ok || !res.body) {

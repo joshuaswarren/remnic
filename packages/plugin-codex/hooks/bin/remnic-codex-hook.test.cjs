@@ -1033,3 +1033,62 @@ test("session-start: a path-prefixed REMNIC_DAEMON_URL routes under the prefix (
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("session-start: REMNIC_NAMESPACE scopes the recall body (#1571 review, parity with plugin-pi)", async () => {
+  // plugin-pi's recall() sets namespace: this.config.namespace on every recall
+  // body. For parity, the Codex recall paths must too — otherwise a namespaced
+  // install recalls from the default key while observing to the namespaced key.
+  const home = mkHome();
+  const { server, port, calls } = await startServer((req, res) => {
+    if (req.url === "/engram/v1/health") return res.writeHead(200).end("ok");
+    if (req.url === "/engram/v1/recall") {
+      return res.writeHead(200, { "Content-Type": "application/json" }).end(
+        JSON.stringify({ context: "namespaced recall", count: 1, mode: "auto" }),
+      );
+    }
+    res.writeHead(404).end();
+  });
+  try {
+    await runHook(
+      "session-start",
+      { session_id: "recall-ns", cwd: home },
+      { port, home, env: { extra: { REMNIC_NAMESPACE: "fleet/gamma" } } },
+    );
+    const recall = calls.find((c) => c.url === "/engram/v1/recall");
+    assert.ok(recall, "recall was called");
+    assert.equal(recall.body.namespace, "fleet/gamma", "recall body carries the namespace (parity with plugin-pi)");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pre-compact: REMNIC_PRECOMPACT_LOCK_RETRIES=0 still takes a FREE lock (does not skip acquisition) (#1571 review)", async () => {
+  // 0 retries must mean "try once, don't wait" — a free lock is taken and the
+  // drain+flush proceed normally; only a busy lock is skipped immediately.
+  const home = mkHome();
+  const sessionId = "compact-zero-free";
+  const tpath = transcript(home, [
+    { role: "user", content: "free-lock turn" },
+    { role: "assistant", content: "reply" },
+  ]);
+  fs.mkdirSync(path.join(home, "state", "remnic", "hooks"), { recursive: true });
+  fs.writeFileSync(cursorPath(home, sessionId), "0\n");
+  const { server, port, calls } = await startServer((req, res) =>
+    res.writeHead(200, { "Content-Type": "application/json" }).end('{"ok":true}'),
+  );
+  try {
+    const { json } = await runHook(
+      "pre-compact",
+      { session_id: sessionId, transcript_path: tpath, trigger: "auto", cwd: home },
+      { port, home, env: { extra: { REMNIC_PRECOMPACT_LOCK_RETRIES: "0" } } },
+    );
+    assert.deepEqual(json, { continue: true });
+    // Lock was FREE → acquired on the single attempt → drain + flush ran.
+    assert.ok(calls.some((c) => c.url === "/engram/v1/lcm/compaction/flush"), "flush ran (free lock taken despite 0 retries)");
+    assert.ok(calls.some((c) => c.url === "/engram/v1/observe"), "tail drain ran (free lock taken despite 0 retries)");
+  } finally {
+    server.close();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
