@@ -1225,7 +1225,7 @@ test("upsertEdges: rejects invalid provenance / out-of-range confidence at the b
     // a bad edge is a contract violation, not a tagged failure).
     await assert.rejects(
       store.upsertEdges([
-        { srcQualifiedName: "a.greet", dstQualifiedName: "a.farewell", type: "HTTP_CALLS", confidence: 0.5, provenance: "bogus" },
+        { srcQualifiedName: "a.greet", dstQualifiedName: "a.farewell", type: "HTTP_CALLS", confidence: 0.5, provenance: "bogus" as never },
       ]),
       /provenance/,
     );

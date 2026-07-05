@@ -18,6 +18,7 @@
  * Track A's architecture card with live graph stats. Zero duplicated ADR
  * or architecture-card logic.
  */
+import { createHash } from "node:crypto";
 import type { PluginConfig, CodingContext } from "../types.js";
 import {
   codegraphRuntimeAvailable,
@@ -329,6 +330,13 @@ async function handleGetSchema(
   tool: CodegraphToolName,
 ): Promise<CodegraphSurfaceResponse> {
   const stats = store.schemaStats();
+  // Thread 12 (cursor bugbot): a closed-store / invalid-query failure arrives
+  // as { ok: false, code }. The surface MUST mirror that to ok:false so MCP/HTTP
+  // clients honoring CodegraphSurfaceResponse.ok do not treat failures as
+  // successes (search_code already did this; the other read handlers did not).
+  if (!stats.ok) {
+    return { tool, ok: false, code: stats.code, message: "schemaStats failed" };
+  }
   return { tool, ok: true, result: stats };
 }
 
@@ -342,6 +350,9 @@ async function handleSearchGraph(
   // Map the surface `query` to the store's SearchQuery shape: the store's
   // searchGraph reads `namePattern` (not `query`) for symbol-name matching.
   const result = store.searchGraph({ namePattern: query, limit });
+  if (!result.ok) {
+    return { tool: request.tool, ok: false, code: result.code, message: "searchGraph failed" };
+  }
   return { tool: request.tool, ok: true, result };
 }
 
@@ -396,6 +407,9 @@ async function handleTracePath(
   // expects `incoming`/`outgoing`/`both` and `maxDepth` (not depth).
   const storeDirection = direction === "outbound" ? "outgoing" : direction === "inbound" ? "incoming" : direction;
   const result = store.traverse({ start, direction: storeDirection, maxDepth: depth });
+  if (!result.ok) {
+    return { tool: request.tool, ok: false, code: result.code, message: "traverse failed" };
+  }
   return { tool: request.tool, ok: true, result };
 }
 
@@ -406,6 +420,9 @@ async function handleGetSnippet(
 ): Promise<CodegraphSurfaceResponse> {
   const qualifiedName = requireString(request.qualifiedName, "qualifiedName", ctx);
   const result = await store.snippetFor({ qualifiedName });
+  if (!result.ok) {
+    return { tool: request.tool, ok: false, code: result.code, message: "snippetFor failed" };
+  }
   return { tool: request.tool, ok: true, result };
 }
 
@@ -428,6 +445,9 @@ async function handleQueryGraph(
   // The structured query is forwarded verbatim; the store validates the
   // inner shape. The surface never interprets query internals.
   const result = store.searchGraph(request.structuredQuery);
+  if (!result.ok) {
+    return { tool: request.tool, ok: false, code: result.code, message: "searchGraph failed" };
+  }
   return { tool: request.tool, ok: true, result };
 }
 
@@ -495,9 +515,23 @@ async function handleIndex(
   // via ctx.runReindex below — GraphStore.open only creates/applies the
   // schema; it does NOT parse or ingest files (P1 fix: previously the
   // handler returned ok:true after open + schemaStats without reindexing).
+  //
+  // Thread 7 (issue #1554): the schema advertises codegraph_index as
+  // callable with only repoRoot, but resolveStore requires a project id or
+  // a session coding context. Derive a stable project id from repoRoot when
+  // the caller supplied neither, so a standalone stdio-MCP index call works
+  // (matches the root:<hex> id convention used by coding contexts).
+  // Build a mutable resolve request: project may be derived below (thread 7).
+  const resolveReq = { ...request, repoRoot } as CodegraphSurfaceRequest & { project?: string };
+  if (
+    (typeof resolveReq.project !== "string" || resolveReq.project.trim().length === 0) &&
+    !hasCodingContext(resolveReq, ctx)
+  ) {
+    resolveReq.project = `root:${projectIdHash(repoRoot)}`;
+  }
   let store: CodegraphStore;
   try {
-    store = await ctx.resolveStore({ ...request, repoRoot });
+    store = await ctx.resolveStore(resolveReq);
   } catch (err) {
     if (err instanceof CodegraphRuntimeError) {
       return { tool: request.tool, ok: false, code: err.code, message: err.message };
@@ -722,6 +756,29 @@ function resolveRepoRoot(request: CodegraphSurfaceRequest, ctx: CodegraphSurface
     return request.repoRoot.trim();
   }
   return resolveCodingContext(request, ctx).rootPath;
+}
+
+/**
+ * Whether the request carries a usable coding context (non-empty sessionKey
+ * with an attached context). Used by handleIndex to decide whether to derive
+ * a project id from repoRoot: when a coding context IS present, resolveStore
+ * uses its projectId, so derivation must not run (thread 7).
+ */
+function hasCodingContext(request: CodegraphSurfaceRequest, ctx: CodegraphSurfaceContext): boolean {
+  if (typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
+    return false;
+  }
+  return ctx.getCodingContext(request.sessionKey) !== null;
+}
+
+/**
+ * Derive a stable, filesystem-safe project id from a repo root path
+ * (thread 7). SHA-256 keeps it fixed-length and collision-resistant; the
+ * `root:` prefix matches the coding-context id convention so a derived id
+ * is distinguishable from an `origin:<hex>` remote id in tools/list output.
+ */
+function projectIdHash(repoRoot: string): string {
+  return createHash("sha256").update(repoRoot).digest("hex").slice(0, 16);
 }
 
 /**

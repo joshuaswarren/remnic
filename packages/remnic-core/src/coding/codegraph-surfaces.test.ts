@@ -29,6 +29,7 @@ import {
   type CodegraphSurfaceRequest,
   type CodegraphSurfaceResponse,
 } from "./codegraph-surfaces.js";
+import type { CodegraphStore } from "./codegraph-runtime.js";
 import type { DecisionSurfaceRequest, DecisionSurfaceResponse } from "./decision-surfaces.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -127,7 +128,7 @@ const MOCK_STORE = {
   snippetFor: async () => ({ ok: false, code: "not_found" }),
   deadCode: () => ({ ok: true, hits: [] }),
   close: async () => {},
-} as unknown as import("./codegraph-runtime.js").CodegraphStore;
+} as unknown as CodegraphStore;
 
 function makeEnabledCtx(overrides: Partial<CodegraphSurfaceContext> = {}): CodegraphSurfaceContext {
   const pluginConfig = {
@@ -673,7 +674,7 @@ test("search_code: respects the kind filter via per-kind label queries (issue #1
             : [],
       };
     },
-  } as unknown as import("./codegraph-runtime.js").CodegraphStore;
+  } as unknown as CodegraphStore;
   const ctx = makeEnabledCtx({ resolveStore: async () => store });
   const response = await handleCodegraphTool(
     { tool: "search_code", query: "foo" },
@@ -686,4 +687,130 @@ test("search_code: respects the kind filter via per-kind label queries (issue #1
   if (!response.ok) throw new Error("expected ok");
   const result = response.result as { hits: { nodeId: string }[] };
   assert.equal(result.hits.length, 2, "merges hits across kinds, deduped by nodeId");
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Thread 12 (cursor bugbot): read handlers propagate store { ok:false } →
+// surface ok:false (previously several handlers always returned ok:true).
+// ──────────────────────────────────────────────────────────────────────────
+
+test("read-failure propagation: get_schema surfaces store failure as ok:false (thread 12)", async () => {
+  const store = {
+    ...MOCK_STORE,
+    schemaStats: () => ({ ok: false, code: "store_closed" }),
+  } as unknown as CodegraphStore;
+  const ctx = makeEnabledCtx({ resolveStore: async () => store });
+  const response = await handleCodegraphTool({ tool: "get_schema" }, ctx);
+  assert.equal(response.ok, false, "get_schema must mirror a store failure");
+  if (!response.ok) {
+    assert.equal(response.code, "store_closed");
+  }
+});
+
+test("read-failure propagation: search_graph surfaces store failure as ok:false (thread 12)", async () => {
+  const store = {
+    ...MOCK_STORE,
+    searchGraph: () => ({ ok: false, code: "store_closed" }),
+  } as unknown as CodegraphStore;
+  const ctx = makeEnabledCtx({ resolveStore: async () => store });
+  const response = await handleCodegraphTool({ tool: "search_graph", query: "x" }, ctx);
+  assert.equal(response.ok, false);
+  if (!response.ok) {
+    assert.equal(response.code, "store_closed");
+  }
+});
+
+test("read-failure propagation: trace_path surfaces traverse failure as ok:false (thread 12)", async () => {
+  const store = {
+    ...MOCK_STORE,
+    traverse: () => ({ ok: false, code: "store_closed" }),
+  } as unknown as CodegraphStore;
+  const ctx = makeEnabledCtx({ resolveStore: async () => store });
+  const response = await handleCodegraphTool(
+    { tool: "trace_path", start: "a.b", direction: "outbound" },
+    ctx,
+  );
+  assert.equal(response.ok, false);
+  if (!response.ok) {
+    assert.equal(response.code, "store_closed");
+  }
+});
+
+test("read-failure propagation: get_snippet surfaces snippetFor failure as ok:false (thread 12)", async () => {
+  const store = {
+    ...MOCK_STORE,
+    snippetFor: async () => ({ ok: false, code: "not_found" }),
+  } as unknown as CodegraphStore;
+  const ctx = makeEnabledCtx({ resolveStore: async () => store });
+  const response = await handleCodegraphTool(
+    { tool: "get_snippet", qualifiedName: "a.b" },
+    ctx,
+  );
+  assert.equal(response.ok, false);
+  if (!response.ok) {
+    assert.equal(response.code, "not_found");
+  }
+});
+
+test("read-failure propagation: query_graph surfaces structured-query failure as ok:false (thread 12)", async () => {
+  const store = {
+    ...MOCK_STORE,
+    searchGraph: () => ({ ok: false, code: "store_closed" }),
+  } as unknown as CodegraphStore;
+  const ctx = makeEnabledCtx({ resolveStore: async () => store });
+  const response = await handleCodegraphTool(
+    { tool: "query_graph", structuredQuery: { namePattern: "x" } },
+    ctx,
+  );
+  assert.equal(response.ok, false);
+  if (!response.ok) {
+    assert.equal(response.code, "store_closed");
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Thread 7 (issue #1554): codegraph_index derives a project id from repoRoot
+// when the caller supplies neither a project nor a session coding context,
+// so a standalone stdio-MCP index call works (the schema advertises
+// repoRoot-only). When a coding context IS present, its projectId is used.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("index: derives root:<hash> project from repoRoot when no project/context (thread 7)", async () => {
+  let resolvedProject: unknown = undefined;
+  const ctx = makeEnabledCtx({
+    // No coding context attached to any session.
+    getCodingContext: () => null,
+    resolveStore: async (req) => {
+      resolvedProject = req.project;
+      return MOCK_STORE;
+    },
+    runReindex: async () => ({ ok: true, mode: "full", filesIngested: 3, head: "abc123" }),
+  });
+  const response = await handleCodegraphTool(
+    { tool: "index", repoRoot: "/repos/my-repo" },
+    ctx,
+  );
+  assert.equal(response.ok, true);
+  assert.equal(typeof resolvedProject, "string");
+  assert.ok(
+    typeof resolvedProject === "string" && resolvedProject.startsWith("root:"),
+    `derived project must be root:<hash>, got ${JSON.stringify(resolvedProject)}`,
+  );
+});
+
+test("index: prefers an explicit project over repoRoot derivation (thread 7)", async () => {
+  let resolvedProject: unknown = undefined;
+  const ctx = makeEnabledCtx({
+    getCodingContext: () => null,
+    resolveStore: async (req) => {
+      resolvedProject = req.project;
+      return MOCK_STORE;
+    },
+    runReindex: async () => ({ ok: true, mode: "full", filesIngested: 1, head: "abc" }),
+  });
+  await handleCodegraphTool(
+    { tool: "index", repoRoot: "/repos/my-repo", project: "my-explicit-project" },
+    ctx,
+  );
+  assert.equal(resolvedProject, "my-explicit-project");
 });

@@ -50,7 +50,7 @@ function mockGit(head: string | null): CodingGitInvoker {
     diffNameStatus: () => ({ ok: true, entries: [] }),
     diffHunks: () => ({ ok: true, hunks: [] }),
     logFiles: () => ({ ok: true, entries: [] }),
-  };
+    listTrackedFiles: () => ({ ok: true, paths: [] }),  };
 }
 
 // ──────────────────────────────────────────────────────────────────────────

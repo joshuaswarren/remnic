@@ -27,6 +27,10 @@ import { expandTildePath } from "../utils/path.js";
 
 import type { PluginConfig, CodingKnowledgeConfig, CodingContext } from "../types.js";
 import { isCodingGraphInstalled } from "./optional-coding-graph.js";
+// Type-only reference to the surface context shape (ts-import-type rule).
+// Erased at compile time, so the runtime → surfaces → runtime import cycle is
+// type-only and has no runtime effect.
+import type { CodegraphSurfaceContext } from "./codegraph-surfaces.js";
 
 // Lazy-loaded optional package -- see file header. The dynamic import below
 // is the documented exception to the static-import rule: @remnic/coding-graph
@@ -223,8 +227,12 @@ const storeCache = new Map<string, CachedStore>();
 let cachedModule: CodegraphModule | null | undefined;
 let moduleLoadPromise: Promise<CodegraphModule | null> | null = null;
 
-function storeCacheKey(principal: string, projectId: string): string {
-  return `${principal}::${projectId}`;
+function storeCacheKey(principalSafe: string, projectSafe: string, dbPath: string): string {
+  // Thread 8 (issue #1554): include the resolved DB path so two configs
+  // sharing a principal/project but differing in codegraphDbDir (or memoryDir)
+  // get distinct cache entries — otherwise the second config reuses the first
+  // config's open SQLite handle and reads/writes the wrong graph DB.
+  return `${principalSafe}::${projectSafe}::${dbPath}`;
 }
 
 /**
@@ -285,14 +293,31 @@ export async function getCodegraphStore(params: {
       "The @remnic/coding-graph package is not installed; install it to use codegraph tools.",
     );
   }
-  // Key the cache on SANITIZED values so two different raw identifiers
-  // that sanitize to the same path segment share one store handle
-  // (prevents two open handles on the same SQLite file).
+  // Key the cache on SANITIZED values AND the resolved DB path (thread 8):
+  // two different raw identifiers that sanitize to the same path segment
+  // share one store handle (prevents two open handles on the same SQLite
+  // file), and two configs with different roots get distinct entries.
   const principalSafe = sanitizePathSegment(principal);
   const projectSafe = sanitizePathSegment(projectId);
-  const key = storeCacheKey(principalSafe, projectSafe);
+  const dbPath = resolveCodegraphDbPath({ config, memoryDir, principal, projectId });
+  const key = storeCacheKey(principalSafe, projectSafe, dbPath);
   const cached = storeCache.get(key);
   if (cached !== undefined) {
+    if (repoRoot !== undefined && cached.repoRoot === undefined) {
+      // Thread 11 (issue #1554): the cached store was opened rootless (e.g. a
+      // get_schema call with no repoRoot). A later call that DOES supply a
+      // repoRoot needs repo-root-bound operations (snippet reads file content)
+      // to work, so close the rootless handle and reopen bound to repoRoot.
+      storeCache.delete(key);
+      try {
+        await cached.store.close();
+      } catch {
+        // Best-effort close; the reopen below still proceeds.
+      }
+      const store = await mod.GraphStore.open({ dbPath, repoRoot });
+      storeCache.set(key, { store, repoRoot, openedAt: Date.now() });
+      return store;
+    }
     if (repoRoot !== undefined && cached.repoRoot !== undefined && cached.repoRoot !== repoRoot) {
       throw new CodegraphRuntimeError(
         "repo_root_conflict",
@@ -301,7 +326,6 @@ export async function getCodegraphStore(params: {
     }
     return cached.store;
   }
-  const dbPath = resolveCodegraphDbPath({ config, memoryDir, principal, projectId });
   const store = await mod.GraphStore.open({ dbPath, repoRoot });
   storeCache.set(key, { store, repoRoot, openedAt: Date.now() });
   return store;
@@ -366,7 +390,15 @@ export async function deleteCodegraphProject(params: {
   if (!codegraphSurfaceVisible(config)) {
     throw new CodegraphRuntimeError("disabled", "codegraph tools are disabled");
   }
-  const key = storeCacheKey(principal, projectId);
+  // Thread 10 (issue #1554): build the cache key from SANITIZED values + the
+  // resolved DB path so deletion finds the live entry regardless of which raw
+  // projectId form (e.g. github.com/test/repo) was used to open it. Without
+  // this, deleteCodegraphProject unlinks the SQLite file while the cached
+  // handle stays open and subsequent reads still see the "deleted" graph.
+  const principalSafe = sanitizePathSegment(principal);
+  const projectSafe = sanitizePathSegment(projectId);
+  const dbPath = resolveCodegraphDbPath({ config, memoryDir, principal, projectId });
+  const key = storeCacheKey(principalSafe, projectSafe, dbPath);
   const cached = storeCache.get(key);
   if (cached !== undefined) {
     storeCache.delete(key);
@@ -376,7 +408,7 @@ export async function deleteCodegraphProject(params: {
       // Best-effort close; the file delete below still proceeds.
     }
   }
-  const dbPath = resolveCodegraphDbPath({ config, memoryDir, principal, projectId });
+  // dbPath resolved above for the cache key; reuse it for the file delete.
   let deleted = false;
   try {
     removeFile(dbPath);
@@ -417,7 +449,7 @@ export async function closeAllCodegraphStores(): Promise<void> {
 // ──────────────────────────────────────────────────────────────────────────
 
 export function makeCodegraphRuntimeDelegates(): Pick<
-  import("./codegraph-surfaces.js").CodegraphSurfaceContext,
+  CodegraphSurfaceContext,
   "runReindex" | "reportIndexStatus" | "detectChanges" | "ingestTraces"
 > {
   return {
@@ -455,9 +487,17 @@ export async function runCodegraphReindex(params: {
   if (mod === null) {
     return { ok: false, code: "package_missing", message: "The @remnic/coding-graph package is not installed." };
   }
-  if (typeof mod.executeReindex !== "function" || typeof mod.defaultCodingGitInvoker !== "object" || mod.defaultCodingGitInvoker === null) {
+  // Thread 13 (issue #1554): defaultCodingGitInvoker is a FACTORY FUNCTION
+  // (returns the CodingGitInvoker), not an object instance. The previous
+  // `typeof ... !== "object"` check always failed, so codegraph_index /
+  // codegraph_index_status degraded to runtime_unavailable even with the
+  // optional package present.
+  if (typeof mod.executeReindex !== "function" || typeof mod.defaultCodingGitInvoker !== "function") {
     return { ok: false, code: "runtime_unavailable", message: "executeReindex is not available in the installed @remnic/coding-graph." };
   }
+  const git = (mod.defaultCodingGitInvoker as () => unknown)() as {
+    listTrackedFiles(cwd: string): { ok: true; paths: readonly string[] } | { ok: false; code: string };
+  };
   let engine: { parseFile(input: unknown): Promise<unknown> };
   try {
     if (typeof mod.createCodingGraphEngine !== "function") {
@@ -468,12 +508,29 @@ export async function runCodegraphReindex(params: {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, code: "engine_unavailable", message: `The coding-graph engine is not ready: ${msg}` };
   }
+  // Thread 14 (issue #1554): executeReindex's full-reindex branch treats an
+  // omitted candidatePaths as non-authoritative and returns a noop with
+  // filesIngested:0. Discover the repo's tracked files via the git invoker
+  // and pass them so a first index of a real repo actually ingests files.
+  let candidatePaths: readonly string[] = [];
+  try {
+    const tracked = git.listTrackedFiles(params.repoRoot);
+    if (tracked.ok) {
+      candidatePaths = tracked.paths;
+    }
+    // A git failure here is non-fatal: executeReindex will noop cleanly and
+    // the caller sees filesIngested:0 rather than a false error. The status
+    // tool reports the underlying git mode separately.
+  } catch {
+    // Best-effort discovery; leave candidatePaths empty on throw.
+  }
   try {
     const result = (await mod.executeReindex({
       store: params.store,
-      git: mod.defaultCodingGitInvoker,
+      git,
       repoRoot: params.repoRoot,
       parseFile: (input: unknown) => engine.parseFile(input),
+      candidatePaths,
     })) as { ok: boolean; mode?: string; filesIngested?: number; head?: string | null; code?: string; message?: string };
     if (result && result.ok === true) {
       return { ok: true, mode: result.mode ?? "auto", filesIngested: result.filesIngested ?? 0, head: result.head ?? null };
@@ -501,11 +558,13 @@ export async function reportCodegraphIndexStatus(params: {
   if (mod === null) {
     return { ok: false, code: "package_missing", message: "The @remnic/coding-graph package is not installed." };
   }
-  if (typeof mod.getIndexStatus !== "function" || typeof mod.defaultCodingGitInvoker !== "object" || mod.defaultCodingGitInvoker === null) {
+  // Thread 13 (issue #1554): defaultCodingGitInvoker is a factory function.
+  if (typeof mod.getIndexStatus !== "function" || typeof mod.defaultCodingGitInvoker !== "function") {
     return { ok: false, code: "runtime_unavailable", message: "getIndexStatus is not available in the installed @remnic/coding-graph." };
   }
+  const git = (mod.defaultCodingGitInvoker as () => unknown)();
   try {
-    const status = mod.getIndexStatus(params.store, mod.defaultCodingGitInvoker, params.repoRoot) as Record<string, unknown>;
+    const status = mod.getIndexStatus(params.store, git, params.repoRoot) as Record<string, unknown>;
     return { ok: true, status };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

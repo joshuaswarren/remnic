@@ -130,6 +130,18 @@ export interface CodingGitInvoker {
     cwd: string,
     limit: number,
   ): { ok: true; entries: readonly LogFilesEntry[] } | GitFailure;
+
+  /**
+   * `git ls-files` — the repo's tracked files as repo-relative forward-slash
+   * paths. Used by the codegraph runtime to source `candidatePaths` for a
+   * full reindex (issue #1554: the executor treats an omitted candidate list
+   * as non-authoritative and no-ops, so the runtime must supply one).
+   * Returns an empty path list for a repo with no tracked files; a git
+   * failure degrades to `{ ok: false, code: "git_unavailable" | "git_error" }`.
+   */
+  listTrackedFiles(
+    cwd: string,
+  ): { ok: true; paths: readonly string[] } | GitFailure;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -248,6 +260,20 @@ export function defaultCodingGitInvoker(): CodingGitInvoker {
         return { ok: false, code: "git_error" };
       }
       return { ok: true, entries: parseLogFiles(r.stdout) };
+    },
+
+    listTrackedFiles(cwd: string) {
+      // `git ls-files` lists the repo's tracked files (cached in the index)
+      // as repo-relative forward-slash paths — exactly the candidatePaths
+      // format executeReindex expects. --others is NOT used: only tracked
+      // files belong in an authoritative full-reindex candidate set.
+      const r = runGit(cwd, ["ls-files"]);
+      if (!r.ok) return r;
+      if (r.exitCode !== 0) {
+        return { ok: false, code: "git_error" };
+      }
+      const paths = r.stdout.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+      return { ok: true, paths };
     },
   };
 }
