@@ -72,6 +72,18 @@ export interface SessionDelta {
   commits: GitCommit[];
   /** Touched files since last seen, capped to {@link MAX_DELTA_FILES}. */
   touchedFiles: string[];
+  /**
+   * Uncapped total commit count. The {@link commits} slice is capped for
+   * transport; this total reports the true delta size so summaries and
+   * metrics never under-report on large repos (issue #1630 fix 1).
+   */
+  totalCommits: number;
+  /**
+   * Uncapped total touched-file count. The {@link touchedFiles} slice is
+   * capped for transport; this total reports the true delta size (issue
+   * #1630 fix 1).
+   */
+  totalTouchedFiles: number;
   /** A single human-readable summary line for briefing injection. */
   summaryLine: string;
 }
@@ -159,6 +171,11 @@ export function computeSessionDelta(
     delta: {
       commits,
       touchedFiles,
+      // Uncapped totals — the slices above are capped for transport, but
+      // the summary/metrics must report the true delta size so callers
+      // never under-report on large repos (issue #1630 fix 1).
+      totalCommits: current.commits.length,
+      totalTouchedFiles: current.touchedFiles.length,
       summaryLine: buildSummaryLine(commits.length, touchedFiles.length, lastSeen.at),
     },
     nextState,

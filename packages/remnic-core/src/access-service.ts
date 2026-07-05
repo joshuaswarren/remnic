@@ -4665,9 +4665,15 @@ export class EngramAccessService {
         // non-default namespaces route to memoryDir/namespaces/<token>, so
         // session-delta markers must read/write from the routed tree, mirroring
         // the decision/architecture siblings (cursor review).
+        // Issue #1630 fix 2: the marker write is a write side-effect, so gate
+        // it on canWriteNamespace — read-only callers get the delta but don't
+        // advance state (the READ ACL let them reach here, e.g. shared ns).
+        const principal = this.resolveRequestPrincipal(req.sessionKey, authenticatedPrincipal);
+        const canAdvanceState = canWriteNamespace(principal, ns, this.orchestrator.config);
         return {
           memoryDir: storage.dir,
           namespace: ns,
+          canAdvanceState,
         } satisfies DeltaSurfaceStorage;
       },
       gitInvoker: (cwd, args) => {
