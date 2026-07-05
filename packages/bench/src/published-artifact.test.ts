@@ -782,3 +782,104 @@ test("hashBenchmarkArtifact is stable for tier/hardware/judgeCalibration presenc
   assert.notEqual(hashA, hashBefore);
   assert.equal(hashA, hashB);
 });
+
+test("buildBenchmarkArtifact inherits judgeCalibration from result.config.benchmarkOptions (#1573 seam)", () => {
+  // The CLI run path attaches persisted calibration to
+  // result.config.benchmarkOptions.judgeCalibration via
+  // attachPersistedJudgeCalibration. buildBenchmarkArtifact must inherit it
+  // so tier:"local" artifacts carry judgeCalibration end-to-end without the
+  // caller threading it manually (cursor + codex High/P1 review).
+  const resultWithCalibration = sampleResult({
+    config: {
+      systemProvider: null,
+      judgeProvider: null,
+      adapterMode: "direct",
+      remnicConfig: {},
+      benchmarkOptions: {
+        judgeCalibration: { kappa: 0.82, sampleSize: 50, threshold: 0.7, warning: false },
+      },
+    },
+  });
+  const artifact = buildBenchmarkArtifact({
+    benchmarkId: "locomo",
+    datasetVersion: "v1",
+    model: "llama-3.1-8b-instruct",
+    seed: 42,
+    startedAt: "2026-07-05T08:00:00.000Z",
+    finishedAt: "2026-07-05T08:30:00.000Z",
+    result: resultWithCalibration,
+    tier: "local",
+  });
+  assert.equal(artifact.judgeCalibration?.kappa, 0.82);
+  assert.equal(artifact.judgeCalibration?.sampleSize, 50);
+  assert.equal(artifact.judgeCalibration?.threshold, 0.7);
+  assert.equal(artifact.judgeCalibration?.warning, false);
+});
+
+test("buildBenchmarkArtifact explicit judgeCalibration overrides result.config value (#1573)", () => {
+  // Explicit input.judgeCalibration takes precedence over the result-carried
+  // value — tests and direct callers can override.
+  const resultWithCalibration = sampleResult({
+    config: {
+      systemProvider: null,
+      judgeProvider: null,
+      adapterMode: "direct",
+      remnicConfig: {},
+      benchmarkOptions: {
+        judgeCalibration: { kappa: 0.5, sampleSize: 50, threshold: 0.7, warning: true },
+      },
+    },
+  });
+  const artifact = buildBenchmarkArtifact({
+    benchmarkId: "locomo",
+    datasetVersion: "v1",
+    model: "m",
+    seed: 1,
+    startedAt: "2026-07-05T08:00:00.000Z",
+    finishedAt: "2026-07-05T08:10:00.000Z",
+    result: resultWithCalibration,
+    judgeCalibration: { kappa: 0.91, sampleSize: 50, threshold: 0.7, warning: false },
+  });
+  assert.equal(artifact.judgeCalibration?.kappa, 0.91);
+  assert.equal(artifact.judgeCalibration?.warning, false);
+});
+
+test("buildBenchmarkArtifact ignores malformed result.config.judgeCalibration (#1573)", () => {
+  // A corrupt or structurally-invalid benchmarkOptions.judgeCalibration is
+  // silently ignored (rule 34) — the artifact omits the field rather than
+  // crashing or serializing bad data.
+  const resultWithBadCalibration = sampleResult({
+    config: {
+      systemProvider: null,
+      judgeProvider: null,
+      adapterMode: "direct",
+      remnicConfig: {},
+      benchmarkOptions: {
+        judgeCalibration: { kappa: "not a number", sampleSize: 50 },
+      },
+    },
+  });
+  const artifact = buildBenchmarkArtifact({
+    benchmarkId: "locomo",
+    datasetVersion: "v1",
+    model: "m",
+    seed: 1,
+    startedAt: "2026-07-05T08:00:00.000Z",
+    finishedAt: "2026-07-05T08:10:00.000Z",
+    result: resultWithBadCalibration,
+  });
+  assert.equal(artifact.judgeCalibration, undefined);
+});
+
+test("buildBenchmarkArtifact omits judgeCalibration when benchmarkOptions absent (#1573)", () => {
+  const artifact = buildBenchmarkArtifact({
+    benchmarkId: "locomo",
+    datasetVersion: "v1",
+    model: "m",
+    seed: 1,
+    startedAt: "2026-07-05T08:00:00.000Z",
+    finishedAt: "2026-07-05T08:10:00.000Z",
+    result: sampleResult(),
+  });
+  assert.equal(artifact.judgeCalibration, undefined);
+});

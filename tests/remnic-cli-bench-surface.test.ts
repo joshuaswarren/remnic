@@ -383,10 +383,18 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   // P2 (codex): persisted kappa is bound to the calibrated judge pair. The
   // judge-calibrate command records the local + frontier judge identities,
   // and the attach path refuses a stale kappa for a different judge pair.
+  // Only the LOCAL judge match attaches — a frontier-tier run reusing the
+  // stored frontier identity must NOT inherit the local judge's kappa
+  // (cursor Low + codex P2 review).
   assert.match(source, /calibrationIdentities = \{/);
   assert.match(source, /writeJudgeCalibrationState\(result, calibrationDir, calibrationIdentities\)/);
-  assert.match(source, /matchesLocal && matchesFrontier|!matchesLocal && !matchesFrontier/);
+  assert.match(source, /if \(!matchesLocal\) \{/);
   assert.match(source, /state\.localJudgeModel !== undefined && state\.frontierJudgeModel !== undefined/);
+
+  // P2 (codex): limited full runs (--limit 1) are rejected before calibrating
+  // so a one-sample κ cannot be persisted.
+  assert.match(source, /MIN_CALIBRATION_SOURCE_TASKS/);
+  assert.match(source, /sourceTaskCount < bench\.MIN_CALIBRATION_SOURCE_TASKS/);
 
   // P2 (codex): judge-calibrate validates against the package-aware resolver
   // (same as `bench run`), not the static BENCHMARK_IDS catalog.

@@ -248,6 +248,18 @@ export function buildBenchmarkArtifact(input: BuildBenchmarkArtifactInput): Benc
   const finishedAt = new Date(finishedMs).toISOString();
   const durationMs = Math.max(0, finishedMs - startedMs);
 
+  // Issue #1573 PR3 (cursor + codex High/P1): the calibration state attached
+  // to result.config.benchmarkOptions.judgeCalibration by the CLI run path
+  // (`attachPersistedJudgeCalibration`) reaches the published artifact through
+  // this seam. An explicit input.judgeCalibration takes precedence (tests,
+  // direct callers); otherwise the result-carried calibration is inherited so
+  // `tier: "local"` artifacts carry judgeCalibration end-to-end without every
+  // caller having to thread it manually.
+  const resultCalibration = readJudgeCalibrationFromBenchmarkOptions(
+    result.config.benchmarkOptions?.judgeCalibration,
+  );
+  const judgeCalibration = input.judgeCalibration ?? resultCalibration;
+
   return {
     schemaVersion: BENCHMARK_ARTIFACT_SCHEMA_VERSION,
     benchmarkId: input.benchmarkId,
@@ -272,8 +284,38 @@ export function buildBenchmarkArtifact(input: BuildBenchmarkArtifactInput): Benc
     ...(input.note !== undefined ? { note: input.note } : {}),
     ...(input.tier !== undefined ? { tier: input.tier } : {}),
     ...(input.hardware !== undefined ? { hardware: input.hardware } : {}),
-    ...(input.judgeCalibration !== undefined ? { judgeCalibration: input.judgeCalibration } : {}),
+    ...(judgeCalibration !== undefined ? { judgeCalibration } : {}),
   };
+}
+
+/**
+ * Read a `BenchmarkArtifactJudgeCalibration` from the free-form
+ * `benchmarkOptions.judgeCalibration` on a stored `BenchmarkResult`.
+ * Returns `undefined` when absent or structurally invalid so the caller can
+ * fall back to an explicit value or omit the field entirely (backwards
+ * compatible). This is the read side of the writeBenchmarkResult →
+ * buildBenchmarkArtifact seam (issue #1573 PR3).
+ */
+function readJudgeCalibrationFromBenchmarkOptions(
+  value: unknown,
+): BenchmarkArtifactJudgeCalibration | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const kappa = record.kappa;
+  const sampleSize = record.sampleSize;
+  const threshold = record.threshold;
+  const warning = record.warning;
+  if (
+    typeof kappa !== "number" || !Number.isFinite(kappa) ||
+    typeof sampleSize !== "number" || !Number.isFinite(sampleSize) ||
+    typeof threshold !== "number" || !Number.isFinite(threshold) ||
+    typeof warning !== "boolean"
+  ) {
+    return undefined;
+  }
+  return { kappa, sampleSize, threshold, warning };
 }
 
 /**

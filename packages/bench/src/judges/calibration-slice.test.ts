@@ -8,6 +8,7 @@ import type { BenchJudge, BenchPhaseControl } from "../adapters/types.ts";
 import {
   CALIBRATION_SLICE_SIZE,
   JUDGE_CALIBRATION_KAPPA_THRESHOLD,
+  MIN_CALIBRATION_SOURCE_TASKS,
   loadJudgeCalibrationState,
   runJudgeCalibration,
   selectCalibrationSlice,
@@ -412,6 +413,46 @@ test("loadJudgeCalibrationState drops partial/corrupt identities but keeps the c
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+
+test("sanitizeCalibrationSegment: distinct benchmark ids produce distinct filenames (cursor review)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-sanitize-"));
+  try {
+    // "foo.bar" and "foobar" must NOT collide — the old filter-drop mapped
+    // both to "foobar.json", letting one benchmark overwrite another's kappa.
+    // With the fix, punctuation becomes a separator: "foo-bar" vs "foobar".
+    const resultA = await runJudgeCalibration({
+      benchmarkId: "foo.bar",
+      localJudge: makeScalarStubJudge({}),
+      frontierJudge: makeScalarStubJudge({}),
+      answers: makeAnswers(2),
+      sliceSize: 2,
+    });
+    const resultB = await runJudgeCalibration({
+      benchmarkId: "foobar",
+      localJudge: makeScalarStubJudge({}),
+      frontierJudge: makeScalarStubJudge({}),
+      answers: makeAnswers(2),
+      sliceSize: 2,
+    });
+    const pathA = await writeJudgeCalibrationState(resultA, dir);
+    const pathB = await writeJudgeCalibrationState(resultB, dir);
+    assert.notEqual(path.basename(pathA), path.basename(pathB));
+    assert.equal(path.basename(pathA), "foo-bar.json");
+    assert.equal(path.basename(pathB), "foobar.json");
+    // Both load independently — no cross-contamination.
+    const loadedA = await loadJudgeCalibrationState("foo.bar", dir);
+    const loadedB = await loadJudgeCalibrationState("foobar", dir);
+    assert.notEqual(loadedA, undefined);
+    assert.notEqual(loadedB, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("MIN_CALIBRATION_SOURCE_TASKS is exported and positive", () => {
+  assert.ok(MIN_CALIBRATION_SOURCE_TASKS >= 2);
 });
 
 // Suppress the unused-stub warning for the metrics variant (kept for symmetry

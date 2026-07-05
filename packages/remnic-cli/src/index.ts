@@ -2527,6 +2527,16 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
       }
     }
   }
+  // Codex P2 review: a `--limit 1` (or `--trial-limit 1`) full run produces
+  // mode === "full" with a single task, yielding a degenerate one-sample κ
+  // (often 1.0). Require enough completed tasks for a meaningful calibration.
+  const sourceTaskCount = loaded.results.tasks.length;
+  if (sourceTaskCount < bench.MIN_CALIBRATION_SOURCE_TASKS) {
+    console.error(
+      `ERROR: stored result for "${benchmarkId}" has only ${sourceTaskCount} task(s) — too few for a meaningful calibration (minimum ${bench.MIN_CALIBRATION_SOURCE_TASKS}). Run a full uncapped benchmark first (remnic bench run ${benchmarkId}).`,
+    );
+    process.exit(1);
+  }
   const answers = loaded.results.tasks.map((task) => ({
     questionId: task.taskId,
     question: task.question,
@@ -3389,9 +3399,12 @@ async function attachPersistedJudgeCalibration(
     const runJudgeModel = result.config.judgeProvider?.model;
     const matchesLocal =
       runJudgeProvider === state.localJudgeProvider && runJudgeModel === state.localJudgeModel;
-    const matchesFrontier =
-      runJudgeProvider === state.frontierJudgeProvider && runJudgeModel === state.frontierJudgeModel;
-    if (!matchesLocal && !matchesFrontier) {
+    // Only attach when the run uses the LOCAL judge the kappa was computed for
+    // (codex P2 + cursor Low review). A frontier-tier run that happens to
+    // reuse the stored frontier judge identity must NOT inherit the local
+    // judge's reliability kappa — the kappa measures the local judge's
+    // agreement with the frontier, not the frontier judge's self-consistency.
+    if (!matchesLocal) {
       return;
     }
   }

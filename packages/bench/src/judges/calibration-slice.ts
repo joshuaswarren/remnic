@@ -65,6 +65,16 @@ export type LoadedJudgeCalibrationState = BenchmarkArtifactJudgeCalibration &
 export const CALIBRATION_SLICE_SIZE = 50;
 
 /**
+ * Minimum number of completed tasks a stored result must have to be a valid
+ * calibration source (codex P2 review). A `--limit 1` full run produces
+ * `mode === "full"` with a single task, yielding a degenerate one-sample κ
+ * (often 1.0). Below this floor, Cohen's kappa is statistically meaningless.
+ * Benchmarks with fewer total questions are unaffected — the slice uses all
+ * available tasks, but a capped run of a larger benchmark is rejected.
+ */
+export const MIN_CALIBRATION_SOURCE_TASKS = 10;
+
+/**
  * Kappa below this triggers a loud "local judge unreliable for this
  * benchmark" warning in the report and on the artifact. 0.7 is the
  * conventional "substantial agreement" cut-off (Landis & Koch 1977).
@@ -343,10 +353,14 @@ export async function loadJudgeCalibrationState(
  */
 function sanitizeCalibrationSegment(value: string): string {
   const lowered = value.trim().toLowerCase();
+  // Replace disallowed-character RUNS with a single "-" so distinct benchmark
+  // ids stay distinct (cursor review: the previous filter-drop mapped "foo.bar"
+  // and "foobar" to the same file, letting one benchmark overwrite another's
+  // persisted kappa). Collapse consecutive separators and trim edges.
   const cleaned = lowered
-    .split("")
-    .filter((ch) => /[a-z0-9_-]/.test(ch))
-    .join("");
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
   return cleaned.length > 0 ? cleaned : "unknown";
 }
 
