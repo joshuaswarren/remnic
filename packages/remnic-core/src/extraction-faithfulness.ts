@@ -141,9 +141,13 @@ function buildBatchPrompt(inputs: FaithfulnessCheckInput[], contextChars: number
   for (let i = 0; i < inputs.length; i++) {
     const inp = inputs[i];
     if (!inp) continue;
-    const quote = inp.quote.slice(0, contextChars);
+    // The QUOTE is the primary entailment evidence and is already bounded
+    // upstream (provenance.maxQuoteChars / locateFactQuote). Send it whole
+    // so the verifier never judges entailment on a truncated span. Only the
+    // supplementary CONTEXT is bounded by contextChars (the config's "window
+    // around the quote" semantics — cursor review).
     parts.push(`--- Item ${i} ---
-QUOTE: "${quote}"`);
+QUOTE: "${inp.quote}"`);
     if (inp.context && inp.context.trim().length > 0) {
       parts.push(`CONTEXT: "${inp.context.slice(0, contextChars)}"`);
     }
@@ -565,6 +569,102 @@ export interface FaithfulnessGateFact {
  * so the caller records `unchecked`/`skipped_no_span` and proceeds — a gate
  * outage must never block memory writes (checklist §4).
  */
+// Common English stopwords — filtered before overlap scoring so function
+// words (the, a, is, ...) don't dilute the signal between a fact and its
+// source sentence.
+const STOPWORDS = new Set([
+  "the","a","an","and","or","but","is","are","was","were","be","been","being",
+  "to","of","in","on","at","for","with","from","by","as","it","its","this","that",
+  "these","those","i","you","he","she","we","they","my","your","his","her","our","their",
+  "has","have","had","do","does","did","will","would","can","could","should","not","no",
+  "s","very","really","just","so","than","then","there","here","about","into","over","under",
+]);
+
+/**
+ * Crude stemmer: strip common suffixes so "prefers"/"prefer",
+ * "using"/"use", "started"/"start" collapse to one token. Not a real
+ * stemmer — just enough to raise recall for the interim locator (#1575 will
+ * replace this with NLI-verified spans).
+ */
+function crudeStem(word: string): string {
+  if (word.length > 5 && word.endsWith("ing")) return word.slice(0, -3);
+  if (word.length > 4 && word.endsWith("ed")) return word.slice(0, -2);
+  if (word.length > 3 && (word.endsWith("s")) && !word.endsWith("ss")) return word.slice(0, -1);
+  return word;
+}
+
+/**
+ * Tokenize text into a lowercase, stopword-filtered, crudely-stemmed token
+ * set for overlap scoring.
+ */
+function tokenize(text: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const raw of text.toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length <= 1) continue;
+    if (STOPWORDS.has(raw)) continue;
+    tokens.add(crudeStem(raw));
+  }
+  return tokens;
+}
+
+/**
+ * Overlap coefficient: |A ∩ B| / min(|A|, |B|). Robust for paraphrase
+ * matching where a short fact paraphrases a longer source sentence — a short
+ * fact fully supported by a long sentence scores high, unrelated text scores 0.
+ */
+function overlapCoefficient(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let intersection = 0;
+  const [small, large] = a.size <= b.size ? [a, b] : [b, a];
+  for (const t of small) if (large.has(t)) intersection++;
+  return intersection / small.size;
+}
+
+/**
+ * Minimum overlap for a located quote to be trusted as the fact's source span.
+ * Below this the fact is treated as having no located span (skipped_no_span)
+ * rather than judged against an unrelated sentence.
+ */
+const LOCATE_QUOTE_MIN_OVERLAP = 0.3;
+
+/**
+ * Locate the best-matching verbatim span (sentence) from the source turn text
+ * for an extracted fact, by token overlap. Returns the quote when a confident
+ * match is found, `undefined` otherwise (the gate then records
+ * skipped_no_span — never judged against an unrelated span).
+ *
+ * This is the interim source-text locator that makes the gate functional on
+ * real extraction output (where #1575 has not yet attached per-fact
+ * `sources`). It produces a genuine located quote per fact so the gate
+ * consumes a span, not the whole conversation (issue #1576 design constraint).
+ * #1575's NLI-verified per-fact locator will replace this when it lands.
+ */
+export function locateFactQuote(
+  factText: string,
+  sourceText: string,
+  maxQuoteChars = 600,
+): string | undefined {
+  if (!factText || !sourceText) return undefined;
+  const factTokens = tokenize(factText);
+  if (factTokens.size === 0) return undefined;
+  // Split source into candidate spans: sentences, then line segments as a
+  // fallback for transcripts without sentence punctuation.
+  const candidates: string[] = [];
+  for (const sentence of sourceText.split(/(?<=[.!?])\s+|\n+/)) {
+    const s = sentence.trim();
+    if (s.length > 0) candidates.push(s);
+  }
+  if (candidates.length === 0) return undefined;
+  let best: { quote: string; score: number } | null = null;
+  for (const candidate of candidates) {
+    const score = overlapCoefficient(factTokens, tokenize(candidate));
+    if (!best || score > best.score) best = { quote: candidate, score };
+  }
+  if (!best || best.score < LOCATE_QUOTE_MIN_OVERLAP) return undefined;
+  return best.quote.length > maxQuoteChars
+    ? best.quote.slice(0, maxQuoteChars)
+    : best.quote;
+}
 export async function runFaithfulnessGateBatch(
   facts: readonly FaithfulnessGateFact[],
   mode: "shadow" | "enforce",
@@ -572,6 +672,13 @@ export async function runFaithfulnessGateBatch(
   localLlm: LocalLlmClient | null,
   fallbackLlm: FallbackLlmClient | null,
   counters: FaithfulnessGateCounters,
+  /**
+   * The verbatim source turn text the facts were extracted from. When a fact
+   * has no #1575 `sources`, locateFactQuote finds a fallback span here so the
+   * gate runs on real extraction output. May be empty (replay/import paths
+   * with no source turns) — facts then get skipped_no_span.
+   */
+  sourceText = "",
 ): Promise<Map<number, FaithfulnessResult> | null> {
   const resultsByFactIndex = new Map<number, FaithfulnessResult>();
   try {
@@ -579,16 +686,17 @@ export async function runFaithfulnessGateBatch(
     for (let fi = 0; fi < facts.length; fi++) {
       const f = facts[fi];
       if (!f || typeof f.content !== "string" || !f.content.trim()) continue;
+      // Prefer a #1575 verified span; fall back to a located quote from the
+      // source turn text so the gate runs even before per-fact sources are
+      // attached. Without either, the fact is skipped_no_span (never gated).
       const sources = Array.isArray(f.sources) ? f.sources : [];
-      if (sources.length === 0) continue; // no verified span — skip, don't gate
       const firstSource = sources[0];
-      if (!firstSource || typeof firstSource.quote !== "string" || !firstSource.quote.trim()) {
-        continue;
-      }
-      inputs.push({
-        factIndex: fi,
-        input: { factText: f.content, quote: firstSource.quote },
-      });
+      const quote =
+        firstSource && typeof firstSource.quote === "string" && firstSource.quote.trim()
+          ? firstSource.quote
+          : locateFactQuote(f.content, sourceText);
+      if (!quote) continue; // no located span — applyFaithfulnessVerdict tags skipped_no_span
+      inputs.push({ factIndex: fi, input: { factText: f.content, quote } });
     }
     if (inputs.length === 0) return resultsByFactIndex;
     const batch = await checkFaithfulnessBatch(
@@ -601,20 +709,12 @@ export async function runFaithfulnessGateBatch(
       const entry = inputs[j];
       if (entry) resultsByFactIndex.set(entry.factIndex, batch.results[j]!);
     }
-    for (const result of batch.results) {
-      if (result.ok) {
-        if (result.verdict === "entailed") counters.entailed++;
-        else if (result.verdict === "contradicted") counters.contradicted++;
-        else if (result.verdict === "unsupported") counters.unsupported++;
-      } else {
-        counters.unchecked++;
-      }
-    }
+    // Verdict-distribution counters are bumped in applyFaithfulnessVerdict
+    // (at the per-fact apply point), NOT here, so console_state reflects
+    // facts that actually reached verdict application — not facts later
+    // dropped by dedup, importance, or judge gates (cursor review).
     log.info(
-      `extraction-faithfulness[${mode}]: ${inputs.length} facts checked, ` +
-        `entailed=${counters.entailed} contradicted=${counters.contradicted} ` +
-        `unsupported=${counters.unsupported} unchecked=${counters.unchecked}, ` +
-        `${batch.elapsedMs}ms`,
+      `extraction-faithfulness[${mode}]: ${inputs.length} facts checked, ${batch.elapsedMs}ms`,
     );
   } catch (err) {
     // Fail-open: a pipeline error never blocks writes (checklist §4). Return
@@ -664,6 +764,9 @@ export function applyFaithfulnessVerdict(
     };
   }
   if (result.ok) {
+    if (result.verdict === "entailed") counters.entailed++;
+    else if (result.verdict === "contradicted") counters.contradicted++;
+    else if (result.verdict === "unsupported") counters.unsupported++;
     const fm: FaithfulnessFrontmatter = {
       verdict: result.verdict,
       ...(result.model ? { model: result.model } : {}),
@@ -683,6 +786,7 @@ export function applyFaithfulnessVerdict(
     return { faithfulness: fm, enforceStatus };
   }
   // Backend failure — record as unchecked, fact proceeds (graceful degradation).
+  counters.unchecked++;
   return {
     faithfulness: { verdict: "unchecked", at: new Date().toISOString() },
     enforceStatus: undefined,

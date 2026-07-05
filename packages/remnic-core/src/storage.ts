@@ -7029,6 +7029,10 @@ export class StorageManager {
       intentEntityTypes?: string[];
       memoryKind?: MemoryFrontmatter["memoryKind"];
       validAt?: string;
+      /** Lifecycle status (issue #1576): pending_review chunks stay out of active recall. */
+      status?: import("./types.js").MemoryStatus;
+      /** Faithfulness gate verdict (issue #1576), propagated from the parent fact. */
+      faithfulness?: import("./types.js").FaithfulnessFrontmatter;
     } = {},
   ): Promise<string> {
     await this.ensureDirectories();
@@ -7058,6 +7062,8 @@ export class StorageManager {
       intentEntityTypes: options.intentEntityTypes,
       memoryKind: options.memoryKind,
       valid_at: validAt,
+      ...(options.status ? { status: options.status } : {}),
+      ...(options.faithfulness ? { faithfulness: options.faithfulness } : {}),
     };
 
     const sanitized = sanitizeMemoryContent(content);

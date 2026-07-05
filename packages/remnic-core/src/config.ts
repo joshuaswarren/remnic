@@ -2927,18 +2927,18 @@ export function parseConfig(
       typeof cfg.extractionFaithfulnessModel === "string"
         ? cfg.extractionFaithfulnessModel
         : "",
-    extractionFaithfulnessContextChars:
-      typeof cfg.extractionFaithfulnessContextChars === "number" &&
-      Number.isFinite(cfg.extractionFaithfulnessContextChars) &&
-      cfg.extractionFaithfulnessContextChars > 0
-        ? Math.min(Math.round(cfg.extractionFaithfulnessContextChars), 4000)
-        : 400,
-    extractionFaithfulnessTimeoutMs:
-      typeof cfg.extractionFaithfulnessTimeoutMs === "number" &&
-      Number.isFinite(cfg.extractionFaithfulnessTimeoutMs) &&
-      cfg.extractionFaithfulnessTimeoutMs > 0
-        ? Math.min(Math.round(cfg.extractionFaithfulnessTimeoutMs), 60_000)
-        : 8000,
+    // Numeric knobs go through coerceNumber so CLI operators can pass
+    // --config extractionFaithfulnessTimeoutMs=4000 without the string
+    // silently dropping to the default. Matches the coercion contract applied
+    // to other numeric config keys (CLAUDE.md rule #28 / gotcha #36).
+    extractionFaithfulnessContextChars: (() => {
+      const n = coerceNumber(cfg.extractionFaithfulnessContextChars);
+      return n !== undefined && n > 0 ? Math.min(Math.round(n), 4000) : 400;
+    })(),
+    extractionFaithfulnessTimeoutMs: (() => {
+      const n = coerceNumber(cfg.extractionFaithfulnessTimeoutMs);
+      return n !== undefined && n > 0 ? Math.min(Math.round(n), 60_000) : 8000;
+    })(),
     // Inline source attribution (issue #369). Opt-in to preserve
     // backwards compatibility with existing downstream consumers.
     inlineSourceAttributionEnabled: cfg.inlineSourceAttributionEnabled === true,

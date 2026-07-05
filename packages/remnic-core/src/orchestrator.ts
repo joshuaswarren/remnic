@@ -13269,6 +13269,9 @@ export class Orchestrator {
       // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,
       scopeProfileGatePlan,
+      // Verbatim source turns for the faithfulness gate (#1576) so it can
+      // locate a quote per fact when #1575 spans are absent.
+      normalizedTurns.map((t) => t.content).join("\n\n"),
     );
     let postPersistMetadataFailed = false;
     meta ??= await storage.loadMeta();
@@ -13715,6 +13718,8 @@ export class Orchestrator {
     sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
+    /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */
+    sourceText?: string,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
@@ -14618,6 +14623,7 @@ export class Orchestrator {
               fallbackLlmRuntimeContextFromConfig(this.config),
             ),
             this.faithfulnessCounters,
+            sourceText,
           )
         : null;
 
@@ -15162,6 +15168,11 @@ export class Orchestrator {
                   intentEntityTypes: inferredIntent?.entityTypes,
                   memoryKind,
                   validAt: sourceContext?.validAt,
+                  // Faithfulness gate (issue #1576): propagate the parent
+                  // fact's verdict + enforce status so a pending_review fact
+                  // is not indexed as active through its chunks (chatgpt P2).
+                  ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
+                  ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
                 },
               );
             }
@@ -15208,7 +15219,10 @@ export class Orchestrator {
           } catch (err) {
             log.warn(`temporal-supersession (chunked): unexpected error: ${err}`);
           }
-          await promoteMemoryToShared({
+          // Faithfulness gate (#1576, chatgpt P2): do not promote a
+          // pending_review fact to shared/profile — it must enter the review
+          // queue without active copies that bypass the gate.
+          if (faithfulnessEnforceStatus !== "pending_review") await promoteMemoryToShared({
             sourceStorage: targetStorage,
             category: writeCategory,
             content: fact.content,
@@ -15253,7 +15267,8 @@ export class Orchestrator {
             if (
               this.config.verbatimArtifactsEnabled &&
               this.config.verbatimArtifactCategories.includes(writeCategory) &&
-              fact.confidence >= this.config.verbatimArtifactsMinConfidence
+              fact.confidence >= this.config.verbatimArtifactsMinConfidence &&
+              faithfulnessEnforceStatus !== "pending_review"
             ) {
               // Reuse citedChunkedContent so the artifact carries the same citation
               // timestamp as the parent memory write above (Fix #3 — duplicate-citation).
@@ -15442,7 +15457,9 @@ export class Orchestrator {
           threadEpisodeIdsForGraph.push(memoryId);
         }
         await this.indexPersistedMemory(targetStorage, memoryId);
-        await promoteMemoryToShared({
+        // Faithfulness gate (#1576, chatgpt P2): skip promotion for a
+        // pending_review fact so no active shared/profile copy bypasses the gate.
+        if (faithfulnessEnforceStatus !== "pending_review") await promoteMemoryToShared({
           sourceStorage: targetStorage,
           category: writeCategory,
           content: fact.content,
@@ -15506,7 +15523,8 @@ export class Orchestrator {
         if (
           this.config.verbatimArtifactsEnabled &&
           this.config.verbatimArtifactCategories.includes(writeCategory) &&
-          fact.confidence >= this.config.verbatimArtifactsMinConfidence
+          fact.confidence >= this.config.verbatimArtifactsMinConfidence &&
+          faithfulnessEnforceStatus !== "pending_review"
         ) {
           // Reuse citedFactContent so the artifact carries the same citation
           // timestamp as the memory write above (Fix #3 — duplicate-citation).

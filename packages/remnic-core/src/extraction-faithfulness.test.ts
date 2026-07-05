@@ -18,6 +18,7 @@ import {
   runFaithfulnessGateBatch,
   applyFaithfulnessVerdict,
   createFaithfulnessCounters,
+  locateFactQuote,
   FAITHFULNESS_PROMPT_HASH,
 } from "./extraction-faithfulness.js";
 import type { FaithfulnessResult } from "./extraction-faithfulness.js";
@@ -560,7 +561,7 @@ test("createFaithfulnessCounters: returns zeroed counters", () => {
   });
 });
 
-test("runFaithfulnessGateBatch: facts without sources skipped (no LLM call)", async () => {
+test("runFaithfulnessGateBatch: facts with no span and no sourceText match skipped", async () => {
   const facts = [
     { content: "Fact with no sources" },
     { content: "Another", sources: [] },
@@ -574,10 +575,35 @@ test("runFaithfulnessGateBatch: facts without sources skipped (no LLM call)", as
     null,
     stubFallbackLlm("[]", captured),
     counters,
+    "", // no source text → no fallback quote
   );
-  assert.equal(captured.length, 0, "no LLM call when no facts have sources");
-  assert.ok(result instanceof Map, "no-sources batch returns an empty map");
+  assert.equal(captured.length, 0, "no LLM call when no facts have a located quote");
+  assert.ok(result instanceof Map, "returns an empty map");
   assert.equal(result.size, 0);
+  assert.equal(counters.entailed, 0);
+});
+
+test("runFaithfulnessGateBatch: locateFactQuote fallback feeds the gate when no #1575 sources", async () => {
+  // Fact has no `sources` but the source text contains a matching sentence →
+  // locateFactQuote finds it so the gate actually runs (P1 fix).
+  const facts = [{ content: "The user prefers Vim." }];
+  const llm = JSON.stringify([{ index: 0, verdict: "entailed" }]);
+  const counters = createFaithfulnessCounters();
+  const result = await runFaithfulnessGateBatch(
+    facts,
+    "shadow",
+    baseConfig(),
+    null,
+    stubFallbackLlm(llm),
+    counters,
+    "I have used Vim for ten years and I really prefer Vim over Emacs.",
+  );
+  assert.ok(result instanceof Map);
+  assert.equal(result.size, 1);
+  const r0 = result.get(0);
+  assert.equal(r0?.ok, true);
+  if (r0?.ok) assert.equal(r0.verdict, "entailed");
+  // counters still 0 here — bumped at apply time.
   assert.equal(counters.entailed, 0);
 });
 
@@ -612,8 +638,9 @@ test("runFaithfulnessGateBatch: builds index→result map + updates counters", a
   const r2 = result.get(2);
   assert.equal(r2?.ok, true);
   if (r2?.ok) assert.equal(r2.verdict, "contradicted");
-  assert.equal(counters.entailed, 1);
-  assert.equal(counters.contradicted, 1);
+  // Counters are bumped at apply time (applyFaithfulnessVerdict), not here.
+  assert.equal(counters.entailed, 0);
+  assert.equal(counters.contradicted, 0);
 });
 
 test("runFaithfulnessGateBatch: backend throw → unchecked result, fail-open (checklist §4)", async () => {
@@ -634,6 +661,11 @@ test("runFaithfulnessGateBatch: backend throw → unchecked result, fail-open (c
   const r0 = result.get(0);
   assert.equal(r0?.ok, false);
   if (!r0?.ok) assert.equal(r0.error.code, "backend_unavailable");
+  // Counters bump at apply time (cursor review), so still 0 after the batch.
+  assert.equal(counters.unchecked, 0);
+  // Applying the verdict bumps unchecked.
+  const applied = applyFaithfulnessVerdict(result, 0, "enforce", "Fact", counters);
+  assert.equal(applied.faithfulness?.verdict, "unchecked");
   assert.equal(counters.unchecked, 1);
 });
 
@@ -692,4 +724,40 @@ test("applyFaithfulnessVerdict: per-fact backend failure (ok:false) → unchecke
   const r = applyFaithfulnessVerdict(map, 0, "enforce", "fact", counters);
   assert.equal(r.faithfulness?.verdict, "unchecked");
   assert.equal(r.enforceStatus, undefined);
+});
+
+test("locateFactQuote: finds the best-overlap sentence", () => {
+  const src = "I drove to Berlin yesterday. My favorite editor is Vim.";
+  assert.equal(
+    locateFactQuote("The user likes Vim.", src),
+    "My favorite editor is Vim.",
+  );
+});
+
+test("locateFactQuote: returns undefined below the overlap threshold", () => {
+  const src = "The weather is sunny. Stocks rose 2 percent.";
+  assert.equal(locateFactQuote("The user lives in Tokyo.", src), undefined);
+});
+
+test("locateFactQuote: empty inputs → undefined", () => {
+  assert.equal(locateFactQuote("", "text"), undefined);
+  assert.equal(locateFactQuote("fact", ""), undefined);
+});
+
+test("applyFaithfulnessVerdict: bumps verdict counters at apply time (cursor review)", () => {
+  const counters = createFaithfulnessCounters();
+  const map: Map<number, FaithfulnessResult> = new Map([
+    [0, { ok: true, verdict: "entailed", model: "m" }],
+    [1, { ok: true, verdict: "contradicted", model: "m" }],
+    [2, { ok: true, verdict: "unsupported", model: "m" }],
+    [3, { ok: false, error: { code: "timeout" } }],
+  ]);
+  applyFaithfulnessVerdict(map, 0, "enforce", "f0", counters);
+  applyFaithfulnessVerdict(map, 1, "enforce", "f1", counters);
+  applyFaithfulnessVerdict(map, 2, "enforce", "f2", counters);
+  applyFaithfulnessVerdict(map, 3, "enforce", "f3", counters);
+  assert.equal(counters.entailed, 1);
+  assert.equal(counters.contradicted, 1);
+  assert.equal(counters.unsupported, 1);
+  assert.equal(counters.unchecked, 1);
 });
