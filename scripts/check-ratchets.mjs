@@ -14,6 +14,14 @@
  *                                comments/strings too, but the baseline is
  *                                measured with the same rule, so the ratchet
  *                                direction stays meaningful).
+ *   4. adHocNamespaceResolutions — call sites of the ad-hoc namespace-resolution
+ *                                helpers (`resolveWritableNamespace` /
+ *                                `namespaceFromStorageDir` /
+ *                                `configuredNamespaces`) outside the ScopePlan
+ *                                resolver module (scopes/scope-plan.ts). Every
+ *                                read/write path should consume a resolved
+ *                                ScopePlan instead (issue #1521); this ratchet
+ *                                pins the residual count so it can only shrink.
  *
  * Improvements pass and print a reminder to tighten the baseline with:
  *   node scripts/check-ratchets.mjs --update
@@ -51,6 +59,16 @@ const WATCHLIST = [
 ];
 
 const FLAG_READ_RE = /\bconfig\.[A-Za-z0-9_]+Enabled\b/g;
+/**
+ * Ad-hoc namespace-resolution call sites (issue #1521): occurrences of the
+ * three legacy resolution helpers outside the ScopePlan resolver module. The
+ * goal is zero — every path should resolve through `resolveScopePlan` instead.
+ * The `\s*\(` anchor targets call/definition sites, excluding local
+ * variables named `configuredNamespaces` (e.g. `const configuredNamespaces = …`).
+ */
+const ADHOC_RESOLUTION_RE =
+  /\b(resolveWritableNamespace|namespaceFromStorageDir|configuredNamespaces)\s*\(/g;
+const SCOPE_PLAN_REL = "packages/remnic-core/src/scopes/scope-plan.ts";
 const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
 
 function usage() {
@@ -123,6 +141,7 @@ function collectMetrics(oversizeThresholdLoc) {
   const sourceFiles = walkSourceFiles(CORE_SRC).sort();
   const oversizedFiles = [];
   let scatteredConfigFlagReads = 0;
+  let adHocNamespaceResolutions = 0;
   for (const file of sourceFiles) {
     const relPosix = toPosix(path.relative(ROOT, file));
     const content = readFileSync(file, "utf8");
@@ -136,6 +155,12 @@ function collectMetrics(oversizeThresholdLoc) {
         scatteredConfigFlagReads += matches.length;
       }
     }
+    if (relPosix !== SCOPE_PLAN_REL) {
+      const adHocMatches = content.match(ADHOC_RESOLUTION_RE);
+      if (adHocMatches) {
+        adHocNamespaceResolutions += adHocMatches.length;
+      }
+    }
   }
 
   return {
@@ -144,6 +169,7 @@ function collectMetrics(oversizeThresholdLoc) {
     oversizedFiles,
     oversizedFileCount: oversizedFiles.length,
     scatteredConfigFlagReads,
+    adHocNamespaceResolutions,
   };
 }
 
@@ -178,7 +204,7 @@ function readBaseline() {
       fail(`baseline metrics.watchlistLoc entry ${file} must be a non-negative integer`);
     }
   }
-  for (const key of ["oversizedFileCount", "scatteredConfigFlagReads"]) {
+  for (const key of ["oversizedFileCount", "scatteredConfigFlagReads", "adHocNamespaceResolutions"]) {
     if (!Number.isInteger(metrics[key]) || metrics[key] < 0) {
       fail(`baseline metrics.${key} must be a non-negative integer`);
     }
@@ -201,6 +227,7 @@ function writeBaseline(metrics, oversizeThresholdLoc) {
       watchlistLoc: metrics.watchlistLoc,
       oversizedFileCount: metrics.oversizedFileCount,
       scatteredConfigFlagReads: metrics.scatteredConfigFlagReads,
+      adHocNamespaceResolutions: metrics.adHocNamespaceResolutions,
     },
   };
   writeFileSync(BASELINE_PATH, `${JSON.stringify(baseline, null, 2)}\n`, "utf8");
@@ -239,6 +266,7 @@ function main() {
     }
     console.log(`[ratchet]   oversizedFileCount (> ${DEFAULT_OVERSIZE_THRESHOLD_LOC} LOC): ${metrics.oversizedFileCount}`);
     console.log(`[ratchet]   scatteredConfigFlagReads: ${metrics.scatteredConfigFlagReads}`);
+    console.log(`[ratchet]   adHocNamespaceResolutions: ${metrics.adHocNamespaceResolutions}`);
     return;
   }
 
@@ -299,6 +327,17 @@ function main() {
   } else if (current.scatteredConfigFlagReads < baseline.metrics.scatteredConfigFlagReads) {
     improvements.push(
       `scattered config.*Enabled reads: ${baseline.metrics.scatteredConfigFlagReads} -> ${current.scatteredConfigFlagReads}`,
+    );
+  }
+
+  if (current.adHocNamespaceResolutions > baseline.metrics.adHocNamespaceResolutions) {
+    failures.push(
+      `ad-hoc namespace-resolution call sites grew from ${baseline.metrics.adHocNamespaceResolutions} ` +
+        `to ${current.adHocNamespaceResolutions} (resolve through the ScopePlan resolver instead; see #1521)`,
+    );
+  } else if (current.adHocNamespaceResolutions < baseline.metrics.adHocNamespaceResolutions) {
+    improvements.push(
+      `ad-hoc namespace-resolution call sites: ${baseline.metrics.adHocNamespaceResolutions} -> ${current.adHocNamespaceResolutions}`,
     );
   }
 
