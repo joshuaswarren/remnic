@@ -565,6 +565,111 @@ test("ACCEPT: wrong-type inline literal matches nothing (standard Cypher, not a 
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// ACCEPT — review-round-2 hardening: relationship-target :Label enforcement,
+// WHERE first-variable pushdown, and LIKE-wildcard guard in the pushdown.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("ACCEPT: relationship target :Label is enforced (cursor Bugbot: 'Relationship node labels not enforced')", async () => {
+  // Fixture: app.handleRequest (Function) -[:USES_TYPE]-> db.QueryResult (Type).
+  // Before the fix, matchesNodePattern ignored the parsed :Label on
+  // relationship targets, so `...->(b:Function)` WRONGLY returned the Type
+  // node for `b`. Now the parsed label is enforced.
+  const { store, dir } = await tempStoreWithFixture();
+  try {
+    const typed = await run(
+      store,
+      "MATCH (a:Function)-[:USES_TYPE]->(b:Type) RETURN b.qualifiedName",
+    );
+    assert.deepEqual(typed.rows.map((r) => r["b.qualifiedName"]), [
+      "db.QueryResult",
+    ]);
+    // Requiring the target to be a Function excludes the Type node —
+    // before the fix this returned db.QueryResult.
+    const noFn = await run(
+      store,
+      "MATCH (a:Function)-[:USES_TYPE]->(b:Function) RETURN b.qualifiedName",
+    );
+    assert.equal(noFn.rows.length, 0);
+    // Symmetric on CALLS: no Type node is the target of a CALLS edge.
+    const noTypeOverCalls = await run(
+      store,
+      "MATCH (a:Function)-[:CALLS]->(b:Type) RETURN b.qualifiedName",
+    );
+    assert.equal(noTypeOverCalls.rows.length, 0);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("ACCEPT: WHERE f.name = ... on the first var narrows before the cap (single conjunction pushdown)", async () => {
+  // `MATCH (f) WHERE f.name = "x"` pushes the equality down to the index
+  // when WHERE is a single conjunction (no top-level OR), so the named
+  // node is found before the 1000-row cap. Parity with the inline form.
+  const { store, dir } = await tempStoreWithFixture();
+  try {
+    const whereForm = await run(
+      store,
+      'MATCH (f:Function) WHERE f.name = "handleRequest" RETURN f.qualifiedName',
+    );
+    assert.deepEqual(whereForm.rows.map((r) => r["f.qualifiedName"]), [
+      "app.handleRequest",
+    ]);
+    const inlineForm = await run(
+      store,
+      'MATCH (f:Function {name: "handleRequest"}) RETURN f.qualifiedName',
+    );
+    assert.deepEqual(inlineForm.rows.map((r) => r["f.qualifiedName"]), [
+      "app.handleRequest",
+    ]);
+    // OR (multiple groups) is NOT pushed down — but still resolves
+    // correctly via the post-filter, proving the conservative branch.
+    const orForm = await run(
+      store,
+      'MATCH (f:Function) WHERE f.name = "bootstrap" OR f.name = "query" RETURN f.name',
+    );
+    assert.deepEqual(
+      orForm.rows.map((r) => r["f.name"]).sort(),
+      ["bootstrap", "query"],
+    );
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("ACCEPT: name containing a LIKE metacharacter resolves exactly (pushdown wildcard guard)", async () => {
+  // A literal `_` in the value must not be pushed to searchGraph's LIKE
+  // matcher (which treats `_` as a single-char wildcard). The value falls
+  // back to the capped label scan + exact post-filter and still resolves
+  // to the single exact match — not the wildcard neighbour.
+  const dir = await mkdtemp(path.join(tmpdir(), "cypher-wild-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "graph.sqlite"),
+    repoRoot: dir,
+  });
+  try {
+    const file: StoreFileIR = {
+      path: "src/w.ts",
+      language: "typescript",
+      contentHash: "h-wild",
+      symbols: [
+        sym("w.foo_bar", "foo_bar", 0, 10, "function"),
+        sym("w.foozbar", "foozbar", 10, 20, "function"),
+      ],
+      edges: [],
+    };
+    const r = await store.upsertFileBatch([file]);
+    assert.equal(r.ok, true, "fixture ingest must succeed");
+    const { rows } = await run(
+      store,
+      'MATCH (f:Function {name: "foo_bar"}) RETURN f.qualifiedName',
+    );
+    assert.deepEqual(rows.map((row) => row["f.qualifiedName"]), ["w.foo_bar"]);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // ACCEPT — LIMIT.
 // ──────────────────────────────────────────────────────────────────────────
 

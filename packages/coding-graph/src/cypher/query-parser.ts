@@ -47,6 +47,15 @@
  * filters in node patterns (`{name: "foo"}`) and WHERE conditions are
  * applied in JS as post-filters on the bound nodes.
  *
+ * Variable-length depth uses `traverse`'s BFS, which visits each node ONCE
+ * at its shortest-path depth. So `*M..N` returns nodes whose SHORTEST path
+ * from the start is in `[M, N]` — correct for "reachable within N hops".
+ * Exact `*N` (N > 1) is honored only for nodes whose shortest path is
+ * exactly N; a node reachable at both a shorter and a length-N path is
+ * returned at the shorter depth only. True path-enumeration semantics
+ * (returning a node once per distinct length-N path) needs a path-
+ * enumerating store primitive and is tracked as a follow-up.
+ *
  * ## Read-only by construction
  *
  * The parser only recognizes the tokens `MATCH`, `WHERE`, `RETURN`,
@@ -78,9 +87,17 @@
  *
  * The subset is aimed at interactive exploration over indexed graphs. The
  * start-node resolution uses `searchGraph` (capped at 1000 rows by the
- * store) and relationship expansion uses `traverse` (BFS, full reachable
- * subgraph up to maxDepth). For graphs larger than the start cap, narrow
- * the start node with a label + property filter.
+ * store); the inline `name`/`filePath` property filter and a supported
+ * single-conjunction first-variable WHERE equality term are pushed down
+ * to the index BEFORE the cap, so an exact-name lookup is found even when
+ * the matching node sorts after the cap on a large graph. Values
+ * containing LIKE metacharacters (`%`/`_`) and multi-group (OR) WHERE
+ * clauses are NOT pushed down — they fall back to the capped scan, so on
+ * graphs with more than 1000 nodes of the starting label such queries can
+ * still false-negative; use the inline literal form for guaranteed
+ * resolution. Relationship expansion uses `traverse` (BFS, full reachable
+ * subgraph up to maxDepth) — see the compile-target note for the BFS
+ * shortest-depth semantics of variable-length `*N`.
  */
 import type {
   GraphStore,
@@ -1315,35 +1332,40 @@ interface Binding {
 }
 
 /**
- * Push the inline `name` / `filePath` property filters from a node pattern
- * down to the structured `searchGraph` filters so the candidate set is
- * narrowed by the index BEFORE the 1000-row cap applies. A specific name
- * like `"runServer"` narrows from the whole graph to a handful of rows,
- * so a low-degree node with an exact name match is no longer truncated
- * out (cursor Bugbot: 'Start search truncates before filters').
+ * Push ONE `name` / `filePath` equality filter down to the structured
+ * `searchGraph` filters so the candidate set is narrowed by the index
+ * BEFORE the 1000-row cap applies. A specific name like `"runServer"`
+ * narrows from the whole graph to a handful of rows, so a low-degree
+ * node with an exact name match is no longer truncated out (cursor
+ * Bugbot: 'Start search truncates before filters').
  *
- * The post-filter ({@link matchesNodePattern}) still enforces EXACT
- * case-sensitive equality afterwards; the pushdown uses `searchGraph`'s
- * `LIKE ... COLLATE NOCASE`, which is a SUPERSET of exact match, so no
- * valid result is lost (the post-filter removes the extras). A literal
- * `%`/`_` in the user's value acts as a LIKE wildcard for the narrow
- * pass, which only makes the candidate set slightly broader — never
- * narrower — so correctness is preserved.
+ * Only LITERAL values are pushed: a `%`/`_` in the value would act as a
+ * LIKE wildcard under searchGraph's `LIKE ... COLLATE NOCASE`, ballooning
+ * the candidate set (e.g. `"foo_bar"` matching `fooXbar`). Such values
+ * fall back to the capped label scan + exact post-filter instead
+ * (chatgpt-codex-connector: 'Escape LIKE wildcards before start-node
+ * pushdown'). The first writer wins (inline properties take priority
+ * over a WHERE term) so two constraints on the same field don't clobber
+ * each other. The post-filter ({@link matchesNodePattern} /
+ * {@link matchesWhere}) always enforces exact case-sensitive equality,
+ * so this narrowing never loses a valid row.
  */
-function pushInlineFiltersToSearch(
-  query: { label?: string; namePattern?: string; filePattern?: string },
-  properties: ReadonlyArray<{ key: string; value: CypherScalar }>,
+function pushFilterToSearch(
+  query: { namePattern?: string; filePattern?: string },
+  key: string,
+  value: CypherScalar,
 ): void {
-  for (const { key, value } of properties) {
-    const k = key.toLowerCase();
-    if (k === "name" && typeof value === "string") {
-      query.namePattern = value;
-    } else if (
-      (k === "filepath" || k === "file_path") &&
-      typeof value === "string"
-    ) {
-      query.filePattern = value;
-    }
+  if (typeof value !== "string") return;
+  // Skip LIKE metacharacters so the pushed pattern stays literal-exact.
+  if (value.includes("%") || value.includes("_")) return;
+  const k = key.toLowerCase();
+  if (k === "name" && query.namePattern === undefined) {
+    query.namePattern = value;
+  } else if (
+    (k === "filepath" || k === "file_path") &&
+    query.filePattern === undefined
+  ) {
+    query.filePattern = value;
   }
 }
 
@@ -1355,10 +1377,14 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
   // 1. Resolve the FIRST node pattern via searchGraph. The label + any
   //    inline `name`/`filePath` property filters are pushed down so the
   //    candidate set is narrowed by the index before the 1000-row cap;
-  //    remaining inline properties + WHERE conditions are applied as JS
-  //    post-filters. A closed store surfaces as
-  //    `{ ok: false, code: "store_closed" }` from searchGraph itself
-  //    (we don't reach into the private `closed` flag).
+  //    a supported first-variable WHERE equality term (`f.name = "x"`) is
+  //    pushed down too when WHERE is a single conjunction (no top-level
+  //    OR), so `MATCH (f) WHERE f.name = "rare"` is narrowed before the
+  //    cap rather than after (chatgpt-codex-connector: 'Push down first-
+  //    node WHERE filters before capping'). Remaining inline properties +
+  //    the full WHERE are applied as JS post-filters. A closed store
+  //    surfaces as `{ ok: false, code: "store_closed" }` from searchGraph
+  //    itself (we don't reach into the private `closed` flag).
   const firstNode = ast.match.nodes[0]!;
   const searchQuery: {
     label?: string;
@@ -1369,7 +1395,20 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
   if (firstNode.label !== undefined) {
     searchQuery.label = CYPHER_LABEL_TO_DB_LABEL[firstNode.label]!;
   }
-  pushInlineFiltersToSearch(searchQuery, firstNode.properties);
+  for (const { key, value } of firstNode.properties) {
+    pushFilterToSearch(searchQuery, key, value);
+  }
+  // Single OR-group ⇒ pure conjunction ⇒ every term is a necessary
+  // condition, so pushing a first-var `=` term down only narrows. With OR
+  // (multiple groups) we push nothing — a term true on one branch is not
+  // necessary overall, and pushing it would drop the other branch's rows.
+  if (ast.where && ast.where.orGroups.length === 1 && firstNode.varName) {
+    for (const term of ast.where.orGroups[0]!) {
+      if (term.varName === firstNode.varName && term.op === "=") {
+        pushFilterToSearch(searchQuery, term.key, term.value);
+      }
+    }
+  }
   const search = store.searchGraph(searchQuery);
   if (!search.ok) {
     return storeFailureToCypher(search);
@@ -1471,6 +1510,17 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
 }
 
 function matchesNodePattern(node: CypherNodeValue, pattern: NodePattern): boolean {
+  // Enforce the parsed `:Label`. The FIRST node's label is already pushed
+  // into searchGraph's `label` filter, so this is a no-op for it; for
+  // relationship TARGET nodes this is the only place the parsed label is
+  // enforced (cursor Bugbot: 'Relationship node labels not enforced' —
+  // without this, `MATCH (a:Function)-[:CALLS]->(b:Type)` returned
+  // Function nodes for `b`). `pattern.label` is validated at parse time,
+  // so the mapped db label always exists when set.
+  if (pattern.label !== undefined) {
+    const dbLabel = CYPHER_LABEL_TO_DB_LABEL[pattern.label];
+    if (dbLabel !== undefined && node.label !== dbLabel) return false;
+  }
   for (const { key, value } of pattern.properties) {
     const actual = readProperty(node, key);
     if (!compareValues(actual, "=", value)) return false;
