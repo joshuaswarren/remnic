@@ -532,3 +532,158 @@ test("operation handler: codegraph_index operation calls service.codegraphTool w
   assert.equal(calls.length, 1);
   assert.equal(calls[0]?.tool, "index");
 });
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// P1: index / ingest_traces / index_status / detect_changes invoke the real
+// runtime delegates and surface their outcomes — never stub success. When a
+// delegate is absent the handler degrades with a clean code (issue #1554).
+// ──────────────────────────────────────────────────────────────────────────
+
+test("P1 index: invokes ctx.runReindex and surfaces the real reindex outcome (not stub success)", async () => {
+  let called = false;
+  const ctx = makeEnabledCtx({
+    runReindex: async () => {
+      called = true;
+      return { ok: true, mode: "incremental", filesIngested: 7, head: "abc123" };
+    },
+  });
+  const response = await handleCodegraphTool(
+    { tool: "index", repoRoot: "/repo", mode: "auto" },
+    ctx,
+  );
+  assert.equal(called, true, "runReindex delegate must be invoked");
+  assert.equal(response.ok, true);
+  if (!response.ok) throw new Error("expected ok");
+  const result = response.result as { mode: string; filesIngested: number; head: string };
+  assert.equal(result.mode, "incremental", "real executor mode surfaces");
+  assert.equal(result.filesIngested, 7, "real executor file count surfaces");
+  assert.equal(result.head, "abc123", "real executor head surfaces");
+});
+
+test("P1 index: surfaces the executor failure (does not report ok:true on a failed reindex)", async () => {
+  const ctx = makeEnabledCtx({
+    runReindex: async () => ({ ok: false, code: "engine_unavailable", message: "engine is a placeholder" }),
+  });
+  const response = await handleCodegraphTool(
+    { tool: "index", repoRoot: "/repo", mode: "full" },
+    ctx,
+  );
+  assert.equal(response.ok, false, "a failed reindex must NOT report success");
+  if (response.ok) throw new Error("expected failure");
+  assert.equal(response.code, "engine_unavailable");
+});
+
+test("P1 index: degrades to runtime_unavailable when the delegate is absent (no stub success)", async () => {
+  // makeEnabledCtx with no runReindex override → delegate absent.
+  const response = await handleCodegraphTool(
+    { tool: "index", repoRoot: "/repo", mode: "auto" },
+    makeEnabledCtx(),
+  );
+  assert.equal(response.ok, false, "absent runtime must not report stub success");
+  if (response.ok) throw new Error("expected failure");
+  assert.equal(response.code, "runtime_unavailable");
+});
+
+test("P1 ingest_traces: invokes ctx.ingestTraces and surfaces the persisted count (not accepted:len stub)", async () => {
+  let called = false;
+  const ctx = makeEnabledCtx({
+    ingestTraces: async () => {
+      called = true;
+      return { ok: true, accepted: 3, persisted: 2, skipped: 1 };
+    },
+  });
+  const response = await handleCodegraphTool(
+    { tool: "ingest_traces", traces: [{ caller: "a", callee: "b" }] },
+    ctx,
+  );
+  assert.equal(called, true, "ingestTraces delegate must be invoked");
+  assert.equal(response.ok, true);
+  if (!response.ok) throw new Error("expected ok");
+  const result = response.result as { accepted: number; persisted: number };
+  assert.equal(result.accepted, 3, "accepted surfaces the delegate value");
+  assert.equal(result.persisted, 2, "persisted reflects real writes, not traces.length");
+});
+
+test("P1 ingest_traces: degrades to runtime_unavailable when the delegate is absent", async () => {
+  const response = await handleCodegraphTool(
+    { tool: "ingest_traces", traces: [{ caller: "a", callee: "b" }] },
+    makeEnabledCtx(),
+  );
+  assert.equal(response.ok, false);
+  if (response.ok) throw new Error("expected failure");
+  assert.equal(response.code, "runtime_unavailable");
+});
+
+test("P1 index_status: invokes ctx.reportIndexStatus and surfaces the real status (not placeholder)", async () => {
+  let called = false;
+  const ctx = makeEnabledCtx({
+    reportIndexStatus: async () => {
+      called = true;
+      return {
+        ok: true,
+        status: { mode: "stale", dirty: true, currentHead: "def", lastIndexedHead: "abc", fileCount: 5, nodeCount: 42 },
+      };
+    },
+  });
+  const response = await handleCodegraphTool(
+    { tool: "index_status", repoRoot: "/repo", sessionKey: "sess" },
+    ctx,
+  );
+  assert.equal(called, true, "reportIndexStatus delegate must be invoked");
+  assert.equal(response.ok, true);
+  if (!response.ok) throw new Error("expected ok");
+  const status = response.result as { mode: string };
+  assert.equal(status.mode, "stale", "real index status surfaces, not a placeholder note");
+});
+
+test("P1 detect_changes: invokes ctx.detectChanges and surfaces affected symbols (not placeholder)", async () => {
+  let called = false;
+  const ctx = makeEnabledCtx({
+    detectChanges: async () => {
+      called = true;
+      return { ok: true, affected: [{ qualifiedName: "a.greet", risk: "direct" }] };
+    },
+  });
+  const response = await handleCodegraphTool(
+    { tool: "detect_changes", head: "abc123", repoRoot: "/repo", sessionKey: "sess" },
+    ctx,
+  );
+  assert.equal(called, true, "detectChanges delegate must be invoked");
+  assert.equal(response.ok, true);
+  if (!response.ok) throw new Error("expected ok");
+  const result = response.result as { head: string; affected: unknown[] };
+  assert.equal(result.head, "abc123");
+  assert.equal(result.affected.length, 1, "real affected symbols surface, not a placeholder note");
+});
+
+test("search_code: respects the kind filter via per-kind label queries (issue #1554 review threads 0/6)", async () => {
+  // The store stub returns hits per-label; search_code must query each kind.
+  const seenLabels: string[] = [];
+  const store = {
+    ...MOCK_STORE,
+    searchGraph: (q: { label?: string }) => {
+      seenLabels.push(q.label ?? "<none>");
+      return {
+        ok: true,
+        hits: q.label === "function"
+          ? [{ nodeId: "n1", name: "foo", label: "function" }]
+          : q.label === "class"
+            ? [{ nodeId: "n2", name: "Bar", label: "class" }]
+            : [],
+      };
+    },
+  } as unknown as import("./codegraph-runtime.js").CodegraphStore;
+  const ctx = makeEnabledCtx({ resolveStore: async () => store });
+  const response = await handleCodegraphTool(
+    { tool: "search_code", query: "foo" },
+    ctx,
+  );
+  assert.equal(response.ok, true);
+  // The handler must have queried function, class, AND method labels
+  // (proving the kind filter is real, not an ignored `kinds` key).
+  assert.deepEqual(seenLabels.sort(), ["class", "function", "method"]);
+  if (!response.ok) throw new Error("expected ok");
+  const result = response.result as { hits: { nodeId: string }[] };
+  assert.equal(result.hits.length, 2, "merges hits across kinds, deduped by nodeId");
+});
