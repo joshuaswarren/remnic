@@ -153,7 +153,8 @@ export class FakeLcmEngine implements ExplicitCueRecallEngine {
     if (sessionId && this.faultingSessions.has(sessionId)) {
       throw new Error(`FakeLcmEngine: simulated read fault on session ${sessionId}`);
     }
-    const messages = sessionId ? this.sessions.get(sessionId) : undefined;
+    if (!sessionId) return [];
+    const messages = this.sessions.get(sessionId);
     if (!messages) return [];
     const hits = this.searchHitsBySession.get(sessionId) ?? [];
     return hits
