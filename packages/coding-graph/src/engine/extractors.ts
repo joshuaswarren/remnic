@@ -110,6 +110,12 @@ const JS_ROUTES = `
     property: (property_identifier) @route.verb)
   arguments: (arguments . (string (string_fragment) @route.path) . (function_expression) @route.handler)
   (#match? @route.verb "^(get|post|put|patch|delete|head|options|all|use)$"))
+(call_expression
+  function: (member_expression
+    object: (identifier) @__route.app
+    property: (property_identifier) @route.verb)
+  arguments: (arguments . (string (string_fragment) @route.path) . (identifier) @route.handler)
+  (#match? @route.verb "^(get|post|put|patch|delete|head|options|all|use)$"))
 `.trim();
 
 // ===========================================================================

@@ -147,8 +147,13 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
     const matches = query.matches(root);
 
     // Group by import-statement node start index (unique per node in tree).
+    // Group by (statement-start + module) so multi-module statements like
+    // Python `import os, sys` produce separate import entries rather than
+    // collapsing to a single module. Single-module statements like
+    // `import { foo, bar } from "module"` still group correctly because
+    // all captures share the same module.
     const groups = new Map<
-      number,
+      string,
       { module: string; names: Set<string>; startByte: number; endByte: number }
     >();
 
@@ -180,12 +185,12 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
         }
       }
 
-      const existing = groups.get(stmtStart);
+      const key = `${stmtStart}:${moduleText}`;
+      const existing = groups.get(key);
       if (existing) {
-        if (moduleText && !existing.module) existing.module = moduleText;
         for (const n of names) existing.names.add(n);
       } else {
-        groups.set(stmtStart, {
+        groups.set(key, {
           module: moduleText,
           names: new Set(names),
           startByte: stmtStart,
@@ -285,10 +290,12 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
         } else if (cap.name === "route.path") {
           pathTemplate = cleanModuleSpecifier(cap.node.text);
         } else if (cap.name === "route.handler") {
-          // For JS: the handler is an arrow_function/function_expression node.
-          // Its name is the first identifier parameter or "anonymous".
-          const nameNode = findHandlerName(cap.node);
-          handler = nameNode ?? "anonymous";
+          // Identifier handlers (Python function names, JS named route
+          // handlers like app.get("/x", handler)) carry the name directly.
+          // Function/arrow expression handlers need name extraction.
+          handler = cap.node.type === "identifier"
+            ? cap.node.text
+            : (findHandlerName(cap.node) ?? "anonymous");
           endByte = cap.node.endIndex;
         }
       }

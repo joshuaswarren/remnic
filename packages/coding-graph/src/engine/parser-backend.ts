@@ -88,10 +88,22 @@ export class WasmTreeSitterBackend implements ParserBackend {
   private parser: Parser | null = null;
   private readonly languages = new Map<CodingGraphLanguage, Language>();
   private readonly loadingLanguages = new Map<CodingGraphLanguage, Promise<void>>();
-  private readonly grammarDir: string;
+  private grammarDir = "";
+  private grammarDirResolved = false;
+  private readonly grammarDirHint: string | null;
 
   constructor(grammarDir?: string) {
-    this.grammarDir = grammarDir ?? resolveGrammarDir();
+    // Defer resolveGrammarDir() to first use so that a missing grammars/
+    // directory surfaces as a per-file parse_failed (rule 44) rather than
+    // a constructor exception that bricks createCodingGraphEngine.
+    this.grammarDirHint = grammarDir ?? null;
+  }
+
+  private getGrammarDir(): string {
+    if (this.grammarDirResolved) return this.grammarDir;
+    this.grammarDir = this.grammarDirHint ?? resolveGrammarDir();
+    this.grammarDirResolved = true;
+    return this.grammarDir;
   }
 
   async init(): Promise<void> {
@@ -119,7 +131,7 @@ export class WasmTreeSitterBackend implements ParserBackend {
     if (this.loadingLanguages.has(lang)) return this.loadingLanguages.get(lang)!;
     const p = (async () => {
       try {
-        const wasmPath = path.join(this.grammarDir, grammarFileName(lang));
+        const wasmPath = path.join(this.getGrammarDir(), grammarFileName(lang));
         const language = await Language.load(wasmPath);
         this.languages.set(lang, language);
       } finally {
@@ -162,6 +174,8 @@ export class WasmTreeSitterBackend implements ParserBackend {
     this.loadingLanguages.clear();
     this.initialized = false;
     this.initializing = null;
+    this.grammarDirResolved = false;
+    this.grammarDir = "";
   }
 }
 

@@ -517,6 +517,117 @@ test("retry: failed grammar load allows a fresh retry, not a cached rejection", 
 });
 
 // ---------------------------------------------------------------------------
+// 2c. Round-2 review-thread fixes (#1551 PR2 — PR #1652).
+//   - Constructor does not throw on missing grammar dir (thread dEv5)
+//   - parseFile catches extraction errors → parse_failed (thread dEv7)
+//   - Named JS route handlers: app.get("/x", handler) (thread dFOD)
+//   - Multi-module imports: Python import os, sys (thread dFOF)
+//   - Python route handler names not 'anonymous' (thread dFOG)
+// ---------------------------------------------------------------------------
+
+test("ctor-safe: WasmTreeSitterBackend constructor does not throw on missing grammar dir", () => {
+  // Before the fix, resolveGrammarDir() ran eagerly in the constructor and
+  // threw if grammars/ was missing — bricking createCodingGraphEngine.
+  // Now resolution is deferred to first ensureLanguage() call.
+  const backend = new WasmTreeSitterBackend("/nonexistent-dir-" + Date.now());
+  assert.ok(backend instanceof WasmTreeSitterBackend, "constructor must not throw");
+});
+
+test("parse-safe: extraction errors surface as parse_failed, not thrown", async () => {
+  const engine = createCodingGraphEngine();
+  // Feed content that could trigger query errors in edge-case grammars.
+  // The key contract: parseFile NEVER throws — it returns { ok: false }.
+  const result = await engine.parseFile({
+    path: "test.js",
+    content: Buffer.from("", "utf-8"),
+    language: "javascript",
+  });
+  assert.ok(result.ok, "empty JS file should still parse (no extraction error)");
+
+  await engine.dispose();
+});
+
+test("named-routes: app.get('/users', getUsers) captures the handler name", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    'const express = require("express");',
+    "const app = express();",
+    "function getUsers() { return []; }",
+    'app.get("/users", getUsers);',
+    'app.post("/items", (req, res) => {});',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "lib/server.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const routes = result.ir.routes ?? [];
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "JS: should have a /users route");
+  assert.equal(usersRoute!.handlerQualifiedName, "getUsers", "named handler should use the identifier text");
+
+  const itemsRoute = routes.find((r) => r.pathTemplate === "/items");
+  assert.ok(itemsRoute, "JS: should have a /items route");
+
+  await engine.dispose();
+});
+
+test("multi-import: Python 'import os, sys' produces two import entries", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "import os, sys",
+    "from collections import defaultdict",
+    "",
+    "def main():",
+    "    pass",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "app.py", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const modules = result.ir.imports.map((i) => i.module);
+  assert.ok(modules.includes("os"), `Python: should import os, got: ${modules.join(", ")}`);
+  assert.ok(modules.includes("sys"), `Python: should import sys, got: ${modules.join(", ")}`);
+  assert.ok(modules.includes("collections"), `Python: should import collections, got: ${modules.join(", ")}`);
+
+  await engine.dispose();
+});
+
+test("python-routes: @app.get('/users') def users() captures handler name", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "from flask import Flask",
+    "app = Flask(__name__)",
+    "",
+    "@app.get('/users')",
+    "def users():",
+    "    return []",
+    "",
+    "@app.route('/items')",
+    "def list_items():",
+    "    return []",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "app.py", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const routes = result.ir.routes ?? [];
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "Python: should have a /users route");
+  assert.notEqual(
+    usersRoute!.handlerQualifiedName,
+    "anonymous",
+    "Python route handler should be 'users', not 'anonymous'",
+  );
+  assert.equal(usersRoute!.handlerQualifiedName, "users", "should capture the function name");
+
+  const itemsRoute = routes.find((r) => r.pathTemplate === "/items");
+  assert.ok(itemsRoute, "Python: should have a /items route");
+  assert.notEqual(itemsRoute!.handlerQualifiedName, "anonymous", "items route handler should not be anonymous");
+
+  await engine.dispose();
+});
+
+// ---------------------------------------------------------------------------
 // 3. Determinism — same file parsed twice must produce byte-identical IR.
 // ---------------------------------------------------------------------------
 

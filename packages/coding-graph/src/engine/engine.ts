@@ -107,6 +107,15 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
         language,
       );
       return { ok: true, ir };
+    } catch (err) {
+      // Rule 44: extraction/query errors surface as tagged parse_failed,
+      // not thrown exceptions that abort batch reindex.
+      return {
+        ok: false,
+        code: "parse_failed",
+        path: input.path,
+        message: `extraction failed for ${lang}: ${err instanceof Error ? err.message : String(err)}`,
+      };
     } finally {
       tree.delete();
     }
