@@ -15307,8 +15307,8 @@ export class Orchestrator {
                 intentEntityTypes: inferredIntent?.entityTypes,
               });
             }
-            // v8.2: graph edge building for chunked memories
-            if (graphCaps.multiGraphMemory) {
+            // v8.2: graph edge building for chunked memories. #1576: skip pending_review.
+            if (graphCaps.multiGraphMemory && faithfulnessEnforceStatus !== "pending_review") {
               try {
                 const graphContext = await ensureGraphContext(targetStorage);
                 const entityRef =
@@ -15508,8 +15508,8 @@ export class Orchestrator {
           validAt: sourceContext?.validAt,
           source: extractionWriteSource,
         });
-        // v8.2: graph edge building (fail-open — errors caught inside GraphIndex)
-        if (graphCaps.multiGraphMemory) {
+        // v8.2: graph edge building (fail-open). #1576: skip pending_review facts.
+        if (graphCaps.multiGraphMemory && faithfulnessEnforceStatus !== "pending_review") {
           try {
             const graphContext = await ensureGraphContext(targetStorage);
             const entityRef =
