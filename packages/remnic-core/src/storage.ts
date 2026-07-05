@@ -2711,7 +2711,10 @@ export class StorageManager {
    * Promote a pending_review wearable memory to active in place,
    * merging updated trust evidence into structuredAttributes. Returns
    * false when the memory is missing or no longer pending_review (a
-   * concurrent review decision wins).
+   * concurrent review decision wins), or when the row is tombstone-blocked
+   * (`blockedBy` — issue #1579 threads OcuDx/Ocu1l): writeMemoryFrontmatter
+   * bypasses the writeMemory chokepoint, so a blocked row must first be
+   * cleared via revokeTombstone before promotion can proceed.
    */
   async promoteWearableMemory(
     id: string,
@@ -2722,6 +2725,8 @@ export class StorageManager {
     const memory = memories.find((entry) => entry.frontmatter.id === id);
     if (!memory) return false;
     if (memory.frontmatter.status !== "pending_review") return false;
+    // Tombstone-blocked rows need revokeTombstone first (issue #1579 OcuDx/Ocu1l).
+    if (memory.frontmatter.blockedBy) return false;
     return this.writeMemoryFrontmatter(memory, {
       status: "active",
       // Keep frontmatter confidence in step with the re-scored trust —

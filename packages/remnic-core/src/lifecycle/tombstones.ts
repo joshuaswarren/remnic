@@ -158,9 +158,15 @@ function newTombstoneId(): string {
   return `${TOMBSTONE_PREFIX}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-/** Deterministic key for the keyed tier (entityRef + supersessionKey). */
-function keyedTierKey(entityRef: string, supersessionKey: string): string {
-  return `${entityRef}\0${supersessionKey}`;
+/** Deterministic key for the keyed tier (namespace + entityRef + supersessionKey).
+ *
+ * The namespace is part of the discriminator so two namespace-scoped stores
+ * that share the same backing `tombstones.jsonl` (namespaces disabled, or the
+ * same directory used with different namespace configs) cannot overwrite each
+ * other's index entries — a later tombstone for namespace B with the same
+ * entity/key no longer evicts namespace A's entry (issue #1579 thread Ocs-O). */
+function keyedTierKey(namespace: string, entityRef: string, supersessionKey: string): string {
+  return `${namespace}\0${entityRef}\0${supersessionKey}`;
 }
 
 /**
@@ -328,11 +334,17 @@ export class TombstoneStore {
       if (entry.revokes) this.revokedIds.add(entry.revokes);
       return;
     }
-    // Tombstone entries populate the lookup maps.
-    if (entry.contentHash) this.byHash.set(entry.contentHash, entry.id);
-    if (entry.normalizedText) this.byNormalized.set(entry.normalizedText, entry.id);
+    // Tombstone entries populate the lookup maps. The namespace is part of
+    // every discriminator key (issue #1579 thread Ocs-O): when two
+    // namespace-scoped stores share the same backing file, a later tombstone
+    // for namespace B with identical content must NOT evict namespace A's map
+    // entry — otherwise A's lookup finds B's id, rejects it on namespace
+    // mismatch, and misses its own still-active tombstone (resurrection).
+    const ns = entry.namespace;
+    if (entry.contentHash) this.byHash.set(`${ns}\0${entry.contentHash}`, entry.id);
+    if (entry.normalizedText) this.byNormalized.set(`${ns}\0${entry.normalizedText}`, entry.id);
     if (entry.entityRef && entry.supersessionKey) {
-      this.byKey.set(keyedTierKey(entry.entityRef, entry.supersessionKey), entry.id);
+      this.byKey.set(keyedTierKey(ns, entry.entityRef, entry.supersessionKey), entry.id);
     }
   }
 
@@ -485,22 +497,26 @@ export class TombstoneStore {
     if (!this.options.enabled) return null;
     if (!this.loaded) return null;
 
-    // Tier 1: exact contentHash.
+    // Tier 1: exact contentHash. Namespace is part of the map key (thread
+    // Ocs-O), so the lookup finds only this namespace's tombstone even when
+    // the backing file is shared. The namespace equality check below is kept
+    // as defense-in-depth.
+    const ns = query.namespace;
     if (query.contentHash) {
-      const id = this.byHash.get(query.contentHash);
+      const id = this.byHash.get(`${ns}\0${query.contentHash}`);
       if (id && !this.revokedIds.has(id)) {
         const entry = this.byId.get(id);
-        if (entry && entry.namespace === query.namespace) {
+        if (entry && entry.namespace === ns) {
           return { tombstoneId: id, matchedTier: "exact", reason: entry.reason };
         }
       }
     }
     // Tier 2: normalized text.
     if (query.normalizedText) {
-      const id = this.byNormalized.get(query.normalizedText);
+      const id = this.byNormalized.get(`${ns}\0${query.normalizedText}`);
       if (id && !this.revokedIds.has(id)) {
         const entry = this.byId.get(id);
-        if (entry && entry.namespace === query.namespace) {
+        if (entry && entry.namespace === ns) {
           return { tombstoneId: id, matchedTier: "normalized", reason: entry.reason };
         }
       }
@@ -521,10 +537,10 @@ export class TombstoneStore {
         }
       }
       for (const key of keysToCheck) {
-        const id = this.byKey.get(keyedTierKey(query.entityRef, key));
+        const id = this.byKey.get(keyedTierKey(ns, query.entityRef, key));
         if (id && !this.revokedIds.has(id)) {
           const entry = this.byId.get(id);
-          if (entry && entry.namespace === query.namespace) {
+          if (entry && entry.namespace === ns) {
             return { tombstoneId: id, matchedTier: "keyed", reason: entry.reason };
           }
         }

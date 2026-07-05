@@ -556,3 +556,113 @@ test("#1579 thread Oci-T: rebuild preserves per-key tombstone ids (revocation su
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ── Issue #1579 thread Ocs-O: namespace-keyed index maps ───────────────────
+// When two namespace-scoped stores share the same backing tombstones.jsonl
+// (namespaces disabled, or the same directory used with different namespace
+// configs), the in-memory index maps must namespace-key their discriminators.
+// Pre-fix the maps stored ONE tombstone id per hash/text/key; a later
+// tombstone for namespace B with identical content overwrote namespace A's
+// map entry, so A's lookup found B's id, rejected it on namespace mismatch,
+// and missed A's own still-active tombstone — allowing resurrection.
+test("#1579 thread Ocs-O: shared backing file — each namespace's tombstone survives the other's", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-tombstone-nsidx-"));
+  try {
+    const storageA = new StorageManager(dir);
+    await storageA.ensureDirectories();
+    enableTombstones(storageA, "ns-a");
+
+    const storageB = new StorageManager(dir);
+    await storageB.ensureDirectories();
+    enableTombstones(storageB, "ns-b");
+
+    const content = "Identical retired content in two namespaces (Ocs-O)";
+    // BOTH namespaces tombstone the SAME content.
+    await storageA.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "fact-ocs-o-a",
+      rawContent: content,
+    });
+    await storageB.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "fact-ocs-o-b",
+      rawContent: content,
+    });
+
+    // Namespace A's write must still be blocked by A's OWN tombstone.
+    // Pre-fix: B's tombstone (appended later to the shared file) overwrote
+    // A's map entry; A's lookup found B's id, rejected on namespace mismatch,
+    // and missed A's tombstone — the fact resurrected as active.
+    const idA = await storageA.writeMemory("fact", content, { source: "extraction" });
+    const memoryA = await readBack(storageA, idA);
+    assertBlocked(memoryA, "exact");
+
+    // Namespace B's write must also be blocked by B's tombstone.
+    const idB = await storageB.writeMemory("fact", content, { source: "extraction" });
+    const memoryB = await readBack(storageB, idB);
+    assertBlocked(memoryB, "exact");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Issue #1579 threads OcuDx/Ocu1l: wearable promotion bypass ─────────────
+// promoteWearableMemory flipped pending_review → active via
+// writeMemoryFrontmatter, bypassing the writeMemory chokepoint. A
+// tombstone-blocked fact (pending_review + blockedBy) could be promoted to
+// active while the tombstone stayed enforced only on new writes —
+// resurrecting retired content in active recall.
+test("#1579 threads OcuDx/Ocu1l: promoteWearableMemory refuses tombstone-blocked rows", async () => {
+  const { storage, dir } = await makeStorage();
+  try {
+    const content = "Wearable fact that matches a tombstone (OcuDx)";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "fact-wearable-retired",
+      rawContent: content,
+    });
+
+    // The write chokepoint blocks the fact: pending_review + blockedBy.
+    const id = await storage.writeMemory("fact", content, {
+      source: "wearable:smart",
+    });
+    const memory = await readBack(storage, id);
+    assertBlocked(memory, "exact");
+
+    // Promotion must refuse — the row is tombstone-blocked, not merely
+    // trust-gated. Pre-fix promoteWearableMemory only checked
+    // status === "pending_review" and flipped it to active via
+    // writeMemoryFrontmatter, bypassing the writeMemory chokepoint.
+    const promoted = await storage.promoteWearableMemory(id, { trust: "corroborated" }, 0.95);
+    assert.equal(promoted, false, "tombstone-blocked row must not be promotable");
+
+    const after = await readBack(storage, id);
+    assert.equal(
+      after.frontmatter.status,
+      "pending_review",
+      "blocked row stays pending_review until the tombstone is revoked",
+    );
+    assert.ok(
+      typeof after.frontmatter.blockedBy === "string" && after.frontmatter.blockedBy.length > 0,
+      "blockedBy must survive the promotion attempt",
+    );
+
+    // Control: a non-blocked pending_review row (no tombstone match) CAN
+    // still be promoted — the guard is on blockedBy, not on the
+    // pending_review status itself.
+    const cleanContent = "A clean wearable fact with no tombstone match";
+    const cleanId = await storage.writeMemory("fact", cleanContent, {
+      source: "wearable:smart",
+      status: "pending_review",
+    });
+    const cleanPromoted = await storage.promoteWearableMemory(cleanId, { trust: "high" }, 0.9);
+    assert.equal(cleanPromoted, true, "non-blocked pending_review row is promotable");
+    const cleanAfter = await readBack(storage, cleanId);
+    assert.equal(cleanAfter.frontmatter.status, "active");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
