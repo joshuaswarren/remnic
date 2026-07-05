@@ -23,6 +23,7 @@
  * by the surface handler via a context seam.
  */
 import path from "node:path";
+import { expandTildePath } from "../utils/path.js";
 
 import type { PluginConfig, CodingKnowledgeConfig, CodingContext } from "../types.js";
 import { isCodingGraphInstalled } from "./optional-coding-graph.js";
@@ -138,9 +139,10 @@ export function resolveCodegraphDbPath(params: {
   readonly projectId: string;
 }): string {
   const { config, memoryDir, principal, projectId } = params;
+  const rawDir = config.codingKnowledge.codegraphDbDir.trim();
   const root =
-    config.codingKnowledge.codegraphDbDir.trim().length > 0
-      ? config.codingKnowledge.codegraphDbDir.trim()
+    rawDir.length > 0
+      ? expandTildePath(rawDir)
       : path.join(memoryDir, "codegraph");
   const principalSafe = sanitizePathSegment(principal);
   const projectSafe = sanitizePathSegment(projectId);
@@ -241,7 +243,12 @@ export async function getCodegraphStore(params: {
       "The @remnic/coding-graph package is not installed; install it to use codegraph tools.",
     );
   }
-  const key = storeCacheKey(principal, projectId);
+  // Key the cache on SANITIZED values so two different raw identifiers
+  // that sanitize to the same path segment share one store handle
+  // (prevents two open handles on the same SQLite file).
+  const principalSafe = sanitizePathSegment(principal);
+  const projectSafe = sanitizePathSegment(projectId);
+  const key = storeCacheKey(principalSafe, projectSafe);
   const cached = storeCache.get(key);
   if (cached !== undefined) {
     if (repoRoot !== undefined && cached.repoRoot !== undefined && cached.repoRoot !== repoRoot) {
@@ -271,9 +278,10 @@ export function listCodegraphProjects(params: {
 }): readonly string[] {
   const { config, memoryDir, principal, listDir } = params;
   if (!codegraphSurfaceVisible(config)) return [];
+  const rawDir = config.codingKnowledge.codegraphDbDir.trim();
   const root =
-    config.codingKnowledge.codegraphDbDir.trim().length > 0
-      ? config.codingKnowledge.codegraphDbDir.trim()
+    rawDir.length > 0
+      ? expandTildePath(rawDir)
       : path.join(memoryDir, "codegraph");
   const principalSafe = sanitizePathSegment(principal);
   const principalDir = path.join(root, principalSafe);
