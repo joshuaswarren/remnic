@@ -141,20 +141,26 @@ export class RemnicClient {
     options: ObserveOptions = {},
   ): Promise<Record<string, unknown>> {
     const maxBytes = options.maxBytes ?? this.config.observeMaxBytes;
+    // Observe runs on the live turn hooks, so bound it by the per-turn budget
+    // (#1626) regardless of how many chunks the payload splits into. A missing
+    // override previously let single-chunk observe fall back to the 60s general
+    // budget while multi-chunk used the 20s turn budget (cursor review). An
+    // explicit override is honored so callers outside the turn (shutdown replay,
+    // tests) can extend it.
+    const turnBudgetMs = options.timeoutMs ?? this.config.turnRequestTimeoutMs;
     const retryOptions: RequestOptions = {
-      timeoutMs: options.timeoutMs,
+      timeoutMs: turnBudgetMs,
       maxRetries: options.maxRetries ?? this.config.observeMaxRetries,
     };
     const chunks = chunkObservePayload(this.config, sessionKey, cwd, messages, maxBytes);
     if (chunks.length === 1) {
       return this.requestWithRetry("POST", "/engram/v1/observe", chunks[0], retryOptions);
     }
-    // Multiple chunks: send sequentially within a single per-turn deadline so
-    // the TOTAL observe time stays under turnRequestTimeoutMs (not per-chunk),
-    // which keeps it inside the host's ~30s handler budget (#1626). Each chunk
-    // is retried independently on transient connection failures; observe is
+    // Multiple chunks: send sequentially within the SAME per-turn deadline so
+    // the TOTAL observe time stays under turnBudgetMs (not per-chunk), which
+    // keeps it inside the host's ~30s handler budget (#1626). Each chunk is
+    // retried independently on transient connection failures; observe is
     // dedupe-safe, so a partial failure just re-sends on the next turn.
-    const turnBudgetMs = options.timeoutMs ?? this.config.turnRequestTimeoutMs;
     const deadline = Date.now() + turnBudgetMs;
     const results: Record<string, unknown>[] = [];
     for (let i = 0; i < chunks.length; i++) {
@@ -317,16 +323,35 @@ export class RemnicClient {
     options: RequestOptions = {},
   ): Promise<T> {
     const maxRetries = options.maxRetries ?? 0;
+    // Share ONE deadline across all attempts (including backoff sleeps) when the
+    // caller passes a per-turn/per-operation budget, so a late transient failure
+    // cannot burn a full timeout on every retry and overshoot the host's ~30s
+    // handler window (#1602/#1626 — cursor + codex reviews). The first attempt
+    // keeps the original timeoutMs verbatim (preserving error messages/timing);
+    // only retries are tightened to the remaining budget.
+    const budgetMs = options.timeoutMs;
+    const hasDeadline = typeof budgetMs === "number" && Number.isFinite(budgetMs) && budgetMs > 0;
+    const deadline = hasDeadline ? Date.now() + budgetMs : Number.POSITIVE_INFINITY;
     let attempt = 0;
+    let attemptOptions = options;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       try {
-        return await this.request<T>(method, pathname, body, options);
+        return await this.request<T>(method, pathname, body, attemptOptions);
       } catch (err) {
         if (attempt >= maxRetries || !isTransientNetworkError(err)) throw err;
         const delayMs = RETRY_BASE_DELAY_MS * 2 ** attempt;
         await sleep(delayMs);
         attempt += 1;
+        if (hasDeadline) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            throw new Error(
+              `Remnic request exceeded the ${budgetMs}ms budget before retry ${attempt} (${method} ${pathname})`,
+            );
+          }
+          attemptOptions = { ...options, timeoutMs: remaining };
+        }
       }
     }
   }

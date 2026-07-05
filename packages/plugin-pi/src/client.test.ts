@@ -337,3 +337,52 @@ test("chunkObservePayload never overshoots the cap once array commas are counted
     assert.ok(bytes <= 3000, `chunk ${bytes} bytes exceeds 3000 cap`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Review (cursor + codex): retries must share one deadline; single-chunk
+// observe must use the turn budget, not the 60s general budget (#1602/#1626).
+// ---------------------------------------------------------------------------
+
+test("requestWithRetry keeps retries within the shared per-turn budget instead of a fresh timeout per attempt (#1602/#1626, review cursor+codex)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    throw new Error("The socket connection was closed unexpectedly.");
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  // Budget (50ms) is smaller than the first exponential backoff (200ms), so a
+  // retry would already be past the deadline. The old code retried with a fresh
+  // full timeout each attempt; the new code aborts before the retry.
+  const client = new RemnicClient({ ...baseConfig(), observeMaxRetries: 3 });
+  await assert.rejects(
+    () => client.recall("query", "sess", "/cwd", { timeoutMs: 50, maxRetries: 3 }),
+    /exceeded the 50ms budget before retry/,
+  );
+  assert.equal(calls, 1, "the shared deadline stopped further retries instead of looping");
+});
+
+test("single-chunk observe is bounded by the turn budget, not the general request budget (#1626, review cursor)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (_input, init) => {
+    calls += 1;
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(Object.assign(new Error("This operation was aborted"), { name: "AbortError" })),
+      );
+    });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  // General budget 60s, turn budget 30ms. A single small message must time out
+  // at the TURN budget (30ms), proving the single-chunk path no longer falls
+  // back to the 60s general budget the way the multi-chunk path never did.
+  const client = new RemnicClient({ ...baseConfig(), requestTimeoutMs: 60000, turnRequestTimeoutMs: 30 });
+  await assert.rejects(
+    () => client.observe("sess", "/cwd", [{ role: "user", content: "hi" }]),
+    /Remnic request timed out after 30ms/,
+  );
+  assert.equal(calls, 1);
+});

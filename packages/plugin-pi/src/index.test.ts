@@ -1379,3 +1379,55 @@ test("recall circuit breaker skips subsequent turns after a timeout against an u
   await emit("context", event, ctx);
   assert.equal(fetchCalls, 1, "circuit breaker skipped recall during cooldown");
 });
+
+test("session_shutdown replays the branch even when the daemon breaker is tripped (#1626, review codex)", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const observeBodies: Array<Record<string, any>> = [];
+  let call = 0;
+  globalThis.fetch = async (input, init) => {
+    call += 1;
+    if (String(input).endsWith("/engram/v1/observe")) {
+      // Fail the ENTIRE turn_end retry chain (1 initial + observeMaxRetries=2
+      // retries = 3 calls) so the breaker actually trips; the next observe
+      // (shutdown) then succeeds, proving shutdown bypasses the breaker.
+      if (call <= 3) {
+        throw new Error("The socket connection was closed unexpectedly.");
+      }
+      observeBodies.push(JSON.parse(String(init?.body ?? "{}")));
+    }
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  const { pi, emit } = makePiHarness();
+  const extension = createRemnicPiExtension({
+    config: {
+      ...baseConfig(),
+      authToken: "test-token",
+      recallEnabled: false,
+      compactionEnabled: false,
+      mcpToolsEnabled: false,
+      statusEnabled: false,
+    },
+  });
+  await extension(pi as any);
+
+  const message = { role: "assistant", content: "done" };
+  const ctx = {
+    cwd: "/tmp/remnic-pi",
+    sessionManager: {
+      getSessionId: () => "shutdown-breaker-test",
+      getEntries: () => [],
+      getBranch: () => [{ id: "entry-1", message }],
+    },
+  };
+
+  // turn_end observe fails transiently -> breaker tripped, nothing recorded.
+  await emit("turn_end", { message }, ctx);
+  assert.equal(observeBodies.length, 0, "turn_end observe failed and recorded nothing");
+
+  // shutdown runs while the breaker is in cooldown; forceAttempt must still
+  // replay the branch (the last chance to observe before teardown).
+  await emit("session_shutdown", {}, ctx);
+  assert.equal(observeBodies.length, 1, "shutdown bypassed the breaker and observed the branch");
+});

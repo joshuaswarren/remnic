@@ -133,7 +133,7 @@ export function createRemnicPiExtension(options: RemnicPiExtensionOptions = {}) 
         const branchMessages = branchMessagesWithEntryIdentity(session.branch);
         const unobservedBranchMessages = skipLiveObservedReplayMessages(session.sessionKey, branchMessages, state.liveObservedReplayKeys);
         if (unobservedBranchMessages.length > 0) {
-          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config);
+          await observeMessagesForSession(session, client, unobservedBranchMessages, state.observedHashes, undefined, config, true);
         }
       }
       persistObservedState(pi, state.observedHashes);
@@ -421,6 +421,7 @@ async function observeMessagesForSession(
   observedHashes: Set<string>,
   liveObservedReplayKeys?: Map<string, number>,
   config?: RemnicPiConfig,
+  forceAttempt = false,
 ): Promise<void> {
   const messages: ObserveMessage[] = [];
   const pendingHashes = new Set<string>();
@@ -435,8 +436,11 @@ async function observeMessagesForSession(
   if (messages.length === 0) return;
   // Circuit breaker: when config is wired (the live Pi handlers always pass
   // it), skip observe fast while the daemon is known-down so a dead host
-  // doesn't burn the full per-turn budget on every turn (#1626).
-  if (config && !client.isReachable()) return;
+  // doesn't burn the full per-turn budget on every turn (#1626). Shutdown is
+  // the exception — it is the last chance to observe the branch before the
+  // session tears down, so force the attempt even mid-cooldown; a failure
+  // still trips the breaker normally (codex review).
+  if (config && !forceAttempt && !client.isReachable()) return;
   const observeOptions = config ? { timeoutMs: config.turnRequestTimeoutMs } : undefined;
   try {
     await client.observe(session.sessionKey, session.cwd, messages, observeOptions);
