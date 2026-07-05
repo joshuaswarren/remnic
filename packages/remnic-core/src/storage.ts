@@ -3171,9 +3171,14 @@ export class StorageManager {
       // Cross-process staleness guard (#1579 review): if another process
       // appended to tombstones.jsonl, our in-memory index is stale. A cheap
       // mtime probe detects peer appends and reloads so the next writeMemory
-      // lookup does not admit resurrected content.
+      // lookup does not admit resurrected content. The probe MAY null out
+      // `this.tombstoneStore` (it just invalidated it) — in that case we fall
+      // through to the reload branch below instead of returning null. Returning
+      // Promise.resolve(null) here was the regression: the chokepoint then
+      // threw on `.lookup` and failed OPEN, so every resurrected fact slipped
+      // through (#1579 matrix a–e).
       this.maybeInvalidateTombstoneStoreForPeerAppend();
-      return Promise.resolve(this.tombstoneStore);
+      if (this.tombstoneStore) return Promise.resolve(this.tombstoneStore);
     }
     if (!this.tombstoneStoreLoadPromise) {
       const store = this.buildTombstoneStore();
@@ -3226,7 +3231,13 @@ export class StorageManager {
       // citation-stripped contentHashSource. Idempotent on already-stripped
       // text, so callers that pre-strip (e.g. recordSupersession) are unaffected.
       const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate);
-      return await store.appendTombstone({ ...input, rawContent: strippedRawContent });
+      const id = await store.appendTombstone({ ...input, rawContent: strippedRawContent });
+      // Record the file's new mtime so the staleness probe does not treat our
+      // OWN append as a peer append and throw away the (correct) in-memory
+      // index on the next access (#1579 — avoids a needless invalidate+reload
+      // in the hot write path).
+      this.refreshTombstoneStoreMtimeAfterOwnWrite();
+      return id;
     } catch (err) {
       log.warn(`tombstone append failed (memory=${input.sourceMemoryId}): ${err}`);
       return null;
@@ -3241,7 +3252,9 @@ export class StorageManager {
     if (!this.tombstonesConfig.enabled) return null;
     try {
       const store = await this.getTombstoneStore();
-      return await store.revoke(tombstoneId, createdBy);
+      const id = await store.revoke(tombstoneId, createdBy);
+      this.refreshTombstoneStoreMtimeAfterOwnWrite();
+      return id;
     } catch (err) {
       log.warn(`tombstone revoke failed (id=${tombstoneId}): ${err}`);
       return null;
@@ -3317,7 +3330,25 @@ export class StorageManager {
         createdAt: m.frontmatter.updated || m.frontmatter.created,
       });
     }
-    return store.rebuild(retired);
+    const rebuilt = await store.rebuild(retired);
+    this.refreshTombstoneStoreMtimeAfterOwnWrite();
+    return rebuilt;
+  }
+
+  /**
+   * After this instance writes to tombstones.jsonl (append / revoke / rebuild),
+   * record the file's new mtime so the cross-process staleness probe treats the
+   * next access as fresh rather than as a peer append. The in-memory index the
+   * store just updated is already correct; without this the probe would
+   * invalidate it and force a needless disk reload on every write (#1579).
+   */
+  private refreshTombstoneStoreMtimeAfterOwnWrite(): void {
+    try {
+      this.tombstoneStoreFileMtimeMs = Math.floor(statSync(this.tombstonesPath).mtimeMs);
+    } catch {
+      // ENOENT — the write should have created the file; if stat still fails,
+      // leave the recorded mtime as-is (fail-open, rule 34 spirit).
+    }
   }
 
   private async getFactHashIndex(): Promise<ContentHashIndex> {
