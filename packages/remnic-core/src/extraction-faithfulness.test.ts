@@ -65,15 +65,57 @@ function throwingFallbackLlm(error: Error): FallbackLlmClient {
 
 /**
  * Create a stub FallbackLlmClient that never resolves within the test timeout
- * (simulates a hung request). We resolve after a long delay; the gate's own
- * AbortController will fire first.
+ * (simulates a hung request). Respects the gate's AbortSignal: when the
+ * signal fires, the stub throws — mirroring a real fetch that is aborted by
+ * the gate timer. (The previous stub ignored the signal and returned "[]"
+ * after the delay, which is unrealistic and masked the timeout-race fix.)
  */
 function slowFallbackLlm(delayMs: number): FallbackLlmClient {
   return {
     isAvailable: () => true,
-    chatCompletion: async () => {
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    chatCompletion: async (
+      _messages: Array<{ role: string; content: string }>,
+      options: Record<string, unknown> = {},
+    ) => {
+      const signal = options.signal as AbortSignal | undefined;
+      const { promise, resolve, reject } = Promise.withResolvers<void>();
+      const timer = setTimeout(resolve, delayMs);
+      if (signal) {
+        if (signal.aborted) {
+          clearTimeout(timer);
+          throw new Error("aborted");
+        }
+        signal.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(timer);
+            reject(new Error("aborted"));
+          },
+          { once: true },
+        );
+      }
+      await promise;
       return { content: "[]", modelUsed: "slow", usage: undefined };
+    },
+  } as unknown as FallbackLlmClient;
+}
+
+/**
+ * Create a stub FallbackLlmClient that IGNORES the abort signal and returns
+ * valid content after a delay longer than the gate's timeout. This simulates
+ * the race the cursor review flagged (#1576): the abort timer fires
+ * (`timedOut = true`) but the response lands a moment later with genuine
+ * verdicts. The race fix must honor that content instead of discarding it as
+ * a timeout error.
+ */
+function racingFallbackLlm(delayMs: number, content: string): FallbackLlmClient {
+  return {
+    isAvailable: () => true,
+    chatCompletion: async () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, delayMs);
+      await promise;
+      return { content, modelUsed: "racing", usage: undefined };
     },
   } as unknown as FallbackLlmClient;
 }
@@ -384,6 +426,23 @@ test("checkFaithfulnessBatch: timeout → tagged timeout, not a crash", async ()
   assert.equal(result.results[0]?.ok, false);
   if (!result.results[0]?.ok) {
     assert.equal(result.results[0].error.code, "timeout");
+  }
+});
+
+test("checkFaithfulnessBatch: content returned as the timer fires is used, not discarded (cursor race)", async () => {
+  // The abort timer fires at 50ms (timedOut=true), but the LLM returns valid
+  // content at 80ms — a response that lands just as the abort propagates. The
+  // race fix must honor the real verdict instead of throwing it away as a
+  // timeout (cursor review PRRT_kwDORJXyws6ObXbj).
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = parseConfig({ extractionFaithfulnessTimeoutMs: 50 });
+  const llm = JSON.stringify([{ index: 0, verdict: "entailed" }]);
+  const result = await checkFaithfulnessBatch(
+    inputs, config, null, racingFallbackLlm(80, llm),
+  );
+  assert.equal(result.results[0]?.ok, true, "racing content must be used, not timed out");
+  if (result.results[0]?.ok) {
+    assert.equal(result.results[0].verdict, "entailed");
   }
 });
 

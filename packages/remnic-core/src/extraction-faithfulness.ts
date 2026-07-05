@@ -454,7 +454,11 @@ export async function checkFaithfulnessBatch(
     );
     const elapsedMs = Date.now() - startedAt;
 
-    if (timedOut) {
+    // Cursor review: if the LLM returned usable content, use it even when
+    // the abort timer raced — a response that lands just as the timer fires
+    // has real verdicts. Only fall back to timeout errors when there is no
+    // content to parse (the call genuinely did not complete in time).
+    if (timedOut && !llmResult.content) {
       for (const idx of checkableIndices) {
         results[idx] = { ok: false, error: { code: "timeout" } };
       }
