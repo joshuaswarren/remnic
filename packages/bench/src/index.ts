@@ -414,8 +414,10 @@ export type {
   CalibrationAnswer,
   CalibrationVerdictPair,
   CohenKappaResult,
+  JudgeCalibrationIdentities,
   JudgeCalibrationResult,
   JudgeCategory,
+  LoadedJudgeCalibrationState,
   RunJudgeCalibrationOptions,
 } from "./judges/calibration-slice.js";
 

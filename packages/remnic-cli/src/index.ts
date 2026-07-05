@@ -726,15 +726,28 @@ type PackageBenchModule = {
   /**
    * Load a previously persisted judge-calibration state for a benchmark (issue
    * #1573 PR3). Returns the artifact-relevant subset (`{ kappa, sampleSize,
-   * threshold, warning }`) or `undefined` when no calibration has been run.
-   * Wired into the run path so subsequent local artifacts carry the persisted
-   * kappa after `remnic bench judge-calibrate` (cursor + codex review: the
-   * loader was previously dead code — only tests called it).
+   * threshold, warning }`) plus optional judge identities, or `undefined` when
+   * no calibration has been run. Wired into the run path so subsequent local
+   * artifacts carry the persisted kappa after `remnic bench judge-calibrate`,
+   * but ONLY when the run's judge matches the calibrated pair (codex P2 review:
+   * the loader was previously dead code — only tests called it).
    */
   loadJudgeCalibrationState?: (
     benchmarkId: string,
     calibrationDir: string,
-  ) => Promise<{ kappa: number; sampleSize: number; threshold: number; warning: boolean } | undefined>;
+  ) => Promise<
+    | {
+        kappa: number;
+        sampleSize: number;
+        threshold: number;
+        warning: boolean;
+        localJudgeProvider?: string;
+        localJudgeModel?: string;
+        frontierJudgeProvider?: string;
+        frontierJudgeModel?: string;
+      }
+    | undefined
+  >;
 };
 
 interface TrainingExportOptions {
@@ -2498,7 +2511,22 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     );
     process.exit(1);
   }
-  const loaded = await bench.loadBenchmarkResult(latest.path);
+  // Prefer the latest COMPLETE full run — a partial full run (interrupted)
+  // would otherwise seed calibration from an incomplete slice even when an
+  // older complete full run exists (codex P2 review). `status` lives on the
+  // loaded result, not the summary, so load newest-first and keep the first
+  // complete one; if every candidate is partial we keep the newest (the only
+  // option available to the operator).
+  let loaded = await bench.loadBenchmarkResult(latest.path);
+  if (loaded.meta.status === "partial") {
+    for (const candidate of candidates.slice(1)) {
+      const candidateResult = await bench.loadBenchmarkResult(candidate.path);
+      if (candidateResult.meta.status !== "partial") {
+        loaded = candidateResult;
+        break;
+      }
+    }
+  }
   const answers = loaded.results.tasks.map((task) => ({
     questionId: task.taskId,
     question: task.question,
@@ -2516,9 +2544,8 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   // from CLI flags whose `provider` is the broad `BuiltInProvider` union, so
   // it is narrowed through the same cast the local judge uses.
   type ProviderFactoryConfig = Parameters<typeof bench.createProviderBackedJudge>[0];
-  const localJudge = bench.createProviderBackedJudge(
-    resolvedProfile.judge.providerConfig as ProviderFactoryConfig,
-  );
+  const localJudgeConfig = resolvedProfile.judge.providerConfig as ProviderFactoryConfig;
+  const localJudge = bench.createProviderBackedJudge(localJudgeConfig);
   const frontierJudge = bench.createProviderBackedJudge({
     provider: parsed.judgeProvider,
     model: parsed.judgeModel,
@@ -2534,7 +2561,16 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   });
 
   const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
-  const statePath = await bench.writeJudgeCalibrationState(result, calibrationDir);
+  // Bind the persisted kappa to the calibrated judge pair (codex P2 review):
+  // without these identities, a later run that swaps the local-lab manifest
+  // or the frontier judge would inherit a stale kappa for a different pair.
+  const calibrationIdentities = {
+    localJudgeProvider: String(localJudgeConfig.provider),
+    localJudgeModel: String(localJudgeConfig.model),
+    frontierJudgeProvider: parsed.judgeProvider,
+    frontierJudgeModel: parsed.judgeModel,
+  };
+  const statePath = await bench.writeJudgeCalibrationState(result, calibrationDir, calibrationIdentities);
   // Read the persisted state straight back. This exercises the load path the
   // artifact builder will use (cursor review + codex P1: loadJudgeCalibration-
   // State was previously dead code — only tests called it). A mismatch here
@@ -3326,20 +3362,48 @@ async function runBenchViaPackage(
  * `judge-calibrate` yet): the result is returned unchanged. A corrupt state
  * file is a silent miss inside `loadJudgeCalibrationState` (rule 34) — the run
  * is never failed by stale calibration.
+ *
+ * Judge binding (codex P2 review): when the persisted state records the
+ * calibrated judge identities, the kappa is attached ONLY when the run's judge
+ * matches the calibrated local or frontier judge — a run that swapped the
+ * local-lab manifest or the frontier judge must not inherit a stale kappa for
+ * a different pair. State files predating identities have none and are treated
+ * as unbound (attach anyway) for backwards compatibility. Only the artifact
+ * subset is stashed — never the judge identities (those are bookkeeping).
  */
 async function attachPersistedJudgeCalibration(
   benchModule: PackageBenchModule,
   benchmarkId: string,
-  result: { config: { benchmarkOptions?: Record<string, unknown> } },
+  result: {
+    config: {
+      benchmarkOptions?: Record<string, unknown>;
+      judgeProvider?: { provider?: string; model?: string } | null;
+    };
+  },
 ): Promise<void> {
   const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
-  const calibration = await benchModule.loadJudgeCalibrationState?.(benchmarkId, calibrationDir);
-  if (calibration) {
-    result.config.benchmarkOptions = {
-      ...(result.config.benchmarkOptions ?? {}),
-      judgeCalibration: calibration,
-    };
+  const state = await benchModule.loadJudgeCalibrationState?.(benchmarkId, calibrationDir);
+  if (!state) return;
+  if (state.localJudgeModel !== undefined && state.frontierJudgeModel !== undefined) {
+    const runJudgeProvider = result.config.judgeProvider?.provider;
+    const runJudgeModel = result.config.judgeProvider?.model;
+    const matchesLocal =
+      runJudgeProvider === state.localJudgeProvider && runJudgeModel === state.localJudgeModel;
+    const matchesFrontier =
+      runJudgeProvider === state.frontierJudgeProvider && runJudgeModel === state.frontierJudgeModel;
+    if (!matchesLocal && !matchesFrontier) {
+      return;
+    }
   }
+  result.config.benchmarkOptions = {
+    ...(result.config.benchmarkOptions ?? {}),
+    judgeCalibration: {
+      kappa: state.kappa,
+      sampleSize: state.sampleSize,
+      threshold: state.threshold,
+      warning: state.warning,
+    },
+  };
 }
 
 function restoreOptionalEnv(key: string, previousValue: string | undefined): void {

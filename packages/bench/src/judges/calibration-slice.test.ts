@@ -332,6 +332,87 @@ test("writeJudgeCalibrationState sanitizes the benchmark id in the filename (no 
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("writeJudgeCalibrationState + loadJudgeCalibrationState round-trip judge identities (codex P2 review)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-identities-"));
+  try {
+    const result = await runJudgeCalibration({
+      benchmarkId: "locomo",
+      localJudge: makeScalarStubJudge(Object.fromEntries(makeAnswers(6).map((a) => [a.predicted, 1]))),
+      frontierJudge: makeScalarStubJudge(Object.fromEntries(makeAnswers(6).map((a) => [a.predicted, 1]))),
+      answers: makeAnswers(6),
+      sliceSize: 6,
+    });
+    const identities = {
+      localJudgeProvider: "local-llm",
+      localJudgeModel: "llama3:70b",
+      frontierJudgeProvider: "openai",
+      frontierJudgeModel: "gpt-4o",
+    };
+    await writeJudgeCalibrationState(result, dir, identities);
+
+    const loaded = await loadJudgeCalibrationState("locomo", dir);
+    assert.notEqual(loaded, undefined);
+    // The artifact subset still round-trips.
+    assert.equal(loaded?.kappa, result.kappa);
+    assert.equal(loaded?.warning, result.warning);
+    // The judge identities that produced the kappa travel with the state.
+    assert.equal(loaded?.localJudgeProvider, "local-llm");
+    assert.equal(loaded?.localJudgeModel, "llama3:70b");
+    assert.equal(loaded?.frontierJudgeProvider, "openai");
+    assert.equal(loaded?.frontierJudgeModel, "gpt-4o");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeJudgeCalibrationState without identities still loads (backwards compatible, unbound)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-noid-"));
+  try {
+    const result = await runJudgeCalibration({
+      benchmarkId: "locomo",
+      localJudge: makeScalarStubJudge({}),
+      frontierJudge: makeScalarStubJudge({}),
+      answers: makeAnswers(2),
+      sliceSize: 2,
+    });
+    // No identities argument — mirrors pre-binding state files.
+    await writeJudgeCalibrationState(result, dir);
+
+    const loaded = await loadJudgeCalibrationState("locomo", dir);
+    assert.notEqual(loaded, undefined);
+    assert.equal(loaded?.kappa, result.kappa);
+    // Absent identities: the attach path treats this as unbound (attach anyway).
+    assert.equal(loaded?.localJudgeModel, undefined);
+    assert.equal(loaded?.frontierJudgeModel, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("loadJudgeCalibrationState drops partial/corrupt identities but keeps the calibration subset", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-partial-id-"));
+  try {
+    // Some identity fields present but not all four (unreliable binding).
+    await writeFile(
+      path.join(dir, "locomo.json"),
+      JSON.stringify({
+        kappa: 0.82,
+        sampleSize: 50,
+        threshold: 0.7,
+        warning: false,
+        localJudgeProvider: "local-llm",
+        // localJudgeModel missing → identities dropped, calibration kept.
+      }),
+    );
+    const loaded = await loadJudgeCalibrationState("locomo", dir);
+    assert.notEqual(loaded, undefined);
+    assert.equal(loaded?.kappa, 0.82);
+    assert.equal(loaded?.localJudgeProvider, undefined);
+    assert.equal(loaded?.localJudgeModel, undefined);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 // Suppress the unused-stub warning for the metrics variant (kept for symmetry
 // with the BenchJudge surface; the scalar path is what calibration uses).

@@ -378,7 +378,15 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /loadJudgeCalibrationState\?:/);
   assert.match(source, /async function attachPersistedJudgeCalibration\(/);
   assert.match(source, /await attachPersistedJudgeCalibration\(benchModule, benchmarkId, result\);/);
-  assert.match(source, /judgeCalibration: calibration,/);
+  assert.match(source, /judgeCalibration: \{/);
+
+  // P2 (codex): persisted kappa is bound to the calibrated judge pair. The
+  // judge-calibrate command records the local + frontier judge identities,
+  // and the attach path refuses a stale kappa for a different judge pair.
+  assert.match(source, /calibrationIdentities = \{/);
+  assert.match(source, /writeJudgeCalibrationState\(result, calibrationDir, calibrationIdentities\)/);
+  assert.match(source, /matchesLocal && matchesFrontier|!matchesLocal && !matchesFrontier/);
+  assert.match(source, /state\.localJudgeModel !== undefined && state\.frontierJudgeModel !== undefined/);
 
   // P2 (codex): judge-calibrate validates against the package-aware resolver
   // (same as `bench run`), not the static BENCHMARK_IDS catalog.
@@ -386,8 +394,11 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /if \(!knownBenchmarkIds\.has\(benchmarkId\)\)/);
 
   // P2 (codex): calibration candidates are filtered to full runs so a stale
-  // 1-task quick result cannot seed a meaningless kappa.
+  // 1-task quick result cannot seed a meaningless kappa, AND a partial full
+  // run is skipped in favor of an older complete run.
   assert.match(source, /\.filter\(\(entry\) => entry\.mode === "full"\)/);
+  assert.match(source, /loaded\.meta\.status === "partial"/);
+  assert.match(source, /candidateResult\.meta\.status !== "partial"/);
 });
 
 test("bench run exits non-zero after a mixed success/failure run", async () => {

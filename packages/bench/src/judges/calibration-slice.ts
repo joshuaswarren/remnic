@@ -34,6 +34,29 @@ import {
   type CohenKappaResult,
   type JudgeCategory,
 } from "./cohen-kappa.js";
+/**
+ * Judge identities recorded alongside a persisted calibration so a later run
+ * can verify the kappa was computed for the SAME judge pair (issue #1573 PR3,
+ * codex P2 review). Without this binding, a run that swaps the local-lab
+ * manifest or the frontier judge would inherit a stale kappa computed for a
+ * different pair.
+ */
+export interface JudgeCalibrationIdentities {
+  localJudgeProvider: string;
+  localJudgeModel: string;
+  frontierJudgeProvider: string;
+  frontierJudgeModel: string;
+}
+
+/**
+ * The full persisted calibration record as loaded from disk: the artifact
+ * subset plus the (optional) judge identities that produced it. Identities
+ * are optional because state files written before they existed still load —
+ * the attach path treats absent identities as "unbound, attach anyway" to
+ * preserve backwards compatibility.
+ */
+export type LoadedJudgeCalibrationState = BenchmarkArtifactJudgeCalibration &
+  Partial<JudgeCalibrationIdentities>;
 
 /**
  * Fixed slice size per benchmark. The issue specifies a 50-question slice; a
@@ -218,18 +241,22 @@ export async function runJudgeCalibration(
  *
  * Only the artifact-relevant subset (`BenchmarkArtifactJudgeCalibration`) is
  * persisted — never the per-question verdicts or answer text (repo ethics +
- * rule 10: nothing interpolated into shell).
+ * rule 10: nothing interpolated into shell). Optional `identities` record the
+ * judge pair that produced the kappa so a later run can refuse a stale kappa
+ * for a different pair (codex P2 review); omitted on pre-binding state files.
  */
 export async function writeJudgeCalibrationState(
   result: JudgeCalibrationResult,
   calibrationDir: string,
+  identities?: JudgeCalibrationIdentities,
 ): Promise<string> {
   await mkdir(calibrationDir, { recursive: true });
-  const state: BenchmarkArtifactJudgeCalibration = {
+  const state: BenchmarkArtifactJudgeCalibration & Partial<JudgeCalibrationIdentities> = {
     kappa: result.kappa,
     sampleSize: result.sampleSize,
     threshold: result.threshold,
     warning: result.warning,
+    ...(identities ? identities : {}),
   };
   const filePath = path.join(calibrationDir, `${sanitizeCalibrationSegment(result.benchmarkId)}.json`);
   // Atomic write: land bytes on a temp file, then rename into place. The
@@ -255,7 +282,7 @@ export async function writeJudgeCalibrationState(
 export async function loadJudgeCalibrationState(
   benchmarkId: string,
   calibrationDir: string,
-): Promise<BenchmarkArtifactJudgeCalibration | undefined> {
+): Promise<LoadedJudgeCalibrationState | undefined> {
   const filePath = path.join(calibrationDir, `${sanitizeCalibrationSegment(benchmarkId)}.json`);
   let raw: string;
   try {
@@ -285,7 +312,28 @@ export async function loadJudgeCalibrationState(
   ) {
     return undefined;
   }
-  return { kappa, sampleSize, threshold, warning };
+  const loaded: LoadedJudgeCalibrationState = { kappa, sampleSize, threshold, warning };
+  // Identities are optional (older state files predate them). If ANY identity
+  // field is present, ALL four must be present and string — otherwise the
+  // binding is unreliable and identities are dropped (the calibration subset
+  // still loads; the attach path treats unbound state as "attach anyway" for
+  // backwards compatibility).
+  const identityKeys = [
+    "localJudgeProvider",
+    "localJudgeModel",
+    "frontierJudgeProvider",
+    "frontierJudgeModel",
+  ] as const;
+  const identityValues = identityKeys.map((key) => record[key]);
+  if (identityValues.some((value) => value !== undefined)) {
+    if (identityValues.every((value) => typeof value === "string")) {
+      Object.assign(
+        loaded,
+        Object.fromEntries(identityKeys.map((key, index) => [key, identityValues[index]])),
+      );
+    }
+  }
+  return loaded;
 }
 
 /**
