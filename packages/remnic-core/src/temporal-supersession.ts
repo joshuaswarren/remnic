@@ -471,6 +471,44 @@ export async function applyTemporalSupersession(args: {
           supersededAt,
           invalidAt: invalidAtPatch ?? fresh.frontmatter.invalid_at,
         });
+        // Issue #1579 — emit a tombstone for the superseded memory so it
+        // cannot resurrect through re-extraction / import / consolidation /
+        // dreams / pattern-reinforcement. The supersession key is the first
+        // matched key (the write-time supersession identity). Best-effort:
+        // a tombstone append failure is logged but never fails supersession
+        // (gotcha #13).
+        // Issue #1579 thread ObteS: persist ALL matched supersession keys, not
+        // just the first. A later paraphrased re-observation may derive the
+        // same entity but place the tombstoned attribute at a different
+        // position in structuredAttributes; without an entry for every matched
+        // key, the keyed tier would miss and the fact could resurrect as
+        // active. Pass the canonical contentHash from the retired memory's
+        // frontmatter so the tombstone's exact tier matches re-extraction
+        // (review: citation-hash alignment). The rawContent is the stored body;
+        // the StorageManager.appendTombstone chokepoint strips citation
+        // annotations for the normalized-text tier.
+        const keysToTombstone =
+          decision.matchedKeys.length > 0 ? decision.matchedKeys : [undefined];
+        for (const key of keysToTombstone) {
+          try {
+            await args.storage.appendTombstone({
+              reason: "supersession",
+              createdBy: "supersession",
+              sourceMemoryId: fresh.frontmatter.id,
+              ...(fresh.frontmatter.contentHash
+                ? { contentHash: fresh.frontmatter.contentHash }
+                : {}),
+              rawContent: fresh.content,
+              ...(fresh.frontmatter.entityRef ? { entityRef: fresh.frontmatter.entityRef } : {}),
+              ...(key ? { supersessionKey: key } : {}),
+              createdAt: supersededAt,
+            });
+          } catch (tombErr) {
+            log.warn(
+              `temporal-supersession: tombstone emit failed for ${fresh.frontmatter.id}${key ? ` (key=${key})` : ""} : ${tombErr}`,
+            );
+          }
+        }
       }
     } catch (err) {
       log.warn(

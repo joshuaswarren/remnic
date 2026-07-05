@@ -2728,6 +2728,22 @@ export class Orchestrator {
       maxVersionsPerPage: config.versioningMaxPerPage,
       sidecarDir: config.versioningSidecarDir,
     });
+    // Wire the tombstone non-resurrection invariant (issue #1579) on the
+    // primary default-namespace storage. Router-created namespace storages
+    // get the same config via NamespaceStorageRouter.bindTombstonesConfig
+    // (installed below) so every write path funnels through the chokepoint.
+    const { tombstonesEnabled, tombstonesSemanticMatch, tombstonesSemanticThreshold } = config;
+    this.storage.setTombstonesConfig({
+      enabled: tombstonesEnabled,
+      semanticMatch: tombstonesSemanticMatch,
+      semanticThreshold: tombstonesSemanticThreshold,
+      namespace: config.defaultNamespace,
+    });
+    this.storageRouter.bindTombstonesConfig(this.storage, config.defaultNamespace, {
+      enabled: tombstonesEnabled,
+      semanticMatch: tombstonesSemanticMatch,
+      semanticThreshold: tombstonesSemanticThreshold,
+    });
     // Wire at-rest encryption (issue #690 PR 3/4).
     // If secureStoreEnabled, check whether the keyring already holds a key
     // for this memory dir (e.g. operator unlocked before daemon restart).

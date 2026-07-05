@@ -1326,6 +1326,12 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     details: namespaceMaintenanceHealth,
   });
 
+  // Tombstone non-resurrection invariant (issue #1579). Reports active
+  // tombstone count, last append, corrupted-line count, and rebuild
+  // staleness so operators can verify the invariant is enforced and know
+  // when a rebuild is warranted. Informational: never errors on its own.
+  checks.push(await summarizeTombstoneStatus(options.orchestrator.storage));
+
   const summary = checks.reduce(
     (acc, check) => {
       acc[check.status] += 1;
@@ -1866,6 +1872,77 @@ export async function summarizeObservationThroughput(
       status: "warn",
       summary: "Could not read observation telemetry ledger.",
       remediation: "Retry `remnic doctor` after ensuring the memory state directory is readable.",
+      details: { error: String(err) },
+    };
+  }
+}
+
+/**
+ * Tombstone non-resurrection invariant status for `remnic doctor`
+ * (issue #1579).
+ *
+ * Reports:
+ *   - active tombstone count (excluding revoked)
+ *   - revoked count (re-allowed via the review queue)
+ *   - last append timestamp
+ *   - corrupted-line count (skipped, not crashed — rule 34/18)
+ *   - rebuild staleness (whether the in-memory index loaded cleanly)
+ *
+ * Always informational: a disabled or empty tombstone store is the expected
+ * cold-install state and is never an error. A non-zero corrupted-line count
+ * surfaces as `warn` so operators know a rebuild (`remnic doctor
+ * --rebuild-tombstones`) will repair the log.
+ */
+export async function summarizeTombstoneStatus(
+  storage: StorageManager,
+): Promise<OperatorDoctorCheck> {
+  try {
+    const stats = await storage.getTombstoneStats();
+    if (stats === null) {
+      return {
+        key: "tombstones",
+        status: "ok",
+        summary: "Tombstone non-resurrection invariant is disabled (tombstonesEnabled=false).",
+        details: { enabled: false },
+      };
+    }
+    const corrupted = stats.corruptedLines > 0;
+    const parts = [
+      `${stats.count} active tombstone(s)`,
+      ...(stats.revoked > 0 ? [`${stats.revoked} revoked`] : []),
+    ];
+    if (stats.lastAppendAt) {
+      parts.push(`last append ${stats.lastAppendAt}`);
+    }
+    if (corrupted) {
+      parts.push(`${stats.corruptedLines} corrupted line(s) skipped`);
+    }
+    return {
+      key: "tombstones",
+      status: corrupted ? "warn" : "ok",
+      summary:
+        `Tombstone invariant enabled. ${parts.join(", ")}. ` +
+        (corrupted
+          ? "Run `remnic doctor --rebuild-tombstones` to repair the log."
+          : "Re-observation of retired facts is blocked at the storage chokepoint."),
+      remediation: corrupted
+        ? "Rebuild the tombstone log from retired memories on disk."
+        : undefined,
+      details: {
+        enabled: true,
+        count: stats.count,
+        revoked: stats.revoked,
+        lastAppendAt: stats.lastAppendAt,
+        corruptedLines: stats.corruptedLines,
+        loaded: stats.loaded,
+      },
+    };
+  } catch (err) {
+    return {
+      key: "tombstones",
+      status: "warn",
+      summary: "Could not read tombstone store stats.",
+      remediation: "Ensure the memory state directory is readable and rerun `remnic doctor`.",
       details: { error: String(err) },
     };
   }
