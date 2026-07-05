@@ -3181,6 +3181,14 @@ export class StorageManager {
         .load()
         .then(() => {
           this.tombstoneStore = store;
+          // Record the file's mtime so the staleness probe does not immediately
+          // invalidate on the next access (tombstoneStoreFileMtimeMs starts at 0;
+          // without this, any non-zero mtime would trigger a spurious reload).
+          try {
+            this.tombstoneStoreFileMtimeMs = Math.floor(statSync(this.tombstonesPath).mtimeMs);
+          } catch {
+            // ENOENT — fresh store with no file yet; mtime stays 0.
+          }
           return store;
         })
         .catch((err) => {
@@ -3211,7 +3219,14 @@ export class StorageManager {
     if (!this.tombstonesConfig.enabled) return null;
     try {
       const store = await this.getTombstoneStore();
-      return await store.appendTombstone(input);
+      // Chokepoint citation strip (#1579 review): strip citation annotations
+      // from the raw body so BOTH the exact-tier hash (when the caller omits
+      // contentHash and the store computes it from rawContent) AND the
+      // normalized-text tier match re-extraction, which hashes/normalizes the
+      // citation-stripped contentHashSource. Idempotent on already-stripped
+      // text, so callers that pre-strip (e.g. recordSupersession) are unaffected.
+      const strippedRawContent = stripCitationForTemplate(input.rawContent, this.citationTemplate);
+      return await store.appendTombstone({ ...input, rawContent: strippedRawContent });
     } catch (err) {
       log.warn(`tombstone append failed (memory=${input.sourceMemoryId}): ${err}`);
       return null;

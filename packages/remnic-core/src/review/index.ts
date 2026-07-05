@@ -29,7 +29,7 @@ export interface ReviewItem {
   /** Created date */
   created: string;
   /** Reason it's in review */
-  reviewReason: "low_confidence" | "suggestion" | "contradiction" | "duplicate";
+  reviewReason: "low_confidence" | "suggestion" | "contradiction" | "duplicate" | "tombstone_blocked";
   /** Additional context */
   context?: string;
 }
@@ -45,6 +45,8 @@ export interface ReviewResult {
   updatedPath?: string;
   /** Status message */
   message: string;
+  /** Tombstone id cleared by an approve action (for the caller to revoke). */
+  clearedTombstoneId?: string;
 }
 
 export interface ReviewListResult {
@@ -220,7 +222,7 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
       if (!fm?.id) return false;
 
       const confidence = parseConfidence(fm.confidence, 1);
-      if (confidence >= confidenceThreshold) return false;
+      if (confidence >= confidenceThreshold && !(typeof fm.blockedBy === "string" && fm.blockedBy.length > 0)) return false;
       if (parseBoolean(fm.reviewDismissed)) return false;
 
       // Skip if already in items
@@ -235,7 +237,7 @@ export function listReviewItems(options: ReviewOptions): ReviewListResult {
         source: (fm.source as string) ?? "unknown",
         filePath,
         created: (fm.created as string) ?? new Date().toISOString(),
-        reviewReason: "low_confidence",
+        reviewReason: (typeof fm.blockedBy === "string" && fm.blockedBy.length > 0) ? "tombstone_blocked" : "low_confidence",
       });
       return isLimitReached();
     });
@@ -307,7 +309,10 @@ function approveItem(
     confidenceTier: "high",
     reviewDismissed: null,
     // Clear the tombstone-block markers so the promoted memory is active.
-    ...(blockedBy ? { blockedBy: null, tombstoneBlockTier: null } : {}),
+    // Clear the tombstone-block markers AND restore active status so the
+    // promoted memory is fully active in recall + provenance (issue #1579
+    // review: leaving status: pending_review kept it invisible to recall).
+    ...(blockedBy ? { blockedBy: null, tombstoneBlockTier: null, status: "active" } : {}),
   });
 
   if (found.location === "category") {
@@ -317,6 +322,7 @@ function approveItem(
       action: "approve",
       updatedPath: found.filePath,
       message: "Approved low-confidence memory in place with confidence 0.9",
+      ...(blockedBy ? { clearedTombstoneId: blockedBy } : {}),
     };
   }
 
@@ -338,6 +344,7 @@ function approveItem(
     action: "approve",
     updatedPath: promotedPath,
     message: `Promoted to ${category} with confidence 0.9`,
+    ...(blockedBy ? { clearedTombstoneId: blockedBy } : {}),
   };
 }
 
@@ -446,6 +453,16 @@ function isLowConfidenceReviewCandidate(
   options: ReviewActionOptions,
 ): boolean {
   const threshold = options.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
+  // Issue #1579: tombstone-blocked facts are ALWAYS review candidates,
+  // regardless of confidence. The block sets status: pending_review +
+  // blockedBy; these must be visible in the review queue so an operator
+  // can approve (revoke the tombstone) or dismiss them. Without this, a
+  // high-confidence blocked fact is visible on disk but absent from the
+  // review UI — a silent drop, which violates the non-resurrection design
+  // (rule 34: visible, not silent).
+  if (typeof fm.blockedBy === "string" && fm.blockedBy.length > 0) {
+    return !parseBoolean(fm.reviewDismissed);
+  }
   return (
     parseConfidence(fm.confidence, 1) < threshold &&
     !parseBoolean(fm.reviewDismissed)

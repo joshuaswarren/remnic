@@ -5674,7 +5674,7 @@ async function cmdCurate(targetPath: string, json: boolean): Promise<void> {
   console.log(`Duration: ${result.durationMs}ms`);
 }
 
-function cmdReview(action: string, rest: string[]): void {
+async function cmdReview(action: string, rest: string[]): Promise<void> {
   const memoryDir = resolveMemoryDir();
   if (action === "list") {
     const result = listReviewItems({ memoryDir });
@@ -5696,7 +5696,24 @@ function cmdReview(action: string, rest: string[]): void {
       console.error("Usage: remnic review <approve|dismiss|flag> <id>");
       process.exit(1);
     }
-    const result = performReview(memoryDir, id, action as ReviewAction);
+    const storage = new StorageManager(memoryDir);
+    const result = performReview(memoryDir, id, action as ReviewAction, {
+      onApproveBlockedMemory: (tombstoneId) => {
+        // Fire-and-forget for long-running callers; the CLI also awaits
+        // result.clearedTombstoneId below so the revocation lands before exit.
+        void storage.revokeTombstone(tombstoneId, "user_correction").catch(() => undefined);
+      },
+    });
+    // Issue #1579: await the revocation so it lands before the CLI exits.
+    // The fire-and-forget hook covers long-running callers; this await covers
+    // the short-lived CLI process (without it the revocation could be lost).
+    if (result.clearedTombstoneId) {
+      try {
+        await storage.revokeTombstone(result.clearedTombstoneId, "user_correction");
+      } catch {
+        /* best-effort — approval already succeeded */
+      }
+    }
     console.log(result.message);
   } else {
     console.log("Usage: remnic review <list|approve|dismiss|flag> [id]");
@@ -11462,7 +11479,7 @@ Options:
 
     case "review": {
       const action = rest[0] ?? "list";
-      cmdReview(action, rest.slice(1));
+      await cmdReview(action, rest.slice(1));
       break;
     }
 

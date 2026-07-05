@@ -482,6 +482,14 @@ export async function applyTemporalSupersession(args: {
             reason: "supersession",
             createdBy: "supersession",
             sourceMemoryId: fresh.frontmatter.id,
+            // Pass the canonical contentHash from the retired memory's
+            // frontmatter so the tombstone's exact tier matches re-extraction
+            // (issue #1579 review: citation-hash alignment). The rawContent is
+            // the stored body; the StorageManager.appendTombstone chokepoint
+            // strips citation annotations for the normalized-text tier.
+            ...(fresh.frontmatter.contentHash
+              ? { contentHash: fresh.frontmatter.contentHash }
+              : {}),
             rawContent: fresh.content,
             ...(fresh.frontmatter.entityRef ? { entityRef: fresh.frontmatter.entityRef } : {}),
             ...(decision.matchedKeys.length > 0
