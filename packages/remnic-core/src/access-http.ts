@@ -2114,6 +2114,162 @@ export class EngramAccessHttpServer {
       return;
     }
 
+    // ── Admin console surfaces (issue #1502) ──────────────────────────────
+    //
+    // All five routes live under /engram/v1/admin/* which the access-surface
+    // catalog treats as infrastructure (no boundary migration required; the
+    // static-completeness fitness test excludes this prefix). They still
+    // require bearer auth (enforced above) and delegate to core APIs via the
+    // pure admin-surfaces module — the dashboard never re-resolves scope or
+    // re-lists namespaces.
+    if (pathname.startsWith("/engram/v1/admin/scope/inspect")) {
+      if (req.method !== "GET" && req.method !== "POST") {
+        this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
+        return;
+      }
+      const principal = this.resolveRequestPrincipal(req);
+      let sessionKey: string | undefined;
+      let namespaceOverride: string | undefined;
+      let operation: string | undefined;
+      if (req.method === "GET") {
+        sessionKey = parsed.searchParams.get("session") ?? undefined;
+        namespaceOverride = parsed.searchParams.get("namespace") ?? undefined;
+        operation = parsed.searchParams.get("operation") ?? undefined;
+      } else {
+        const body = await this.readJsonBody(req) as Record<string, unknown>;
+        sessionKey = typeof body.sessionKey === "string" ? body.sessionKey : undefined;
+        namespaceOverride = typeof body.namespace === "string" ? body.namespace : undefined;
+        operation = typeof body.operation === "string" ? body.operation : undefined;
+      }
+      const inspection = await this.service.adminInspectScope({
+        sessionKey: sessionKey && sessionKey.length > 0 ? sessionKey : undefined,
+        namespace: namespaceOverride && namespaceOverride.length > 0 ? namespaceOverride : undefined,
+        principalOverride: principal,
+        operation: operation as "recall" | "observe" | "memory_store" | "maintenance" | "dashboard" | undefined,
+      });
+      this.respondJson(res, 200, inspection);
+      return;
+    }
+
+    if (pathname === "/engram/v1/admin/namespaces") {
+      if (req.method !== "GET") {
+        this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
+        return;
+      }
+      const kind = parsed.searchParams.get("kind");
+      const principal = parsed.searchParams.get("principal");
+      const projectId = parsed.searchParams.get("projectId");
+      const discoveredBy = parsed.searchParams.get("discoveredBy");
+      const result = await this.service.adminListNamespaces({
+        ...(kind ? { kind: kind as "default" | "self" | "shared" | "project" | "branch" | "team-project" | "explicit" | "legacy" } : {}),
+        ...(principal && principal.length > 0 ? { principal } : {}),
+        ...(projectId && projectId.length > 0 ? { projectId } : {}),
+        ...(discoveredBy
+          ? { discoveredBy: discoveredBy as "config" | "write" | "read" | "scan" | "migration" }
+          : {}),
+      });
+      this.respondJson(res, 200, result);
+      return;
+    }
+
+    if (pathname === "/engram/v1/admin/maintenance-health") {
+      if (req.method !== "GET") {
+        this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
+        return;
+      }
+      const report = await this.service.adminMaintenanceHealth();
+      this.respondJson(res, 200, report);
+      return;
+    }
+
+    if (pathname === "/engram/v1/admin/transcript-audit") {
+      if (req.method !== "GET") {
+        this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
+        return;
+      }
+      const report = await this.service.adminTranscriptAudit();
+      this.respondJson(res, 200, report);
+      return;
+    }
+
+    if (pathname === "/engram/v1/admin/promote") {
+      if (req.method !== "POST") {
+        this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
+        return;
+      }
+      const body = await this.readJsonBody(req) as Record<string, unknown>;
+      if (typeof body.sourceMemoryId !== "string" || body.sourceMemoryId.trim().length === 0) {
+        this.respondJson(res, 400, {
+          error: "invalid_request",
+          code: "invalid_request",
+          message: "sourceMemoryId is required",
+        });
+        return;
+      }
+      if (typeof body.reason !== "string" || body.reason.trim().length === 0) {
+        this.respondJson(res, 400, {
+          error: "invalid_request",
+          code: "invalid_request",
+          message: "reason is required for promotion",
+        });
+        return;
+      }
+      if (!Array.isArray(body.targets) || body.targets.length === 0) {
+        this.respondJson(res, 400, {
+          error: "invalid_request",
+          code: "invalid_request",
+          message: "targets must be a non-empty array",
+        });
+        return;
+      }
+      const VALID_TARGETS = ["teamProject", "serverShared", "userProject", "userGlobal", "explicit"];
+      const targets = [];
+      for (const entry of body.targets) {
+        if (typeof entry !== "object" || entry === null || typeof entry.kind !== "string") {
+          this.respondJson(res, 400, {
+            error: "invalid_request",
+            code: "invalid_request",
+            message: "each target must be an object with a 'kind' string",
+          });
+          return;
+        }
+        if (!VALID_TARGETS.includes(entry.kind)) {
+          this.respondJson(res, 400, {
+            error: "invalid_request",
+            code: "invalid_request",
+            message: `target.kind must be one of: ${VALID_TARGETS.join(", ")}`,
+          });
+          return;
+        }
+        targets.push({
+          kind: entry.kind as "teamProject" | "serverShared" | "userProject" | "userGlobal" | "explicit",
+          namespace: typeof entry.namespace === "string" ? entry.namespace : undefined,
+        });
+      }
+      try {
+        const result = await this.service.adminPromoteMemory({
+          sourceMemoryId: body.sourceMemoryId,
+          namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+          principal: this.resolveRequestPrincipal(req),
+          targets,
+          reason: body.reason,
+          actor: typeof body.actor === "string" ? body.actor : undefined,
+        });
+        this.respondJson(res, 200, result);
+      } catch (err) {
+        if (err instanceof EngramAccessInputError) {
+          this.respondJson(res, 400, {
+            error: "invalid_request",
+            code: "invalid_request",
+            message: err.message,
+          });
+          return;
+        }
+        throw err;
+      }
+      return;
+    }
+
     this.respondJson(res, 404, { error: "not_found", code: "not_found" });
   }
 

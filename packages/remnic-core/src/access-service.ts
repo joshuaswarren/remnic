@@ -104,6 +104,21 @@ import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
 import { isPathInsideStorageRoot } from "./storage-paths.js";
+import {
+  AdminPromotionError,
+  auditTranscripts,
+  gatherMaintenanceHealth,
+  inspectScope,
+  listAdminNamespaces,
+  promoteMemory,
+  redactSensitive,
+  type AdminNamespaceFilter,
+  type AdminNamespaceQmdHealth,
+  type InspectScopeOptions,
+  type MemoryPromotionTargetKind,
+  type PromotionStorageProvider,
+  type ScopeInspection,
+} from "./admin/admin-surfaces.js";
 import type { LastRecallSnapshot } from "./recall-state.js";
 import type {
   GraphRecallSnapshot,
@@ -8560,6 +8575,165 @@ export class EngramAccessService {
       date: request.date,
       limit: request.limit,
     });
+  }
+
+  // ── Admin console surfaces (issue #1502) ────────────────────────────────
+  //
+  // Thin delegators. Every method threads `this.orchestrator` references
+  // into the pure `admin/admin-surfaces.ts` functions so the dashboard
+  // never re-resolves scope, re-derives promotion targets, or re-lists
+  // namespaces.
+
+  /**
+   * Resolve an effective scope inspection for the console. Inputs are
+   * redacted before return so an operator-supplied principal preview /
+   * namespace override never echoes a pasted credential back.
+   */
+  async adminInspectScope(options: {
+    sessionKey?: string;
+    namespace?: string;
+    principalOverride?: string;
+    operation?: InspectScopeOptions["operation"];
+  }): Promise<ScopeInspection> {
+    const config = this.orchestrator.config;
+    // Fetch the coding context when a session is supplied; the pure
+    // inspectScope helper (admin-surfaces.ts) owns the single namespace-flag
+    // read for this surface and threads it through resolveScopePlan.
+    const codingContext = options.sessionKey
+      ? this.orchestrator.getCodingContextForSession(options.sessionKey) ?? null
+      : null;
+    const inspection = inspectScope({
+      config,
+      sessionKey: options.sessionKey,
+      namespace: options.namespace,
+      principalOverride: options.principalOverride,
+      codingContext,
+      operation: options.operation,
+    });
+    // Redact operator free-text inputs that may carry credentials. The plan
+    // itself is derived from config + storage layout, not user input, so its
+    // fields stay intact for diagnostics.
+    return redactSensitive(inspection);
+  }
+
+  /**
+   * List configured + discovered namespaces from the catalog with the
+   * admin filters the console exposes.
+   */
+  async adminListNamespaces(filter?: AdminNamespaceFilter) {
+    return listAdminNamespaces({
+      catalog: this.orchestrator.namespaceCatalog,
+      filter,
+    });
+  }
+
+  /**
+   * Per-namespace maintenance + QMD health. QMD diagnostics are probed via
+   * the orchestrator's search health accessor (one probe per namespace).
+   */
+  async adminMaintenanceHealth() {
+    return gatherMaintenanceHealth({
+      catalog: this.orchestrator.namespaceCatalog,
+      qmdHealthProvider: async (namespace): Promise<AdminNamespaceQmdHealth | null> => {
+        try {
+          const health = await this.orchestrator.searchHealthForNamespace(namespace);
+          return {
+            namespace,
+            collection: health.collection,
+            available: health.available,
+            collectionState: health.collectionState,
+            debugStatus: health.debugStatus,
+            installedVersion: health.installedVersion,
+            supportedVersion: health.supportedVersion,
+            supported: health.supported,
+            upgradeAvailable: health.upgradeAvailable,
+            daemonMode: health.daemonMode,
+          };
+        } catch (err) {
+          // The report marks the namespace degraded and records the reason;
+          // a probe failure must not abort the whole report.
+          throw err;
+        }
+      },
+    });
+  }
+
+  /**
+   * Dry-run transcript/session audit. Detects mixed `other/default` data
+   * and legacy stranded directories. Never applies a migration.
+   */
+  async adminTranscriptAudit() {
+    return auditTranscripts(this.orchestrator.config.memoryDir);
+  }
+
+  /**
+   * Manually promote a memory into one or more authorized targets. Requires
+   * a non-empty reason (audit-logged). Reuses the scope-profile promotion
+   * resolution and `canWriteNamespace` gate — there is no dashboard-only
+   * write path.
+   */
+  async adminPromoteMemory(request: {
+    sourceMemoryId: string;
+    namespace?: string;
+    principal?: string;
+    targets: ReadonlyArray<{ kind: MemoryPromotionTargetKind; namespace?: string }>;
+    reason: string;
+    actor?: string;
+  }) {
+    const config = this.orchestrator.config;
+    const sourceNamespace = this.resolveReadableNamespace(
+      request.namespace,
+      request.principal,
+    );
+    const scopeProfilePlan = resolveScopeProfilePlan({
+      config,
+      principal: request.principal,
+      codingContext: null,
+      codingOverlay: null,
+    });
+    const storage: PromotionStorageProvider = {
+      readMemory: async (namespace, memoryId) => {
+        const resolved = await this.orchestrator.getStorage(namespace);
+        const memory = await resolved.getMemoryById(memoryId);
+        if (!memory) return null;
+        return {
+          category: memory.frontmatter.category,
+          content: memory.content,
+          frontmatter: memory.frontmatter,
+        };
+      },
+      writePromotedMemory: async (namespace, memory) => {
+        const resolved = await this.orchestrator.getStorage(namespace);
+        return resolved.writeMemory(memory.category, memory.content, {
+          confidence: memory.confidence,
+          tags: memory.tags,
+          entityRef: memory.entityRef,
+          source: `admin-promotion-${memory.sourceNamespace}`,
+          lineage: memory.lineage,
+          sourceMemoryId: memory.sourceMemoryId,
+          actor: memory.actor,
+          validAt: memory.validAt,
+        });
+      },
+    };
+    try {
+      return await promoteMemory({
+        config,
+        sourceMemoryId: request.sourceMemoryId,
+        sourceNamespace,
+        principal: request.principal,
+        targets: request.targets,
+        reason: request.reason,
+        actor: request.actor ?? request.principal ?? "admin-console",
+        storage,
+        scopeProfilePlan,
+      });
+    } catch (err) {
+      if (err instanceof AdminPromotionError) {
+        throw new EngramAccessInputError(err.message);
+      }
+      throw err;
+    }
   }
 }
 
