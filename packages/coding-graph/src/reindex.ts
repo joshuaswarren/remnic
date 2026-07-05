@@ -33,7 +33,7 @@
  * reindex run).
  */
 import { createHash } from "node:crypto";
-import { readFile as fsReadFile, lstat as fsLstat, realpath as fsRealpath } from "node:fs/promises";
+import { readFile as fsReadFile, realpath as fsRealpath } from "node:fs/promises";
 import path from "node:path";
 
 import type { ParseFileInput, ParseResult } from "@remnic/core";
@@ -301,17 +301,16 @@ function resolveRepoPath(repoRoot: string, relPath: string): string {
 
 /**
  * Symlink-escape guard (AGENTS.md rule 3): a canonical repo-relative path can
- * still resolve to a SYMLINK whose target lives outside repoRoot; following it
- * would let a crafted/tracked symlink read arbitrary files into the graph.
- * Returns true only for real symlinks whose resolved target escapes repoRoot.
- * Non-symlinks and unresolvable paths return false (the normal read path then
- * classifies ENOENT/transient errors) so injected readers and regular files are
- * unaffected.
+ * still resolve — via a symlinked file OR any symlinked PARENT directory — to a
+ * target outside repoRoot; following it would let a crafted/tracked symlink
+ * read arbitrary files into the graph. `realpath` resolves every symlink in the
+ * path (including parents), so we containment-check the fully-resolved target
+ * against the resolved repoRoot. A non-existent path (realpath ENOENT) or any
+ * realpath error returns false so the normal read path classifies it
+ * (ENOENT→missing / transient→retry) and injected readers stay unaffected.
  */
 async function symlinkEscapesRoot(repoRoot: string, absPath: string): Promise<boolean> {
   try {
-    const st = await fsLstat(absPath);
-    if (!st.isSymbolicLink()) return false;
     const [realRoot, realAbs] = await Promise.all([
       fsRealpath(repoRoot),
       fsRealpath(absPath),
