@@ -237,6 +237,23 @@ test("get: returns found=true with card content when card exists", async () => {
   assert.equal(result.card!.content, cardContent);
 });
 
+test("get: strips the [Attributes:] suffix writeMemory appends (cursor review)", async () => {
+  // writeMemory appends `\n[Attributes: cardKind=architecture]` to the stored
+  // body when structuredAttributes are present. The card markdown returned to
+  // clients must NOT include that storage-metadata suffix, and byteSize must
+  // reflect the card alone.
+  const cardMarkdown = "# Architecture Card\n\nreal content";
+  const storedContent = `${cardMarkdown}\n[Attributes: cardKind=architecture]`;
+  const storage = makeStubStorage([makeCardMemory({ content: storedContent })]);
+  const ctx = makeContext({ resolveStorage: async () => storage });
+  const result = await handleCodingArchitecture({ subcommand: "get", sessionKey: "s1" }, ctx);
+  if (result.subcommand !== "get") return;
+  assert.equal(result.found, true);
+  assert.ok(result.card);
+  assert.equal(result.card!.content, cardMarkdown, "attributes suffix stripped from get content");
+  assert.equal(result.card!.byteSize, Buffer.byteLength(cardMarkdown, "utf-8"), "byteSize excludes the suffix");
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // refresh — first write (no existing card)
 // ──────────────────────────────────────────────────────────────────────────

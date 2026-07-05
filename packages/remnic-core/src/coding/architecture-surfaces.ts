@@ -239,6 +239,24 @@ export async function handleCodingArchitecture(
 // Subcommand handlers
 // ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * Strip the `\n[Attributes: …]` enrichment suffix `writeMemory` appends when
+ * `structuredAttributes` are present. The architecture card persists
+ * `structuredAttributes.cardKind` so findArchitectureCardMemory can identify
+ * it, but that suffix is storage metadata — not card markdown — so `get`
+ * returns the card content alone (cursor review: get returned the suffix and
+ * an inflated byteSize). `updateMemory` does not append the suffix, so this
+ * is a safe no-op after a refresh-update path.
+ */
+function stripAttributesSuffix(content: string): string {
+  const marker = "\n[Attributes: ";
+  const idx = content.lastIndexOf(marker);
+  if (idx === -1) return content;
+  // Only strip when the marker opens the final non-empty line.
+  if (!content.slice(idx + marker.length).trimEnd().endsWith("]")) return content;
+  return content.slice(0, idx);
+}
+
 async function architectureGet(
   request: ArchitectureSurfaceRequest,
   ctx: ArchitectureSurfaceContext,
@@ -248,17 +266,18 @@ async function architectureGet(
   if (!existing) {
     return { subcommand: "get", found: false };
   }
+  const content = stripAttributesSuffix(existing.content);
   return {
     subcommand: "get",
     found: true,
     card: {
-      content: existing.content,
+      content,
       generatedAt: existing.frontmatter.updated ?? existing.frontmatter.created,
-      byteSize: Buffer.byteLength(existing.content, "utf-8"),
+      byteSize: Buffer.byteLength(content, "utf-8"),
       // Derive truncation from the CONTENT marker, not a frontmatter tag —
       // the refresh update path changes content without rewriting tags, so
       // a tag-based check goes stale (cursor review: stale truncated tag).
-      truncated: existing.content.includes(ARCHITECTURE_CARD_TRUNCATION_MARKER),
+      truncated: content.includes(ARCHITECTURE_CARD_TRUNCATION_MARKER),
     },
   };
 }
