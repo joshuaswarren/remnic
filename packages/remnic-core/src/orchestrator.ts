@@ -19059,7 +19059,18 @@ export class Orchestrator {
       }
       const memory = memoryByPath.get(r.path);
       if (memory) {
-        if (memory.frontmatter.status === "forgotten") {
+        // Review-lifecycle statuses never enter active recall injection
+        // (forgotten, pending_review, rejected, quarantined). Superseded and
+        // archived have dedicated filters below. #1576: the faithfulness gate
+        // routes unsupported/contradicted facts to pending_review — they must
+        // not leak back via the QMD/embedding path. chatgpt P2.
+        const recallStatus = memory.frontmatter.status;
+        if (
+          recallStatus === "forgotten" ||
+          recallStatus === "pending_review" ||
+          recallStatus === "rejected" ||
+          recallStatus === "quarantined"
+        ) {
           forgottenFilteredCount += 1;
           continue;
         }
