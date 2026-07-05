@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -22,14 +23,19 @@ import {
 } from "./paths.js";
 
 const DEFAULT_DAEMON_PORT = 4318;
-const EXTENSION_OWNED_FILES = ["remnic.config.json", "index.ts", "README.md"] as const;
-const EXTENSION_OWNED_TEMP_FILE_PATTERN = /^(?:remnic\.config\.json|index\.ts|README\.md)\.tmp-\d+-\d+$/u;
+const BASE_OWNED_FILES = ["remnic.config.json", "index.ts", "README.md"] as const;
+const EXTENSION_OWNED_TEMP_FILE_SUFFIX = /\.tmp-\d+-\d+$/u;
 
 type FileSnapshot = {
   path: string;
   existed: boolean;
   content?: Buffer;
   mode?: number;
+};
+
+type DirSnapshot = {
+  path: string;
+  existed: boolean;
 };
 
 /**
@@ -126,6 +132,38 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
 
   protected constructor(private readonly host: HostPublisherDescriptor) {}
 
+  /**
+   * File basenames this publisher owns inside the extension root. The shared
+   * set is config + wrapper + readme; subclasses add host-specific files
+   * (e.g. omp's pre-bundle loader + package manifest). Used for snapshot,
+   * atomic-write rollback, and unpublish cleanup.
+   */
+  protected get ownedFileNames(): readonly string[] {
+    return BASE_OWNED_FILES;
+  }
+
+  /**
+   * Directory names this publisher owns inside the extension root (build
+   * outputs). Recursively removed on unpublish and on publish rollback when
+   * newly created.
+   */
+  protected get ownedDirNames(): readonly string[] {
+    return [];
+  }
+
+  /**
+   * Hook for subclasses to write host-specific files and run install-time
+   * build steps after the shared config/wrapper/readme are written. Runs
+   * inside the publish try-block: a throw triggers full rollback.
+   */
+  protected finalizePublish(
+    _ctx: PublishContext,
+    _extensionRoot: string,
+    _paths: { configPath: string; wrapperPath: string; pluginPiDistPath: string },
+  ): void {
+    // No-op by default; subclasses override.
+  }
+
   get hostId(): string {
     return this.host.hostId;
   }
@@ -176,9 +214,16 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
 
     ctx.log.info(`Publishing ${this.host.displayName} memory extension to ${extensionRoot}`);
 
-    const [configPath, wrapperPath, readmePath] = extensionOwnedPaths(extensionRoot);
+    const ownedFilePaths = this.ownedFileNames.map((fileName) => path.join(extensionRoot, fileName));
+    const configPath = ownedFilePaths[0];
+    const wrapperPath = ownedFilePaths[1];
+    const readmePath = ownedFilePaths[2];
+    const pluginPiDistPath = resolveExtensionModulePath();
     const rootExisted = fs.existsSync(extensionRoot);
-    const snapshots = snapshotFiles([configPath, wrapperPath, readmePath]);
+    const fileSnapshots = snapshotFiles(ownedFilePaths);
+    const dirSnapshots = snapshotDirs(
+      this.ownedDirNames.map((dirName) => path.join(extensionRoot, dirName)),
+    );
     const priorTokenEntry =
       ctx.rollbackTokenEntry === undefined
         ? snapshotTokenEntry(this.host.connectorId)
@@ -220,14 +265,20 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
       atomicWriteFile(configPath, `${JSON.stringify(config, null, 2)}\n`, 0o600);
       filesWritten.push(configPath);
 
-      atomicWriteFile(wrapperPath, renderWrapper(resolveExtensionModulePath(), configPath), 0o644);
+      atomicWriteFile(wrapperPath, renderWrapper(pluginPiDistPath, configPath), 0o644);
       filesWritten.push(wrapperPath);
 
       atomicWriteFile(readmePath, `${await this.renderInstructions(ctx)}\n`, 0o644);
       filesWritten.push(readmePath);
+
+      this.finalizePublish(ctx, extensionRoot, { configPath, wrapperPath, pluginPiDistPath });
+      for (let i = BASE_OWNED_FILES.length; i < ownedFilePaths.length; i++) {
+        filesWritten.push(ownedFilePaths[i]);
+      }
     } catch (err) {
       try {
-        restorePublishSnapshot(extensionRoot, rootExisted, snapshots);
+        restorePublishSnapshot(extensionRoot, rootExisted, fileSnapshots);
+        restoreDirSnapshots(dirSnapshots);
       } catch (restoreErr) {
         ctx.log.warn(
           `${this.host.displayName} extension rollback failed: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`,
@@ -256,6 +307,8 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
       ? this.host.listRemovalAgentHomes(process.env)
       : [this.host.resolveAgentHome(process.env)];
 
+    const ownedFileNames = this.ownedFileNames;
+    const ownedDirNames = this.ownedDirNames;
     const seen = new Set<string>();
     for (const agentHome of agentHomes) {
       const extensionRoot = path.join(path.resolve(agentHome), "extensions", "remnic");
@@ -264,9 +317,27 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
       if (!fs.existsSync(extensionRoot)) continue;
 
       assertSafeExtensionRoot(extensionRoot, agentHome);
-      const removableFiles = removableOwnedExtensionFiles(extensionOwnedUnpublishPaths(extensionRoot));
+      const removableFiles = removableOwnedExtensionFiles(
+        extensionOwnedUnpublishPaths(extensionRoot, ownedFileNames),
+      );
       for (const filePath of removableFiles) {
         fs.rmSync(filePath, { force: true });
+      }
+      for (const dirName of ownedDirNames) {
+        const dirPath = path.join(extensionRoot, dirName);
+        let stat: fs.Stats;
+        try {
+          stat = fs.lstatSync(dirPath);
+        } catch (err) {
+          if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") continue;
+          throw err;
+        }
+        if (stat.isSymbolicLink()) {
+          throw new Error(`Extension path must not be a symlink: ${dirPath}`);
+        }
+        if (stat.isDirectory()) {
+          fs.rmSync(dirPath, { recursive: true, force: true });
+        }
       }
       removeEmptyDirectory(extensionRoot);
     }
@@ -285,16 +356,105 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
   constructor() {
     super(OMP_HOST);
   }
+
+  protected get ownedFileNames(): readonly string[] {
+    return [...BASE_OWNED_FILES, "loader.js", "package.json"];
+  }
+
+  protected get ownedDirNames(): readonly string[] {
+    return ["dist-bundle"];
+  }
+
+  protected finalizePublish(
+    ctx: PublishContext,
+    extensionRoot: string,
+    paths: { configPath: string; wrapperPath: string; pluginPiDistPath: string },
+  ): void {
+    const loaderPath = path.join(extensionRoot, "loader.js");
+    const packageJsonPath = path.join(extensionRoot, "package.json");
+
+    atomicWriteFile(loaderPath, renderOmpLoader(paths.pluginPiDistPath), 0o644);
+    atomicWriteFile(packageJsonPath, renderOmpPackageJson(), 0o644);
+
+    this.runBundleBuild(ctx, extensionRoot);
+  }
+
+  /**
+   * Pre-bundles the omp extension with `bun build` so omp's embedded runtime
+   * never resolves bare npm specifiers (e.g. @sinclair/typebox) from the
+   * extension's node_modules at load time. The bundle is written to a temp
+   * directory and atomically swapped into dist-bundle/ on success; a failure
+   * leaves any pre-existing dist-bundle untouched.
+   *
+   * Override in tests to skip the real bun invocation.
+   */
+  protected runBundleBuild(ctx: PublishContext, extensionRoot: string): void {
+    const bunBin = resolveBunBinary();
+    if (!bunBin) {
+      throw new Error(
+        "Remnic omp extension requires `bun` to pre-bundle the extension: omp's embedded " +
+          "runtime cannot resolve bare npm specifiers from the extension's node_modules. " +
+          "Install bun from https://bun.sh, then re-run `remnic connectors install omp`.",
+      );
+    }
+
+    const sourceEntry = path.join(extensionRoot, "index.ts");
+    const tmpOutDir = path.join(extensionRoot, `.dist-bundle.tmp-${process.pid}-${Date.now()}`);
+    const finalOutDir = path.join(extensionRoot, "dist-bundle");
+
+    const result = spawnSync(bunBin, ["build", sourceEntry, "--target=bun", `--outdir=${tmpOutDir}`], {
+      cwd: extensionRoot,
+      encoding: "utf-8",
+    });
+
+    if (result.error || result.status !== 0) {
+      try {
+        fs.rmSync(tmpOutDir, { recursive: true, force: true });
+      } catch {
+        // best-effort tmp cleanup
+      }
+      const detail =
+        (typeof result.stderr === "string" ? result.stderr.trim() : "") ||
+        (result.error instanceof Error ? result.error.message : "") ||
+        `bun exited with status ${result.status ?? "null"}`;
+      throw new Error(
+        `Remnic omp extension: bun build failed (${detail}). Resolve the error and re-run ` +
+          "`remnic connectors install omp`, or build manually with " +
+          "`bun build index.ts --target=bun --outdir=dist-bundle` inside " +
+          `${extensionRoot}.`,
+      );
+    }
+
+    try {
+      if (fs.existsSync(finalOutDir)) {
+        fs.rmSync(finalOutDir, { recursive: true, force: true });
+      }
+      fs.renameSync(tmpOutDir, finalOutDir);
+    } catch (err) {
+      try {
+        fs.rmSync(tmpOutDir, { recursive: true, force: true });
+      } catch {
+        // best-effort tmp cleanup
+      }
+      throw new Error(
+        `Remnic omp extension: failed to finalize bundle output — ${err instanceof Error ? err.message : String(err)}.`,
+      );
+    }
+
+    ctx.log.info(`Pre-bundled omp extension into ${finalOutDir}`);
+  }
 }
 
-function extensionOwnedPaths(extensionRoot: string): string[] {
-  return EXTENSION_OWNED_FILES.map((fileName) => path.join(extensionRoot, fileName));
+function extensionOwnedPaths(extensionRoot: string, ownedFileNames: readonly string[]): string[] {
+  return ownedFileNames.map((fileName) => path.join(extensionRoot, fileName));
 }
 
-function extensionOwnedUnpublishPaths(extensionRoot: string): string[] {
-  const ownedPaths = extensionOwnedPaths(extensionRoot);
+function extensionOwnedUnpublishPaths(extensionRoot: string, ownedFileNames: readonly string[]): string[] {
+  const ownedBaseNames = new Set(ownedFileNames);
+  const ownedPaths = extensionOwnedPaths(extensionRoot, ownedFileNames);
   for (const fileName of fs.readdirSync(extensionRoot)) {
-    if (EXTENSION_OWNED_TEMP_FILE_PATTERN.test(fileName)) {
+    const match = EXTENSION_OWNED_TEMP_FILE_SUFFIX.exec(fileName);
+    if (match && ownedBaseNames.has(fileName.slice(0, match.index))) {
       ownedPaths.push(path.join(extensionRoot, fileName));
     }
   }
@@ -333,6 +493,109 @@ function renderWrapper(extensionModulePath: string, configPath: string): string 
     `export default createRemnicPiExtension({ configPath: ${JSON.stringify(configPath)} });`,
     "",
   ].join("\n");
+}
+
+/**
+ * Generates the self-healing `loader.js` that omp loads via the package
+ * manifest's `omp.extensions` entry. It mtime-compares the pre-bundled
+ * `dist-bundle/index.js` against `index.ts` and the underlying @remnic/plugin-pi
+ * dist, rebuilds via `bun build` when stale (e.g. after an `npm update`), then
+ * imports the self-contained bundle so omp's embedded runtime never resolves
+ * bare npm specifiers at load time.
+ */
+function renderOmpLoader(pluginPiDistPath: string): string {
+  return [
+    "// Auto-generated by Remnic's OmpMemoryExtensionPublisher.",
+    "// omp's embedded runtime cannot resolve bare npm specifiers from this",
+    "// extension's node_modules, so we pre-bundle with `bun build` and import",
+    "// the self-contained bundle here. Rebuilt automatically when index.ts or",
+    "// the underlying @remnic/plugin-pi dist changes.",
+    "",
+    'import { existsSync, statSync } from "node:fs";',
+    'import { spawnSync } from "node:child_process";',
+    'import { dirname, join } from "node:path";',
+    'import { fileURLToPath, pathToFileURL } from "node:url";',
+    "",
+    'const here = dirname(fileURLToPath(import.meta.url));',
+    'const bundleEntry = join(here, "dist-bundle", "index.js");',
+    'const sourceEntry = join(here, "index.ts");',
+    `const pluginPiEntry = ${JSON.stringify(pluginPiDistPath)};`,
+    "",
+    "function bundleIsStale() {",
+    "  if (!existsSync(bundleEntry)) return true;",
+    "  const bundleMtime = statSync(bundleEntry).mtimeMs;",
+    "  if (existsSync(sourceEntry) && bundleMtime < statSync(sourceEntry).mtimeMs) return true;",
+    "  if (pluginPiEntry && existsSync(pluginPiEntry) && bundleMtime < statSync(pluginPiEntry).mtimeMs) return true;",
+    "  return false;",
+    "}",
+    "",
+    "function rebuildBundle() {",
+    '  const result = spawnSync("bun", ["build", sourceEntry, "--target=bun", "--outdir=dist-bundle"], {',
+    "    cwd: here,",
+    '    stdio: "inherit",',
+    "  });",
+    "  if (result.status !== 0 || result.error) {",
+    "    throw new Error(",
+    '      "Remnic omp extension: bundle is stale or missing and could not be rebuilt. " +',
+    '      "Install bun (https://bun.sh), then run " +',
+    '      "`bun build index.ts --target=bun --outdir=dist-bundle` inside " + here',
+    "    );",
+    "  }",
+    "}",
+    "",
+    "if (bundleIsStale()) rebuildBundle();",
+    "",
+    "// Cache-bust so a freshly rebuilt bundle is loaded instead of a stale cached copy.",
+    'const bundle = await import(pathToFileURL(bundleEntry).href + "?t=" + Date.now());',
+    "export default bundle.default;",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Generates the `package.json` that tells omp to load `loader.js` (not
+ * auto-discover `index.ts`) and re-bundles after `npm install` via postinstall.
+ */
+function renderOmpPackageJson(): string {
+  const manifest = {
+    name: "remnic-omp-extension",
+    version: "0.0.0",
+    private: true,
+    type: "module",
+    omp: { extensions: ["./loader.js"] },
+    // Legacy key so older omp builds that only read `pi.extensions` also
+    // resolve loader.js instead of falling through to index.ts.
+    pi: { extensions: ["./loader.js"] },
+    scripts: {
+      postinstall: "bun build index.ts --target=bun --outdir=dist-bundle",
+    },
+  };
+  return `${JSON.stringify(manifest, null, 2)}\n`;
+}
+
+/**
+ * Resolves the `bun` binary for the install-time pre-bundle. Honours
+ * `REMNIC_OMP_BUN_BIN` (test/override seam), then PATH, then common locations.
+ * Returns null when bun is unavailable so the caller can fail with guidance.
+ */
+function resolveBunBinary(): string | null {
+  const override = process.env.REMNIC_OMP_BUN_BIN;
+  if (override !== undefined) {
+    return fs.existsSync(override) ? override : null;
+  }
+
+  const pathProbe = spawnSync("bun", ["--version"], { encoding: "utf-8" });
+  if (!pathProbe.error && pathProbe.status === 0) return "bun";
+
+  const candidates = [
+    path.join(process.env.HOME ?? "", ".bun", "bin", "bun"),
+    "/usr/local/bin/bun",
+    "/opt/homebrew/bin/bun",
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
 function atomicWriteFile(filePath: string, content: string, mode: number): void {
@@ -397,6 +660,38 @@ function restorePublishSnapshot(extensionRoot: string, rootExisted: boolean, sna
     removeEmptyDirectory(extensionRoot);
   }
 }
+
+function snapshotDirs(paths: string[]): DirSnapshot[] {
+  return paths.map((dirPath) => {
+    let existed = false;
+    try {
+      const stat = fs.lstatSync(dirPath);
+      if (stat.isSymbolicLink()) {
+        throw new Error(`Extension path must not be a symlink: ${dirPath}`);
+      }
+      existed = stat.isDirectory();
+    } catch (err) {
+      if (err && typeof err === "object" && "code" in err && err.code === "ENOENT") {
+        existed = false;
+      } else {
+        throw err;
+      }
+    }
+    return { path: dirPath, existed };
+  });
+}
+
+function restoreDirSnapshots(snapshots: DirSnapshot[]): void {
+  for (const snapshot of snapshots) {
+    if (snapshot.existed) continue;
+    try {
+      fs.rmSync(snapshot.path, { recursive: true, force: true });
+    } catch {
+      // best-effort — the loader self-heals at runtime if the dir lingers
+    }
+  }
+}
+
 
 function canCleanNewExtensionRoot(extensionRoot: string): boolean {
   let stat: fs.Stats;
