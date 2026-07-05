@@ -3822,6 +3822,23 @@ export class StorageManager {
     await factHashIndex.save();
   }
 
+  /**
+   * Re-register a fact's contentHash in the dedup index after a tombstone
+   * block is lifted on approval (issue #1579 thread ObnTy). `writeMemory`
+   * skips hash-index registration for tombstone-blocked facts (rule 44); when
+   * the review queue later promotes such a fact back to `status: active`, the
+   * hash must enter the index or the next extraction of the same content
+   * creates a second active fact. Reads the memory by id so the caller (the
+   * review CLI) does not need to re-parse the file. No-op for non-facts or
+   * facts that are not active.
+   */
+  async restoreFactHashAfterApproval(memoryId: string): Promise<void> {
+    const all = await this.readAllMemories();
+    const memory = all.find((m) => m.frontmatter.id === memoryId);
+    if (!memory) return;
+    await this.addActiveFactContentHash(memory);
+  }
+
   private async syncFactHashIndexAfterRewrite(before: MemoryFile, after: MemoryFile): Promise<void> {
     if (before.frontmatter.category !== "fact" && after.frontmatter.category !== "fact") return;
 

@@ -5697,6 +5697,23 @@ async function cmdReview(action: string, rest: string[]): Promise<void> {
       process.exit(1);
     }
     const storage = new StorageManager(memoryDir);
+    // Issue #1579 review threads Oblq_ / ObnTy: the standalone CLI storage
+    // must mirror the orchestrator's tombstone config, otherwise
+    // revokeTombstone() returns null (enabled defaults to false) and the
+    // approved content is blocked again on the next write. Parse the same
+    // config the daemon uses and apply it before revoking.
+    const configPath = resolveConfigPath();
+    const rawCfg = fs.existsSync(configPath)
+      ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+      : {};
+    const remnicCfg = rawCfg.remnic ?? rawCfg.engram ?? rawCfg;
+    const config = parseConfig(remnicCfg);
+    storage.setTombstonesConfig({
+      enabled: config.tombstonesEnabled,
+      semanticMatch: config.tombstonesSemanticMatch,
+      semanticThreshold: config.tombstonesSemanticThreshold,
+      namespace: config.defaultNamespace,
+    });
     const result = performReview(memoryDir, id, action as ReviewAction, {
       onApproveBlockedMemory: (tombstoneId) => {
         // Fire-and-forget for long-running callers; the CLI also awaits
@@ -5707,11 +5724,21 @@ async function cmdReview(action: string, rest: string[]): Promise<void> {
     // Issue #1579: await the revocation so it lands before the CLI exits.
     // The fire-and-forget hook covers long-running callers; this await covers
     // the short-lived CLI process (without it the revocation could be lost).
+    // Issue #1579: await the revocation so it lands before the CLI exits, and
+    // re-register the now-active fact's contentHash in the dedup index (thread
+    // ObnTy). writeMemory skipped registration while the fact was tombstone-
+    // blocked (rule 44); without this, the next extraction of the same content
+    // would create a second active fact.
     if (result.clearedTombstoneId) {
       try {
         await storage.revokeTombstone(result.clearedTombstoneId, "user_correction");
       } catch {
         /* best-effort — approval already succeeded */
+      }
+      try {
+        await storage.restoreFactHashAfterApproval(id);
+      } catch {
+        /* best-effort — approval + revocation already succeeded */
       }
     }
     console.log(result.message);
