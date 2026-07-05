@@ -73,8 +73,19 @@ export interface PublishResult {
  * Declarative capability flags that describe what a given publisher
  * can produce. Useful for feature-gating UI or doctor output without
  * instantiating the publisher.
+ *
+ * `isStub` is the explicit declaration required by #1518: when true, the
+ * docs-code parity gate (`scripts/check-docs-parity.mjs`) refuses any
+ * automation claim ("installs the plugin", "configures mcp",
+ * "automatically …") in the publisher's mapped install docs, because a stub
+ * publisher writes nothing to disk. A publisher that implements any real
+ * artefact writes MUST set this false. The inferred "all flags false ⇒ stub"
+ * detection in the parity script remains as a backstop, but the explicit
+ * flag is now the source of truth.
  */
 export interface PublisherCapabilities {
+  /** Whether the publisher is an intentional no-op stub (writes nothing). */
+  readonly isStub: boolean;
   /** Whether the publisher writes an instructions.md file. */
   readonly instructionsMd: boolean;
   /** Whether the publisher populates a skills folder. */
