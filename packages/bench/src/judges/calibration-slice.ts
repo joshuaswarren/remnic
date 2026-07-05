@@ -21,8 +21,8 @@
  * text into shell strings (rule 10).
  */
 
-import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { BenchJudge } from "../adapters/types.js";
@@ -155,7 +155,19 @@ export async function runJudgeCalibration(
     sliceSize,
   );
   const sliceIdSet = new Set(sliceIds);
-  const sliceAnswers = options.answers.filter((answer) => sliceIdSet.has(answer.questionId));
+  // Dedupe by questionId (cursor review: a stored result with duplicate
+  // taskIds would otherwise double-count the same question, inflating
+  // sampleSize and skewing kappa). First answer per id wins; slice order
+  // is preserved so verdicts line up with sliceQuestionIds.
+  const answerById = new Map<string, CalibrationAnswer>();
+  for (const answer of options.answers) {
+    if (sliceIdSet.has(answer.questionId) && !answerById.has(answer.questionId)) {
+      answerById.set(answer.questionId, answer);
+    }
+  }
+  const sliceAnswers = sliceIds
+    .map((id) => answerById.get(id))
+    .filter((answer): answer is CalibrationAnswer => answer !== undefined);
 
   const localLabels: JudgeCategory[] = [];
   const frontierLabels: JudgeCategory[] = [];
@@ -200,8 +212,9 @@ export async function runJudgeCalibration(
  * Persist a calibration result so subsequent local artifacts can carry the
  * kappa (issue #1573 done-when: "a kappa number that lands in subsequent
  * local artifacts"). The state is a single JSON file per benchmark under
- * `<calibrationDir>/<benchmarkId>.json`, written atomically via temp-write
- * (the shared canonical serializer keeps the SHA stable across reruns).
+ * `<calibrationDir>/<benchmarkId>.json`, written atomically via temp-write-
+ * then-rename (cursor review: a direct writeFile can leave truncated JSON on
+ * crash, which loadJudgeCalibrationState would silently drop as a miss).
  *
  * Only the artifact-relevant subset (`BenchmarkArtifactJudgeCalibration`) is
  * persisted — never the per-question verdicts or answer text (repo ethics +
@@ -219,7 +232,16 @@ export async function writeJudgeCalibrationState(
     warning: result.warning,
   };
   const filePath = path.join(calibrationDir, `${sanitizeCalibrationSegment(result.benchmarkId)}.json`);
-  await writeFile(filePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  // Atomic write: land bytes on a temp file, then rename into place. The
+  // rename is atomic on POSIX; best-effort temp cleanup on failure.
+  const tempPath = `${filePath}.${randomBytes(6).toString("hex")}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  try {
+    await rename(tempPath, filePath);
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+    throw error;
+  }
   return filePath;
 }
 

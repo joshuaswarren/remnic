@@ -231,6 +231,33 @@ test("runJudgeCalibration: non-finite judge scores do not crash calibration", as
   assert.equal(result.warning, true);
 });
 
+test("runJudgeCalibration: duplicate questionIds are deduped — first answer wins (cursor review)", async () => {
+  // A stored result with duplicate taskIds must not double-count a question.
+  // Build 4 distinct answers, then append duplicates of two of them; the
+  // slice covers all 4 ids, so without dedup sampleSize would be 6.
+  const base = makeAnswers(4);
+  const answers = [
+    ...base,
+    { ...base[0]! },
+    { ...base[2]! },
+  ];
+  const scores: Record<string, number> = {};
+  for (const answer of base) {
+    scores[answer.predicted] = 1;
+  }
+  const result = await runJudgeCalibration({
+    benchmarkId: "locomo",
+    localJudge: makeScalarStubJudge(scores),
+    frontierJudge: makeScalarStubJudge(scores),
+    answers,
+    sliceSize: 10,
+  });
+  assert.equal(result.sampleSize, 4, "duplicates must not inflate sampleSize");
+  assert.equal(result.sliceQuestionIds.length, 4);
+  assert.equal(result.verdicts.length, 4);
+  assert.equal(result.kappa, 1);
+});
+
 test("writeJudgeCalibrationState + loadJudgeCalibrationState round-trip the artifact subset", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-"));
   try {

@@ -2456,7 +2456,16 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   const stored = await bench.listBenchmarkResults(resultsDir);
   const candidates = stored
     .filter((entry) => entry.benchmark === benchmarkId)
-    .sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+    .sort((a, b) => {
+      // Descending by timestamp with a 3-way comparator (cursor review: the
+      // previous `< b ? 1 : -1` never returned 0, so tied timestamps produced
+      // an unstable order that could pick a non-latest run). The id breaks
+      // remaining ties deterministically.
+      if (a.timestamp !== b.timestamp) {
+        return a.timestamp < b.timestamp ? 1 : -1;
+      }
+      return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+    });
   const latest = candidates[0];
   if (!latest) {
     console.error(
@@ -2501,6 +2510,18 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
 
   const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
   const statePath = await bench.writeJudgeCalibrationState(result, calibrationDir);
+  // Read the persisted state straight back. This exercises the load path the
+  // artifact builder will use (cursor review + codex P1: loadJudgeCalibration-
+  // State was previously dead code — only tests called it). A mismatch here
+  // would mean the persisted kappa is not what subsequent local artifacts
+  // would carry, which is an operator-visible failure.
+  const persisted = await bench.loadJudgeCalibrationState(benchmarkId, calibrationDir);
+  if (!persisted || persisted.kappa !== result.kappa || persisted.warning !== result.warning) {
+    console.error(
+      `ERROR: calibration state round-trip failed for ${benchmarkId} (wrote kappa ${result.kappa}, read back ${persisted ? persisted.kappa : "nothing"}). Re-run judge-calibrate.`,
+    );
+    process.exit(1);
+  }
 
   if (parsed.json) {
     console.log(
@@ -2535,7 +2556,8 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   } else {
     console.log(`  OK: local judge agrees with frontier above threshold.`);
   }
-  console.log(`  Calibration state written to: ${statePath}`);
+  console.log(`  Calibration state written + verified (round-trip ok): ${statePath}`);
+  console.log(`  Subsequent local artifacts for ${benchmarkId} will carry kappa ${persisted.kappa.toFixed(4)}.`);
 }
 
 async function publishBenchPackageResults(parsed: ParsedBenchArgs): Promise<void> {
