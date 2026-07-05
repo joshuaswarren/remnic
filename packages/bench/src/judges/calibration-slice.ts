@@ -353,15 +353,40 @@ export async function loadJudgeCalibrationState(
  */
 function sanitizeCalibrationSegment(value: string): string {
   const lowered = value.trim().toLowerCase();
-  // Replace disallowed-character RUNS with a single "-" so distinct benchmark
-  // ids stay distinct (cursor review: the previous filter-drop mapped "foo.bar"
-  // and "foobar" to the same file, letting one benchmark overwrite another's
-  // persisted kappa). Collapse consecutive separators and trim edges.
-  const cleaned = lowered
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return cleaned.length > 0 ? cleaned : "unknown";
+  // Character-by-character sanitization (CodeQL: avoids polynomial regex on
+  // uncontrolled input). Disallowed characters become a single "-" separator
+  // so distinct benchmark ids stay distinct (cursor review: the old filter-drop
+  // mapped "foo.bar" and "foobar" to the same file). Consecutive separators
+  // are collapsed and edges are trimmed.
+  const chars: string[] = [];
+  let prevWasSeparator = false;
+  for (const ch of lowered) {
+    const code = ch.charCodeAt(0);
+    const isAllowed =
+      (code >= 0x61 && code <= 0x7a) || // a-z
+      (code >= 0x30 && code <= 0x39) || // 0-9
+      code === 0x5f || // _
+      code === 0x2d;   // -
+    if (isAllowed) {
+      const isSeparator = ch === "-";
+      if (isSeparator && prevWasSeparator) {
+        continue; // Collapse consecutive separators.
+      }
+      chars.push(ch);
+      prevWasSeparator = isSeparator;
+    } else if (!prevWasSeparator && chars.length > 0) {
+      chars.push("-");
+      prevWasSeparator = true;
+    }
+  }
+  // Trim leading/trailing separators (array-based, no regex).
+  while (chars.length > 0 && chars[0] === "-") {
+    chars.shift();
+  }
+  while (chars.length > 0 && chars[chars.length - 1] === "-") {
+    chars.pop();
+  }
+  return chars.length > 0 ? chars.join("") : "unknown";
 }
 
 export {

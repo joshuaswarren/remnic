@@ -2530,7 +2530,11 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   // Codex P2 review: a `--limit 1` (or `--trial-limit 1`) full run produces
   // mode === "full" with a single task, yielding a degenerate one-sample κ
   // (often 1.0). Require enough completed tasks for a meaningful calibration.
-  const sourceTaskCount = loaded.results.tasks.length;
+  // Count UNIQUE task ids — runJudgeCalibration dedupes by questionId, so
+  // raw task count can overstate the sample (codex P2 review: a stored result
+  // with duplicate taskIds could pass the minimum while producing a smaller κ).
+  const uniqueTaskIds = new Set(loaded.results.tasks.map((task) => task.taskId));
+  const sourceTaskCount = uniqueTaskIds.size;
   if (sourceTaskCount < bench.MIN_CALIBRATION_SOURCE_TASKS) {
     console.error(
       `ERROR: stored result for "${benchmarkId}" has only ${sourceTaskCount} task(s) — too few for a meaningful calibration (minimum ${bench.MIN_CALIBRATION_SOURCE_TASKS}). Run a full uncapped benchmark first (remnic bench run ${benchmarkId}).`,
