@@ -1175,26 +1175,12 @@ export class ContentHashIndex {
  *   normalizeAttributePairs({ foo: "bar", BAZ: "qux" })
  *   // → "baz: qux; foo: bar"
  */
-/**
- * Remove the "[Attributes: ...]" suffix `writeMemory` appends to the
- * stored body when structuredAttributes are present, yielding the raw
- * fact text for content comparison. Inverse companion of
- * `normalizeAttributePairs` enrichment. String operations, not regex —
- * CodeQL js/polynomial-redos on a suffix-anchored pattern over
- * library-supplied content.
- */
-export function stripAttributesSuffix(content: string): string {
-  const trimmed = content.trimEnd();
-  if (!trimmed.endsWith("]")) return content.trim();
-  const marker = "\n[Attributes: ";
-  const markerIndex = trimmed.lastIndexOf(marker);
-  if (markerIndex === -1) return content.trim();
-  // The block must be the FINAL line and contain no "]" before the
-  // closing bracket (mirrors the shape normalizeAttributePairs emits).
-  const inner = trimmed.slice(markerIndex + marker.length, -1);
-  if (inner.includes("]") || inner.includes("\n")) return content.trim();
-  return trimmed.slice(0, markerIndex).trim();
-}
+// `stripAttributesSuffix` now lives in ./structured-attributes.ts (shared with
+// the coding surfaces + wearable service). Imported here so internal callers
+// (snapshotBeforeWrite, snapshotForProvenance) resolve, and re-exported to
+// keep the public storage API stable for existing callers (wearables, dist).
+import { stripAttributesSuffix } from "./structured-attributes.js";
+export { stripAttributesSuffix };
 
 export function normalizeAttributePairs(pairs: Record<string, string>): string {
   return Object.entries(pairs)
