@@ -33,6 +33,8 @@
  */
 
 import { clusterByKey } from "../procedural/reinforcement-core.js";
+import { buildRetiredFactTombstoneInputs, type TombstoneReason, type TombstoneCreatedBy } from "../lifecycle/tombstones.js";
+import { supersessionKeysForFact } from "../temporal-supersession.js";
 import type {
   MemoryFile,
   MemoryFrontmatter,
@@ -56,8 +58,8 @@ export interface PatternReinforcementStorage {
    * StorageManager satisfies it via its appendTombstone chokepoint.
    */
   appendTombstone?(input: {
-    reason: "supersession" | "correction" | "retraction";
-    createdBy: "supersession" | "contradiction_resolution" | "user_correction" | "chat";
+    reason: TombstoneReason;
+    createdBy: TombstoneCreatedBy;
     sourceMemoryId: string;
     contentHash?: string;
     rawContent: string;
@@ -358,28 +360,34 @@ export async function runPatternReinforcement(
         updated: nowIso,
       };
       await storage.writeMemoryFrontmatter(dup, patch);
-      supersededIds.push(dup.frontmatter.id);
-      result.duplicatesSuperseded += 1;
-      // Issue #1579 thread Oblq9: emit a tombstone so the retired duplicate
-      // cannot resurrect through re-extraction / import. Pattern reinforcement
-      // retires via writeMemoryFrontmatter which bypasses the writeMemory
-      // chokepoint; without this emit, the same content re-extracted before a
-      // manual rebuild would be stored active. Best-effort (the interface
-      // method is optional; a failure must not fail the reinforcement job).
+      // Issue #1579 thread Oblq9 / Ocn0C / OcoPs: emit a tombstone so the
+      // retired duplicate cannot resurrect through re-extraction / import.
+      // Pattern reinforcement retires via writeMemoryFrontmatter which
+      // bypasses the writeMemory chokepoint; without this emit, the same
+      // content re-extracted before a manual rebuild would be stored active.
+      // Threads Ocn0C/OcoPs: emit one tombstone PER derived supersession key
+      // via buildRetiredFactTombstoneInputs (same helper as supersedeMemory +
+      // forgetMemory), not a single entityRef-only record — a paraphrased
+      // re-extraction with the same entity/attribute can only be caught by
+      // the keyed tier. Best-effort (the interface method is optional; a
+      // failure must not fail the reinforcement job).
       if (storage.appendTombstone) {
-        try {
-          await storage.appendTombstone({
-            reason: "supersession",
-            createdBy: "supersession",
-            sourceMemoryId: dup.frontmatter.id,
-            ...(dup.frontmatter.contentHash ? { contentHash: dup.frontmatter.contentHash } : {}),
-            rawContent: dup.content,
-            ...(dup.frontmatter.entityRef ? { entityRef: dup.frontmatter.entityRef } : {}),
-            createdAt: nowIso,
-          });
-        } catch {
-          // Best-effort: a tombstone append failure must not fail the
-          // reinforcement job (gotcha #13 / rule 34 spirit).
+        for (const input of buildRetiredFactTombstoneInputs(
+          {
+            id: dup.frontmatter.id,
+            content: dup.content,
+            contentHash: dup.frontmatter.contentHash,
+            entityRef: dup.frontmatter.entityRef,
+            structuredAttributes: dup.frontmatter.structuredAttributes,
+          },
+          { reason: "supersession", createdBy: "supersession", createdAt: nowIso, supersessionKeysForFact },
+        )) {
+          try {
+            await storage.appendTombstone(input);
+          } catch {
+            // Best-effort: a tombstone append failure must not fail the
+            // reinforcement job (gotcha #13 / rule 34 spirit).
+          }
         }
       }
     }
