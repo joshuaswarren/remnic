@@ -356,3 +356,45 @@ test("until <future month> rolls back a year (cursor review r2 regression)", () 
   assert.equal(r.ok, true);
   assert.equal(r.validUntil, "2025-04-01T00:00:00.000Z");
 });
+
+test("this winter from January rolls back to previous December (codex review r2)", () => {
+  const r = resolveEventTime("this winter", "2026-01-15T00:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-12-01T00:00:00.000Z");
+});
+
+test("this winter from February rolls back to previous December (codex review r2)", () => {
+  const r = resolveEventTime("this winter", "2026-02-15T00:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2025-12-01T00:00:00.000Z");
+});
+
+test("this winter from December stays in the current year (codex review r2)", () => {
+  const r = resolveEventTime("this winter", "2026-12-15T00:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2026-12-01T00:00:00.000Z");
+});
+
+test("this spring from January stays in the current year (season rollback regression)", () => {
+  const r = resolveEventTime("this spring", "2026-01-15T00:00:00.000Z");
+  assert.equal(r.ok, true);
+  assert.equal(r.validFrom, "2026-03-01T00:00:00.000Z");
+});
+
+test("until <season> <year> advances by the full 3-month season (codex review r2)", () => {
+  const r = resolveEventTime("until spring 2025", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2025-06-01T00:00:00.000Z");
+});
+
+test("through <season> <year> advances by the full 3-month season (codex review r2)", () => {
+  const r = resolveEventTime("through summer 2025", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2025-09-01T00:00:00.000Z");
+});
+
+test("until <month> <year> still advances by 1 month (season fix regression)", () => {
+  const r = resolveEventTime("until March 2025", ANCHOR);
+  assert.equal(r.ok, true);
+  assert.equal(r.validUntil, "2025-04-01T00:00:00.000Z");
+});

@@ -218,8 +218,13 @@ function resolveSeasonYear(
   if (typeof baseMonth !== "number") return null;
   const d = new Date(anchorMs);
   let year = d.getUTCFullYear();
-  if (direction === -1 && baseMonth > d.getUTCMonth() + 1) year -= 1;
-  else if (direction === +1 && baseMonth < d.getUTCMonth() + 1) year += 1;
+  const anchorMonth = d.getUTCMonth() + 1;
+  if (direction === -1 && baseMonth > anchorMonth) year -= 1;
+  else if (direction === +1 && baseMonth < anchorMonth) year += 1;
+  // "this winter" (direction 0) from Jan/Feb: winter started in the previous
+  // December. Without this, the resolver stamps facts almost a year in the
+  // future (codex review r2). Only winter (Dec) spans the year boundary.
+  else if (direction === 0 && baseMonth === 12 && anchorMonth <= 2) year -= 1;
   return buildDateMs(year, baseMonth, 1);
 }
 
@@ -430,14 +435,18 @@ function resolveEndBound(anchorMs: number, period: string): number | null {
     if (!/[Tt]/.test(trimmed)) return startOfNextDayUtc(absMs);
     return absMs;
   }
-  // Explicit "<month> <year>" end bound (e.g. "until March 2025") — the
-  // explicit year is authoritative, so exclusive end = start of the FOLLOWING
-  // month in that year (no anchor rollback). Shares resolveExplicitMonthYear
-  // with the since/bare paths (review: month-year phrases after since).
+  // Explicit "<month|season> <year>" end bound (e.g. "until March 2025",
+  // "through spring 2025"). The explicit year is authoritative, so the
+  // exclusive end = start of the FOLLOWING month (for a single month) or the
+  // start of the month AFTER the season ends (for a 3-month season).
+  // Review r2: seasons previously advanced only 1 month, cutting off the
+  // last 2 months of the season.
   const explicitMs = resolveExplicitMonthYear(trimmed);
   if (explicitMs !== null) {
     const nd = new Date(explicitMs);
-    nd.setUTCMonth(nd.getUTCMonth() + 1);
+    const firstWord = trimmed.toLowerCase().split(/\s+/)[0];
+    const monthAdvance = firstWord in SEASON_TO_MONTH ? 3 : 1;
+    nd.setUTCMonth(nd.getUTCMonth() + monthAdvance);
     return startOfDayUtc(nd.getTime());
   }
 
