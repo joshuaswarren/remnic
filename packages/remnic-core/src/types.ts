@@ -788,6 +788,25 @@ export interface PluginConfig {
    * filtered out.
    */
   temporalSupersessionIncludeInRecall: boolean;
+  /**
+   * Bi-temporal validity master gate (issue #1578). When `false` (default),
+   * the recall validity-injection filter and `asOf` semantics behave
+   * byte-identically to pre-#1578.
+   *
+   * Turn on to exclude validity-expired facts from default injection
+   * candidates (they remain findable by explicit search and `as_of`
+   * queries). Storage round-trips `observedAt`/`eventTimeSource`; the
+   * extraction prompt → `resolveEventTime` write-time wiring lands in a
+   * follow-on PR, so new extractions are not yet event-time-resolved.
+   */
+  temporalBiTemporal: boolean;
+  /**
+   * Escape hatch for the bi-temporal injection filter (issue #1578). When
+   * `true`, facts whose `[valid_at, invalid_at)` interval ended before now
+   * are kept in injection candidates even with `temporalBiTemporal` on — some
+   * deployments prefer the older (always-inject) behavior. Default `false`.
+   */
+  temporalExpiredInInjection: boolean;
   // Direct-answer retrieval tier (issue #518)
   /**
    * When true, recall checks whether a single validated memory in a
@@ -2423,6 +2442,25 @@ export interface MemoryFrontmatter {
    * point in time.
    */
   invalid_at?: string;
+  /**
+   * Ingestion time (issue #1578) — when Remnic *learned* this fact.
+   * Distinct from `created` (file creation) and `valid_at` (event-time
+   * start).  Aligns with the source turn timestamp (#1575
+   * `sources[].observedAt`).  When `eventTimeSource === "assumed"`,
+   * `valid_at` is copied from this value.
+   */
+  observedAt?: string;
+  /**
+   * Provenance of the event-time interval (issue #1578).
+   *   - `"extracted"` — a per-fact `eventTime` expression was resolved
+   *     against the source turn's timestamp and produced `valid_at` /
+   *     `invalid_at`.
+   *   - `"assumed"` — no resolvable expression; `valid_at` was copied from
+   *     `observedAt` (the ingestion anchor).
+   * Absent on memories written before #1578; readers treat absent as
+   * `"assumed"` for display purposes.
+   */
+  eventTimeSource?: "extracted" | "assumed";
   /**
    * Timestamp when the operator explicitly forgot this memory
    * (issue #686 PR 4/6).  Set by `remnic forget <id>`.  Memories with
