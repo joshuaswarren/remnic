@@ -6,6 +6,7 @@ import type { PluginConfig } from "../types.js";
 import { ALL_CATEGORY_DIRS } from "../utils/category-dir.js";
 import { namespaceIdentityToken, normalizeNamespaceIdentity } from "./identity.js";
 import type { NamespaceCatalog } from "./catalog.js";
+import { MutationSerializer } from "../utils/serialize-mutations.js";
 
 async function exists(p: string): Promise<boolean> {
   try {
@@ -209,21 +210,22 @@ export class NamespaceStorageRouter {
   // rebuilds. We fire the hook only when the (namespace, storageDir) pair is new
   // or its dir changed, so a steady-state cache hit is a no-op for the catalog.
   private readonly notifiedResolved = new Map<string, string>();
-  // In-flight resolve-hook dedup (NFJV-, codex P2). The catalog's `onResolve`
-  // hook is ASYNC (it returns `registerResolved(...)`), so `notifiedResolved` is
-  // only set after the hook's promise SETTLES. Without tracking the in-flight
-  // window, a burst of `storageFor()` cache hits for the SAME namespace before
-  // the first registration finishes would each pass the `notifiedResolved` guard
-  // and fire their OWN `onResolve` — queueing N duplicate catalog touches + lock
-  // acquisitions despite the once-per-namespace intent. We therefore record the
-  // (namespace → storageDir) being registered BEFORE awaiting the hook so a
-  // concurrent call for the same pair skips firing. On SUCCESS the pair is
-  // promoted to `notifiedResolved` (future calls skip permanently); on `false`
-  // (dropped touch — e.g. rebuild-lock timeout) OR rejection the in-flight marker
-  // is CLEARED so a later `storageFor()` can RETRY the dropped registration. The
-  // entry is always removed when the promise settles, so the map cannot grow
-  // unbounded (one transient entry per concurrently-resolving namespace).
-  private readonly inFlightResolved = new Map<string, string>();
+  // Instance-scoped serializer for the resolve hook (issue #1524 adoption).
+  // Replaces the bespoke `inFlightResolved` marker-then-clear pattern: the
+  // serializer's per-key chain strictly orders concurrent notifications for the
+  // SAME namespace, and the task re-checks `notifiedResolved` once it runs, so a
+  // burst of cache hits before the first hook settles collapses to a single
+  // hook invocation (the once-per-namespace intent). Recovery is preserved —
+  // one rejected hook never poisons subsequent notifications for that key.
+  private readonly resolveSerializer = new MutationSerializer();
+  // (namespace, storageDir) pairs whose resolve hook is currently pending. Set SYNCHRONOUSLY in
+  // notifyResolved (before queueing) so a burst of concurrent storageFor()
+  // cache hits collapses onto the one in-flight hook instead of each enqueuing
+  // its own task. Cleared when the queued hook settles. Without this, a dropped
+  // hook (returns false on a rebuild-lock timeout) leaves notifiedResolved
+  // unset, so every queued sibling task would re-run the hook — N serial lock
+  // waits (cursor Medium 06f58a7c, codex P2).
+  private readonly inFlightResolveHooks = new Set<string>();
   // Tracks every in-flight resolve-hook promise so callers can deterministically
   // await the fire-and-forget registrations that `storageFor()` kicks off (see
   // `whenResolveHooksSettled`). Entries are removed as each hook settles, so the
@@ -308,77 +310,82 @@ export class NamespaceStorageRouter {
   /**
    * Fire the resolve hook defensively. A hook failure (e.g. a catalog write
    * error) MUST NOT crash storage resolution — see CLAUDE.md gotcha #13.
+   *
+   * Issue #1524 adoption: hook invocations for the SAME namespace are now
+   * strictly ordered through the shared `MutationSerializer` rather than the
+   * bespoke `inFlightResolved` marker-then-clear pattern. The serializer
+   * guarantees one in-flight hook per namespace; a concurrent burst of
+   * `storageFor()` cache hits collapses to a single hook invocation because
+   * each queued task re-checks `notifiedResolved` before invoking the hook. A
+   * dropped (`false`) or rejected hook leaves `notifiedResolved` unset so the
+   * next `storageFor()` retries — the serializer recovers from the rejection,
+   * so a failed hook never poisons later notifications.
    */
   private notifyResolved(namespace: string, storageDir: string): void {
     const hook = this.hooks.onResolve;
     if (!hook) return;
-    // Skip when we've already SUCCESSFULLY notified this exact (namespace,
-    // storageDir) — a steady-state cache hit must not re-append to the catalog
-    // log (NCNL2). A changed dir (rare: migration/realignment) still re-fires
-    // once. We mark the pair as notified ONLY AFTER the hook succeeds, and CLEAR
-    // it on failure, so a dropped registration (e.g. rebuild-lock timeout) is
-    // RETRIED on the next cache hit instead of being suppressed forever (round 6,
-    // cursor Medium — ND3EJ).
+    // Permanent dedup: skip once we've SUCCESSFULLY notified this exact
+    // (namespace, storageDir). A changed dir (rare: migration/realignment)
+    // still re-fires once. The mark is set ONLY AFTER the hook succeeds, so a
+    // dropped registration (e.g. rebuild-lock timeout) is RETRIED on the next
+    // cache hit instead of being suppressed forever (round 6, cursor Medium —
+    // ND3EJ).
     if (this.notifiedResolved.get(namespace) === storageDir) return;
-    // In-flight dedup (NFJV-, codex P2): if a registration for this exact
-    // (namespace, storageDir) is already AWAITING its async hook, do not fire a
-    // second one. Without this, concurrent cache-hit bursts before the first
-    // append settles each pass the `notifiedResolved` guard above and queue
-    // duplicate catalog touches/lock acquisitions. A pair with a DIFFERENT
-    // in-flight dir (rare mid-migration realignment) still fires once.
-    if (this.inFlightResolved.get(namespace) === storageDir) return;
-    try {
-      // Handle BOTH synchronous throws and asynchronous rejections (round 6,
-      // codex P2 — NDo8C). The hook may be `async`; its rejected promise would
-      // bypass this try/catch and, where unhandled rejections are fatal, crash
-      // storage resolution. Mark the dedup pair as notified ONLY when the hook
-      // resolves to a PERSISTED result (round 6, codex P2 — NEFoX): a result of
-      // `false` means the registration was dropped/no-op (e.g. rebuild-lock
-      // timeout), so we must NOT suppress its retry. `void`/`undefined` is treated
-      // as success for legacy hooks. On rejection we leave it un-notified to retry.
-      //
-      // Record the in-flight marker BEFORE awaiting so concurrent calls for the
-      // same pair skip (NFJV-). It is always cleared once the promise settles, so
-      // the map holds at most one transient entry per concurrently-resolving
-      // namespace and cannot grow unbounded.
-      this.inFlightResolved.set(namespace, storageDir);
-      const hookResult = Promise.resolve(hook(namespace, storageDir));
-      // Track the in-flight promise so `whenResolveHooksSettled()` can await it.
-      this.pendingResolveHooks.add(hookResult);
-      hookResult.then(
-        (persisted) => {
-          // Clear the in-flight marker ONLY if it is still ours (a newer resolve
-          // for a different dir may have replaced it).
-          if (this.inFlightResolved.get(namespace) === storageDir) {
-            this.inFlightResolved.delete(namespace);
-          }
-          if (persisted !== false) {
-            this.notifiedResolved.set(namespace, storageDir);
-          }
-          // On `false` (dropped touch) we intentionally do NOT mark notified, so
-          // a later `storageFor()` retries the registration. Clearing the
-          // in-flight marker above is what re-enables that retry.
-          this.pendingResolveHooks.delete(hookResult);
-        },
-        () => {
-          // Registration failed — clear in-flight AND do NOT mark as notified, so
-          // it is retried on the next cache hit.
-          if (this.inFlightResolved.get(namespace) === storageDir) {
-            this.inFlightResolved.delete(namespace);
-          }
-          if (this.notifiedResolved.get(namespace) === storageDir) {
-            this.notifiedResolved.delete(namespace);
-          }
-          this.pendingResolveHooks.delete(hookResult);
-        },
-      );
-    } catch {
-      // Synchronous throw: clear any in-flight marker we just set and leave the
-      // pair un-notified so a later resolve retries.
-      if (this.inFlightResolved.get(namespace) === storageDir) {
-        this.inFlightResolved.delete(namespace);
+    // In-flight dedup (cursor Medium 06f58a7c, codex P2): if a hook for THIS
+    // namespace is already pending, collapse this call onto it instead of
+    // enqueueing another task. The serializer strictly orders queued tasks, but
+    // ordering alone is not enough — when the first hook returns `false`
+    // (dropped touch, e.g. rebuild-lock timeout), `notifiedResolved` stays
+    // unset, so each queued sibling task would pass its re-check and re-run the
+    // hook. With the real catalog hook each retry can spend the full lock wait,
+    // so N cache hits during a rebuild leave N serial background lock attempts.
+    // Collapsing here means at most ONE hook runs per in-flight registration;
+    // its result (set `notifiedResolved` on success, leave unset on drop)
+    // decides whether a LATER `storageFor()` retries — collapsing loses
+    // nothing because the drop is already retried on the next cache hit.
+    // Keyed by the composite (namespace, storageDir) so a CHANGED dir
+    // (migration/realignment) for the same namespace still gets its own hook —
+    // it is NOT collapsed onto the old dir's pending registration (cursor
+    // Medium, codex P2).
+    const inFlightKey = namespace + "\u0000" + storageDir;
+    if (this.inFlightResolveHooks.has(inFlightKey)) return;
+    this.inFlightResolveHooks.add(inFlightKey);
+    // Queue through the serializer. Concurrent calls for the same namespace
+    // strictly order here; the 2nd call's task runs only after the 1st's hook
+    // settles, by which point `notifiedResolved` is either set (no-op) or still
+    // unset (retry). The returned promise is tracked for
+    // `whenResolveHooksSettled()`. Rejections from the task body are caught so
+    // they never reach the caller (best-effort hook contract); the serializer's
+    // recovered tail still lets subsequent notifications run.
+    const task = async (): Promise<void> => {
+      // Re-check after queueing: a prior task in this same chain may have just
+      // marked the pair as notified.
+      if (this.notifiedResolved.get(namespace) === storageDir) return;
+      try {
+        // Hook may be sync or async; Promise.resolve normalizes both. A result
+        // of `false` means the registration was dropped/no-op (e.g. rebuild-lock
+        // timeout) — leave notifiedResolved UNSET so the next storageFor retries
+        // (round 6, codex P2 — NEFoX). `void`/`undefined` is success for legacy
+        // hooks. A rejection leaves notifiedResolved unset for the same reason.
+        const persisted = await Promise.resolve(hook(namespace, storageDir));
+        if (persisted !== false) {
+          this.notifiedResolved.set(namespace, storageDir);
+        }
+      } catch {
+        // Best-effort: a hook failure MUST NOT crash storage resolution. Leave
+        // notifiedResolved unset so a later storageFor retries the registration.
       }
-    }
+    };
+    const queued = this.resolveSerializer.serialize(namespace, task);
+    this.pendingResolveHooks.add(queued);
+    // Clear the in-flight marker when the hook settles so a subsequent
+    // storageFor() can retry after a drop, or short-circuit via notifiedResolved
+    // after a success.
+    const cleanup = (): void => {
+      this.inFlightResolveHooks.delete(inFlightKey);
+      this.pendingResolveHooks.delete(queued);
+    };
+    void queued.then(cleanup, cleanup);
   }
 
   /**
