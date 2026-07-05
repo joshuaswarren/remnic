@@ -10,6 +10,7 @@ import { type PublishContext, loadTokenStore, saveTokenStore } from "@remnic/cor
 import {
   OmpMemoryExtensionPublisher,
   PiMemoryExtensionPublisher,
+  resolveBunBinary,
   resolveBunOnPath,
   resolveOmpWrapperImportSpecifier,
 } from "./publisher.js";
@@ -1619,4 +1620,54 @@ test("resolveBunOnPath skips a non-executable bun earlier on PATH and resolves t
   });
   const resolved = resolveBunOnPath();
   assert.equal(resolved, fs.realpathSync(goodBun));
+});
+
+// ── Regression (PR #1641 / #1598): when the PATH `bun --version` probe fails,
+// resolveBunBinary's filesystem fallback must also skip a stale,
+// non-executable ~/.bun/bin/bun instead of returning it over a later working
+// binary. Same executable-file check as the PATH walk (isExecutableFile),
+// centralised so both candidate-selection sites stay in lockstep.
+test("resolveBunBinary fallback skips a stale non-executable ~/.bun/bin/bun", (t) => {
+  if (process.platform === "win32") {
+    // POSIX executable-bit semantics; skip on Windows (PATHEXT/.exe differ).
+    t.skip();
+    return;
+  }
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-bun-fallback-"));
+  const home = path.join(root, "home");
+  const bunBinDir = path.join(home, ".bun", "bin");
+  fs.mkdirSync(bunBinDir, { recursive: true });
+  // Stale, non-executable regular file at the first fallback candidate.
+  fs.writeFileSync(path.join(bunBinDir, "bun"), "broken\n", { mode: 0o644 });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  const previousPath = process.env.PATH;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.REMNIC_OMP_BUN_BIN;
+  // Empty PATH so the spawnSync("bun", ["--version"]) probe fails and the
+  // filesystem fallback candidate list is exercised.
+  process.env.PATH = "";
+  t.after(() => {
+    process.env.HOME = previousHome;
+    process.env.USERPROFILE = previousUserProfile;
+    process.env.PATH = previousPath;
+    if (previousBunBin === undefined) delete process.env.REMNIC_OMP_BUN_BIN;
+    else process.env.REMNIC_OMP_BUN_BIN = previousBunBin;
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const resolved = resolveBunBinary();
+  // The stale non-executable ~/.bun/bin/bun must NOT be returned. If the host
+  // has a real bun at a later candidate (/usr/local/bin/bun, /opt/homebrew/bin/
+  // bun) the resolver returns that working binary instead — either way the
+  // non-executable file is skipped, which is the bug fix's intent. When a
+  // binary is returned it must itself be executable (a working bun, not just a
+  // file that exists).
+  assert.notEqual(resolved, path.join(bunBinDir, "bun"));
+  if (resolved !== null) {
+    fs.accessSync(resolved, fs.constants.X_OK);
+  }
 });

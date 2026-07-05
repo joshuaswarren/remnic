@@ -798,6 +798,26 @@ try {
 }
 
 /**
+ * True when `candidate` is a regular file that the current process can
+ * execute. Used by every `bun`-binary candidate selection site so a stale,
+ * non-executable file named `bun` (or `bun.exe`) cannot win over a later
+ * working binary — matching `which(1)` and the `spawnSync("bun", ["--version"])`
+ * version probe, which both skip non-executable files. On Windows
+ * `fs.accessSync(X_OK)` verifies read access, which holds for real `.exe`
+ * files, so the check is a harmless no-op there.
+ */
+function isExecutableFile(candidate: string): boolean {
+  try {
+    const stat = fs.statSync(candidate);
+    if (!stat.isFile()) return false;
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Walks `PATH` the way a shell does and returns the first `bun` executable it
  * finds, as a realpath-resolved absolute path (or null when nothing on PATH
  * is an executable `bun`). Used so the install-time PATH probe can embed an
@@ -816,20 +836,8 @@ export function resolveBunOnPath(): string | null {
       const candidate = path.isAbsolute(dir)
         ? path.join(dir, name)
         : path.resolve(dir, name);
-      try {
-        const stat = fs.statSync(candidate);
-        // Match `which(1)`: skip non-executable candidates. The PATH version
-        // probe (spawnSync("bun", ["--version"])) uses the OS exec lookup, which
-        // skips non-executable files, so returning a non-executable `bun` here
-        // would diverge from the probe and embed a path that fails with EACCES
-        // at bundle time. fs.accessSync with X_OK is a no-op check on Windows
-        // for real .exe files (it verifies read access there).
-        if (stat.isFile()) {
-          fs.accessSync(candidate, fs.constants.X_OK);
-          return fs.realpathSync(candidate);
-        }
-      } catch {
-        // Missing dir, non-executable file, or permission error — next candidate.
+      if (isExecutableFile(candidate)) {
+        return fs.realpathSync(candidate);
       }
     }
   }
@@ -841,7 +849,7 @@ export function resolveBunOnPath(): string | null {
  * `REMNIC_OMP_BUN_BIN` (test/override seam), then PATH, then common locations.
  * Returns null when bun is unavailable so the caller can fail with guidance.
  */
-function resolveBunBinary(): string | null {
+export function resolveBunBinary(): string | null {
   const override = process.env.REMNIC_OMP_BUN_BIN;
   if (override !== undefined) {
     return fs.existsSync(override) ? override : null;
@@ -863,8 +871,11 @@ function resolveBunBinary(): string | null {
   // ~/.bun/bin/bun fallback on Windows installs where HOME is unset.
   const home = process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
   // The official Bun installer writes ~/.bun/bin/bun on POSIX and
-  // ~/.bun/bin/bun.exe on Windows; fs.existsSync does not apply PATHEXT, so we
-  // probe both names. The .exe candidate is a harmless no-op on POSIX.
+  // ~/.bun/bin/bun.exe on Windows. Select the first candidate that is an
+  // executable regular file (not merely one that exists) so a stale,
+  // non-executable ~/.bun/bin/bun cannot win over a later working binary
+  // (e.g. /usr/local/bin/bun or /opt/homebrew/bin/bun) — same `which(1)`
+  // semantics as the PATH walk above.
   const candidates = [
     path.join(home ?? "", ".bun", "bin", "bun"),
     path.join(home ?? "", ".bun", "bin", "bun.exe"),
@@ -872,7 +883,7 @@ function resolveBunBinary(): string | null {
     "/opt/homebrew/bin/bun",
   ];
   for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
+    if (isExecutableFile(candidate)) return candidate;
   }
   return null;
 }
