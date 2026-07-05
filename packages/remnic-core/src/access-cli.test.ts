@@ -522,3 +522,43 @@ test("access-cli rejects adjacent option-looking values", async () => {
 
   assert.match(output, /missing required option: --content/);
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// architecture command — wired through the boundary operation (#1548 PR3)
+// ──────────────────────────────────────────────────────────────────────────
+
+test("access-cli architecture is a known command (unknown options rejected, not unsupported-command)", async () => {
+  const output = await captureRunCliFailure(["architecture", "--typo", "x"]);
+  assert.match(output, /unknown option: --typo/);
+});
+
+test("access-cli architecture accepts its documented value options", async () => {
+  // Valid option spellings parse cleanly; the invocation only fails once it
+  // reaches the runtime (no OpenClaw config here), proving the options were
+  // accepted by parseArgs rather than rejected as unknown.
+  const output = await captureRunCliFailure([
+    "architecture",
+    "--subcommand",
+    "get",
+    "--session-key",
+    "s1",
+    "--namespace",
+    "ns",
+    "--project-tag",
+    "myproj",
+  ]);
+  assert.doesNotMatch(output, /unknown option/);
+  assert.doesNotMatch(output, /unsupported command/);
+});
+
+test("access-cli usage lists the architecture command and its options", async () => {
+  const output = await captureRunCliFailure(["architecture", "--typo"]);
+  assert.match(output, /engram-access architecture \[options\]/);
+  assert.match(output, /Architecture options:/);
+  assert.match(output, /--subcommand <get\|refresh>/);
+});
+
+test("access-cli still rejects truly unknown commands as unsupported", async () => {
+  const output = await captureRunCliFailure(["bogus-command"]);
+  assert.match(output, /unsupported command/);
+});

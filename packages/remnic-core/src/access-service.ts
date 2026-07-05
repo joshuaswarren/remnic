@@ -27,7 +27,7 @@ import {
   createArchitectureVersioningHook,
   ARCHITECTURE_CARD_TAG,
 } from "./coding/architecture-surfaces.js";
-import { buildArchitectureCard } from "./coding/architecture-card.js";
+import { buildArchitectureCard, createArchitectureCardSummariser } from "./coding/architecture-card.js";
 import { createVersion } from "./page-versioning.js";
 import { WorkStorage } from "./work/storage.js";
 import {
@@ -4529,10 +4529,10 @@ export class EngramAccessService {
         const storage = await this.orchestrator.getStorage(ns);
         return Object.assign(storage, { namespace: ns }) as ArchitectureSurfaceStorage;
       },
-      buildCard: async (repoRoot) =>
-        buildArchitectureCard(repoRoot, {
-          llmSummary: this.orchestrator.config.codingKnowledge?.architectureCardLlmSummary === true,
-        }),
+      buildCard: async (repoRoot) => buildArchitectureCard(repoRoot, {
+        llmSummary: this.orchestrator.config.codingKnowledge?.architectureCardLlmSummary === true,
+        summariser: createArchitectureCardSummariser(this.fallbackLlmRef ?? this.localLlmRef),
+      }),
       versioning: createArchitectureVersioningHook(
         resolvedConfig.versioningEnabled === true,
         resolvedConfig.versioningMaxPerPage,

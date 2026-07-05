@@ -119,6 +119,68 @@ export type ArchitectureCardSummariser = (
 ) => Promise<string | null>;
 
 /**
+ * Minimal chat-completion surface for the architecture-card summariser.
+ * Structural — satisfied by both `FallbackLlmClient` (gateway model
+ * chain) and `LocalLlmClient` (Ollama / OpenAI-compatible local
+ * endpoints) without this pure module importing either (rule 48 — the
+ * builder stays free of orchestrator/client references). The shape
+ * mirrors `Orchestrator.fastLlmForRerank` so callers resolve the client
+ * gateway-first, matching LCM routing precedence.
+ */
+export interface ArchitectureCardLlmClient {
+  chatCompletion(
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
+    options?: {
+      temperature?: number;
+      maxTokens?: number;
+      timeoutMs?: number;
+      operation?: string;
+      priority?: "background" | "recall-critical";
+    },
+  ): Promise<{ content: string } | null>;
+}
+
+const ARCHITECTURE_CARD_SUMMARY_SYSTEM_PROMPT = `You write a concise overview for a repository architecture card.
+Given the deterministic card (languages, manifests, entry points), produce a 3-5 sentence plain-text overview naming the dominant language, the primary entry point, and the project's shape.
+Rules:
+- Never invent facts absent from the input.
+- No headings, no markdown — just sentences.
+- Keep it under 600 characters.`;
+
+/**
+ * Build an {@link ArchitectureCardSummariser} backed by an LLM client.
+ * The client is a structural type so this module does NOT import
+ * `LocalLlmClient` / `FallbackLlmClient` (rule 48 — pure builder). The
+ * caller resolves which client to use (gateway-first, matching LCM) and
+ * may pass `null` when none is configured — then the summariser is
+ * `undefined` so the builder's LLM branch stays inert (no silent no-op).
+ *
+ * Failures return `null` (rule 13) so the deterministic card ships
+ * unchanged; `buildArchitectureCard` additionally defends against
+ * implementations that throw.
+ */
+export function createArchitectureCardSummariser(
+  client: ArchitectureCardLlmClient | null,
+): ArchitectureCardSummariser | undefined {
+  if (!client) return undefined;
+  return async (deterministicCard, repoRoot) => {
+    const response = await client.chatCompletion(
+      [
+        { role: "system", content: ARCHITECTURE_CARD_SUMMARY_SYSTEM_PROMPT },
+        { role: "user", content: `Repository: ${path.basename(repoRoot) || repoRoot}\n\n${deterministicCard}` },
+      ],
+      {
+        temperature: 0.2,
+        maxTokens: 512,
+        operation: "architecture-card-summary",
+        priority: "background",
+      },
+    );
+    return response?.content ?? null;
+  };
+}
+
+/**
  * Optional dependencies for `buildArchitectureCard`.
  */
 export interface BuildArchitectureCardOptions {
@@ -392,8 +454,12 @@ function parsePackageJson(raw: string): { name: string | null; entryPoints: stri
   if (typeof bin === "string") {
     entryPoints.push(bin);
   } else if (typeof bin === "object" && bin !== null && !Array.isArray(bin)) {
-    for (const key of Object.keys(bin as Record<string, unknown>)) {
-      entryPoints.push(`bin/${key}`);
+    for (const [key, value] of Object.entries(bin)) {
+      // Record the target path when it is a string (e.g. {remnic:'dist/cli.js'}
+      // → 'dist/cli.js'); fall back to the bin-key form for non-string
+      // values. `bin` is already narrowed to a record by the typeof/!null/
+      // !isArray guard above, so no cast is needed (codex review P2).
+      entryPoints.push(typeof value === "string" ? value : `bin/${key}`);
     }
   }
   const main = typeof obj["main"] === "string" ? obj["main"] : null;

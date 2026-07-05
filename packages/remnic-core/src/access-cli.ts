@@ -15,7 +15,7 @@ import { projectTagProjectId } from "./coding/coding-namespace.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
-type CommandName = "browse" | "store" | "decision";
+type CommandName = "browse" | "store" | "decision" | "architecture";
 
 type ParsedArgs = {
   command: CommandName;
@@ -137,6 +137,7 @@ function usage(): string {
     "  engram-access browse [options]",
     "  engram-access store [options]",
     "  engram-access decision [options]",
+    "  engram-access architecture [options]",
     "",
     "Browse options:",
     "  --namespace <name>",
@@ -176,6 +177,13 @@ function usage(): string {
     "  --entity-ref <ref> (repeatable)",
     "  --project-tag <tag> (attach coding context for this invocation)",
     "  --supersedes-id <id> (alias for --id on supersede)",
+    "",
+    "Architecture options:",
+    "  --subcommand <get|refresh>",
+    "  --namespace <name>",
+    "  --session-key <key>",
+    "  --principal <principal>",
+    "  --project-tag <tag> (attach coding context for this invocation)",
   ].join("\n");
 }
 
@@ -228,6 +236,16 @@ const COMMAND_SPECS: Record<CommandName, CommandSpec> = {
     ]),
     flagOptions: new Set(),
   },
+  architecture: {
+    valueOptions: new Set([
+      "subcommand",
+      "namespace",
+      "session-key",
+      "principal",
+      "project-tag",
+    ]),
+    flagOptions: new Set(),
+  },
 };
 const BROWSE_SORT_VALUES = Object.freeze([
   "updated_desc",
@@ -238,9 +256,19 @@ const BROWSE_SORT_VALUES = Object.freeze([
 
 type BrowseSort = (typeof BROWSE_SORT_VALUES)[number];
 
+/**
+ * Type guard for {@link CommandName}. Enumerating the union (rather than a
+ * bare `value in COMMAND_SPECS`) is what lets TypeScript NARROW the string
+ * to `CommandName` — the `in` operator alone yields TS2322 on the
+ * `command: commandRaw` assignment below (codex review P2).
+ */
+function isCommandName(value: string): value is CommandName {
+  return value === "browse" || value === "store" || value === "decision" || value === "architecture";
+}
+
 function parseArgs(argv: string[]): ParsedArgs {
   const [commandRaw, ...rest] = argv;
-  if (commandRaw !== "browse" && commandRaw !== "store" && commandRaw !== "decision") {
+  if (!isCommandName(commandRaw)) {
     throw new UsageError("unsupported-command");
   }
   const spec = COMMAND_SPECS[commandRaw];
@@ -552,6 +580,50 @@ async function runDecision(args: ParsedArgs, preferredId?: string): Promise<void
   console.log(JSON.stringify(output.result, null, 2));
 }
 
+/**
+ * Architecture-card surface (issue #1548 Track A PR 3). Dispatches through
+ * the same `coding_architecture` operation as the MCP tool and HTTP route —
+ * one validation boundary, three transports.
+ */
+async function runArchitecture(args: ParsedArgs, preferredId?: string): Promise<void> {
+  const subcommand = requireOption(args, "subcommand");
+  const { config, service } = buildRuntime(preferredId);
+  // Same coding-context attachment as runDecision (review P2): the CLI's
+  // fresh Orchestrator has an empty session coding-context map, so attach
+  // a context BEFORE dispatching when --project-tag + --session-key are
+  // given, so the gate passes and writes resolve to the right namespace.
+  const projectTag = getLastOption(args, "project-tag");
+  const sessionKey = getLastOption(args, "session-key");
+  if (projectTag && projectTag.trim().length > 0 && sessionKey && sessionKey.trim().length > 0) {
+    const projectId = projectTagProjectId(projectTag.trim());
+    service.setCodingContext({
+      sessionKey,
+      codingContext: {
+        projectId,
+        branch: null,
+        rootPath: projectId,
+        defaultBranch: null,
+      },
+    });
+  }
+  const op = getOperation("coding_architecture");
+  if (!op) {
+    throw new Error("access-boundary: operation not registered: coding_architecture");
+  }
+  const output = (await op.run(
+    {
+      subcommand,
+      namespace: getLastOption(args, "namespace"),
+      sessionKey,
+    },
+    {
+      service,
+      authenticatedPrincipal: getLastOption(args, "principal") ?? config.agentAccessHttp.principal,
+    },
+  )) as { result: unknown };
+  console.log(JSON.stringify(output.result, null, 2));
+}
+
 export async function main(
   argv: string[] = process.argv.slice(2),
   options: AccessCliOptions = {},
@@ -563,6 +635,10 @@ export async function main(
   }
   if (args.command === "decision") {
     await runDecision(args, options.preferredId);
+    return;
+  }
+  if (args.command === "architecture") {
+    await runArchitecture(args, options.preferredId);
     return;
   }
   await runStore(args, options.preferredId);

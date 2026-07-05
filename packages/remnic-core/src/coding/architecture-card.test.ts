@@ -20,6 +20,8 @@ import test from "node:test";
 
 import {
   buildArchitectureCard,
+  createArchitectureCardSummariser,
+  type ArchitectureCardLlmClient,
   ARCHITECTURE_CARD_MAX_BYTES,
 } from "./architecture-card.js";
 
@@ -215,7 +217,7 @@ test("manifest: package.json name and entry points surface in card", async () =>
     if (!result.ok) return;
     assert.ok(result.card.content.includes("my-pkg"), "project name surfaced");
     assert.ok(result.card.content.includes("src/index.ts"), "main entry surfaced");
-    assert.ok(result.card.content.includes("bin/my-cli"), "bin entry surfaced");
+    assert.ok(result.card.content.includes("src/cli.ts"), "bin target path surfaced");
     assert.ok(result.card.content.includes("scripts.start"), "start script surfaced");
   } finally {
     await rm(repo, { recursive: true, force: true });
@@ -323,6 +325,74 @@ test("llm summary: null return → deterministic card unchanged", async () => {
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// createArchitectureCardSummariser — factory wiring (rule 48)
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Structural stub satisfying ArchitectureCardLlmClient — no cast needed. */
+function makeStubLlmClient(content: string | null): ArchitectureCardLlmClient {
+  return {
+    async chatCompletion() {
+      return content === null ? null : { content };
+    },
+  };
+}
+
+test("summariser factory: null client → undefined (builder LLM branch stays inert)", () => {
+  assert.equal(createArchitectureCardSummariser(null), undefined);
+});
+
+test("summariser factory: client → summariser prepends overview end-to-end", async () => {
+  const repo = await makeFixtureRepo({
+    files: [{ path: "package.json", content: JSON.stringify({ name: "test" }) }],
+  });
+  try {
+    const summariser = createArchitectureCardSummariser(makeStubLlmClient("## Overview\n\nA test repo."));
+    assert.ok(summariser, "summariser defined for a real client");
+    const result = await buildArchitectureCard(repo, { now: NOW, llmSummary: true, summariser });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.ok(result.card.content.startsWith("## Overview"), "factory-built summary prepended");
+    assert.ok(result.card.content.includes("---"), "separator present");
+    assert.ok(result.card.content.includes("Architecture Card"), "deterministic card still present");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("summariser factory: chatCompletion returning null → deterministic card unchanged (rule 13)", async () => {
+  const repo = await makeFixtureRepo({
+    files: [{ path: "package.json", content: JSON.stringify({ name: "test" }) }],
+  });
+  try {
+    const deterministic = await buildArchitectureCard(repo, { now: NOW });
+    const summariser = createArchitectureCardSummariser(makeStubLlmClient(null));
+    assert.ok(summariser);
+    const withNullClient = await buildArchitectureCard(repo, { now: NOW, llmSummary: true, summariser });
+    assert.equal(deterministic.ok, true);
+    assert.equal(withNullClient.ok, true);
+    if (!deterministic.ok || !withNullClient.ok) return;
+    assert.equal(withNullClient.card.content, deterministic.card.content);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("summariser factory: records the LLM operation tag (background priority)", async () => {
+  let captured: { operation?: string; priority?: string } | undefined;
+  const client: ArchitectureCardLlmClient = {
+    async chatCompletion(_messages, options) {
+      captured = options;
+      return { content: "summary" };
+    },
+  };
+  const summariser = createArchitectureCardSummariser(client);
+  assert.ok(summariser);
+  await summariser("card", "/repo");
+  assert.equal(captured?.operation, "architecture-card-summary");
+  assert.equal(captured?.priority, "background");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
