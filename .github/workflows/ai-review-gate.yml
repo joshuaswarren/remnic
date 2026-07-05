@@ -22,19 +22,21 @@ jobs:
       (github.event_name == 'check_run' &&
         contains(fromJSON('["cursor-bugbot","cursor"]'), github.event.check_run.app.slug)) ||
       (github.event_name != 'check_run' && github.event.pull_request.draft == false)
-    # Coalesce within an event type, never force-cancel, never let a non-PR-head
-    # run evict the PR-head run. cancel-in-progress:false keeps the in-flight HEAD
-    # evaluation running to a terminal conclusion, so a required `ai-reviewers`
-    # check is never left `cancelled` on the head SHA (the stuck-merge mode
-    # check-unsticker was reactively clearing). The group key includes event_name
-    # so a `check_run`/review completion — whose run lands on the default branch,
-    # not the PR head, and cannot satisfy the required check — can never replace a
-    # pending `pull_request` PR-head run (codex OcD1Z). pull_request bursts still
-    # collapse to the latest pending run within their own group, and a superseded
-    # run self-exits via the head-SHA guard. Coverage is unchanged: the PR-head
-    # `pull_request` run always completes a full evaluation before merge.
+    # Coalesce PR-head events, isolate check_run, never force-cancel. All PR-head
+    # events (pull_request, pull_request_review, pull_request_review_comment — all
+    # land on refs/pull/N/merge) share ONE group so they serialize on the head and
+    # exactly one completes the required `ai-reviewers` check; they must NOT race
+    # in separate groups (a review run passing while the pull_request poll times
+    # out would leave a failed suite — codex OcHGk). `check_run` completions land
+    # on the default branch and cannot satisfy the PR-head check, so they get their
+    # own group and can never evict a pending PR-head run (codex OcD1Z).
+    # cancel-in-progress:false never force-cancels a running evaluation, so a
+    # required check is never left `cancelled` on the head SHA (the stuck-merge
+    # mode check-unsticker was clearing); a superseded run self-exits via the
+    # head-SHA guard. Coverage unchanged: the PR head always gets a complete
+    # evaluation before merge.
     concurrency:
-      group: ai-review-gate-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.run_id }}
+      group: ai-review-gate-${{ github.event_name == 'check_run' && 'checkrun' || 'prhead' }}-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.run_id }}
       cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 10
