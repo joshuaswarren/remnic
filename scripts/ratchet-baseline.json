@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "Structural ratchets (issue #1529, epic #1520). Counts may only decrease. Regenerate with: node scripts/check-ratchets.mjs --update. #1566: scatteredConfigFlagReads 562->536 (-26); watchlist LOC grew +9 (cli.ts +5, access-service.ts +3, orchestrator.ts +1) from caps-resolution lines required by the CapabilitySet migration — unavoidable per-operation resolve() calls.",
+  "note": "#1668: all remaining MCP tools migrated through the strict-schema boundary. unmigratedHandlerCount 82->0.",
   "oversizeThresholdLoc": 3000,
   "metrics": {
     "watchlistLoc": {
@@ -13,7 +13,7 @@
     "oversizedFileCount": 11,
     "scatteredConfigFlagReads": 536,
     "adHocNamespaceResolutions": 0,
-    "unmigratedHandlerCount": 82,
+    "unmigratedHandlerCount": 0,
     "directStorageImports": 38
   }
 }
