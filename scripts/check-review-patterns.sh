@@ -3,6 +3,7 @@
 # Codex, CodeQL) repeatedly flagged across PRs #343-#408 (700+ review comments).
 # Run this before pushing. Zero exit = clean.
 # Updated: 2026-04-12 (added checks 7-10 from iteration 2, 11-14 from iteration 3, 15-17 from iteration 4, 18-21 from iteration 5, 22-23 from iteration 7, 24-26 from iteration 8, 27-29 from iteration 10, 30-34 from iteration 12).
+# 2026-07-06: added check 35 (rule 27 slice-guard, WARN) + check 36 (rule 26 cross-package imports, BLOCKING).
 # 2026-07-05: check 15 graduated to BLOCKING + added codex-* prefix + maxdepth-1 scope (rule 31, PR #TBD).
 set -euo pipefail
 
@@ -818,6 +819,54 @@ if compgen -G ".github/workflows/*.yml" >/dev/null 2>&1 || compgen -G ".github/w
       fi
     done <<< "$PUBLISH_WORKFLOWS"
   fi
+fi
+
+
+# ---- 35. slice(-variable) without zero-guard (CLAUDE.md rule 27) ----
+echo "[check] slice(-variable) without zero-guard..."
+
+# Rule 27: .slice(-n) where n could be 0 returns ALL elements (slice(-0) ===
+# slice(0)). Flag .slice(- followed by a letter (variable name). Literal
+# negative offsets like .slice(-3) are safe and excluded. WARN-level because
+# ~20 existing call sites use computed offsets (often guarded by Math.max(1,...)
+# above); new violations should add a guard or justify the safety.
+SLICE_NEG_VAR=$(grep -rnE '\.slice\(-[a-zA-Z_]' \
+  --include="*.ts" \
+  packages/remnic-core/src/ packages/remnic-cli/src/ \
+  2>/dev/null \
+  | grep -v node_modules \
+  | grep -v dist \
+  | grep -v ".test." \
+  | grep -v "//.*slice" \
+  | grep -v "\\*.*slice" \
+  || true)
+
+if [[ -n "$SLICE_NEG_VAR" ]]; then
+  while IFS= read -r line; do
+    warn "$line — .slice(-variable) without zero-guard (rule 27). slice(-0) returns ALL elements. Guard with if (n <= 0) or use a literal."
+  done <<< "$SLICE_NEG_VAR"
+fi
+
+# ---- 36. Cross-package relative imports instead of package name (CLAUDE.md rule 26) ----
+echo "[check] Cross-package relative imports (BLOCKING)..."
+
+# Rule 26: import from "@remnic/core", not "../../../remnic-core/src/foo".
+# Relative cross-package imports break silently on directory renames and hide
+# package dependency signals. Flag any import using ../ that reaches into
+# another package's src directory.
+CROSS_PKG_IMPORTS=$(grep -rnE 'from .*\.\..*remnic-(core|cli)/src' \
+  --include="*.ts" \
+  packages/ \
+  2>/dev/null \
+  | grep -v node_modules \
+  | grep -v dist \
+  | grep -v ".test." \
+  || true)
+
+if [[ -n "$CROSS_PKG_IMPORTS" ]]; then
+  while IFS= read -r line; do
+    fail "$line — cross-package relative import (rule 26). Use import from \"@remnic/core\" instead."
+  done <<< "$CROSS_PKG_IMPORTS"
 fi
 
 if [[ $ERRORS -gt 0 ]]; then
