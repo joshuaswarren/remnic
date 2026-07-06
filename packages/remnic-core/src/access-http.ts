@@ -1496,14 +1496,23 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/correction/pending") {
-      const namespace = parsed.searchParams.get("namespace") ?? undefined;
-      const sessionKey = parsed.searchParams.get("sessionKey") ?? undefined;
-      const plans = await this.service.correctionListPending({
-        ...(namespace ? { namespace } : {}),
-        ...(sessionKey ? { sessionKey } : {}),
-        principal: this.resolveRequestPrincipal(req),
-      });
-      this.respondJson(res, 200, plans);
+      const op = getOperation("correction_pending");
+      if (op) {
+        const output = (await op.run(
+          { namespace: parsed.searchParams.get("namespace") ?? undefined, sessionKey: parsed.searchParams.get("sessionKey") ?? undefined },
+          { service: this.service, authenticatedPrincipal: this.resolveRequestPrincipal(req) },
+        )) as { result: unknown };
+        this.respondJson(res, 200, output.result);
+      } else {
+        const namespace = parsed.searchParams.get("namespace") ?? undefined;
+        const sessionKey = parsed.searchParams.get("sessionKey") ?? undefined;
+        const plans = await this.service.correctionListPending({
+          ...(namespace ? { namespace } : {}),
+          ...(sessionKey ? { sessionKey } : {}),
+          principal: this.resolveRequestPrincipal(req),
+        });
+        this.respondJson(res, 200, plans);
+      }
       return;
     }
 

@@ -255,14 +255,13 @@ test("access-mcp.ts registers engram.peer_forget tool", () => {
     "utf-8",
   );
   assert.match(src, /["']engram\.peer_forget["']/, "MCP must register engram.peer_forget tool");
+  // After the #1525 boundary migration, tools dispatch through the
+  // operation registry (getOperation) rather than per-tool case branches.
+  // Verify peer_forget is in the migrated-operations map AND registered
+  // as a boundary operation.
   assert.match(
     src,
-    /case ["']engram\.peer_forget["']/,
-    "MCP callTool must handle engram.peer_forget",
-  );
-  assert.match(
-    src,
-    /case ["']remnic\.peer_forget["']/,
-    "MCP callTool must handle remnic.peer_forget alias",
+    /["']engram\.peer_forget["']\s*:\s*["']peer_forget["']/,
+    "MCP must map engram.peer_forget to the peer_forget operation",
   );
 });

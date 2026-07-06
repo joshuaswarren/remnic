@@ -10,10 +10,10 @@
       "packages/remnic-core/src/storage.ts": 7730,
       "packages/remnic-core/src/config.ts": 4672
     },
-    "oversizedFileCount": 11,
+    "oversizedFileCount": 10,
     "scatteredConfigFlagReads": 536,
     "adHocNamespaceResolutions": 0,
-    "unmigratedHandlerCount": 82,
+    "unmigratedHandlerCount": 0,
     "directStorageImports": 38
   }
 }
