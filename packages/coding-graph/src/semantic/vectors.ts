@@ -84,6 +84,13 @@ export async function indexSymbolVectors(
 ): Promise<IndexVectorsResult | SemanticFailure> {
   const { store, provider, repoRoot, config, signal } = input;
 
+  // Closed store is a distinct degradation (rule 34) — do not treat it as
+  // an empty graph that returns { ok: true } with zero counts (cursor
+  // Bugbot: 'Closed store reports success').
+  if (store.isClosed) {
+    return { ok: false, code: "store_closed" };
+  }
+
   // Rule 30/48 + rule 39: single gate chokepoint.
   if (!config.enabled) {
     return { ok: false, code: "semantic_disabled" };

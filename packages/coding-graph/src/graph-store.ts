@@ -621,6 +621,18 @@ export class GraphStore {
   private readonly repoRoot: string | undefined;
   private closed = false;
   private closing = false;
+  /**
+   * True once close() has begun (closing) or completed (closed). Public so
+   * callers that hold a GraphStore reference can return the documented
+   * 'store_closed' degradation code instead of treating a closed store as
+   * an empty graph (cursor Bugbot: 'Closed store reports success'). The
+   * read primitives already short-circuit on this internally; this getter
+   * lets the semantic entry points do the same BEFORE calling a read that
+   * would return [].
+   */
+  get isClosed(): boolean {
+    return this.closed || this.closing;
+  }
   // Shared drain-and-close promise so a second close() called while the
   // first is still draining awaits the same completion instead of
   // resolving early (chatgpt-codex-connector P2: 'Wait for an

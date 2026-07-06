@@ -134,13 +134,16 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
         });
         confirmed += 1;
       }
-    } else {
-      // MinHash-only: no vectors for one or both nodes. Distinct lower
-      // confidence band (documented). Use a Jaccard gate well below the
+    } else if (!provider) {
+      // MinHash-only is the documented fallback for the NO-PROVIDER
+      // (local, deterministic) mode. When a provider IS configured we do
+      // NOT emit MinHash-only edges for pairs missing a vector — that
+      // would bypass the cosine confirmation path during partial / not-
+      // yet-indexed state. Such pairs are simply skipped; they will be
+      // cosine-confirmed once indexing completes (cursor Bugbot: 'MinHash
+      // edges with provider set'). Use a Jaccard gate well below the
       // cosine threshold — MinHash Jaccard for near-clones is typically
-      // 0.3-0.8; the cosine 0.92 gate would suppress almost all MinHash
-      // edges. The MINHASH_JACCARD_GATE is the documented floor for
-      // local (no-provider) SIMILAR_TO edges.
+      // 0.3-0.8; the MINHASH_JACCARD_GATE is the documented floor.
       if (c.jaccard >= MINHASH_JACCARD_GATE) {
         edges.push({
           srcQualifiedName: c.aQualifiedName,
@@ -151,6 +154,8 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
         minhashOnly += 1;
       }
     }
+    // else: provider configured but a vector is missing → skip (await
+    // indexing + cosine confirmation; do not bypass with MinHash-only).
   }
 
   // Stable sort: by confidence desc, then src qname, then dst qname.

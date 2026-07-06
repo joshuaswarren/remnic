@@ -22,10 +22,11 @@ import test from "node:test";
 
 import type { HostEmbeddingProvider } from "@remnic/core/host-embedding-provider";
 
-import { GraphStore } from "../graph-store.js";
+import { GraphStore, nodeIdFor } from "../graph-store.js";
 import type { StoreFileIR } from "../graph-store.js";
 import {
   indexSymbolVectors,
+  modelIdFor,
   computeSimilarTo,
   similarEdgesToEdgeIR,
   semanticQuery,
@@ -613,5 +614,109 @@ test("semanticQuery: duplicate qualified name still hydrates a snippet (by node 
   } finally {
     await cleanup();
   }
+});
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// MinHash-only edges are the documented NO-PROVIDER fallback. When a
+// provider IS configured, a pair missing a vector is skipped (await
+// cosine confirmation) instead of bypassing it with a MinHash-only edge
+// (cursor Bugbot: 'MinHash edges with provider set').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("SIMILAR_TO: provider set + missing vectors → no MinHash-only bypass", () => {
+  const body = "function compute(x, y) { const z = x + y; return z * 2 + x - y; }";
+  const bodies = new Map<string, { readonly qualifiedName: string; readonly body: string }>([
+    ["n1", { qualifiedName: "mod.a", body }],
+    ["n2", { qualifiedName: "mod.b", body }],
+  ]);
+
+  // Provider configured, no vectors → must NOT emit MinHash-only edges.
+  const withProvider = computeSimilarTo({
+    store: null as never,
+    provider: countingProvider(),
+    config: ENABLED_CONFIG,
+    bodies,
+    vectors: new Map<string, Float32Array>(),
+  });
+  assert.equal(withProvider.ok, true);
+  if (withProvider.ok) {
+    assert.equal(withProvider.minhashOnly, 0, "provider active → no MinHash-only bypass");
+    assert.equal(withProvider.edges.length, 0, "no edges when vectors missing and provider active");
+  }
+
+  // No provider → MinHash-only edges are the documented local fallback.
+  const noProvider = computeSimilarTo({
+    store: null as never,
+    provider: undefined,
+    config: ENABLED_CONFIG,
+    bodies,
+  });
+  assert.equal(noProvider.ok, true);
+  if (noProvider.ok) {
+    assert.ok(noProvider.minhashOnly >= 1, "no provider → MinHash-only edges emitted");
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Mismatched-dimensionality vectors are excluded from ranking. cosine over
+// the shorter length would otherwise give a misleading partial score to a
+// row from a different model size (cursor Bugbot: 'Mismatched embedding
+// lengths scored').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("semanticQuery: mismatched-dims vectors are excluded from ranking", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const src = "function a() { return 1; }\nfunction b() { return 2; }";
+    await writeFile(path.join(dir, "a.ts"), src);
+    const ir = makeFileIR("a.ts", [
+      { name: "a", qname: "mod.a", kind: "function", start: 0, end: 23 },
+      { name: "b", qname: "mod.b", kind: "function", start: 24, end: 47 },
+    ], src);
+    await store.upsertFileBatch([ir]);
+
+    const provider = countingProvider();
+    const modelId = modelIdFor(provider);
+    const idA = nodeIdFor({ qualifiedName: "mod.a", filePath: "a.ts", label: "function" });
+    const idB = nodeIdFor({ qualifiedName: "mod.b", filePath: "a.ts", label: "function" });
+    // a: dims=8 (matches the query provider); b: dims=4 (mismatched → excluded).
+    store.writeSymbolVector({ nodeId: idA, modelId, contentHash: "h".repeat(64), dims: 8, vector: new Float32Array(8) });
+    store.writeSymbolVector({ nodeId: idB, modelId, contentHash: "h".repeat(64), dims: 4, vector: new Float32Array(4) });
+
+    const r = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "a" });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      const names = r.hits.map((h) => h.qualifiedName);
+      assert.ok(names.includes("mod.a"), "matching-dims hit included");
+      assert.ok(!names.includes("mod.b"), "mismatched-dims hit excluded");
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Closed store is a distinct degradation code (rule 34), not an empty
+// graph that returns ok:true / no_vectors (cursor Bugbot: 'Closed store
+// reports success').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("closed store: indexSymbolVectors returns store_closed (not ok with zeros)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  await store.close();
+  const r = await indexSymbolVectors({ store, provider: countingProvider(), repoRoot: dir, config: ENABLED_CONFIG });
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.equal(r.code, "store_closed");
+  await cleanup();
+});
+
+test("closed store: semanticQuery returns store_closed (not no_vectors)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  await store.close();
+  const r = await semanticQuery({ store, provider: countingProvider(), repoRoot: dir, config: ENABLED_CONFIG, query: "x" });
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.equal(r.code, "store_closed");
+  await cleanup();
 });
 

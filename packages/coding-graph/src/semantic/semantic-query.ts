@@ -58,6 +58,12 @@ export const DEFAULT_SEMANTIC_QUERY_LIMIT = 10;
  */
 export async function semanticQuery(input: SemanticQueryInput): Promise<SemanticQueryOutcome> {
   const { store, provider, repoRoot, config, query, signal } = input;
+  // Closed store is a distinct degradation (rule 34) — do not treat it as
+  // an empty vectors table that returns 'no_vectors' (cursor Bugbot:
+  // 'Closed store reports success').
+  if (store.isClosed) {
+    return { ok: false, code: "store_closed" };
+  }
   if (!config.enabled) {
     return { ok: false, code: "semantic_disabled" };
   }
@@ -97,7 +103,14 @@ export async function semanticQuery(input: SemanticQueryInput): Promise<Semantic
   }
 
   const limit = Math.max(1, input.limit ?? DEFAULT_SEMANTIC_QUERY_LIMIT);
+  // Only score vectors whose dimensionality matches the query embedding.
+  // cosineSimilarity compares over the SHORTER length, so a row from a
+  // different model size would otherwise get a misleading partial-overlap
+  // score and rank incorrectly instead of being excluded (cursor Bugbot:
+  // 'Mismatched embedding lengths scored').
+  const queryDims = queryF32.length;
   const scored = rows
+    .filter((r) => r.dims === queryDims)
     .map((r) => ({
       nodeId: r.nodeId,
       qualifiedName: r.qualifiedName,
