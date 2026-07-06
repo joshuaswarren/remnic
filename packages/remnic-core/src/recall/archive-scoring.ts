@@ -246,6 +246,13 @@ class ArchiveScoringWorkerPool {
   async run(task: ScoreTask, abortSignal?: AbortSignal): Promise<ArchiveScoreResult[]> {
     if (this.terminated) throw new Error("archive-scoring pool terminated");
     const worker = await this.acquire();
+    // If the caller already aborted before we could dispatch, return the
+    // freshly-acquired worker to the idle pool instead of retiring it — it was
+    // never posted to, so terminating a healthy worker is wasteful (#1674).
+    if (abortSignal?.aborted) {
+      this.release(worker);
+      return [];
+    }
     let abandoned = false;
     try {
       return await this.dispatch(worker, task, abortSignal, () => {
@@ -307,6 +314,11 @@ class ArchiveScoringWorkerPool {
     // Inline eval mode — no file resolution needed. Works identically under
     // tsx (source), compiled dist (bundled chunks), and published npm packages.
     const worker = new Worker(WORKER_SOURCE, { eval: true });
+    // Unref so idle workers never keep the event loop alive — one-shot CLIs
+    // exit naturally after recall completes. During an active dispatch the
+    // DISPATCH_TIMEOUT_MS timer keeps the loop alive, so worker replies are
+    // always received before the process would consider exiting (#1674).
+    worker.unref();
     this.workers.push(worker);
     return worker;
   }
@@ -318,19 +330,14 @@ class ArchiveScoringWorkerPool {
     onAbandon: () => void
   ): Promise<ArchiveScoreResult[]> {
     return new Promise<ArchiveScoreResult[]>((resolve, reject) => {
-      if (abortSignal?.aborted) {
-        onAbandon();
-        resolve([]);
-        return;
-      }
       let settled = false;
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
         cleanup();
         onAbandon();
-        log.debug(`archive-scoring dispatch timed out after ${DISPATCH_TIMEOUT_MS}ms — worker retired`);
-        resolve([]);
+        log.debug(`archive-scoring dispatch timed out after ${DISPATCH_TIMEOUT_MS}ms — worker retired, falling back to sync scoring`);
+        reject(new Error(`archive-scoring dispatch timed out after ${DISPATCH_TIMEOUT_MS}ms`));
       }, DISPATCH_TIMEOUT_MS);
 
       const onMessage = (reply: ScoreReply) => {
@@ -423,6 +430,10 @@ export class OffThreadArchiveScoring implements ArchiveScoringStrategy {
         if (abortSignal?.aborted) return [];
         return results;
       } catch (err) {
+        // Timeout or worker error — fall back to sync scoring so recall
+        // quality is never silently dropped (a timed-out dispatch used to
+        // resolve with []). An already-aborted signal short-circuits first.
+        if (abortSignal?.aborted) return [];
         log.debug(`archive-scoring: worker dispatch failed, using sync fallback — ${(err as Error).message}`);
       }
     }
@@ -456,6 +467,23 @@ export function getDefaultArchiveScoring(): ArchiveScoringStrategy {
     defaultStrategy = new OffThreadArchiveScoring();
   }
   return defaultStrategy;
+}
+
+/**
+ * Dispose the process-wide default archive-scoring strategy, terminating any
+ * worker threads. Called from `Orchestrator.destroy()` so worker threads don't
+ * outlive the orchestrator (#1674). The strategy is lazily recreated on the
+ * next cold-fallback recall, so this is safe to call from tests that create
+ * and destroy orchestrator instances.
+ */
+export async function disposeDefaultArchiveScoring(): Promise<void> {
+  if (defaultStrategy !== null) {
+    const strategy = defaultStrategy;
+    defaultStrategy = null;
+    if (strategy instanceof OffThreadArchiveScoring) {
+      await strategy.terminate();
+    }
+  }
 }
 
 /**

@@ -438,7 +438,7 @@ import type {
   EntityStructuredSection,
   EntityTimelineEntry,
 } from "./types.js";
-import { getDefaultArchiveScoring, memoryFileToScoreItem, type ArchiveScoringStrategy } from "./recall/archive-scoring.js";
+import { disposeDefaultArchiveScoring, getDefaultArchiveScoring, memoryFileToScoreItem, type ArchiveScoringStrategy } from "./recall/archive-scoring.js";
 
 export interface BulkImportBatchIngestResult {
   attemptedTurnCount: number;
@@ -2115,6 +2115,9 @@ export class Orchestrator {
     if (this.conversationQmd && this.conversationQmd !== this.qmd) {
       await (this.conversationQmd as { dispose?: () => void | Promise<void> }).dispose?.();
     }
+    // Issue #1674: terminate archive-scoring worker threads on destroy.
+    await disposeDefaultArchiveScoring();
+    this._archiveScoring = null;
   }
 
   /** Set per-session workspace for the next recall() call (compaction reset). @internal */
