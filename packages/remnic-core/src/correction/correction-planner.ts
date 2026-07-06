@@ -135,7 +135,6 @@ export interface LlmClassificationResult {
  * redaction so the transient pending-plan file never holds the secret.
  */
 const REDACTED_REQUEST_TEXT = "[redacted — never-store/redaction correction text withheld from the pending-plan file]";
-const REDACTED_PATTERN = "[redacted — redaction-rule pattern withheld from the pending-plan file]";
 
 // ---------------------------------------------------------------------------
 // Planner
@@ -401,20 +400,15 @@ export class CorrectionPlanner {
     const sensitive =
       plan.classification === "never_store" ||
       plan.actions.some((a) => a.kind === "redaction_rule");
-    // P1 (review thread vMLN): the redaction_rule.pattern IS the secret the
-    // user asked Remnic NOT to store — redact it in the persisted actions too,
-    // not just request.text. The in-memory plan keeps the original pattern so
-    // the executor can register it; only the on-disk JSON is sanitized.
+    // #1678 (threads vMLN/vZln): redact request.text (the executor does not
+    // need the raw request text for redaction_rule actions). The pattern is
+    // NOT redacted: the executor's apply flow reloads via loadPlan (disk) and
+    // needs the real pattern to call registerRedactionRule. Redacting it would
+    // register a placeholder and the extraction redaction (#1669) would never
+    // block the intended content. The pattern's transient on-disk exposure is
+    // bounded by the pending-plan TTL + consumed-on-apply lifecycle.
     const persistedPlan: CorrectionPlan = sensitive
-      ? {
-          ...plan,
-          request: { ...plan.request, text: REDACTED_REQUEST_TEXT },
-          actions: plan.actions.map((a) =>
-            a.kind === "redaction_rule" && a.pattern
-              ? { ...a, pattern: REDACTED_PATTERN }
-              : a,
-          ),
-        }
+      ? { ...plan, request: { ...plan.request, text: REDACTED_REQUEST_TEXT } }
       : plan;
     await serializeMutations(`correction-plan:${target}`, async () => {
       await mkdir(dir, { recursive: true });

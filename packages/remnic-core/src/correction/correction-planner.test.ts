@@ -472,13 +472,16 @@ test("#1678: never_store plan redacts the request text in the persisted pending-
     const filePath = path.join(dir, "state", "corrections", "pending", `${plan.planId}.json`);
     const raw = await readFile(filePath, "utf-8");
     assert.ok(!raw.includes("sk-secret-DO-NOT-STORE"),
-      "the persisted pending-plan file must NOT contain the never-store secret");
+      "the persisted pending-plan file must NOT contain the never-store secret (request.text is redacted)");
     assert.ok(raw.includes("redacted"),
       "the persisted request text must be the redaction placeholder");
-    // P1 (review thread vMLN): the redaction_rule.pattern IS the secret — it
-    // must also be redacted in the persisted actions, not just request.text.
-    assert.ok(!raw.includes("sk-secret-\\d"),
-      "the persisted redaction_rule.pattern must NOT contain the original pattern");
+    // The redaction_rule.pattern is NOT redacted on disk: the executor's apply
+    // flow reloads via loadPlan and needs the real pattern to call
+    // registerRedactionRule. Redacting it would register a placeholder (#vZln).
+    // The pattern's transient exposure is bounded by the pending-plan TTL +
+    // consumed-on-apply lifecycle.
+    assert.ok(raw.includes("sk-secret"),
+      "the redaction_rule.pattern survives on disk for the apply flow (bounded by pending-plan TTL)");
 
     // loadPlan reads from disk → the reloaded plan has the redacted text.
     const reloaded = await planner.loadPlan("default", plan.planId);
