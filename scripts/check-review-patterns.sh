@@ -3,7 +3,7 @@
 # Codex, CodeQL) repeatedly flagged across PRs #343-#408 (700+ review comments).
 # Run this before pushing. Zero exit = clean.
 # Updated: 2026-04-12 (added checks 7-10 from iteration 2, 11-14 from iteration 3, 15-17 from iteration 4, 18-21 from iteration 5, 22-23 from iteration 7, 24-26 from iteration 8, 27-29 from iteration 10, 30-34 from iteration 12).
-# 2026-07-06: added check 35 (rule 27 slice-guard, WARN) + check 36 (rule 26 cross-package imports, BLOCKING).
+# 2026-07-06: added check 37 (rule 53 ad-hoc status exclusion, WARN). Graduated rules 36 (→check #19), 46 (→check #26), 53 (→check #37).
 # 2026-07-05: check 15 graduated to BLOCKING + added codex-* prefix + maxdepth-1 scope (rule 31, PR #TBD).
 set -euo pipefail
 
@@ -869,6 +869,38 @@ if [[ -n "$CROSS_PKG_IMPORTS" ]]; then
     fail "$line — cross-package relative import (rule 26). Use import from \"@remnic/core\" instead."
   done <<< "$CROSS_PKG_IMPORTS"
 fi
+
+# ---- 37. Ad-hoc non-active status exclusion (CLAUDE.md rule 53) ----
+echo "[check] Ad-hoc non-active status exclusion lists..."
+
+# Rule 53: code that enumerates 2+ non-active status string literals
+# (superseded, archived, quarantined, rejected, forgotten, pending_review)
+# as an exclusion list without referencing ACTIVE_STATUSES is fragile —
+# adding a new status means every such site must be updated individually.
+# Use the shared ACTIVE_STATUSES set from contradiction-scan.ts instead.
+# WARN-level — existing sites need migration to ACTIVE_STATUSES over time.
+ADHOC_STATUS=$(grep -rnE '(status|frontmatter\.status)\s*(===|!==)\s*"(superseded|archived|quarantined|rejected|forgotten|pending_review)"' \
+  --include="*.ts" \
+  packages/remnic-core/src/ packages/remnic-cli/src/ \
+  2>/dev/null \
+  | grep -v node_modules \
+  | grep -v dist \
+  | grep -v ".test." \
+  | grep -v ACTIVE_STATUSES \
+  || true)
+
+# Only flag files that have 2+ such comparisons (the "enumeration" pattern)
+if [[ -n "$ADHOC_STATUS" ]]; then
+  ADHOC_FILES=$(echo "$ADHOC_STATUS" | cut -d: -f1 | sort | uniq -c | sort -rn | awk '$1 >= 2 {print $2}')
+  if [[ -n "$ADHOC_FILES" ]]; then
+    while IFS= read -r f; do
+      MATCHES=$(echo "$ADHOC_STATUS" | grep "^${f}:" | head -5)
+      warn "$f — enumerates 2+ non-active status literals without ACTIVE_STATUSES (rule 53). Use the shared set from contradiction-scan.ts."
+      echo "$MATCHES" | sed 's/^/    /'
+    done <<< "$ADHOC_FILES"
+  fi
+fi
+
 
 if [[ $ERRORS -gt 0 ]]; then
   echo "[check] FAILED — $ERRORS issue(s) found. Fix before pushing."
