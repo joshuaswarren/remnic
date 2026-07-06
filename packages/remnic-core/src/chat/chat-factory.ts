@@ -10,7 +10,6 @@ import type { EngramAccessService } from "../access-service.js";
 import type { FallbackLlmClient } from "../fallback-llm.js";
 import type { LocalLlmClient } from "../local-llm.js";
 import type { ChatConfig, ChatTurnResult } from "./chat-types.js";
-import type { ChatEngine } from "./chat-engine.js";
 import { ChatEngine } from "./chat-engine.js";
 import { createProductionChatLlmAdapter } from "./chat-llm.js";
 import { createChatExecutor } from "./chat-executor.js";

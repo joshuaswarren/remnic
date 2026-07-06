@@ -21,6 +21,7 @@ import {
   appendTranscriptEntry,
   sessionBelongsToPrincipal,
   chatSessionFile,
+  cleanupExpiredChatSessions,
 } from "./chat-session.js";
 import type { ChatSessionState } from "./chat-types.js";
 import type { ChatToolExecutor } from "./chat-engine.js";
@@ -233,7 +234,6 @@ test("loadChatSession round-trips transcript entries", async () => {
 // ---------------------------------------------------------------------------
 
 test("cleanupExpiredChatSessions removes old sessions", async () => {
-  const { cleanupExpiredChatSessions } = await import("./chat-session.js");
   const dir = await makeTempDir();
   await createChatSession(dir, { principal: "test" });
 
