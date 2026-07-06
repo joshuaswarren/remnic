@@ -82,11 +82,34 @@ export function effectiveInvalidAt(
 export function isValidAsOf(
   fm: Pick<
     MemoryFrontmatter,
-    "valid_at" | "invalid_at" | "created" | "supersededAt" | "status"
+    | "valid_at"
+    | "invalid_at"
+    | "created"
+    | "supersededAt"
+    | "status"
+    | "eventTimeSource"
   >,
   asOfMs: number,
 ): boolean {
   if (!Number.isFinite(asOfMs)) return true;
+  // Open-start bi-temporal interval (#1578 r3): an extracted end-only bound
+  // (eventTimeSource "extracted", no valid_at, has invalid_at) is true from
+  // the indefinite past. Without this, effectiveValidAt falls back to
+  // `created` and a historical as_of before ingestion hides a fact that was
+  // actually true up until invalid_at (chatgpt-codex thread on
+  // orchestrator.ts:15533). Gated on eventTimeSource so legacy memories
+  // (no bi-temporal provenance) keep the created-anchor fallback.
+  const explicitValidAt = fm.valid_at?.trim();
+  if (
+    (!explicitValidAt || explicitValidAt.length === 0) &&
+    fm.eventTimeSource === "extracted"
+  ) {
+    const invalidAt = effectiveInvalidAt(fm);
+    if (invalidAt !== undefined) {
+      const invalidAtMs = Date.parse(invalidAt);
+      if (Number.isFinite(invalidAtMs)) return invalidAtMs > asOfMs;
+    }
+  }
   const validAtMs = Date.parse(effectiveValidAt(fm));
   if (!Number.isFinite(validAtMs)) return false;
   if (validAtMs > asOfMs) return false;

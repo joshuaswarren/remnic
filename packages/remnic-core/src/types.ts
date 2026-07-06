@@ -810,8 +810,9 @@ export interface PluginConfig {
    * Turn on to exclude validity-expired facts from default injection
    * candidates (they remain findable by explicit search and `as_of`
    * queries). Storage round-trips `observedAt`/`eventTimeSource`; the
-   * extraction prompt → `resolveEventTime` write-time wiring lands in a
-   * follow-on PR, so new extractions are not yet event-time-resolved.
+   * extraction prompt emits an optional per-fact `eventTime` expression
+   * and `resolveFactEventTime` resolves it against the source turn
+   * timestamp at write time (#1578 PR2).
    */
   temporalBiTemporal: boolean;
   /**
@@ -2920,6 +2921,15 @@ export interface ExtractedFact {
    * walked through. Persisted under reasoning-traces/.
    */
   reasoningTrace?: ExtractedReasoningTrace;
+  /**
+   * Optional event-time expression for bi-temporal validity (#1578 PR2).
+   * Verbatim temporal anchor extracted from the conversation ("2025-03-01",
+   * "last March", "since 2024", "until 2025-06-01"). Resolved against the
+   * source turn timestamp at write time by `resolveFactEventTime` — never
+   * re-resolved at read. Absent when the fact carries no temporal anchor or
+   * when `temporal.biTemporal` is off.
+   */
+  eventTime?: string;
 }
 
 export interface ExtractedReasoningTraceStep {
