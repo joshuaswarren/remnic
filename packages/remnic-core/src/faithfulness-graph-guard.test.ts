@@ -25,6 +25,8 @@ import { Orchestrator } from "./orchestrator.js";
 import { readEdges } from "./graph.js";
 import type { ExtractionResult, PluginConfig } from "./types.js";
 import type { LocalLlmClient } from "./local-llm.js";
+import type { BufferTurn } from "./types.js";
+import type { ConversationThread } from "./threading.js";
 
 /**
  * Stub local LLM whose `chatCompletion` only answers faithfulness-gate calls
@@ -42,15 +44,20 @@ function faithfulnessStubLocalLlm(
     ) => {
       if (options.operation !== "extraction-faithfulness") return null;
       const userMsg = messages.find((m) => m.role === "user");
-      // The prompt emits `FACT: "<text>"` — fact text never contains a raw
-      // double-quote, so capture up to the closing quote.
-      const match = userMsg?.content.match(/FACT: "([^"]*)"/);
-      const factContent = match ? (match[1] ?? "") : "";
-      const verdict = verdictForFactContent(factContent);
+      // The batch prompt emits one `FACT: "<text>"` line per fact, each
+      // followed by `Respond with the JSON array entry for index <i>`. The
+      // gate maps verdicts back to facts by that index, so return one entry
+      // per fact in prompt order. (Single-fact callers still get one entry.)
+      const factMatches = [...(userMsg?.content ?? "").matchAll(/FACT: "([^"]*)"/g)];
+      const entries = factMatches.map((m, i) => ({
+        index: i,
+        verdict: verdictForFactContent(m[1] ?? ""),
+        rationale: "stub verdict",
+      }));
       return {
-        content: JSON.stringify([
-          { index: 0, verdict, rationale: "stub verdict" },
-        ]),
+        content: JSON.stringify(
+          entries.length > 0 ? entries : [{ index: 0, verdict: "entailed" as const, rationale: "stub" }],
+        ),
       };
     },
   } as unknown as LocalLlmClient;
@@ -245,6 +252,206 @@ test("pending_review fact gets no graph edge; an active fact with the same entit
     assert.ok(
       !edgesAfter2.some((e) => e.from.includes(id1!)),
       "pending_review fact1 must never originate an entity edge even after a later active fact",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+
+/**
+ * Thread-enabled harness for issue #1635: time + causal graph ON (so
+ * thread-predecessor edges are built), faithfulness gate in enforce mode.
+ * Entity graph is left OFF to isolate the thread-episode predecessor
+ * mechanism (entity-sibling edges are a separate, out-of-scope path).
+ */
+async function makeThreadHarness(): Promise<OrchHarness> {
+  const memoryDir = await mkdtemp(
+    path.join(os.tmpdir(), "remnic-faithfulness-thread-"),
+  );
+  const config: PluginConfig = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    multiGraphMemoryEnabled: true,
+    entityGraphEnabled: false,
+    timeGraphEnabled: true,
+    causalGraphEnabled: true,
+    extractionFaithfulnessGate: "enforce",
+    extractionFaithfulnessContextChars: 400,
+    extractionFaithfulnessTimeoutMs: 2000,
+    extractionJudgeEnabled: false,
+    temporalSupersessionEnabled: false,
+    contradictionDetectionEnabled: false,
+    chunkingEnabled: false,
+    embeddingFallbackEnabled: false,
+    qmdEnabled: false,
+    extractionMinChars: 0,
+    extractionMinImportanceLevel: "trivial",
+    inlineSourceAttributionEnabled: false,
+  });
+  const orchestrator = new Orchestrator(config);
+  return { orchestrator, memoryDir };
+}
+
+/** ExtractionResult with two facts (order preserved by the persist loop). */
+function twoFactResult(
+  contentA: string,
+  entityRefA: string,
+  contentB: string,
+  entityRefB: string,
+): ExtractionResult {
+  return {
+    facts: [
+      { content: contentA, category: "fact", tags: [], confidence: 0.9, entityRef: entityRefA },
+      { content: contentB, category: "fact", tags: [], confidence: 0.9, entityRef: entityRefB },
+    ],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  } as unknown as ExtractionResult;
+}
+
+interface StorageLike {
+  ensureDirectories: () => Promise<void>;
+  dir: string;
+  readAllMemories: () => Promise<
+    Array<{ path: string; frontmatter: { id: string; status?: string } }>
+  >;
+}
+
+interface PersistExtractionSig {
+  (
+    r: ExtractionResult,
+    s: unknown,
+    t: string | null,
+    ctx: unknown,
+    bn: unknown,
+    plan: unknown,
+    src: string,
+  ): Promise<string[]>;
+}
+
+test("pending_review id must NOT enter persisted thread episodes across a cross-flush (#1635)", async () => {
+  const { orchestrator, memoryDir } = await makeThreadHarness();
+  try {
+    // fact content containing "closed permanently" → unsupported → pending_review.
+    (orchestrator as unknown as { localLlm: LocalLlmClient }).localLlm =
+      faithfulnessStubLocalLlm((c) =>
+        c.includes("closed permanently") ? "unsupported" : "entailed",
+      );
+
+    const getStorage = orchestrator as unknown as {
+      getStorage: (ns: string) => Promise<StorageLike>;
+    };
+    const storage = await getStorage.getStorage("default");
+    await storage.ensureDirectories();
+
+    // Establish a real thread (mirrors runExtraction's processTurn step) so
+    // appendEpisodeIds has a thread file to write episode ids into.
+    const threading = orchestrator as unknown as {
+      threading: {
+        processTurn: (turn: BufferTurn, ids: string[]) => Promise<string>;
+        loadThread: (id: string) => Promise<ConversationThread | null>;
+      };
+    };
+    const seedTurn: BufferTurn = {
+      role: "user",
+      content: "Tell me about the widget factory.",
+      timestamp: "2026-07-06T10:00:00.000Z",
+      sessionKey: "agent:test:main",
+    };
+    const threadId = await threading.threading.processTurn(seedTurn, []);
+    assert.ok(threadId, "thread established via processTurn");
+
+    const persist = orchestrator as unknown as {
+      persistExtraction: PersistExtractionSig;
+      appendPersistedThreadEpisodes: (
+        threadId: string,
+        persistedIds: string[],
+      ) => Promise<void>;
+    };
+
+    const sourceText =
+      "The widget factory reopened this quarter after being closed permanently last year.";
+
+    // --- Flush 1: an active fact + a pending_review fact, same thread ---
+    const flush1 = await persist.persistExtraction(
+      twoFactResult(
+        "The widget factory reopened this quarter.", "wf-active",
+        "The widget factory closed permanently last year.", "wf-pending",
+      ),
+      storage,
+      threadId,
+      { sessionKey: "agent:test:main", principal: "test" },
+      undefined,
+      null,
+      sourceText,
+    );
+    const [activeId1, pendingId] = flush1;
+    assert.ok(activeId1, "flush1 active fact persisted");
+    assert.ok(pendingId, "flush1 pending_review fact persisted");
+
+    // runExtraction's append step (the real helper; filters pending_review).
+    await persist.appendPersistedThreadEpisodes(threadId, flush1);
+
+    // PART (a): the thread FILE must hold the active id but NOT the pending id.
+    const threadAfter1 = await threading.threading.loadThread(threadId);
+    assert.ok(threadAfter1, "thread file readable after flush 1");
+    assert.ok(
+      threadAfter1!.episodeIds.includes(activeId1),
+      "active fact id is in persisted thread episodes",
+    );
+    assert.ok(
+      !threadAfter1!.episodeIds.includes(pendingId),
+      "pending_review id must NOT enter persisted thread episodes (#1635)",
+    );
+
+    // The pending fact IS durable (with status pending_review) — proves the
+    // gate routed it correctly; the guard is about its absence from the thread.
+    const memsAfter1 = await storage.readAllMemories();
+    const pendingMem = memsAfter1.find((m) => m.frontmatter.id === pendingId);
+    assert.ok(pendingMem, "pending_review fact is durable");
+    assert.equal(
+      pendingMem!.frontmatter.status,
+      "pending_review",
+      "unsupported fact is pending_review under enforce",
+    );
+
+    // --- Flush 2: an active fact in the SAME thread ---
+    const flush2 = await persist.persistExtraction(
+      factResult("The widget factory hired ten new engineers.", "wf-active"),
+      storage,
+      threadId,
+      { sessionKey: "agent:test:main", principal: "test" },
+      undefined,
+      null,
+      sourceText,
+    );
+    const activeId2 = flush2[0];
+    assert.ok(activeId2, "flush2 active fact persisted");
+    await persist.appendPersistedThreadEpisodes(threadId, flush2);
+
+    // PART (a)+(b): no predecessor edge may reference the pending fact. Under
+    // the bug, flush 1 would have appended pendingId to the thread file, flush
+    // 2's loadThread would re-seed it into threadEpisodeIdsForGraph, and the
+    // active fact2 would build a time/causal predecessor edge to it.
+    const pendingPath = path.relative(memoryDir, pendingMem!.path);
+    for (const gtype of ["time", "causal"] as const) {
+      const edges = await readEdges(memoryDir, gtype);
+      assert.ok(
+        !edges.some((e) => e.from === pendingPath || e.to === pendingPath),
+        `no ${gtype} edge references the pending_review fact path (${pendingPath}); got ${edges.length} edges`,
+      );
+    }
+
+    // Control: the graph + threading are wired — the active fact2 builds a
+    // time predecessor edge to the active fact1 (which IS in the thread file).
+    const timeEdges = await readEdges(memoryDir, "time");
+    assert.ok(
+      timeEdges.length > 0,
+      "active fact2 builds a time predecessor edge (control: graph+threading wired)",
     );
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

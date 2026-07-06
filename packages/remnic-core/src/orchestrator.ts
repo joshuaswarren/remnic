@@ -1722,8 +1722,28 @@ export function resolveRecentThreadMemoryPaths(options: {
     buildMemoryPathById(options.allMemsForGraph, options.storageDir);
   if (pathById.size === 0) return [];
 
+  // #1635 (defensive): never resolve a thread-predecessor path to a
+  // pending_review memory, even if a legacy/pre-existing thread episode set
+  // still references one. The append boundary (appendPersistedThreadEpisodes)
+  // keeps new pending ids out of the thread file; this guards reads of any
+  // episode set that predates that fix. Built lazily — the common case (no
+  // pending_review memories) allocates nothing.
+  let pendingReviewIds: Set<string> | null = null;
+  if (Array.isArray(options.allMemsForGraph)) {
+    for (const mem of options.allMemsForGraph) {
+      if (
+        mem.frontmatter.status === "pending_review" &&
+        typeof mem.frontmatter.id === "string"
+      ) {
+        if (!pendingReviewIds) pendingReviewIds = new Set<string>();
+        pendingReviewIds.add(mem.frontmatter.id);
+      }
+    }
+  }
+
   return options.threadEpisodeIds
     .filter((id) => id !== options.currentMemoryId)
+    .filter((id) => !pendingReviewIds || !pendingReviewIds.has(id))
     .slice(-maxRecent)
     .map((id) => pathById.get(id))
     .filter((p): p is string => typeof p === "string" && p.length > 0);
@@ -1849,6 +1869,13 @@ export class Orchestrator {
    * callers already destructure `persistedIds` by position.
    */
   private lastPersistExtractionDeferredCount: number = 0;
+  /**
+   * Side-channel (#1635): persisted fact ids routed to pending_review by the
+   * faithfulness gate in the most recent `persistExtraction` call. runExtraction
+   * reads this to exclude them from `appendEpisodeIds` so they never enter the
+   * thread file and re-seed predecessor edges on the next extraction.
+   */
+  private lastPersistExtractionPendingReviewIds: string[] = [];
   private readonly _fastGatewayLlm: FallbackLlmClient | null;
 
   get fastGatewayLlm(): FallbackLlmClient | null {
@@ -13423,23 +13450,18 @@ export class Orchestrator {
     }
 
     // Batch-append persisted IDs so non-fact memories (entities/questions) are
-    // always attached to the thread.
+    // always attached to the thread. Pending_review fact ids (#1635) are
+    // excluded inside the helper so they never enter the thread file and
+    // re-seed predecessor edges on the next extraction in this thread.
     if (
       this.config.threadingEnabled &&
       threadIdForExtraction &&
       persistedIds.length > 0
     ) {
-      try {
-        await this.threading.appendEpisodeIds(
-          threadIdForExtraction,
-          persistedIds,
-        );
-      } catch (err) {
-        log.warn(
-          "[threading] appendEpisodeIds failed after persistence (non-fatal)",
-          err,
-        );
-      }
+      await this.appendPersistedThreadEpisodes(
+        threadIdForExtraction,
+        persistedIds,
+      );
     }
 
     // Thread title update for the already-established thread context.
@@ -13793,9 +13815,11 @@ export class Orchestrator {
       // to avoid a maintenance hazard where the two guard paths could diverge.
       return attachCitation(content, citationContext, citationTemplate);
     };
-    const supersessionOrderingAt = (validAt?: string): string =>
-      validAt && validAt.length > 0 ? validAt : new Date().toISOString();
     const persistedIds: string[] = [];
+    // #1635: persisted fact ids routed to pending_review by the faithfulness
+    // gate. Surfaced to runExtraction via lastPersistExtractionPendingReviewIds
+    // so they can be excluded from the thread episode set (appendEpisodeIds).
+    const pendingReviewPersistedIds: string[] = [];
     const persistedIdsByStorage = new Map<
       string,
       { storage: StorageManager; ids: string[] }
@@ -13803,10 +13827,18 @@ export class Orchestrator {
     const trackPersistedId = (
       targetStorage: StorageManager,
       id: string,
-      options: { includeReturnedIds?: boolean } = {},
+      options: {
+        includeReturnedIds?: boolean;
+        /** Mark this id as a pending_review fact (#1635) so it is kept out of
+         * the persisted thread episode set. */
+        pendingReview?: boolean;
+      } = {},
     ): void => {
       if (options.includeReturnedIds !== false) {
         persistedIds.push(id);
+      }
+      if (options.pendingReview) {
+        pendingReviewPersistedIds.push(id);
       }
       const key = targetStorage.dir;
       const existing = persistedIdsByStorage.get(key);
@@ -15309,7 +15341,9 @@ export class Orchestrator {
           log.debug(
             `chunked memory ${parentId} into ${chunkResult.chunks.length} chunks`,
           );
-          trackPersistedId(targetStorage, parentId);
+          trackPersistedId(targetStorage, parentId, {
+            pendingReview: faithfulnessEnforceStatus === "pending_review",
+          });
           // #1576 (cursor Medium): keep pending_review ids out of threadEpisodeIdsForGraph — else later active facts build thread-predecessor edges to an unfaithful memory.
           if (
             faithfulnessEnforceStatus !== "pending_review" &&
@@ -15595,8 +15629,9 @@ export class Orchestrator {
             source: "extraction",
           }),
         );
-        trackPersistedId(targetStorage, memoryId);
-        // #1576 (cursor Medium): same thread-episode guard on the non-chunked path.
+        trackPersistedId(targetStorage, memoryId, {
+          pendingReview: faithfulnessEnforceStatus === "pending_review",
+        });
         if (
           faithfulnessEnforceStatus !== "pending_review" &&
           threadEpisodeIdsForGraph &&
@@ -15906,8 +15941,43 @@ export class Orchestrator {
       log.debug(`temporal-index update error (non-fatal): ${err}`),
     );
 
+    // #1635: surface pending_review fact ids to runExtraction so they can be
+    // excluded from the thread episode set (appendEpisodeIds). Without this,
+    // pending ids persist into the thread file and re-seed threadEpisodeIdsForGraph
+    // on the next extraction in the same thread, building predecessor edges to
+    // unfaithful memories.
+    this.lastPersistExtractionPendingReviewIds = pendingReviewPersistedIds;
     // Return the persisted fact IDs for threading
     return persistedIds;
+  }
+  /**
+   * Append this extraction's persisted ids to the thread's episode set,
+   * EXCLUDING any pending_review fact ids (issue #1635). A pending_review
+   * memory is an unfaithful extraction awaiting review; persisting its id into
+   * the thread file would re-seed `threadEpisodeIdsForGraph` (via `loadThread`)
+   * on the next extraction in the same thread and build time/causal predecessor
+   * edges to an unfaithful memory. The pending set is surfaced from
+   * `persistExtraction` via `lastPersistExtractionPendingReviewIds`. Fail-open
+   * like the raw `appendEpisodeIds` call it replaces.
+   */
+  private async appendPersistedThreadEpisodes(
+    threadId: string,
+    persistedIds: string[],
+  ): Promise<void> {
+    const pendingReviewIds = this.lastPersistExtractionPendingReviewIds;
+    const episodeIds =
+      pendingReviewIds.length > 0
+        ? persistedIds.filter((id) => !pendingReviewIds.includes(id))
+        : persistedIds;
+    if (episodeIds.length === 0) return;
+    try {
+      await this.threading.appendEpisodeIds(threadId, episodeIds);
+    } catch (err) {
+      log.warn(
+        "[threading] appendEpisodeIds failed after persistence (non-fatal)",
+        err,
+      );
+    }
   }
 
   private async indexPersistedMemory(
