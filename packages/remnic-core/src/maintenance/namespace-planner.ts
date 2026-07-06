@@ -9,6 +9,7 @@ import { namespaceIdentityToken } from "../namespaces/identity.js";
 import { resolveNamespaceStorageRoot } from "../namespaces/storage.js";
 import { displayErrorDetail } from "../runtime/better-sqlite.js";
 import type { PluginConfig } from "../types.js";
+import { getConfiguredNamespaces } from "../scopes/scope-plan.js";
 
 export type NamespaceMaintenanceJobName = string;
 
@@ -110,15 +111,7 @@ export function __setNamespaceMaintenanceFsForTest(overrides: Partial<typeof nam
   };
 }
 
-function configuredNamespaces(config: PluginConfig): string[] {
-  return Array.from(
-    new Set(
-      [config.defaultNamespace, config.sharedNamespace, ...config.namespacePolicies.map((policy) => policy.name)]
-        .map((value) => value.trim())
-        .filter(Boolean)
-    )
-  );
-}
+
 
 function inferConfiguredKind(config: PluginConfig, namespace: string): NamespaceKind {
   if (namespace === config.defaultNamespace.trim()) return "default";
@@ -219,7 +212,7 @@ export async function planNamespaceMaintenance(
   // once per configured name. The #1500 contract is "namespaces disabled:
   // maintain the current default storage only," so collapse to the default.
   const configured = config.namespacesEnabled
-    ? configuredNamespaces(config)
+    ? getConfiguredNamespaces(config)
     : [config.defaultNamespace.trim()].filter(Boolean);
   const byNamespace = new Map<string, NamespaceMaintenanceCandidate>();
   const skipped: NamespaceMaintenanceSkippedNamespace[] = [];

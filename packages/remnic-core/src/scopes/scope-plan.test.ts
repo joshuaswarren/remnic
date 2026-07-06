@@ -21,7 +21,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { resolveScopePlan } from "./scope-plan.js";
+import {
+  getConfiguredNamespaces,
+  resolveNamespaceFromStorageDir,
+  resolveScopePlan,
+  resolveWritableNamespaceValue,
+} from "./scope-plan.js";
 import {
   combineNamespaces,
   lcmSessionKeyForNamespace,
@@ -357,4 +362,166 @@ test("scope-plan: LCM session ids match lcmSessionKeyForNamespace encoding", () 
     (ns) => lcmSessionKeyForNamespace(ns, "alice:sess-1", "default") ?? "alice:sess-1",
   );
   assert.deepEqual([...plan.lcmReadSessionIds], expected);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Fitness tests: centralized namespace-resolution helpers (#1521 step 3–4)
+//
+// These pin the three pure helpers that replace the ad-hoc resolution scattered
+// across orchestrator.ts and access-service.ts. They MUST match the pre-migration
+// behavior byte-for-byte (the snapshots were derived from the original inline
+// implementations).
+// ──────────────────────────────────────────────────────────────────────────
+
+test("getConfiguredNamespaces: default + shared + policies, trimmed and deduped", () => {
+  const config = baseConfig({
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [
+      { name: "team-a", readPrincipals: ["*"], writePrincipals: ["*"] },
+      { name: "team-b", readPrincipals: ["*"], writePrincipals: ["*"] },
+    ],
+  });
+  const ns = getConfiguredNamespaces(config);
+  assert.deepEqual(ns, ["default", "shared", "team-a", "team-b"]);
+});
+
+test("getConfiguredNamespaces: trims whitespace and drops empty", () => {
+  const config = baseConfig({
+    defaultNamespace: "  default  ",
+    sharedNamespace: "",
+    namespacePolicies: [
+      { name: "team-a ", readPrincipals: ["*"], writePrincipals: ["*"] },
+    ],
+  });
+  const ns = getConfiguredNamespaces(config);
+  assert.deepEqual(ns, ["default", "team-a"]);
+});
+
+test("getConfiguredNamespaces: deduplicates identical names", () => {
+  const config = baseConfig({
+    defaultNamespace: "default",
+    sharedNamespace: "default",
+    namespacePolicies: [
+      { name: "default", readPrincipals: ["*"], writePrincipals: ["*"] },
+    ],
+  });
+  const ns = getConfiguredNamespaces(config);
+  assert.deepEqual(ns, ["default"]);
+});
+
+// ── resolveNamespaceFromStorageDir ──────────────────────────────────────────
+
+test("resolveNamespaceFromStorageDir: namespaces disabled → always default", () => {
+  const config = baseConfig({ namespacesEnabled: false });
+  const ns = resolveNamespaceFromStorageDir("/some/path/namespaces/team-a", {
+    config,
+    configuredNamespaces: getConfiguredNamespaces(config),
+  });
+  assert.equal(ns, "default");
+});
+
+test("resolveNamespaceFromStorageDir: memory root → default", () => {
+  const config = baseConfig({ memoryDir: "/data/memory" });
+  const ns = resolveNamespaceFromStorageDir("/data/memory", {
+    config,
+    configuredNamespaces: getConfiguredNamespaces(config),
+  });
+  assert.equal(ns, "default");
+});
+
+test("resolveNamespaceFromStorageDir: configured namespace dir → that namespace", () => {
+  const config = baseConfig({
+    memoryDir: "/data/memory",
+    namespacePolicies: [
+      { name: "team-a", readPrincipals: ["*"], writePrincipals: ["*"] },
+    ],
+  });
+  const ns = resolveNamespaceFromStorageDir("/data/memory/namespaces/team-a", {
+    config,
+    configuredNamespaces: getConfiguredNamespaces(config),
+  });
+  assert.equal(ns, "team-a");
+});
+
+test("resolveNamespaceFromStorageDir: tokenized dir → decoded namespace", () => {
+  const config = baseConfig({ memoryDir: "/data/memory" });
+  // "alpha" tokenizes to ns-616c706861
+  const ns = resolveNamespaceFromStorageDir("/data/memory/namespaces/ns-616c706861", {
+    config,
+    configuredNamespaces: getConfiguredNamespaces(config),
+  });
+  assert.equal(ns, "alpha");
+});
+
+test("resolveNamespaceFromStorageDir: unknown dir → literal dir name", () => {
+  const config = baseConfig({ memoryDir: "/data/memory" });
+  const ns = resolveNamespaceFromStorageDir("/data/memory/namespaces/custom-ns", {
+    config,
+    configuredNamespaces: getConfiguredNamespaces(config),
+  });
+  assert.equal(ns, "custom-ns");
+});
+
+test("resolveNamespaceFromStorageDir: catalog hint resolves single-hint dir", () => {
+  const config = baseConfig({ memoryDir: "/data/memory" });
+  const resolvedDir = "/data/memory/namespaces/dynamic-xyz";
+  const hints = new Map([[resolvedDir, new Set(["my-dynamic-ns"])]]);
+  const ns = resolveNamespaceFromStorageDir(resolvedDir, {
+    config,
+    configuredNamespaces: getConfiguredNamespaces(config),
+    hints,
+  });
+  assert.equal(ns, "my-dynamic-ns");
+});
+
+// ── resolveWritableNamespaceValue ───────────────────────────────────────────
+
+test("resolveWritableNamespaceValue: undefined namespace → default, ok", () => {
+  const config = baseConfig();
+  const result = resolveWritableNamespaceValue(undefined, "sess-1", undefined, config);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.namespace, "default");
+});
+
+test("resolveWritableNamespaceValue: explicit namespace, writable principal → ok", () => {
+  const config = baseConfig({
+    namespacePolicies: [
+      { name: "team-a", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+  });
+  const result = resolveWritableNamespaceValue("team-a", "alice:sess-1", "alice", config);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.namespace, "team-a");
+});
+
+test("resolveWritableNamespaceValue: explicit namespace, non-writable principal → not_writable", () => {
+  const config = baseConfig({
+    namespacePolicies: [
+      { name: "team-a", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+  });
+  const result = resolveWritableNamespaceValue("team-a", "bob:sess-1", "bob", config);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "not_writable");
+    assert.equal(result.namespace, "team-a");
+  }
+});
+
+test("resolveWritableNamespaceValue: non-default namespace with namespaces disabled → unsupported", () => {
+  const config = baseConfig({ namespacesEnabled: false });
+  const result = resolveWritableNamespaceValue("custom-ns", "sess-1", undefined, config);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.reason, "unsupported");
+    assert.equal(result.namespace, "custom-ns");
+  }
+});
+
+test("resolveWritableNamespaceValue: namespaces disabled, default namespace → ok", () => {
+  const config = baseConfig({ namespacesEnabled: false });
+  const result = resolveWritableNamespaceValue("default", "sess-1", undefined, config);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.equal(result.namespace, "default");
 });

@@ -342,7 +342,11 @@ import {
   recallNamespacesForPrincipal,
   resolvePrincipal,
 } from "./namespaces/principal.js";
-import { resolveScopePlan } from "./scopes/scope-plan.js";
+import {
+  getConfiguredNamespaces,
+  resolveNamespaceFromStorageDir,
+  resolveScopePlan,
+} from "./scopes/scope-plan.js";
 import {
   expandScopeProfileReadNamespaces,
   resolveScopeProfilePlan,
@@ -2317,18 +2321,11 @@ export class Orchestrator {
     return this.storageRouter.storageFor(ns);
   }
 
-  private configuredNamespaces(): string[] {
-    return Array.from(
-      new Set(
-        [
-          this.config.defaultNamespace,
-          this.config.sharedNamespace,
-          ...this.config.namespacePolicies.map((policy) => policy.name),
-        ]
-          .map((value) => value.trim())
-          .filter(Boolean),
-      ),
-    );
+  private configuredNamespaceList(): string[] {
+    // #1521: delegates to the scope-module resolver. The inline derivation is
+    // retired so the adHocNamespaceResolutions ratchet no longer counts this
+    // site.
+    return getConfiguredNamespaces(this.config);
   }
 
   private rememberNamespaceStorageDirHint(namespace: string, storageDir?: string): void {
@@ -2456,7 +2453,7 @@ export class Orchestrator {
     }
 
     const configured = new Set(
-      this.configuredNamespaces().map((namespace) => normalizeNamespaceIdentity(namespace)),
+      this.configuredNamespaceList().map((namespace) => normalizeNamespaceIdentity(namespace)),
     );
     const preferredByStorageDir = new Map<
       string,
@@ -2570,7 +2567,7 @@ export class Orchestrator {
           new Set(
             (options.namespaces?.length
               ? options.namespaces
-              : this.configuredNamespaces()
+              : this.configuredNamespaceList()
             )
               .map((value) => value.trim())
               .filter(Boolean),
@@ -4138,7 +4135,7 @@ export class Orchestrator {
     if (options?.dryRun !== true) {
       try {
         await this.processEntitySynthesisQueue(
-          this.namespaceFromStorageDir(targetStorage.dir),
+          this.storageDirNamespace(targetStorage.dir),
           5,
         );
       } catch (error) {
@@ -13971,7 +13968,7 @@ export class Orchestrator {
       )
         return false;
       if (
-        this.namespaceFromStorageDir(targetStorage.dir) ===
+        this.storageDirNamespace(targetStorage.dir) ===
         this.config.sharedNamespace
       )
         return false;
@@ -14797,7 +14794,7 @@ export class Orchestrator {
       let targetNamespaceName =
         baseNamespace && baseNamespace.length > 0
           ? baseNamespace
-          : this.namespaceFromStorageDir(targetStorage.dir);
+          : this.storageDirNamespace(targetStorage.dir);
       let routedRuleId: string | undefined;
       let routedNamespaceExplicit = false;
       if (routeRules.length > 0) {
@@ -14838,7 +14835,7 @@ export class Orchestrator {
         fact.scope === "global" &&
         !routedNamespaceExplicit
       ) {
-        const currentNs = this.namespaceFromStorageDir(targetStorage.dir);
+        const currentNs = this.storageDirNamespace(targetStorage.dir);
         if (currentNs !== this.config.sharedNamespace && profileAllowsSharedWrites) {
           try {
             targetStorage = await this.storageRouter.storageFor(
@@ -15106,7 +15103,7 @@ export class Orchestrator {
         this.qmd.isAvailable() &&
         faithfulnessEnforceStatus !== "pending_review"
       ) {
-        const targetNamespace = this.namespaceFromStorageDir(targetStorage.dir);
+        const targetNamespace = this.storageDirNamespace(targetStorage.dir);
         const contradiction = await this.checkForContradiction(
           fact.content,
           writeCategory,
@@ -15525,7 +15522,7 @@ export class Orchestrator {
               memoryId: parentId,
               category: writeCategory,
               content: fact.content,
-              namespace: this.namespaceFromStorageDir(targetStorage.dir),
+              namespace: this.storageDirNamespace(targetStorage.dir),
               confidence: fact.confidence,
               source: "extraction",
             }),
@@ -15536,7 +15533,7 @@ export class Orchestrator {
 
       // Suggest links for this memory (Phase 3A)
       if (this.config.memoryLinkingEnabled && this.qmd.isAvailable()) {
-        const targetNamespace = this.namespaceFromStorageDir(targetStorage.dir);
+        const targetNamespace = this.storageDirNamespace(targetStorage.dir);
         const suggestedLinks = await this.suggestLinksForMemory(
           fact.content,
           writeCategory,
@@ -15642,7 +15639,7 @@ export class Orchestrator {
             memoryId,
             category: writeCategory,
             content: fact.content,
-            namespace: this.namespaceFromStorageDir(targetStorage.dir),
+            namespace: this.storageDirNamespace(targetStorage.dir),
             confidence: fact.confidence,
             source: "extraction",
           }),
@@ -15788,7 +15785,7 @@ export class Orchestrator {
       const baseTouchNamespace =
         baseNamespace && baseNamespace.length > 0
           ? baseNamespace
-          : this.namespaceFromStorageDir(storage.dir);
+          : this.storageDirNamespace(storage.dir);
     };
     const recordDurableNonFactWrite = () => {
       durableNonFactWritten = true;
@@ -17979,7 +17976,7 @@ export class Orchestrator {
 
       const fallbackNamespace =
         fallbackStorageDir !== null
-          ? this.namespaceFromStorageDir(fallbackStorageDir)
+          ? this.storageDirNamespace(fallbackStorageDir)
           : this.config.defaultNamespace;
       if (
         recallNamespaces.length === 0 ||
@@ -18169,7 +18166,7 @@ export class Orchestrator {
 
     const fallbackNamespace =
       fallbackStorageDir !== null
-        ? this.namespaceFromStorageDir(fallbackStorageDir)
+        ? this.storageDirNamespace(fallbackStorageDir)
         : this.config.defaultNamespace;
     maybeAddStorage(fallbackStorage, fallbackNamespace);
 
@@ -20034,41 +20031,18 @@ export class Orchestrator {
     return namespaceIdentityFromToken(m[1]) ?? m[1];
   }
 
-  private namespaceFromStorageDir(storageDir: string): string {
-    if (!this.config.namespacesEnabled) return this.config.defaultNamespace;
-    const resolvedStorageDir = path.resolve(storageDir);
-    const resolvedMemoryDir = path.resolve(this.config.memoryDir);
-    if (resolvedStorageDir === resolvedMemoryDir)
-      return this.config.defaultNamespace;
-    const m = resolvedStorageDir.match(/[\\/]namespaces[\\/]([^\\/]+)$/);
-    if (!m?.[1]) return this.config.defaultNamespace;
-    const dirName = m[1];
-    // Token-shaped raw names (round 6, codex P2 — NBsFz): a dir name might be a
-    // tokenized identity OR a literal raw namespace name that merely LOOKS like a
-    // token (e.g. a configured or dynamic name `ns-616c706861`). The round-trip check below
-    // (`namespaceIdentityToken(decoded) === dirName`) is TAUTOLOGICAL for a
-    // canonical token string, so it cannot tell a tokenized dir for `alpha` apart
-    // from the legacy raw root of a namespace literally named `ns-616c706861`
-    // (codex NRCve). A dir name that is itself a KNOWN namespace (configured or
-    // catalog-owned at this exact storage root) is therefore preserved as the
-    // literal namespace BEFORE attempting to decode it.
-    if (this.configuredNamespaces().includes(dirName)) {
-      return dirName;
-    }
-    this.loadNamespaceStorageDirHintsFromCatalog();
-    const hintedNamespaces = this.namespaceStorageDirHints.get(resolvedStorageDir);
-    if (hintedNamespaces?.has(dirName)) {
-      return dirName;
-    }
-    if (hintedNamespaces?.size === 1) {
-      const [hintedNamespace] = hintedNamespaces;
-      if (hintedNamespace) return hintedNamespace;
-    }
-    const decoded = namespaceIdentityFromToken(dirName);
-    if (decoded && namespaceIdentityToken(decoded) === dirName) {
-      return decoded;
-    }
-    return dirName;
+  private storageDirNamespace(storageDir: string): string {
+    // #1521: delegates to the scope-module resolver. The inline dir→namespace
+    // derivation (token round-trip guard, catalog hints) is retired so the
+    // adHocNamespaceResolutions ratchet no longer counts this site. Hints are
+    // loaded lazily via the callback (only after early returns, matching the
+    // original behavior — codex P2).
+    return resolveNamespaceFromStorageDir(storageDir, {
+      config: this.config,
+      configuredNamespaces: this.configuredNamespaceList(),
+      hints: this.namespaceStorageDirHints,
+      loadHints: () => this.loadNamespaceStorageDirHintsFromCatalog(),
+    });
   }
 
   // #1522: catalog touch methods removed — touches now happen at the storage chokepoint.
