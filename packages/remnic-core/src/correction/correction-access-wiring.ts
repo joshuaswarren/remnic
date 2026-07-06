@@ -471,6 +471,13 @@ async function rescopeMemoryFn(
   const sourceStorage = await wiring.orchestrator.getStorage(namespace);
   const memory = await sourceStorage.getMemoryById(memoryId);
   if (!memory) throw new CorrectionContractError(`memory not found for rescope: ${memoryId}`);
+  if (memory.frontmatter.status && memory.frontmatter.status !== "active") {
+    // Don't copy a stale source: rescoping a superseded/retracted/archived
+    // memory duplicates outdated content into the destination (thread Ohjwb).
+    throw new CorrectionContractError(
+      `cannot rescope memory ${memoryId}: source is ${memory.frontmatter.status}, not active`,
+    );
+  }
   const destStorage = await wiring.orchestrator.getStorage(toNamespace);
   const fm = memory.frontmatter;
   // Strip the `[Attributes: …]` suffix writeMemory appended to the source body
@@ -626,7 +633,12 @@ function buildAuditBody(record: {
     "Actions:",
   ];
   for (const r of record.outcome.results) {
-    lines.push(`  - ${r.action.kind}: ${r.status}${r.error ? ` (${r.error})` : ""}`);
+    // Never-store/redaction action errors can echo the secret/pattern — withhold
+    // the error text for those actions (review thread OhjwW).
+    const withhold =
+      r.action.kind === "redaction_rule" || record.classification === "never_store";
+    const errPart = r.error ? (withhold ? " (error withheld)" : ` (${r.error})`) : "";
+    lines.push(`  - ${r.action.kind}: ${r.status}${errPart}`);
   }
   return lines.join("\n");
 }
@@ -676,11 +688,16 @@ function toCandidate(m: MemoryFile, namespace: string, score: number): PlannerCa
 
 function toExecutorMemory(m: MemoryFile): ExecutorMemory {
   const fm = m.frontmatter;
+  // The tombstone hash must use the ORIGINAL unsuffixed body: writeMemory
+  // appends an `[Attributes: …]` suffix when structuredAttributes are set, so
+  // hashing m.content would never match the pre-suffix content hash (thread
+  // OhX2N, rule 23). Strip the suffix when attributes are present.
+  const rawBody = fm.structuredAttributes ? stripAttributesSuffix(m.content) : m.content;
   return {
     memoryId: fm.id,
     content: m.content,
     category: fm.category,
-    rawContent: m.content, // rawContent for the tombstone hash (rule 23).
+    rawContent: rawBody,
     ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
   } satisfies ExecutorMemory;
 }

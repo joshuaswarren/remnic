@@ -2123,12 +2123,14 @@ export function parseConfig(
       return v;
     })(),
     correctionMaxAffected: (() => {
-      const nested = (cfg.correction as Record<string, unknown> | undefined)?.maxAffected;
-      const fromNested = nested !== undefined ? coerceNumber(nested) : undefined;
-      if (fromNested !== undefined && fromNested >= 1) return Math.floor(fromNested);
-      const fromFlat = coerceNumber(cfg.correctionMaxAffected);
-      if (fromFlat !== undefined && fromFlat >= 1) return Math.floor(fromFlat);
-      return 10;
+      const rawNested = (cfg.correction as Record<string, unknown> | undefined)?.maxAffected;
+      const raw = rawNested !== undefined ? rawNested : cfg.correctionMaxAffected;
+      if (raw === undefined || raw === null) return 10;
+      const n = coerceNumber(raw);
+      if (n === undefined || !Number.isFinite(n) || n < 1) {
+        throw new Error(`Invalid correction.maxAffected: expected an integer >= 1, got ${JSON.stringify(raw)}`);
+      }
+      return Math.floor(n);
     })(),
     correctionPlanTtlHours: (() => {
       const nested = (cfg.correction as Record<string, unknown> | undefined)?.planTtlHours;
