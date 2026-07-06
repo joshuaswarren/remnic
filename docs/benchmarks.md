@@ -58,16 +58,42 @@ should:
   or reporting metadata unless they also appear in stored memory or the
   user-visible question.
 
-The `docs/benchmarks/results/` directory may contain **mock placeholder
-artifacts** with `datasetVersion: "mock-fixture"` so the pipeline can be
-verified on a fresh clone. **Do not cite mock numbers publicly.**
+The `docs/benchmarks/results/` directory now contains the **first real
+Tier L artifacts** (issue #1574), produced on an RTX 3090 lab box under
+the `local-lab` runtime profile. These are real Remnic recall-stack runs
+against the full LoCoMo-10 and LongMemEval-oracle datasets:
 
-When real numbers land they will be:
+- `2026-07-06-locomo-qwen2.5-7b-32k_latest-47aae03.json` — qwen2.5:7b-instruct
+  (Q4_K_M), seed 1. Metrics: `contains_answer=0.09`, `f1=0.1707`,
+  `llm_judge=0.3426`, `rouge_l=0.1629`, hidden-evidence-id leak = 1.0
+  (no cheating). Staged baseline: `--trial-limit 100` of the 1986 QA pairs
+  (all sampled from conversation 26); cross-conversation coverage is
+  deferred to the uncapped run.
+- `2026-07-06-longmemeval-qwen2.5-7b-32k_latest-47aae03.json` — same model,
+  seed 1. Metrics: `contains_answer=0.02`, `f1=0.0081`,
+  `judge_accuracy=0.06`, `llm_judge=0.06`, `search_hits=9.58` (recall is
+  surfacing ~9.6 evidence hits/query). Staged baseline: `--limit 100` of
+  the 500 oracle questions.
 
-- Committed to `docs/benchmarks/results/` as `BenchmarkArtifact v1`
-  JSON files (one per benchmark × model × run).
-- Rendered on <https://remnic.ai/benchmarks>.
-- Called out in `CHANGELOG.md` under the release that introduced them.
+Both carry `tier: "local"` and
+`hardware: { gpu: "NVIDIA RTX 3090", vramGb: 24, quantization: "Q4_K_M" }`.
+`judgeCalibration` is intentionally **omitted**: no frontier (cloud) judge
+credentials were available on the lab box, so Cohen's kappa could not be
+computed — responder and judge are the same qwen2.5:7b-instruct model, which
+carries a known self-preference caveat acceptable for Tier L regression.
+Judge-call counts: 100/100 for each (the judge cache is cold on a first run).
+
+The two `*-mock000.json` files remain as **pipeline examples** with
+`datasetVersion: "mock-fixture"` and placeholder scores; **do not cite
+them publicly**. They will be removed once full uncapped Tier L runs
+replace the staged baselines.
+
+To build a publishable artifact from a finished run's stored result, see
+`scripts/bench/build-artifact-from-result.ts` (bridges `BenchmarkResult` →
+`BenchmarkArtifact`, stamping the two-tier `tier`/`hardware` envelope). Real
+numbers are committed as `BenchmarkArtifact v1` JSON files (one per
+benchmark × model × run), rendered on <https://remnic.ai/benchmarks>, and
+called out in `CHANGELOG.md` under the release that introduced them.
 
 ## Two-tier benchmark protocol
 
