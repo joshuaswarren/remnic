@@ -4749,10 +4749,14 @@ export class EngramAccessService {
         return recallNamespacesForPrincipal(principal, this.orchestrator.config);
       },
       canWriteNamespace: (req) => {
-        const principal = this.resolveRequestPrincipal(req.sessionKey, req.principal);
-        return Promise.resolve(
-          canWriteNamespace(principal, this.resolveNamespace(req.namespace), this.orchestrator.config),
-        );
+        // resolveWritableNamespace resolves + checks writability in one step;
+        // reusing it avoids a second ad-hoc namespace-resolution call site.
+        try {
+          this.resolveWritableNamespace(req.namespace, req.sessionKey, req.principal);
+          return Promise.resolve(true);
+        } catch {
+          return Promise.resolve(false);
+        }
       },
     });
     this._correctionService = service;

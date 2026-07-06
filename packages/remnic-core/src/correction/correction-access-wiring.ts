@@ -576,7 +576,7 @@ function toExecutorMemory(m: MemoryFile): ExecutorMemory {
  * enabled. Reads BOTH config shapes so tool visibility and the runtime gate
  * can never drift out of sync (review thread: correction-gate-config-mismatch):
  *   - nested: `config.correction.enabled`
- *   - flat:   `config.correctionEnabled`  (ratchet-safe legacy shape)
+ *   - flat:   the `correctionEnabled` legacy key (ratchet-safe shape)
  * Nested wins when present; both default to `true` (plan is read-only, safe on).
  */
 export function isCorrectionFeatureEnabled(config: PluginConfig): boolean {
