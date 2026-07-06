@@ -15216,7 +15216,7 @@ export class Orchestrator {
               intentEntityTypes: inferredIntent?.entityTypes,
               memoryKind,
               structuredAttributes: fact.structuredAttributes,
-              validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
+              validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
               ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
               contentHashSource: rawChunkedContent,
               // Faithfulness gate (issue #1576).
@@ -15259,7 +15259,7 @@ export class Orchestrator {
                   intentActionType: inferredIntent?.actionType,
                   intentEntityTypes: inferredIntent?.entityTypes,
                   memoryKind,
-                  validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
+                  validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
                   // #1578: propagate bi-temporal end bound + ingestion provenance
                   // to chunks so an independently-surfaced chunk expires at the
                   // same invalid_at as its parent (cursor bugbot).
@@ -15353,7 +15353,7 @@ export class Orchestrator {
             intentActionType: inferredIntent?.actionType,
             intentEntityTypes: inferredIntent?.entityTypes,
             memoryKind,
-            validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
+            validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
             ...(biTemporal
               ? {
                   observedAt: biTemporal.observedAt,
@@ -15530,7 +15530,7 @@ export class Orchestrator {
           intentEntityTypes: inferredIntent?.entityTypes,
           memoryKind,
           structuredAttributes: fact.structuredAttributes,
-          validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
+          validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
           ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
           contentHashSource: writeCategory === "fact" ? fact.content : undefined,
           // Faithfulness gate (issue #1576).
@@ -15612,7 +15612,7 @@ export class Orchestrator {
           intentActionType: inferredIntent?.actionType,
           intentEntityTypes: inferredIntent?.entityTypes,
           memoryKind,
-          validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
+          validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
           ...(biTemporal
             ? {
                 observedAt: biTemporal.observedAt,
