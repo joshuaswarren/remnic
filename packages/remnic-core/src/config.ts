@@ -47,6 +47,7 @@ import {
 import { parseWearablesConfig } from "./wearables/config.js";
 import { parseProvenanceConfig } from "./provenance.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
+import { parseChatConfig } from "./chat/chat-config.js";
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
   ".openclaw",
@@ -2507,6 +2508,7 @@ export function parseConfig(
     slotBehavior,
     codexCompat,
     codingKnowledge: parseCodingKnowledgeConfig(cfg.codingKnowledge),
+    chat: parseChatConfig(cfg.chat),
      // Hourly summaries
     hourlySummariesEnabled: cfg.hourlySummariesEnabled !== false, // default: true
     daySummaryEnabled: cfg.daySummaryEnabled !== false, // default: true

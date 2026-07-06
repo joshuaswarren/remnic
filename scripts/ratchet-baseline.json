@@ -5,15 +5,15 @@
   "metrics": {
     "watchlistLoc": {
       "packages/remnic-core/src/orchestrator.ts": 20079,
-      "packages/remnic-core/src/cli.ts": 9364,
+      "packages/remnic-core/src/cli.ts": 9384,
       "packages/remnic-core/src/access-service.ts": 8974,
       "packages/remnic-core/src/storage.ts": 7730,
-      "packages/remnic-core/src/config.ts": 4608
+      "packages/remnic-core/src/config.ts": 4610
     },
     "oversizedFileCount": 11,
     "scatteredConfigFlagReads": 564,
     "adHocNamespaceResolutions": 53,
-    "unmigratedHandlerCount": 81,
+    "unmigratedHandlerCount": 82,
     "directStorageImports": 38
   }
 }

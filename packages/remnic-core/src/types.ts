@@ -494,6 +494,19 @@ export interface CodingKnowledgeConfig {
   codegraphDbDir: string;
 }
 
+// ChatConfig — conversational memory inspection and correction (issue #1583).
+// Off by default — spawns LLM calls so explicit opt-in (rule 48).
+export interface ChatConfig {
+  /** Master gate. Off = no tools/endpoints/CLI registered (byte-identical, rule 39). */
+  enabled: boolean;
+  /** Routing override for the chat LLM (empty = use the default chain). */
+  model: string;
+  /** Max tool calls per user turn before partial-reply fallback (rule 34). */
+  maxToolCallsPerTurn: number;
+  /** Hours after which idle chat session state is cleaned up. */
+  sessionTtlHours: number;
+}
+
 /**
  * Session-scoped coding context. Produced by `resolveGitContext()` in the
  * connector layer and attached to a session so that recall + write paths can
@@ -1091,6 +1104,9 @@ export interface PluginConfig {
   // (rule 39).
   codingKnowledge: CodingKnowledgeConfig;
   heartbeat: HeartbeatConfig;
+  // Conversational memory inspection and correction (issue #1583). Off by
+  // default — byte-identical pre-feature when enabled === false (rule 39).
+  chat: ChatConfig;
   slotBehavior: SlotBehaviorConfig;
   codexCompat: CodexCompatConfig;
   /**
