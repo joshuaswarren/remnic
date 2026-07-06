@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "#1668: all remaining MCP tools migrated through the strict-schema boundary. unmigratedHandlerCount 82->0.",
+  "note": "Structural ratchets (issue #1529, epic #1520). Counts may only decrease. Regenerate with: node scripts/check-ratchets.mjs --update",
   "oversizeThresholdLoc": 3000,
   "metrics": {
     "watchlistLoc": {
@@ -10,7 +10,7 @@
       "packages/remnic-core/src/storage.ts": 7730,
       "packages/remnic-core/src/config.ts": 4672
     },
-    "oversizedFileCount": 11,
+    "oversizedFileCount": 10,
     "scatteredConfigFlagReads": 536,
     "adHocNamespaceResolutions": 0,
     "unmigratedHandlerCount": 0,
