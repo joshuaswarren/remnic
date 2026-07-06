@@ -19,6 +19,7 @@ import { StorageManager } from "../storage.js";
 import {
   ALL_CATEGORY_DIRS,
   ALL_CATEGORY_KEYS,
+  CATEGORY_DIR_MAP,
   RECALL_NON_MEMORY_DIRS,
   categoryDirName,
 } from "../utils/category-dir.js";
@@ -160,19 +161,18 @@ test("round-trip: readMemoryByPath returns null for a non-existent path", async 
   }
 });
 
-test("round-trip: every ALL_CATEGORY_DIRS entry is a real directory name, not a category key", () => {
+test("round-trip: ALL_CATEGORY_DIRS is exactly facts + every CATEGORY_DIR_MAP value", () => {
   // ALL_CATEGORY_DIRS must contain directory NAMES (facts, decisions, ...) not
   // singular keys (fact, decision, ...). This guards the parity between
-  // categoryDirName() and the scan roots.
+  // categoryDirName() and the scan roots — a divergence would silently drop
+  // a category from recall.
+  const expected = new Set(["facts", ...Object.values(CATEGORY_DIR_MAP)]);
+  assert.deepEqual(new Set(ALL_CATEGORY_DIRS), expected);
+  // No singular keys leaked in
   for (const dir of ALL_CATEGORY_DIRS) {
-    assert.ok(!dir.endsWith("s") || dir === "facts" || dir.endsWith("s"),
-      `sanity: ${dir} is a plural directory name`);
+    assert.ok(!Object.hasOwn(CATEGORY_DIR_MAP, dir),
+      `${dir} is a singular category key, not a directory name`);
   }
-  // The map covers every non-fact category key
-  const dirs = new Set(ALL_CATEGORY_DIRS);
-  assert.ok(dirs.has("facts"));
-  assert.ok(dirs.has("decisions"));
-  assert.ok(dirs.has("questions"));
 });
 
 test("round-trip: StorageManager.dir exposes the base directory", async () => {
