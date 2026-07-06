@@ -307,12 +307,21 @@ export class HostMemoryExtensionPublisher implements MemoryExtensionPublisher {
           `${this.host.displayName} extension rollback failed: ${restoreErr instanceof Error ? restoreErr.message : String(restoreErr)}`,
         );
       }
-      try {
-        restoreTokenEntry(priorTokenEntry, this.host.connectorId);
-      } catch (tokenErr) {
-        ctx.log.warn(
-          `${this.host.displayName} connector token rollback failed: ${tokenErr instanceof Error ? tokenErr.message : String(tokenErr)}`,
-        );
+      // A failed omp pre-bundle (bun missing or `bun build` failing) is
+      // recoverable: the runtime loader self-heals dist-bundle on first load,
+      // and the connector token is already committed by the CLI. Rolling it
+      // back here would leave the connector registered with no credential and
+      // block a non-`--force` reinstall (AGENTS.md #14 — don't destroy
+      // committed state before the new state is confirmed). File/dir rollback
+      // above still runs, so a failed first-time publish still cleans its root.
+      if (!(err instanceof OmpPreBundleError)) {
+        try {
+          restoreTokenEntry(priorTokenEntry, this.host.connectorId);
+        } catch (tokenErr) {
+          ctx.log.warn(
+            `${this.host.displayName} connector token rollback failed: ${tokenErr instanceof Error ? tokenErr.message : String(tokenErr)}`,
+          );
+        }
       }
       throw err;
     }
@@ -374,6 +383,20 @@ export class PiMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
   }
 }
 
+/**
+ * Marks a failure originating from the omp pre-bundle step (bun missing, or the
+ * `bun build` itself failing). {@link HostMemoryExtensionPublisher.publish}
+ * catches this and rolls back the written files but SKIPS the connector-token
+ * rollback: the pre-bundle runs after the install (config + wrapper + token) is
+ * already committed, and the runtime loader self-heals `dist-bundle` on first
+ * load, so destroying the just-generated token would leave the connector
+ * registered with no credential and block a non-`--force` reinstall
+ * (AGENTS.md #14 — don't destroy committed state before the new state is
+ * confirmed). The message is preserved verbatim so existing `/requires \`bun\`/`
+ * and `/bun build failed/` assertions still match.
+ */
+class OmpPreBundleError extends Error {}
+
 /** Publisher for Oh My Pi / omp (`~/.omp/agent/extensions/remnic`). */
 export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
   constructor() {
@@ -405,7 +428,10 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
     // path that is not on omp's PATH at runtime.
     const bunBin = resolveBunBinary();
     if (!bunBin) {
-      throw new Error(
+      // OmpPreBundleError so publish() keeps the connector token intact (see
+      // the class doc); the runtime loader self-heals the bundle once bun is
+      // installed.
+      throw new OmpPreBundleError(
         "Remnic omp extension requires `bun` to pre-bundle the extension: omp's embedded " +
           "runtime cannot resolve bare npm specifiers from the extension's node_modules. " +
           "Install bun from https://bun.sh, then re-run `remnic connectors install omp`.",
@@ -424,7 +450,14 @@ export class OmpMemoryExtensionPublisher extends HostMemoryExtensionPublisher {
     atomicWriteFile(postinstallPath, renderOmpPostinstall(bunBin), 0o644);
     atomicWriteFile(packageJsonPath, renderOmpPackageJson(), 0o644);
 
-    this.runBundleBuild(ctx, extensionRoot, bunBin);
+    try {
+      this.runBundleBuild(ctx, extensionRoot, bunBin);
+    } catch (err) {
+      // OmpPreBundleError so publish() keeps the connector token intact (see
+      // the class doc); the runtime loader self-heals the bundle on next load.
+      const message = err instanceof Error ? err.message : String(err);
+      throw new OmpPreBundleError(message);
+    }
   }
 
   /**

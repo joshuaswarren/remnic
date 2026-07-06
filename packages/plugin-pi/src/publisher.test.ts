@@ -877,6 +877,61 @@ test("omp publisher rolls back shared files when bun build fails", async (t) => 
   assert.equal(fs.existsSync(path.join(extensionRoot, "dist-bundle")), false, "dist-bundle must be cleaned up on rollback");
 });
 
+// ── Regression (PR #1641 / #1598): a failed omp pre-bundle (bun missing or
+// `bun build` failing) must NOT roll back the connector token. The CLI commits
+// the new token before publishing and the loader self-heals dist-bundle on
+// first load; destroying the token leaves the connector installed with no
+// credential and blocks a non-`--force` reinstall (AGENTS.md #14).
+test("omp publisher keeps the connector token when pre-bundling fails", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-token-preserve-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  // No bun available → resolveBunBinary returns null → pre-bundle fails.
+  process.env.REMNIC_OMP_BUN_BIN = path.join(root, "does-not-exist");
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // The CLI has already committed the new omp token; there was no prior token.
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-05-10T00:00:00.000Z" }],
+  });
+
+  const publisher = new OmpMemoryExtensionPublisher();
+  await assert.rejects(
+    () =>
+      publisher.publish({
+        config: { memoryDir: path.join(root, "memory") },
+        skillsRoot: path.join(root, "memory", "skills"),
+        rollbackTokenEntry: null,
+        log: { info: () => undefined, warn: () => undefined, error: () => undefined },
+      }),
+    /requires `bun`.*omp/i,
+  );
+
+  // The committed token must survive the pre-bundle failure.
+  const ompToken = loadTokenStore().tokens.find((entry) => entry.connector === "omp");
+  assert.equal(ompToken?.token, "omp-token", "omp token must be preserved when pre-bundling fails");
+});
+
 test("omp publisher loader.js embeds the plugin-pi dist path for mtime self-healing", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-loader-path-"));
   const home = path.join(root, "home");
