@@ -83,10 +83,24 @@ export interface CorrectionAccessWiring {
 
 export function createCorrectionService(wiring: CorrectionAccessWiring): CorrectionService {
   const cfg = wiring.orchestrator.config;
+  // parseConfig now owns these (review thread Txp): the orchestrator's config
+  // carries correctionEnabled / correctionApplyRequiresConfirm /
+  // correctionMaxAffected / correctionPlanTtlHours as parsed fields. The
+  // loose-read helpers stay as a fallback only for tests that construct a
+  // PluginConfig-shaped object without running parseConfig.
   const correctionEnabled = isCorrectionFeatureEnabled(cfg);
-  const applyRequiresConfirm = readCorrectionFlag(cfg, "applyRequiresConfirm", true);
-  const maxAffected = readCorrectionNumber(cfg, "maxAffected", 10);
-  const planTtlHours = readCorrectionNumber(cfg, "planTtlHours", 24);
+  const applyRequiresConfirm =
+    typeof cfg.correctionApplyRequiresConfirm === "boolean"
+      ? cfg.correctionApplyRequiresConfirm
+      : readCorrectionFlag(cfg, "applyRequiresConfirm", true);
+  const maxAffected =
+    typeof cfg.correctionMaxAffected === "number" && cfg.correctionMaxAffected >= 1
+      ? Math.floor(cfg.correctionMaxAffected)
+      : readCorrectionNumber(cfg, "maxAffected", 10);
+  const planTtlHours =
+    typeof cfg.correctionPlanTtlHours === "number" && cfg.correctionPlanTtlHours > 0
+      ? cfg.correctionPlanTtlHours
+      : readCorrectionNumber(cfg, "planTtlHours", 24);
   const biTemporalEnabled = cfg.temporalBiTemporal === true;
 
   const serviceDeps: CorrectionServiceDeps = {
@@ -614,6 +628,11 @@ function toExecutorMemory(m: MemoryFile): ExecutorMemory {
  * Nested wins when present; both default to `true` (plan is read-only, safe on).
  */
 export function isCorrectionFeatureEnabled(config: PluginConfig): boolean {
+  // parseConfig now resolves this into `config.correctionEnabled` (review
+  // thread Txp) — prefer the parsed boolean so operator config actually takes
+  // effect. The loose nested/flat read stays as a fallback for PluginConfig-
+  // shaped objects built without parseConfig (unit tests).
+  if (typeof config.correctionEnabled === "boolean") return config.correctionEnabled;
   const nested = (config as unknown as Record<string, unknown>).correction as
     | Record<string, unknown>
     | undefined;

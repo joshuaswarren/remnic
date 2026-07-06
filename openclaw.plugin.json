@@ -3170,6 +3170,28 @@
         "default": false,
         "description": "Escape hatch for the bi-temporal injection filter (issue #1578). When true, facts whose [valid_at, invalid_at) interval ended before now are kept in injection candidates even with temporalBiTemporal on — some deployments prefer the older (always-inject) behavior."
       },
+      "correctionEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Correction Contract master gate (issue #1580). When true (default), the memory_correct_plan / memory_correct_apply tools are visible and runtime calls are accepted. Planning is read-only (locates candidates + drafts a pending plan file) and safe to ship on; set false to hide the tools and reject calls so visibility + enforcement never drift out of sync. Also settable via the nested correction.enabled key."
+      },
+      "correctionApplyRequiresConfirm": {
+        "type": "boolean",
+        "default": true,
+        "description": "Whether memory_correct_apply requires an explicit confirm:true to mutate memories (least-privileged default). Also settable via correction.applyRequiresConfirm."
+      },
+      "correctionMaxAffected": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 10,
+        "description": "Max memories a single correction plan may touch; over-limit plans are rejected, never silently truncated. Also settable via correction.maxAffected."
+      },
+      "correctionPlanTtlHours": {
+        "type": "number",
+        "minimum": 1,
+        "default": 24,
+        "description": "Plan time-to-live in hours; expired plans are rejected at apply. Also settable via correction.planTtlHours."
+      },
       "recallDirectAnswerEnabled": {
         "type": "boolean",
         "default": false,

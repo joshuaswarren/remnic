@@ -4758,6 +4758,24 @@ export class EngramAccessService {
           return Promise.resolve(false);
         }
       },
+      // Wire the orchestrator's extraction LLM so classify+draft actually
+      // drafts actions instead of always hitting the deterministic fallback
+      // (review thread PG5). The planner's classifyAndDraft already falls back
+      // on any LLM outage, so returning null (LLM disabled/cooldown) or a
+      // thrown error both degrade safely to the deterministic path (rule 13).
+      llmComplete: async ({ system, user }) => {
+        const result = await this.orchestrator.localLlm.chatCompletion(
+          [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          { operation: "correction-classify", priority: "background" },
+        );
+        if (!result) {
+          throw new Error("correction classify+draft: local LLM unavailable (disabled or in cooldown)");
+        }
+        return result.content;
+      },
     });
     this._correctionService = service;
     return service;

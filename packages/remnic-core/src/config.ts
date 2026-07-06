@@ -2097,6 +2097,37 @@ export function parseConfig(
     // (docs kept honest — review: wire resolver before exposing the gate).
     temporalBiTemporal: coerceBool(cfg.temporalBiTemporal) ?? false,
     temporalExpiredInInjection: coerceBool(cfg.temporalExpiredInInjection) ?? false,
+    // Correction Contract (issue #1580). Parsed here so operators can actually
+    // set the documented toggles/limits (review thread Txp): parseConfig builds
+    // an explicit output, so without these lines the raw `correction` block /
+    // flat legacy keys are dropped and the runtime always sees defaults. Nested
+    // `correction.<key>` wins; flat `correction<Key>` is the legacy fallback.
+    correctionEnabled: (() => {
+      const nested = (cfg.correction as Record<string, unknown> | undefined)?.enabled;
+      if (nested !== undefined) return coerceBool(nested) ?? true;
+      return coerceBool(cfg.correctionEnabled) ?? true;
+    })(),
+    correctionApplyRequiresConfirm: (() => {
+      const nested = (cfg.correction as Record<string, unknown> | undefined)?.applyRequiresConfirm;
+      if (nested !== undefined) return coerceBool(nested) ?? true;
+      return coerceBool(cfg.correctionApplyRequiresConfirm) ?? true;
+    })(),
+    correctionMaxAffected: (() => {
+      const nested = (cfg.correction as Record<string, unknown> | undefined)?.maxAffected;
+      const fromNested = nested !== undefined ? coerceNumber(nested) : undefined;
+      if (fromNested !== undefined && fromNested >= 1) return Math.floor(fromNested);
+      const fromFlat = coerceNumber(cfg.correctionMaxAffected);
+      if (fromFlat !== undefined && fromFlat >= 1) return Math.floor(fromFlat);
+      return 10;
+    })(),
+    correctionPlanTtlHours: (() => {
+      const nested = (cfg.correction as Record<string, unknown> | undefined)?.planTtlHours;
+      const fromNested = nested !== undefined ? coerceNumber(nested) : undefined;
+      if (fromNested !== undefined && fromNested > 0) return fromNested;
+      const fromFlat = coerceNumber(cfg.correctionPlanTtlHours);
+      if (fromFlat !== undefined && fromFlat > 0) return fromFlat;
+      return 24;
+    })(),
     // Tombstones — non-resurrection invariant (issue #1579). The invariant is
     // the point, so it ships ON by default; `false` restores pre-feature
     // behavior for rollback safety (rule 30). Uses coerceBool so CLI string
