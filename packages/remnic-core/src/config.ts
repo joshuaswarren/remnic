@@ -49,6 +49,7 @@ import { parseWearablesConfig } from "./wearables/config.js";
 import { parseProvenanceConfig } from "./provenance.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 import { parseChatConfig } from "./chat/chat-config.js";
+import { parseCorrectionIntentConfig, parseFaithfulnessGateConfig } from "./faithfulness-config.js";
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
   ".openclaw",
@@ -3018,36 +3019,14 @@ export function parseConfig(
     collectJudgeTrainingPairs: coerceBool(cfg.collectJudgeTrainingPairs) === true,
     judgeTrainingDir:
       typeof cfg.judgeTrainingDir === "string" ? cfg.judgeTrainingDir : "",
-    // Extraction faithfulness gate (issue #1576). Entailment-verification of
-    // extracted facts against verified source spans (#1575). Default "off"
-    // (rule 39: byte-identical pre-feature pipeline). Invalid values are
-    // rejected listing valid options (rule 51).
-    extractionFaithfulnessGate: (() => {
-      const v = cfg.extractionFaithfulnessGate;
-      if (v === undefined || v === null) return "off";
-      // Present-but-invalid (true/1/{}) must reject, not silently disable the gate (Ob4RQ).
-      const raw = typeof v === "string" ? v.trim().toLowerCase() : v;
-      if (raw === "off" || raw === "shadow" || raw === "enforce") return raw;
-      throw new Error(
-        `extractionFaithfulnessGate must be one of "off" | "shadow" | "enforce" (got ${JSON.stringify(v)})`,
-      );
-    })(),
-    extractionFaithfulnessModel:
-      typeof cfg.extractionFaithfulnessModel === "string"
-        ? cfg.extractionFaithfulnessModel
-        : "",
-    // Issue #1634 (#1576 follow-up): strict-integer validation via
-    // parseIntegerAtLeast — reject non-numeric, <=0, non-integer, NaN,
-    // Infinity, booleans, objects (gotcha #51). Mirrors qmdDaemonTimeoutMs.
-    // Valid CLI-string integers still coerce and clamp to the budget cap.
-    extractionFaithfulnessContextChars: Math.min(
-      parseIntegerAtLeast(cfg.extractionFaithfulnessContextChars, 400, 1, "extractionFaithfulnessContextChars"),
-      4000,
-    ),
-    extractionFaithfulnessTimeoutMs: Math.min(
-      parseIntegerAtLeast(cfg.extractionFaithfulnessTimeoutMs, 8000, 1, "extractionFaithfulnessTimeoutMs"),
-      60_000,
-    ),
+    // Extraction faithfulness gate (issue #1576) + model-lab pointer
+    // `extractionFaithfulnessBaseUrl` (issue #1585), and the correction-intent
+    // model-lab pointer (issue #1581 / #1585). Parsed in faithfulness-config.ts
+    // (extracted from this god file so the block can grow without tripping the
+    // ratchet). Defaults preserve the byte-identical pre-feature pipeline
+    // (rule 39); invalid values reject (rule 51 / #1634).
+    ...parseFaithfulnessGateConfig(cfg),
+    ...parseCorrectionIntentConfig(cfg),
     // Inline source attribution (issue #369). Opt-in to preserve
     // backwards compatibility with existing downstream consumers.
     inlineSourceAttributionEnabled: cfg.inlineSourceAttributionEnabled === true,

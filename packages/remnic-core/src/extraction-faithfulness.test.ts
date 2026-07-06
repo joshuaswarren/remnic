@@ -1254,3 +1254,105 @@ test("parseFaithfulnessResponse: object-wrapped arrays unwrap (results/verdicts/
   // A wrapper object with no recognized array key still returns null (no over-match).
   assert.equal(parseFaithfulnessResponse('{"data": {"nested": []}}', 1), null);
 });
+
+// ---------------------------------------------------------------------------
+// Issue #1585 model-lab pointer: local fine-tuned endpoint path
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a fake fetch that responds for a specific base URL with a canned
+ * openai-compatible chat-completions body. Records the request body so tests
+ * can assert the gate routed to the local model.
+ */
+function fakeFetchFor(
+  baseUrl: string,
+  responder: (body: Record<string, unknown>) => unknown,
+): { fetch: typeof fetch; requests: Array<{ url: string; body: Record<string, unknown> }> } {
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  const fake = ((url: string, init: RequestInit) => {
+    requests.push({ url, body: JSON.parse(String(init.body)) });
+    const body = JSON.parse(String(init.body));
+    const payload = responder(body);
+    return Promise.resolve(
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  }) as typeof fetch;
+  return { fetch: fake, requests };
+}
+
+test("checkFaithfulnessBatch: local model-lab endpoint is tried first when configured (#1585)", async () => {
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = parseConfig({
+    extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
+    extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
+    extractionFaithfulnessTimeoutMs: 5000,
+  });
+  const fallbackCalls: Array<{ options: unknown }> = [];
+  const { fetch: fakeFetch, requests } = fakeFetchFor("http://localhost:11434/v1", (body) => ({
+    model: body.model,
+    choices: [{ message: { content: JSON.stringify([{ index: 0, verdict: "contradicted" }]) } }],
+  }));
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    null,
+    stubFallbackLlm("[]", fallbackCalls),
+    fakeFetch,
+  );
+  assert.equal(requests.length, 1, "local model-lab endpoint must be called");
+  assert.equal(requests[0]?.url, "http://localhost:11434/v1/chat/completions");
+  assert.equal(requests[0]?.body.model, "remnic-faithfulness-gate-v1");
+  assert.equal(fallbackCalls.length, 0, "gateway fallback must NOT run when the local endpoint succeeds");
+  assert.equal(result.results[0]?.ok, true);
+  if (result.results[0]?.ok) {
+    assert.equal(result.results[0].verdict, "contradicted", "local model verdict is used");
+    assert.equal(result.results[0].model, "remnic-faithfulness-gate-v1");
+  }
+});
+
+test("checkFaithfulnessBatch: local endpoint failure falls back to the configured chain (#1585 graceful)", async () => {
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = parseConfig({
+    extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
+    extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
+    extractionFaithfulnessTimeoutMs: 5000,
+  });
+  const fallbackCalls: Array<{ options: unknown }> = [];
+  // Local endpoint returns 500 → caller returns null → gate falls through to fallback.
+  const failingFetch = (() =>
+    Promise.resolve(new Response("err", { status: 500 }))) as unknown as typeof fetch;
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    null,
+    stubFallbackLlm(JSON.stringify([{ index: 0, verdict: "entailed" }]), fallbackCalls),
+    failingFetch,
+  );
+  assert.equal(fallbackCalls.length, 1, "must fall back to the configured chain on local-endpoint failure");
+  assert.equal(result.results[0]?.ok, true);
+  if (result.results[0]?.ok) {
+    assert.equal(result.results[0].verdict, "entailed", "fallback chain verdict is used");
+  }
+});
+
+test("checkFaithfulnessBatch: no local endpoint pointer → byte-identical routing (regression guard)", async () => {
+  // Default config (no baseUrl) must never attempt a local-endpoint fetch.
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = baseConfig();
+  let fetchCalled = false;
+  const spyFetch = (() => {
+    fetchCalled = true;
+    return Promise.resolve(new Response("{}", { status: 200 }));
+  }) as unknown as typeof fetch;
+  await checkFaithfulnessBatch(
+    inputs,
+    config,
+    null,
+    stubFallbackLlm(JSON.stringify([{ index: 0, verdict: "entailed" }])),
+    spyFetch,
+  );
+  assert.equal(fetchCalled, false, "no local-endpoint fetch when pointer is unset");
+});
