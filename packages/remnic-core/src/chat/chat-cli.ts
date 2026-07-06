@@ -157,7 +157,8 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
 
   rl.prompt();
 
-  rl.on("line", async (line: string) => {
+  let inFlight: Promise<void> = Promise.resolve();
+  rl.on("line", (line: string) => {
     const message = line.trim();
     if (!message) {
       rl.prompt();
@@ -167,7 +168,9 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
       rl.close();
       return;
     }
-
+    // Serialize turns: a second line waits for the first to finish so
+    // transcript updates and engine state don't race on the same session.
+    inFlight = inFlight.then(async () => {
     const userEntry = await appendTranscriptEntry(opts.memoryDir, session!.id, {
       role: "user",
       content: message,
@@ -189,6 +192,10 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
       console.log(`[note: ${result.skippedTools.length} tool(s) skipped due to budget]\n`);
     }
     rl.prompt();
+    }).catch((err) => {
+      console.error(`[error] ${err instanceof Error ? err.message : String(err)}`);
+      rl.prompt();
+    });
   });
 
   await new Promise<void>((resolve) => {

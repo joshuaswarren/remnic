@@ -180,17 +180,31 @@ export class ChatEngine {
     }
 
     // ── Normal tool-loop ────────────────────────────────────────────────
+    // Build the transcript context, filtering out:
+    //  - the system header (seq === 0)
+    //  - internal state markers (pending_plan:/pending_promotion:/plan_applied:)
+    //  - the last user entry if it matches userMessage (the caller already
+    //    appended it to the transcript before calling processMessage — adding
+    //    it again below would duplicate it in the prompt).
+    const recentEntries = session.transcript
+      .slice(-21)
+      .filter((e) => e.role !== "system" || e.seq !== 0)
+      .filter((e) => !(e.role === "system" && /^[a-z_]+:/.test(e.content)))
+      .filter((e, _i, arr) => {
+        // Drop the last user entry if it duplicates the current message.
+        if (e.role === "user" && e.content === userMessage) {
+          const lastUser = [...arr].reverse().find((x) => x.role === "user");
+          return e !== lastUser;
+        }
+        return true;
+      });
     const conversation: ChatLlmMessage[] = [
       { role: "system", content: this.systemPrompt },
-      // Include recent transcript context (last 20 entries to stay bounded).
-      ...session.transcript
-        .slice(-20)
-        .filter((e) => e.role !== "system" || e.seq !== 0)
-        .map((e) => ({
-          role: e.role as "user" | "assistant" | "tool",
-          content: e.content,
-          ...(e.toolCallId ? { toolCallId: e.toolCallId } : {}),
-        })),
+      ...recentEntries.map((e) => ({
+        role: e.role as "user" | "assistant" | "tool",
+        content: e.content,
+        ...(e.toolCallId ? { toolCallId: e.toolCallId } : {}),
+      })),
       { role: "user", content: userMessage },
     ];
 

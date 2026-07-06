@@ -137,10 +137,12 @@ export async function loadChatSession(
         if (pm) pendingPlanId = pm[1];
         const pp = entry.content.match(/^pending_promotion:(.+)$/);
         if (pp) pendingPromotionId = pp[1];
-        const resolved = entry.content.match(/^(?:plan_applied|plan_cancelled|promotion_applied|promotion_cancelled):(.+)$/);
+        const resolved = entry.content.match(/^(?:plan_applied|plan_cancelled|promotion_applied|promotion_cancelled):/);
         if (resolved) {
-          if (resolved[1] === pendingPlanId) pendingPlanId = undefined;
-          if (resolved[1] === pendingPromotionId) pendingPromotionId = undefined;
+          // Any resolution marker clears the pending state (plans/promotions
+          // are consumed one-at-a-time per session).
+          pendingPlanId = undefined;
+          pendingPromotionId = undefined;
         }
       }
     } catch {
