@@ -26,5 +26,5 @@ export default defineConfig({
   clean: true,
   sourcemap: true,
   dts: true,
-  external: ["@remnic/core", "better-sqlite3"],
+  external: ["@remnic/core", "better-sqlite3", "web-tree-sitter"],
 });

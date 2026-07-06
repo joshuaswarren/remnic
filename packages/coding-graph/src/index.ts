@@ -115,29 +115,17 @@ export class CodingGraphError extends Error {
 }
 
 // ---------------------------------------------------------------------------
-// Engine implementation for PR1 (placeholder — PR2 fills extractors).
+// Engine implementation (PR2): WASM tree-sitter parser + tier-1 extractors.
+// Delegates to ./engine/engine.js which wires the ParserBackend, per-language
+// .scm queries, and the FileIR emitter.
 // ---------------------------------------------------------------------------
 
-/**
- * Construct an engine. PR1 implementation: always throws
- * `CodingGraphError("not_implemented", …)` after stamping the engine
- * version onto the error so callers can advertise their expected engine
- * in failure logs. PR2 will return a fully wired `CodingGraphEngine`.
- *
- * The error type is public so consumers can pattern-match on `.code`
- * without parsing the message.
- */
-export function createCodingGraphEngine(
-  _options: CreateCodingGraphEngineOptions = {},
-): CodingGraphEngine {
-  throw new CodingGraphError(
-    "not_implemented",
-    "createCodingGraphEngine() is a PR1 scaffold placeholder. " +
-      "The web-tree-sitter backend, grammar manager, and per-language " +
-      "extractors land in PR2 (#1551). Engine version requested: " +
-      `${ENGINE_VERSION}.`,
-  );
-}
+export { createCodingGraphEngine } from "./engine/engine.js";
+
+// Backwards-compat: re-export the engine module's internal types for any
+// consumer that reached into the implementation.
+export type { ParserBackend } from "./engine/parser-backend.js";
+export { WasmTreeSitterBackend } from "./engine/parser-backend.js";
 
 // ---------------------------------------------------------------------------
 // Re-export the contract types so the public surface is stable whether a
