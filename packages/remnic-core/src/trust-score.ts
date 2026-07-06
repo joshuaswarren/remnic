@@ -299,7 +299,19 @@ export function computeTrustScore(
   // weight to the present ones (a memory with only memory-worth data is scored
   // purely on memory-worth, not half-scored because other signals are absent).
   const activeWeightSum = candidates.reduce((acc, c) => acc + resolved[c.key], 0);
-  const safeWeightSum = activeWeightSum > 0 ? activeWeightSum : 1;
+  // When every present signal's weight is 0 (operator explicitly disabled
+  // the only components the memory has), fall back to the neutral prior
+  // rather than damning the memory to score 0. A disabled signal is not a
+  // negative signal — it carries no information (review P2: zero-weight).
+  if (activeWeightSum <= 0) {
+    return {
+      score: NEUTRAL_TRUST_SCORE,
+      band: "medium",
+      components: {},
+      neutral: true,
+    };
+  }
+  const safeWeightSum = activeWeightSum;
 
   let blended = 0;
   const components: Record<string, TrustScoreComponent> = {};

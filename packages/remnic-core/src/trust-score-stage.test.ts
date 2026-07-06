@@ -306,3 +306,45 @@ test("explainQuarantine: pending_review → review reason", () => {
   };
   assert.match(explainQuarantine(trust), /pending review/);
 });
+
+test("adapter: memory-worth half-life decays stale observations", () => {
+  // Review P2: TrustScore subsumes the memory-worth filter, so outcome decay
+  // must not be lost. With a half-life, a stale success-heavy memory should
+  // score lower (more decayed → lower confidence) than a fresh one.
+  const now = new Date("2026-07-01T00:00:00.000Z");
+  const fresh = buildTrustSignalMap(
+    [{ path: "fresh.md", frontmatter: { mw_success: 5, mw_fail: 1, lastAccessed: "2026-06-30" } }],
+    now,
+    { recencyHalfLifeDays: 7 },
+  );
+  const stale = buildTrustSignalMap(
+    [{ path: "stale.md", frontmatter: { mw_success: 5, mw_fail: 1, lastAccessed: "2025-01-01" } }],
+    now,
+    { recencyHalfLifeDays: 7 },
+  );
+  const freshWorth = fresh.get("fresh.md")?.memoryWorth;
+  const staleWorth = stale.get("stale.md")?.memoryWorth;
+  assert.ok(freshWorth, "fresh memory has worth signal");
+  assert.ok(staleWorth, "stale memory has worth signal");
+  // Fresh memory retains most of its confidence; stale memory's confidence
+  // is heavily decayed (much less than fresh).
+  assert.ok(
+    staleWorth!.confidence < freshWorth!.confidence,
+    "stale observations must decay → lower confidence than fresh",
+  );
+});
+
+test("adapter: no half-life → no decay (raw counters)", () => {
+  // Without a half-life, computeMemoryWorth uses raw counters — no decay.
+  // This is the pre-TrustScore behavior and must be preserved.
+  const now = new Date("2026-07-01T00:00:00.000Z");
+  const stale = buildTrustSignalMap(
+    [{ path: "old.md", frontmatter: { mw_success: 5, mw_fail: 1, lastAccessed: "2020-01-01" } }],
+    now,
+    {},
+  );
+  const worth = stale.get("old.md")?.memoryWorth;
+  assert.ok(worth);
+  // Without decay, 5/1 success-heavy → confidence ~6 (raw count).
+  assert.ok(worth!.confidence >= 5, "no half-life → raw confidence (no decay)");
+});

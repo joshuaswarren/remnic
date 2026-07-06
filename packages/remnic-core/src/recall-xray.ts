@@ -185,6 +185,20 @@ export interface RecallXrayResult {
     /** Coarse strength tag from the frontmatter. */
     provenance: "verified" | "unverified" | "none";
   };
+  /**
+   * Issue #1577 — per-result trust score, band, and components from the
+   * unified TrustScore recall stage. Present when `trustScoreEnabled` is on.
+   * Quarantined items appear here with `quarantined: true` and a reason so
+   * exclusion never looks like "no result" (rule 34).
+   */
+  trust?: {
+    score: number;
+    band: "high" | "medium" | "low" | "quarantine";
+    components: Record<string, { value: number; weight: number }>;
+    multiplier: number;
+    quarantined: boolean;
+    quarantineReason?: string;
+  };
 }
 
 /**

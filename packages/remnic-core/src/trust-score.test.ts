@@ -206,3 +206,31 @@ test("epistemic hedge: medium band → names a single weakness", () => {
   // Always deterministic.
   assert.equal(renderEpistemicHedge(medium), hedge);
 });
+
+test("disabled weight: zero-weight-only-signal falls back to neutral, not low", () => {
+  // Review P2: when an operator sets a component weight to 0 to disable it,
+  // and a memory has only that signal, the score must NOT collapse to 0 (low
+  // band). It should be neutral — a disabled signal carries no information.
+  const result = computeTrustScore(
+    { memoryWorth: { score: 0.9, confidence: 5 } },
+    { memoryWorth: 0, provenance: 1, faithfulness: 1 },
+  );
+  assert.equal(result.neutral, true, "zero-weight-only-signal must be neutral");
+  assert.equal(result.score, NEUTRAL_TRUST_SCORE);
+  assert.equal(result.band, "medium");
+  assert.equal(Object.keys(result.components).length, 0);
+});
+
+test("disabled weight: zero-weight component does not contribute to blend", () => {
+  // When a component has weight 0 but other components are active, the active
+  // ones still score normally. The zero-weight component stays in the echo
+  // (with weight 0) for explainability but contributes nothing to the blend.
+  const result = computeTrustScore(
+    { memoryWorth: { score: 0.9, confidence: 5 }, provenance: "verified" },
+    { memoryWorth: 0, provenance: 1, faithfulness: 1 },
+  );
+  assert.equal(result.neutral, false);
+  assert.ok(result.score > NEUTRAL_TRUST_SCORE, "verified provenance should boost");
+  assert.equal(result.components.memoryWorth?.weight, 0, "zero-weight component echoed with weight 0");
+  assert.ok(result.components.provenance?.weight > 0, "active component has non-zero weight");
+});

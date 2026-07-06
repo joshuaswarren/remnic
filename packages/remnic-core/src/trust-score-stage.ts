@@ -72,11 +72,19 @@ export function buildTrustSignalMap(
     // Memory worth — reuse the exact Laplace computation the standalone filter
     // uses so the two never disagree on the same counters.
     if (fm.mw_success !== undefined || fm.mw_fail !== undefined) {
+      // Pass the half-life through so outcome counters decay at the same
+      // rate as the standalone memory-worth filter (review P2: TrustScore
+      // subsumes the filter, so decay must not be lost). Convert days → ms.
+      const halfLifeMs =
+        options.recencyHalfLifeDays !== undefined
+          ? options.recencyHalfLifeDays * 86_400_000
+          : undefined;
       const worth = computeMemoryWorth({
         mw_success: fm.mw_success,
         mw_fail: fm.mw_fail,
         lastAccessed: fm.lastAccessed,
         now,
+        halfLifeMs,
       });
       signals.memoryWorth = { score: worth.score, confidence: worth.confidence };
     }

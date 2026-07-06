@@ -112,7 +112,7 @@ import {
   buildMemoryWorthCounterMap,
   type MemoryWorthCounters,
 } from "./memory-worth-filter.js";
-import { applyTrustScoreStage, buildTrustSignalsForRerank } from "./trust-score-stage.js";
+import { applyTrustScoreStage, buildTrustSignalsForRerank, projectTrustForXray } from "./trust-score-stage.js";
 import type { TrustStageResultItem } from "./trust-score-stage.js";
 import { renderEpistemicHedge, type TrustSignals } from "./trust-score.js";
 import { reorderRecallResultsWithMmr } from "./recall-mmr.js";
@@ -1951,13 +1951,6 @@ export class Orchestrator {
     { at: number; signals: ReadonlyMap<string, TrustSignals> }
   >();
   private static readonly TRUST_SIGNAL_CACHE_TTL_MS = 30_000;
-  /**
-   * Issue #1577 — most recent TrustScore stage output keyed by memory path,
-   * populated by {@link applyTrustScoreRerank} and consumed by the injection
-   * formatter (epistemic hedge) and the X-ray capture path (per-result trust
-   * components + quarantine reasons). Cleared at the start of every recall.
-   */
-  private lastTrustByPath: Map<string, TrustStageResultItem> | null = null;
   /**
    * Per-session workspace selections keyed by sessionKey.
    * Set by the before_agent_start hook so recall() uses the correct
@@ -7254,12 +7247,6 @@ export class Orchestrator {
     caps: CapabilitySet = resolveCapabilities(this.config),
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
   ): Promise<string> {
-    // Issue #1577 — clear stale TrustScore data at recall entry so the
-    // epistemic-rendering formatter never surfaces trust hedges from a
-    // previous recall (e.g. when the gate is off this round, or the
-    // stage fails open). lastTrustByPath is repopulated only by
-    // applyTrustScoreRerank when the stage actually runs.
-    this.lastTrustByPath = null;
     const recallStart = Date.now();
     // Backend degradations observed by this recall's QMD searches (#1536):
     // collected via the execution-options observer and attached to the
@@ -7387,6 +7374,14 @@ export class Orchestrator {
     // per-result explain data (e.g. reinforcementBoost) from the result that
     // was actually served.
     let xrayRecalledResults: QmdSearchResult[] = [];
+    // Issue #1577 — per-recall trust map (admitted + quarantined items).
+    // A LOCAL, not instance state, so concurrent recalls on the same
+    // orchestrator cannot race on it (review: shared-trust-map concurrency).
+    // Populated by applyTrustScoreRerank on whichever recall path runs;
+    // consumed by formatQmdResults (epistemic hedge), publishRecallResults
+    // (quarantine filtering on ALL paths), and the X-ray capture (trust
+    // projection + quarantined-item visibility — rule 34).
+    let recallTrustByPath: Map<string, TrustStageResultItem> | null = null;
     const lcmStructuredXrayResults: RecallXrayResult[] = [];
     // Per-branch pre-limit candidate pool size for the X-ray filter
     // trace (issue #570 PR 1).  `recalledMemoryCount` is assigned
@@ -11090,7 +11085,9 @@ export class Orchestrator {
       // on lookup errors so a storage hiccup never breaks recall.
       if (caps.recallTrustScore && memoryResults.length > 0) {
         try {
-          memoryResults = await this.applyTrustScoreRerank(memoryResults, recallNamespaces);
+          const trustOutcome = await this.applyTrustScoreRerank(memoryResults, recallNamespaces);
+          memoryResults = trustOutcome.results;
+          recallTrustByPath = trustOutcome.trustByPath;
         } catch (err) {
           log.debug("trust-score stage failed open", { error: (err as Error).message });
         }
@@ -11216,6 +11213,7 @@ export class Orchestrator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
+        trustByPath: recallTrustByPath,
         });
         recalledMemoryIds = this.extractMemoryIdsFromResults(memoryResults);
         recalledMemoryPaths = memoryResults
@@ -11292,6 +11290,7 @@ export class Orchestrator {
               injectedChars: identityInjectedChars,
               truncated: identityInjectionTruncated,
             },
+          trustByPath: recallTrustByPath,
           });
           recalledMemoryIds = this.extractMemoryIdsFromResults(scoped);
           recalledMemoryPaths = scoped
@@ -11337,6 +11336,7 @@ export class Orchestrator {
                 injectedChars: identityInjectedChars,
                 truncated: identityInjectionTruncated,
               },
+            trustByPath: recallTrustByPath,
             });
             recalledMemoryIds = this.extractMemoryIdsFromResults(longTerm);
             recalledMemoryPaths = longTerm
@@ -11353,7 +11353,7 @@ export class Orchestrator {
         this.appendRecallSection(
           sectionBuckets,
           "workspace-context",
-          this.formatQmdResults("Workspace Context", globalResults, sessionKey),
+          this.formatQmdResults("Workspace Context", globalResults, sessionKey, recallTrustByPath),
         );
       }
 
@@ -11452,6 +11452,7 @@ export class Orchestrator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
+        trustByPath: recallTrustByPath,
         });
         recalledMemoryIds = this.extractMemoryIdsFromResults(scoped);
         recalledMemoryPaths = scoped
@@ -11559,6 +11560,7 @@ export class Orchestrator {
                   injectedChars: identityInjectedChars,
                   truncated: identityInjectionTruncated,
                 },
+              trustByPath: recallTrustByPath,
               });
               recalledMemoryIds = this.extractMemoryIdsFromResults(longTerm);
               recalledMemoryPaths = longTerm
@@ -11635,6 +11637,7 @@ export class Orchestrator {
                   injectedChars: identityInjectedChars,
                   truncated: identityInjectionTruncated,
                 },
+              trustByPath: recallTrustByPath,
               });
               recalledMemoryIds = this.extractMemoryIdsFromResults(recent);
               recalledMemoryPaths = recent
@@ -11681,6 +11684,7 @@ export class Orchestrator {
                     injectedChars: identityInjectedChars,
                     truncated: identityInjectionTruncated,
                   },
+                trustByPath: recallTrustByPath,
                 });
                 recalledMemoryIds = this.extractMemoryIdsFromResults(longTerm);
                 recalledMemoryPaths = longTerm
@@ -11729,6 +11733,7 @@ export class Orchestrator {
                 injectedChars: identityInjectedChars,
                 truncated: identityInjectionTruncated,
               },
+            trustByPath: recallTrustByPath,
             });
             recalledMemoryIds = this.extractMemoryIdsFromResults(longTerm);
             recalledMemoryPaths = longTerm
@@ -11999,6 +12004,7 @@ export class Orchestrator {
             // X-ray capture is best-effort; missing provenance must not
             // perturb recall or suppress the surfaced result.
           }
+          const trustItem = recallTrustByPath?.get(recalledPath);
           results.push({
             memoryId: derivedId,
             path: recalledPath,
@@ -12007,7 +12013,29 @@ export class Orchestrator {
             admittedBy: [],
             ...(provenance ? { provenance } : {}),
             ...(sourceSpan ? { sourceSpan } : {}),
+            // Issue #1577 — per-result trust projection for X-ray visibility.
+            ...(trustItem ? { trust: projectTrustForXray(trustItem) } : {}),
           });
+        }
+        // Issue #1577 — surface quarantined items in X-ray with their exclusion
+        // reason so operators see WHY a memory was dropped (rule 34 — exclusion
+        // must never look like "no result"). These are NOT in recalledMemoryPaths
+        // (they were excluded from injection) but ARE in the trust map.
+        if (recallTrustByPath) {
+          for (const [qPath, qItem] of recallTrustByPath) {
+            if (!qItem.quarantined || recalledMemoryPaths.includes(qPath)) continue;
+            const qId = idFromPath(qPath);
+            if (!qId) continue;
+            results.push({
+              memoryId: qId,
+              path: qPath,
+              servedBy,
+              scoreDecomposition: { final: 0 },
+              admittedBy: [],
+              rejectedBy: "trust-score:quarantine",
+              trust: projectTrustForXray(qItem),
+            });
+          }
         }
         // `considered` must reflect the pool size of the branch that
         // actually produced the admitted results, NOT the max across
@@ -17568,6 +17596,7 @@ export class Orchestrator {
     title: string,
     results: QmdSearchResult[],
     sessionKey?: string,
+    trustByPath?: Map<string, TrustStageResultItem> | null,
   ): string {
     // Issue #1582 — handles are only rendered when a session key is available:
     // resolution requires the handle history to have been recorded for this
@@ -17583,8 +17612,8 @@ export class Orchestrator {
     // cheap lever against confident-stale-answer failures). Gated separately
     // from scoring so rendering can ship after the stage is stable. High-band
     // and neutral items get no suffix (don't waste tokens on the common case).
-    const renderHedge = this.config.trustScoreEpistemicRendering && this.lastTrustByPath !== null;
-    const trustByPath = renderHedge ? this.lastTrustByPath : null;
+    const renderHedge = this.config.trustScoreEpistemicRendering && trustByPath !== null && trustByPath !== undefined;
+    const hedgeMap = renderHedge ? trustByPath : null;
     const lines = results.map((r, i) => {
       const snippet = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
@@ -17594,8 +17623,8 @@ export class Orchestrator {
       const handle = handleByIndex.get(i);
       const hedged = head.replace(/\s+$/, "");
       const withHandle = handle ? `${hedged} ${handle}` : hedged;
-      if (trustByPath) {
-        const item = trustByPath.get(r.path);
+      if (hedgeMap) {
+        const item = hedgeMap.get(r.path);
         if (item) {
           const hedge = renderEpistemicHedge(item.trust);
           if (hedge.length > 0) return `${withHandle} ${hedge}`;
@@ -17958,15 +17987,30 @@ export class Orchestrator {
       injectedChars: number;
       truncated: boolean;
     };
+    /**
+     * Issue #1577 — per-recall trust map. When present, quarantined items
+     * are filtered from injection on EVERY recall path (hot QMD, embedding
+     * fallback, cold archive, recent) so a faithfulness-contradicted memory
+     * cannot sneak in via a branch that bypasses trust scoring (review:
+     * fallback paths bypass trust). The map is also threaded to
+     * formatQmdResults for the epistemic hedge.
+     */
+    trustByPath?: Map<string, TrustStageResultItem> | null;
   }): void {
     const sectionId = "memories";
-    const memoryIds = this.extractMemoryIdsFromResults(options.results);
+    // Filter quarantined items from ALL recall paths so no branch can inject
+    // a hard-negative memory that trust scoring excluded on another path.
+    const trustByPath = options.trustByPath ?? null;
+    const injectable = trustByPath
+      ? options.results.filter((r) => !trustByPath.get(r.path)?.quarantined)
+      : options.results;
+    const memoryIds = this.extractMemoryIdsFromResults(injectable);
     this.trackMemoryAccess(memoryIds);
 
     this.appendRecallSection(
       options.sectionBuckets,
       sectionId,
-      this.formatQmdResults(options.title, options.results, options.sessionKey),
+      this.formatQmdResults(options.title, injectable, options.sessionKey, trustByPath),
     );
   }
 
@@ -18394,15 +18438,21 @@ export class Orchestrator {
    * orchestrator runs exactly one of the two (mutual exclusion, rule 39; the
    * double-multiplier test in trust-score-stage.test.ts pins it structurally).
    *
-   * Quarantine-band items are dropped from the returned (injectable) list but
-   * recorded in {@link lastTrustByPath} with `quarantined: true` so the X-ray
-   * capture path can surface them with a reason (rule 34).
+   * Returns the admitted results AND the per-path trust map (including
+   * quarantined items) so the caller can: (a) render epistemic hedges, (b)
+   * surface quarantined items in X-ray with a reason (rule 34), and (c) filter
+   * quarantined paths from fallback recall branches. The trust map is a
+   * per-recall local — never instance state — so concurrent recalls cannot
+   * race on it (review: shared-trust-map concurrency).
    */
   private async applyTrustScoreRerank(
     results: QmdSearchResult[],
     namespaces: string[],
-  ): Promise<QmdSearchResult[]> {
-    if (results.length === 0) return results;
+  ): Promise<{
+    results: QmdSearchResult[];
+    trustByPath: Map<string, TrustStageResultItem> | null;
+  }> {
+    if (results.length === 0) return { results, trustByPath: null };
     const now = new Date();
     const halfLifeDays =
       this.config.recallMemoryWorthHalfLifeMs > 0
@@ -18440,8 +18490,7 @@ export class Orchestrator {
       },
     );
     if (signals.size === 0) {
-      this.lastTrustByPath = null;
-      return results;
+      return { results, trustByPath: null };
     }
     // Synthetic monotone-decreasing rank so the multiplier rebias is applied
     // on top of upstream ordering, not raw QMD scores (see applyMemoryWorthRerank).
@@ -18453,11 +18502,12 @@ export class Orchestrator {
       maxMultiplier: this.config.trustScoreMaxMultiplier,
       quarantine: this.config.trustScoreQuarantine,
     });
-    this.lastTrustByPath = new Map(stage.all.map((item) => [item.path, item]));
+    const trustByPath = new Map(stage.all.map((item) => [item.path, item]));
     const byPath = new Map(results.map((r) => [r.path, r]));
-    return stage.admitted
+    const admitted = stage.admitted
       .map((item) => byPath.get(item.path))
       .filter((r): r is QmdSearchResult => r !== undefined);
+    return { results: admitted, trustByPath };
   }
 
   private diversifyAndLimitRecallResults(
@@ -18834,6 +18884,14 @@ export class Orchestrator {
      * Unset by default so existing call sites are unaffected.
      */
     xrayPoolSizeSink?: { size: number };
+    /**
+     * Issue #1577 — out-parameter that receives the TrustScore stage's
+     * per-path trust map (admitted + quarantined) when the cold path runs
+     * trust scoring. Mirrors the xrayPoolSizeSink pattern so recallInternal
+     can propagate trust data for epistemic rendering and X-ray visibility
+     without changing the cold pipeline's return type.
+     */
+    trustByPathSink?: { trustByPath: Map<string, TrustStageResultItem> | null };
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
@@ -19182,7 +19240,9 @@ export class Orchestrator {
     // Fail-open on lookup errors.
     if (caps.recallTrustScore && results.length > 0) {
       try {
-        results = await this.applyTrustScoreRerank(results, options.recallNamespaces);
+        const trustOutcome = await this.applyTrustScoreRerank(results, options.recallNamespaces);
+        results = trustOutcome.results;
+        if (options.trustByPathSink) options.trustByPathSink.trustByPath = trustOutcome.trustByPath;
       } catch (err) {
         log.debug("trust-score stage (cold) failed open", {
           error: (err as Error).message,
