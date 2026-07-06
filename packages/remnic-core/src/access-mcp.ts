@@ -34,6 +34,7 @@ import {
   buildChatGptMemoryInspectorResult,
   type RemnicChatGptMemoryInspectorInput,
 } from "./mcp-memory-inspector-app.js";
+import { processChatMessage } from "./chat/chat-factory.js";
 
 type JsonRpcId = string | number | null;
 
@@ -354,6 +355,12 @@ export class EngramMcpServer {
    */
   private readonly codegraphVisible: boolean;
   private readonly sessionDeltaVisible: boolean;
+  /**
+   * Whether the `memory_chat` tool should appear in `tools/list` (issue
+   * #1583). Gated on `chat.enabled`. When false the tools array is
+   * byte-identical to pre-feature (rule 39).
+   */
+  private readonly chatVisible: boolean;
 
   constructor(
     private readonly service: EngramAccessService,
@@ -366,6 +373,7 @@ export class EngramMcpServer {
       architectureCardVisible?: boolean;
       codegraphVisible?: boolean;
       sessionDeltaVisible?: boolean;
+      chatVisible?: boolean;
     } = {},
   ) {
     this.citationsEnabled = options.citationsEnabled === true;
@@ -375,6 +383,7 @@ export class EngramMcpServer {
     this.architectureCardVisible = options.architectureCardVisible === true;
     this.codegraphVisible = options.codegraphVisible === true;
     this.sessionDeltaVisible = options.sessionDeltaVisible === true;
+    this.chatVisible = options.chatVisible === true;
     this.authenticatedPrincipal =
       options.principal?.trim() ||
       readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() ||
@@ -2149,6 +2158,26 @@ export class EngramMcpServer {
       );
       this.tools = [...this.tools, ...deltaTools];
     }
+    if (this.chatVisible) {
+      const chatTools = withToolAliases(
+        {
+          name: "engram.memory_chat",
+          description:
+            "Conversational memory inspection and correction (issue #1583). Send a message to chat about what Remnic remembers, inspect memories, or request corrections. Returns {reply, chatSessionId, pendingPlan?}.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              message: { type: "string", description: "The user's message — a question about memories, a correction request, or a confirmation (yes/apply) to proceed with a pending plan." },
+              chatSessionId: { type: "string", description: "Optional existing chat session id to resume. Omit to start a new session." },
+            },
+            required: ["message"],
+            additionalProperties: false,
+          },
+        },
+        this.emitLegacyTools,
+      );
+      this.tools = [...this.tools, ...chatTools];
+    }
   }
 
   /** Get clientInfo for a specific MCP session. Returns undefined for non-MCP requests. */
@@ -3658,6 +3687,21 @@ export class EngramMcpServer {
           dryRun,
           namespace,
           authenticatedPrincipal: effectivePrincipal,
+        });
+      }
+      case "engram.memory_chat": {
+        const message = typeof args.message === "string" ? args.message : "";
+        if (!message) {
+          throw new EngramAccessInputError("message is required");
+        }
+        const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId : undefined;
+        return processChatMessage({
+          service: this.service,
+          config: this.service.configRef.chat,
+          memoryDir: this.service.memoryDir,
+          message,
+          ...(chatSessionId ? { chatSessionId } : {}),
+          ...(effectivePrincipal ? { principal: effectivePrincipal } : {}),
         });
       }
       default:

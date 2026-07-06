@@ -32,6 +32,7 @@ import { getOperation } from "./access-boundary.js";
 // (memory_get / memory_store) as a side effect; the HTTP handlers below
 // dispatch the migrated routes through the registry (issue #1525).
 import "./access-operations.js";
+import { handleChatMessage, handleChatEventsSSE } from "./chat/chat-http.js";
 
 export interface EngramAccessHttpServerOptions {
   service: EngramAccessService;
@@ -319,6 +320,7 @@ export class EngramAccessHttpServer {
       architectureCardVisible: this.service.architectureCardSurfaceVisible,
       codegraphVisible: this.service.codegraphSurfaceVisible,
       sessionDeltaVisible: this.service.sessionDeltaSurfaceVisible,
+      chatVisible: this.service.configRef.chat.enabled,
     });
   }
 
@@ -1972,6 +1974,26 @@ export class EngramAccessHttpServer {
     if (req.method === "GET" && pathname === "/engram/v1/graph/events") {
       void getOperation("graph_events"); // boundary dispatch (issue #1525)
       await this.handleGraphEventsSSE(req, res);
+      return;
+    }
+
+    // ── Chat endpoints (issue #1583) ────────────────────────────────────────
+    if (req.method === "POST" && pathname === "/engram/v1/chat/message") {
+      const body = await this.readJsonBody(req) as Record<string, unknown>;
+      await handleChatMessage(
+        req, res, body,
+        { service: this.service, config: this.service.configRef.chat, memoryDir: this.service.memoryDir },
+        this.resolveRequestPrincipal(req),
+      );
+      return;
+    }
+    const chatEventsMatch = /^\/engram\/v1\/chat\/events\/([^/]+)$/.exec(pathname);
+    if (req.method === "GET" && chatEventsMatch) {
+      await handleChatEventsSSE(
+        req, res, chatEventsMatch[1] ?? "",
+        { service: this.service, config: this.service.configRef.chat, memoryDir: this.service.memoryDir },
+        this.resolveRequestPrincipal(req),
+      );
       return;
     }
 

@@ -95,6 +95,7 @@ import { WebDavServer } from "./network/webdav.js";
 import { GraphDashboardServer, type DashboardStatus } from "./dashboard-runtime.js";
 import { EngramAccessService } from "./access-service.js";
 import { EngramAccessHttpServer } from "./access-http.js";
+import { runChatCli } from "./chat/chat-cli.js";
 import {
   buildActionConfidenceInputFromOptions,
   evaluateActionConfidence,
@@ -9334,6 +9335,33 @@ export function registerCli(
               }
             }
           }
+        });
+      // ── Chat — conversational memory inspection + correction (#1583) ────
+      cmd
+        .command("chat")
+        .description("Conversational memory inspection and correction (issue #1583)")
+        .option("--session <id>", "Resume an existing chat session")
+        .option("--once", "Process a single message from stdin and exit (non-TTY/scripting)")
+        .option("--principal <principal>", "Trusted principal (defaults to config/env)")
+        .action(async (...args: unknown[]) => {
+          const options = (args[0] ?? {}) as Record<string, unknown>;
+          const service = new EngramAccessService(orchestrator);
+          let input: string | undefined;
+          if (options.once === true) {
+            const chunks: Buffer[] = [];
+            for await (const chunk of process.stdin) {
+              chunks.push(chunk as Buffer);
+            }
+            input = Buffer.concat(chunks).toString("utf8").trim();
+          }
+          await runChatCli({
+            service,
+            config: orchestrator.config.chat,
+            memoryDir: orchestrator.config.memoryDir,
+            principal: typeof options.principal === "string" ? options.principal : undefined,
+            ...(typeof options.session === "string" ? { sessionId: options.session } : {}),
+            ...(options.once === true ? { once: true, input } : {}),
+          });
         });
     },
     { commands: ["engram"] },
