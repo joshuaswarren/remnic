@@ -7,7 +7,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdir, rm, readFile } from "node:fs/promises";
+import { mkdir, rm, readFile, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -269,4 +269,39 @@ test("budget exhaustion summary LLM failure does not crash (Thread 16)", async (
   // Should return a partial reply, not throw.
   assert.ok(result.reply.length > 0, "Should return a fallback reply");
   assert.ok(result.skippedTools !== undefined, "Should report skipped tools");
+});
+
+// ---------------------------------------------------------------------------
+// TTL boundary (issue #1685 item 1 / #1687 Thread 21)
+// ---------------------------------------------------------------------------
+
+test("cleanupExpiredChatSessions honors TTL boundary [0, ttlHours) — age >= ttl expires", async () => {
+  const dir = await makeTempDir();
+  const ttlHours = 2;
+  const ttlMs = ttlHours * 3600 * 1000;
+
+  // Session aged past the TTL (mtime set to ttlHours ago; by the time the
+  // sweep stat()s it a few ms have elapsed, so age >= ttl deterministically
+  // — the boundary is inclusive: age ∈ [0, ttl) survives, age >= ttl expires).
+  const expired = await createChatSession(dir, { principal: "expired" });
+  const expiredFile = chatSessionFile(dir, expired.id);
+  const atTtlSeconds = (Date.now() - ttlMs) / 1000;
+  await utimes(expiredFile, atTtlSeconds, atTtlSeconds);
+
+  // Session aged well under the TTL → must survive.
+  const fresh = await createChatSession(dir, { principal: "fresh" });
+  const freshFile = chatSessionFile(dir, fresh.id);
+  const underTtlSeconds = (Date.now() - (ttlMs - 6 * 60 * 1000)) / 1000; // ~1.9h old
+  await utimes(freshFile, underTtlSeconds, underTtlSeconds);
+
+  const removed = await cleanupExpiredChatSessions(dir, ttlHours);
+  assert.equal(removed, 1, "only the expired session should be removed");
+
+  // The fresh session file must still be on disk.
+  const freshStillExists = await readFile(freshFile, "utf8").then(() => true).catch(() => false);
+  assert.ok(freshStillExists, "session aged under the TTL must survive the sweep");
+
+  // The expired session file must be gone.
+  const expiredGone = await readFile(expiredFile, "utf8").then(() => false).catch(() => true);
+  assert.ok(expiredGone, "session aged at/over the TTL must be swept");
 });
