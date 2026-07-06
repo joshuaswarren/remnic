@@ -1060,6 +1060,25 @@ async function buildOperatorConfigReviewReport(input: {
   };
 }
 
+/**
+ * Summarize the provenance coverage of a set of memories (issue #1575 PR 3).
+ * Pure function — counts the verified/unverified/none distribution so the
+ * doctor check and any future surface can consume it without coupling to the
+ * orchestrator. Legacy memories (no `provenance` field) count as `"none"`.
+ */
+export function summarizeProvenanceCoverage(
+  memories: ReadonlyArray<{ frontmatter: { provenance?: string } }>,
+): { counts: { verified: number; unverified: number; none: number }; total: number } {
+  const counts = { verified: 0, unverified: 0, none: 0 };
+  for (const mem of memories) {
+    const tag = mem.frontmatter.provenance ?? "none";
+    if (tag === "verified") counts.verified += 1;
+    else if (tag === "unverified") counts.unverified += 1;
+    else counts.none += 1;
+  }
+  return { counts, total: memories.length };
+}
+
 export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise<OperatorDoctorReport> {
   const now = options.now ?? new Date();
   const configStatus = await loadCliPluginConfig(options.configPath);
@@ -1175,6 +1194,67 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
       ? undefined
       : "Run a normal agent turn or `openclaw engram consolidate` after seeding memory.",
     details: meta,
+  });
+
+  // Provenance coverage (issue #1575 PR 3). Operators need to see the
+  // verified/unverified/none distribution grow as extraction backfills.
+  // Best-effort: a read failure surfaces as a warn, not an error.
+  let provenanceCoverage: ReturnType<typeof summarizeProvenanceCoverage> = {
+    counts: { verified: 0, unverified: 0, none: 0 },
+    total: 0,
+  };
+  let provenanceReadOk = true;
+  let provenancePartialTiers: string[] = [];
+  try {
+    // Include all tiers so cold-migrated and archived memories are counted
+    // (codex thread PRRT_kwDORJXyws6Ojqz8 — readAllMemories is hot-only).
+    // Use allSettled so a real read failure (e.g. locked encrypted store)
+    // is surfaced as a partial-read warning, not silently swallowed
+    // (codex thread PRRT_kwDORJXyws6OjygQ).
+    const [hot, archived, cold] = await Promise.allSettled([
+      storage.readAllMemories(),
+      storage.readArchivedMemories(),
+      storage.readAllColdMemories(),
+    ]);
+    const all: { frontmatter: { provenance?: string } }[] = [];
+    if (hot.status === "fulfilled") all.push(...hot.value);
+    else provenancePartialTiers.push("hot");
+    if (archived.status === "fulfilled") all.push(...archived.value);
+    else provenancePartialTiers.push("archived");
+    if (cold.status === "fulfilled") all.push(...cold.value);
+    else provenancePartialTiers.push("cold");
+    provenanceCoverage = summarizeProvenanceCoverage(all);
+  } catch {
+    provenanceReadOk = false;
+  }
+  const pc = provenanceCoverage.counts;
+  const totalProvenance = provenanceCoverage.total;
+  const provenanceCovered = pc.verified + pc.unverified;
+  const partialSuffix = provenancePartialTiers.length > 0
+    ? ` (partial: ${provenancePartialTiers.join("/")} tier unreadable)`
+    : "";
+  checks.push({
+    key: "provenance_coverage",
+    status: !provenanceReadOk || provenancePartialTiers.length > 0
+      ? "warn"
+      : totalProvenance === 0
+        ? "warn"
+        : provenanceCovered === 0
+          ? "warn"
+          : "ok",
+    summary: !provenanceReadOk
+      ? "Could not read memories for provenance coverage."
+      : totalProvenance === 0
+        ? "No memories found yet — provenance coverage is empty."
+        : `Provenance coverage: ${pc.verified} verified, ${pc.unverified} unverified, ${pc.none} none (${totalProvenance} total).${partialSuffix}`,
+    remediation: !provenanceReadOk
+      ? undefined
+      : provenancePartialTiers.length > 0
+        ? `Some tiers could not be read (${provenancePartialTiers.join(", ")}). Check storage health and re-run.`
+        : provenanceCovered === 0 && totalProvenance > 0
+          ? "New extractions will carry source spans. Existing legacy memories remain `none` until re-extracted."
+          : undefined,
+    details: { provenanceCounts: pc, total: totalProvenance, partialTiers: provenancePartialTiers.length > 0 ? provenancePartialTiers : undefined },
   });
 
   const syncedChunkCount =
