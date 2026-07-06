@@ -75,9 +75,9 @@ export interface MemCorrectLeaderboardRow {
   uptake_latency_censored: number;
   non_resurrection: number;
   collateral_delta: number;
-  scope_precision: number;
+  scope_precision: number | null;
   false_apply: number;
-  reassertion: number;
+  reassertion: number | null;
   provenance_fidelity: number | null;
 }
 
@@ -169,9 +169,9 @@ export function buildMemCorrectLeaderboardRow(
     uptake_latency_censored: numberOrZero(aggregate.uptake_latency_censored),
     non_resurrection: numberOrZero(aggregate.non_resurrection),
     collateral_delta: numberOrZero(aggregate.collateral_delta),
-    scope_precision: numberOrZero(aggregate.scope_precision),
+    scope_precision: typeof aggregate.scope_precision === "number" ? aggregate.scope_precision : null,
     false_apply: numberOrZero(aggregate.false_apply),
-    reassertion: numberOrZero(aggregate.reassertion),
+    reassertion: typeof aggregate.reassertion === "number" ? aggregate.reassertion : null,
     provenance_fidelity:
       typeof provenance === "number" ? provenance : null,
   };

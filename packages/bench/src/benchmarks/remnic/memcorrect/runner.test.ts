@@ -73,6 +73,7 @@ test("runner: baseline run emits directional scores (collateral_delta excluded; 
   const alwaysPresent = [
     "uptake_at_next",
     "uptake_latency",
+    "uptake_latency_censored",
     "non_resurrection",
     "false_apply",
   ];

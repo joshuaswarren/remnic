@@ -396,6 +396,7 @@ export async function runMemCorrectBenchmark(
     const scores: Record<string, number> = {
       uptake_at_next: m.uptake_at_next,
       uptake_latency: m.uptake_latency,
+      uptake_latency_censored: m.uptake_latency_censored,
       non_resurrection: m.non_resurrection,
       false_apply: m.false_apply,
     };
