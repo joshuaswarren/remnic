@@ -15329,7 +15329,7 @@ export class Orchestrator {
                 newMemoryId: parentId,
                 entityRef: supersessionEntityRef,
                 structuredAttributes: fact.structuredAttributes,
-                createdAt: supersessionOrderingAt(sourceContext?.validAt),
+                createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
                 // #1578 r3: an extracted end-only bound (validFrom absent) is
                 // historical, not a new authoritative state — never let it
                 // supersede a later active fact (codex P1 on :15534).
@@ -15568,7 +15568,7 @@ export class Orchestrator {
             newMemoryId: memoryId,
             entityRef: supersessionEntityRef,
             structuredAttributes: fact.structuredAttributes,
-            createdAt: supersessionOrderingAt(sourceContext?.validAt),
+            createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
             enabled: this.config.temporalSupersessionEnabled &&
               !(biTemporal && !biTemporal.validFrom),
           });
