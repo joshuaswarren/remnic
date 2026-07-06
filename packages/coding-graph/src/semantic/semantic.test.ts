@@ -46,7 +46,7 @@ function createCountingProvider(
     id: "stub-embedder",
     model: "stub-model-v1",
     dimensions: dims,
-    embed(text: string) {
+    async embed(text: string) {
       embedCount += 1;
       if (opts.failMode === "timeout") {
         throw new (class extends Error {
@@ -97,7 +97,7 @@ function countingProvider(
       embedCount = 0;
       provider.embedCount = 0;
     },
-    embed(text: string) {
+    async embed(text: string) {
       embedCount += 1;
       provider.embedCount = embedCount;
       if (opts.failMode === "timeout") throw new Error("stub timeout");
