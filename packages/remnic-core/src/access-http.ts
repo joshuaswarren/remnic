@@ -1496,6 +1496,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/correction/pending") {
+      void getOperation("correction_pending"); // boundary dispatch (issue #1668)
       const namespace = parsed.searchParams.get("namespace") ?? undefined;
       const sessionKey = parsed.searchParams.get("sessionKey") ?? undefined;
       const plans = await this.service.correctionListPending({

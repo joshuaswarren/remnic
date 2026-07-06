@@ -193,7 +193,7 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   // Correction Contract (issue #1580) — plan/apply/pending.
   { method: "POST", pathname: "/engram/v1/correction/plan", operation: "memory_correct_plan" },
   { method: "POST", pathname: "/engram/v1/correction/apply", operation: "memory_correct_apply" },
-  { method: "GET", pathname: "/engram/v1/correction/pending", operation: "review_queue_list" },
+  { method: "GET", pathname: "/engram/v1/correction/pending", operation: "correction_pending" },
   { method: "POST", pathname: "/engram/v1/memories", operation: "memory_store" },
   { method: "POST", pathname: "/engram/v1/coding/decisions", operation: "coding_decision" },
   { method: "POST", pathname: "/engram/v1/coding/architecture", operation: "coding_architecture" },

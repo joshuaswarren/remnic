@@ -2708,6 +2708,24 @@ export class EngramMcpServer {
     let envelope: Record<string, unknown>;
     if (migrated === "memory_store") {
       envelope = parseMcpRequest("memoryStore", args);
+    } else if (migrated === "suggestion_submit") {
+      envelope = parseMcpRequest("suggestionSubmit", args);
+    } else if (migrated === "action_confidence") {
+      envelope = parseMcpRequest("actionConfidence", args);
+    } else if (migrated === "day_summary") {
+      envelope = parseMcpRequest("daySummary", args);
+    } else if (migrated === "capsule_export") {
+      envelope = parseMcpRequest("capsuleExport", args);
+    } else if (migrated === "capsule_import") {
+      envelope = parseMcpRequest("capsuleImport", args);
+    } else if (migrated === "capsule_list") {
+      envelope = parseMcpRequest("capsuleList", args);
+    } else if (migrated === "observe") {
+      envelope = parseMcpRequest("observe", args);
+    } else if (migrated === "lcm_compaction_flush") {
+      envelope = parseMcpRequest("lcmCompactionFlush", args);
+    } else if (migrated === "lcm_compaction_record") {
+      envelope = parseMcpRequest("lcmCompactionRecord", args);
     } else if (migrated.startsWith("codegraph_")) {
       envelope = { ...args, tool: migrated.slice("codegraph_".length) };
     } else if (migrated === "chat_message") {

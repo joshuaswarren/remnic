@@ -81,6 +81,7 @@ export type OperationName =
   | "suggestion_submit"
   | "entity_get"
   | "review_queue_list"
+  | "correction_pending"
   | "observe"
   | "lcm_search"
   | "lcm_compaction_flush"
