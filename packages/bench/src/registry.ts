@@ -135,6 +135,10 @@ import {
   retentionAgedDatasetDefinition,
   runRetentionAgedDatasetBenchmark,
 } from "./benchmarks/remnic/retention-aged-dataset/runner.js";
+import {
+  memcorrectDefinition,
+  runMemCorrectBenchmark,
+} from "./benchmarks/remnic/memcorrect/runner.js";
 
 interface RegisteredBenchmark extends BenchmarkDefinition {
   run?: (options: ResolvedRunBenchmarkOptions) => Promise<BenchmarkResult>;
@@ -272,6 +276,10 @@ const REGISTERED_BENCHMARKS: RegisteredBenchmark[] = [
   {
     ...retentionAgedDatasetDefinition,
     run: runRetentionAgedDatasetBenchmark,
+  },
+  {
+    ...memcorrectDefinition,
+    run: runMemCorrectBenchmark,
   },
 ];
 

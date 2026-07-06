@@ -102,6 +102,20 @@ explicit dates, turn numbers, plan ids, speaker names, step labels,
 preference updates, and keypoint names help retrieve precise evidence,
 while hidden gold metadata remains unavailable to the answerer.
 
+## MemCorrect (open correction benchmark)
+
+Remnic also publishes **MemCorrect v1** (`memcorrect-v1`), an open
+correction / steerability benchmark that measures whether a memory system
+can be *corrected*: uptake speed, non-resurrection under maintenance and
+re-ingest, collateral damage to unrelated memories, scope precision,
+false-apply, and re-assertion. It is system-agnostic — any memory system
+that implements the `MemCorrectSystemAdapter` interface can be scored.
+Methodology, metric definitions, and the submission contract are in
+[`docs/benchmarks/memcorrect.md`](./benchmarks/memcorrect.md). Lab
+artifacts land in `docs/benchmarks/results/` once the local-lab Tier-L run
+completes; until then the hermetic baseline smoke (`remnic bench run
+--benchmark memcorrect --quick`) is the reproducible in-tree check.
+
 ## Ethics
 
 - No dataset file or raw LLM trace is committed to this repo.
