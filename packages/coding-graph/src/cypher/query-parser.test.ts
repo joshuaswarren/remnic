@@ -899,6 +899,61 @@ test("INVARIANT: every documented label maps to a db label", () => {
   }
 });
 
+
+test("REJECT: variable-length depth above the supported cap fails with invalid_query (not a silent empty result)", async () => {
+  const { store, dir } = await tempStoreWithFile(multiPathCypherFile);
+  try {
+    const r = executeCypher(
+      store,
+      'MATCH (a:Function {name: "a"})-[:CALLS*2000]->(b) RETURN b',
+    );
+    assert.equal(r.ok, false, "*2000 must fail, not silently return an empty success");
+    if (r.ok) throw new Error("expected failure");
+    assert.equal(r.code, "invalid_query");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("ACCEPT: truncated flag surfaces when variable-length enumeration hits the path cap (cursor Bugbot)", async () => {
+  // A complete directed graph on 23 nodes (no self-loops): 506 edges.
+  // *1..3 from one node enumerates 22 + 22*22 + 22*22*22 = 11_154 paths,
+  // exceeding the DEFAULT_TRAVERSE_PATHS_MAX (10_000) cap. The executor
+  // must surface `truncated: true` rather than silently returning a
+  // partial endpoint set.
+  const N = 23;
+  const symbols: SymbolIR[] = [];
+  for (let i = 0; i < N; i += 1) {
+    symbols.push(sym("cp." + i, String(i), i * 10, i * 10 + 9));
+  }
+  const edges: EdgeIR[] = [];
+  for (let i = 0; i < N; i += 1) {
+    for (let j = 0; j < N; j += 1) {
+      if (i !== j) edges.push(edge("cp." + i, "cp." + j));
+    }
+  }
+  const completeFile: StoreFileIR = {
+    path: "src/complete.ts",
+    language: "typescript",
+    contentHash: "h-complete",
+    symbols,
+    edges,
+  };
+  const { store, dir } = await tempStoreWithFile(completeFile);
+  try {
+    const r = executeCypher(
+      store,
+      'MATCH (a:Function {name: "0"})-[:CALLS*1..3]->(b) RETURN b.qualifiedName',
+    );
+    assert.equal(r.ok, true, "query should succeed (partial result, not failure)");
+    if (!r.ok) throw new Error("expected ok");
+    assert.equal(r.truncated, true, "truncated must be true when the path cap is hit");
+    assert.ok(r.rows.length > 0, "partial endpoint set is still returned");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
 test("INVARIANT: the 13 documented labels are all present", () => {
   // Project, Package, Folder, File, Module, Class, Function, Method,
   // Interface, Enum, Type, Route, Resource (issue #1552 body).
@@ -918,4 +973,135 @@ test("INVARIANT: the 13 documented labels are all present", () => {
     "Type",
   ];
   assert.deepEqual([...VALID_CYPHER_LABELS].sort(), expected);
+});
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// ACCEPT — variable-length path enumeration (issue #1650).
+// Exact `*N` (N > 1) must include nodes reachable at BOTH a shorter and a
+// length-N path. The fixture has two paths to b (a->b at len 1, a->c->b at
+// len 2) and a diamond to d (a->b->d, a->c->d, both len 2).
+//
+//   a -> b
+//   a -> c
+//   c -> b
+//   b -> d
+//   c -> d
+// ──────────────────────────────────────────────────────────────────────────
+
+const multiPathCypherFile: StoreFileIR = {
+  path: "src/mp.ts",
+  language: "typescript",
+  contentHash: "h-mp",
+  symbols: [
+    sym("mp.a", "a", 0, 10),
+    sym("mp.b", "b", 10, 20),
+    sym("mp.c", "c", 20, 30),
+    sym("mp.d", "d", 30, 40),
+  ],
+  edges: [
+    edge("mp.a", "mp.b"),
+    edge("mp.a", "mp.c"),
+    edge("mp.c", "mp.b"),
+    edge("mp.b", "mp.d"),
+    edge("mp.c", "mp.d"),
+  ],
+};
+
+async function tempStoreWithFile(
+  file: StoreFileIR,
+): Promise<{ store: GraphStore; dir: string }> {
+  const dir = await mkdtemp(path.join(tmpdir(), "cypher-1650-"));
+  const store = await GraphStore.open({
+    dbPath: path.join(dir, "graph.sqlite"),
+    repoRoot: dir,
+  });
+  const r = await store.upsertFileBatch([file]);
+  assert.equal(r.ok, true, "fixture ingest must succeed");
+  return { store, dir };
+}
+
+test("ACCEPT: *N (N>1) includes a node reachable at a shorter AND a length-N path (issue #1650)", async () => {
+  const { store, dir } = await tempStoreWithFile(multiPathCypherFile);
+  try {
+    // b is reachable at len 1 (a->b) AND len 2 (a->c->b). Under the old
+    // BFS compile target, b was visited at depth 1 and dropped by the
+    // depth==2 filter; the length-2 path a->c->b now qualifies it.
+    const { rows } = await run(
+      store,
+      'MATCH (a:Function {name: "a"})-[:CALLS*2]->(b) RETURN b.qualifiedName',
+    );
+    const qnames = rows.map((r) => r["b.qualifiedName"] as string).sort();
+    assert.deepEqual(qnames, ["mp.b", "mp.d"]);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("ACCEPT: *1..N unchanged — returns reachable nodes, no regression (issue #1650)", async () => {
+  const { store, dir } = await tempStoreWithFile(multiPathCypherFile);
+  try {
+    // *1..2 from a: b (len1), c (len1), d (len2). Endpoint-dedup keeps
+    // this identical to the prior BFS shortest-depth behavior.
+    const { rows } = await run(
+      store,
+      'MATCH (a:Function {name: "a"})-[:CALLS*1..2]->(b) RETURN b.qualifiedName',
+    );
+    const qnames = rows.map((r) => r["b.qualifiedName"] as string).sort();
+    assert.deepEqual(qnames, ["mp.b", "mp.c", "mp.d"]);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("ACCEPT: diamond *2 reaches the far node via either length-2 path", async () => {
+  const { store, dir } = await tempStoreWithFile(multiPathCypherFile);
+  try {
+    // d is reachable only via length-2 paths (a->b->d, a->c->d). It must
+    // appear in *2 results (deduped to one row).
+    const { rows } = await run(
+      store,
+      'MATCH (a:Function {name: "a"})-[:CALLS*2]->(b) RETURN b.name',
+    );
+    const names = rows.map((r) => r["b.name"] as string).sort();
+    assert.deepEqual(names, ["b", "d"]);
+    // d appears exactly once (endpoint-dedup), not once per path.
+    const dRows = rows.filter((r) => r["b.name"] === "d");
+    assert.equal(dRows.length, 1);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("ACCEPT: *N on a cyclic graph terminates (cycle safety via relationship-uniqueness)", async () => {
+  // a -> b -> c -> a (cycle) plus a self-edge on b.
+  const cyclicFile: StoreFileIR = {
+    path: "src/cyc.ts",
+    language: "typescript",
+    contentHash: "h-cyc",
+    symbols: [
+      sym("cyc.a", "a", 0, 10),
+      sym("cyc.b", "b", 10, 20),
+      sym("cyc.c", "c", 20, 30),
+    ],
+    edges: [
+      edge("cyc.a", "cyc.b"),
+      edge("cyc.b", "cyc.c"),
+      edge("cyc.c", "cyc.a"),
+      edge("cyc.b", "cyc.b"),
+    ],
+  };
+  const { store, dir } = await tempStoreWithFile(cyclicFile);
+  try {
+    // Must complete (relationship-uniqueness bounds enumeration) and
+    // return only nodes in the cycle.
+    const { rows } = await run(
+      store,
+      'MATCH (a:Function {name: "a"})-[:CALLS*1..4]->(b) RETURN b.qualifiedName',
+    );
+    const qnames = rows.map((r) => r["b.qualifiedName"] as string).sort();
+    assert.deepEqual(qnames, ["cyc.a", "cyc.b", "cyc.c"]);
+  } finally {
+    await dispose(store, dir);
+  }
 });

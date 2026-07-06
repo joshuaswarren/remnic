@@ -552,6 +552,452 @@ test("traverse: malformed edgeTypes (non-array or non-string element) rejected w
 });
 
 // ──────────────────────────────────────────────────────────────────────────
+// traversePaths(): path-enumerating traversal (issue #1650). Unlike
+// traverse()'s BFS (one hit per node at shortest depth), this primitive
+// yields one hit per distinct relationship-simple path, so an exact `*N`
+// (N > 1) honors length-N paths to nodes also reachable at a shorter depth.
+// ──────────────────────────────────────────────────────────────────────────
+
+// Fixture: a graph with multiple paths to the same endpoint.
+//   a -> b          (b reachable at len 1)
+//   a -> c
+//   c -> b          (b ALSO reachable at len 2 via a->c->b)
+//   b -> d
+//   c -> d          (d reachable at len 2 via TWO paths: a->b->d, a->c->d)
+const multiPathFile: StoreFileIR = {
+  path: "src/multipath.ts",
+  language: "typescript",
+  contentHash: "h-multipath",
+  symbols: [
+    sym("mp.a", "a", 0, 10),
+    sym("mp.b", "b", 10, 20),
+    sym("mp.c", "c", 20, 30),
+    sym("mp.d", "d", 30, 40),
+  ],
+  edges: [
+    edge("mp.a", "mp.b"),
+    edge("mp.a", "mp.c"),
+    edge("mp.c", "mp.b"),
+    edge("mp.b", "mp.d"),
+    edge("mp.c", "mp.d"),
+  ],
+};
+
+test("traversePaths: endpoint reachable at len 1 AND len 2 yields a hit for each path (issue #1650 core)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    const out = store.traversePaths({ start: "mp.a", maxHops: 2 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.truncated, false);
+    // len1: a->b, a->c ; len2: a->b->d, a->c->b, a->c->d  => 5 paths.
+    assert.equal(out.hits.length, 5);
+    // b is an endpoint at BOTH length 1 (a->b) and length 2 (a->c->b).
+    // BFS traverse would visit b only once at depth 1.
+    const bHits = out.hits.filter((h) => h.qualifiedName === "mp.b");
+    assert.equal(bHits.length, 2, "b must appear once per distinct path");
+    const bLengths = bHits.map((h) => h.length).sort();
+    assert.deepEqual(bLengths, [1, 2]);
+    // The length-2 hit to b must trace a->c->b.
+    const bLen2 = bHits.find((h) => h.length === 2)!;
+    assert.equal(bLen2.nodeIds.length, 3);
+    // The length-2 path to b is a->c->b: middle node is c, and every hop
+    // is a CALLS edge (kilo-code-bot: the prior line was a tautology).
+    const cHit = out.hits.find((h) => h.qualifiedName === "mp.c" && h.length === 1)!;
+    assert.equal(bLen2.nodeIds[1], cHit.nodeId, "length-2 path to b is a->c->b");
+    assert.equal(bLen2.nodeIds[0], out.hits[0]!.nodeIds[0], "path starts at the start node");
+    assert.deepEqual(bLen2.edgeTypes, ["CALLS", "CALLS"]);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: diamond yields two length-2 paths to the far node", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    const out = store.traversePaths({ start: "mp.a", maxHops: 2 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    const dHits = out.hits.filter((h) => h.qualifiedName === "mp.d");
+    assert.equal(dHits.length, 2, "d reachable via two distinct len-2 paths");
+    assert.ok(dHits.every((h) => h.length === 2));
+    // The two paths are a->b->d and a->c->d (distinct middle node).
+    const middles = new Set(dHits.map((h) => h.nodeIds[1]));
+    assert.equal(middles.size, 2, "two distinct middle nodes (b and c)");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: relationship-uniqueness terminates on a cyclic graph and caps path length", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([cyclicFile]);
+    assert.equal(r.ok, true);
+    // cyclicFile: a->b->c->a plus a self-edge on b. Relationship-uniqueness
+    // must bound enumeration (each edge used once per path) so this completes.
+    const out = store.traversePaths({ start: "cyc.a", maxHops: 5 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.ok(out.hits.length > 0, "should enumerate at least the len-1 path");
+    // No path exceeds maxHops.
+    assert.ok(out.hits.every((h) => h.length <= 5));
+    // Every hit's nodeIds reconstructs to length+1 entries.
+    assert.ok(out.hits.every((h) => h.nodeIds.length === h.length + 1));
+    // relationship-uniqueness allows revisiting a node via a DISTINCT edge:
+    // a->b->c->a is valid (edges a-b, b-c, c-a all different) and reaches a
+    // at length 3. Node-uniqueness would block this.
+    const backToA = out.hits.find((h) => h.qualifiedName === "cyc.a" && h.length === 3);
+    assert.ok(backToA, "a->b->c->a (len 3) must be enumerated under relationship-uniqueness");
+    assert.deepEqual(backToA!.nodeIds.length, 4);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: maxPaths cap sets truncated and bounds the hit count", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    // 5 distinct paths of length <= 2 exist from a; cap at 2.
+    const out = store.traversePaths({ start: "mp.a", maxHops: 2, maxPaths: 2 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.truncated, true, "enumeration must flag truncation");
+    assert.equal(out.hits.length, 2, "hit count must not exceed the cap");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: minHops gates the cap -- shorter prefixes do not consume maxPaths (cursor Bugbot)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    // *2 (minHops 2, maxHops 2) with a tight maxPaths. Three length-2 paths
+    // exist (a->b->d, a->c->b, a->c->d); two length-1 paths exist (a->b,
+    // a->c) but must NOT count toward the cap. With maxPaths 2 we expect 2
+    // LENGTH-2 hits (truncated), and zero length-1 hits.
+    const out = store.traversePaths({ start: "mp.a", minHops: 2, maxHops: 2, maxPaths: 2 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.truncated, true, "cap is hit by in-range length-2 paths");
+    assert.equal(out.hits.length, 2);
+    assert.ok(out.hits.every((h) => h.length === 2), "no shorter prefix consumes the cap");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: minHops emits only in-range paths (no cap)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    // minHops 2, maxHops 2, default cap: all three length-2 paths, no length-1.
+    const out = store.traversePaths({ start: "mp.a", minHops: 2, maxHops: 2 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.truncated, false);
+    assert.equal(out.hits.length, 3);
+    assert.ok(out.hits.every((h) => h.length === 2));
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: edgeTypes exposes the relationship type per hop (chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const mixed: StoreFileIR = {
+      path: "src/mixed2.ts",
+      language: "typescript",
+      contentHash: "h-mixed2",
+      symbols: [sym("mx.a", "a", 0, 10), sym("mx.b", "b", 10, 20)],
+      edges: [
+        edge("mx.a", "mx.b", "CALLS"),
+        edge("mx.a", "mx.b", "USES_TYPE"),
+      ],
+    };
+    const r = await store.upsertFileBatch([mixed]);
+    assert.equal(r.ok, true);
+    // Two distinct relationships a->b (CALLS, USES_TYPE) yield two distinct
+    // relationship-simple paths with identical nodeIds but different edgeTypes.
+    const out = store.traversePaths({ start: "mx.a", maxHops: 1 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.hits.length, 2, "two distinct edges -> two distinct paths");
+    const typeSets = out.hits.map((h) => h.edgeTypes).sort();
+    assert.deepEqual(typeSets, [["CALLS"], ["USES_TYPE"]]);
+    // nodeIds are identical; only edgeTypes distinguishes them.
+    assert.deepEqual(out.hits[0]!.nodeIds, out.hits[1]!.nodeIds);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: malformed maxPaths rejected with 'invalid_query' (chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    for (const v of [-1, 1.5, Number.NaN, "100" as never, true as never] as const) {
+      const out = store.traversePaths({ start: "mp.a", maxHops: 2, maxPaths: v });
+      assert.equal(out.ok, false, `maxPaths ${JSON.stringify(v)} should fail`);
+      if (out.ok) throw new Error("expected failure");
+      assert.equal(out.code, "invalid_query");
+    }
+    // undefined still defaults (no rejection).
+    const ok = store.traversePaths({ start: "mp.a", maxHops: 1, maxPaths: undefined });
+    assert.equal(ok.ok, true);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: maxHops above MAX_TRAVERSE_PATHS_HOPS rejected (stack-overflow guard)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    // A pathological depth (e.g. *15000) would overflow the recursive DFS;
+    // the store rejects it instead of crashing (chatgpt-codex-connector P2).
+    const out = store.traversePaths({ start: "mp.a", maxHops: 15000 });
+    assert.equal(out.ok, false);
+    if (out.ok) throw new Error("expected failure");
+    assert.equal(out.code, "invalid_query");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: edgeEndpoints disambiguates antiparallel edges under direction both", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // A <-> B (both CALLS): two antiparallel edges. From A, direction both,
+    // maxHops 1: hop A->B can be via edge (A,B) outgoing OR edge (B,A)
+    // incoming -- same nodeIds [A,B], same edgeTypes [CALLS], distinct
+    // edgeEndpoints (chatgpt-codex-connector P2: 'Include edge endpoints').
+    const antiFile: StoreFileIR = {
+      path: "src/anti.ts",
+      language: "typescript",
+      contentHash: "h-anti",
+      symbols: [sym("an.a", "a", 0, 10), sym("an.b", "b", 10, 20)],
+      edges: [edge("an.a", "an.b"), edge("an.b", "an.a")],
+    };
+    const r = await store.upsertFileBatch([antiFile]);
+    assert.equal(r.ok, true);
+    const out = store.traversePaths({ start: "an.a", direction: "both", maxHops: 1 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.hits.length, 2, "two distinct antiparallel edges -> two paths");
+    // Same node sequence + edge type, but distinct per-hop endpoints.
+    assert.deepEqual(out.hits[0]!.nodeIds, out.hits[1]!.nodeIds);
+    assert.deepEqual(out.hits[0]!.edgeTypes, out.hits[1]!.edgeTypes);
+    const ep = out.hits.map((h) => h.edgeEndpoints[0]).sort((x, y) =>
+      x.src < y.src ? -1 : x.src > y.src ? 1 : 0);
+    assert.equal(ep.length, 2);
+    assert.notDeepEqual(ep[0], ep[1], "edge endpoints must differ");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: malformed minHops rejected with 'invalid_query'", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    for (const v of [0, -1, 1.5, Number.NaN] as const) {
+      const out = store.traversePaths({ start: "mp.a", minHops: v, maxHops: 3 });
+      assert.equal(out.ok, false, `minHops ${v} should fail`);
+      if (out.ok) throw new Error("expected failure");
+      assert.equal(out.code, "invalid_query");
+    }
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: maxHops 0 yields no paths (every path has length >= 1)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    const out = store.traversePaths({ start: "mp.a", maxHops: 0 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.hits.length, 0);
+    assert.equal(out.truncated, false);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: direction=incoming follows edges backward", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    // Who points at b within 1 hop? a (a->b) and c (c->b).
+    const out = store.traversePaths({
+      start: "mp.b",
+      direction: "incoming",
+      maxHops: 1,
+    });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.hits.length, 2);
+    const qnames = out.hits.map((h) => h.qualifiedName).sort();
+    assert.deepEqual(qnames, ["mp.a", "mp.c"]);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: direction=both does not double a self-loop (one hit per distinct path)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // A single self-loop edge s->s is matched by BOTH the outgoing and
+    // incoming SELECTs under direction "both"; without dedup the same
+    // relationship-simple path is emitted twice (chatgpt-codex-connector
+    // P2: 'Deduplicate self-loop edges for both-direction traversal').
+    const selfFile: StoreFileIR = {
+      path: "src/self.ts",
+      language: "typescript",
+      contentHash: "h-self",
+      symbols: [sym("sl.s", "s", 0, 10)],
+      edges: [edge("sl.s", "sl.s")],
+    };
+    const r = await store.upsertFileBatch([selfFile]);
+    assert.equal(r.ok, true);
+    const out = store.traversePaths({ start: "sl.s", direction: "both", maxHops: 1 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.hits.length, 1, "self-loop must yield exactly one path under direction both");
+    assert.equal(out.hits[0]?.length, 1);
+    assert.equal(out.hits[0]?.qualifiedName, "sl.s");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: edgeTypes filter restricts enumerated paths", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    const out = store.traversePaths({
+      start: "mp.a",
+      edgeTypes: ["USES_TYPE"],
+      maxHops: 2,
+    });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.hits.length, 0, "no USES_TYPE edges => no paths");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: unknown start returns tagged failure (rule 34)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const out = store.traversePaths({ start: "does.not.exist", maxHops: 3 });
+    assert.equal(out.ok, false);
+    if (out.ok) throw new Error("expected failure");
+    assert.equal(out.code, "unknown_start");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: invalid maxHops rejected with 'invalid_query' (rule 51)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    for (const v of [-1, 1.5, Number.NaN] as const) {
+      const out = store.traversePaths({ start: "mp.a", maxHops: v });
+      assert.equal(out.ok, false);
+      if (out.ok) throw new Error("expected failure");
+      assert.equal(out.code, "invalid_query");
+    }
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: invalid direction / edgeTypes / start rejected with 'invalid_query'", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    const badDir = store.traversePaths({
+      start: "mp.a",
+      direction: "sideways" as never,
+      maxHops: 2,
+    });
+    assert.equal(badDir.ok, false);
+    if (badDir.ok) throw new Error("expected failure");
+    assert.equal(badDir.code, "invalid_query");
+
+    const badTypes = store.traversePaths({
+      start: "mp.a",
+      edgeTypes: "CALLS" as never,
+      maxHops: 2,
+    });
+    assert.equal(badTypes.ok, false);
+    if (badTypes.ok) throw new Error("expected failure");
+    assert.equal(badTypes.code, "invalid_query");
+
+    const badStart = store.traversePaths({ start: "", maxHops: 2 });
+    assert.equal(badStart.ok, false);
+    if (badStart.ok) throw new Error("expected failure");
+    assert.equal(badStart.code, "invalid_query");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: store_closed when the store is closed", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+  } finally {
+    await dispose(store, dir);
+  }
+  // store is now closed after dispose.
+  const out = store.traversePaths({ start: "mp.a", maxHops: 2 });
+  assert.equal(out.ok, false);
+  if (out.ok) throw new Error("expected failure");
+  assert.equal(out.code, "store_closed");
+});
+
+test("traversePaths: rejects a null/undefined query object with 'invalid_query'", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    for (const bad of [null, undefined] as const) {
+      const out = store.traversePaths(bad as never);
+      assert.equal(out.ok, false);
+      if (out.ok) throw new Error("expected failure");
+      assert.equal(out.code, "invalid_query");
+    }
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
 // searchGraph(): label / name / file patterns + degree filters + limit.
 // ──────────────────────────────────────────────────────────────────────────
 
