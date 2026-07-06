@@ -275,6 +275,18 @@ export class ChatEngine {
         }
         toolCallCount++;
 
+        // ── Tool-schema gate (cursor HIGH OlCjs — must run before mutating-tool
+        // interception so disabled tools like correction_apply/memory_promote
+        // are rejected before any confirmation flow or executor call).
+        if (!this.allowedToolNames.has(tc.name)) {
+          conversation.push({
+            role: "tool",
+            content: JSON.stringify({ error: `Tool '${tc.name}' is not available in this configuration.` }),
+            toolCallId: tc.id,
+          });
+          continue;
+        }
+
         // ── Confirmation protocol for mutating tools ──────────────────
         if (MUTATING_TOOLS.has(tc.name as ChatToolName)) {
           if (tc.name === "correction_apply") {
@@ -336,16 +348,6 @@ export class ChatEngine {
             reply: `I want to promote memory \`${memoryId}\`. Reply **apply** to confirm this promotion, or **cancel** to discard it.`,
             chatSessionId: session.id,
           };
-        }
-
-        // ── Tool-schema gate (cursor HIGH — disabled tools must not execute) ─
-        if (!this.allowedToolNames.has(tc.name)) {
-          conversation.push({
-            role: "tool",
-            content: JSON.stringify({ error: `Tool '${tc.name}' is not available in this configuration.` }),
-            toolCallId: tc.id,
-          });
-          continue;
         }
 
         // ── Execute the tool ───────────────────────────────────────────
