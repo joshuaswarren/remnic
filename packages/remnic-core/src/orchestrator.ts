@@ -136,9 +136,9 @@ import {
   type TierMigrationStatusSnapshot,
 } from "./recall-state.js";
 import {
+  buildHandleIndexForResults,
   MEMORY_ID_PATTERN,
   parseIdOrHandle,
-  renderHandlesForInjection,
   resolveHandle,
   stripHandles,
   type RecallSnapshotIds,
@@ -11313,7 +11313,7 @@ export class Orchestrator {
         this.appendRecallSection(
           sectionBuckets,
           "workspace-context",
-          this.formatQmdResults("Workspace Context", globalResults),
+          this.formatQmdResults("Workspace Context", globalResults, sessionKey),
         );
       }
 
@@ -17493,34 +17493,20 @@ export class Orchestrator {
     }
   }
 
-  private formatQmdResults(title: string, results: QmdSearchResult[]): string {
-    // Issue #1582 — when handles are on, append a stable `[m:xxxx]` token to
-    // each memory line. Handles are derived from the memory id (the `.md`
-    // filename); results without one (e.g. entity reconstructions) get no
-    // handle. Off = byte-identical to the pre-#1582 output (rule 39).
-    const handleOn = this.config.recallMemoryHandles === true;
-    const handleByIndex = new Map<number, string>();
-    if (handleOn) {
-      const ids: string[] = [];
-      const idIndexByResult: Array<number | null> = results.map((r) => {
-        const match = r.path.match(/([^/]+)\.md$/);
-        if (!match) return null;
-        const candidate = match[1] as string;
-        // Only real memory ids are handle-eligible: entity reconstructions and
-        // other non-memory .md rows (e.g. entities/Widget.md) must NOT receive a
-        // handle — citing one would resolve to a basename no storage can load.
-        if (!MEMORY_ID_PATTERN.test(candidate)) return null;
-        ids.push(candidate);
-        return ids.length - 1;
-      });
-      const entries = renderHandlesForInjection(ids);
-      results.forEach((r, i) => {
-        const idIndex = idIndexByResult[i];
-        if (idIndex !== null && entries[idIndex]) {
-          handleByIndex.set(i, (entries[idIndex] as { handle: string }).handle);
-        }
-      });
-    }
+  private formatQmdResults(
+    title: string,
+    results: QmdSearchResult[],
+    sessionKey?: string,
+  ): string {
+    // Issue #1582 — handles are only rendered when a session key is available:
+    // resolution requires the handle history to have been recorded for this
+    // session, which only happens when sessionKey is present. Rendering handles
+    // without recording would show tokens a user can never resolve (cursor
+    // review). The rendering logic itself lives in the pure handles module.
+    const handleByIndex = buildHandleIndexForResults(
+      results,
+      this.config.recallMemoryHandles === true && sessionKey != null,
+    );
     const lines = results.map((r, i) => {
       const snippet = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
@@ -17528,8 +17514,6 @@ export class Orchestrator {
       const source = typeof r.line === "number" ? `${r.path}:${r.line}` : r.path;
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
       const handle = handleByIndex.get(i);
-      // Append the precomputed handle token onto the snippet tail (one space),
-      // where a user/agent points at it. Keep it off the source/path line.
       return handle ? `${head.replace(/\s+$/, "")} ${handle}` : head;
     });
     return `## ${title}\n\n${lines.join("\n\n")}`;
@@ -17895,7 +17879,7 @@ export class Orchestrator {
     this.appendRecallSection(
       options.sectionBuckets,
       sectionId,
-      this.formatQmdResults(options.title, options.results),
+      this.formatQmdResults(options.title, options.results, options.sessionKey),
     );
   }
 

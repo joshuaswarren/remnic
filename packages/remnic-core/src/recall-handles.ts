@@ -138,13 +138,10 @@ export interface InjectionHandleEntry {
 export function renderHandlesForInjection(
   memoryIds: readonly string[],
 ): InjectionHandleEntry[] {
-  const entries: InjectionHandleEntry[] = [];
-  // Group ids by their default-width handle so EVERY member of a colliding
-  // group widens — not just the later one. Widening only the second id would
-  // leave the first rendering a 4-char token whose resolution is ambiguous
-  // against the group: a user citing that displayed 4-char handle hits both
-  // ids and cannot resolve (codex review). Widening all members guarantees
-  // each rendered token is unique at its own width.
+  // Group ids by their default-width handle so every member of a 4-char
+  // collision group widens to 6 together — not just the later one. Widening
+  // only the second id would leave the first rendering a 4-char token whose
+  // resolution is ambiguous against the group (codex review).
   const idsByDefaultHandle = new Map<string, string[]>();
   for (const memoryId of memoryIds) {
     if (!memoryId) continue;
@@ -153,27 +150,86 @@ export function renderHandlesForInjection(
     if (group) group.push(memoryId);
     else idsByDefaultHandle.set(defaultHandle, [memoryId]);
   }
-  // rendered token → memoryId, to guarantee uniqueness even after widening.
-  const tokenToId = new Map<string, string>();
-
+  const entries: InjectionHandleEntry[] = [];
   for (const memoryId of memoryIds) {
     if (!memoryId) continue;
     const defaultHandle = handleFor(memoryId, HANDLE_DEFAULT_WIDTH);
     const group = idsByDefaultHandle.get(defaultHandle) ?? [memoryId];
-    let width = group.length > 1 ? HANDLE_EXTENDED_WIDTH : HANDLE_DEFAULT_WIDTH;
-    let token = `[m:${handleFor(memoryId, width)}]`;
-    // Guard against a pathological collision at the widened width too (extremely
-    // unlikely for real memory ids): keep widening up to HANDLE_MAX_WIDTH.
-    let guard = width + 1;
-    while (tokenToId.has(token) && tokenToId.get(token) !== memoryId && guard <= HANDLE_MAX_WIDTH) {
-      width = guard;
-      token = `[m:${handleFor(memoryId, width)}]`;
-      guard += 1;
+    const width = group.length > 1 ? HANDLE_EXTENDED_WIDTH : HANDLE_DEFAULT_WIDTH;
+    entries.push({ memoryId, width, handle: `[m:${handleFor(memoryId, width)}]` });
+  }
+  // Reconciliation pass: if two DIFFERENT ids still produce the same rendered
+  // token at their assigned width — the pathological case where they also
+  // collide at the extended 6-char width — widen ALL members of the collision
+  // group together, never just the later one. Leaving the first at 6 chars
+  // while widening the second to 7 makes the first token resolve ambiguously
+  // (both ids match at width 6). Iterate until no collision remains or every
+  // member reaches HANDLE_MAX_WIDTH (codex review).
+  let widened = true;
+  while (widened) {
+    widened = false;
+    const tokenToIndices = new Map<string, number[]>();
+    for (let i = 0; i < entries.length; i++) {
+      const token = entries[i]!.handle;
+      const arr = tokenToIndices.get(token);
+      if (arr) arr.push(i);
+      else tokenToIndices.set(token, [i]);
     }
-    tokenToId.set(token, memoryId);
-    entries.push({ memoryId, width, handle: token });
+    for (const indices of tokenToIndices.values()) {
+      if (indices.length < 2) continue;
+      const uniqueIds = new Set(indices.map((idx) => entries[idx]!.memoryId));
+      if (uniqueIds.size < 2) continue; // same id listed twice — same handle is fine
+      for (const idx of indices) {
+        const entry = entries[idx]!;
+        if (entry.width >= HANDLE_MAX_WIDTH) continue;
+        entry.width += 1;
+        entry.handle = `[m:${handleFor(entry.memoryId, entry.width)}]`;
+      }
+      widened = true;
+    }
   }
   return entries;
+}
+
+/**
+ * Build a `resultIndex → handle` map for a QMD result set. Returns an empty
+ * map when handles are disabled or no result carries a handle-eligible memory
+ * id. Extracted from the orchestrator's `formatQmdResults` so the rendering
+ * logic lives in the pure handles module, not the god file (issue #1582,
+ * rule 4).
+ *
+ * Only real memory ids (matching {@link MEMORY_ID_PATTERN}) are handle-eligible;
+ * entity reconstructions and other non-memory `.md` rows get no handle.
+ *
+ * @param results  QMD search results (each has a `path` like `…/fact-x.md`).
+ * @param enabled  Whether handle rendering is on. The caller gates on both the
+ *                  config flag and session-key availability — handles rendered
+ *                  without a session key can never be resolved, so they must
+ *                  not be shown (cursor review of #1582).
+ */
+export function buildHandleIndexForResults(
+  results: readonly { path: string }[],
+  enabled: boolean,
+): Map<number, string> {
+  if (!enabled) return new Map();
+  const ids: string[] = [];
+  const idIndexByResult: Array<number | null> = results.map((r) => {
+    const match = r.path.match(/([^/]+)\.md$/);
+    if (!match) return null;
+    const candidate = match[1] as string;
+    if (!MEMORY_ID_PATTERN.test(candidate)) return null;
+    ids.push(candidate);
+    return ids.length - 1;
+  });
+  const entries = renderHandlesForInjection(ids);
+  const handleByIndex = new Map<number, string>();
+  results.forEach((_r, i) => {
+    const idIndex = idIndexByResult[i];
+    if (idIndex === null) return;
+    const entry = entries[idIndex];
+    if (entry) handleByIndex.set(i, entry.handle);
+  });
+  return handleByIndex;
 }
 
 /**

@@ -85,12 +85,21 @@ function qmdResult(memoryId: string, snippet = "snippet", score = 0.9): QmdSearc
  * unchecked assertion (rule: no inline cast for a property read).
  */
 interface FormatQmdResultsAccess {
-  formatQmdResults(title: string, results: QmdSearchResult[]): string;
+  formatQmdResults(
+    title: string,
+    results: QmdSearchResult[],
+    sessionKey?: string,
+  ): string;
 }
 
-function formatQmd(orch: Orchestrator, title: string, results: QmdSearchResult[]): string {
+function formatQmd(
+  orch: Orchestrator,
+  title: string,
+  results: QmdSearchResult[],
+  sessionKey?: string,
+): string {
   const internals = orch as unknown as FormatQmdResultsAccess;
-  return internals.formatQmdResults(title, results);
+  return internals.formatQmdResults(title, results, sessionKey);
 }
 
 const SESSION = "sess-handles-test";
@@ -140,7 +149,7 @@ test("formatQmdResults: handles ON appends [m:xxxx] derived from the memory id",
   try {
     const out = formatQmd(orchestrator, "Workspace Context", [
       qmdResult(ID_A, "The API rate limit is 1000 rpm."),
-    ]);
+    ], SESSION);
     const expected = `[m:${handleFor(ID_A)}]`;
     assert.ok(
       out.includes(expected),
@@ -159,7 +168,7 @@ test("formatQmdResults: result without an .md id gets no handle (entity reconstr
   try {
     const out = formatQmd(orchestrator, "Workspace Context", [
       { docid: "Widget", path: "/entities/Widget.json", line: 3, snippet: "entity reconstruction", score: 0.5 },
-    ]);
+    ], SESSION);
     assert.doesNotMatch(out, /\[m:[0-9a-f]{4,8}\]/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
@@ -176,10 +185,25 @@ test("formatQmdResults: a non-memory .md row (entity reconstruction) gets no han
     const out = formatQmd(orchestrator, "Workspace Context", [
       { docid: "Widget", path: "/mem/default/entities/Widget.md", line: 1, snippet: "entity reconstruction", score: 0.5 },
       qmdResult(ID_A, "real memory"),
-    ]);
+    ], SESSION);
     assert.doesNotMatch(out, /\[m:[0-9a-f]{4,8}\].*Widget|Widget.*\[m:/);
     // The real memory still gets its handle.
     assert.ok(out.includes(`[m:${handleFor(ID_A)}]`));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("formatQmdResults: handles OFF when sessionKey is absent even if config is on (cursor review)", async () => {
+  // A recall that injects context without a session key renders NO handles:
+  // the handle history is only recorded when sessionKey is present, so tokens
+  // shown without it could never be resolved (cursor review of #1582).
+  const { orchestrator, memoryDir } = await makeHarness({ recallMemoryHandles: true });
+  try {
+    const out = formatQmd(orchestrator, "Workspace Context", [
+      qmdResult(ID_A, "The API rate limit is 1000 rpm."),
+    ]);
+    assert.doesNotMatch(out, /\[m:[0-9a-f]{4,8}\]/);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
