@@ -740,3 +740,102 @@ test("OgIqt: plan marked `applying` before mutations; markConsumed failure leave
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1672 / #1678 regression tests
+// ---------------------------------------------------------------------------
+
+test("#1672 item 4 (executor): retract forwards supersessionKeys + contentHash into the tombstone dep", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-s", { memoryId: "mem-s", path: "facts/mem-s.md", content: "structured", excerpt: "structured", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([
+        ["mem-s", fakeMemory({
+          memoryId: "mem-s",
+          content: "structured",
+          supersessionKeys: ["entity-deploy::day", "entity-deploy::week"],
+          contentHash: "canonical-hash-xyz",
+        })],
+      ]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "retract", memoryId: "mem-s" }],
+        relevance: [{ memoryId: "mem-s", why: "stale" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "structured", targetIds: ["mem-s"] }, ["default"]);
+    const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
+    const outcome = await executor.apply("default", plan.planId, { confirm: true });
+    assert.equal(outcome.status, "applied");
+    assert.equal(state.tombstones.length, 1, "exactly one tombstone dep call for the retract");
+    assert.deepEqual(state.tombstones[0].supersessionKeys, ["entity-deploy::day", "entity-deploy::week"],
+      "the tombstone dep must receive the FULL supersessionKeys set");
+    assert.equal(state.tombstones[0].contentHash, "canonical-hash-xyz",
+      "the tombstone dep must receive the canonical contentHash (exact tier)");
+  });
+});
+
+test("#1678: rescope outcome reports the DESTINATION memory id, not the source", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-r", { memoryId: "mem-r", path: "facts/mem-r.md", content: "fact", excerpt: "fact", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([["mem-r", fakeMemory({ memoryId: "mem-r", content: "fact" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "wrong_scope",
+        confidence: 0.9,
+        actions: [{ kind: "rescope", memoryId: "mem-r", toNamespace: "other-ns" }],
+        relevance: [{ memoryId: "mem-r", why: "wrong scope" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "fact", targetIds: ["mem-r"] }, ["default"]);
+    const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
+    const outcome = await executor.apply("default", plan.planId, { confirm: true });
+    const result = outcome.results.find((r) => r.action.kind === "rescope");
+    assert.equal(result!.status, "applied");
+    // The fake rescopeMemory returns `rescoped-${memoryId}`. The outcome must
+    // report THAT destination id — not the source (which is archived by the move).
+    assert.equal(result!.memoryId, "rescoped-mem-r",
+      "rescope outcome must report the destination id, not the archived source");
+  });
+});
+
+test("#1678: sanitizeErrorMessage strips absolute paths and caps length", () => {
+  // POSIX absolute path is replaced with <path>.
+  const posix = sanitizeErrorMessage("failed to read /Users/josh/secrets/key.pem during apply");
+  assert.ok(!posix.includes("/Users/josh"), "POSIX abs path must be stripped: " + posix);
+  assert.ok(posix.includes("<path>"), "stripped path must leave a <path> placeholder: " + posix);
+  // Windows absolute path is replaced with <path>.
+  const win = sanitizeErrorMessage("cannot open C:\\Users\\josh\\vault\\token.txt");
+  assert.ok(!/C:\\Users/i.test(win), "Windows abs path must be stripped: " + win);
+  // Length cap.
+  const long = sanitizeErrorMessage("x".repeat(CORRECTION_ERROR_MAX + 500));
+  assert.ok(long.length <= CORRECTION_ERROR_MAX + 1, "over-long message must be capped (cap + ellipsis)");
+  assert.ok(long.endsWith("…"), "capped message must end with an ellipsis");
+  // A clean message passes through unchanged.
+  assert.equal(sanitizeErrorMessage("memory not found: mem-42"), "memory not found: mem-42");
+});

@@ -515,9 +515,12 @@ export const CORRECTION_ERROR_MAX = 500;
 export function sanitizeErrorMessage(raw: string): string {
   // Collapse any absolute POSIX path (/Users/foo/..., /home/..., /tmp/...) and
   // Windows path (C:\Users\...) to a neutral <path> placeholder.
+  // Capture the leading delimiter (start/space/quote) in group 1 so the path
+  // itself is consumed and replaced — the prior non-capturing prefix bound $1
+  // to the path, which survived and had <path> appended AFTER it.
   const stripped = raw
-    .replace(/(?:^|[\s:'"(])(\/(?:Users|home|tmp|var|opt|etc|root|private|mnt|srv)\/[^\s'">) ]+)/g, "$1<path>")
-    .replace(/(?:^|[\s:'"(])([A-Za-z]:\\[^\s'">)\\]+(?:\\[^\s'">) ]*)*)/g, "$1<path>");
+    .replace(/(^|[\s:'"(])\/(?:Users|home|tmp|var|opt|etc|root|private|mnt|srv)\/[^\s'">) ]+/g, "$1<path>")
+    .replace(/(^|[\s:'"(])[A-Za-z]:\\[^\s'">)\\]+(?:\\[^\s'">) ]*)*/g, "$1<path>");
   const trimmed = stripped.trim();
   return trimmed.length > CORRECTION_ERROR_MAX
     ? `${trimmed.slice(0, CORRECTION_ERROR_MAX)}…`

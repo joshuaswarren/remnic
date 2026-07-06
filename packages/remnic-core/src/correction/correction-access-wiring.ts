@@ -950,4 +950,8 @@ export {
   buildClassifyPrompt,
   CLASSIFY_SYSTEM_PROMPT,
   parseClassifyResponse,
+  // #1672: exported for focused storage-integration regression tests.
+  isEligibleCorrectionCandidate,
+  applyEditMemory,
+  appendTombstoneFn,
 };

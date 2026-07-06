@@ -2092,3 +2092,53 @@ test("parseConfig rejects invalid correction.enabled instead of silently enablin
   assert.equal(parseConfig({ correctionEnabled: "0" }).correctionEnabled, false);
   assert.equal(parseConfig({}).correctionEnabled, true);
 });
+
+test("parseConfig rejects invalid correction.planTtlHours instead of silently defaulting (#1678)", () => {
+  // Nested form: correction.planTtlHours.
+  for (const value of [0, -1, 0.5, "0", "-5", "abc", true, null]) {
+    assert.throws(
+      () => parseConfig({ correction: { planTtlHours: value } } as Record<string, unknown>),
+      /Invalid correction\.planTtlHours/,
+      `nested planTtlHours=${JSON.stringify(value)} should throw`,
+    );
+  }
+  // Flat form: correctionPlanTtlHours.
+  for (const value of [0, -3, "abc", true]) {
+    assert.throws(
+      () => parseConfig({ correctionPlanTtlHours: value } as Record<string, unknown>),
+      /Invalid correction\.planTtlHours/,
+      `flat correctionPlanTtlHours=${JSON.stringify(value)} should throw`,
+    );
+  }
+  // Valid values resolve (no regression on the happy path).
+  assert.equal(parseConfig({ correction: { planTtlHours: 48 } }).correctionPlanTtlHours, 48);
+  assert.equal(parseConfig({ correctionPlanTtlHours: 12 }).correctionPlanTtlHours, 12);
+  assert.equal(parseConfig({}).correctionPlanTtlHours, 24, "absent → documented default");
+});
+
+test("parseConfig correction.maxAffected rejects non-integers (Number.isInteger, #1678)", () => {
+  // The error message says "integer" — 3.7 must be rejected, not silently floored to 3.
+  for (const value of [3.7, 2.5, "1.5", 0.99]) {
+    assert.throws(
+      () => parseConfig({ correction: { maxAffected: value } } as Record<string, unknown>),
+      /Invalid correction\.maxAffected/,
+      `maxAffected=${JSON.stringify(value)} should throw (non-integer)`,
+    );
+  }
+  for (const value of [0, -1, "abc"]) {
+    assert.throws(
+      () => parseConfig({ correction: { maxAffected: value } } as Record<string, unknown>),
+      /Invalid correction\.maxAffected/,
+      `maxAffected=${JSON.stringify(value)} should throw`,
+    );
+  }
+  // Flat form.
+  assert.throws(
+    () => parseConfig({ correctionMaxAffected: 4.2 } as Record<string, unknown>),
+    /Invalid correction\.maxAffected/,
+  );
+  // Valid integers resolve.
+  assert.equal(parseConfig({ correction: { maxAffected: 5 } }).correctionMaxAffected, 5);
+  assert.equal(parseConfig({ correctionMaxAffected: 20 }).correctionMaxAffected, 20);
+  assert.equal(parseConfig({}).correctionMaxAffected, 10, "absent → documented default");
+});
