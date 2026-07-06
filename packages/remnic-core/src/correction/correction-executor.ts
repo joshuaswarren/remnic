@@ -370,7 +370,7 @@ export class CorrectionExecutor {
           // the reported id need the live (destination) memory, otherwise they
           // observe an archived fact and the correction looks like a no-op.
           results.push({ action, status: "applied", memoryId: destId });
-          appliedTouched.push(destId);
+          appliedTouched.push(action.memoryId); // source id for source-side propagation
           // Propagate the destination memory in its namespace too (review
           // thread: propagate-rescoped-destination) — best-effort.
           try {
@@ -519,7 +519,7 @@ export function sanitizeErrorMessage(raw: string): string {
   // itself is consumed and replaced — the prior non-capturing prefix bound $1
   // to the path, which survived and had <path> appended AFTER it.
   const stripped = raw
-    .replace(/(^|[\s:'"(])\/(?:Users|home|tmp|var|opt|etc|root|private|mnt|srv)\/[^\s'">) ]+/g, "$1<path>")
+    .replace(/(^|[\s:'"(])\/[A-Za-z][\w.-]*(?:\/[\w.\-]+)+/g, "$1<path>")
     .replace(/(^|[\s:'"(])[A-Za-z]:\\[^\s'">)\\]+(?:\\[^\s'">) ]*)*/g, "$1<path>");
   const trimmed = stripped.trim();
   return trimmed.length > CORRECTION_ERROR_MAX

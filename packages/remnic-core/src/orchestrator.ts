@@ -15163,7 +15163,10 @@ export class Orchestrator {
       // (review thread #2). Fails open on read error.
       try {
         const redactionRules = await redactionRulesFor(sourceStorageDir, targetStorage.dir);
-        if (redactionRules.length > 0 && contentMatchesRedactionRules(fact.content, redactionRules)) {
+        const redactionCandidate = fact.content
+          + (fact.structuredAttributes ? " " + JSON.stringify(fact.structuredAttributes) : "")
+          + (fact.procedureSteps ? " " + fact.procedureSteps.join(" ") : "");
+        if (redactionRules.length > 0 && contentMatchesRedactionRules(redactionCandidate, redactionRules)) {
           redactionGatedCount++;
           log.debug(`extraction: redaction-rule withheld fact #${redactionGatedCount} in ${targetStorage.dir}`);
           continue;
