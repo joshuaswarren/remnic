@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.3.713",
+  "version": "9.3.714",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -3342,6 +3342,18 @@
         "default": 0,
         "description": "Half-life (ms) for Memory Worth decay. Positive values exponentially decay older outcomes toward the neutral prior; 0 disables decay."
       },
+      "recallMemoryHandles": {
+        "type": "boolean",
+        "default": false,
+        "description": "Issue #1582 — append stable short handles (`[m:4f2a]`) to injected memory lines at recall render time. Default false: off = byte-identical injection. Token cost ~9 chars/memory; flip the default only with benchmark evidence that answer quality is unaffected."
+      },
+      "recallHandleSnapshotDepth": {
+        "type": "number",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 5,
+        "description": "Issue #1582 — number of recent per-session recall snapshots searched when resolving a `[m:xxxx]` handle to a memory id. Older-than-N snapshots are not searched; a miss is tagged rather than widening the window."
+      },
       "memoryLinkingEnabled": {
         "type": "boolean",
         "default": false,
@@ -3404,6 +3416,36 @@
         "type": "boolean",
         "default": true,
         "description": "Enable transcript archiving"
+      },
+      "chat": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Conversational memory inspection and correction (issue #1583). A bounded tool-loop agent over read-only + confirmation-gated mutating tools. Off by default — spawns LLM calls so explicit opt-in (rule 48).",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master gate. Off = no chat tools/endpoints/CLI registered (byte-identical surfaces, rule 39)."
+          },
+          "model": {
+            "type": "string",
+            "default": "",
+            "description": "Routing override for the chat LLM. Empty = use the default routing chain (local Ollama/vLLM fully supported)."
+          },
+          "maxToolCallsPerTurn": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "default": 8,
+            "description": "Max tool calls per user turn before partial-reply fallback (rule 34 — never a silent stall)."
+          },
+          "sessionTtlHours": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 72,
+            "description": "Hours after which idle chat session state is cleaned up."
+          }
+        }
       },
       "captureMode": {
         "type": "string",
