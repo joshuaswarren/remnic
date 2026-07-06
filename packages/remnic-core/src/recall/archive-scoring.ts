@@ -44,7 +44,7 @@ export interface ArchiveScoreItem {
   tags: string[];
 }
 
-/** Scoring output — maps 1:1 to the relevant {@link QmdSearchResultLike} fields. */
+/** Scoring output — maps 1:1 to the relevant QmdSearchResult fields. */
 export interface ArchiveScoreResult {
   docid: string;
   path: string;
@@ -62,7 +62,7 @@ interface ScoreTask {
 type ScoreReply = { ok: true; results: ArchiveScoreResult[] } | { ok: false; error: string };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pure scoring function — shared by both strategies and by the worker entry.
+// Pure scoring function — shared by both strategies and by the inline worker.
 // Extracted verbatim from the original inline loop in
 // `searchLongTermArchiveFallback` so behavior is identical.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -160,6 +160,55 @@ export class SyncArchiveScoring implements ArchiveScoringStrategy {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Inline worker code (eval mode) — eliminates file-resolution / build-config
+// issues entirely. The worker is self-contained CJS (no imports), so it runs
+// identically under tsx, compiled dist, and published npm packages.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Inline worker source. Runs via `new Worker(code, { eval: true })`.
+ *
+ * MUST stay byte-identical to {@link scoreArchiveMemories} above. The
+ * regression test "worker scoring matches canonical scoreArchiveMemories"
+ * asserts this equivalence at runtime.
+ */
+const WORKER_SOURCE = String.raw`
+const { parentPort } = require('node:worker_threads');
+
+function scoreArchiveMemories(items, tokens) {
+  if (items.length === 0 || tokens.length === 0) return [];
+  var scored = [];
+  for (var i = 0; i < items.length; i++) {
+    var item = items[i];
+    var haystack = [item.content, item.category].concat(item.tags || []).join(' ').toLowerCase();
+    var hits = 0;
+    for (var j = 0; j < tokens.length; j++) {
+      if (haystack.indexOf(tokens[j]) !== -1) hits++;
+    }
+    if (hits === 0) continue;
+    scored.push({
+      docid: item.id,
+      path: item.path,
+      score: hits / tokens.length,
+      snippet: item.content.slice(0, 400).replace(/\n/g, ' '),
+    });
+  }
+  return scored;
+}
+
+if (parentPort) {
+  parentPort.on('message', function(task) {
+    try {
+      var results = scoreArchiveMemories(task.items, task.tokens);
+      parentPort.postMessage({ ok: true, results: results });
+    } catch (err) {
+      parentPort.postMessage({ ok: false, error: err && err.message ? err.message : String(err) });
+    }
+  });
+}
+`;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 2. OffThreadArchiveScoring — worker pool for genuine multi-core parallelism
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -172,6 +221,15 @@ function defaultPoolSize(): number {
   const cpus = typeof os.availableParallelism === "function" ? os.availableParallelism() : os.cpus().length;
   return Math.max(1, Math.min(Math.max(1, cpus - 1), 8));
 }
+
+/**
+ * Safety-net timeout for a single dispatch. The cold-fallback pipeline already
+ * has its own deadline mechanism (runColdStepWithinDeadline); this is a
+ * last-resort guard so a hung worker never blocks recall indefinitely.
+ * Generously large to avoid interfering with large corpora (issue #1674
+ * reported scans up to ~70s on large archives).
+ */
+const DISPATCH_TIMEOUT_MS = 120_000;
 
 /** Lazy worker pool. Workers are created on first use and recycled. */
 class ArchiveScoringWorkerPool {
@@ -188,10 +246,21 @@ class ArchiveScoringWorkerPool {
   async run(task: ScoreTask, abortSignal?: AbortSignal): Promise<ArchiveScoreResult[]> {
     if (this.terminated) throw new Error("archive-scoring pool terminated");
     const worker = await this.acquire();
+    let abandoned = false;
     try {
-      return await this.dispatch(worker, task, abortSignal);
+      return await this.dispatch(worker, task, abortSignal, () => {
+        abandoned = true;
+      });
     } finally {
-      this.release(worker);
+      if (abandoned) {
+        // The dispatch was abandoned (timeout/abort) while the worker may
+        // still be processing. Terminate it to prevent cross-request
+        // contamination (a stale reply arriving on a reused worker).
+        // A fresh worker will be spawned on the next acquire.
+        this.retireWorker(worker);
+      } else {
+        this.release(worker);
+      }
     }
   }
 
@@ -221,31 +290,48 @@ class ArchiveScoringWorkerPool {
     }
   }
 
+  /** Terminate a worker that may still be busy, then spawn a replacement
+   *  if a waiter is queued. */
+  private retireWorker(worker: Worker): void {
+    const idx = this.workers.indexOf(worker);
+    if (idx !== -1) this.workers.splice(idx, 1);
+    void worker.terminate();
+    // If a waiter is queued, give it a fresh worker.
+    const next = this.waiters.shift();
+    if (next) {
+      next(this.spawn());
+    }
+  }
+
   private spawn(): Worker {
-    // Resolve `.ts` under tsx/source, `.js` under compiled dist. Both
-    // `import.meta.url` and the worker URL are file:// URLs; the suffix
-    // check reliably distinguishes the two execution modes.
-    const ext = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
-    const workerUrl = new URL(`./archive-scoring-worker${ext}`, import.meta.url);
-    const worker = new Worker(workerUrl);
+    // Inline eval mode — no file resolution needed. Works identically under
+    // tsx (source), compiled dist (bundled chunks), and published npm packages.
+    const worker = new Worker(WORKER_SOURCE, { eval: true });
     this.workers.push(worker);
     return worker;
   }
 
-  private dispatch(worker: Worker, task: ScoreTask, abortSignal?: AbortSignal): Promise<ArchiveScoreResult[]> {
+  private dispatch(
+    worker: Worker,
+    task: ScoreTask,
+    abortSignal: AbortSignal | undefined,
+    onAbandon: () => void
+  ): Promise<ArchiveScoreResult[]> {
     return new Promise<ArchiveScoreResult[]>((resolve, reject) => {
       if (abortSignal?.aborted) {
+        onAbandon();
         resolve([]);
         return;
       }
       let settled = false;
       const timer = setTimeout(() => {
-        if (!settled) {
-          settled = true;
-          cleanup();
-          reject(new Error("archive-scoring dispatch timed out after 10s"));
-        }
-      }, 10_000);
+        if (settled) return;
+        settled = true;
+        cleanup();
+        onAbandon();
+        log.debug(`archive-scoring dispatch timed out after ${DISPATCH_TIMEOUT_MS}ms — worker retired`);
+        resolve([]);
+      }, DISPATCH_TIMEOUT_MS);
 
       const onMessage = (reply: ScoreReply) => {
         if (settled) return;
@@ -261,6 +347,7 @@ class ArchiveScoringWorkerPool {
         if (settled) return;
         settled = true;
         cleanup();
+        onAbandon();
         reject(err);
       };
 
@@ -268,6 +355,7 @@ class ArchiveScoringWorkerPool {
         if (settled) return;
         settled = true;
         cleanup();
+        onAbandon();
         resolve([]);
       };
 

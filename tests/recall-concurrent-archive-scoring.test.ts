@@ -225,6 +225,33 @@ test("OffThreadArchiveScoring parallelizes K concurrent calls (~1× single-call 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 5b. Worker scoring matches canonical scoreArchiveMemories
+//     (guards the inline copy in WORKER_SOURCE against drift)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test("worker scoring matches canonical scoreArchiveMemories", async (t) => {
+  // The worker inlines its own copy of scoreArchiveMemories (eval mode).
+  // This test proves they produce identical results so the duplication
+  // can't silently drift.
+  const offThread = new OffThreadArchiveScoring();
+  t.after(async () => {
+    await offThread.terminate();
+  });
+
+  const results = await offThread.score(HEAVY_ITEMS, QUERY_TOKENS);
+  const canonical = scoreArchiveMemories(HEAVY_ITEMS, QUERY_TOKENS);
+
+  assert.equal(results.length, canonical.length);
+  const canonicalById = new Map(canonical.map((r) => [r.docid, r]));
+  for (const result of results) {
+    const c = canonicalById.get(result.docid);
+    assert.ok(c, `worker produced result ${result.docid} not in canonical`);
+    assert.equal(result.score, c.score, `score mismatch for ${result.docid}`);
+    assert.equal(result.path, c.path, `path mismatch for ${result.docid}`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 6. Abort signal — both strategies respect abort at boundaries
 // ─────────────────────────────────────────────────────────────────────────────
 
