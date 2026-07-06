@@ -223,21 +223,21 @@ function extractCorrectedAssertion(
  * words the user is relaying, not the user correcting their own memory).
  */
 function isWithinQuotes(text: string, matchIndex: number): boolean {
-  let inQuote: string | null = null;
+  // Only DOUBLE quotes delimit quoted speech. Single quotes (ASCII apostrophe
+  // and smart single quotes) are deliberately NOT treated as delimiters: in
+  // English they are overwhelmingly contractions/possessives
+  // ("I don't think we switched"), which would falsely mark a
+  // correction as quoted speech and suppress a valid detection (false
+  // negative). A contraction before the correction phrase must not flip the
+  // detector into quoted mode.
+  let inQuote = false;
   for (let i = 0; i < matchIndex && i < text.length; i++) {
     const c = text[i];
-    if (inQuote === null) {
-      if (c === '"' || c === '\u201c' || c === '\u201d' || c === '\u2018' || c === '\u2019') {
-        inQuote = c;
-      } else if (c === '\'') {
-        // Smart-quote-style single quote — treat as quote open.
-        inQuote = c;
-      }
-    } else if (c === inQuote || (inQuote === '\u201c' && c === '\u201d') || (inQuote === '\u201d' && c === '\u201c')) {
-      inQuote = null;
+    if (c === '"' || c === '\u201c' || c === '\u201d') {
+      inQuote = !inQuote;
     }
   }
-  return inQuote !== null;
+  return inQuote;
 }
 
 /**

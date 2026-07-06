@@ -80,6 +80,14 @@ export interface PassiveCaptureDeps {
   ): Promise<CorrectionOutcome>;
   /** Resolve the storage dir for notification enqueue (per namespace). */
   storageDir(namespace: string): Promise<string>;
+  /**
+   * Resolve a memory handle (`[m:xxxx]`) to a concrete memory id, returning
+   * null when the handle is unresolvable in the session (graceful — the
+   * planner then falls back to text search). Wired to the orchestrator single
+   * shared `resolveMemoryIdOrHandle` helper (#1582) so handle resolution has
+   * one path (rule 22). Review: "memory handles not resolved".
+   */
+  resolveHandle?(ref: string, sessionKey?: string): string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -191,17 +199,35 @@ export async function capturePassiveCorrections(
   telemetry.detected = corrections.length;
 
   for (const correction of corrections) {
-    // 1. Dedup
+    // 1. Dedup — checked before planning, but the fingerprint is only
+    //    recorded AFTER a successful plan so a transient planning failure
+    //    can be retried on a later flush (review: "dedup blocks retry
+    //    after failure").
     const fp = correctionFingerprint(ctx.bufferKey, correction);
     if (dedupState.has(fp)) {
       continue;
     }
-    dedupState.add(fp);
 
-    // 2. Build + plan
+    // 2. Resolve `[m:xxxx]` handles to concrete memory ids (review:
+    //    "memory handles not resolved"). The planner resolveTargetMemories
+    //    expects memory ids, not raw handle tokens — passing a handle
+    //    string would throw "target memory not found". Unresolvable handles
+    //    are dropped so the planner falls back to text search (graceful
+    //    degradation; a correction without a resolved target is still valid).
+    let targetIds: string[] | undefined;
+    if (correction.handles.length > 0 && deps.resolveHandle && ctx.sessionKey) {
+      const resolved: string[] = [];
+      for (const handle of correction.handles) {
+        const id = deps.resolveHandle(handle, ctx.sessionKey);
+        if (id) resolved.push(id);
+      }
+      if (resolved.length > 0) targetIds = resolved;
+    }
+
+    // 3. Build + plan
     const request: CorrectionRequest = {
       text: correction.correctedAssertion || correction.sourceExcerpt,
-      ...(correction.handles.length > 0 ? { targetIds: correction.handles } : {}),
+      ...(targetIds ? { targetIds } : {}),
       ...(ctx.sessionKey ? { sessionKey: ctx.sessionKey } : {}),
       ...(ctx.principal ? { principal: ctx.principal } : {}),
       namespace: ctx.namespace,
@@ -217,6 +243,8 @@ export async function capturePassiveCorrections(
       continue;
     }
     plans.push(plan);
+    // Record the fingerprint only after a successful plan.
+    dedupState.add(fp);
 
     // 3. Dispatch by mode
     if (config.mode === "queue") {

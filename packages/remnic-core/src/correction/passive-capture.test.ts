@@ -382,3 +382,84 @@ test("telemetry: emptyTelemetry returns zeroed counters", () => {
   assert.strictEqual(t.autoApplied, 0);
   assert.strictEqual(Object.keys(t.suppressedReasons).length, 0);
 });
+
+// ---------------------------------------------------------------------------
+// Review fixes (cursor threads)
+// ---------------------------------------------------------------------------
+
+test("handle resolution: resolveHandle dep converts [m:xxxx] to memory ids (review)", async () => {
+  // The planner resolveTargetMemories expects concrete memory ids, not raw
+  // [m:xxxx] tokens. The capture loop must resolve handles via the resolveHandle
+  // dep before building the CorrectionRequest; unresolvable handles are dropped
+  // so the planner falls back to text search.
+  let capturedTargetIds: string[] | undefined;
+  const deps: PassiveCaptureDeps = {
+    ...mockDeps(makePlan()),
+    resolveHandle: (ref) => (ref === "[m:4f2a]" ? "fact-1700000000-abcd" : null),
+    planCorrection: async (req) => {
+      capturedTargetIds = req.targetIds as string[] | undefined;
+      return makePlan();
+    },
+  };
+  const correction = makeCorrection({
+    handles: ["[m:4f2a]"],
+    correctedAssertion: "[m:4f2a] is wrong",
+    polarity: "retract",
+  });
+  await capturePassiveCorrections(
+    [correction],
+    { ...LIVE_CTX, sessionKey: "sess-1" },
+    QUEUE_CONFIG,
+    deps,
+    new Set(),
+  );
+  assert.deepStrictEqual(
+    capturedTargetIds,
+    ["fact-1700000000-abcd"],
+    "handle must be resolved to a concrete memory id before planning",
+  );
+});
+
+test("handle resolution: unresolvable handle is dropped (planner falls back to text)", async () => {
+  let capturedTargetIds: string[] | undefined;
+  const deps: PassiveCaptureDeps = {
+    ...mockDeps(makePlan()),
+    resolveHandle: () => null,
+    planCorrection: async (req) => {
+      capturedTargetIds = req.targetIds as string[] | undefined;
+      return makePlan();
+    },
+  };
+  const correction = makeCorrection({ handles: ["[m:dead]"] });
+  await capturePassiveCorrections(
+    [correction],
+    { ...LIVE_CTX, sessionKey: "sess-1" },
+    QUEUE_CONFIG,
+    deps,
+    new Set(),
+  );
+  assert.strictEqual(capturedTargetIds, undefined, "unresolvable handle must not reach the planner");
+});
+
+test("dedup: failed plan can be retried on a later flush (review)", async () => {
+  // The fingerprint is recorded only AFTER a successful plan, so a transient
+  // planning failure does not permanently block the correction.
+  let attempts = 0;
+  const deps: PassiveCaptureDeps = {
+    ...mockDeps(makePlan()),
+    planCorrection: async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("transient planning failure");
+      return makePlan();
+    },
+  };
+  const dedup = new Set<string>();
+  const correction = makeCorrection();
+  // First flush: planning throws — fingerprint NOT recorded.
+  const r1 = await capturePassiveCorrections([correction], LIVE_CTX, QUEUE_CONFIG, deps, dedup);
+  assert.strictEqual(r1.telemetry.queued, 0, "failed plan must not count as queued");
+  // Second flush: same correction, retry succeeds.
+  const r2 = await capturePassiveCorrections([correction], LIVE_CTX, QUEUE_CONFIG, deps, dedup);
+  assert.strictEqual(r2.telemetry.queued, 1, "failed plan must be retriable");
+  assert.strictEqual(attempts, 2);
+});

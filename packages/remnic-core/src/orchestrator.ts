@@ -342,6 +342,7 @@ import {
 } from "./namespaces/identity.js";
 import {
   canReadNamespace,
+  canWriteNamespace,
   defaultNamespaceForPrincipal,
   recallNamespacesForPrincipal,
   resolvePrincipal,
@@ -13080,6 +13081,17 @@ export class Orchestrator {
           planCorrection: (req) => service.plan(req),
           applyCorrection: (planId, applyOpts) => service.apply(planId, applyOpts),
           storageDir: async (ns) => (await this.getStorage(ns)).dir,
+          // Resolve `[m:xxxx]` handles to concrete memory ids via the single
+          // shared helper (#1582). Returns null on miss/ambiguity so the
+          // capture loop drops the handle and the planner falls back to text
+          // search (review: "memory handles not resolved").
+          resolveHandle: (ref, sessionKey) => {
+            try {
+              return this.resolveMemoryIdOrHandle(ref, sessionKey);
+            } catch {
+              return null;
+            }
+          },
         },
         this.passiveCorrectionDedup,
       );
@@ -13106,12 +13118,29 @@ export class Orchestrator {
     if (this._passiveCorrectionService) return this._passiveCorrectionService;
     this._passiveCorrectionService = createCorrectionService({
       orchestrator: this,
-      resolveAuthorizedNamespace: async (req) =>
-        req.namespace ?? this.config.defaultNamespace,
-      resolveReadableNamespaces: (req) => [
-        req.namespace ?? this.config.defaultNamespace,
-      ],
-      canWriteNamespace: async () => true,
+      // Session-scoped write ACL (review: "passive capture bypasses write
+      // ACL"). A correction detected in session S plans only against S readable
+      // namespaces and applies only to writable ones (rule 42) — passive
+      // capture never becomes a cross-tenant mutation vector. Mirrors the
+      // access-service createCorrectionService wiring rather than bypassing it.
+      resolveAuthorizedNamespace: async (req) => {
+        const principal = req.principal || resolvePrincipal(req.sessionKey, this.config);
+        const ns = req.namespace ?? defaultNamespaceForPrincipal(principal, this.config);
+        if (!canWriteNamespace(principal, ns, this.config)) {
+          throw new Error(
+            `passive correction: namespace "${ns}" is not writable for principal ${principal ?? "(none)"}`,
+          );
+        }
+        return ns;
+      },
+      resolveReadableNamespaces: (req) => {
+        const principal = req.principal || resolvePrincipal(req.sessionKey, this.config);
+        return recallNamespacesForPrincipal(principal, this.config);
+      },
+      canWriteNamespace: async (req) => {
+        const principal = req.principal || resolvePrincipal(req.sessionKey, this.config);
+        return canWriteNamespace(principal, req.namespace, this.config);
+      },
       llmComplete: async ({ system, user }) => {
         const llmResult = await this.localLlm.chatCompletion(
           [
@@ -13242,6 +13271,33 @@ export class Orchestrator {
         `skipping extraction: below threshold (totalChars=${totalChars}, userTurns=${userTurns.length})`,
       );
       await clearBuffer();
+      // Passive correction capture runs even when extraction is skipped for
+      // being below the char/user-turn threshold (review: "skipped extraction
+      // skips capture"). A short correction like "stop using Vim" is under
+      // extractionMinChars but is exactly the high-value case this feature
+      // exists for. Best-effort namespace: writeNamespaceOverride wins, else
+      // the session self namespace (coding overlay included). The ACL in
+      // passiveCorrectionService authorizes the actual plan/apply.
+      {
+        const capturePrincipal =
+          typeof options.principalOverride === "string" && options.principalOverride.length > 0
+            ? options.principalOverride
+            : resolvePrincipal(sessionKey, this.config);
+        const captureNamespace =
+          typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
+            ? options.writeNamespaceOverride
+            : this.resolveSelfNamespace(sessionKey);
+        await this.maybeCapturePassiveCorrections(
+          normalizedTurns as BufferTurn[],
+          {
+            sessionKey,
+            principal: capturePrincipal,
+            namespace: captureNamespace,
+            bufferKey,
+            isLiveSession: clearBufferAfterExtraction,
+          },
+        );
+      }
       return {
         status: "skipped",
         reason: "below_threshold",

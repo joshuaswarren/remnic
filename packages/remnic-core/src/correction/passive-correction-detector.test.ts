@@ -226,3 +226,23 @@ test("extractHandles: extracts [m:xxxx] handles", () => {
 test("extractHandles: returns empty for no handles", () => {
   assert.deepStrictEqual(extractHandles("no handles here"), []);
 });
+
+test("contraction does not suppress a correction phrase (review: apostrophe quote detection)", () => {
+  // OLD isWithinQuotes treated the ASCII apostrophe as a quote opener. A single
+  // contraction with no closing apostrophe ("We've switched to Postgres") left
+  // the scanner in quoted mode and suppressed the correction — a false negative.
+  // Only double quotes delimit quoted speech; apostrophes are contractions.
+  const results = detectPassiveCorrections(user("We've switched to Postgres"));
+  assert.ok(results.length > 0, "contraction-led correction must be detected");
+  assert.ok(results.some((r) => r.polarity === "update"));
+});
+
+test("double-quoted correction is still suppressed (isWithinQuotes uses double quotes only)", () => {
+  // After dropping single-quote handling, real double-quoted speech must STILL
+  // be suppressed — only the delimiter set changed, not the suppression itself.
+  const results = detectPassiveCorrections(
+    user('Bob told me "that\'s wrong" about the deployment process'),
+  );
+  const retracts = results.filter((r) => r.polarity === "retract");
+  assert.strictEqual(retracts.length, 0, "double-quoted speech must still be suppressed");
+});
