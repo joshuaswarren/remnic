@@ -165,6 +165,7 @@ export {
   GraphStore,
   nodeIdFor,
   DEFAULT_TRAVERSE_PATHS_MAX,
+  MAX_TRAVERSE_PATHS_HOPS,
   DEAD_CODE_EXCLUSION,
   type ByteSpan,
   type DeadCodeHit,

@@ -761,6 +761,54 @@ test("traversePaths: malformed maxPaths rejected with 'invalid_query' (chatgpt-c
   }
 });
 
+test("traversePaths: maxHops above MAX_TRAVERSE_PATHS_HOPS rejected (stack-overflow guard)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    // A pathological depth (e.g. *15000) would overflow the recursive DFS;
+    // the store rejects it instead of crashing (chatgpt-codex-connector P2).
+    const out = store.traversePaths({ start: "mp.a", maxHops: 15000 });
+    assert.equal(out.ok, false);
+    if (out.ok) throw new Error("expected failure");
+    assert.equal(out.code, "invalid_query");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: edgeEndpoints disambiguates antiparallel edges under direction both", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // A <-> B (both CALLS): two antiparallel edges. From A, direction both,
+    // maxHops 1: hop A->B can be via edge (A,B) outgoing OR edge (B,A)
+    // incoming -- same nodeIds [A,B], same edgeTypes [CALLS], distinct
+    // edgeEndpoints (chatgpt-codex-connector P2: 'Include edge endpoints').
+    const antiFile: StoreFileIR = {
+      path: "src/anti.ts",
+      language: "typescript",
+      contentHash: "h-anti",
+      symbols: [sym("an.a", "a", 0, 10), sym("an.b", "b", 10, 20)],
+      edges: [edge("an.a", "an.b"), edge("an.b", "an.a")],
+    };
+    const r = await store.upsertFileBatch([antiFile]);
+    assert.equal(r.ok, true);
+    const out = store.traversePaths({ start: "an.a", direction: "both", maxHops: 1 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.hits.length, 2, "two distinct antiparallel edges -> two paths");
+    // Same node sequence + edge type, but distinct per-hop endpoints.
+    assert.deepEqual(out.hits[0]!.nodeIds, out.hits[1]!.nodeIds);
+    assert.deepEqual(out.hits[0]!.edgeTypes, out.hits[1]!.edgeTypes);
+    const ep = out.hits.map((h) => h.edgeEndpoints[0]).sort((x, y) =>
+      x.src < y.src ? -1 : x.src > y.src ? 1 : 0);
+    assert.equal(ep.length, 2);
+    assert.notDeepEqual(ep[0], ep[1], "edge endpoints must differ");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
 test("traversePaths: malformed minHops rejected with 'invalid_query'", async () => {
   const { store, dir } = await tempStore();
   try {

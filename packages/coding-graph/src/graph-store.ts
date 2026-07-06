@@ -277,6 +277,15 @@ export type TraverseResult =
 export const DEFAULT_TRAVERSE_PATHS_MAX = 10_000;
 
 /**
+ * Hard upper bound on {@link TraversePathsQuery.maxHops}. The DFS recurses
+ * once per hop; an unbounded depth (e.g. a Cypher `*15000`) would overflow
+ * the call stack before `maxPaths` could stop it. 1000 is ~100x any
+ * realistic code-graph depth and recurses safely (chatgpt-codex-connector
+ * P2: 'Avoid recursive DFS for deep bounded paths').
+ */
+export const MAX_TRAVERSE_PATHS_HOPS = 1000;
+
+/**
  * Path-enumerating traversal query (issue #1650). Mirrors {@link TraverseQuery}
  * but yields CONCRETE paths rather than BFS-shortest-depth reachability, so an
  * exact `*N` (N > 1) hop count is honored for nodes reachable at both a shorter
@@ -337,6 +346,15 @@ export interface TraversePathHit {
    * hits').
    */
   edgeTypes: string[];
+  /**
+   * Per-hop edge endpoints, parallel to {@link nodeIds} (`length` entries).
+   * Under `direction: "both"` antiparallel same-type edges (A->B and B->A)
+   * yield distinct relationship-simple paths that share nodeIds + edgeTypes;
+   * the src/dst per hop disambiguates which edge was traversed and in which
+   * direction (chatgpt-codex-connector P2: 'Include edge endpoints in path
+   * hits').
+   */
+  edgeEndpoints: Array<{ src: string; dst: string }>;
 }
 
 export type TraversePathsResult =
@@ -2176,6 +2194,12 @@ export class GraphStore {
     ) {
       return { ok: false, code: "invalid_query" };
     }
+    // Reject depths that would overflow the recursive DFS before maxPaths
+    // can bind it (chatgpt-codex-connector P2: 'Avoid recursive DFS for deep
+    // bounded paths').
+    if (query.maxHops > MAX_TRAVERSE_PATHS_HOPS) {
+      return { ok: false, code: "invalid_query" };
+    }
     const direction: TraverseDirection =
       query.direction === undefined ? "outgoing" : query.direction;
     if (
@@ -2338,6 +2362,7 @@ export class GraphStore {
       const usedEdges = new Set<string>();
       const pathNodes: string[] = [startId];
       const pathEdgeTypes: string[] = [];
+      const pathEndpoints: Array<{ src: string; dst: string }> = [];
 
       // Recursive DFS. `length` is the current path's hop count (edges taken).
       // We EXPLORE while length < maxHops (shorter prefixes must be walked to
@@ -2355,6 +2380,7 @@ export class GraphStore {
           usedEdges.add(key);
           pathNodes.push(e.neighbor);
           pathEdgeTypes.push(e.type);
+          pathEndpoints.push({ src: e.src, dst: e.dst });
           const newLength = length + 1;
           if (newLength >= minHops) {
             // Cap check on EMITTED (in-range) hits only.
@@ -2372,11 +2398,13 @@ export class GraphStore {
                   length: newLength,
                   nodeIds: pathNodes.slice(),
                   edgeTypes: pathEdgeTypes.slice(),
+                  edgeEndpoints: pathEndpoints.slice(),
                 });
               }
             }
           }
           if (!truncated) dfs(e.neighbor, newLength);
+          pathEndpoints.pop();
           pathEdgeTypes.pop();
           pathNodes.pop();
           usedEdges.delete(key);
