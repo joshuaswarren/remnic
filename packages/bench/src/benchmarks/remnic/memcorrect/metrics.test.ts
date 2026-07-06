@@ -131,6 +131,19 @@ test("uptakeLatency: mean of resolved + censored, capped", () => {
   assert.equal(result.censored, 1);
 });
 
+test("uptakeLatency: a success landing exactly at the cap is resolved, not censored", () => {
+  const corrections: ResolvedCorrection[] = [
+    { scenarioId: "s1", namespace: "ns-a", turnIndex: 10, retiredContent: ["old"], correctedContent: ["new"] },
+  ];
+  const log: ProbeLogEntry[] = [
+    // First passing probe at turn 15 = delta 5 == cap → resolved, NOT censored.
+    probe({ scenarioId: "s1", phase: "post_correction", turnIndex: 15, recalled: ["new value"] }),
+  ];
+  const result = uptakeLatency(log, corrections, 5);
+  assert.equal(result.mean, 5);
+  assert.equal(result.censored, 0);
+});
+
 // ---------------------------------------------------------------------------
 // non_resurrection
 // ---------------------------------------------------------------------------

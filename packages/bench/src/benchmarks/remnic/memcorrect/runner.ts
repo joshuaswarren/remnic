@@ -426,6 +426,11 @@ export async function runMemCorrectBenchmark(
 
   const remnicVersion = await getRemnicVersion();
   const totalLatencyMs = tasks.reduce((sum, t) => sum + t.latencyMs, 0);
+  // Omit the live adapter instance from the persisted config so the result
+  // stays JSON-serializable — a stateful/circular adapter would otherwise be
+  // walked by the reporter. The adapter label is already captured in `adapterMode`.
+  const { adapter: _liveAdapter, ...persistableBenchmarkOptions } =
+    (options.benchmarkOptions as Record<string, unknown> | undefined) ?? {};
   return {
     meta: {
       id: randomUUID(),
@@ -447,7 +452,7 @@ export async function runMemCorrectBenchmark(
       adapterMode: adapterLabel,
       remnicConfig: options.remnicConfig ?? {},
       benchmarkOptions: {
-        ...options.benchmarkOptions,
+        ...persistableBenchmarkOptions,
         personaCount: generatorOptions.personaCount,
         factsPerPersona: generatorOptions.factsPerPersona,
         maintenanceCycles: generatorOptions.maintenanceCycles,

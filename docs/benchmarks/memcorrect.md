@@ -129,18 +129,25 @@ scenario probe logs) is attached to `config.benchmarkOptions.aggregateMetrics`.
 ## Running it
 
 ```bash
-# Hermetic baseline smoke (no orchestrator, no GPU):
-remnic bench run --benchmark memcorrect --quick
+# Hermetic synthetic-corpus smoke (no dataset download, no GPU):
+remnic bench run memcorrect-v1 --quick
 
-# Lab run (Remnic native, on the local-lab profile):
-remnic bench run --benchmark memcorrect --profile local-lab-3090
+# Lab run on a resolved runtime profile:
+remnic bench run memcorrect-v1 --runtime-profile local-lab \
+  --local-lab-manifest ~/bench/local-lab.json
 ```
 
+The benchmark id is the positional `memcorrect-v1` (the registered catalog
+id); `--runtime-profile` selects `baseline|real|openclaw-chain|local-lab`.
 The runner selects the adapter via `benchmarkOptions.adapter` (a
-`MemCorrectSystemAdapter`). When none is supplied, it wraps the bench
-`system` adapter via `createRemnicMemCorrectAdapter`. The default
-`--quick` corpus is 2 personas × 4 facts (8 scenarios); `--full` is
-5 × 8 (40 scenarios).
+`MemCorrectSystemAdapter`). When none is supplied — as is the case for CLI
+runs — it wraps the bench `system` adapter via
+`createRemnicMemCorrectAdapter` (the Remnic-native path), **not** the
+prompt-only baseline. The hermetic `PromptOnlyBaselineAdapter` (the
+structural floor deltas are measured against) is a programmatic adapter
+supplied via `benchmarkOptions.adapter` in scripts and `runner.test.ts`;
+there is no CLI flag that selects it. The default `--quick` corpus is
+2 personas × 4 facts (8 scenarios); `--full` is 5 × 8 (40 scenarios).
 
 ## Determinism guarantees
 

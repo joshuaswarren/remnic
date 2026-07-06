@@ -117,15 +117,20 @@ export function uptakeLatency(
       .sort((a, b) => a.turnIndex - b.turnIndex)
       .filter((e) => e.turnIndex > correction.turnIndex);
     let resolved = cap;
+    let found = false;
     for (const entry of post) {
       const delta = entry.turnIndex - correction.turnIndex;
       if (delta > cap) break;
       if (probePassesForCorrection(entry, correction)) {
         resolved = delta;
+        found = true;
         break;
       }
     }
-    if (resolved >= cap) censored += 1;
+    // Censor only when NO passing probe was found within the cap. A success
+    // landing exactly at the cap (delta === cap) is resolved, not censored —
+    // the old `resolved >= cap` check double-counted such boundary wins.
+    if (!found) censored += 1;
     sum += resolved;
   }
   return { mean: sum / corrections.length, censored };

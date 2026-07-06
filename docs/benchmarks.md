@@ -113,8 +113,10 @@ that implements the `MemCorrectSystemAdapter` interface can be scored.
 Methodology, metric definitions, and the submission contract are in
 [`docs/benchmarks/memcorrect.md`](./benchmarks/memcorrect.md). Lab
 artifacts land in `docs/benchmarks/results/` once the local-lab Tier-L run
-completes; until then the hermetic baseline smoke (`remnic bench run
---benchmark memcorrect --quick`) is the reproducible in-tree check.
+completes; until then the hermetic synthetic-corpus smoke (`remnic bench run
+memcorrect-v1 --quick`) is the reproducible in-tree check. By default this
+exercises the Remnic-native adapter (the bench `system`); the prompt-only
+baseline is a programmatic adapter (see `runner.test.ts`), not a CLI mode.
 
 ## Ethics
 
