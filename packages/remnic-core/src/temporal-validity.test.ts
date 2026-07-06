@@ -410,6 +410,39 @@ test("isValidAsOf: half-open interval [valid_at, invalid_at)", () => {
   assert.equal(isValidAsOf(fm, Date.parse("2026-01-01T00:00:00.000Z")), false);
 });
 
+test("isValidAsOf: extracted end-only bound is open-start (-inf, invalid_at] (#1578 r3)", () => {
+  // An extracted fact like "we used MongoDB until June 2025" resolves to
+  // validUntil only (no validFrom); valid_at is absent, eventTimeSource is
+  // "extracted". The interval must be open-start so historical as_of queries
+  // before ingestion still see it, rather than defaulting valid_at to created.
+  const fm = {
+    invalid_at: "2025-07-01T00:00:00.000Z",
+    created: "2025-08-15T00:00:00.000Z",
+    eventTimeSource: "extracted" as const,
+  };
+  // Well before ingestion/created — still authoritative (open start).
+  assert.equal(isValidAsOf(fm, Date.parse("2024-01-01T00:00:00.000Z")), true);
+  // Mid-window — authoritative.
+  assert.equal(isValidAsOf(fm, Date.parse("2025-06-15T00:00:00.000Z")), true);
+  // Exactly at invalid_at — NOT authoritative (exclusive upper bound).
+  assert.equal(isValidAsOf(fm, Date.parse("2025-07-01T00:00:00.000Z")), false);
+  // After invalid_at — not authoritative.
+  assert.equal(isValidAsOf(fm, Date.parse("2026-01-01T00:00:00.000Z")), false);
+});
+
+test("isValidAsOf: legacy memory without eventTimeSource keeps created fallback (#1578 r3)", () => {
+  // A legacy memory with invalid_at but no eventTimeSource must NOT become
+  // open-start — it keeps the pre-#1578 [created, invalid_at) behaviour so
+  // supersession/backfill semantics are unchanged.
+  const fm = {
+    invalid_at: "2025-12-31T00:00:00.000Z",
+    created: "2025-06-01T00:00:00.000Z",
+  };
+  // Before created — not authoritative (legacy behaviour preserved).
+  assert.equal(isValidAsOf(fm, Date.parse("2025-05-01T00:00:00.000Z")), false);
+  assert.equal(isValidAsOf(fm, Date.parse("2025-09-01T00:00:00.000Z")), true);
+});
+
 test("isValidAsOf: timezone-suffixed ISO strings compare via Date.parse, not lexicographic", () => {
   // Two strings that order differently lexicographically vs as Dates.
   // 2025-01-01T00:00:00+02:00 == 2024-12-31T22:00:00Z
