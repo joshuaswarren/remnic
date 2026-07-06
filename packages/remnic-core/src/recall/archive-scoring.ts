@@ -229,8 +229,6 @@ class ArchiveScoringWorkerPool {
     const ext = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
     const workerUrl = new URL(`./archive-scoring-worker${ext}`, import.meta.url);
     const worker = new Worker(workerUrl);
-    // Don't keep the event loop alive solely for idle scoring workers.
-    worker.unref();
     this.workers.push(worker);
     return worker;
   }
@@ -246,6 +244,13 @@ class ArchiveScoringWorkerPool {
         return;
       }
       let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          cleanup();
+          reject(new Error("archive-scoring dispatch timed out after 10s"));
+        }
+      }, 10_000);
 
       const onMessage = (reply: ScoreReply) => {
         if (settled) return;
@@ -268,12 +273,11 @@ class ArchiveScoringWorkerPool {
         if (settled) return;
         settled = true;
         cleanup();
-        // Cannot interrupt a running worker mid-computation, but the work is
-        // bounded by the file cap. Discard the result and resolve empty.
         resolve([]);
       };
 
       const cleanup = () => {
+        clearTimeout(timer);
         worker.off("message", onMessage);
         worker.off("error", onError);
         abortSignal?.removeEventListener("abort", onAbort);
