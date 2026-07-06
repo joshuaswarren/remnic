@@ -3055,6 +3055,20 @@ export interface ExtractedFact {
    * when `temporal.biTemporal` is off.
    */
   eventTime?: string;
+  /**
+   * Per-fact source-turn timestamp for bi-temporal event-time resolution
+   * (#1670). When set, `resolveFactEventTime` anchors this fact's
+   * `eventTime` expression against THIS turn's timestamp instead of the
+   * batch-wide latest turn timestamp — so a buffered conversation spanning
+   * a date boundary resolves "yesterday" on an early-turn fact against
+   * that early turn's date, not the last turn's.
+   *
+   * Programmatic-only: extractors that know the exact source turn set this
+   * directly. The LLM extraction prompt never emits it (models cannot know
+   * turn timestamps). Falls back to the earliest provenance span's
+   * `observedAt`, then to the batch anchor, when absent.
+   */
+  sourceTurnTimestamp?: string;
 }
 
 export interface ExtractedReasoningTraceStep {

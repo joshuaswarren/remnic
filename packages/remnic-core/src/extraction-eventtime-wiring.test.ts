@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 
-import { resolveFactEventTime } from "./event-time.js";
+import { pickFactEventTimeAnchor, resolveFactEventTime } from "./event-time.js";
 import { ExtractionEngine } from "./extraction.js";
 import { ExtractedFactSchema } from "./schemas.js";
 import { StorageManager } from "./storage.js";
@@ -266,4 +266,104 @@ test("resolveFactEventTime: bare '2025-03' (YYYY-MM) → validFrom = first of mo
   assert.equal(result.eventTimeSource, "extracted");
   assert.equal(result.validFrom, "2025-03-01T00:00:00.000Z");
   assert.equal(result.validUntil, undefined);
+});
+
+// ── #1670: per-fact source-turn anchor selection ─────────────────────────
+
+test("pickFactEventTimeAnchor: explicit sourceTurnTimestamp wins over batch anchor", () => {
+  // A buffered batch's latest turn is 2025-04-12, but the fact was extracted
+  // from an earlier turn on 2025-04-10. The per-fact timestamp must win.
+  const anchor = pickFactEventTimeAnchor(
+    { sourceTurnTimestamp: "2025-04-10T12:00:00.000Z" },
+    "2025-04-12T12:00:00.000Z",
+  );
+  assert.equal(anchor, "2025-04-10T12:00:00.000Z");
+});
+
+test("pickFactEventTimeAnchor: earliest provenance span observedAt used when no sourceTurnTimestamp", () => {
+  // A fact backed by spans from two turns: the EARLIEST span's observedAt is
+  // the turn where the claim was first uttered — the correct anchor for a
+  // relative expression like "yesterday".
+  const anchor = pickFactEventTimeAnchor(
+    {
+      sources: [
+        { observedAt: "2025-04-11T08:00:00.000Z" },
+        { observedAt: "2025-04-10T08:00:00.000Z" },
+        { observedAt: "2025-04-12T08:00:00.000Z" },
+      ],
+    },
+    "2025-04-12T08:00:00.000Z",
+  );
+  assert.equal(anchor, "2025-04-10T08:00:00.000Z");
+});
+
+test("pickFactEventTimeAnchor: sourceTurnTimestamp takes precedence over provenance spans", () => {
+  const anchor = pickFactEventTimeAnchor(
+    {
+      sourceTurnTimestamp: "2025-04-09T00:00:00.000Z",
+      sources: [{ observedAt: "2025-04-11T00:00:00.000Z" }],
+    },
+    "2025-04-12T00:00:00.000Z",
+  );
+  assert.equal(anchor, "2025-04-09T00:00:00.000Z");
+});
+
+test("pickFactEventTimeAnchor: falls back to batch anchor when no per-fact signal", () => {
+  const anchor = pickFactEventTimeAnchor({}, "2025-04-12T12:00:00.000Z");
+  assert.equal(anchor, "2025-04-12T12:00:00.000Z");
+});
+
+test("pickFactEventTimeAnchor: returns undefined when no signal and no batch anchor", () => {
+  const anchor = pickFactEventTimeAnchor({}, undefined);
+  assert.equal(anchor, undefined);
+});
+
+test("pickFactEventTimeAnchor: ignores corrupt sourceTurnTimestamp, falls through to provenance", () => {
+  const anchor = pickFactEventTimeAnchor(
+    {
+      sourceTurnTimestamp: "not-a-timestamp",
+      sources: [{ observedAt: "2025-04-10T08:00:00.000Z" }],
+    },
+    "2025-04-12T08:00:00.000Z",
+  );
+  assert.equal(anchor, "2025-04-10T08:00:00.000Z");
+});
+
+test("pickFactEventTimeAnchor: ignores corrupt provenance observedAt entries, falls through to batch", () => {
+  const anchor = pickFactEventTimeAnchor(
+    { sources: [{ observedAt: "garbage" }, { observedAt: "also-bad" }] },
+    "2025-04-12T08:00:00.000Z",
+  );
+  assert.equal(anchor, "2025-04-12T08:00:00.000Z");
+});
+
+test("#1670 integration: 'yesterday' on an early-turn fact resolves against the early turn, not the batch", () => {
+  // Simulates the exact scenario from the issue: a buffered conversation
+  // spanning a date boundary. The fact carries provenance from the early turn.
+  const earlyAnchor = pickFactEventTimeAnchor(
+    { sources: [{ observedAt: "2025-01-15T10:00:00.000Z" }] },
+    "2025-01-17T10:00:00.000Z", // batch latest = 3 days later
+  );
+  assert.ok(earlyAnchor, "anchor must resolve from provenance");
+  const result = resolveFactEventTime("yesterday", earlyAnchor);
+  assert.ok(result.validFrom!.startsWith("2025-01-14"),
+    `yesterday relative to early turn should be 2025-01-14, got ${result.validFrom}`);
+});
+
+test("#1670 integration: same expression, batch vs source-turn anchor → different validFrom", () => {
+  // Without per-fact provenance, "yesterday" resolves against the batch
+  // (latest turn = 2025-01-17 → 2025-01-16). With provenance from the early
+  // turn (2025-01-15), it resolves to 2025-01-14. The two must differ.
+  const batchAnchor = pickFactEventTimeAnchor({}, "2025-01-17T10:00:00.000Z");
+  assert.ok(batchAnchor);
+  const batchResult = resolveFactEventTime("yesterday", batchAnchor);
+  const provenanceAnchor = pickFactEventTimeAnchor(
+    { sources: [{ observedAt: "2025-01-15T10:00:00.000Z" }] },
+    "2025-01-17T10:00:00.000Z",
+  );
+  assert.ok(provenanceAnchor);
+  const provenanceResult = resolveFactEventTime("yesterday", provenanceAnchor);
+  assert.notEqual(batchResult.validFrom, provenanceResult.validFrom);
+  assert.ok(batchResult.validFrom!.startsWith("2025-01-16"));
+  assert.ok(provenanceResult.validFrom!.startsWith("2025-01-14"));
 });
