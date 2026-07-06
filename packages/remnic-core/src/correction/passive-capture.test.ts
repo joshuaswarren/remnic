@@ -315,7 +315,7 @@ test("auto mode: partial outcome queues instead of counting as applied (review: 
   const result = await capturePassiveCorrections([makeCorrection()], LIVE_CTX, AUTO_CONFIG, deps, dedup);
 
   assert.strictEqual(result.telemetry.autoApplied, 0, "partial outcome must not count as auto-applied");
-  assert.strictEqual(result.telemetry.queued, 1);
+  assert.strictEqual(result.telemetry.queued, 0, "partial outcome does not re-queue (plan is consumed)");
 });
 
 // ---------------------------------------------------------------------------

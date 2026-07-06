@@ -266,8 +266,9 @@ function detectAntiFixture(text: string): string | null {
  * corrections.
  *
  * A single turn may produce multiple corrections if different patterns match
- * different parts of the text. Dedup by (turnIndex, polarity, targetHint) so
- * overlapping patterns on the same phrase produce one correction.
+ * different parts of the text. Dedup by (turnIndex, targetHint) so overlapping
+ * patterns on the same phrase (e.g. "actually, we don't use Redis anymore"
+ * matching both update + retract) produce one correction.
  */
 export function detectPassiveCorrections(
   turns: readonly DetectorTurn[],
@@ -300,7 +301,11 @@ export function detectPassiveCorrections(
 
       const targetHint = extractTargetHint(content, match);
       const correctedAssertion = extractCorrectedAssertion(content, pattern.polarity);
-      const dedupKey = `${i}:${pattern.polarity}:${targetHint}`;
+      // Polarity-agnostic: "actually, we don't use Redis anymore" matches
+      // both the update ("actually") and retract ("don't use ... anymore")
+      // patterns with the same targetHint — emit one correction, not two
+      // (review: "deduplicate overlapping passive-correction cues").
+      const dedupKey = `${i}:${targetHint}`;
       if (seen.has(dedupKey)) continue;
       seen.add(dedupKey);
 

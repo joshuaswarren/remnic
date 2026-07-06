@@ -246,3 +246,18 @@ test("double-quoted correction is still suppressed (isWithinQuotes uses double q
   const retracts = results.filter((r) => r.polarity === "retract");
   assert.strictEqual(retracts.length, 0, "double-quoted speech must still be suppressed");
 });
+
+test("overlapping cues dedup: 'actually, we don't use Redis anymore' emits one correction (review)", () => {
+  // Both the "actually" (update) and "don't use X anymore" (retract) patterns
+  // match the same targetHint. Polarity-agnostic dedup keeps one correction.
+  const results = detectPassiveCorrections(
+    user("actually, we don't use Redis anymore for caching"),
+  );
+  const redisCorrections = results.filter((r) =>
+    r.targetHint.toLowerCase().includes("redis"),
+  );
+  assert.ok(
+    redisCorrections.length <= 1,
+    `overlapping cues for same target must emit at most one correction, got ${redisCorrections.length}`,
+  );
+});

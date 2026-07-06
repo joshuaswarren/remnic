@@ -281,7 +281,13 @@ export async function capturePassiveCorrections(
       // storage failures). Don't count it as auto-applied or notify — queue
       // for human review instead (review: "partial outcomes as failures").
       if (outcome.status !== "applied") {
-        telemetry.queued += 1;
+        // Partial outcome: some actions applied, some failed. The plan is
+        // consumed (status 'partial', not 'pending'), so it won't appear in
+        // listPending — do NOT increment queued (review: "partial not
+        // re-queued"). The audit record captures which actions failed.
+        log.warn(
+          `passive-correction: plan ${plan.planId} applied partially — some actions failed (see audit record)`,
+        );
         continue;
       }
       telemetry.autoApplied += 1;
