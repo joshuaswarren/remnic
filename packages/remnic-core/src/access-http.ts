@@ -2610,7 +2610,15 @@ export class EngramAccessHttpServer {
         codingArchitectureWrite ||
         codegraphWrite
       );
-    if (isMcpWrite) {
+    // observe self-enforces quota INSIDE its idempotency lock via the
+    // enforceWriteQuota hook (issue #1649) — mirroring the direct
+    // /engram/v1/observe route — so it must NOT be pre-checked here: a
+    // pre-check would 429 a response-lost replay. It still counts as a write
+    // for post-recording (the replay guard in shouldCountWriteRateLimit skips
+    // the record). Other write tools keep the coarse pre-check.
+    const observeSelfEnforcesQuota =
+      toolName === "engram.observe" || toolName === "remnic.observe";
+    if (isMcpWrite && !observeSelfEnforcesQuota) {
       this.ensureWriteRateLimitAvailable();
     }
 
@@ -2626,6 +2634,9 @@ export class EngramAccessHttpServer {
       sessionKeyOverride: requestIdentity.sessionKey,
       sessionId,
       correlationId: mcpCorrelationId,
+      enforceWriteQuota: observeSelfEnforcesQuota
+        ? () => this.ensureWriteRateLimitAvailable()
+        : undefined,
     });
 
     if (isMcpWrite && response !== null) {
