@@ -147,18 +147,39 @@ async function runScenario(
     log.push({ scenarioId: scenario.id, phase, turnIndex: turn, namespace, query, recalled, at });
   };
 
-  // --- Establishing transcript ---
+  // --- Establishing transcript (primary fact) ---
   for (const t of scenario.establishingTurns) {
     await adapter.ingestTurn(sessionKey, t.role, t.text, t.at);
     turn += 1;
   }
 
+  // --- Scoped twin establishment (alternate namespace, BEFORE the correction) ---
+  // Seeded before the correction so scope_precision can catch a system that
+  // wrongly applies the correction across every namespace at correction time
+  // (the twin must already exist to be overwritten).
+  if (scenario.scopedTwin) {
+    for (const t of scenario.scopedTwin.establishingTurns) {
+      await adapter.ingestTurn(scenario.scopedTwin.namespace, t.role, t.text, t.at);
+      turn += 1;
+    }
+  }
+
+  // --- Collateral-fact establishment (primary namespace) ---
+  // Seed the unrelated facts before the baseline probe so collateral_delta
+  // measures recall over facts that were actually stored.
+  for (const probe of scenario.unrelatedProbes) {
+    for (const t of probe.establishingTurns) {
+      await adapter.ingestTurn(sessionKey, t.role, t.text, t.at);
+      turn += 1;
+    }
+  }
+
   // --- Baseline probe (unrelated-fact recall before correction) ---
   const collateralBefore: number[] = [];
   for (const probe of scenario.unrelatedProbes) {
+    turn += 1;
     const recalled = await adapter.recall(probe.query, sessionKey);
     recordProbe("baseline", probe.query, sessionKey, recalled, scenario.correction.turn.at);
-    turn += 1;
     collateralBefore.push(
       recalled.some((r) => r.toLowerCase().includes(probe.expectedContent.toLowerCase())) ? 1 : 0,
     );
@@ -170,10 +191,13 @@ async function runScenario(
   const correctionTurnIndex = turn;
 
   // --- Post-correction probe (uptake@next) ---
+  // Recorded at the interaction turn AFTER the correction (strictly greater
+  // than correctionTurnIndex) so uptake@next / uptake_latency count the
+  // dedicated uptake probe, not only the later anti-event / twin probes.
   {
+    turn += 1;
     const recalled = await adapter.recall(scenario.probe.query, sessionKey);
     recordProbe("post_correction", scenario.probe.query, sessionKey, recalled, scenario.correction.turn.at);
-    turn += 1;
   }
 
   // --- Anti-events (false_apply window) ---
@@ -187,16 +211,13 @@ async function runScenario(
     turn += 1;
   }
 
-  // Scoped twin probe (namespace-B must stay intact).
+  // --- Scoped twin probe (namespace-B must stay intact AFTER the correction) ---
+  // The twin was established above (before the correction); this probe checks
+  // it survived. Only the probe runs here — no re-ingestion.
   if (scenario.scopedTwin) {
-    const twin = scenario.scopedTwin;
-    for (const t of twin.establishingTurns) {
-      await adapter.ingestTurn(twin.namespace, t.role, t.text, t.at);
-      turn += 1;
-    }
-    const recalled = await adapter.recall(scenario.probe.query, twin.namespace);
-    recordProbe("post_correction", scenario.probe.query, twin.namespace, recalled, scenario.correction.turn.at);
     turn += 1;
+    const recalled = await adapter.recall(scenario.probe.query, scenario.scopedTwin.namespace);
+    recordProbe("post_correction", scenario.probe.query, scenario.scopedTwin.namespace, recalled, scenario.correction.turn.at);
   }
 
   // --- Maintenance cycles (non_resurrection) ---

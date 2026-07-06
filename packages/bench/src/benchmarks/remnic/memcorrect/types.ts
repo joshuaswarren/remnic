@@ -112,6 +112,13 @@ export interface Reassertion {
 export interface UnrelatedProbe {
   query: string;
   expectedContent: string;
+  /**
+   * Turns that seed the unrelated fact in the primary namespace BEFORE the
+   * baseline probe. Without these the collateral metric recalls facts that
+   * were never stored. Each turn carries the expected value so deduping or
+   * summarizing systems still capture it.
+   */
+  establishingTurns: EstablishingTurn[];
 }
 
 /** One MemCorrect scenario. The runner emits one task per scenario. */

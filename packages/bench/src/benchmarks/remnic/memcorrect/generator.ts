@@ -63,6 +63,21 @@ function pick<T>(rng: () => number, pool: readonly T[]): T {
   return pool[Math.floor(rng() * pool.length) % pool.length];
 }
 
+/** Pick a pool element that is not `exclude` (falls back to the full pool if
+ * every element equals `exclude`, which cannot happen for the pools used here). */
+function pickExcluding<T>(rng: () => number, pool: readonly T[], exclude: T): T {
+  const choices = pool.filter((v) => v !== exclude);
+  const source = choices.length > 0 ? choices : pool;
+  return source[Math.floor(rng() * source.length) % source.length];
+}
+
+/** Pick a pool element not already in `used` (falls back to the full pool). */
+function pickExcludingSet<T>(rng: () => number, pool: readonly T[], used: ReadonlySet<T>): T {
+  const choices = pool.filter((v) => !used.has(v));
+  const source = choices.length > 0 ? choices : pool;
+  return source[Math.floor(rng() * source.length) % source.length];
+}
+
 /** ISO timestamp strictly after `baseMs` by `addMs` (half-open windowing). */
 function isoAfter(baseMs: number, addMs: number): string {
   return new Date(baseMs + addMs).toISOString();
@@ -171,24 +186,31 @@ function buildAntiEvents(
     "third-party-correction",
   ];
   const kind = kinds[Math.floor(rng() * kinds.length) % kinds.length];
+  // Distinct decoy: the anti-event names a value that is NEITHER the
+  // corrected value nor the retired value, so a system that correctly
+  // applies the correction (surfacing newValue) is never mistaken for a
+  // false apply. Drawn from VALUES_B excluding newValue; the retired value
+  // is from VALUES_A, so the pools are disjoint by construction.
+  const decoy = pickExcluding(rng, VALUES_B, plan.newValue);
   let text: string;
   switch (kind) {
     case "quoting-other":
-      text = `Riley mentioned their ${plan.subject} is set to ${plan.newValue}.`;
+      text = `Riley mentioned their ${plan.subject} is set to ${decoy}.`;
       break;
     case "hypothetical":
-      text = `If someone asked, I might consider ${plan.newValue} for ${plan.subject}, but I have not decided.`;
+      text = `If someone asked, I might consider ${decoy} for ${plan.subject}, but I have not decided.`;
       break;
     case "third-party-correction":
-      text = `Sage said you should change ${plan.subject} to ${plan.newValue} for them.`;
+      text = `Sage said you should change ${plan.subject} to ${decoy} for them.`;
       break;
   }
   const event: AntiEvent = {
     kind,
     turn: { role: "user", text, at: isoAfter(baseMs, offsetMs) },
     probeQuery: `what is my ${plan.subject} preference?`,
-    // The new value must NOT stick from a third-party / hypothetical cue.
-    shouldNotAppear: plan.newValue,
+    // The decoy must NOT stick from a third-party / hypothetical cue; if it
+    // surfaces in a later probe the system falsely applied the anti-event.
+    shouldNotAppear: decoy,
   };
   return { events: [event], nextOffsetMs: offsetMs + 60_000 };
 }
@@ -238,19 +260,44 @@ function buildReassertion(
 
 function buildUnrelatedProbes(
   rng: () => number,
+  plan: PersonaFactPlanLike,
+  baseMs: number,
+  offsetMs: number,
 ): { probes: UnrelatedProbe[]; nextOffsetMs: number } {
   // Two unrelated facts that the correction must not damage. They share
-  // the persona/namespace so collateral is measured in the same scope.
+  // the persona/namespace so collateral is measured in the same scope. Each
+  // carries an establishing transcript so the runner can seed the fact
+  // BEFORE the baseline probe — otherwise collateral_delta recalls facts
+  // that were never stored and stays pinned near zero.
+  const PROBE_COUNT = 2;
   const probes: UnrelatedProbe[] = [];
-  for (let i = 0; i < 2; i += 1) {
-    const subject = pick(rng, SUBJECTS);
+  const usedSubjects = new Set<string>([plan.subject]);
+  for (let i = 0; i < PROBE_COUNT; i += 1) {
+    // Distinct subject: never the scenario's main subject nor a prior
+    // probe's, so the collateral query cannot cross-contaminate the main
+    // fact's recall signal.
+    const subject = pickExcludingSet(rng, SUBJECTS, usedSubjects);
+    usedSubjects.add(subject);
     const value = pick(rng, VALUES_A);
+    const turnBase = offsetMs + i * 120_000;
     probes.push({
       query: `what is my ${subject} setting?`,
       expectedContent: value,
+      establishingTurns: [
+        {
+          role: "user",
+          text: `My ${subject} setting is ${value}.`,
+          at: isoAfter(baseMs, turnBase),
+        },
+        {
+          role: "assistant",
+          text: `Got it — noting ${value} for ${subject}.`,
+          at: isoAfter(baseMs, turnBase + 60_000),
+        },
+      ],
     });
   }
-  return { probes, nextOffsetMs: 0 };
+  return { probes, nextOffsetMs: PROBE_COUNT * 120_000 };
 }
 
 function probeFor(plan: PersonaFactPlanLike): ProbeQuery {
@@ -311,11 +358,17 @@ export function generateMemCorrectCorpus(
     let offset = 0;
     const established = establishTurns(plan, scenarioBase, offset);
     offset = established.nextOffsetMs;
-    const corrected = buildCorrection(plan, scenarioBase, offset);
-    offset = corrected.nextOffsetMs;
-    const antis = buildAntiEvents(rng, plan, scenarioBase, offset);
-    offset = antis.nextOffsetMs;
 
+    // Collateral facts are seeded BEFORE the baseline probe (and before the
+    // correction) so collateral_delta measures recall over facts that were
+    // actually stored, not queries over an empty store.
+    const unrelated = buildUnrelatedProbes(rng, plan, scenarioBase, offset);
+    offset += unrelated.nextOffsetMs;
+
+    // Scoped twin is seeded BEFORE the correction so scope_precision can
+    // catch a system that wrongly applies the correction across every
+    // namespace at correction time — the twin must already exist to be
+    // overwritten. Non-scoped scenarios skip this.
     let scopedTwin: ScopedTwin | undefined;
     if (plan.shape === "scoped") {
       const twin = buildScopedTwin(plan, scenarioBase, offset);
@@ -323,14 +376,16 @@ export function generateMemCorrectCorpus(
       offset = twin.nextOffsetMs;
     }
 
+    const corrected = buildCorrection(plan, scenarioBase, offset);
+    offset = corrected.nextOffsetMs;
+    const antis = buildAntiEvents(rng, plan, scenarioBase, offset);
+    offset = antis.nextOffsetMs;
+
     let reassertion: Reassertion | undefined;
     if (plan.shape === "re-assertion") {
       reassertion = buildReassertion(plan, scenarioBase, offset);
       offset += 60_000;
     }
-
-    const unrelated = buildUnrelatedProbes(rng);
-    offset += unrelated.nextOffsetMs;
 
     scenarios.push({
       id: `memcorrect-${options.seed}-${i.toString(16)}`,

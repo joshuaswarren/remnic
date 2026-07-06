@@ -168,10 +168,15 @@ export class PromptOnlyBaselineAdapter implements MemCorrectSystemAdapter {
     this.turns.push({ sessionKey, role, text, at });
   }
 
-  async recall(query: string, _sessionKey: string): Promise<string[]> {
+  async recall(query: string, sessionKey: string): Promise<string[]> {
     const queryTf = termFrequencies(tokenize(query));
     if (queryTf.size === 0) return [];
+    // Scope recall to the requesting session so a primary-namespace probe
+    // cannot pull twin-namespace text (and vice-versa). Without this filter
+    // scoped scenarios let cross-namespace turns distort the baseline's
+    // scope and recall signals.
     const scored = this.turns
+      .filter((turn) => turn.sessionKey === sessionKey)
       .map((turn) => {
         const turnTf = termFrequencies(tokenize(turn.text));
         let overlap = 0;
