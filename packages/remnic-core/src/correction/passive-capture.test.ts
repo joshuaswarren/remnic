@@ -6,7 +6,11 @@
  * Uses mock deps — no real CorrectionService or storage.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { strict as assert } from "node:assert";
+import { test } from "node:test";
+import { rm, mkdir } from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
 import {
   capturePassiveCorrections,
   evaluateAutoApplyGuards,
@@ -26,9 +30,6 @@ import {
   enqueuePassiveCorrectionNotification,
   drainPassiveCorrectionNotifications,
 } from "./passive-correction-notifications.js";
-import { rm, mkdir } from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -110,356 +111,274 @@ const LIVE_CTX: PassiveCaptureContext = {
 // Queue mode
 // ---------------------------------------------------------------------------
 
-describe("capturePassiveCorrections — queue mode", () => {
-  it("plans corrections and leaves them pending", async () => {
-    const plan = makePlan();
-    const deps = mockDeps(plan);
-    const dedup = new Set<string>();
+test("queue mode: plans corrections and leaves them pending", async () => {
+  const plan = makePlan();
+  const deps = mockDeps(plan);
+  const dedup = new Set<string>();
 
-    const result = await capturePassiveCorrections(
-      [makeCorrection()],
-      LIVE_CTX,
-      QUEUE_CONFIG,
-      deps,
-      dedup,
-    );
+  const result = await capturePassiveCorrections([makeCorrection()], LIVE_CTX, QUEUE_CONFIG, deps, dedup);
 
-    expect(result.telemetry.detected).toBe(1);
-    expect(result.telemetry.queued).toBe(1);
-    expect(result.telemetry.autoApplied).toBe(0);
-    expect(result.plans).toHaveLength(1);
-  });
+  assert.strictEqual(result.telemetry.detected, 1);
+  assert.strictEqual(result.telemetry.queued, 1);
+  assert.strictEqual(result.telemetry.autoApplied, 0);
+  assert.strictEqual(result.plans.length, 1);
+});
 
-  it("does not auto-apply in queue mode", async () => {
-    const appliedPlans: string[] = [];
-    const plan = makePlan();
-    const deps = mockDeps(plan, { appliedPlans });
-    const dedup = new Set<string>();
+test("queue mode: does not auto-apply", async () => {
+  const appliedPlans: string[] = [];
+  const plan = makePlan();
+  const deps = mockDeps(plan, { appliedPlans });
+  const dedup = new Set<string>();
 
-    await capturePassiveCorrections(
-      [makeCorrection()],
-      LIVE_CTX,
-      QUEUE_CONFIG,
-      deps,
-      dedup,
-    );
+  await capturePassiveCorrections([makeCorrection()], LIVE_CTX, QUEUE_CONFIG, deps, dedup);
 
-    expect(appliedPlans).toHaveLength(0);
-  });
+  assert.strictEqual(appliedPlans.length, 0);
 });
 
 // ---------------------------------------------------------------------------
 // Dedup
 // ---------------------------------------------------------------------------
 
-describe("capturePassiveCorrections — dedup", () => {
-  it("same correction, two flushes → one plan", async () => {
-    const plan = makePlan();
-    const deps = mockDeps(plan);
-    const dedup = new Set<string>();
+test("dedup: same correction, two flushes → one plan", async () => {
+  const plan = makePlan();
+  const deps = mockDeps(plan);
+  const dedup = new Set<string>();
 
-    const correction = makeCorrection();
-    const r1 = await capturePassiveCorrections([correction], LIVE_CTX, QUEUE_CONFIG, deps, dedup);
-    const r2 = await capturePassiveCorrections([correction], LIVE_CTX, QUEUE_CONFIG, deps, dedup);
+  const correction = makeCorrection();
+  const r1 = await capturePassiveCorrections([correction], LIVE_CTX, QUEUE_CONFIG, deps, dedup);
+  const r2 = await capturePassiveCorrections([correction], LIVE_CTX, QUEUE_CONFIG, deps, dedup);
 
-    expect(r1.telemetry.queued).toBe(1);
-    expect(r2.telemetry.queued).toBe(0);
-    expect(r2.telemetry.detected).toBe(1);
-  });
+  assert.strictEqual(r1.telemetry.queued, 1);
+  assert.strictEqual(r2.telemetry.queued, 0);
+  assert.strictEqual(r2.telemetry.detected, 1);
+});
 
-  it("different bufferKey → both processed", async () => {
-    const plan = makePlan();
-    const deps = mockDeps(plan);
-    const dedup = new Set<string>();
+test("dedup: different bufferKey → both processed", async () => {
+  const plan = makePlan();
+  const deps = mockDeps(plan);
+  const dedup = new Set<string>();
 
-    const correction = makeCorrection();
-    await capturePassiveCorrections(
-      [correction],
-      { ...LIVE_CTX, bufferKey: "session-A" },
-      QUEUE_CONFIG,
-      deps,
-      dedup,
-    );
-    await capturePassiveCorrections(
-      [correction],
-      { ...LIVE_CTX, bufferKey: "session-B" },
-      QUEUE_CONFIG,
-      deps,
-      dedup,
-    );
+  const correction = makeCorrection();
+  await capturePassiveCorrections([correction], { ...LIVE_CTX, bufferKey: "session-A" }, QUEUE_CONFIG, deps, dedup);
+  await capturePassiveCorrections([correction], { ...LIVE_CTX, bufferKey: "session-B" }, QUEUE_CONFIG, deps, dedup);
 
-    expect(dedup.size).toBe(2);
-  });
+  assert.strictEqual(dedup.size, 2);
 });
 
 // ---------------------------------------------------------------------------
 // Auto mode + guards
 // ---------------------------------------------------------------------------
 
-describe("capturePassiveCorrections — auto mode", () => {
-  it("auto-applies when all guards pass", async () => {
-    const appliedPlans: string[] = [];
-    const plan = makePlan({ confidence: 0.9, classification: "outdated" });
-    const deps = mockDeps(plan, { appliedPlans });
-    const dedup = new Set<string>();
+test("auto mode: applies when all guards pass", async () => {
+  const appliedPlans: string[] = [];
+  const plan = makePlan({ confidence: 0.9, classification: "outdated" });
+  const deps = mockDeps(plan, { appliedPlans });
+  const dedup = new Set<string>();
 
-    const result = await capturePassiveCorrections(
-      [makeCorrection()],
-      LIVE_CTX,
-      AUTO_CONFIG,
-      deps,
-      dedup,
-    );
+  const result = await capturePassiveCorrections([makeCorrection()], LIVE_CTX, AUTO_CONFIG, deps, dedup);
 
-    expect(result.telemetry.autoApplied).toBe(1);
-    expect(appliedPlans).toEqual(["corr-test-001"]);
+  assert.strictEqual(result.telemetry.autoApplied, 1);
+  assert.deepStrictEqual(appliedPlans, ["corr-test-001"]);
+});
+
+test("auto mode: suppressed — confidence below floor → queued", async () => {
+  const appliedPlans: string[] = [];
+  const plan = makePlan({ confidence: 0.5 });
+  const deps = mockDeps(plan, { appliedPlans });
+  const dedup = new Set<string>();
+
+  const result = await capturePassiveCorrections([makeCorrection()], LIVE_CTX, AUTO_CONFIG, deps, dedup);
+
+  assert.strictEqual(result.telemetry.autoApplied, 0);
+  assert.strictEqual(result.telemetry.queued, 1);
+  assert.strictEqual(result.telemetry.suppressedReasons.confidence_below_floor, 1);
+  assert.strictEqual(appliedPlans.length, 0);
+});
+
+test("auto mode: suppressed — affected too large → queued", async () => {
+  const appliedPlans: string[] = [];
+  const plan = makePlan({
+    affected: [
+      { memoryId: "m1", path: "a.md", excerpt: "x", why: "y" },
+      { memoryId: "m2", path: "b.md", excerpt: "x", why: "y" },
+      { memoryId: "m3", path: "c.md", excerpt: "x", why: "y" },
+    ],
   });
+  const deps = mockDeps(plan, { appliedPlans });
+  const dedup = new Set<string>();
 
-  it("suppressed: confidence below floor → queued", async () => {
-    const appliedPlans: string[] = [];
-    const plan = makePlan({ confidence: 0.5 });
-    const deps = mockDeps(plan, { appliedPlans });
-    const dedup = new Set<string>();
+  const result = await capturePassiveCorrections([makeCorrection()], LIVE_CTX, AUTO_CONFIG, deps, dedup);
 
-    const result = await capturePassiveCorrections(
-      [makeCorrection()],
-      LIVE_CTX,
-      AUTO_CONFIG,
-      deps,
-      dedup,
-    );
+  assert.strictEqual(result.telemetry.autoApplied, 0);
+  assert.strictEqual(result.telemetry.suppressedReasons.affected_too_large, 1);
+});
 
-    expect(result.telemetry.autoApplied).toBe(0);
-    expect(result.telemetry.queued).toBe(1);
-    expect(result.telemetry.suppressedReasons.confidence_below_floor).toBe(1);
-    expect(appliedPlans).toHaveLength(0);
+test("auto mode: suppressed — disallowed classification → queued", async () => {
+  const appliedPlans: string[] = [];
+  const plan = makePlan({ classification: "wrong_scope" as CorrectionClassification });
+  const deps = mockDeps(plan, { appliedPlans });
+  const dedup = new Set<string>();
+
+  const result = await capturePassiveCorrections([makeCorrection()], LIVE_CTX, AUTO_CONFIG, deps, dedup);
+
+  assert.strictEqual(result.telemetry.autoApplied, 0);
+  assert.strictEqual(result.telemetry.suppressedReasons.classification_not_allowed, 1);
+});
+
+test("auto mode: suppressed — disallowed action kind (rescope) → queued", async () => {
+  const appliedPlans: string[] = [];
+  const plan = makePlan({
+    actions: [{ kind: "rescope", memoryId: "m1", toNamespace: "other" } as CorrectionAction],
   });
+  const deps = mockDeps(plan, { appliedPlans });
+  const dedup = new Set<string>();
 
-  it("suppressed: affected too large → queued", async () => {
-    const appliedPlans: string[] = [];
-    const plan = makePlan({
-      affected: [
-        { memoryId: "m1", path: "a.md", excerpt: "x", why: "y" },
-        { memoryId: "m2", path: "b.md", excerpt: "x", why: "y" },
-        { memoryId: "m3", path: "c.md", excerpt: "x", why: "y" },
-      ],
-    });
-    const deps = mockDeps(plan, { appliedPlans });
-    const dedup = new Set<string>();
+  const result = await capturePassiveCorrections([makeCorrection()], LIVE_CTX, AUTO_CONFIG, deps, dedup);
 
-    const result = await capturePassiveCorrections(
-      [makeCorrection()],
-      LIVE_CTX,
-      AUTO_CONFIG,
-      deps,
-      dedup,
-    );
+  assert.strictEqual(result.telemetry.autoApplied, 0);
+  assert.strictEqual(result.telemetry.suppressedReasons.disallowed_action_kind, 1);
+});
 
-    expect(result.telemetry.autoApplied).toBe(0);
-    expect(result.telemetry.suppressedReasons.affected_too_large).toBe(1);
-  });
+test("auto mode: suppressed — non-live session (replay) → queued", async () => {
+  const appliedPlans: string[] = [];
+  const plan = makePlan();
+  const deps = mockDeps(plan, { appliedPlans });
+  const dedup = new Set<string>();
 
-  it("suppressed: disallowed classification → queued", async () => {
-    const appliedPlans: string[] = [];
-    const plan = makePlan({ classification: "wrong_scope" as CorrectionClassification });
-    const deps = mockDeps(plan, { appliedPlans });
-    const dedup = new Set<string>();
+  const result = await capturePassiveCorrections(
+    [makeCorrection()],
+    { ...LIVE_CTX, isLiveSession: false },
+    AUTO_CONFIG,
+    deps,
+    dedup,
+  );
 
-    const result = await capturePassiveCorrections(
-      [makeCorrection()],
-      LIVE_CTX,
-      AUTO_CONFIG,
-      deps,
-      dedup,
-    );
+  assert.strictEqual(result.telemetry.autoApplied, 0);
+  assert.strictEqual(result.telemetry.suppressedReasons.non_live_session, 1);
+});
 
-    expect(result.telemetry.autoApplied).toBe(0);
-    expect(result.telemetry.suppressedReasons.classification_not_allowed).toBe(1);
-  });
+test("auto mode: auto-applied correction enqueues notification", async () => {
+  const plan = makePlan({ confidence: 0.9 });
+  const tmpDir = path.join(os.tmpdir(), `test-passive-notify-${Date.now()}`);
+  const deps: PassiveCaptureDeps = {
+    planCorrection: async () => plan,
+    applyCorrection: async (planId) => ({
+      planId,
+      status: "applied",
+      results: [],
+      auditMemoryId: "audit",
+      appliedAt: new Date().toISOString(),
+    }),
+    storageDir: async () => tmpDir,
+  };
+  const dedup = new Set<string>();
 
-  it("suppressed: disallowed action kind (rescope) → queued", async () => {
-    const appliedPlans: string[] = [];
-    const plan = makePlan({
-      actions: [{ kind: "rescope", memoryId: "m1", toNamespace: "other" } as CorrectionAction],
-    });
-    const deps = mockDeps(plan, { appliedPlans });
-    const dedup = new Set<string>();
+  await capturePassiveCorrections([makeCorrection()], LIVE_CTX, AUTO_CONFIG, deps, dedup);
 
-    const result = await capturePassiveCorrections(
-      [makeCorrection()],
-      LIVE_CTX,
-      AUTO_CONFIG,
-      deps,
-      dedup,
-    );
+  const notifications = await drainPassiveCorrectionNotifications(tmpDir);
+  assert.strictEqual(notifications.length, 1);
+  assert.strictEqual(notifications[0].planId, "corr-test-001");
+  assert.ok(notifications[0].undoCommand.includes("remnic correct --revert"));
 
-    expect(result.telemetry.autoApplied).toBe(0);
-    expect(result.telemetry.suppressedReasons.disallowed_action_kind).toBe(1);
-  });
-
-  it("suppressed: non-live session (replay) → queued", async () => {
-    const appliedPlans: string[] = [];
-    const plan = makePlan();
-    const deps = mockDeps(plan, { appliedPlans });
-    const dedup = new Set<string>();
-
-    const result = await capturePassiveCorrections(
-      [makeCorrection()],
-      { ...LIVE_CTX, isLiveSession: false },
-      AUTO_CONFIG,
-      deps,
-      dedup,
-    );
-
-    expect(result.telemetry.autoApplied).toBe(0);
-    expect(result.telemetry.suppressedReasons.non_live_session).toBe(1);
-  });
-
-  it("auto-applied correction enqueues notification", async () => {
-    const plan = makePlan({ confidence: 0.9 });
-    const tmpDir = path.join(os.tmpdir(), `test-passive-notify-${Date.now()}`);
-    const deps: PassiveCaptureDeps = {
-      planCorrection: async () => plan,
-      applyCorrection: async (planId) => ({
-        planId,
-        status: "applied",
-        results: [],
-        auditMemoryId: "audit",
-        appliedAt: new Date().toISOString(),
-      }),
-      storageDir: async () => tmpDir,
-    };
-    const dedup = new Set<string>();
-
-    await capturePassiveCorrections(
-      [makeCorrection()],
-      LIVE_CTX,
-      AUTO_CONFIG,
-      deps,
-      dedup,
-    );
-
-    const notifications = await drainPassiveCorrectionNotifications(tmpDir);
-    expect(notifications).toHaveLength(1);
-    expect(notifications[0].planId).toBe("corr-test-001");
-    expect(notifications[0].undoCommand).toContain("remnic correct --revert");
-
-    await rm(tmpDir, { recursive: true, force: true });
-  });
+  await rm(tmpDir, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
 // evaluateAutoApplyGuards — direct unit tests
 // ---------------------------------------------------------------------------
 
-describe("evaluateAutoApplyGuards", () => {
-  const config: PassiveCaptureConfig = {
-    mode: "auto",
-    confidenceFloor: 0.85,
-    autoApplyMaxAffected: 2,
-  };
+test("guards: returns null when all pass", () => {
+  const config: PassiveCaptureConfig = { mode: "auto", confidenceFloor: 0.85, autoApplyMaxAffected: 2 };
+  const plan = makePlan({ confidence: 0.9 });
+  assert.strictEqual(evaluateAutoApplyGuards(plan, config, true), null);
+});
 
-  it("returns null when all guards pass", () => {
-    const plan = makePlan({ confidence: 0.9 });
-    expect(evaluateAutoApplyGuards(plan, config, true)).toBeNull();
-  });
+test("guards: non_live_session for replay", () => {
+  const config: PassiveCaptureConfig = { mode: "auto", confidenceFloor: 0.85, autoApplyMaxAffected: 2 };
+  assert.strictEqual(evaluateAutoApplyGuards(makePlan(), config, false), "non_live_session");
+});
 
-  it("returns non_live_session for replay", () => {
-    const plan = makePlan();
-    expect(evaluateAutoApplyGuards(plan, config, false)).toBe("non_live_session");
-  });
+test("guards: confidence_below_floor", () => {
+  const config: PassiveCaptureConfig = { mode: "auto", confidenceFloor: 0.85, autoApplyMaxAffected: 2 };
+  assert.strictEqual(evaluateAutoApplyGuards(makePlan({ confidence: 0.5 }), config, true), "confidence_below_floor");
+});
 
-  it("returns confidence_below_floor", () => {
-    const plan = makePlan({ confidence: 0.5 });
-    expect(evaluateAutoApplyGuards(plan, config, true)).toBe("confidence_below_floor");
-  });
+test("guards: classification_not_allowed for wrong_scope", () => {
+  const config: PassiveCaptureConfig = { mode: "auto", confidenceFloor: 0.85, autoApplyMaxAffected: 2 };
+  assert.strictEqual(evaluateAutoApplyGuards(makePlan({ classification: "wrong_scope" }), config, true), "classification_not_allowed");
+});
 
-  it("returns classification_not_allowed for wrong_scope", () => {
-    const plan = makePlan({ classification: "wrong_scope" });
-    expect(evaluateAutoApplyGuards(plan, config, true)).toBe("classification_not_allowed");
+test("guards: affected_too_large", () => {
+  const config: PassiveCaptureConfig = { mode: "auto", confidenceFloor: 0.85, autoApplyMaxAffected: 2 };
+  const plan = makePlan({
+    affected: [
+      { memoryId: "m1", path: "a", excerpt: "x", why: "y" },
+      { memoryId: "m2", path: "b", excerpt: "x", why: "y" },
+      { memoryId: "m3", path: "c", excerpt: "x", why: "y" },
+    ],
   });
+  assert.strictEqual(evaluateAutoApplyGuards(plan, config, true), "affected_too_large");
+});
 
-  it("returns affected_too_large", () => {
-    const plan = makePlan({
-      affected: [
-        { memoryId: "m1", path: "a", excerpt: "x", why: "y" },
-        { memoryId: "m2", path: "b", excerpt: "x", why: "y" },
-        { memoryId: "m3", path: "c", excerpt: "x", why: "y" },
-      ],
-    });
-    expect(evaluateAutoApplyGuards(plan, config, true)).toBe("affected_too_large");
-  });
-
-  it("returns disallowed_action_kind for redaction_rule", () => {
-    const plan = makePlan({
-      actions: [{ kind: "redaction_rule", pattern: "secret" }],
-    });
-    expect(evaluateAutoApplyGuards(plan, config, true)).toBe("disallowed_action_kind");
-  });
+test("guards: disallowed_action_kind for redaction_rule", () => {
+  const config: PassiveCaptureConfig = { mode: "auto", confidenceFloor: 0.85, autoApplyMaxAffected: 2 };
+  const plan = makePlan({ actions: [{ kind: "redaction_rule", pattern: "secret" }] });
+  assert.strictEqual(evaluateAutoApplyGuards(plan, config, true), "disallowed_action_kind");
 });
 
 // ---------------------------------------------------------------------------
 // Notifications — drain-once semantics
 // ---------------------------------------------------------------------------
 
-describe("passive-correction-notifications — drain-once", () => {
-  let tmpDir: string;
+test("notifications: drains once then returns empty", async () => {
+  const tmpDir = path.join(os.tmpdir(), `test-passive-notify-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  await mkdir(tmpDir, { recursive: true });
 
-  beforeEach(async () => {
-    tmpDir = path.join(os.tmpdir(), `test-passive-notify-${Date.now()}-${Math.random().toString(36).slice(2)}`);
-    await mkdir(tmpDir, { recursive: true });
+  await enqueuePassiveCorrectionNotification(tmpDir, {
+    planId: "p1", summary: "test", undoCommand: "remnic correct --revert p1", createdAt: new Date().toISOString(),
   });
 
-  it("drains once then returns empty", async () => {
-    await enqueuePassiveCorrectionNotification(tmpDir, {
-      planId: "p1",
-      summary: "test",
-      undoCommand: "remnic correct --revert p1",
-      createdAt: new Date().toISOString(),
-    });
+  const first = await drainPassiveCorrectionNotifications(tmpDir);
+  const second = await drainPassiveCorrectionNotifications(tmpDir);
 
-    const first = await drainPassiveCorrectionNotifications(tmpDir);
-    const second = await drainPassiveCorrectionNotifications(tmpDir);
+  assert.strictEqual(first.length, 1);
+  assert.strictEqual(second.length, 0);
 
-    expect(first).toHaveLength(1);
-    expect(second).toHaveLength(0);
+  await rm(tmpDir, { recursive: true, force: true });
+});
+
+test("notifications: accumulates multiple", async () => {
+  const tmpDir = path.join(os.tmpdir(), `test-passive-notify-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  await mkdir(tmpDir, { recursive: true });
+
+  await enqueuePassiveCorrectionNotification(tmpDir, {
+    planId: "p1", summary: "first", undoCommand: "remnic correct --revert p1", createdAt: new Date().toISOString(),
+  });
+  await enqueuePassiveCorrectionNotification(tmpDir, {
+    planId: "p2", summary: "second", undoCommand: "remnic correct --revert p2", createdAt: new Date().toISOString(),
   });
 
-  it("accumulates multiple notifications", async () => {
-    await enqueuePassiveCorrectionNotification(tmpDir, {
-      planId: "p1",
-      summary: "first",
-      undoCommand: "remnic correct --revert p1",
-      createdAt: new Date().toISOString(),
-    });
-    await enqueuePassiveCorrectionNotification(tmpDir, {
-      planId: "p2",
-      summary: "second",
-      undoCommand: "remnic correct --revert p2",
-      createdAt: new Date().toISOString(),
-    });
+  const drained = await drainPassiveCorrectionNotifications(tmpDir);
+  assert.strictEqual(drained.length, 2);
+  assert.deepStrictEqual(drained.map((n) => n.planId), ["p1", "p2"]);
 
-    const drained = await drainPassiveCorrectionNotifications(tmpDir);
-    expect(drained).toHaveLength(2);
-    expect(drained.map((n) => n.planId)).toEqual(["p1", "p2"]);
-  });
+  await rm(tmpDir, { recursive: true, force: true });
+});
 
-  it("returns empty when no file exists", async () => {
-    const drained = await drainPassiveCorrectionNotifications(tmpDir);
-    expect(drained).toEqual([]);
-  });
+test("notifications: returns empty when no file exists", async () => {
+  const tmpDir = path.join(os.tmpdir(), `test-passive-notify-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+  const drained = await drainPassiveCorrectionNotifications(tmpDir);
+  assert.deepStrictEqual(drained, []);
 });
 
 // ---------------------------------------------------------------------------
 // Telemetry
 // ---------------------------------------------------------------------------
 
-describe("telemetry", () => {
-  it("emptyTelemetry returns zeroed counters", () => {
-    const t = emptyTelemetry();
-    expect(t.detected).toBe(0);
-    expect(t.queued).toBe(0);
-    expect(t.autoApplied).toBe(0);
-    expect(Object.keys(t.suppressedReasons)).toHaveLength(0);
-  });
+test("telemetry: emptyTelemetry returns zeroed counters", () => {
+  const t = emptyTelemetry();
+  assert.strictEqual(t.detected, 0);
+  assert.strictEqual(t.queued, 0);
+  assert.strictEqual(t.autoApplied, 0);
+  assert.strictEqual(Object.keys(t.suppressedReasons).length, 0);
 });
