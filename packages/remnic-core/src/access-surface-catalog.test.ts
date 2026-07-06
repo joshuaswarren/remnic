@@ -44,7 +44,7 @@ import {
 // catalog-completeness correction: adding routes that were always live but
 // omitted from the catalog (review-caught). Such a bump MUST be accompanied
 // by the newly-cataloged entries; the higher count is the honest baseline.
-const UNMIGRATED_HANDLER_BASELINE = 134;
+const UNMIGRATED_HANDLER_BASELINE = 80;
 
 // Keep the import live — `getOperation` is the call surfaces use at dispatch
 // time; referencing it here pins the registry's lookup contract.
@@ -187,6 +187,7 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
   const lines = source.split("\n");
   const routeOps = new Map<string, Set<string>>();
   let currentKey: string | null = null;
+  let lastSeenPathname: string | null = null;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
@@ -217,6 +218,7 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
     }
 
     if (pathname) {
+      lastSeenPathname = pathname;
       // Determine the HTTP method: same line first, then backward for
       // exact-match routes, forward for dynamic routes. Check both positive
       // (===) and negated (!==) method patterns — `req.method !== "GET"` as
@@ -251,6 +253,20 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
         routeOps.set(currentKey, new Set<string>());
       }
       continue;
+    }
+
+    // Detect method changes within a shared route block (e.g. a single
+    // regex match with GET/PUT/DELETE branches). When a new method check
+    // appears after a route pattern was already detected, update currentKey
+    // to the new method + the same pathname so per-method getOperation
+    // calls are tracked against the right route key.
+    const methodChange = line.match(/req\.method\s*===\s*"(\w+)"/);
+    if (methodChange && lastSeenPathname) {
+      const newKey = methodChange[1]! + " " + lastSeenPathname;
+      if (!routeOps.has(newKey)) {
+        routeOps.set(newKey, new Set<string>());
+      }
+      currentKey = newKey;
     }
 
     // Collect getOperation calls within the current route block.
