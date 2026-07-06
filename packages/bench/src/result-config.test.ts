@@ -105,3 +105,16 @@ test("finalizeBenchmarkResultConfig records generic run limit in benchmark optio
     trialLimit: 2,
   });
 });
+
+test("finalizeBenchmarkResultConfig strips live adapter from benchmarkOptions", () => {
+  const result = buildResult();
+  const liveAdapter = { label: "should-not-leak" };
+  const finalized = finalizeBenchmarkResultConfig(result, {
+    benchmarkOptions: {
+      adapter: liveAdapter,
+      seed: 42,
+    },
+  });
+  assert.ok(!("adapter" in (finalized.config.benchmarkOptions ?? {})), "live adapter must not leak into finalized config");
+  assert.equal((finalized.config.benchmarkOptions as Record<string, unknown>)?.seed, 42, "non-adapter options preserved");
+});
