@@ -243,6 +243,26 @@ function createTables(db: BetterSqlite3Database): void {
     CREATE INDEX IF NOT EXISTS idx_co_changes_a ON co_changes(file_a);
     CREATE INDEX IF NOT EXISTS idx_co_changes_b ON co_changes(file_b);
   `);
+  // Semantic layer (issue #1556): symbol embedding vectors. Additive to v1
+  // (CREATE TABLE IF NOT EXISTS — same rule-23 pattern as node_attributes).
+  // One row per (node_id, model_id): a node re-embedded under a different
+  // provider/model gets a distinct row so a provider swap does not
+  // overwrite the prior vectors (the cache invalidation test covers this).
+  // content_hash is the canonical-text hash (rule 37) — a re-index compares
+  // it to decide whether to re-embed. CASCADE on nodes(id) keeps the table
+  // in lockstep with node lifetimes (foreign_keys=ON is set in GraphStore.open).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS symbol_vectors (
+      node_id      TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+      model_id     TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      dims         INTEGER NOT NULL CHECK (dims > 0),
+      vector       BLOB NOT NULL,
+      PRIMARY KEY (node_id, model_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_symbol_vectors_model
+      ON symbol_vectors(model_id);
+  `);
   // repopulate both tables in lockstep without ordering concerns.
   db.exec(`
     CREATE TABLE IF NOT EXISTS fts_index (

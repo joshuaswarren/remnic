@@ -367,3 +367,13 @@ export type {
   LspTextDocumentItem,
   LspTextDocumentPositionParams,
 } from "./lsp/types.js";
+
+
+// ---------------------------------------------------------------------------
+// Semantic layer (issue #1556): symbol embeddings, SIMILAR_TO near-clone
+// edges, and semantic_query. OFF by default (SemanticConfig.enabled = false).
+// The layer builds on @remnic/core's host embedding provider + fallback —
+// no new embedding stack. See ./semantic/index.ts for the full surface.
+// ---------------------------------------------------------------------------
+
+export * from "./semantic/index.js";
