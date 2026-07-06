@@ -287,3 +287,83 @@ export {
   type CypherSuccess,
   type CypherValue,
 } from "./cypher/query-parser.js";
+// ---------------------------------------------------------------------------
+// PR (issue #1555): Phase B type resolution — LSP client layer over
+// installed language servers. Minimal JSON-RPC-over-stdio client, server
+// registry, resolution pass, and status surfacing. All behind
+// `codingGraph.lsp.enabled` (default false — rule 30/48).
+// ---------------------------------------------------------------------------
+
+export {
+  LspClient,
+  pathToUri,
+  uriToPath,
+  type LspClientOptions,
+} from "./lsp/client.js";
+
+export {
+  LspFrameDecoder,
+  encodeLspFrame,
+  type FrameDecodeError,
+  type FrameDecodeErrorKind,
+  type FrameDecodeResult,
+} from "./lsp/framing.js";
+
+export {
+  DEFAULT_LSP_CONFIG,
+  DEFAULT_LSP_MAX_REQUESTS_PER_RUN,
+  DEFAULT_LSP_TIMEOUT_MS,
+  parseLspConfig,
+  readLspEnabledEnv,
+  type LspConfig,
+  type LspConfigParseResult,
+  type LspServerLaunchSpec,
+  type LspServerOverrides,
+} from "./lsp/config.js";
+
+export {
+  lspDegradation,
+  type LspBackend,
+  type LspDegradation,
+  type LspDegradationCode,
+  type LspResult,
+} from "./lsp/degradation.js";
+
+export {
+  executeLspResolution,
+  mapLocationToNode,
+  planLspUpgrades,
+  type EdgeUpgrade,
+  type LspBudget,
+  type NodeLocator,
+  type PlanResult,
+  type PlannedLspRequest,
+  type ResolutionResult,
+  type ResolveOptions,
+  type UnresolvedCallSite,
+} from "./lsp/resolution.js";
+
+export {
+  formatLspStatusLine,
+  getLspStatus,
+  resolutionResultToStatusMaps,
+  type LspStatusEntry,
+  type LspStatusInput,
+} from "./lsp/status.js";
+export {
+  buildLineOffsetMap,
+  byteOffsetToPosition,
+  positionToByteOffset,
+  type LineOffsetMap,
+} from "./lsp/byte-position.js";
+
+export type {
+  LspInitializeParams,
+  LspInitializeResult,
+  LspLocation,
+  LspPosition,
+  LspRange,
+  LspServerCapabilities,
+  LspTextDocumentItem,
+  LspTextDocumentPositionParams,
+} from "./lsp/types.js";
