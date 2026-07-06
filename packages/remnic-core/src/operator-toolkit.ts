@@ -1204,24 +1204,38 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     total: 0,
   };
   let provenanceReadOk = true;
+  let provenancePartialTiers: string[] = [];
   try {
     // Include all tiers so cold-migrated and archived memories are counted
     // (codex thread PRRT_kwDORJXyws6Ojqz8 — readAllMemories is hot-only).
-    const [hot, archived, cold] = await Promise.all([
+    // Use allSettled so a real read failure (e.g. locked encrypted store)
+    // is surfaced as a partial-read warning, not silently swallowed
+    // (codex thread PRRT_kwDORJXyws6OjygQ).
+    const [hot, archived, cold] = await Promise.allSettled([
       storage.readAllMemories(),
-      storage.readArchivedMemories().catch(() => []),
-      storage.readAllColdMemories().catch(() => []),
+      storage.readArchivedMemories(),
+      storage.readAllColdMemories(),
     ]);
-    provenanceCoverage = summarizeProvenanceCoverage([...hot, ...archived, ...cold]);
+    const all: { frontmatter: { provenance?: string } }[] = [];
+    if (hot.status === "fulfilled") all.push(...hot.value);
+    else provenancePartialTiers.push("hot");
+    if (archived.status === "fulfilled") all.push(...archived.value);
+    else provenancePartialTiers.push("archived");
+    if (cold.status === "fulfilled") all.push(...cold.value);
+    else provenancePartialTiers.push("cold");
+    provenanceCoverage = summarizeProvenanceCoverage(all);
   } catch {
     provenanceReadOk = false;
   }
   const pc = provenanceCoverage.counts;
   const totalProvenance = provenanceCoverage.total;
   const provenanceCovered = pc.verified + pc.unverified;
+  const partialSuffix = provenancePartialTiers.length > 0
+    ? ` (partial: ${provenancePartialTiers.join("/")} tier unreadable)`
+    : "";
   checks.push({
     key: "provenance_coverage",
-    status: !provenanceReadOk
+    status: !provenanceReadOk || provenancePartialTiers.length > 0
       ? "warn"
       : totalProvenance === 0
         ? "warn"
@@ -1232,13 +1246,15 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
       ? "Could not read memories for provenance coverage."
       : totalProvenance === 0
         ? "No memories found yet — provenance coverage is empty."
-        : `Provenance coverage: ${pc.verified} verified, ${pc.unverified} unverified, ${pc.none} none (${totalProvenance} total).`,
+        : `Provenance coverage: ${pc.verified} verified, ${pc.unverified} unverified, ${pc.none} none (${totalProvenance} total).${partialSuffix}`,
     remediation: !provenanceReadOk
       ? undefined
-      : provenanceCovered === 0 && totalProvenance > 0
-        ? "New extractions will carry source spans. Existing legacy memories remain `none` until re-extracted."
-        : undefined,
-    details: { provenanceCounts: pc, total: totalProvenance },
+      : provenancePartialTiers.length > 0
+        ? `Some tiers could not be read (${provenancePartialTiers.join(", ")}). Check storage health and re-run.`
+        : provenanceCovered === 0 && totalProvenance > 0
+          ? "New extractions will carry source spans. Existing legacy memories remain `none` until re-extracted."
+          : undefined,
+    details: { provenanceCounts: pc, total: totalProvenance, partialTiers: provenancePartialTiers.length > 0 ? provenancePartialTiers : undefined },
   });
 
   const syncedChunkCount =
