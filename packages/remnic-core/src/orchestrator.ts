@@ -129,7 +129,7 @@ import {
   shouldFilterSupersededFromRecall,
 } from "./temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "./temporal-validity.js";
-import { resolveFactEventTime } from "./event-time.js";
+import { pickFactEventTimeAnchor, resolveFactEventTime } from "./event-time.js";
 import { RelevanceStore } from "./relevance.js";
 import { NegativeExampleStore } from "./negative.js";
 import {
@@ -2725,6 +2725,91 @@ export class Orchestrator {
       `[${context}] removing hash for legacy memory ${memory.frontmatter.id ?? "(unknown)"} via content fallback - no contentHash in frontmatter`,
     );
     index.remove(memory.content);
+  }
+
+  /**
+   * Issue #1671 — backfill bi-temporal bounds onto an existing promoted/deduped
+   * copy that was written BEFORE the source fact carried a resolved
+   * `invalid_at`/`observedAt`/`eventTimeSource`.
+   *
+   * On re-extraction/backfill, a fact may now carry a resolved end bound (e.g.
+   * "until June 2025") that the existing copy lacks because it was promoted
+   * before bi-temporal wiring existed. Without this backfill, recall keeps
+   * surfacing an expired fact even though the source copy now expires correctly.
+   *
+   * Finds the active fact in `targetStorage` whose normalized content matches
+   * `dedupContent`, then patches the temporal frontmatter the existing copy is
+   * missing. Best-effort / fail-open — any I/O error is logged and swallowed
+   * so the dedup short-circuit is never blocked by a backfill failure.
+   *
+   * Only patches fields the existing copy LACKS — never overwrites a bound the
+   * copy already carries (a later re-resolution should not clobber an earlier
+   * explicit bound). Gated on the incoming fact actually carrying bounds so
+   * no I/O occurs when bi-temporal is off or the fact has no end bound.
+   */
+  private async backfillTemporalBoundsOnDedupHit(
+    targetStorage: StorageManager,
+    dedupContent: string,
+    bounds: {
+      invalidAt?: string;
+      observedAt?: string;
+      eventTimeSource?: "extracted" | "assumed";
+    },
+  ): Promise<void> {
+    // Gate: skip entirely when no bounds to forward (avoids readAllMemories I/O).
+    if (
+      !bounds.invalidAt &&
+      !bounds.observedAt &&
+      !bounds.eventTimeSource
+    ) {
+      return;
+    }
+    try {
+      const normalizedIncoming = ContentHashIndex.normalizeContent(dedupContent);
+      const all = await targetStorage.readAllMemories();
+      const existing = all.find((m) => {
+        if (m.frontmatter.category !== "fact") return false;
+        if ((m.frontmatter.status ?? "active") !== "active") return false;
+        return (
+          ContentHashIndex.normalizeContent(m.content ?? "") ===
+          normalizedIncoming
+        );
+      });
+      if (!existing) return;
+      // Build a patch containing ONLY the fields the existing copy lacks.
+      const patch: Partial<MemoryFrontmatter> = {};
+      const fm = existing.frontmatter;
+      if (
+        bounds.invalidAt &&
+        (!fm.invalid_at || fm.invalid_at.length === 0)
+      ) {
+        patch.invalid_at = bounds.invalidAt;
+      }
+      if (
+        bounds.observedAt &&
+        (!fm.observedAt || fm.observedAt.length === 0)
+      ) {
+        patch.observedAt = bounds.observedAt;
+      }
+      if (
+        bounds.eventTimeSource &&
+        (!fm.eventTimeSource || fm.eventTimeSource.length === 0)
+      ) {
+        patch.eventTimeSource = bounds.eventTimeSource;
+      }
+      // Nothing to patch — the copy already carries all the bounds.
+      if (Object.keys(patch).length === 0) return;
+      const ok = await targetStorage.writeMemoryFrontmatter(existing, patch);
+      if (ok) {
+        log.debug(
+          `bitemporal-backfill: patched ${Object.keys(patch).join(",")} onto existing fact ${fm.id ?? "(unknown)"} in ${targetStorage.dir}`,
+        );
+      }
+    } catch (err) {
+      log.warn(
+        `bitemporal-backfill: failed open for ${targetStorage.dir}: ${err}`,
+      );
+    }
   }
 
   private async saveContentHashIndexes(): Promise<void> {
@@ -14155,6 +14240,16 @@ export class Orchestrator {
             options.category === "fact" &&
             (await targetStorage.hasFactContentHash(dedupContent))
           ) {
+            // #1671 — backfill bi-temporal bounds the existing promoted copy
+            // lacks (re-extraction with a now-resolved invalidAt). Best-effort,
+            // fail-open, gated on the incoming fact carrying bounds.
+            if (options.invalidAt || options.observedAt || options.eventTimeSource) {
+              await this.backfillTemporalBoundsOnDedupHit(targetStorage, dedupContent, {
+                ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
+                ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+                ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
+              });
+            }
             continue;
           }
           const promotedId = await targetStorage.writeMemory(
@@ -14318,6 +14413,17 @@ export class Orchestrator {
           options.category === "fact" &&
           (await sharedStorage.hasFactContentHash(dedupContent))
         ) {
+          // #1671 — backfill bi-temporal bounds onto the existing shared copy
+          // before the supersession short-circuit. Covers all return paths below
+          // (supersession-hit, catch-skip, and the no-supersession short-circuit)
+          // in one shot. Best-effort / fail-open; gated on incoming bounds.
+          if (options.invalidAt || options.observedAt || options.eventTimeSource) {
+            await this.backfillTemporalBoundsOnDedupHit(sharedStorage, dedupContent, {
+              ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
+              ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+              ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
+            });
+          }
           // Uj6H fix: shared-namespace temporal supersession must also run when
           // the hash-dedup short-circuit fires.  Without this, an existing shared
           // fact whose structuredAttributes are stale (or an older conflicting
@@ -14885,7 +14991,14 @@ export class Orchestrator {
         typeof (fact as any).confidence === "number"
           ? (fact as any).confidence
           : 0.7;
-      const biTemporal = this.config.temporalBiTemporal && sourceContext?.validAt ? resolveFactEventTime(fact.eventTime, sourceContext.validAt) : undefined;
+      // #1670 — anchor each fact's event-time to its SOURCE TURN timestamp,
+      // not the batch-wide latest. When a buffered conversation spans a date
+      // boundary, a relative expression ("yesterday") on an early-turn fact
+      // must resolve against that early turn's date. Prefer the fact's
+      // explicit sourceTurnTimestamp, then the earliest provenance span's
+      // observedAt, then fall back to the batch anchor (legacy extractors).
+      const factAnchor = pickFactEventTimeAnchor(fact, sourceContext?.validAt);
+      const biTemporal = this.config.temporalBiTemporal && factAnchor ? resolveFactEventTime(fact.eventTime, factAnchor) : undefined;
       // Content-hash dedup check (v6.0)
       //
       // Canonicalize pre-tagged facts before hashing (Codex P2 — issue #369).
@@ -15002,6 +15115,17 @@ export class Orchestrator {
         );
       }
       if (exactDuplicate) {
+        // #1671 — before short-circuiting, backfill bi-temporal bounds
+        // onto the existing source-namespace copy if it lacks bounds the
+        // incoming fact now carries (re-extraction with a resolved invalidAt).
+        // Best-effort / fail-open; gated on biTemporal so no I/O when off.
+        if (biTemporal) {
+          await this.backfillTemporalBoundsOnDedupHit(targetStorage, contentHashDedupKey, {
+            ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}),
+            observedAt: biTemporal.observedAt,
+            eventTimeSource: biTemporal.eventTimeSource,
+          });
+        }
         log.debug(
           `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…" in storage ${targetStorage.dir}`,
         );
