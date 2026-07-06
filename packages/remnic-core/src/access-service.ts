@@ -57,6 +57,7 @@ import {
   type CorrectionPlan,
   type CorrectionRequest,
 } from "./correction/index.js";
+import { isHandleToken } from "./recall-handles.js";
 import { createVersion } from "./page-versioning.js";
 import { WorkStorage } from "./work/storage.js";
 import {
@@ -4487,10 +4488,19 @@ export class EngramAccessService {
     }
   }
 
-  async memoryGet(memoryId: string, namespace?: string, principal?: string): Promise<EngramAccessMemoryResponse> {
+  async memoryGet(
+    memoryId: string,
+    namespace?: string,
+    principal?: string,
+    sessionKey?: string,
+  ): Promise<EngramAccessMemoryResponse> {
+    // Issue #1582 — accept a `[m:xxxx]` handle in place of a memory id; resolve
+    // it against the caller's session via the shared helper (rule 22). A raw id
+    // passes through unchanged, so callers unaware of handles are unaffected.
+    const resolvedId = this.resolveMemoryIdOrHandleInput(memoryId, sessionKey);
     const resolvedNamespace = this.resolveReadableNamespace(namespace, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
-    const memory = await storage.getMemoryById(memoryId);
+    const memory = await storage.getMemoryById(resolvedId);
     if (!memory) {
       return { found: false, namespace: resolvedNamespace };
     }
@@ -4781,7 +4791,38 @@ export class EngramAccessService {
     return service;
   }
 
+  /**
+   * Issue #1582 — resolve a single memoryId-or-handle reference to a concrete
+   * memory id. Handles resolve against the session's recall history via the
+   * orchestrator's shared helper (rule 22); raw ids pass through unchanged. A
+   * handle that misses or is ambiguous becomes an EngramAccessInputError so the
+   * boundary maps it to a 400 (rule 34/51 — list candidates, never guess).
+   */
+  private resolveMemoryIdOrHandleInput(
+    ref: string,
+    sessionKey: string | undefined,
+  ): string {
+    if (!isHandleToken(ref)) return ref;
+    try {
+      return this.orchestrator.resolveMemoryIdOrHandle(ref, sessionKey);
+    } catch (err) {
+      throw new EngramAccessInputError(
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   async correctionPlan(request: CorrectionRequest): Promise<CorrectionPlan> {
+    // Issue #1582 — resolve any `[m:xxxx]` handle in targetIds to its memory
+    // id against the caller's session BEFORE planning, so the planner only ever
+    // sees concrete ids. One shared resolve path (rule 22); a handle that
+    // misses or collides is an explicit input error, never silent (rule 34/51).
+    if (request.targetIds?.some((id) => isHandleToken(id))) {
+      const targetIds = request.targetIds.map((id) =>
+        this.resolveMemoryIdOrHandleInput(id, request.sessionKey),
+      );
+      return this.correctionService().plan({ ...request, targetIds });
+    }
     return this.correctionService().plan(request);
   }
 

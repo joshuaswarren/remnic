@@ -502,3 +502,102 @@ export class TierMigrationStatusStore {
     }
   }
 }
+
+
+/**
+ * Per-session bounded history of recent recall memory-id sets, used ONLY by
+ * handle resolution (issue #1582). Distinct from {@link LastRecallStore} —
+ * that keeps ONE last snapshot per session; this keeps a small ring (depth N)
+ * of the memory-id arrays a session has recalled, newest first, so a handle
+ * cited in a later turn still resolves even after a newer recall displaced the
+ * "last" snapshot.
+ *
+ * Deliberately lightweight: stores only `string[]` per entry (no full
+ * snapshot), capped at `depth` per session and 50 sessions total (rule 27
+ * slice/cap guards). Misses are acceptable and tagged at resolution time.
+ */
+export class RecallHandleHistoryStore {
+  private readonly statePath: string;
+  private readonly writeStateFile: StateFileWriter;
+  private state: Record<string, Array<{ at: string; ids: string[] }>> = {};
+  private writeChain: Promise<void> = Promise.resolve();
+  private readonly maxDepth: number;
+
+  constructor(memoryDir: string, options: { writeStateFile?: StateFileWriter; maxDepth?: number } = {}) {
+    this.statePath = path.join(memoryDir, "state", "handle_history.json");
+    this.writeStateFile =
+      options.writeStateFile ??
+      (async (filePath, content) => {
+        await writeFileAtomically(filePath, content);
+      });
+    this.maxDepth =
+      typeof options.maxDepth === "number" && Number.isFinite(options.maxDepth)
+        ? Math.max(1, Math.min(50, Math.floor(options.maxDepth)))
+        : 5;
+  }
+
+  async load(): Promise<void> {
+    try {
+      const raw = await readFile(this.statePath, "utf-8");
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") this.state = parsed as typeof this.state;
+    } catch {
+      this.state = {};
+    }
+  }
+
+  /**
+   * Record one recall's admitted memory ids for a session, newest first.
+   * The ring is capped at {@link maxDepth}; older entries drop off the tail.
+   */
+  async record(sessionKey: string, memoryIds: readonly string[]): Promise<void> {
+    if (!sessionKey) return;
+    const ids = memoryIds.filter((id): id is string => typeof id === "string" && id.length > 0);
+    const entry = { at: new Date().toISOString(), ids };
+    const prior = this.state[sessionKey] ?? [];
+    const next = [entry, ...prior].slice(0, this.maxDepth);
+    this.state[sessionKey] = next;
+    this.capSessions();
+    try {
+      await this.flush();
+    } catch (err) {
+      log.debug(`recall handle history write failed: ${err}`);
+    }
+  }
+
+  /**
+   * Return the memory-id arrays for a session, newest first, capped at `depth`.
+   * Empty array when the session has no recorded history.
+   */
+  recent(sessionKey: string, depth: number = this.maxDepth): Array<readonly string[]> {
+    const entries = this.state[sessionKey];
+    if (!entries || entries.length === 0) return [];
+    const limit = Math.max(0, Math.min(depth, entries.length));
+    return entries.slice(0, limit).map((e) => e.ids);
+  }
+
+  /** Test seam: drop all history (used by the corpus-scan hygiene test). */
+  clearForTest(): void {
+    this.state = {};
+  }
+
+  private capSessions(): void {
+    const keys = Object.keys(this.state);
+    if (keys.length <= 50) return;
+    const ordered = keys
+      .map((k) => ({ k, at: this.state[k]?.[0]?.at ?? "" }))
+      .sort((a, b) => b.at.localeCompare(a.at));
+    for (const doomed of ordered.slice(50)) {
+      delete this.state[doomed.k];
+    }
+  }
+
+  private flush(): Promise<void> {
+    const run = this.writeChain.catch(() => undefined).then(async () => {
+      await mkdir(path.dirname(this.statePath), { recursive: true });
+      await this.writeStateFile(this.statePath, JSON.stringify(this.state, null, 2));
+    });
+    this.writeChain = run.then(() => undefined, () => undefined);
+    return run;
+  }
+}

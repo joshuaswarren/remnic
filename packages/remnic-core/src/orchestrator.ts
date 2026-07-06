@@ -126,6 +126,7 @@ import { RelevanceStore } from "./relevance.js";
 import { NegativeExampleStore } from "./negative.js";
 import {
   LastRecallStore,
+  RecallHandleHistoryStore,
   type LastRecallBudgetSummary,
   TierMigrationStatusStore,
   clampGraphRecallExpandedEntries,
@@ -134,6 +135,13 @@ import {
   type TierMigrationCycleSummary,
   type TierMigrationStatusSnapshot,
 } from "./recall-state.js";
+import {
+  parseIdOrHandle,
+  renderHandlesForInjection,
+  resolveHandle,
+  stripHandles,
+  type RecallSnapshotIds,
+} from "./recall-handles.js";
 import {
   buildXraySnapshot,
   type RecallFilterTrace,
@@ -1872,6 +1880,7 @@ export class Orchestrator {
   readonly relevance: RelevanceStore;
   readonly negatives: NegativeExampleStore;
   readonly lastRecall: LastRecallStore;
+  readonly handleHistory: RecallHandleHistoryStore;
   readonly tierMigrationStatus: TierMigrationStatusStore;
   /**
    * In-memory X-ray snapshot from the most recent `recall()` call that
@@ -2797,6 +2806,9 @@ export class Orchestrator {
     this.relevance = new RelevanceStore(config.memoryDir);
     this.negatives = new NegativeExampleStore(config.memoryDir);
     this.lastRecall = new LastRecallStore(config.memoryDir);
+    this.handleHistory = new RecallHandleHistoryStore(config.memoryDir, {
+      maxDepth: config.recallHandleSnapshotDepth,
+    });
     this.tierMigrationStatus = new TierMigrationStatusStore(config.memoryDir);
     this.sessionObserver = new SessionObserverState({
       memoryDir: config.memoryDir,
@@ -3241,6 +3253,7 @@ export class Orchestrator {
       await this.relevance.load();
       await this.negatives.load();
       await this.lastRecall.load();
+      await this.handleHistory.load();
       await this.tierMigrationStatus.load();
       await this.sessionObserver.load();
       this.runtimePolicyValues = await this.policyRuntime.loadRuntimeValues();
@@ -12073,6 +12086,14 @@ export class Orchestrator {
             backendDegradations.length > 0 ? backendDegradations : undefined,
         })
         .catch((err) => log.debug(`last recall record failed: ${err}`));
+      // Issue #1582 — record the admitted memory-id set for handle resolution.
+      // Only when handles are enabled: if injection is off, no handle is ever
+      // rendered, so there is nothing to resolve and we skip the write.
+      if (this.config.recallMemoryHandles && recalledMemoryIds.length > 0) {
+        this.handleHistory
+          .record(sessionKey, recalledMemoryIds)
+          .catch((err) => log.debug(`handle history record failed: ${err}`));
+      }
     }
     if (sessionKey) {
       this.queueEvalShadowRecall({
@@ -12165,9 +12186,17 @@ export class Orchestrator {
           ? sessionKey
           : "default";
     const captureTimestamp = new Date().toISOString();
+    // Issue #1582 hygiene §2 — strip any echoed `[m:xxxx]` handle before the
+    // turn enters the extraction buffer so handles never become memory content
+    // or get QMD-indexed (rule 23). Gated on the feature flag: when handles are
+    // off none are ever injected, so there is nothing to strip and the buffer
+    // stays byte-identical to the pre-#1582 path.
+    const bufferedContent = this.config.recallMemoryHandles
+      ? stripHandles(content)
+      : content;
     const turn: BufferTurn = {
       role,
-      content,
+      content: bufferedContent,
       timestamp: captureTimestamp,
       // #1578: anchor live-capture turns to wall-clock when bi-temporal is on;
       // replay/import turns carry sourceValidAt explicitly (codex P1).
@@ -17456,12 +17485,38 @@ export class Orchestrator {
   }
 
   private formatQmdResults(title: string, results: QmdSearchResult[]): string {
+    // Issue #1582 — when handles are on, append a stable `[m:xxxx]` token to
+    // each memory line. Handles are derived from the memory id (the `.md`
+    // filename); results without one (e.g. entity reconstructions) get no
+    // handle. Off = byte-identical to the pre-#1582 output (rule 39).
+    const handleOn = this.config.recallMemoryHandles === true;
+    const handleByIndex = new Map<number, string>();
+    if (handleOn) {
+      const ids: string[] = [];
+      const idIndexByResult: Array<number | null> = results.map((r) => {
+        const match = r.path.match(/([^/]+)\.md$/);
+        if (!match) return null;
+        ids.push(match[1] as string);
+        return ids.length - 1;
+      });
+      const entries = renderHandlesForInjection(ids);
+      results.forEach((r, i) => {
+        const idIndex = idIndexByResult[i];
+        if (idIndex !== null && entries[idIndex]) {
+          handleByIndex.set(i, (entries[idIndex] as { handle: string }).handle);
+        }
+      });
+    }
     const lines = results.map((r, i) => {
       const snippet = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
         : "(no preview)";
       const source = typeof r.line === "number" ? `${r.path}:${r.line}` : r.path;
-      return `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
+      const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
+      const handle = handleByIndex.get(i);
+      // Append the precomputed handle token onto the snippet tail (one space),
+      // where a user/agent points at it. Keep it off the source/path line.
+      return handle ? `${head.replace(/\s+$/, "")} ${handle}` : head;
     });
     return `## ${title}\n\n${lines.join("\n\n")}`;
   }
@@ -19659,6 +19714,54 @@ export class Orchestrator {
 
   getLastRecall(sessionKey: string): LastRecallSnapshot | null {
     return this.lastRecall.get(sessionKey);
+  }
+
+  /**
+   * Issue #1582 — resolve a memory handle (`[m:4f2a]` / bare hex) to its memory
+   * id against THIS session's recent recall history. Returns the id on a unique
+   * hit, `null` on a miss, and throws on ambiguity (callers must disambiguate —
+   * rule 34/51). Resolution is per-session and snapshot-scoped; there is no
+   * global handle→id map (rule 42).
+   */
+  resolveMemoryHandle(handle: string, sessionKey: string): string | null {
+    if (!sessionKey) return null;
+    const depth = this.config.recallHandleSnapshotDepth;
+    const snapshots: RecallSnapshotIds[] = this.handleHistory
+      .recent(sessionKey, depth)
+      .map((ids) => ({ memoryIds: ids }));
+    const result = resolveHandle(handle, snapshots, depth);
+    if (result.ok) return result.memoryId;
+    if (result.reason === "ambiguous") {
+      throw new Error(
+        `Memory handle ${handle} is ambiguous in session ${sessionKey}: ` +
+          `${result.candidates.join(", ")}. Cite a unique memory id instead.`,
+      );
+    }
+    return null;
+  }
+
+  /**
+   * Issue #1582 — resolve a caller reference that may be EITHER a memory id or
+   * a handle to a concrete memory id. Handles resolve against the session's
+   * recall history; raw ids pass through unchanged. The single shared helper
+   * every surface (memory_get / feedback / outcome / correction targetIds)
+   * calls so handle resolution has one path (rule 22).
+   */
+  resolveMemoryIdOrHandle(ref: string, sessionKey?: string): string {
+    const parsed = parseIdOrHandle(ref);
+    if (!parsed.isHandle) return parsed.value;
+    if (!sessionKey) {
+      throw new Error(
+        `Memory handle ${ref} cannot be resolved without a session key.`,
+      );
+    }
+    const resolved = this.resolveMemoryHandle(parsed.value, sessionKey);
+    if (resolved === null) {
+      throw new Error(
+        `Memory handle ${ref} was not found in the recent recall history for session ${sessionKey}.`,
+      );
+    }
+    return resolved;
   }
 
   /**
