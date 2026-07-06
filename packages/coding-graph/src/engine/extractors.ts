@@ -246,11 +246,11 @@ const RUST_EXTRACTOR: LanguageExtractor = {
 (impl_item
   type: (type_identifier) @__receiver.type
   body: (declaration_list
-    (function_item name: (identifier) @name))) @def.method
+    (function_item name: (identifier) @name) @def.method))
 (impl_item
   type: (type_identifier) @__receiver.type
   body: (declaration_list
-    (function_signature_item name: (identifier) @name))) @def.method
+    (function_signature_item name: (identifier) @name) @def.method))
 `.trim(),
   importsQuery: `
 (use_declaration (scoped_identifier) @import.module) @__import.stmt

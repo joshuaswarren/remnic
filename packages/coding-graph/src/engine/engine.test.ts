@@ -805,6 +805,45 @@ test("rust-impl-parent: impl methods get struct-qualified name", async () => {
   await engine.dispose();
 });
 
+test("rust-nested-qualified: function inside impl method gets full parent chain", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "pub struct Config {",
+    "    pub port: u16,",
+    "}",
+    "",
+    "impl Config {",
+    "    pub fn new() -> Self {",
+    "        fn default_port() -> u16 { 8080 }",
+    "        Self { port: default_port() }",
+    "    }",
+    "}",
+  ].join("\n");
+  const result = await engine.parseFile({
+    path: "src/nested.rs",
+    content: Buffer.from(code, "utf-8"),
+  });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  // The impl method `new` → Config.new (verified by prior test).
+  const newMethod = result.ir.symbols.find((s) => s.name === "new");
+  assert.ok(newMethod, "Rust: impl method 'new' must exist");
+  assert.equal(newMethod!.qualifiedName, "Config.new");
+
+  // The nested function inside `new` should get Config.new.default_port,
+  // not just new.default_port.
+  const helper = result.ir.symbols.find((s) => s.name === "default_port");
+  assert.ok(helper, "Rust: nested function 'default_port' must exist");
+  assert.equal(
+    helper!.parentQualifiedName,
+    "Config.new",
+    `Rust: nested function should have parent 'Config.new', got: ${helper!.parentQualifiedName}`,
+  );
+
+  await engine.dispose();
+});
+
 test("member-routes: this.router.get(...) produces a route", async () => {
   const engine = createCodingGraphEngine();
   const fixture = FIXTURES.typescript; // has: this.router.get('/', () => {});

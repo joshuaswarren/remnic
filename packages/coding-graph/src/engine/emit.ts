@@ -121,17 +121,21 @@ function extractSymbols(root: TSNode, language: Language, lang: CodingGraphLangu
     const deduped = [...seen.values()];
     deduped.sort((a, b) => a.startByte - b.startByte || a.name.localeCompare(b.name));
 
-    const stack: RawDef[] = [];
+    // The stack stores each def's computed qualifiedName so that nested
+    // definitions inside a receiver-qualified method (e.g. Config.new.helper)
+    // get the full parent chain, not just the short method name.
+    const stack: { endByte: number; qualifiedName: string }[] = [];
     const symbols: SymbolIR[] = [];
     for (const def of deduped) {
       while (stack.length > 0 && stack[stack.length - 1].endByte <= def.startByte) {
         stack.pop();
       }
-      // Go methods sit outside their receiver struct, so byte-span nesting
-      // cannot determine the parent. Use the captured receiver type instead.
+      // Go/Rust methods sit outside their receiver struct, so byte-span
+      // nesting cannot determine the parent. Use the captured receiver
+      // type instead.
       const parentQualifiedName =
         def.receiverType ??
-        (stack.length > 0 ? stack.map((d) => d.name).join(".") : undefined);
+        (stack.length > 0 ? stack.map((s) => s.qualifiedName).join(".") : undefined);
       const qualifiedName = parentQualifiedName
         ? `${parentQualifiedName}.${def.name}`
         : def.name;
@@ -150,7 +154,7 @@ function extractSymbols(root: TSNode, language: Language, lang: CodingGraphLangu
             span: { startByte: def.startByte, endByte: def.endByte },
           };
       symbols.push(symbol);
-      stack.push(def);
+      stack.push({ endByte: def.endByte, qualifiedName });
     }
     return symbols;
   } finally {
