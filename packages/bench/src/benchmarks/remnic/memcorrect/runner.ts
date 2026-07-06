@@ -354,11 +354,20 @@ export async function runMemCorrectBenchmark(
   const { adapter, adapterLabel } = resolveAdapter(options);
 
   // Honor options.limit so quick / limited runs don't fan out across every
-  // scenario, mirroring the other remnic runners.
-  const scenarios =
-    typeof options.limit === "number" && options.limit > 0
-      ? corpus.scenarios.slice(0, options.limit)
-      : corpus.scenarios;
+  // scenario, mirroring the other remnic runners. `limit === 0` is a valid
+  // zero-item cap (issue #1584): slice(0,0) yields [] rather than silently
+  // running the full corpus; non-number => no cap; reject negatives/fractions.
+  const { limit } = options;
+  let scenarios: typeof corpus.scenarios;
+  if (typeof limit !== "number") {
+    scenarios = corpus.scenarios;
+  } else if (!Number.isInteger(limit) || limit < 0) {
+    throw new Error(
+      `MemCorrect --limit must be a non-negative integer; got ${String(limit)}`,
+    );
+  } else {
+    scenarios = corpus.scenarios.slice(0, limit);
+  }
 
   const tasks: TaskResult[] = [];
   const aggregateLog: ProbeLogEntry[] = [];

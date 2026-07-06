@@ -293,3 +293,50 @@ test("computeMetricBundle: assembles all 8 metrics from resolved inputs", () => 
   assert.equal(bundle.reassertion, null);
   assert.equal(bundle.provenance_fidelity, null);
 });
+
+test("correction evidence citing old+new is not penalized as stale recall (#1584)", () => {
+  const corrections = [
+    { scenarioId: "s1", namespace: "ns-a", turnIndex: 10, retiredContent: ["old"], correctedContent: ["new"] },
+  ];
+  // Provenance-rich recall: one string cites BOTH the retired and corrected
+  // value ("not old, now new"). Pre-#1584 the token-absence check saw "old"
+  // and failed the probe; now it is affirmative evidence and must pass.
+  const log: ProbeLogEntry[] = [
+    probe({ scenarioId: "s1", phase: "post_correction", turnIndex: 11, recalled: ["the value is not old it is now new"] }),
+    probe({ scenarioId: "s1", phase: "post_maintenance", turnIndex: 14, recalled: ["the value is not old it is now new"] }),
+    probe({ scenarioId: "s1", phase: "post_reingest", turnIndex: 18, recalled: ["the value is not old it is now new"] }),
+  ];
+  const bundle = computeMetricBundle({
+    log,
+    corrections,
+    antiEvents: [],
+    reassertions: [],
+    collateralBefore: [1],
+    collateralAfter: [1],
+    provenanceCites: [null],
+    uptakeLatencyCap: 5,
+  });
+  assert.equal(bundle.uptake_at_next, 1, "correction evidence should pass uptake@next");
+  assert.equal(bundle.uptake_latency, 1);
+  assert.equal(bundle.non_resurrection, 1, "correction evidence must not count as resurrection");
+});
+
+test("standalone retired recall (no corrected value) still counts as stale (#1584)", () => {
+  const corrections = [
+    { scenarioId: "s1", namespace: "ns-a", turnIndex: 10, retiredContent: ["old"], correctedContent: ["new"] },
+  ];
+  const log: ProbeLogEntry[] = [
+    probe({ scenarioId: "s1", phase: "post_correction", turnIndex: 11, recalled: ["the value is still old"] }),
+  ];
+  const bundle = computeMetricBundle({
+    log,
+    corrections,
+    antiEvents: [],
+    reassertions: [],
+    collateralBefore: [1],
+    collateralAfter: [1],
+    provenanceCites: [null],
+    uptakeLatencyCap: 5,
+  });
+  assert.equal(bundle.uptake_at_next, 0, "genuine stale recall must still fail");
+});

@@ -55,8 +55,28 @@ function joinedRecall(entry: ProbeLogEntry): string {
 }
 
 /**
+ * True iff the probe's recall shows the retired value as a *standalone* stale
+ * assertion — some recalled string asserts the retired content WITHOUT the
+ * corrected content. Correction/provenance evidence that cites both the old and
+ * new value (e.g. "not X, now Y") is affirmative, not stale, and must NOT be
+ * penalized (issue #1584: don't treat correction evidence as stale recall).
+ */
+export function recallShowsStaleRetired(
+  entry: ProbeLogEntry,
+  correction: ResolvedCorrection,
+): boolean {
+  for (const recalled of entry.recalled) {
+    if (!containsAll(recalled, correction.retiredContent)) continue;
+    // Retired token present: only a stale signal if the corrected value is
+    // absent from the SAME string (otherwise it is correction evidence).
+    if (!containsAll(recalled, correction.correctedContent)) return true;
+  }
+  return false;
+}
+
+/**
  * A probe "passes" for a correction iff the corrected content is present
- * AND the retired content is absent from the joined recall.
+ * AND no recalled string asserts the retired value as a standalone stale fact.
  */
 export function probePassesForCorrection(
   entry: ProbeLogEntry,
@@ -65,7 +85,7 @@ export function probePassesForCorrection(
   const hay = joinedRecall(entry);
   return (
     containsAll(hay, correction.correctedContent) &&
-    containsNone(hay, correction.retiredContent)
+    !recallShowsStaleRetired(entry, correction)
   );
 }
 
@@ -153,8 +173,8 @@ export function nonResurrection(
     const postReingest = entriesFor(log, correction.scenarioId, "post_reingest");
     const both = [...postMaint, ...postReingest];
     if (both.length === 0) continue;
-    const allRetired = both.every((e) =>
-      containsNone(joinedRecall(e), correction.retiredContent),
+    const allRetired = both.every(
+      (e) => !recallShowsStaleRetired(e, correction),
     );
     if (allRetired) stayedRetired += 1;
   }
@@ -205,10 +225,7 @@ export function scopePrecision(
       )
       .sort((a, b) => a.turnIndex - b.turnIndex)[0];
     if (!primaryPost || !twinPost) continue;
-    const primaryRetired = containsNone(
-      joinedRecall(primaryPost),
-      correction.retiredContent,
-    );
+    const primaryRetired = !recallShowsStaleRetired(primaryPost, correction);
     const twinIntact = containsAll(joinedRecall(twinPost), [twin.twinContent]);
     if (primaryRetired && twinIntact) passed += 1;
   }
