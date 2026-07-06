@@ -62,6 +62,8 @@ function optStrArr(v: unknown): string[] | undefined { return Array.isArray(v) &
 const S = {
   str: z.string().optional(),
   num: z.number().optional(),
+  // Accept numbers and numeric strings (MCP clients sometimes send "7" for 7).
+  flexNum: z.union([z.number(), z.string()]).optional(),
   bool: z.boolean().optional(),
   strArr: z.array(z.string()).optional(),
 };
@@ -110,10 +112,10 @@ defineOperation({ name: "recall_xray", description: "X-ray recall.", schema: str
 
 // === WEARABLES ===
 defineOperation({ name: "wearables_status", description: "Wearables status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.wearablesStatus() }) });
-defineOperation({ name: "wearables_sync", description: "Sync wearables.", schema: strictSchema({ source: S.str, date: S.str, days: S.num, forceMemories: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.wearablesSync({ source: optStr(input.source), date: optStr(input.date), days: optNum(input.days), forceMemories: optBool(input.forceMemories) }) }) });
+defineOperation({ name: "wearables_sync", description: "Sync wearables.", schema: strictSchema({ source: S.str, date: S.str, days: S.flexNum, forceMemories: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.wearablesSync({ source: optStr(input.source), date: optStr(input.date), days: optNum(input.days), forceMemories: optBool(input.forceMemories) }) }) });
 defineOperation({ name: "transcript_day", description: "Transcript for a day.", schema: strictSchema({ date: S.str, source: S.str }), handler: async (input, ctx) => { const d = defStr(input.date, ""); if (d.trim().length === 0) throw new EngramAccessInputError("transcript_day: date is required (YYYY-MM-DD)"); return { result: await ctx.service.wearablesTranscriptDay({ date: d, source: optStr(input.source) }) }; } });
-defineOperation({ name: "transcript_search", description: "Search transcripts.", schema: strictSchema({ query: S.str, source: S.str, from: S.str, to: S.str, limit: S.num }), handler: async (input, ctx) => { const q = defStr(input.query, ""); if (q.trim().length === 0) throw new EngramAccessInputError("transcript_search: query is required"); return { result: await ctx.service.wearablesTranscriptSearch({ query: q, source: optStr(input.source), from: optStr(input.from), to: optStr(input.to), limit: optNum(input.limit) }) }; } });
-defineOperation({ name: "transcript_memories", description: "Transcript memories.", schema: strictSchema({ source: S.str, date: S.str, limit: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.wearablesTranscriptMemories({ source: optStr(input.source), date: optStr(input.date), limit: optNum(input.limit) }) }) });
+defineOperation({ name: "transcript_search", description: "Search transcripts.", schema: strictSchema({ query: S.str, source: S.str, from: S.str, to: S.str, limit: S.flexNum }), handler: async (input, ctx) => { const q = defStr(input.query, ""); if (q.trim().length === 0) throw new EngramAccessInputError("transcript_search: query is required"); return { result: await ctx.service.wearablesTranscriptSearch({ query: q, source: optStr(input.source), from: optStr(input.from), to: optStr(input.to), limit: optNum(input.limit) }) }; } });
+defineOperation({ name: "transcript_memories", description: "Transcript memories.", schema: strictSchema({ source: S.str, date: S.str, limit: S.flexNum }), handler: async (input, ctx) => ({ result: await ctx.service.wearablesTranscriptMemories({ source: optStr(input.source), date: optStr(input.date), limit: optNum(input.limit) }) }) });
 
 // === ACTION CONFIDENCE + INSPECTOR + CAPSULE ===
 defineOperation({ name: "action_confidence", description: "Action confidence.", schema: strictSchema({ intendedAction: S.str, confidence: S.num, risk: S.str, contextReadiness: S.str, currentContextScopes: S.strArr }), handler: async (input, ctx) => ({ result: await ctx.service.actionConfidence({ intendedAction: optStr(input.intendedAction), confidence: optNum(input.confidence), risk: optStr(input.risk) as "low" | "medium" | "high" | "irreversible" | "restricted" | undefined, contextReadiness: optStr(input.contextReadiness) as "none" | "partial" | "sufficient" | undefined, currentContextScopes: optStrArr(input.currentContextScopes) }) }) });
