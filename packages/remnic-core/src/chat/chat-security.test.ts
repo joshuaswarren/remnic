@@ -399,3 +399,58 @@ test("executor: maxResults=0 is forwarded, not dropped by falsy check (Thread 14
   await executor.memorySearch("query", 0);
   assert.equal(capturedArgs.maxResults, 0, "maxResults=0 must be forwarded, not dropped");
 });
+
+// ---------------------------------------------------------------------------
+// HIGH — Promote bypass via repeated tool call (cursor OkuNd)
+// ---------------------------------------------------------------------------
+
+test("promote: a second tool call for the same memoryId does NOT bypass confirmation", async () => {
+  let promoteCalled = false;
+  const executor = makeStubExecutor({
+    async memoryPromote() { promoteCalled = true; return JSON.stringify({ promoted: true }); },
+  });
+  // correctionAvailable=true so memory_promote is in the schema and requires confirmation.
+  const llm = new StubChatLlmAdapter([
+    { toolCalls: [{ name: "memory_promote", arguments: { memoryId: "mem-1" } }] },
+  ]);
+  const engine = makeEngine(llm, executor, { correctionAvailable: true });
+  const session = await createChatSession(await makeTempDir(), {});
+
+  // Turn 1: LLM calls memory_promote — should be intercepted.
+  const result1 = await engine.processMessage("promote mem-1", session);
+  assert.ok(result1.reply.includes("apply"), "Turn 1 should ask for confirmation");
+  assert.equal(session.pendingPromotionId, "mem-1");
+  assert.equal(promoteCalled, false, "memory_promote must NOT execute in the tool loop");
+
+  // Turn 2: user types something that is NOT a confirmation keyword.
+  // The LLM calls memory_promote again. The engine must intercept again,
+  // NOT execute it (cursor HIGH: no bypass via repeated calls).
+  const llm2 = new StubChatLlmAdapter([
+    { toolCalls: [{ name: "memory_promote", arguments: { memoryId: "mem-1" } }] },
+  ]);
+  const engine2 = makeEngine(llm2, executor, { correctionAvailable: true });
+  const result2 = await engine2.processMessage("please promote it now", session);
+  assert.ok(result2.reply.includes("apply"), "Turn 2 should still ask for confirmation");
+  assert.equal(promoteCalled, false, "memory_promote must NOT execute without an exact confirm keyword");
+});
+
+// ---------------------------------------------------------------------------
+// HIGH — Disabled mutating tools still execute (cursor OkuNk)
+// ---------------------------------------------------------------------------
+
+test("tool gate: memory_promote is rejected when correctionAvailable is false", async () => {
+  let promoteCalled = false;
+  const executor = makeStubExecutor({
+    async memoryPromote() { promoteCalled = true; return JSON.stringify({ promoted: true }); },
+  });
+  // correctionAvailable=false so memory_promote is NOT in the tool schema.
+  // The LLM hallucinates a memory_promote call anyway.
+  const llm = new StubChatLlmAdapter([
+    { toolCalls: [{ name: "memory_promote", arguments: { memoryId: "mem-1" } }] },
+    { content: "Done." },
+  ]);
+  const engine = makeEngine(llm, executor, { correctionAvailable: false });
+  const session = await createChatSession(await makeTempDir(), {});
+  await engine.processMessage("promote something", session);
+  assert.equal(promoteCalled, false, "memory_promote must NOT execute when not in the active schema set");
+});

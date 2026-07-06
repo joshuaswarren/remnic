@@ -194,8 +194,8 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
       console.log(`[note: ${result.skippedTools.length} tool(s) skipped due to budget]\n`);
     }
     rl.prompt();
-    }).catch((err) => {
-      console.error(`[error] ${err instanceof Error ? err.message : String(err)}`);
+    }).catch(() => {
+      console.error("[error] An unexpected error occurred during this turn. Please try again.");
       rl.prompt();
     });
   });

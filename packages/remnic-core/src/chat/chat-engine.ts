@@ -104,6 +104,7 @@ export class ChatEngine {
   private readonly scopeInspectAvailable: boolean;
   private readonly systemPrompt: string;
   private readonly toolSchemas: ChatToolSchema[];
+  private readonly allowedToolNames: Set<string>;
 
   constructor(opts: ChatEngineOptions) {
     this.llm = opts.llm;
@@ -119,6 +120,9 @@ export class ChatEngine {
       correctionAvailable: opts.correctionAvailable,
       scopeInspectAvailable: opts.scopeInspectAvailable,
     });
+    // Pre-compute the set of allowed tool names for fast lookup (cursor HIGH —
+    // executeTool must not run a tool that's not in the active schema set).
+    this.allowedToolNames = new Set(this.toolSchemas.map((t) => t.function.name));
   }
 
   /**
@@ -308,25 +312,34 @@ export class ChatEngine {
         }
 
         // ── memory_promote confirmation (mutating tool) ─────────────────
+        // memory_promote is NEVER executed directly in the tool loop — it can
+        // only be applied via the confirmation fast-path at the top of
+        // processMessage (cursor HIGH: prevent bypass via repeated tool calls).
         if (tc.name === "memory_promote" && this.correctionAvailable) {
           const memoryId = typeof tc.arguments.memoryId === "string" ? tc.arguments.memoryId : "";
-          if (!session.pendingPromotionId || session.pendingPromotionId !== memoryId) {
-            session.pendingPromotionId = memoryId;
-            conversation.push({
-              role: "tool",
-              content: JSON.stringify({
-                intercepted: true,
-                message: `Memory promotion requires confirmation. Reply 'apply' to promote memory '${memoryId}'.`,
-              }),
-              toolCallId: tc.id,
-            });
-            return {
-              reply: `I want to promote memory \`${memoryId}\`. Reply **apply** to confirm this promotion, or **cancel** to discard it.`,
-              chatSessionId: session.id,
-            };
-          }
-          // Confirmed — consume the one-time confirmation.
-          session.pendingPromotionId = undefined;
+          session.pendingPromotionId = memoryId;
+          conversation.push({
+            role: "tool",
+            content: JSON.stringify({
+              intercepted: true,
+              message: `Memory promotion requires confirmation. Reply 'apply' to promote memory '${memoryId}'.`,
+            }),
+            toolCallId: tc.id,
+          });
+          return {
+            reply: `I want to promote memory \`${memoryId}\`. Reply **apply** to confirm this promotion, or **cancel** to discard it.`,
+            chatSessionId: session.id,
+          };
+        }
+
+        // ── Tool-schema gate (cursor HIGH — disabled tools must not execute) ─
+        if (!this.allowedToolNames.has(tc.name)) {
+          conversation.push({
+            role: "tool",
+            content: JSON.stringify({ error: `Tool '${tc.name}' is not available in this configuration.` }),
+            toolCallId: tc.id,
+          });
+          continue;
         }
 
         // ── Execute the tool ───────────────────────────────────────────
