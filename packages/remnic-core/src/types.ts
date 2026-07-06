@@ -1650,6 +1650,19 @@ export interface PluginConfig {
    * benchmarking (issue #564 PR 3).
    */
   recallReasoningTraceBoostEnabled: boolean;
+  /**
+   * Issue #1582 — append stable short handles (`[m:4f2a]`) to injected memory
+   * lines at recall render time. Default false: off = byte-identical injection
+   * (rule 39). Token cost ~9 chars/memory; flip the default only with #1574
+   * evidence that answer quality is unaffected (rule 55).
+   */
+  recallMemoryHandles: boolean;
+  /**
+   * Issue #1582 — how many recent per-session recall snapshots (newest first)
+   * handle resolution searches. Older-than-N snapshots are not searched and a
+   * miss is tagged rather than widening the window.
+   */
+  recallHandleSnapshotDepth: number;
   qmdRecallCacheTtlMs: number;
   qmdRecallCacheStaleTtlMs: number;
   qmdRecallCacheMaxEntries: number;

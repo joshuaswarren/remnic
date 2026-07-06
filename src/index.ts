@@ -4738,11 +4738,17 @@ const pluginDefinition = {
           if (timeoutId) {
             clearTimeout(timeoutId);
           }
-          await queueOpenClawFlushPlanProcessing(
-            "before_reset",
-            (ctx?.workspaceDir as string) || (event?.workspaceDir as string),
-            { deadlineMs: beforeResetDeadlineMs },
-          );
+          // When the flush itself timed out, the reset deadline is already
+          // spent — skip flush-plan processing entirely rather than relying on
+          // a Date.now() >= deadlineMs check that can be off by 1–2 ms when the
+          // abort timer fires early under CI load (#1686 tests(root) flake).
+          if (!flushTimedOut) {
+            await queueOpenClawFlushPlanProcessing(
+              "before_reset",
+              (ctx?.workspaceDir as string) || (event?.workspaceDir as string),
+              { deadlineMs: beforeResetDeadlineMs },
+            );
+          }
           if (flushTimedOut) {
             log.warn(
               `before_reset flush timed out after ${cfg.beforeResetTimeoutMs}ms`,

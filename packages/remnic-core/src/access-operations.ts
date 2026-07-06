@@ -58,11 +58,15 @@ import {
  */
 const memoryGetSchema = z.object({
   memoryId: z.string().trim().min(1, "memoryId is required").max(512),
+  // Issue #1582 — when memoryId is a `[m:xxxx]` handle, sessionKey scopes the
+  // resolution to this session's recent recall history.
+  sessionKey: z.string().trim().min(1).max(512).nullable().optional(),
   namespace: z.string().trim().max(256).nullable().optional(),
 });
 
 export interface MemoryGetInput {
   readonly memoryId: string;
+  readonly sessionKey?: string | null;
   readonly namespace?: string | null;
 }
 
@@ -79,6 +83,7 @@ export const memoryGetOperation = defineOperation<MemoryGetInput, MemoryGetOutpu
       input.memoryId,
       input.namespace ?? undefined,
       ctx.authenticatedPrincipal,
+      input.sessionKey ?? undefined,
     );
     return { result };
   },

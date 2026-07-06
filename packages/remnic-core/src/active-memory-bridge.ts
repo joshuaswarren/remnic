@@ -1,6 +1,7 @@
 import { canReadNamespace, defaultNamespaceForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
 import type { MemoryFile, PluginConfig } from "./types.js";
 import { collapseWhitespace, truncateCodePointSafe } from "./whitespace.js";
+import { isHandleToken } from "./recall-handles.js";
 
 export interface ActiveMemoryMetadata {
   type?: "fact" | "preference";
@@ -192,6 +193,8 @@ export async function getMemoryForActiveMemory(
     storage?: {
       getMemoryById?: (id: string) => Promise<MemoryFile | null>;
     };
+    /** Issue #1582 — resolves a `[m:xxxx]` handle to a memory id (orchestrator). */
+    resolveMemoryIdOrHandle?: (ref: string, sessionKey?: string) => string;
   },
   id: string,
   options: {
@@ -210,10 +213,26 @@ export async function getMemoryForActiveMemory(
       ? await orchestrator.getStorageForNamespace(namespace)
       : orchestrator.storage;
 
-  const memory = await storage?.getMemoryById?.(id);
+  // Issue #1582 — resolve a `[m:xxxx]` handle to its memory id against the
+  // caller's session before the storage read, so OpenClaw active-memory agents
+  // can cite injected handles through the SAME shared path as memory_get /
+  // correction (cursor review). Raw ids pass through unchanged.
+  //
+  // A handle that misses, collides, or has no session key becomes not_found —
+  // the SAME behavior a bad raw id yields below — instead of throwing, so an
+  // active-memory caller gets a uniform not-found contract (cursor review).
+  let resolvedId = id;
+  if (isHandleToken(id) && typeof orchestrator.resolveMemoryIdOrHandle === "function") {
+    try {
+      resolvedId = orchestrator.resolveMemoryIdOrHandle(id, options.sessionKey);
+    } catch {
+      return { error: "not_found" };
+    }
+  }
+  const memory = await storage?.getMemoryById?.(resolvedId);
   if (!memory) return { error: "not_found" };
   return {
-    id,
+    id: resolvedId,
     text: collapseWhitespace(memory.content),
     metadata: buildActiveMemoryMetadataFromMemory(memory),
   };

@@ -3246,6 +3246,13 @@ export function parseConfig(
     // Issue #564 PR 3: off by default; enable explicitly after bench validation.
     recallReasoningTraceBoostEnabled:
       coerceBool(cfg.recallReasoningTraceBoostEnabled) ?? false,
+    // Issue #1582: off by default — handles are byte-additive at injection time.
+    recallMemoryHandles: coerceBool(cfg.recallMemoryHandles) ?? false,
+    recallHandleSnapshotDepth:
+      typeof cfg.recallHandleSnapshotDepth === "number" &&
+      Number.isFinite(cfg.recallHandleSnapshotDepth)
+        ? Math.max(1, Math.min(50, Math.floor(cfg.recallHandleSnapshotDepth)))
+        : 5,
     qmdRecallCacheTtlMs:
       typeof cfg.qmdRecallCacheTtlMs === "number" ? Math.max(0, Math.floor(cfg.qmdRecallCacheTtlMs)) : 60_000,
     qmdRecallCacheStaleTtlMs:
