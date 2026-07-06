@@ -169,6 +169,11 @@ export async function loadChatSession(
 
 /**
  * Append a transcript entry to the session file (atomic append, rule 54).
+ *
+ * After the append resolves, in-process subscribers (open SSE connections —
+ * issue #1687) are notified synchronously so live clients receive the new
+ * entry without polling.  Listener errors are swallowed so a misbehaving
+ * subscriber can never break a transcript append (rule 54 — atomic + safe).
  */
 export async function appendTranscriptEntry(
   memoryDir: string,
@@ -185,7 +190,58 @@ export async function appendTranscriptEntry(
     JSON.stringify(full) + "\n",
     "utf8",
   );
+  notifyTranscriptListeners(chatSessionId, full);
   return full;
+}
+
+// ---------------------------------------------------------------------------
+// In-process transcript pub/sub (issue #1687 SSE push)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-session listener sets.  Kept module-level so appendTranscriptEntry can
+ * fan out new entries to open SSE connections regardless of which caller
+ * appended (HTTP, MCP, or CLI).  Empty sets are pruned so the map never
+ * grows unbounded (rule 47 — no leak).
+ */
+const transcriptListeners = new Map<string, Set<(entry: ChatTranscriptEntry) => void>>();
+
+function notifyTranscriptListeners(chatSessionId: string, entry: ChatTranscriptEntry): void {
+  const set = transcriptListeners.get(chatSessionId);
+  if (!set) return;
+  for (const fn of set) {
+    try {
+      fn(entry);
+    } catch {
+      // A listener must never break the append path (rule 54).
+    }
+  }
+}
+
+/**
+ * Subscribe to live transcript entries for a chat session.  Returns an
+ * unsubscribe function that removes the listener and prunes the session's
+ * set when it becomes empty.  Used by the SSE handler to push new
+ * user/assistant entries to connected clients (issue #1687).
+ */
+export function subscribeChatTranscript(
+  chatSessionId: string,
+  listener: (entry: ChatTranscriptEntry) => void,
+): () => void {
+  let set = transcriptListeners.get(chatSessionId);
+  if (!set) {
+    set = new Set();
+    transcriptListeners.set(chatSessionId, set);
+  }
+  set.add(listener);
+  return () => {
+    const current = transcriptListeners.get(chatSessionId);
+    if (!current) return;
+    current.delete(listener);
+    if (current.size === 0) {
+      transcriptListeners.delete(chatSessionId);
+    }
+  };
 }
 
 /**
