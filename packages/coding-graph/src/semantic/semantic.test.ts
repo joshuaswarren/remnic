@@ -31,6 +31,8 @@ import {
   similarEdgesToEdgeIR,
   semanticQuery,
   resolveSemanticConfig,
+  DEFAULT_SIMILAR_TO_THRESHOLD,
+  DEFAULT_MAX_SYMBOLS_PER_RUN,
   type SemanticConfig,
 } from "./index.js";
 
@@ -917,3 +919,92 @@ test("writeSymbolVector: returns false on a closed store (write dropped)", async
   await cleanup();
 });
 
+
+// ──────────────────────────────────────────────────────────────────────────
+// coerceHostBool fails CLOSED: unrecognized enabled strings are an opt-out,
+// not an opt-in, so a malformed host value can never silently enable remote
+// embedding (cursor Bugbot: 'Unknown enabled strings enable semantic').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("config: unknown enabled strings fail closed to false", () => {
+  // Explicit affirmatives still enable.
+  assert.equal(resolveSemanticConfig({ enabled: "on" as never }).enabled, true);
+  assert.equal(resolveSemanticConfig({ enabled: "yes" as never }).enabled, true);
+  assert.equal(resolveSemanticConfig({ enabled: "true" as never }).enabled, true);
+  // Unrecognized / opt-out wording must NOT enable (fail closed).
+  assert.equal(resolveSemanticConfig({ enabled: "disabled" as never }).enabled, false);
+  assert.equal(resolveSemanticConfig({ enabled: "off" as never }).enabled, false);
+  assert.equal(resolveSemanticConfig({ enabled: "maybe" as never }).enabled, false);
+  assert.equal(resolveSemanticConfig({ enabled: "enabled" as never }).enabled, false);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Host numeric config is coerced: a malformed string ("abc") must not become
+// NaN and silently disable the vector budget (NaN > 0 is false → unlimited)
+// or the cosine gate. It falls through to the documented default instead
+// (chatgpt-codex-connector: 'Validate host numeric config before clamping').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("config: malformed host numbers fall back to default (no NaN)", () => {
+  const cfg = resolveSemanticConfig({
+    enabled: true,
+    maxSymbolsPerRun: "abc" as never,
+    similarToThreshold: "xyz" as never,
+  });
+  assert.equal(Number.isNaN(cfg.maxSymbolsPerRun), false, "maxSymbolsPerRun must not be NaN");
+  assert.equal(Number.isNaN(cfg.similarToThreshold), false, "similarToThreshold must not be NaN");
+  // Falls through to the documented defaults.
+  assert.equal(cfg.maxSymbolsPerRun, DEFAULT_MAX_SYMBOLS_PER_RUN);
+  assert.equal(cfg.similarToThreshold, DEFAULT_SIMILAR_TO_THRESHOLD);
+  // A valid numeric string is still honored.
+  const cfg2 = resolveSemanticConfig({ enabled: true, maxSymbolsPerRun: "5" as never });
+  assert.equal(cfg2.maxSymbolsPerRun, 5);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Cache hits still work when the provider does not declare dimensions
+// (optional). The dims gate is skipped, so re-indexing an unchanged symbol
+// uses the cache instead of re-embedding every run (cursor Bugbot: 'Cache
+// misses without provider dimensions').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("cache-hit: provider without dimensions still caches on reindex", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const src = `function cached() { return 1; }`;
+    await writeFile(path.join(dir, "a.ts"), src);
+    const ir = makeFileIR("a.ts", [
+      { name: "cached", qname: "mod.cached", kind: "function", start: 0, end: src.length },
+    ], src);
+    await store.upsertFileBatch([ir]);
+
+    // Provider that does NOT declare `dimensions` (the field is optional).
+    let calls = 0;
+    const provider = {
+      id: "nodims-embedder",
+      model: "nodims-model",
+      async embed() {
+        calls += 1;
+        return [1, 0, 0, 0, 0, 0, 0, 0];
+      },
+    } as unknown as HostEmbeddingProvider;
+
+    const r1 = await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+    assert.equal(r1.ok, true);
+    if (r1.ok) {
+      assert.equal(r1.embedded, 1);
+      assert.equal(r1.cached, 0);
+    }
+    assert.equal(calls, 1, "first index embeds once");
+
+    const r2 = await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+    assert.equal(r2.ok, true);
+    if (r2.ok) {
+      assert.equal(r2.embedded, 0);
+      assert.equal(r2.cached, 1);
+    }
+    assert.equal(calls, 1, "reindex must hit cache — no second embed");
+  } finally {
+    await cleanup();
+  }
+});

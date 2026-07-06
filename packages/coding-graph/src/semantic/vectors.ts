@@ -161,12 +161,15 @@ export async function indexSymbolVectors(
     // dims still equal the active provider's declared dimensions. A model
     // that keeps the same model_id but changes vector size would otherwise
     // leave stale-dimensionality rows cached (cursor Bugbot: 'Cache ignores
-    // embedding dimension changes').
+    // embedding dimension changes'). When the provider does not declare
+    // dimensions (optional), the dims gate is skipped so caching still
+    // works instead of re-embedding every run (cursor Bugbot: 'Cache misses
+    // without provider dimensions').
     const cachedRow = store.readSymbolVector(node.nodeId, modelId);
     if (
       cachedRow &&
       cachedRow.contentHash === hash &&
-      cachedRow.dims === provider.dimensions
+      (provider.dimensions === undefined || cachedRow.dims === provider.dimensions)
     ) {
       cached += 1;
       continue;

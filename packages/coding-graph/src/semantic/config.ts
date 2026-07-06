@@ -142,12 +142,36 @@ function coerceHostBool(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
     const v = value.trim().toLowerCase();
-    if (v === "false" || v === "0" || v === "no" || v === "") return false;
-    if (v === "true" || v === "1" || v === "yes") return true;
-    return true;
+    // Fail CLOSED: only explicit affirmatives enable the layer. Any other
+    // value ("false"/"0"/"no"/"off"/"disabled"/""/unknown) is an opt-out,
+    // so a malformed or unrecognized host string can never silently enable
+    // remote embedding against operator intent (cursor Bugbot: 'Unknown
+    // enabled strings enable semantic').
+    if (v === "true" || v === "1" || v === "yes" || v === "on") return true;
+    return false;
   }
   if (typeof value === "number") return value !== 0;
   return Boolean(value);
+}
+
+/**
+ * Coerce a host-provided number (which may arrive as a numeric string from
+ * JSON/CLI config) to a finite number, so a malformed value like
+ * maxSymbolsPerRun:"abc" cannot become NaN and silently disable the vector
+ * budget (NaN > 0 is false → unlimited) or break cosine confirmation
+ * (comparisons against NaN are false). undefined/null/non-finite → undefined
+ * (fall through to env/default). Negative finite numbers pass through so the
+ * downstream clamp still controls range (chatgpt-codex-connector: 'Validate
+ * host numeric config before clamping').
+ */
+function coerceHostNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined;
+  if (typeof value === "string") {
+    const n = Number(value.trim());
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
 }
 
 function resolveBoolEnv(names: readonly string[], fallback: boolean, env: NodeJS.ProcessEnv): boolean {
@@ -191,11 +215,11 @@ export function resolveSemanticConfig(
   const enabled =
     coerceHostBool(host?.enabled) ?? resolveBoolEnv(ENV_ENABLED, false, env);
   const similarToThreshold =
-    host?.similarToThreshold ?? resolveNumberEnv(ENV_THRESHOLD, DEFAULT_SIMILAR_TO_THRESHOLD, env);
+    coerceHostNumber(host?.similarToThreshold) ?? resolveNumberEnv(ENV_THRESHOLD, DEFAULT_SIMILAR_TO_THRESHOLD, env);
   const maxSymbolsPerRun =
-    host?.maxSymbolsPerRun ?? resolveNumberEnv(ENV_MAX_SYMBOLS, DEFAULT_MAX_SYMBOLS_PER_RUN, env);
+    coerceHostNumber(host?.maxSymbolsPerRun) ?? resolveNumberEnv(ENV_MAX_SYMBOLS, DEFAULT_MAX_SYMBOLS_PER_RUN, env);
   const canonicalBodyLines =
-    host?.canonicalBodyLines ?? DEFAULT_CANONICAL_BODY_LINES;
+    coerceHostNumber(host?.canonicalBodyLines) ?? DEFAULT_CANONICAL_BODY_LINES;
   return {
     enabled,
     // Clamp threshold into [0,1] — a malformed env must not produce an
