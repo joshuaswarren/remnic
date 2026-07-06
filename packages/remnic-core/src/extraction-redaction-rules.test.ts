@@ -117,3 +117,25 @@ test("regression (#1669): a persisted redaction rule blocks matching content", a
     );
   });
 });
+
+test("#1669 thread #3: catastrophic-backtracking regex falls back to literal (ReDoS guard)", () => {
+  // A pattern like (a+)+ is a classic ReDoS shape. It must NOT compile as a
+  // RegExp — it would hang persistExtraction on a near-miss fact. Instead it
+  // falls back to literal substring match.
+  const rule = compileRedactionPattern("(a+)+");
+  // The literal fallback matches when the exact string "(a+)+" appears:
+  assert.equal(rule.matcher("a fact with (a+)+ inside"), true,
+    "literal fallback must still match the pattern as a substring");
+  // A long near-miss string that would cause exponential backtracking on the
+  // regex must return quickly (literal match, no regex evaluation):
+  const nearMiss = "a".repeat(100) + "!";
+  assert.equal(rule.matcher(nearMiss), false,
+    "near-miss must not hang — literal fallback, not regex");
+});
+
+test("#1669 thread #3: safe regex pattern still compiles as RegExp", () => {
+  // A benign anchored pattern compiles normally.
+  const rule = compileRedactionPattern("/^secret-key-[a-f0-9]+$/");
+  assert.equal(rule.matcher("secret-key-deadbeef"), true);
+  assert.equal(rule.matcher("not-a-secret"), false);
+});

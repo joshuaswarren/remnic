@@ -1,6 +1,7 @@
 import { access, lstat, readdir, readFile, realpath, stat, writeFile, mkdir, unlink, rename, appendFile, open } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash } from "node:crypto"
+import { normalizeContent, computeContentHash } from "./content-hash.js";;
 import path from "node:path";
 import { log } from "./logger.js";
 import { isErrnoCode } from "./utils/errno.js";
@@ -1189,19 +1190,14 @@ export class ContentHashIndex {
     }
   }
 
-  /** Normalize content and compute SHA-256 hash. */
+  /** Normalize content (delegates to content-hash.ts for a single source of truth). */
   static normalizeContent(content: string): string {
-    return content
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
+    return normalizeContent(content);
   }
 
-  /** Normalize content and compute SHA-256 hash. */
+  /** Compute SHA-256 hash (delegates to content-hash.ts for a single source of truth). */
   static computeHash(content: string): string {
-    const normalized = ContentHashIndex.normalizeContent(content);
-    return createHash("sha256").update(normalized).digest("hex");
+    return computeContentHash(content);
   }
 }
 

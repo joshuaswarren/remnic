@@ -14011,12 +14011,14 @@ export class Orchestrator {
     // dir so a multi-fact batch over one namespace reads the dir once.
     let redactionGatedCount = 0;
     const redactionRulesByDir = new Map<string, CompiledRedactionRule[]>();
-    const redactionRulesFor = async (dir: string): Promise<CompiledRedactionRule[]> => {
-      const cached = redactionRulesByDir.get(dir);
-      if (cached) return cached;
-      const loaded = await loadRedactionRules(dir);
-      redactionRulesByDir.set(dir, loaded);
-      return loaded;
+    const redactionRulesFor = async (...dirs: string[]): Promise<CompiledRedactionRule[]> => {
+      const out: CompiledRedactionRule[] = [];
+      for (const d of dirs) {
+        let r = redactionRulesByDir.get(d);
+        if (!r) { r = await loadRedactionRules(d); redactionRulesByDir.set(d, r); }
+        out.push(...r);
+      }
+      return out;
     };
     const behaviorSignalsByStorage = new Map<
       string,
@@ -14924,6 +14926,7 @@ export class Orchestrator {
       // affect both the dedup fingerprint and importance (issue #519 procedure routing).
       let writeCategory = fact.category;
       let targetStorage = storage;
+      const sourceStorageDir = storage.dir; // #1669 thread #2: pre-routing source ns for redaction gate
       // Track the KNOWN target namespace NAME alongside targetStorage (round 6,
       // codex P2 — NCQI0). Re-deriving it from `targetStorage.dir` mangles a raw
       // namespace literally named like a canonical token (e.g. `ns-616c706861`
@@ -14998,27 +15001,18 @@ export class Orchestrator {
           );
         }
       }
-      // #1669 redaction-rule gate: consult the target namespace's persisted
-      // never-store/redaction patterns BEFORE any dedup/importance work. A
-      // `redaction_rule` correction is meaningless if matching content can
-      // still land in the store, so matching facts are withheld entirely
-      // (never stored, never pending_review) — one stage earlier than the
-      // tombstone chokepoint. Fails open on read error (loadRedactionRules
-      // returns [] for a missing/corrupt dir).
+      // #1669 redaction-rule gate: consult BOTH source and target namespace
+      // rules before any write. A never-store pattern registered under the
+      // source namespace must survive scope-routing to a different target
+      // (review thread #2). Fails open on read error.
       try {
-        const redactionRules = await redactionRulesFor(targetStorage.dir);
+        const redactionRules = await redactionRulesFor(sourceStorageDir, targetStorage.dir);
         if (redactionRules.length > 0 && contentMatchesRedactionRules(fact.content, redactionRules)) {
           redactionGatedCount++;
-          // P1 (review thread vMLJ): never log the withheld content — debug
-          // logging is a durable surface and the fact may start with the very
-          // secret the rule is meant to keep out. Log the count + namespace only.
-          log.debug(
-            `extraction: redaction-rule withheld a fact (#${redactionGatedCount}) in ${targetStorage.dir}`,
-          );
+          log.debug(`extraction: redaction-rule withheld fact #${redactionGatedCount} in ${targetStorage.dir}`);
           continue;
         }
       } catch (redactionErr) {
-        // Never block extraction on a redaction-rule read failure.
         log.warn(`extraction: redaction-rule gate failed open: ${redactionErr}`);
       }
 

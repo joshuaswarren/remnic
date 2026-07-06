@@ -26,7 +26,7 @@ import type { Orchestrator } from "../orchestrator.js";
 import type { MemoryFile, MemoryStatus, PluginConfig } from "../types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import { supersessionKeysForFact } from "../temporal-supersession.js";
-import { ContentHashIndex } from "../storage.js";
+import { computeContentHash } from "../content-hash.js";
 import { sanitizeMemoryContent } from "../sanitize.js";
 import {
   CorrectionContractError,
@@ -438,7 +438,7 @@ async function applyEditMemory(
   // patched body and a later re-extraction of the same fact dedup-misses.
   const contentHashForPatch =
     existing.frontmatter.category === "fact"
-      ? ContentHashIndex.computeHash(sanitizeMemoryContent(patch).text)
+      ? computeContentHash(sanitizeMemoryContent(patch).text)
       : undefined;
   await storage.writeMemoryFrontmatter(
     { ...existing, content: patch },
@@ -580,6 +580,7 @@ async function appendTombstoneFn(
       : input.supersessionKey
         ? [input.supersessionKey]
         : [undefined];
+  const writtenIds: string[] = [];
   let firstId: string | null = null;
   for (const key of keys) {
     const result = await storage.appendTombstone({
@@ -592,11 +593,19 @@ async function appendTombstoneFn(
       ...(input.contentHash ? { contentHash: input.contentHash } : {}),
     });
     if (result === null && enabled) {
+      // Rollback already-written tombstones so a partial multi-key failure
+      // does not leave incomplete resurrection blocking for the still-active
+      // memory (review thread #1). Best-effort — a dangling tombstone is the
+      // safer failure mode (false-positive block vs. false-negative leak).
+      for (const id of writtenIds) {
+        try { await storage.revokeTombstone(id, "user_correction"); } catch { /* best-effort */ }
+      }
       throw new CorrectionContractError(
         `tombstone persistence failed for memory ${input.sourceMemoryId} (tombstones enabled but store returned null — I/O error swallowed)`,
       );
     }
     if (firstId === null) firstId = result;
+    if (result) writtenIds.push(result);
   }
   return firstId;
 }

@@ -62,6 +62,58 @@ function isRegexLike(pattern: string): boolean {
 }
 
 /**
+ * Reject patterns prone to catastrophic backtracking (ReDoS, review thread #3).
+ * Mirrors the safe-regex heuristic: a quantifier inside a group that is itself
+ * quantified creates exponential blowup on near-miss inputs. Also rejects
+ * patterns with overlapping alternation under repetition
+ * (e.g. (a|a)*). Returns true when the pattern is safe to compile.
+ *
+ * This is a second line of defense — validateRedactionPattern runs first at
+ * apply time, but a hand-edited rule file or an edge case can still slip past.
+ */
+function isSafeRegex(source: string): boolean {
+  // Bound the pattern length so a pathological rule cannot stall the check.
+  if (source.length > 512) return false;
+  // Scan for a group (...) or [...]{n,m} followed by a quantifier, where the
+  // group body itself ends with a quantifier. This catches (a+)+, (a*)*, etc.
+  // Also catches overlapping alternation like (a|a)+.
+  for (let i = 0; i < source.length; i++) {
+    if (source[i] !== "(") continue;
+    // Find the matching close paren
+    let depth = 1;
+    let j = i + 1;
+    while (j < source.length && depth > 0) {
+      if (source[j] === "\\") { j += 2; continue; }
+      if (source[j] === "(") depth++;
+      else if (source[j] === ")") depth--;
+      j++;
+    }
+    if (depth !== 0) continue; // unbalanced — will fail RegExp compile anyway
+    // Check if the char after the closing paren is a quantifier
+    const afterGroup = source[j];
+    if (afterGroup !== "+" && afterGroup !== "*" && afterGroup !== "{") continue;
+    const groupBody = source.slice(i + 1, j - 1);
+    // The group body ends with a quantifier on a non-escape char
+    if (/[+*?]$/.test(groupBody) || /\{\d+,?\d*\}[+*?]?$/.test(groupBody)) {
+      // Nested quantifier → potential ReDoS
+      return false;
+    }
+    // Overlapping alternation: (a|a)+ where branches share a common prefix
+    if (groupBody.includes("|")) {
+      const branches = groupBody.split("|");
+      if (branches.length >= 2) {
+        const firstChars = new Set(branches.map((b) => b[0]).filter(Boolean));
+        if (firstChars.size < branches.filter((b) => b.length > 0).length) {
+          return false;
+        }
+      }
+    }
+    i = j;
+  }
+  return true;
+}
+
+/**
  * Compile a single pattern into a matcher. A literal pattern matches by
  * case-sensitive substring; a regex-like pattern compiles into a RegExp
  * anchored to search (global flag off — we only need a boolean). Compilation
@@ -74,6 +126,12 @@ export function compileRedactionPattern(pattern: string): CompiledRedactionRule 
       ? trimmed.slice(1, -1)
       : trimmed;
     try {
+      if (!isSafeRegex(body)) {
+        // Catastrophic-backtracking shape (e.g. (a+)+) — never compile.
+        // Fall back to literal substring so the rule still does something
+        // useful without risking a ReDoS on every extracted fact.
+        return { pattern: trimmed, matcher: (content) => content.includes(trimmed) };
+      }
       const re = new RegExp(body);
       return { pattern: trimmed, matcher: (content) => re.test(content) };
     } catch {
