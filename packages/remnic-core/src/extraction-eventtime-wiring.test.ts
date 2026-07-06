@@ -225,3 +225,17 @@ test("storage: writeChunk propagates invalidAt/observedAt/eventTimeSource from t
     await rm(dir, { recursive: true, force: true });
   }
 });
+test("resolveFactEventTime: 'until 2025-06' (YYYY-MM) → invalidAt = start of following month (#1578 r3)", () => {
+  const result = resolveFactEventTime("until 2025-06", "2025-06-20T00:00:00.000Z");
+  assert.equal(result.eventTimeSource, "extracted");
+  assert.equal(result.validFrom, undefined);
+  assert.equal(result.validUntil, "2025-07-01T00:00:00.000Z",
+    "YYYY-MM end bound must span the whole month, not fall back to assumed");
+});
+
+test("resolveFactEventTime: bare '2025-03' (YYYY-MM) → validFrom = first of month (#1578 r3)", () => {
+  const result = resolveFactEventTime("2025-03", "2025-06-20T00:00:00.000Z");
+  assert.equal(result.eventTimeSource, "extracted");
+  assert.equal(result.validFrom, "2025-03-01T00:00:00.000Z");
+  assert.equal(result.validUntil, undefined);
+});

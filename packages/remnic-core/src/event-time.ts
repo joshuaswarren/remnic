@@ -286,6 +286,14 @@ function resolveQuarter(
  */
 function resolveAbsolute(raw: string): number | null {
   const trimmed = raw.trim();
+  // YYYY-MM (ISO year-month, no day) → first day of that month, UTC
+  // (#1578 review r3: the prompt example "until 2025-06" must resolve, not
+  // fall back to "assumed").
+  const ym = /^(\d{4})-(\d{2})$/.exec(trimmed);
+  if (ym) {
+    const ms = buildDateMs(Number(ym[1]), Number(ym[2]), 1);
+    return ms === null ? null : startOfDayUtc(ms);
+  }
   const ms = parseFlexibleIsoTimestamp(trimmed);
   if (ms === null) return null;
   // Date-only inputs (no T) anchor to start-of-day UTC.
@@ -467,6 +475,17 @@ function resolveEndBound(anchorMs: number, period: string): number | null {
   // Bare four-digit year: exclusive end = January 1 of the FOLLOWING year.
   if (/^\d{4}$/.test(trimmed)) {
     return buildDateMs(Number(trimmed) + 1, 1, 1);
+  }
+
+  // YYYY-MM (year-month) end bound: exclusive end = start of the FOLLOWING
+  // month, so "until 2025-06" spans all of June (#1578 review r3).
+  const ymEnd = /^(\d{4})-(\d{2})$/.exec(trimmed);
+  if (ymEnd) {
+    const startMs = buildDateMs(Number(ymEnd[1]), Number(ymEnd[2]), 1);
+    if (startMs === null) return null;
+    const nd = new Date(startMs);
+    nd.setUTCMonth(nd.getUTCMonth() + 1);
+    return startOfDayUtc(nd.getTime());
   }
 
   // Absolute date/datetime end bound.

@@ -1618,7 +1618,7 @@ When a fact has an explicit temporal anchor — a date, month, season, or relati
 - "The API has been rate-limited since 2024" → "eventTime": "since 2024"
 - "I switched to PostgreSQL on 2025-01-15" → "eventTime": "2025-01-15"
 - "We used MongoDB until June 2025" → "eventTime": "until 2025-06"
-Accepted forms: ISO dates ("2025-03-01"), month/season + year ("March 2025", "summer 2024"), relative ("yesterday", "last week", "this month", "next year", "last December"), and open-ended ("since 2024", "until 2025-06-01").
+Accepted forms: ISO dates ("2025-03-01"), year-month ("2025-03"), month/season + year ("March 2025", "summer 2024"), relative ("yesterday", "last week", "this month", "next year", "last December"), and open-ended ("since 2024", "until 2025-06").
 Omit "eventTime" when the fact has no explicit temporal anchor — do NOT guess or infer dates. The system resolves the expression against the conversation's own timestamp, not today's date.
 `;
   }
