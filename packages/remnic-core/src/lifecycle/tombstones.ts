@@ -40,7 +40,7 @@
 //   - Semantic tier (4) ships dark, off by default (rule 48).
 // ---------------------------------------------------------------------------
 
-import { serializeMutations } from "../utils/serialize-mutations.js";
+import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 
 /** Why a tombstone was emitted. */
 export type TombstoneReason =
@@ -129,6 +129,20 @@ export interface TombstoneStoreOptions {
    * skipped entirely.
    */
   semanticSimilarity?: (a: string, b: string) => number;
+  /**
+   * Cross-process write-lock timings for the tombstone JSONL mutation lock
+   * (issue #1639). The secure-store append is a read-merge-write (read
+   * encrypted → decrypt → concat → re-encrypt → atomic rename), so two
+   * Remnic processes appending concurrently can each read the same contents
+   * and the last writer drops the other's entry — breaking the
+   * non-resurrection invariant. The lock serializes the mutation across
+   * processes. When omitted, defaults that fit the short tombstone critical
+   * section (mirroring the summary-snapshot lock): staleMs 30s, maxWaitMs 5s,
+   * heartbeatMs floor(staleMs/3).
+   */
+  readonly lockStaleMs?: number;
+  readonly lockMaxWaitMs?: number;
+  readonly lockHeartbeatMs?: number;
 }
 
 /** Injected file I/O — the StorageManager wires its secure-store-aware
@@ -261,7 +275,33 @@ export class TombstoneStore {
     private readonly namespace: string,
     private readonly options: TombstoneStoreOptions,
     private readonly io: TombstoneFileIo,
-  ) {}
+  ) {
+    this.lockStaleMs = this.options.lockStaleMs ?? 30_000;
+    this.lockMaxWaitMs = this.options.lockMaxWaitMs ?? 5_000;
+    this.lockHeartbeatMs =
+      this.options.lockHeartbeatMs ?? Math.max(100, Math.floor(this.lockStaleMs / 3));
+  }
+
+  /**
+   * Resolved cross-process write-lock timings (issue #1639). Defaults mirror
+   * the summary-snapshot lock: a tombstone append critical section is
+   * sub-second, so a stale lock older than 30s is a crashed holder; bounded
+   * acquisition gives up after 5s and strict-fails rather than clobbering a
+   * concurrent writer (which would reintroduce the lost-write race this lock
+   * closes).
+   */
+  private readonly lockStaleMs: number;
+  private readonly lockMaxWaitMs: number;
+  private readonly lockHeartbeatMs: number;
+
+  /**
+   * Sibling advisory lockfile: `<tombstones>.jsonl` → `<tombstones>.lock`.
+   * Shared by append, revoke, and rebuild so every JSONL mutation serializes
+   * against the others across processes (issue #1639: "shared with rebuilds").
+   */
+  private get lockPath(): string {
+    return this.filePath.replace(/\.jsonl$/i, "") + ".lock";
+  }
 
   /** Lazy load + build the in-memory index. Idempotent. */
   async load(): Promise<void> {
@@ -473,10 +513,48 @@ export class TombstoneStore {
 
   private serializeAppend(entry: TombstoneEntry): Promise<void> {
     const line = JSON.stringify(entry) + "\n";
-    // serializeMutations recovers after rejection (rule 40): a failed append
-    // surfaces to THIS caller but the next append is not poisoned.
+    // serializeMutations (in-process, rule 40 rejection recovery) wraps the
+    // cross-process lock: within one process appends are queued, and across
+    // processes the advisory lockfile serializes the read-merge-write so two
+    // Remnic processes appending concurrently cannot drop each other's entry
+    // (issue #1639). Under the lock we re-sync the in-memory index against
+    // disk first, so indexEntry builds on the peer's just-appended entries.
     return serializeMutations(`tombstone:${this.filePath}`, () =>
-      this.io.append(this.filePath, line),
+      this.withWriteLock(async () => {
+        await this.ensureFreshAgainstDisk();
+        await this.io.append(this.filePath, line);
+      }),
+    );
+  }
+
+  /**
+   * Acquire the cross-process tombstone write lock and run `task` under it
+   * (issue #1639). Strict-fail on acquisition timeout: the secure-store append
+   * is a read-merge-write, so a best-effort unlocked run would clobber a
+   * concurrent writer — reintroducing the lost-write race this lock closes.
+   * The thrown error surfaces to the caller (rule 34: never silently drop);
+   * rebuild recovers the tombstone on the next maintenance cycle.
+   *
+   * In-process callers are already serialized by serializeMutations (one key
+   * for append/revoke/rebuild), so this lock only contends across processes —
+   * the single-process daemon (default deployment) acquires it immediately.
+   */
+  private withWriteLock<T>(task: () => Promise<T>): Promise<T> {
+    return withHeldFileLock(
+      this.lockPath,
+      {
+        staleMs: this.lockStaleMs,
+        maxWaitMs: this.lockMaxWaitMs,
+        heartbeatMs: this.lockHeartbeatMs,
+      },
+      async (acquired) => {
+        if (!acquired) {
+          throw new Error(
+            "could not acquire tombstone write lock (contention timeout or filesystem error)",
+          );
+        }
+        return task();
+      },
     );
   }
 
@@ -652,8 +730,14 @@ export class TombstoneStore {
         : a.createdAt < b.createdAt ? -1 : 1,
     );
     const serialized = all.map((e) => JSON.stringify(e)).join("\n") + (all.length > 0 ? "\n" : "");
-    await serializeMutations(`tombstone-rebuild:${this.filePath}`, () =>
-      this.io.write(this.filePath, serialized),
+    // Unify the serialization key with append/revoke so rebuild and append
+    // cannot interleave in-process either (previously distinct keys left a
+    // latent in-process read-merge-write race). The cross-process lock
+    // (issue #1639) is shared with append/revoke — the same lockfile.
+    await serializeMutations(`tombstone:${this.filePath}`, () =>
+      this.withWriteLock(async () => {
+        await this.io.write(this.filePath, serialized);
+      }),
     );
     this.resetIndex();
     for (const entry of all) this.indexEntry(entry);
