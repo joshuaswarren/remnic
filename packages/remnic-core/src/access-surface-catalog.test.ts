@@ -49,7 +49,9 @@ import {
 // alongside the other GET list routes (baseline 80 from #1525 + 1 = 81). Also a
 // catalog-completeness correction: POST /engram/v1/memories (operation memory_store)
 // was always live but omitted from HTTP_ROUTES — it is migrated, so no count change.
-const UNMIGRATED_HANDLER_BASELINE = 81;
+// #1583 remnic chat adds memory_chat — an unmigrated handler dispatched to
+// processChatMessage (carries user input; not a boundary operation) → 81 + 1 = 82.
+const UNMIGRATED_HANDLER_BASELINE = 82;
 
 // Keep the import live — `getOperation` is the call surfaces use at dispatch
 // time; referencing it here pins the registry's lookup contract.
@@ -72,7 +74,7 @@ function shortToolName(advertised: string): string {
 /** Spin up a server with emitLegacyTools=true and read the deduped short names. */
 async function liveMcpToolShortNames(): Promise<ReadonlySet<string>> {
   const stub = { briefingEnabled: true } as unknown as EngramAccessService;
-  const server = new EngramMcpServer(stub, { emitLegacyTools: true, codingDecisionVisible: true, architectureCardVisible: true, codegraphVisible: true, sessionDeltaVisible: true });
+  const server = new EngramMcpServer(stub, { emitLegacyTools: true, codingDecisionVisible: true, architectureCardVisible: true, codegraphVisible: true, sessionDeltaVisible: true, chatVisible: true });
   const response = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list" });
   const result = (response as { result?: { tools?: Array<{ name: string }> } }).result;
   const names = new Set<string>();

@@ -148,6 +148,10 @@ export class ChatEngine {
         session.pendingPlanId = undefined;
         try {
           const applyResult = await this.executor.correctionApply(planId);
+          // Consume the one-time confirmation on success so a later
+          // tool-loop correction_apply cannot re-apply the same plan id
+          // (cursor Medium: stale confirm allowed re-apply).
+          session.confirmedPlanIds.delete(planId);
           return {
             reply: `Correction applied.\n\n${applyResult}`,
             chatSessionId: session.id,

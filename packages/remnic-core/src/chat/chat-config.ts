@@ -6,6 +6,7 @@
  */
 
 import type { ChatConfig } from "../types.js";
+import { coerceNumber } from "../connectors/coerce.js";
 
 export const DEFAULT_CHAT_CONFIG: ChatConfig = {
   enabled: false,
@@ -13,6 +14,17 @@ export const DEFAULT_CHAT_CONFIG: ChatConfig = {
   maxToolCallsPerTurn: 8,
   sessionTtlHours: 72,
 };
+
+/**
+ * Coerce a positive-integer config value, accepting numeric strings written
+ * via CLI `key=value` paths (rule 28 — coerce at the boundary). Falls back to
+ * the default for missing/unparseable values, matching the existing
+ * silent-default semantics of this parser.
+ */
+function positiveInt(value: unknown, fallback: number): number {
+  const n = coerceNumber(value);
+  return typeof n === "number" && Number.isInteger(n) && n > 0 ? n : fallback;
+}
 
 /**
  * Parse the `chat` config section from the raw config object.
@@ -39,19 +51,7 @@ export function parseChatConfig(
   return {
     enabled: obj.enabled === true || obj.enabled === "true" || obj.enabled === "1",
     model: typeof obj.model === "string" ? obj.model : "",
-    maxToolCallsPerTurn:
-      typeof obj.maxToolCallsPerTurn === "number" &&
-      Number.isFinite(obj.maxToolCallsPerTurn) &&
-      obj.maxToolCallsPerTurn > 0 &&
-      Number.isInteger(obj.maxToolCallsPerTurn)
-        ? obj.maxToolCallsPerTurn
-        : DEFAULT_CHAT_CONFIG.maxToolCallsPerTurn,
-    sessionTtlHours:
-      typeof obj.sessionTtlHours === "number" &&
-      Number.isFinite(obj.sessionTtlHours) &&
-      obj.sessionTtlHours > 0 &&
-      Number.isInteger(obj.sessionTtlHours)
-        ? obj.sessionTtlHours
-        : DEFAULT_CHAT_CONFIG.sessionTtlHours,
+    maxToolCallsPerTurn: positiveInt(obj.maxToolCallsPerTurn, DEFAULT_CHAT_CONFIG.maxToolCallsPerTurn),
+    sessionTtlHours: positiveInt(obj.sessionTtlHours, DEFAULT_CHAT_CONFIG.sessionTtlHours),
   };
 }

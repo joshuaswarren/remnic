@@ -13,7 +13,7 @@
     "oversizedFileCount": 11,
     "scatteredConfigFlagReads": 564,
     "adHocNamespaceResolutions": 53,
-    "unmigratedHandlerCount": 81,
+    "unmigratedHandlerCount": 82,
     "directStorageImports": 38
   }
 }

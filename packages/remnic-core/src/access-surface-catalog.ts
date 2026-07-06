@@ -75,6 +75,9 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   // Correction Contract (issue #1580) — one plan/apply pipeline.
   { tool: "memory_correct_plan", operation: "memory_correct_plan" },
   { tool: "memory_correct_apply", operation: "memory_correct_apply" },
+  // Conversational memory inspection + correction (issue #1583) — unmigrated
+  // handler dispatched to processChatMessage (not a boundary operation).
+  { tool: "memory_chat", operation: null },
   { tool: "coding_decision", operation: "coding_decision" },
   { tool: "coding_architecture", operation: "coding_architecture" },
   // codegraph parity tools (issue #1554)
