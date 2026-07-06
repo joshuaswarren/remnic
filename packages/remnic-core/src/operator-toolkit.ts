@@ -1205,9 +1205,14 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   };
   let provenanceReadOk = true;
   try {
-    provenanceCoverage = summarizeProvenanceCoverage(
-      await storage.readAllMemories(),
-    );
+    // Include all tiers so cold-migrated and archived memories are counted
+    // (codex thread PRRT_kwDORJXyws6Ojqz8 — readAllMemories is hot-only).
+    const [hot, archived, cold] = await Promise.all([
+      storage.readAllMemories(),
+      storage.readArchivedMemories().catch(() => []),
+      storage.readAllColdMemories().catch(() => []),
+    ]);
+    provenanceCoverage = summarizeProvenanceCoverage([...hot, ...archived, ...cold]);
   } catch {
     provenanceReadOk = false;
   }
