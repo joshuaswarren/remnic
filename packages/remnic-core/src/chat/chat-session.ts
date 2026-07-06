@@ -160,7 +160,10 @@ export async function cleanupExpiredChatSessions(
       const filePath = join(dir, file);
       const st = await stat(filePath);
       const ageHours = (now - st.mtimeMs) / (1000 * 60 * 60);
-      if (ageHours > ttlHours) {
+      // TTL of 0 = expire everything immediately. For positive TTLs the
+      // boundary is inclusive; sub-millisecond APFS mtime skew is negligible
+      // against an hour-scale threshold (rule 54 — deterministic cleanup).
+      if (ttlHours <= 0 || ageHours >= ttlHours) {
         await unlink(filePath);
         removed++;
       }
