@@ -21,7 +21,7 @@ import path from "node:path";
 const fs = { readFileSync: fsReadFileSync };
 import type { GraphStore } from "../graph-store.js";
 import type { EdgeIR } from "../graph-store.js";
-import { buildCanonicalTextAndHash } from "./canonical-text.js";
+import { extractBodyText } from "./canonical-text.js";
 import {
   MINHASH_ONLY_CONFIDENCE,
   SEMANTIC_PROVENANCE,
@@ -104,6 +104,13 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
       message: "computeSimilarTo needs either 'bodies' or 'repoRoot' to read source text",
     };
   }
+  // Closed store is a distinct degradation (rule 34) — readNodesForSemantic
+  // would return [] and we would report { ok: true, edges: [] } instead of
+  // the documented store_closed code used by the other entry points (cursor
+  // Bugbot: 'SimilarTo ignores closed store').
+  if (store.isClosed) {
+    return { ok: false, code: "store_closed" };
+  }
   const bodies = input.bodies ?? readBodiesFromStore(store, input.repoRoot);
   const modelId = provider ? modelIdFor(provider) : undefined;
   const vectors = input.vectors ?? (modelId ? readVectorsMap(store, modelId) : new Map<string, Float32Array>());
@@ -122,7 +129,12 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
   for (const c of candidates) {
     const va = vectors.get(c.aNodeId);
     const vb = vectors.get(c.bNodeId);
-    if (va && vb) {
+    if (va && vb && va.length === vb.length) {
+      // Require matching dimensionality — cosineSimilarity compares over the
+      // shorter length, so mismatched-dims rows would get a misleading
+      // partial-overlap score (cursor Bugbot: 'SimilarTo skips embedding
+      // length check'). Pairs that fail this fall through to the no-provider
+      // MinHash-only branch or are skipped.
       const cos = cosineSimilarity(va, vb);
       // rule 35: >= threshold confirms (decided once, here).
       if (cos >= config.similarToThreshold) {
@@ -204,22 +216,15 @@ function readBodiesFromStore(store: GraphStore, repoRoot?: string): Map<string, 
       } catch {
         // File not readable — body stays empty, symbol is skipped by MinHasher.
       }
-    } else {
-      // No repoRoot — fall back to qualified name tokens so the pipeline
-      // still runs (useful for tests that supply bodies explicitly).
-      rawText = node.qualifiedName;
     }
-    const { text } = buildCanonicalTextAndHash({
-      symbol: {
-        kind: node.kind as never,
-        name: node.qualifiedName.split(/[.#:]/).pop() ?? node.qualifiedName,
-        qualifiedName: node.qualifiedName,
-        span: { startByte: node.startByte, endByte: node.endByte },
-      },
-      rawText,
-      maxBodyLines: 0,
-    });
-    out.set(node.nodeId, { qualifiedName: node.qualifiedName, body: text });
+    // MinHash the extracted BODY only, not the full canonical text. The
+    // canonical form includes KIND/QNAME/SIG metadata; tokenizing it would
+    // let empty-body stubs/declarations emit name-driven candidates among
+    // unrelated symbols. extractBodyText returns "" for a bodyless symbol,
+    // and the hasher skips empty bodies entirely (chatgpt-codex-connector:
+    // 'MinHash only the extracted body text').
+    const body = extractBodyText(rawText, 0);
+    out.set(node.nodeId, { qualifiedName: node.qualifiedName, body });
   }
   return out;
 }

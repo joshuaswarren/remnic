@@ -2525,25 +2525,32 @@ export class GraphStore {
    * caller (the semantic indexer) has ALREADY decided to re-embed (the
    * content_hash differs from the cached row); this method just persists.
    */
-  writeSymbolVector(input: {
+  async writeSymbolVector(input: {
     readonly nodeId: string;
     readonly modelId: string;
     readonly contentHash: string;
     readonly dims: number;
     readonly vector: Float32Array;
-  }): void {
-    if (this.closed) return;
+  }): Promise<void> {
+    // Honor the closing flag (not just closed) and serialize via the write
+    // queue, matching upsertFileBatch / upsertEdges / clearSemanticSimilarToEdges
+    // — otherwise concurrent graph ingestion can interleave a vector upsert
+    // with a transactional node delete (cursor Bugbot: 'Vector writes ignore
+    // closing flag' + 'Vector writes bypass write queue').
+    if (this.closed || this.closing) return;
     const buf = Buffer.from(input.vector.buffer, input.vector.byteOffset, input.vector.byteLength);
-    this.db
-      .prepare(
-        `INSERT INTO symbol_vectors (node_id, model_id, content_hash, dims, vector)
-           VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(node_id, model_id) DO UPDATE SET
-           content_hash = excluded.content_hash,
-           dims = excluded.dims,
-           vector = excluded.vector`,
-      )
-      .run(input.nodeId, input.modelId, input.contentHash, input.dims, buf);
+    await this.queue.schedule(async () => {
+      this.db
+        .prepare(
+          `INSERT INTO symbol_vectors (node_id, model_id, content_hash, dims, vector)
+             VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(node_id, model_id) DO UPDATE SET
+             content_hash = excluded.content_hash,
+             dims = excluded.dims,
+             vector = excluded.vector`,
+        )
+        .run(input.nodeId, input.modelId, input.contentHash, input.dims, buf);
+    });
   }
 
   /**
@@ -2629,12 +2636,17 @@ export class GraphStore {
    * ON DELETE CASCADE on nodes(id) when a node is pruned, so this method
    * is only for the targeted-invalidation path.
    */
-  deleteSymbolVectors(nodeIds: readonly string[]): void {
-    if (this.closed || nodeIds.length === 0) return;
-    this.runChunkedDelete(
-      "DELETE FROM symbol_vectors WHERE node_id IN (%PH%)",
-      nodeIds,
-    );
+  async deleteSymbolVectors(nodeIds: readonly string[]): Promise<void> {
+    // Same closing-flag + write-queue discipline as writeSymbolVector
+    // (cursor Bugbot: 'Vector writes ignore closing flag' + 'Vector writes
+    // bypass write queue').
+    if (this.closed || this.closing || nodeIds.length === 0) return;
+    await this.queue.schedule(async () => {
+      this.runChunkedDelete(
+        "DELETE FROM symbol_vectors WHERE node_id IN (%PH%)",
+        nodeIds,
+      );
+    });
   }
 
   /**

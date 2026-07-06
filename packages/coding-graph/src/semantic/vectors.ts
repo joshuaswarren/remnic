@@ -116,13 +116,17 @@ export async function indexSymbolVectors(
   let embedded = 0;
   let cached = 0;
   let skipped = 0;
+  // Budget bounds provider CALLS (cost), not successful writes. A degraded
+  // provider that throws / returns null / returns a malformed vector for
+  // many uncached symbols must not bypass the per-run cost cap by never
+  // incrementing `embedded` (chatgpt-codex-connector: 'Count failed embed
+  // attempts against the vector budget'). Cached rows do not consume
+  // budget (no provider call); source-read failures do not either.
+  let embedAttempts = 0;
 
   for (const node of nodes) {
     if (signal?.aborted) break;
-    // Stop once this run has embedded `limit` symbols (0 = unlimited).
-    // Cached rows do NOT consume budget — they `continue` below before
-    // any embed call, so a bounded run still makes forward progress.
-    if (limit > 0 && embedded >= limit) break;
+    if (limit > 0 && embedAttempts >= limit) break;
     // Read source text from disk.
     const absolutePath = path.resolve(repoRoot, node.filePath);
     let bytes: Buffer;
@@ -160,6 +164,9 @@ export async function indexSymbolVectors(
       continue;
     }
 
+    // Count the embed attempt (cost) BEFORE the call, regardless of
+    // outcome, so a failed/null/malformed result still consumes budget.
+    embedAttempts += 1;
     // Embed the CANONICAL text (not the raw span) so the vector
     // corresponds to the content_hash that gates cache hits (rule 23).
     // This also respects canonicalBodyLines as a cost/privacy bound.
@@ -174,7 +181,7 @@ export async function indexSymbolVectors(
       // different content_hash and we cannot re-embed, delete the stale
       // row so semantic_query/cosine confirmation do not serve it.
       if (cachedRow && cachedRow.contentHash !== hash) {
-        store.deleteSymbolVectors([node.nodeId]);
+        await store.deleteSymbolVectors([node.nodeId]);
       }
       skipped += 1;
       continue;
@@ -182,13 +189,13 @@ export async function indexSymbolVectors(
     const vec = normalizeHostEmbeddingVector(raw);
     if (!vec || vec.length === 0) {
       if (cachedRow && cachedRow.contentHash !== hash) {
-        store.deleteSymbolVectors([node.nodeId]);
+        await store.deleteSymbolVectors([node.nodeId]);
       }
       skipped += 1;
       continue;
     }
     const float32 = new Float32Array(vec);
-    store.writeSymbolVector({
+    await store.writeSymbolVector({
       nodeId: node.nodeId,
       modelId,
       contentHash: hash,

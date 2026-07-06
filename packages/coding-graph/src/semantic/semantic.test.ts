@@ -624,37 +624,42 @@ test("semanticQuery: duplicate qualified name still hydrates a snippet (by node 
 // (cursor Bugbot: 'MinHash edges with provider set').
 // ──────────────────────────────────────────────────────────────────────────
 
-test("SIMILAR_TO: provider set + missing vectors → no MinHash-only bypass", () => {
-  const body = "function compute(x, y) { const z = x + y; return z * 2 + x - y; }";
-  const bodies = new Map<string, { readonly qualifiedName: string; readonly body: string }>([
-    ["n1", { qualifiedName: "mod.a", body }],
-    ["n2", { qualifiedName: "mod.b", body }],
-  ]);
+test("SIMILAR_TO: provider set + missing vectors → no MinHash-only bypass", async () => {
+  const { store, cleanup } = await tempStore();
+  try {
+    const body = "function compute(x, y) { const z = x + y; return z * 2 + x - y; }";
+    const bodies = new Map<string, { readonly qualifiedName: string; readonly body: string }>([
+      ["n1", { qualifiedName: "mod.a", body }],
+      ["n2", { qualifiedName: "mod.b", body }],
+    ]);
 
-  // Provider configured, no vectors → must NOT emit MinHash-only edges.
-  const withProvider = computeSimilarTo({
-    store: null as never,
-    provider: countingProvider(),
-    config: ENABLED_CONFIG,
-    bodies,
-    vectors: new Map<string, Float32Array>(),
-  });
-  assert.equal(withProvider.ok, true);
-  if (withProvider.ok) {
-    assert.equal(withProvider.minhashOnly, 0, "provider active → no MinHash-only bypass");
-    assert.equal(withProvider.edges.length, 0, "no edges when vectors missing and provider active");
-  }
+    // Provider configured, no vectors → must NOT emit MinHash-only edges.
+    const withProvider = computeSimilarTo({
+      store,
+      provider: countingProvider(),
+      config: ENABLED_CONFIG,
+      bodies,
+      vectors: new Map<string, Float32Array>(),
+    });
+    assert.equal(withProvider.ok, true);
+    if (withProvider.ok) {
+      assert.equal(withProvider.minhashOnly, 0, "provider active → no MinHash-only bypass");
+      assert.equal(withProvider.edges.length, 0, "no edges when vectors missing and provider active");
+    }
 
-  // No provider → MinHash-only edges are the documented local fallback.
-  const noProvider = computeSimilarTo({
-    store: null as never,
-    provider: undefined,
-    config: ENABLED_CONFIG,
-    bodies,
-  });
-  assert.equal(noProvider.ok, true);
-  if (noProvider.ok) {
-    assert.ok(noProvider.minhashOnly >= 1, "no provider → MinHash-only edges emitted");
+    // No provider → MinHash-only edges are the documented local fallback.
+    const noProvider = computeSimilarTo({
+      store,
+      provider: undefined,
+      config: ENABLED_CONFIG,
+      bodies,
+    });
+    assert.equal(noProvider.ok, true);
+    if (noProvider.ok) {
+      assert.ok(noProvider.minhashOnly >= 1, "no provider → MinHash-only edges emitted");
+    }
+  } finally {
+    await cleanup();
   }
 });
 
@@ -681,8 +686,8 @@ test("semanticQuery: mismatched-dims vectors are excluded from ranking", async (
     const idA = nodeIdFor({ qualifiedName: "mod.a", filePath: "a.ts", label: "function" });
     const idB = nodeIdFor({ qualifiedName: "mod.b", filePath: "a.ts", label: "function" });
     // a: dims=8 (matches the query provider); b: dims=4 (mismatched → excluded).
-    store.writeSymbolVector({ nodeId: idA, modelId, contentHash: "h".repeat(64), dims: 8, vector: new Float32Array(8) });
-    store.writeSymbolVector({ nodeId: idB, modelId, contentHash: "h".repeat(64), dims: 4, vector: new Float32Array(4) });
+    await store.writeSymbolVector({ nodeId: idA, modelId, contentHash: "h".repeat(64), dims: 8, vector: new Float32Array(8) });
+    await store.writeSymbolVector({ nodeId: idB, modelId, contentHash: "h".repeat(64), dims: 4, vector: new Float32Array(4) });
 
     const r = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "a" });
     assert.equal(r.ok, true);
@@ -718,5 +723,124 @@ test("closed store: semanticQuery returns store_closed (not no_vectors)", async 
   assert.equal(r.ok, false);
   if (!r.ok) assert.equal(r.code, "store_closed");
   await cleanup();
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// computeSimilarTo honors the closed store (cursor Bugbot: 'SimilarTo
+// ignores closed store').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("closed store: computeSimilarTo returns store_closed", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  await store.close();
+  const r = computeSimilarTo({
+    store,
+    provider: undefined,
+    config: ENABLED_CONFIG,
+    repoRoot: dir,
+    bodies: new Map(),
+  });
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.equal(r.code, "store_closed");
+  await cleanup();
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Cosine confirmation requires matching dims (cursor Bugbot: 'SimilarTo
+// skips embedding length check').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("SIMILAR_TO: cosine confirmation skips mismatched-dims pairs", async () => {
+  const { store, cleanup } = await tempStore();
+  try {
+    const body = "function compute(x, y) { const z = x + y; return z * 2; }";
+    const bodies = new Map<string, { readonly qualifiedName: string; readonly body: string }>([
+      ["n1", { qualifiedName: "mod.a", body }],
+      ["n2", { qualifiedName: "mod.b", body }],
+    ]);
+    const vectors = new Map<string, Float32Array>([
+      ["n1", new Float32Array(8)],
+      ["n2", new Float32Array(4)], // mismatched dims
+    ]);
+    // Pair has vectors but mismatched dims → not cosine-confirmed; provider
+    // active → not MinHash-only either → no edges.
+    const r = computeSimilarTo({
+      store,
+      provider: countingProvider(),
+      config: ENABLED_CONFIG,
+      bodies,
+      vectors,
+    });
+    assert.equal(r.ok, true);
+    if (r.ok) assert.equal(r.edges.length, 0, "mismatched-dims pair must not be cosine-confirmed");
+  } finally {
+    await cleanup();
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Budget bounds provider CALLS, not successful writes — a degraded provider
+// must not bypass the cost cap (chatgpt-codex-connector: 'Count failed embed
+// attempts against the vector budget').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("budget: degraded provider cost is bounded by maxSymbolsPerRun (attempts, not successes)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const src = "function a() { return 1; }\nfunction b() { return 2; }\nfunction c() { return 3; }\nfunction d() { return 4; }";
+    await writeFile(path.join(dir, "a.ts"), src);
+    const ir = makeFileIR("a.ts", [
+      { name: "a", qname: "mod.a", kind: "function", start: 0, end: 24 },
+      { name: "b", qname: "mod.b", kind: "function", start: 25, end: 50 },
+      { name: "c", qname: "mod.c", kind: "function", start: 51, end: 76 },
+      { name: "d", qname: "mod.d", kind: "function", start: 77, end: 102 },
+    ], src);
+    await store.upsertFileBatch([ir]);
+
+    const provider = countingProvider({ failMode: "throw" });
+    const config = resolveSemanticConfig({ enabled: true, maxSymbolsPerRun: 2 });
+    const r = await indexSymbolVectors({ store, provider, repoRoot: dir, config });
+    assert.equal(r.ok, true);
+    // Every embed throws → zero successes, but the provider must NOT be
+    // called for all four nodes. Before the fix, `embedded` never reached
+    // the limit (all throws) so the loop called the provider for every
+    // remaining node, bypassing the per-run cost cap.
+    assert.ok(
+      provider.embedCount <= 2,
+      `degraded provider calls must be bounded by maxSymbolsPerRun, got ${provider.embedCount}`,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// MinHash runs over the extracted BODY only — bodyless declarations
+// (stubs/types with no body) yield no candidates instead of name-driven
+// spurious pairs (chatgpt-codex-connector: 'MinHash only the extracted
+// body text').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("SIMILAR_TO: bodyless declarations yield no MinHash candidates", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const src = "type A = string;\ntype B = number;\ntype C = boolean;";
+    await writeFile(path.join(dir, "t.ts"), src);
+    const ir = makeFileIR("t.ts", [
+      { name: "A", qname: "mod.A", kind: "type", start: 0, end: 16 },
+      { name: "B", qname: "mod.B", kind: "type", start: 17, end: 33 },
+      { name: "C", qname: "mod.C", kind: "type", start: 34, end: 51 },
+    ], src);
+    await store.upsertFileBatch([ir]);
+
+    const r = computeSimilarTo({ store, provider: undefined, config: ENABLED_CONFIG, repoRoot: dir });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.candidates, 0, "bodyless declarations produce no MinHash candidates");
+      assert.equal(r.edges.length, 0, "no SIMILAR_TO edges from bodyless declarations");
+    }
+  } finally {
+    await cleanup();
+  }
 });
 
