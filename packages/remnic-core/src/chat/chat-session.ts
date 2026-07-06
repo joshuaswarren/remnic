@@ -25,7 +25,18 @@ export function chatSessionDir(memoryDir: string): string {
 /**
  * Resolve the transcript file path for a chat session id.
  */
+/**
+ * Validate a chat session id is safe for filesystem use (no path traversal).
+ * Accepts UUIDs and alphanumeric+dash identifiers only (P1 — path safety).
+ */
+export function isSafeChatSessionId(chatSessionId: string): boolean {
+  return /^[A-Za-z0-9]{8,128}$/.test(chatSessionId.replace(/-/g, ""));
+}
+
 export function chatSessionFile(memoryDir: string, chatSessionId: string): string {
+  if (!isSafeChatSessionId(chatSessionId)) {
+    throw new Error("Invalid chat session id");
+  }
   return join(chatSessionDir(memoryDir), `${chatSessionId}.jsonl`);
 }
 
@@ -60,6 +71,11 @@ export async function createChatSession(
       ts: now,
       role: "system" as const,
       content: `Chat session created. Principal: ${opts.principal ?? "default"}. Namespace: ${opts.namespace ?? "default"}. work_task: Excluded from memory extraction`,
+      // Structured binding fields so loadChatSession doesn't need to regex-parse
+      // prose (robust against dotted principals like alice@example.com).
+      ...(opts.principal ? { principal: opts.principal } : {}),
+      ...(opts.namespace ? { namespace: opts.namespace } : {}),
+      ...(opts.sessionKey ? { sessionKey: opts.sessionKey } : {}),
     }) + "\n",
     "utf8",
   );
@@ -89,17 +105,43 @@ export async function loadChatSession(
   let sessionKey: string | undefined;
   let namespace: string | undefined;
   let createdAt = "";
+  let pendingPlanId: string | undefined;
+  let pendingPromotionId: string | undefined;
   for (const line of lines) {
     try {
-      const entry = JSON.parse(line) as ChatTranscriptEntry;
+      const entry = JSON.parse(line) as ChatTranscriptEntry & Record<string, unknown>;
       transcript.push(entry);
       // Extract binding from the system header line.
       if (entry.role === "system" && entry.seq === 0) {
-        const pMatch = entry.content.match(/Principal: ([^.]+)/);
-        if (pMatch) principal = pMatch[1]?.trim() === "default" ? undefined : pMatch[1]?.trim();
-        const nsMatch = entry.content.match(/Namespace: ([^.]+)/);
-        if (nsMatch) namespace = nsMatch[1]?.trim() === "default" ? undefined : nsMatch[1]?.trim();
+        // Prefer structured fields (robust against dotted principals).
+        const metaPrincipal = typeof entry.principal === "string" ? entry.principal : undefined;
+        const metaNamespace = typeof entry.namespace === "string" ? entry.namespace : undefined;
+        const metaSessionKey = typeof entry.sessionKey === "string" ? entry.sessionKey : undefined;
+        if (metaPrincipal) principal = metaPrincipal;
+        else {
+          // Greedy regex fallback for older session files (captures until ". Namespace").
+          const pMatch = entry.content.match(/Principal: (.+?)\.\s/);
+          if (pMatch) principal = pMatch[1]?.trim() === "default" ? undefined : pMatch[1]?.trim();
+        }
+        if (metaNamespace) namespace = metaNamespace;
+        else {
+          const nsMatch = entry.content.match(/Namespace: (.+?)\.\s/);
+          if (nsMatch) namespace = nsMatch[1]?.trim() === "default" ? undefined : nsMatch[1]?.trim();
+        }
+        if (metaSessionKey) sessionKey = metaSessionKey;
         createdAt = entry.ts;
+      }
+      // Scan for pending-plan / pending-promotion markers (append-only state).
+      if (entry.role === "system") {
+        const pm = entry.content.match(/^pending_plan:(.+)$/);
+        if (pm) pendingPlanId = pm[1];
+        const pp = entry.content.match(/^pending_promotion:(.+)$/);
+        if (pp) pendingPromotionId = pp[1];
+        const resolved = entry.content.match(/^(?:plan_applied|plan_cancelled|promotion_applied|promotion_cancelled):(.+)$/);
+        if (resolved) {
+          if (resolved[1] === pendingPlanId) pendingPlanId = undefined;
+          if (resolved[1] === pendingPromotionId) pendingPromotionId = undefined;
+        }
       }
     } catch {
       // Skip malformed lines (rule 54 — atomic appends; partial lines are
@@ -113,6 +155,8 @@ export async function loadChatSession(
     namespace,
     transcript,
     confirmedPlanIds: new Set(),
+    ...(pendingPlanId ? { pendingPlanId } : {}),
+    ...(pendingPromotionId ? { pendingPromotionId } : {}),
     createdAt,
   };
 }
@@ -136,6 +180,63 @@ export async function appendTranscriptEntry(
     "utf8",
   );
   return full;
+}
+
+/**
+ * Append a pending-plan marker so a later turn can confirm the plan
+ * (append-only state — loadChatSession scans for the latest unresolved one).
+ */
+export async function markPendingPlan(
+  memoryDir: string,
+  chatSessionId: string,
+  planId: string,
+): Promise<void> {
+  await appendTranscriptEntry(memoryDir, chatSessionId, {
+    role: "system",
+    content: `pending_plan:${planId}`,
+  });
+}
+
+/**
+ * Append a pending-promotion marker so a later turn can confirm the promotion.
+ */
+export async function markPendingPromotion(
+  memoryDir: string,
+  chatSessionId: string,
+  memoryId: string,
+): Promise<void> {
+  await appendTranscriptEntry(memoryDir, chatSessionId, {
+    role: "system",
+    content: `pending_promotion:${memoryId}`,
+  });
+}
+
+/**
+ * Record that a pending plan was applied or cancelled.
+ */
+export async function markPlanResolved(
+  memoryDir: string,
+  chatSessionId: string,
+  planId: string,
+): Promise<void> {
+  await appendTranscriptEntry(memoryDir, chatSessionId, {
+    role: "system",
+    content: `plan_applied:${planId}`,
+  });
+}
+
+/**
+ * Record that a pending promotion was applied or cancelled.
+ */
+export async function markPromotionResolved(
+  memoryDir: string,
+  chatSessionId: string,
+  memoryId: string,
+): Promise<void> {
+  await appendTranscriptEntry(memoryDir, chatSessionId, {
+    role: "system",
+    content: `promotion_applied:${memoryId}`,
+  });
 }
 
 /**

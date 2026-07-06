@@ -130,6 +130,8 @@ export interface ChatSessionState {
   confirmedPlanIds: Set<string>;
   /** The pending plan awaiting confirmation (if any). */
   pendingPlanId?: string;
+  /** The pending memory-promotion memory id awaiting confirmation (if any). */
+  pendingPromotionId?: string;
   /** Creation timestamp. */
   createdAt: string;
 }

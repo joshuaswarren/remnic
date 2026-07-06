@@ -129,15 +129,17 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
       process.stdout.write("[error] No input provided.\n");
       return;
     }
-    await appendTranscriptEntry(opts.memoryDir, session.id, {
+    const userEntry = await appendTranscriptEntry(opts.memoryDir, session.id, {
       role: "user",
       content: message,
     });
+    session.transcript.push(userEntry);
     const result = await engine.processMessage(message, session);
-    await appendTranscriptEntry(opts.memoryDir, session.id, {
+    const assistantEntry = await appendTranscriptEntry(opts.memoryDir, session.id, {
       role: "assistant",
       content: result.reply,
     });
+    session.transcript.push(assistantEntry);
     process.stdout.write(result.reply + "\n");
     process.stdout.write(`[session: ${session.id}]\n`);
     return;
@@ -166,16 +168,18 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
       return;
     }
 
-    await appendTranscriptEntry(opts.memoryDir, session!.id, {
+    const userEntry = await appendTranscriptEntry(opts.memoryDir, session!.id, {
       role: "user",
       content: message,
     });
+    session!.transcript.push(userEntry);
 
     const result = await engine.processMessage(message, session!);
-    await appendTranscriptEntry(opts.memoryDir, session!.id, {
+    const assistantEntry = await appendTranscriptEntry(opts.memoryDir, session!.id, {
       role: "assistant",
       content: result.reply,
     });
+    session!.transcript.push(assistantEntry);
 
     console.log(`\nassistant> ${result.reply}\n`);
     if (result.pendingPlan) {

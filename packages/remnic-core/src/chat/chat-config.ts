@@ -37,7 +37,7 @@ export function parseChatConfig(
   }
   const obj = raw as Record<string, unknown>;
   return {
-    enabled: obj.enabled === true,
+    enabled: obj.enabled === true || obj.enabled === "true" || obj.enabled === "1",
     model: typeof obj.model === "string" ? obj.model : "",
     maxToolCallsPerTurn:
       typeof obj.maxToolCallsPerTurn === "number" &&

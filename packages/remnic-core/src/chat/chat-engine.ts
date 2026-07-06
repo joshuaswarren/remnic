@@ -134,26 +134,48 @@ export class ChatEngine {
     // confirmation keyword, mark the plan confirmed and apply it directly
     // (bypassing the LLM — deterministic, not LLM-interpreted).
     if (
-      session.pendingPlanId &&
       isConfirmationMessage(userMessage) &&
       this.correctionAvailable
     ) {
-      const planId = session.pendingPlanId;
-      session.confirmedPlanIds.add(planId);
-      session.pendingPlanId = undefined;
-      try {
-        const applyResult = await this.executor.correctionApply(planId);
-        return {
-          reply: `Correction applied.\n\n${applyResult}`,
-          chatSessionId: session.id,
-        };
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return {
-          reply: `[error] Failed to apply correction: ${msg}`,
-          chatSessionId: session.id,
-          error: msg,
-        };
+      // Confirm + apply a pending correction plan.
+      if (session.pendingPlanId) {
+        const planId = session.pendingPlanId;
+        session.confirmedPlanIds.add(planId);
+        session.pendingPlanId = undefined;
+        try {
+          const applyResult = await this.executor.correctionApply(planId);
+          return {
+            reply: `Correction applied.\n\n${applyResult}`,
+            chatSessionId: session.id,
+            ...(session.pendingPromotionId ? {} : {}),
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            reply: `[error] Failed to apply correction: ${msg}`,
+            chatSessionId: session.id,
+            error: msg,
+          };
+        }
+      }
+      // Confirm + apply a pending memory promotion.
+      if (session.pendingPromotionId) {
+        const memoryId = session.pendingPromotionId;
+        session.pendingPromotionId = undefined;
+        try {
+          const promoteResult = await this.executor.memoryPromote(memoryId);
+          return {
+            reply: `Memory promoted.\n\n${promoteResult}`,
+            chatSessionId: session.id,
+          };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return {
+            reply: `[error] Failed to promote memory: ${msg}`,
+            chatSessionId: session.id,
+            error: msg,
+          };
+        }
       }
     }
 
@@ -217,6 +239,10 @@ export class ChatEngine {
         };
       }
 
+      // Push the assistant response content once for this LLM turn (not per
+      // tool call — avoids duplicate assistant messages in the conversation).
+      conversation.push({ role: "assistant", content: response.content });
+
       // Execute each tool call (budget-limited).
       for (const tc of response.toolCalls) {
         if (toolCallCount >= this.maxToolCallsPerTurn) {
@@ -238,7 +264,6 @@ export class ChatEngine {
                 );
                 pendingPlan = { planId: plan.planId, preview: plan.preview };
                 session.pendingPlanId = plan.planId;
-                conversation.push({ role: "assistant", content: response.content });
                 conversation.push({
                   role: "tool",
                   content: JSON.stringify({
@@ -266,6 +291,28 @@ export class ChatEngine {
           }
         }
 
+        // ── memory_promote confirmation (mutating tool) ─────────────────
+        if (tc.name === "memory_promote" && this.correctionAvailable) {
+          const memoryId = typeof tc.arguments.memoryId === "string" ? tc.arguments.memoryId : "";
+          if (!session.pendingPromotionId || session.pendingPromotionId !== memoryId) {
+            session.pendingPromotionId = memoryId;
+            conversation.push({
+              role: "tool",
+              content: JSON.stringify({
+                intercepted: true,
+                message: `Memory promotion requires confirmation. Reply 'apply' to promote memory '${memoryId}'.`,
+              }),
+              toolCallId: tc.id,
+            });
+            return {
+              reply: `I want to promote memory \`${memoryId}\`. Reply **apply** to confirm this promotion, or **cancel** to discard it.`,
+              chatSessionId: session.id,
+            };
+          }
+          // Confirmed — consume the one-time confirmation.
+          session.pendingPromotionId = undefined;
+        }
+
         // ── Execute the tool ───────────────────────────────────────────
         let result: ChatToolResult;
         try {
@@ -276,7 +323,6 @@ export class ChatEngine {
         }
 
         // Feed the tool result back into the conversation.
-        conversation.push({ role: "assistant", content: response.content });
         conversation.push({
           role: "tool",
           content: result.content,

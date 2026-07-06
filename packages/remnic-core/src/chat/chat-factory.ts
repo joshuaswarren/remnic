@@ -18,6 +18,10 @@ import {
   loadChatSession,
   appendTranscriptEntry,
   sessionBelongsToPrincipal,
+  markPendingPlan,
+  markPlanResolved,
+  markPendingPromotion,
+  markPromotionResolved,
 } from "./chat-session.js";
 
 export interface ChatEngineFactoryOptions {
@@ -84,17 +88,10 @@ export async function processChatMessage(opts: {
   if (!opts.service.fallbackLlmRef && !opts.service.localLlmRef) {
     throw new Error("no_llm_available");
   }
-  const engine = createChatEngine({
-    service: opts.service,
-    config: opts.config as ChatConfig,
-    fallbackLlm: opts.service.fallbackLlmRef,
-    localLlm: opts.service.localLlmRef,
-    principal: opts.principal,
-  });
-  if (!engine) {
-    throw new Error("engine_unavailable");
-  }
 
+  // Load or create the session FIRST so the engine inherits the session's
+  // namespace/sessionKey scope (rule 42 — every tool call flows with that
+  // identity; the executor must not use a different scope than the session).
   let session;
   if (opts.chatSessionId) {
     session = await loadChatSession(opts.memoryDir, opts.chatSessionId);
@@ -104,6 +101,19 @@ export async function processChatMessage(opts: {
     }
   } else {
     session = await createChatSession(opts.memoryDir, { principal: opts.principal });
+  }
+
+  const engine = createChatEngine({
+    service: opts.service,
+    config: opts.config as ChatConfig,
+    fallbackLlm: opts.service.fallbackLlmRef,
+    localLlm: opts.service.localLlmRef,
+    principal: opts.principal,
+    ...(session.namespace ? { namespace: session.namespace } : {}),
+    ...(session.sessionKey ? { sessionKey: session.sessionKey } : {}),
+  });
+  if (!engine) {
+    throw new Error("engine_unavailable");
   }
 
   await appendTranscriptEntry(opts.memoryDir, session.id, {
@@ -117,6 +127,17 @@ export async function processChatMessage(opts: {
     role: "assistant",
     content: result.reply,
   });
+
+  // Persist pending-plan/promotion state so a later turn can confirm it
+  // (append-only — loadChatSession scans for the latest unresolved marker).
+  if (result.pendingPlan?.planId) {
+    await markPendingPlan(opts.memoryDir, session.id, result.pendingPlan.planId);
+  } else if (session.pendingPromotionId) {
+    await markPendingPromotion(opts.memoryDir, session.id, session.pendingPromotionId);
+  } else {
+    // Turn resolved any pending state — record the resolution.
+    await markPlanResolved(opts.memoryDir, session.id, "resolved");
+  }
 
   return result;
 }

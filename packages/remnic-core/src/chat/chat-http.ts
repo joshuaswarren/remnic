@@ -27,6 +27,9 @@ import {
   loadChatSession,
   appendTranscriptEntry,
   sessionBelongsToPrincipal,
+  markPendingPlan,
+  markPlanResolved,
+  markPendingPromotion,
 } from "./chat-session.js";
 
 export interface ChatHttpHandlerOptions {
@@ -120,7 +123,21 @@ export async function handleChatMessage(
     content: result.reply,
   });
 
-  respondJson(res, 200, result);
+  // Persist pending-plan/promotion state (append-only markers).
+  if (result.pendingPlan?.planId) {
+    await markPendingPlan(opts.memoryDir, session.id, result.pendingPlan.planId);
+  } else if (session.pendingPromotionId) {
+    await markPendingPromotion(opts.memoryDir, session.id, session.pendingPromotionId);
+  } else {
+    await markPlanResolved(opts.memoryDir, session.id, "resolved");
+  }
+
+  // Strip internal error details from the wire response (CodeQL — no stack
+  // traces or internal messages leak to the client; keep only the tagged reply).
+  const wireResult = result.error
+    ? { reply: result.reply, chatSessionId: result.chatSessionId, ...(result.pendingPlan ? { pendingPlan: result.pendingPlan } : {}) }
+    : result;
+  respondJson(res, 200, wireResult);
 }
 
 /**
