@@ -126,6 +126,20 @@ def validate_manifest(
         elif not isinstance(block, Mapping):
             errors.append(f"{block_key} must be an object (or null when pending)")
 
+    # Nested real-run fields (cursor review): strict mode must also reject a
+    # trained manifest whose eval/artifact object is present but leaves the
+    # load-bearing nested field null — eval.heldOut (the script-produced metric)
+    # and artifact.hfRepo (where the weights published). Without this a
+    # status:"trained" manifest with eval: {heldOut: null} slips past the
+    # top-level object check and undermines the no-half-recorded-run gate.
+    if not allow_pending:
+        eval_block = manifest.get("eval")
+        if isinstance(eval_block, Mapping) and _is_pending(eval_block.get("heldOut")):
+            errors.append("eval.heldOut is pending — a real run must record held-out metrics")
+        artifact_block = manifest.get("artifact")
+        if isinstance(artifact_block, Mapping) and _is_pending(artifact_block.get("hfRepo")):
+            errors.append("artifact.hfRepo is pending — a real run must publish weights")
+
     # Real-run top-level fields (issue #1585): baseModel / hyperparams /
     # trainedAt / hardware must be CONCRETE when allow_pending=False so a
     # reviewer can reproduce the eval. The scaffold leaves them null; a
