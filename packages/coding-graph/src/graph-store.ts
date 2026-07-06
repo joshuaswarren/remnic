@@ -2698,6 +2698,42 @@ export class GraphStore {
       callees: calleeRows.map((r) => r.qualified_name),
     };
   }
+
+  /**
+   * Read callers/callees by node id directly (avoids the qualified-name
+   * ambiguity when duplicate names exist across files). Used by
+   * semantic_query hydration (chatgpt-codex-connector: 'Use the hit node
+   * id when hydrating neighbors').
+   */
+  readNeighborsByNodeId(
+    nodeId: string,
+  ): { readonly callers: readonly string[]; readonly callees: readonly string[] } {
+    if (this.closed) return { callers: [], callees: [] };
+    const callerRows = expectRows<{ qualified_name: string }>(
+      this.db
+        .prepare(
+          `SELECT n.qualified_name FROM edges e
+             JOIN nodes n ON e.src = n.id
+            WHERE e.dst = ? AND e.type = 'CALLS'`,
+        )
+        .all(nodeId),
+      ["qualified_name"],
+    );
+    const calleeRows = expectRows<{ qualified_name: string }>(
+      this.db
+        .prepare(
+          `SELECT n.qualified_name FROM edges e
+             JOIN nodes n ON e.dst = n.id
+            WHERE e.src = ? AND e.type = 'CALLS'`,
+        )
+        .all(nodeId),
+      ["qualified_name"],
+    );
+    return {
+      callers: callerRows.map((r) => r.qualified_name),
+      callees: calleeRows.map((r) => r.qualified_name),
+    };
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────

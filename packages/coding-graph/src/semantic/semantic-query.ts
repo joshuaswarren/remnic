@@ -12,8 +12,7 @@
  * When the provider is available but returns zero hits, `ok:true` with
  * empty hits is the honest answer.
  */
-import { readFile } from "node:fs/promises";
-import path from "node:path";
+
 
 import type { HostEmbeddingProvider } from "@remnic/core/host-embedding-provider";
 import {
@@ -75,13 +74,14 @@ export async function semanticQuery(input: SemanticQueryInput): Promise<Semantic
     raw = await provider.embed(query, { signal, inputType: "query" });
   } catch (error) {
     if (error instanceof EmbeddingTimeoutError) {
-      return { ok: false, code: "provider_timeout", message: String(error) };
+      return { ok: false, code: "provider_timeout" };
     }
     if (error instanceof EmbeddingProviderUnavailableError) {
-      return { ok: false, code: "provider_unavailable", message: String(error) };
+      return { ok: false, code: "provider_unavailable" };
     }
     // Unknown provider error → treat as unavailable (the provider is broken).
-    return { ok: false, code: "provider_unavailable", message: error instanceof Error ? error.message : String(error) };
+    // Do NOT include the raw error message (may leak paths/stacks to clients).
+    return { ok: false, code: "provider_unavailable" };
   }
   const queryVec = normalizeHostEmbeddingVector(raw);
   if (!queryVec || queryVec.length === 0) {
@@ -112,13 +112,13 @@ export async function semanticQuery(input: SemanticQueryInput): Promise<Semantic
   // Hydrate each hit with graph context (callers/callees + snippet).
   const hits: SemanticQueryHit[] = [];
   for (const h of scored) {
-    const neighbors = store.readNeighbors(h.qualifiedName);
+    const neighbors = store.readNeighborsByNodeId(h.nodeId);
     let snippet = "";
     try {
-      const abs = path.resolve(repoRoot, h.filePath);
-      snippet = await readSnippet(abs, 0, 0);
+      const snippetResult = await store.snippetFor({ qualifiedName: h.qualifiedName });
+      if (snippetResult.ok) snippet = snippetResult.text;
     } catch {
-      snippet = "";
+      // snippetFor returns tagged failures, not throws — this is defensive.
     }
     hits.push({
       qualifiedName: h.qualifiedName,
@@ -139,9 +139,3 @@ export async function semanticQuery(input: SemanticQueryInput): Promise<Semantic
  * full source span is available via store.snippetFor; here we just want
  * enough context for the agent to orient.
  */
-async function readSnippet(absolutePath: string, startByte: number, endByte: number): Promise<string> {
-  const bytes = await readFile(absolutePath);
-  const text = bytes.toString("utf8");
-  const lines = text.split(/\r?\n/).slice(0, 20);
-  return lines.join("\n");
-}

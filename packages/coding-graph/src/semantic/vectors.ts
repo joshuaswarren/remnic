@@ -122,8 +122,9 @@ export async function indexSymbolVectors(
     }
     const rawText = bytes.subarray(start, end).toString("utf8");
 
-    // Canonical text + hash (rule 23/37).
-    const { hash } = buildCanonicalTextAndHash({
+    // Canonical text + hash (rule 23/37). The embedded string MUST equal
+    // the hashed string (rule 23 — one form everywhere).
+    const { text: canonicalText, hash } = buildCanonicalTextAndHash({
       symbol: {
         kind: node.kind as never,
         name: node.qualifiedName.split(/[.#:]/).pop() ?? node.qualifiedName,
@@ -141,19 +142,30 @@ export async function indexSymbolVectors(
       continue;
     }
 
-    // Embed via provider.
+    // Embed the CANONICAL text (not the raw span) so the vector
+    // corresponds to the content_hash that gates cache hits (rule 23).
+    // This also respects canonicalBodyLines as a cost/privacy bound.
     let raw: ArrayLike<number> | null;
     try {
-      raw = await provider.embed(rawText, {
+      raw = await provider.embed(canonicalText, {
         signal,
         inputType: "document",
       });
     } catch {
+      // Stale vector cleanup (rule 37): if a prior vector exists with a
+      // different content_hash and we cannot re-embed, delete the stale
+      // row so semantic_query/cosine confirmation do not serve it.
+      if (cachedRow && cachedRow.contentHash !== hash) {
+        store.deleteSymbolVectors([node.nodeId]);
+      }
       skipped += 1;
       continue;
     }
     const vec = normalizeHostEmbeddingVector(raw);
     if (!vec || vec.length === 0) {
+      if (cachedRow && cachedRow.contentHash !== hash) {
+        store.deleteSymbolVectors([node.nodeId]);
+      }
       skipped += 1;
       continue;
     }

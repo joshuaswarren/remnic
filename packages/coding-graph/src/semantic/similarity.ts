@@ -16,6 +16,9 @@
  * Rule 38: the candidate set is a pure function of (seeds, inputs). Two
  * runs over the same fixture produce an identical edge set.
  */
+import { readFileSync as fsReadFileSync } from "node:fs";
+import path from "node:path";
+const fs = { readFileSync: fsReadFileSync };
 import type { GraphStore } from "../graph-store.js";
 import type { EdgeIR } from "../graph-store.js";
 import { buildCanonicalTextAndHash } from "./canonical-text.js";
@@ -39,6 +42,11 @@ export interface SimilarToInput {
   readonly provider: HostEmbeddingProvider | undefined;
   readonly config: SemanticConfig;
   /**
+   * Repo root for reading source text from disk when bodies are not
+   * supplied. Required when bodies is absent.
+   */
+  readonly repoRoot?: string;
+  /**
    * Symbol bodies keyed by nodeId. The caller (the indexer or a
    * standalone pass) reads source text and builds canonical bodies. When
    * absent, the pipeline reads nodes from the store + disk itself.
@@ -59,6 +67,15 @@ export interface SimilarToInput {
 export const CONFIRM_OPERATOR = ">=" as const;
 
 /**
+ * Jaccard gate for MinHash-only SIMILAR_TO edges (no embedding provider).
+ * Well below the cosine similarToThreshold (0.92) because token-Jaccard
+ * for near-clone code is typically 0.3-0.8. 0.5 catches genuine
+ * copy-paste with minor renames while rejecting structurally-similar
+ * but logically-unrelated pairs.
+ */
+export const MINHASH_JACCARD_GATE = 0.5;
+
+/**
  * Compute SIMILAR_TO edges.
  *
  * Returns the edges (for the caller to persist via store.upsertEdges) plus
@@ -74,7 +91,7 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
     return { ok: false, code: "semantic_disabled" };
   }
 
-  const bodies = input.bodies ?? readBodiesFromStore(store);
+  const bodies = input.bodies ?? readBodiesFromStore(store, input.repoRoot);
   const modelId = provider ? modelIdFor(provider) : undefined;
   const vectors = input.vectors ?? (modelId ? readVectorsMap(store, modelId) : new Map<string, Float32Array>());
 
@@ -106,9 +123,12 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
       }
     } else {
       // MinHash-only: no vectors for one or both nodes. Distinct lower
-      // confidence band (documented). The Jaccard estimate gates this so
-      // structurally-similar-but-unrelated pairs do not flood.
-      if (c.jaccard >= config.similarToThreshold) {
+      // confidence band (documented). Use a Jaccard gate well below the
+      // cosine threshold — MinHash Jaccard for near-clones is typically
+      // 0.3-0.8; the cosine 0.92 gate would suppress almost all MinHash
+      // edges. The MINHASH_JACCARD_GATE is the documented floor for
+      // local (no-provider) SIMILAR_TO edges.
+      if (c.jaccard >= MINHASH_JACCARD_GATE) {
         edges.push({
           srcQualifiedName: c.aQualifiedName,
           dstQualifiedName: c.bQualifiedName,
@@ -152,12 +172,25 @@ export function similarEdgesToEdgeIR(edges: readonly SimilarEdge[]): EdgeIR[] {
  * Note: this reads from disk synchronously per node, so callers that
  * already have bodies in memory should pass them via `input.bodies`.
  */
-function readBodiesFromStore(store: GraphStore): Map<string, { readonly qualifiedName: string; readonly body: string }> {
+function readBodiesFromStore(store: GraphStore, repoRoot?: string): Map<string, { readonly qualifiedName: string; readonly body: string }> {
   const out = new Map<string, { readonly qualifiedName: string; readonly body: string }>();
   for (const node of store.readNodesForSemantic()) {
-    // Build a body from the qualified name + kind tokens when disk is not
-    // reachable (the canonical-body text for MinHash only needs the token
-    // stream, not the full source — the indexer path supplies real bodies).
+    let rawText = "";
+    if (repoRoot) {
+      try {
+        const abs = path.resolve(repoRoot, node.filePath);
+        const bytes = fs.readFileSync(abs);
+        const start = Math.max(0, node.startByte);
+        const end = Math.min(bytes.length, node.endByte);
+        if (start <= end) rawText = bytes.subarray(start, end).toString("utf8");
+      } catch {
+        // File not readable — body stays empty, symbol is skipped by MinHasher.
+      }
+    } else {
+      // No repoRoot — fall back to qualified name tokens so the pipeline
+      // still runs (useful for tests that supply bodies explicitly).
+      rawText = node.qualifiedName;
+    }
     const { text } = buildCanonicalTextAndHash({
       symbol: {
         kind: node.kind as never,
@@ -165,7 +198,7 @@ function readBodiesFromStore(store: GraphStore): Map<string, { readonly qualifie
         qualifiedName: node.qualifiedName,
         span: { startByte: node.startByte, endByte: node.endByte },
       },
-      rawText: node.qualifiedName,
+      rawText,
       maxBodyLines: 0,
     });
     out.set(node.nodeId, { qualifiedName: node.qualifiedName, body: text });

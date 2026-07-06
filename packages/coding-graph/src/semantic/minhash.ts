@@ -171,6 +171,11 @@ export class MinHasher {
     if (this.signatures.has(entry.nodeId)) return;
     const tokens = tokenizeForShingling(entry.body);
     const shingles = shingleSet(tokens);
+    // Skip empty bodies — they would all get the same all-max signature
+    // and flood the candidate set with false pairs
+    // (chatgpt-codex-connector: 'Keep empty bodies out of shared MinHash
+    // buckets').
+    if (shingles.size === 0) return;
     const sig = minHashSignature(shingles);
     this.signatures.set(entry.nodeId, sig);
     this.qnames.set(entry.nodeId, entry.qualifiedName);
