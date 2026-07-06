@@ -5715,6 +5715,33 @@ export class EngramAccessService {
     // cross-identity replay can never be silent). `enforceWriteQuota` runs as
     // `beforeExecute` inside the lock — only on a real miss — so a response-lost
     // retry never 429s even when the first attempt filled the window (#1434).
+    //
+    // The fingerprint folds in the EFFECTIVE coding context (#1649 codex P2):
+    // runObserve's scope can be derived from the session's ATTACHED coding
+    // context (which takes PRECEDENCE over per-call cwd/projectTag per
+    // resolveMemoryScopePlan), so neither cwd/projectTag NOR the raw ambient
+    // context alone fully captures the effective scope. The effective context
+    // is computed the SAME way resolveMemoryScopePlan does — session-attached
+    // first, per-call cwd/projectTag fallback — but READ-ONLY: it does NOT seed
+    // the session, so a conflict/quota-rejection path leaves no orphaned binding.
+    // The value is stable across replays because resolveMemoryScopePlan's
+    // seeding writes the IDENTICAL context that resolveCodingContextFromOptions
+    // derives — so getCodingContextForSession returns the same object on the
+    // replay as resolveCodingContextFromOptions returned on the first call.
+    // Only computed when a key is present; non-keyed observes skip the work.
+    const idempotencyKey = request.idempotencyKey?.trim();
+    let effectiveCodingContext: CodingContext | null | undefined;
+    if (idempotencyKey && !(typeof request.namespace === "string" && request.namespace.trim().length > 0)) {
+      // Explicit namespace pins the scope (resolveMemoryScopePlan returns early),
+      // so the coding context is irrelevant — skip it to avoid false conflicts
+      // when the session context changes under a namespace-pinned observe.
+      // resolveCodingContextFromOptions self-gates on projectScope (no scattered
+      // config read here).
+      effectiveCodingContext =
+        (typeof this.orchestrator.getCodingContextForSession === "function"
+          ? this.orchestrator.getCodingContextForSession(request.sessionKey)
+          : null) ?? (await this.resolveCodingContextFromOptions(request));
+    }
     return this.handleIdempotentWrite<EngramAccessObserveResponse>({
       operation: "observe",
       idempotencyKey: request.idempotencyKey,
@@ -5726,6 +5753,7 @@ export class EngramAccessService {
         authenticatedPrincipal: request.authenticatedPrincipal,
         cwd: request.cwd,
         projectTag: request.projectTag,
+        effectiveCodingContext: effectiveCodingContext ?? null,
       },
       beforeExecute: hooks?.enforceWriteQuota,
       execute: () => this.runObserve(request),

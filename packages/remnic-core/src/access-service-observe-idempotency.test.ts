@@ -237,3 +237,72 @@ test("#1649 review fix: the same idempotencyKey under a different principal is a
     rmSync(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("#1649 review fix: rebinding the session's ambient coding context makes the same key a conflict", async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-ambient-scope-"));
+  try {
+    const probe = makeObserveProbe(memoryDir);
+    const service = new EngramAccessService(probe.orch);
+    const key = "observe-batch-ambient-scope-#5";
+    const req = observeRequest({ idempotencyKey: key });
+
+    // No explicit namespace/cwd/projectTag and no ambient context yet — the
+    // scope resolves to the default store. This caches the response.
+    await service.observe(req);
+    assert.equal(probe.extractionCalls.length, 1, "first observe ingests once");
+
+    // The session is now rebound to a coding project by an external caller
+    // (e.g. a memory_store with cwd, or a direct setCodingContextForSession).
+    // The resolved writeNamespace changed, so reusing the same key + same body
+    // must NOT silently replay — it is a conflict.
+    probe.contexts.set(req.sessionKey, {
+      projectId: "tag:remnic",
+      branch: null,
+      rootPath: "/projects/remnic",
+      defaultBranch: null,
+    });
+
+    await assert.rejects(
+      service.observe(req),
+      (err: unknown) =>
+        err instanceof EngramAccessInputError &&
+        /idempotencyKey reuse conflict/.test(err.message),
+      "key reuse after ambient scope rebind must throw a conflict, not silently replay",
+    );
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#1649 review fix: projectTag observe replays correctly despite scope resolution side effects", async () => {
+  // The fingerprint folds in the RESOLVED writeNamespace (not the raw ambient
+  // context). resolveMemoryScopePlan seeds the session context from projectTag
+  // on the first call; the replay reads the SAME seeded context and resolves the
+  // SAME writeNamespace. This proves the fingerprint is stable across replays
+  // even though the scope resolution mutates session state on the first call.
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-tag-replay-"));
+  try {
+    const probe = makeObserveProbe(memoryDir);
+    const service = new EngramAccessService(probe.orch);
+    const key = "observe-batch-tag-replay-#6";
+    const req = observeRequest({ idempotencyKey: key, projectTag: "remnic" });
+
+    const first = await service.observe(req);
+    assert.equal(first.idempotencyReplay, undefined, "first attempt is a real ingest");
+
+    // The first observe's resolveMemoryScopePlan seeded a coding context for
+    // this session. Verify it was actually set (the side effect we depend on).
+    assert.ok(
+      probe.contexts.get(req.sessionKey),
+      "first observe seeded a coding context via resolveMemoryScopePlan",
+    );
+
+    // Retry with the same key + same body + same projectTag — the pre-resolved
+    // writeNamespace matches because the seeded context produces the same scope.
+    const replay = await service.observe(req);
+    assert.equal(replay.idempotencyReplay, true, "projectTag observe replays despite scope-resolution side effects");
+    assert.equal(probe.extractionCalls.length, 1, "replay did not re-ingest");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
