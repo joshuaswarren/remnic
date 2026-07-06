@@ -16,6 +16,7 @@ import { TIER_1_LANGUAGES, type CodingGraphLanguage, type FileIR } from "@remnic
 import { createCodingGraphEngine } from "./engine.js";
 import { FIXTURES } from "./fixtures.js";
 import { hashContent } from "./emit.js";
+import { hashContent as hashContentFromReindex } from "../reindex.js";
 import { sniffLanguage } from "./language-sniff.js";
 import { WasmTreeSitterBackend } from "./parser-backend.js";
 
@@ -762,6 +763,101 @@ test("kotlin-imports: qualified import path not split into segments", async () =
   }
 
   await engine.dispose();
+});
+
+// ---------------------------------------------------------------------------
+// 2f. Round-5 review-thread fixes (#1551 PR2 — PR #1652).
+//   - Rust impl methods get parent qualification (thread OdKT0 / OdLZF)
+//   - Member-receiver routes: this.router.get(...) (thread OdKTz)
+//   - Dispose drains in-flight parses before backend teardown (thread OdLZE)
+//   - Duplicate SHA-256 removed from reindex.ts (thread OdLZH)
+// ---------------------------------------------------------------------------
+
+test("rust-impl-parent: impl methods get struct-qualified name", async () => {
+  const engine = createCodingGraphEngine();
+  const fixture = FIXTURES.rust; // has: impl Config { pub fn new() -> Self { ... } }
+  const result = await engine.parseFile({
+    path: fixture.path,
+    content: Buffer.from(fixture.code, "utf-8"),
+  });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  // The impl method `new` should be qualified as `Config.new`, not bare `new`.
+  const newMethod = result.ir.symbols.find((s) => s.name === "new");
+  assert.ok(newMethod, "Rust: impl method 'new' must exist");
+  assert.equal(
+    newMethod!.parentQualifiedName,
+    "Config",
+    `Rust: new should have parentQualifiedName 'Config', got: ${newMethod!.parentQualifiedName}`,
+  );
+  assert.equal(
+    newMethod!.qualifiedName,
+    "Config.new",
+    `Rust: new should have qualifiedName 'Config.new', got: ${newMethod!.qualifiedName}`,
+  );
+
+  // Free function `add` should NOT have a parent (it's not inside an impl).
+  const add = result.ir.symbols.find((s) => s.name === "add");
+  assert.ok(add, "Rust: free function 'add' must exist");
+  assert.equal(add!.parentQualifiedName, undefined, "Rust: add should not have a parent");
+
+  await engine.dispose();
+});
+
+test("member-routes: this.router.get(...) produces a route", async () => {
+  const engine = createCodingGraphEngine();
+  const fixture = FIXTURES.typescript; // has: this.router.get('/', () => {});
+  const result = await engine.parseFile({
+    path: fixture.path,
+    content: Buffer.from(fixture.code, "utf-8"),
+  });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+
+  const routes = result.ir.routes;
+  assert.ok(
+    routes.some((r) => r.verb === "GET" && r.pathTemplate === "/"),
+    `TS: expected GET / route from this.router.get(...), got: ${JSON.stringify(routes)}`,
+  );
+
+  await engine.dispose();
+});
+
+test("dispose-race: concurrent dispose and parse activity is safe", async () => {
+  const engine = createCodingGraphEngine();
+  const fixture = FIXTURES.typescript;
+
+  // Fire concurrent parses and a dispose in the same synchronous tick.
+  // dispose() sets disposed=true and awaits parseChain; the queued parses
+  // re-check disposed after acquiring the chain and reject cleanly.
+  const parse1 = engine.parseFile({
+    path: fixture.path,
+    content: Buffer.from(fixture.code, "utf-8"),
+  });
+  const parse2 = engine.parseFile({
+    path: fixture.path,
+    content: Buffer.from(fixture.code, "utf-8"),
+  });
+  const disposePromise = engine.dispose();
+
+  // All three must resolve without throwing — no unhandled rejection,
+  // no use-after-free on the backend's shared parser instance.
+  await Promise.all([parse1, parse2, disposePromise]);
+
+  // After dispose completes, new parses must fail.
+  const afterDispose = await engine.parseFile({
+    path: fixture.path,
+    content: Buffer.from(fixture.code, "utf-8"),
+  });
+  assert.equal(afterDispose.ok, false, "disposed engine should reject new parses");
+});
+
+test("hash-dedup: reindex.ts re-exports the single emit.ts hashContent", () => {
+  // Verify the re-export path works — both point to the same implementation
+  // in emit.ts (single hashing contract, rule 23).
+  const data = new TextEncoder().encode("hello world");
+  assert.equal(hashContentFromReindex(data), hashContent(data), "reindex.ts hashContent must match emit.ts hashContent");
 });
 
 // ---------------------------------------------------------------------------

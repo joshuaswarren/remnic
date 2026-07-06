@@ -62,6 +62,17 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
       release = resolve;
     });
     await previous;
+    // Re-check disposed: another caller may have disposed the engine
+    // while we were waiting for the previous parse to finish.
+    if (this.disposed) {
+      release();
+      return {
+        ok: false,
+        code: "parse_failed",
+        path: input.path,
+        message: "engine has been disposed",
+      };
+    }
     try {
       return await this.doParseFile(input);
     } finally {
@@ -145,6 +156,10 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    // Wait for any in-flight parse to finish before tearing down the
+    // backend. Without this, a parseFile call that already passed the
+    // disposed guard can touch freed parser/grammar state.
+    await this.parseChain;
     await this.backend.dispose();
   }
 }

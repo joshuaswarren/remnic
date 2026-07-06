@@ -105,11 +105,25 @@ function extractSymbols(root: TSNode, language: Language, lang: CodingGraphLangu
       });
     }
 
-    rawDefs.sort((a, b) => a.startByte - b.startByte || a.name.localeCompare(b.name));
+    // Deduplicate: a function_item inside an impl block matches both the
+    // general function_item pattern and the impl-scoped method pattern.
+    // Keep the method version (which carries the receiver type for parent
+    // qualification). Same startByte+endByte+name guarantees it's the same
+    // AST node matched by two query patterns, not two distinct definitions.
+    const seen = new Map<string, RawDef>();
+    for (const def of rawDefs) {
+      const key = `${def.startByte}:${def.endByte}:${def.name}`;
+      const existing = seen.get(key);
+      if (!existing || (def.receiverType && !existing.receiverType)) {
+        seen.set(key, def);
+      }
+    }
+    const deduped = [...seen.values()];
+    deduped.sort((a, b) => a.startByte - b.startByte || a.name.localeCompare(b.name));
 
     const stack: RawDef[] = [];
     const symbols: SymbolIR[] = [];
-    for (const def of rawDefs) {
+    for (const def of deduped) {
       while (stack.length > 0 && stack[stack.length - 1].endByte <= def.startByte) {
         stack.pop();
       }

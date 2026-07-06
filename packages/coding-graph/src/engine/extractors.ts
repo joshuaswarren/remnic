@@ -120,21 +120,24 @@ const JS_CALLS = `
 `.trim();
 
 const JS_ROUTES = `
+; The HTTP app/router object can be a bare identifier (app.get) or a
+; member expression (this.router.get, app.router.get). Using (_) matches
+; both without restricting to one shape.
 (call_expression
   function: (member_expression
-    object: (identifier) @__route.app
+    object: (_) @__route.app
     property: (property_identifier) @route.verb)
   arguments: (arguments . (string (string_fragment) @route.path) . (arrow_function) @route.handler)
   (#match? @route.verb "^(get|post|put|patch|delete|head|options|all|use)$"))
 (call_expression
   function: (member_expression
-    object: (identifier) @__route.app
+    object: (_) @__route.app
     property: (property_identifier) @route.verb)
   arguments: (arguments . (string (string_fragment) @route.path) . (function_expression) @route.handler)
   (#match? @route.verb "^(get|post|put|patch|delete|head|options|all|use)$"))
 (call_expression
   function: (member_expression
-    object: (identifier) @__route.app
+    object: (_) @__route.app
     property: (property_identifier) @route.verb)
   arguments: (arguments . (string (string_fragment) @route.path) . (identifier) @route.handler)
   (#match? @route.verb "^(get|post|put|patch|delete|head|options|all|use)$"))
@@ -234,6 +237,20 @@ const RUST_EXTRACTOR: LanguageExtractor = {
 (trait_item name: (type_identifier) @name) @def.interface
 (type_item name: (type_identifier) @name) @def.type
 (mod_item name: (identifier) @name) @def.module
+
+; Rust impl methods — the impl block sits outside the struct's byte span,
+; so byte-span nesting cannot compute the parent struct. Capture the impl
+; type_identifier so extractSymbols can prefix qualified names (Config.new).
+; These also match functions caught by the general patterns above;
+; extractSymbols deduplicates by node identity (startByte+endByte+name).
+(impl_item
+  type: (type_identifier) @__receiver.type
+  body: (declaration_list
+    (function_item name: (identifier) @name))) @def.method
+(impl_item
+  type: (type_identifier) @__receiver.type
+  body: (declaration_list
+    (function_signature_item name: (identifier) @name))) @def.method
 `.trim(),
   importsQuery: `
 (use_declaration (scoped_identifier) @import.module) @__import.stmt
