@@ -355,3 +355,26 @@ test("no readable namespaces → explicit error", async () => {
     );
   });
 });
+
+test("Ug8: path-traversal planId is rejected before building the plan-file path", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map(),
+      llmResult: { classification: "outdated", confidence: 0.5, actions: [], relevance: [], warnings: [] },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const planner = new CorrectionPlanner(makeDeps(dir, state));
+    // `../../meta` must NOT let path.join escape state/corrections/pending and
+    // delete arbitrary .json files under the storage root.
+    for (const bad of ["../../meta", "../sibling", "a/b", "a\\b", ".", "..", ".hidden"]) {
+      await assert.rejects(planner.loadPlan("default", bad), /Invalid plan id/);
+      await assert.rejects(planner.markConsumed("default", bad, "discarded"), /Invalid plan id/);
+      await assert.rejects(planner.deletePlan("default", bad), /Invalid plan id/);
+    }
+    // A canonical corr-... id is accepted (it returns null/not-found without throwing).
+    const ok = await planner.loadPlan("default", "corr-abc-123");
+    assert.equal(ok, null);
+  });
+});

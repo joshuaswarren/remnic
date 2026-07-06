@@ -41,8 +41,12 @@ interface FakeState {
   auditRecords: Array<{ planId: string; outcome: CorrectionOutcome }>;
   replacementFailOnLoserId?: string;
   retireFailOnMemoryId?: string;
+  /** When set, appendTombstone throws for this source memory (PG9 test). */
+  tombstoneFailOnMemoryId?: string;
   propagateFails?: boolean;
   propagateCalls: number;
+  /** Number of times retireMemory was invoked (PG9 ordering test). */
+  retireCalls?: number;
   writtenReplacements: Array<{ namespace: string; content: string; supersedes?: string }>;
 }
 
@@ -113,6 +117,7 @@ function makeExecutorDeps(state: FakeState, opts: { biTemporalEnabled?: boolean;
       if (state.retireFailOnMemoryId === memoryId) {
         throw new Error(`injected retire failure for ${memoryId}`);
       }
+      state.retireCalls = (state.retireCalls ?? 0) + 1;
       const m = state.memories.get(memoryId);
       if (!m) throw new Error(`memory not found for retire: ${memoryId}`);
       state.memories.set(memoryId, {
@@ -130,6 +135,9 @@ function makeExecutorDeps(state: FakeState, opts: { biTemporalEnabled?: boolean;
       return `rescoped-${memoryId}`;
     },
     appendTombstone: async (_ns, input) => {
+      if (state.tombstoneFailOnMemoryId && state.tombstoneFailOnMemoryId === input.sourceMemoryId) {
+        throw new Error(`injected tombstone failure for ${input.sourceMemoryId}`);
+      }
       state.tombstones.push(input);
       return `tomb-${state.tombstones.length}`;
     },
@@ -558,5 +566,44 @@ test("rescope action moves the memory and tags it applied", async () => {
     assert.equal(outcome.status, "applied");
     const result = outcome.results.find((r) => r.action.kind === "rescope");
     assert.equal(result!.status, "applied");
+  });
+});
+
+test("PG9: tombstone failure does NOT retire the source memory (write tombstone before retire)", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-old", { memoryId: "mem-old", path: "facts/mem-old.md", content: "we use MySQL", excerpt: "we use MySQL", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([["mem-old", fakeMemory({ memoryId: "mem-old", content: "we use MySQL" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+      // Inject a tombstone-store failure for the retracted memory.
+      tombstoneFailOnMemoryId: "mem-old",
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "retract", memoryId: "mem-old" }],
+        relevance: [{ memoryId: "mem-old", why: "retracted" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "we use MySQL", targetIds: ["mem-old"] }, ["default"]);
+    const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
+    const outcome = await executor.apply("default", plan.planId, { confirm: true });
+    // The action must be reported failed (the tombstone write threw).
+    const result = outcome.results.find((r) => r.action.kind === "retract");
+    assert.equal(result!.status, "failed");
+    // CRITICAL (PG9): retireMemory must NOT have run — the source stays active
+    // so a retry operates on un-mutated state with no resurrection window.
+    assert.equal(state.retireCalls ?? 0, 0, "retireMemory must not run when appendTombstone fails");
+    assert.equal(state.memories.get("mem-old")!.status, "active", "source memory stays active");
   });
 });
