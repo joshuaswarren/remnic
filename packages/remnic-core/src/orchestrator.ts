@@ -2785,15 +2785,19 @@ export class Orchestrator {
       const existing = all.find((m) => {
         if (m.frontmatter.category !== "fact") return false;
         if ((m.frontmatter.status ?? "active") !== "active") return false;
-        // Same-entity guard: when an entityRef is provided, only consider
-        // facts whose normalized entity matches. Without this, a shared-
-        // namespace backfill could patch an unrelated entity'\''s copy that
-        // happens to share the same content hash.
-        if (incomingEntityNorm) {
-          if (!m.frontmatter.entityRef) return false;
-          if (normalizeSupersessionKey(m.frontmatter.entityRef) !== incomingEntityNorm) {
-            return false;
-          }
+        // Same-entity guard: reject only when the stored fact carries a
+        // DIFFERENT entity (two entities can share identical fact text, so
+        // patching the other entity's copy would corrupt its bounds — codex
+        // P2 PRRT_OvB4A). Legacy facts written before entity linkage (no
+        // entityRef) have no entity to conflict with, so they stay eligible
+        // for backfill (cursor PRRT_OvKnV: the guard must NOT silently
+        // no-op for older promoted copies that predate entity linkage).
+        if (
+          incomingEntityNorm &&
+          m.frontmatter.entityRef &&
+          normalizeSupersessionKey(m.frontmatter.entityRef) !== incomingEntityNorm
+        ) {
+          return false;
         }
         // Prefer the stored contentHash (what the hash index actually keys
         // on) — it is computed from contentHashSource (the raw/enriched
@@ -15142,6 +15146,15 @@ export class Orchestrator {
         writeCategory === "procedure"
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : canonicalContentForHash;
+      // Importance is scored before the dedup short-circuit so #1671 backfill
+      // can gate on it (cursor PRRT_OvKnS): a low-value duplicate that the
+      // importance write-gate (#372) or the judge pre-filter would drop must
+      // not expire an active fact.
+      const importance = scoreImportance(
+        fact.content,
+        writeCategory,
+        fact.tags,
+      );
       let exactDuplicate = false;
       try {
         exactDuplicate = await this.hasContentHashDedup(
@@ -15174,7 +15187,11 @@ export class Orchestrator {
             !this.config.extractionJudgeShadow &&
             judgeVerdict !== undefined &&
             !judgeVerdict.durable;
+          // Importance gate (cursor PRRT_OvKnS): below-threshold duplicates
+          // would never persist (#372) and carry no judge verdict (the
+          // pre-filter skips them), so they must not expire an active fact.
           if (
+            isAboveImportanceThreshold(importance.level, this.config.extractionMinImportanceLevel) &&
             !faithfulnessWouldPending &&
             !requireSpansWouldPending &&
             !judgeWouldGate
@@ -15197,14 +15214,6 @@ export class Orchestrator {
         dedupedCount++;
         continue;
       }
-
-      // Score importance using local heuristics (Phase 1B).
-      // writeCategory / targetStorage already reflect routing.
-      const importance = scoreImportance(
-        fact.content,
-        writeCategory,
-        fact.tags,
-      );
 
       if (writeCategory === "procedure" && this.config.procedural?.enabled !== true) {
         log.debug("persistExtraction: skip procedure memory (procedural.enabled is false)");
