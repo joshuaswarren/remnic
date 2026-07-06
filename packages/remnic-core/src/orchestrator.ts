@@ -20034,12 +20034,14 @@ export class Orchestrator {
   private storageDirNamespace(storageDir: string): string {
     // #1521: delegates to the scope-module resolver. The inline dir→namespace
     // derivation (token round-trip guard, catalog hints) is retired so the
-    // adHocNamespaceResolutions ratchet no longer counts this site.
-    this.loadNamespaceStorageDirHintsFromCatalog();
+    // adHocNamespaceResolutions ratchet no longer counts this site. Hints are
+    // loaded lazily via the callback (only after early returns, matching the
+    // original behavior — codex P2).
     return resolveNamespaceFromStorageDir(storageDir, {
       config: this.config,
       configuredNamespaces: this.configuredNamespaceList(),
       hints: this.namespaceStorageDirHints,
+      loadHints: () => this.loadNamespaceStorageDirHintsFromCatalog(),
     });
   }
 

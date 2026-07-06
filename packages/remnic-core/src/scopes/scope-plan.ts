@@ -374,6 +374,13 @@ export interface ResolveNamespaceFromStorageDirOptions {
    * catalog-discovered). May be `undefined` when no catalog hints are loaded.
    */
   readonly hints?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+  /**
+   * Lazy catalog-hint loader. Called ONLY after the early returns (disabled,
+   * memory root, no namespace segment, configured namespace) — matching the
+   * original lazy behavior so an eager load does not mark hints as loaded
+   * before the catalog file exists (codex P2).
+   */
+  readonly loadHints?: () => void;
 }
 
 /**
@@ -402,6 +409,10 @@ export function resolveNamespaceFromStorageDir(
   if (options.configuredNamespaces.includes(dirName)) {
     return dirName;
   }
+  // Load catalog hints ONLY after the early returns (codex P2: an eager load
+  // before the catalog file exists would mark hints as loaded and skip later
+  // catalog-derived rows).
+  options.loadHints?.();
   const hints = options.hints;
   const hintedNamespaces = hints?.get(resolvedStorageDir);
   if (hintedNamespaces?.has(dirName)) {
