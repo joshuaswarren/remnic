@@ -23,7 +23,7 @@ import {
   buildChatGptMemoryInspectorActionRequest,
   buildChatGptMemoryInspectorResult,
 } from "./mcp-memory-inspector-app.js";
-import { listPairs } from "./contradiction/contradiction-review.js";
+import { listPairs, isDefaultReviewNamespace } from "./contradiction/contradiction-review.js";
 import { executeResolution, isValidResolutionVerb } from "./contradiction/resolution.js";
 import { runContradictionScan } from "./contradiction/contradiction-scan.js";
 import { runGraphEdgeDecayMaintenanceAcrossNamespaces } from "./maintenance/graph-edge-decay.js";
@@ -156,7 +156,7 @@ defineOperation({ name: "memory_timeline", description: "Memory timeline.", sche
 defineOperation({ name: "suggestion_submit", description: "Submit suggestion.", schema: strictSchema({ schemaVersion: S.num, idempotencyKey: S.str, dryRun: S.bool, sessionKey: S.str, content: S.str, category: S.str, confidence: S.num, namespace: S.str, tags: S.strArr, entityRef: S.str, ttl: S.str, sourceReason: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.suggestionSubmit({ schemaVersion: optNum(input.schemaVersion), idempotencyKey: optStr(input.idempotencyKey), dryRun: input.dryRun === true, sessionKey: optStr(input.sessionKey), authenticatedPrincipal: ctx.authenticatedPrincipal, content: optStr(input.content) ?? "", category: optStr(input.category), confidence: optNum(input.confidence), namespace: optStr(input.namespace), tags: optStrArr(input.tags), entityRef: optStr(input.entityRef), ttl: optStr(input.ttl), sourceReason: optStr(input.sourceReason), cwd: optStr(input.cwd), projectTag: optStr(input.projectTag) }) }) });
 defineOperation({ name: "entity_get", description: "Get entity.", schema: strictSchema({ name: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.entityGet(optStr(input.name) ?? "", optStr(input.namespace)) }) });
 defineOperation({ name: "review_queue_list", description: "List review queue.", schema: strictSchema({ runId: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.reviewQueue(optStr(input.runId) ?? "", optStr(input.namespace), ctx.authenticatedPrincipal) }) });
-defineOperation({ name: "observe", description: "Observe messages.", schema: strictSchema({ sessionKey: S.str, messages: z.array(z.object({ role: z.string(), content: z.string(), parts: z.array(z.unknown()).optional(), rawContent: z.string().optional(), sourceFormat: z.string().optional() }).passthrough()), skipExtraction: S.bool, idempotencyKey: S.str, namespace: S.str, cwd: S.str, projectTag: S.str }),
+defineOperation({ name: "observe", description: "Observe messages.", schema: strictSchema({ sessionKey: S.str, messages: z.array(z.object({ role: z.string(), content: z.string(), parts: z.array(z.unknown()).optional(), rawContent: z.unknown().optional(), sourceFormat: z.string().optional() }).passthrough()), skipExtraction: S.bool, idempotencyKey: S.str, namespace: S.str, cwd: S.str, projectTag: S.str }),
   handler: async (input, ctx) => ({ result: await ctx.service.observe({ sessionKey: defStr(input.sessionKey, ""), messages: (input.messages as unknown[]).map((m: unknown) => { const r = m as Record<string, unknown>; return { role: String(r.role), content: String(r.content), parts: r.parts as unknown[], rawContent: r.rawContent as string | undefined, sourceFormat: r.sourceFormat as string | undefined }; }) as never, skipExtraction: input.skipExtraction === true, idempotencyKey: optStr(input.idempotencyKey), namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal, cwd: optStr(input.cwd), projectTag: optStr(input.projectTag) }, ctx.hooks?.enforceWriteQuota ? { enforceWriteQuota: ctx.hooks.enforceWriteQuota } : undefined) }),
 });
 defineOperation({ name: "lcm_search", description: "Search LCM.", schema: strictSchema({ query: S.str, sessionKey: S.str, sessionPrefix: S.str, namespace: S.str, limit: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.lcmSearch({ query: defStr(input.query, ""), sessionKey: optStr(input.sessionKey), sessionPrefix: optStr(input.sessionPrefix), namespace: optStr(input.namespace), limit: optNum(input.limit), authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
@@ -213,7 +213,6 @@ defineOperation({ name: "review_list", description: "List review pairs.", schema
     const ns = optStr(input.namespace);
     const resolved = await ctx.service.getReadableStorageForNamespace(ns, ctx.authenticatedPrincipal);
     const rn = ctx.service.configRef.namespacesEnabled ? resolved.namespace : undefined;
-    const { isDefaultReviewNamespace } = await import("./contradiction/contradiction-review.js");
     const iun = Boolean(rn && isDefaultReviewNamespace(ctx.service.configRef.defaultNamespace, ns, rn));
     return { result: await listPairs(ctx.service.memoryDir, { filter: rf as "all" | "unresolved" | "contradicts" | "independent" | "duplicates" | "needs-user", namespace: rn, includeUnscopedForNamespace: iun, limit: optNum(input.limit) ?? 50 }) };
   },
