@@ -624,7 +624,7 @@ test("zero recall result limit (topK:0) records no catalog read touches", async 
   }
 });
 
-// ── Round 7 (codex P2 — NBsFz): `namespaceFromStorageDir` decodes ONLY a genuine
+// ── Round 7 (codex P2 — NBsFz): `storageDirNamespace` decodes ONLY a genuine
 // tokenized dir — one whose decoded identity round-trips back to the exact dir
 // name via `namespaceIdentityToken`. A `ns-...`-shaped dir name that does NOT
 // round-trip is treated as a literal raw name and returned verbatim, so a
@@ -632,7 +632,7 @@ test("zero recall result limit (topK:0) records no catalog read touches", async 
 // identity by the catalog write touch. (Regression guard for the round-trip
 // containment; the inherent same-bytes ambiguity of a raw name that is ALSO a
 // canonical token is resolved at the call site by passing the known namespace.)
-test("namespaceFromStorageDir preserves a token-shaped literal raw namespace name", async () => {
+test("storageDirNamespace preserves a token-shaped literal raw namespace name", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-from-dir-"));
   try {
     const config = parseConfig({
@@ -656,7 +656,7 @@ test("namespaceFromStorageDir preserves a token-shaped literal raw namespace nam
     const literal = "ns-deadbee"; // odd-length hex after the prefix → not decodable
     const rawDir = path.join(memoryDir, "namespaces", literal);
     assert.equal(
-      orchestrator.namespaceFromStorageDir(rawDir),
+      orchestrator.storageDirNamespace(rawDir),
       literal,
       "a token-shaped but non-canonical raw name must be preserved verbatim, not mangled",
     );
@@ -665,7 +665,7 @@ test("namespaceFromStorageDir preserves a token-shaped literal raw namespace nam
     const realNs = "team-pi-project-origin-abc123";
     const tokenDir = path.join(memoryDir, "namespaces", tokenize(realNs));
     assert.equal(
-      orchestrator.namespaceFromStorageDir(tokenDir),
+      orchestrator.storageDirNamespace(tokenDir),
       realNs,
       "a genuine tokenized dir must still decode to its namespace identity",
     );
@@ -679,7 +679,7 @@ test("namespaceFromStorageDir preserves a token-shaped literal raw namespace nam
 // the token of "alpha") served from its legacy raw root would decode to "alpha".
 // A dir name that is itself a KNOWN (configured) namespace must take precedence
 // over decoding, so routing (contradiction/QMD ownership) uses the literal name.
-test("namespaceFromStorageDir preserves a CONFIGURED namespace named like a canonical token (NRCve)", async () => {
+test("storageDirNamespace preserves a CONFIGURED namespace named like a canonical token (NRCve)", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-token-config-"));
   try {
     // Mirrors `namespaceIdentityToken`: ns-<lowercase hex of UTF-8>.
@@ -697,7 +697,7 @@ test("namespaceFromStorageDir preserves a CONFIGURED namespace named like a cano
     });
     const orchestrator = new Orchestrator(config) as any;
     assert.equal(
-      orchestrator.namespaceFromStorageDir(path.join(memoryDir, "namespaces", literalTokenName)),
+      orchestrator.storageDirNamespace(path.join(memoryDir, "namespaces", literalTokenName)),
       literalTokenName,
       "a configured namespace named like a canonical token must resolve to the literal name, not its decoded identity",
     );
@@ -714,7 +714,7 @@ test("namespaceFromStorageDir preserves a CONFIGURED namespace named like a cano
     });
     const otherOrch = new Orchestrator(otherConfig) as any;
     assert.equal(
-      otherOrch.namespaceFromStorageDir(path.join(memoryDir, "namespaces", tokenize("beta"))),
+      otherOrch.storageDirNamespace(path.join(memoryDir, "namespaces", tokenize("beta"))),
       "beta",
       "an unconfigured genuine tokenized dir still decodes to its identity",
     );
@@ -723,7 +723,7 @@ test("namespaceFromStorageDir preserves a CONFIGURED namespace named like a cano
   }
 });
 
-test("namespaceFromStorageDir preserves a CATALOGED dynamic namespace named like a canonical token", async () => {
+test("storageDirNamespace preserves a CATALOGED dynamic namespace named like a canonical token", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-token-catalog-"));
   try {
     const tokenize = (name: string) => `ns-${Buffer.from(name, "utf8").toString("hex")}`;
@@ -748,13 +748,13 @@ test("namespaceFromStorageDir preserves a CATALOGED dynamic namespace named like
 
     const freshOrchestrator = new Orchestrator(config) as any;
     assert.equal(
-      freshOrchestrator.namespaceFromStorageDir(rawDir),
+      freshOrchestrator.storageDirNamespace(rawDir),
       literalTokenName,
       "a cataloged dynamic namespace named like a canonical token must resolve to the literal name, not its decoded identity",
     );
 
     assert.equal(
-      freshOrchestrator.namespaceFromStorageDir(path.join(memoryDir, "namespaces", tokenize("beta"))),
+      freshOrchestrator.storageDirNamespace(path.join(memoryDir, "namespaces", tokenize("beta"))),
       "beta",
       "an uncataloged genuine tokenized dir still decodes to its identity",
     );
@@ -763,7 +763,7 @@ test("namespaceFromStorageDir preserves a CATALOGED dynamic namespace named like
   }
 });
 
-test("namespaceFromStorageDir ignores catalog hints whose storageDir belongs to another namespace", async () => {
+test("storageDirNamespace ignores catalog hints whose storageDir belongs to another namespace", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-hint-owner-"));
   try {
     const tokenize = (name: string) => `ns-${Buffer.from(name, "utf8").toString("hex")}`;
@@ -799,7 +799,7 @@ test("namespaceFromStorageDir ignores catalog hints whose storageDir belongs to 
     const freshOrchestrator = new Orchestrator(config) as any;
 
     assert.equal(
-      freshOrchestrator.namespaceFromStorageDir(betaRoot),
+      freshOrchestrator.storageDirNamespace(betaRoot),
       "beta",
       "a catalog row for alpha must not claim beta's tokenized storage root",
     );
@@ -808,7 +808,7 @@ test("namespaceFromStorageDir ignores catalog hints whose storageDir belongs to 
   }
 });
 
-test("namespaceFromStorageDir compacts catalog hints before choosing token-root owner", async () => {
+test("storageDirNamespace compacts catalog hints before choosing token-root owner", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-ns-hint-compact-"));
   try {
     const tokenize = (name: string) => `ns-${Buffer.from(name, "utf8").toString("hex")}`;
@@ -861,7 +861,7 @@ test("namespaceFromStorageDir compacts catalog hints before choosing token-root 
     const freshOrchestrator = new Orchestrator(config) as any;
 
     assert.equal(
-      freshOrchestrator.namespaceFromStorageDir(alphaRoot),
+      freshOrchestrator.storageDirNamespace(alphaRoot),
       "alpha",
       "configured namespace alpha must own its tokenized root over a stale literal ns-* alias",
     );

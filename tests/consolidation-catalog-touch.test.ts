@@ -181,7 +181,7 @@ test("summarization records the catalog write touch after source memories are ar
         keyEntities: ["entity"],
       }),
     };
-    orchestrator.namespaceFromStorageDir = () => config.defaultNamespace;
+    orchestrator.storageDirNamespace = () => config.defaultNamespace;
     // #1522: the catalog touch now fires at the storage chokepoint via the
     // StorageManager's onCatalogWrite hook. Simulate that on the mock storage
     // so the test verifies the touch fires during the storage writes.
