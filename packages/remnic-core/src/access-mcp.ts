@@ -1162,6 +1162,7 @@ export class EngramMcpServer {
                 "Optional idempotency key (issue #1649). Deduplicates a retried observe POST server-side so the batch is ingested once even when the HTTP response is lost. Reusing the key with a different payload is rejected.",
             },
             namespace: { type: "string" },
+            skipExtraction: { type: "boolean" },
             cwd: { type: "string", description: "Working directory for auto git-context resolution." },
             projectTag: { type: "string", description: "Project tag for non-git project scoping (e.g. 'blend-supply')." },
           },

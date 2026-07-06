@@ -184,3 +184,56 @@ test("#1649 reusing an idempotencyKey with a divergent payload is rejected as a 
     rmSync(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("#1649 review fix: enforceWriteQuota runs only on a cache miss, never on a replay", async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-quota-hook-"));
+  try {
+    const probe = makeObserveProbe(memoryDir);
+    const service = new EngramAccessService(probe.orch);
+    const key = "observe-batch-pi-geek-abc123-#3";
+    let quotaChecks = 0;
+    const enforceWriteQuota = () => {
+      quotaChecks += 1;
+    };
+
+    await service.observe(observeRequest({ idempotencyKey: key }), { enforceWriteQuota });
+    assert.equal(quotaChecks, 1, "quota is enforced exactly once on the real ingest");
+
+    const replay = await service.observe(observeRequest({ idempotencyKey: key }), { enforceWriteQuota });
+    assert.equal(replay.idempotencyReplay, true, "second call is a replay");
+    assert.equal(quotaChecks, 1, "quota is NOT re-checked on a replay (response-lost retry must not 429)");
+    assert.equal(probe.extractionCalls.length, 1, "replay did not re-ingest");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#1649 review fix: the same idempotencyKey under a different principal is a conflict, not a silent replay", async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-principal-conflict-"));
+  try {
+    const probe = makeObserveProbe(memoryDir);
+    const service = new EngramAccessService(probe.orch);
+    const key = "observe-batch-shared-key-#4";
+
+    // Principal alice ingests under the key.
+    await service.observe(
+      observeRequest({ idempotencyKey: key, authenticatedPrincipal: "alice" }),
+    );
+
+    // A different principal reusing the same key + same body must NOT replay
+    // alice's cached response — the fingerprint folds in authenticatedPrincipal,
+    // so this is a conflict (defends against cross-identity replay when the
+    // principal is supplied out-of-band via HTTP/MCP auth).
+    await assert.rejects(
+      service.observe(
+        observeRequest({ idempotencyKey: key, authenticatedPrincipal: "bob" }),
+      ),
+      (err: unknown) =>
+        err instanceof EngramAccessInputError &&
+        /idempotencyKey reuse conflict/.test(err.message),
+      "cross-principal key reuse must throw a conflict",
+    );
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});

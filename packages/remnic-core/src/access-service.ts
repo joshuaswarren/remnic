@@ -5704,12 +5704,17 @@ export class EngramAccessService {
     return shapeMemorySummary(memory, baseDir, disclosure, rawExcerpts);
   }
 
-  async observe(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
+  async observe(
+    request: EngramAccessObserveRequest,
+    hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+  ): Promise<EngramAccessObserveResponse> {
     // Issue #1649: dedup retried observe POSTs server-side. A retry with the
     // same `idempotencyKey` replays the cached response and skips every side
-    // effect (LCM/extraction/objective-state); divergent payload reuse is a
-    // conflict (same contract as memory_store). Validation + effects live in
-    // `runObserve`, reached only on a cache miss.
+    // effect (LCM/extraction/objective-state); divergent payload OR principal
+    // reuse is a conflict (fingerprint folds in authenticatedPrincipal, so a
+    // cross-identity replay can never be silent). `enforceWriteQuota` runs as
+    // `beforeExecute` inside the lock — only on a real miss — so a response-lost
+    // retry never 429s even when the first attempt filled the window (#1434).
     return this.handleIdempotentWrite<EngramAccessObserveResponse>({
       operation: "observe",
       idempotencyKey: request.idempotencyKey,
@@ -5718,9 +5723,11 @@ export class EngramAccessService {
         messages: request.messages,
         namespace: request.namespace,
         skipExtraction: request.skipExtraction,
+        authenticatedPrincipal: request.authenticatedPrincipal,
         cwd: request.cwd,
         projectTag: request.projectTag,
       },
+      beforeExecute: hooks?.enforceWriteQuota,
       execute: () => this.runObserve(request),
     });
   }
