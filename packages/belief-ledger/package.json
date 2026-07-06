@@ -1,6 +1,6 @@
 {
   "name": "@remnic/belief-ledger",
-  "version": "9.3.715",
+  "version": "9.3.716",
   "description": "Belief and prediction ledger library built on Remnic memory primitives",
   "type": "module",
   "main": "dist/index.js",
@@ -28,7 +28,7 @@
     "provenance": true
   },
   "peerDependencies": {
-    "@remnic/core": "^9.3.715"
+    "@remnic/core": "^9.3.716"
   },
   "devDependencies": {
     "@remnic/core": "workspace:*",
