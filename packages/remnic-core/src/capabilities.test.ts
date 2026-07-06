@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
-import { resolveCapabilities, type CapabilitySet } from "./capabilities.js";
+import {
+  resolveCapabilities,
+  resolveAccessSetupCapabilities,
+  type CapabilitySet,
+  type AccessSetupCapabilitySet,
+} from "./capabilities.js";
 
 /**
  * Characterization tests for the recall-operation CapabilitySet (issue #1523).
@@ -31,6 +36,10 @@ const FIELD_TO_FLAG: Record<keyof CapabilitySet, string> = {
   graphRecall: "graphRecallEnabled",
   graphAssistInFullMode: "graphAssistInFullModeEnabled",
   graphExpandedIntent: "graphExpandedIntentEnabled",
+  // Issue #1566 Cluster C: mixed-operation flags.
+  rerank: "rerankEnabled",
+  harmonicRetrieval: "harmonicRetrievalEnabled",
+  parallelRetrieval: "parallelRetrievalEnabled",
 };
 
 const FIELDS = Object.keys(FIELD_TO_FLAG) as Array<keyof CapabilitySet>;

@@ -7290,8 +7290,8 @@ export class Orchestrator {
     const timings: Record<string, string> = {};
     const profileTraceId = this.profiler.startTrace("recall", sessionKey, {
       qmdEnabled: this.config.qmdEnabled,
-      rerankEnabled: this.config.rerankEnabled,
-      parallelRetrieval: this.config.parallelRetrievalEnabled,
+      rerankEnabled: caps.rerank,
+      parallelRetrieval: caps.parallelRetrieval,
     });
     this.profiler.startSpan("planning", profileTraceId);
     let profileTraceClosed = false;
@@ -8769,10 +8769,10 @@ export class Orchestrator {
       (async (): Promise<string | null> => {
         const t0 = Date.now();
         if (
-          !this.config.harmonicRetrievalEnabled ||
+          !caps.harmonicRetrieval ||
           !this.isRecallSectionEnabled(
             "harmonic-retrieval",
-            this.config.harmonicRetrievalEnabled === true,
+            caps.harmonicRetrieval,
           )
         ) {
           recordRecallSectionMetric({
@@ -9337,7 +9337,7 @@ export class Orchestrator {
           [ParallelSearchResult[], ParallelSearchResult[]]
         > | null =
           !queryAwarePrefilterIsEmpty &&
-          this.config.parallelRetrievalEnabled && maxPerAgent > 0
+          caps.parallelRetrieval && maxPerAgent > 0
             ? Promise.all([
                 shouldRunAgent("direct", retrievalQuery, 0)
                   ? Promise.all(
@@ -9426,7 +9426,7 @@ export class Orchestrator {
               : 0;
           let augmentedResults = filteredResults;
           let maxSpecializedScore = 0;
-          if (this.config.parallelRetrievalEnabled && specializedAgentPromise) {
+          if (caps.parallelRetrieval && specializedAgentPromise) {
             try {
               const [directResults, temporalResults] =
                 await specializedAgentPromise;
@@ -11072,7 +11072,7 @@ export class Orchestrator {
       );
 
       // Optional LLM reranking (default off). Fail-open if rerank fails/slow.
-      if (this.config.rerankEnabled && this.config.rerankProvider === "local") {
+      if (caps.rerank && this.config.rerankProvider === "local") {
         const ranked = await rerankLocalOrNoop({
           query: retrievalQuery,
           candidates: memoryResults
@@ -11104,7 +11104,7 @@ export class Orchestrator {
           memoryResults = reordered;
         }
       }
-      if (this.config.rerankEnabled && this.config.rerankProvider === "cloud") {
+      if (caps.rerank && this.config.rerankProvider === "cloud") {
         log.debug(
           "rerankProvider=cloud is reserved/experimental in v2.2.0; skipping rerank",
         );
@@ -16221,6 +16221,7 @@ export class Orchestrator {
     storage: StorageManager,
     persistedIds: string[],
   ): Promise<void> {
+    const caps = resolveCapabilities(this.config); // #1566 Cluster C
     // Build temporal/tag indexes whenever either consumer is enabled:
     // - queryAwareIndexingEnabled: uses indexes for query-aware prefiltering in recall
     // - parallelRetrievalEnabled: temporal agent reads index_time.json for date-range lookup
@@ -16228,7 +16229,7 @@ export class Orchestrator {
     // produce an empty temporal index, leaving the temporal agent with no data to work from.
     if (
       !this.config.queryAwareIndexingEnabled &&
-      !this.config.parallelRetrievalEnabled
+      !caps.parallelRetrieval
     )
       return;
     // Check for missing indexes BEFORE the early-return so first-time enablement
@@ -19298,7 +19299,7 @@ export class Orchestrator {
       log.debug("cold-tier recall boost skipped: shared assembly deadline already expired");
     }
 
-    if (this.config.rerankEnabled && this.config.rerankProvider === "local") {
+    if (caps.rerank && this.config.rerankProvider === "local") {
       const ranked = await rerankLocalOrNoop({
         query: options.prompt,
         candidates: results
@@ -19329,7 +19330,7 @@ export class Orchestrator {
         results = reordered;
       }
     }
-    if (this.config.rerankEnabled && this.config.rerankProvider === "cloud") {
+    if (caps.rerank && this.config.rerankProvider === "cloud") {
       log.debug(
         "rerankProvider=cloud is reserved/experimental in v2.2.0; skipping rerank",
       );
