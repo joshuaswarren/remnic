@@ -104,7 +104,7 @@ export interface ExecutorDeps {
    * namespace is re-authorized by the service before the executor runs; the
    * implementation performs the move atomically (write-then-unlink).
    */
-  rescopeMemory(namespace: string, memoryId: string, toNamespace: string): Promise<void>;
+  rescopeMemory(namespace: string, memoryId: string, toNamespace: string): Promise<string>;
   /**
    * Append a tombstone (#1579) for a retired memory. Returns the tombstone
    * id, or null if tombstones are disabled (off = pre-feature behavior).
@@ -309,9 +309,16 @@ export class CorrectionExecutor {
             });
             continue;
           }
-          await this.deps.rescopeMemory(namespace, action.memoryId, action.toNamespace);
+          const destId = await this.deps.rescopeMemory(namespace, action.memoryId, action.toNamespace);
           results.push({ action, status: "applied", memoryId: action.memoryId });
           appliedTouched.push(action.memoryId);
+          // Propagate the destination memory in its namespace too (review
+          // thread: propagate-rescoped-destination) — best-effort.
+          try {
+            await this.deps.propagate(action.toNamespace, [destId]);
+          } catch {
+            // non-fatal — the source propagation still fires.
+          }
         } catch (err) {
           results.push({ action, status: "failed", error: errMsg(err) });
         }

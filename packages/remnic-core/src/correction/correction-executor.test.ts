@@ -127,6 +127,7 @@ function makeExecutorDeps(state: FakeState, opts: { biTemporalEnabled?: boolean;
       if (!m) throw new Error(`memory not found for rescope: ${memoryId}`);
       // Fake: just flip status to track the move.
       state.memories.set(memoryId, { ...m, status: "rescoped" });
+      return `rescoped-${memoryId}`;
     },
     appendTombstone: async (_ns, input) => {
       state.tombstones.push(input);

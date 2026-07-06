@@ -406,28 +406,52 @@ async function rescopeMemoryFn(
   namespace: string,
   memoryId: string,
   toNamespace: string,
-): Promise<void> {
+): Promise<string> {
   // The destination namespace is re-authorized by the service before the
   // executor runs; here we perform the move atomically (write-then-unlink).
   const sourceStorage = await wiring.orchestrator.getStorage(namespace);
   const memory = await sourceStorage.getMemoryById(memoryId);
   if (!memory) throw new CorrectionContractError(`memory not found for rescope: ${memoryId}`);
   const destStorage = await wiring.orchestrator.getStorage(toNamespace);
-  await destStorage.writeMemory(
-    memory.frontmatter.category,
-    memory.content,
-    {
-      source: `correction:rescope:${namespace}`,
-      confidence: memory.frontmatter.confidence,
-      tags: memory.frontmatter.tags,
-      ...(memory.frontmatter.entityRef ? { entityRef: memory.frontmatter.entityRef } : {}),
-    },
-  );
-  // Unlink the source by archiving (non-destructive — rule 25).
-  await sourceStorage.writeMemoryFrontmatter(memory, {
-    status: "archived",
-    archivedAt: new Date().toISOString(),
+  const fm = memory.frontmatter;
+  // Forward ALL frontmatter metadata so dedupe/supersession/temporal behavior
+  // is preserved (review thread: preserve-frontmatter-metadata-rescope).
+  const destId = await destStorage.writeMemory(fm.category, memory.content, {
+    source: `correction:rescope:${namespace}`,
+    ...(typeof fm.confidence === "number" ? { confidence: fm.confidence } : {}),
+    ...(Array.isArray(fm.tags) ? { tags: fm.tags } : {}),
+    ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
+    ...(fm.structuredAttributes ? { structuredAttributes: fm.structuredAttributes } : {}),
+    ...(fm.valid_at ? { validAt: fm.valid_at } : {}),
+    ...(fm.observedAt ? { observedAt: fm.observedAt } : {}),
+    ...(fm.memoryKind ? { memoryKind: fm.memoryKind } : {}),
+    ...(Array.isArray(fm.links) ? { links: fm.links } : {}),
+    ...(fm.intentGoal ? { intentGoal: fm.intentGoal } : {}),
   });
+  // Unlink the source by archiving (non-destructive — rule 25). If the archive
+  // fails AFTER the destination write succeeded, compensate by archiving the
+  // destination too so no duplicate ACTIVE fact remains, then re-throw so the
+  // executor records the action as failed (review: rescope-duplicates-on-fail).
+  try {
+    await sourceStorage.writeMemoryFrontmatter(memory, {
+      status: "archived",
+      archivedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    try {
+      const destMem = await destStorage.getMemoryById(destId);
+      if (destMem) {
+        await destStorage.writeMemoryFrontmatter(destMem, {
+          status: "archived",
+          archivedAt: new Date().toISOString(),
+        });
+      }
+    } catch {
+      // best-effort compensation
+    }
+    throw err;
+  }
+  return destId;
 }
 
 async function appendTombstoneFn(
@@ -590,6 +614,13 @@ export function isCorrectionFeatureEnabled(config: PluginConfig): boolean {
 
 /** Read a boolean correction flag from the loosely-typed config (ratchet-safe). */
 function readCorrectionFlag(config: PluginConfig, key: string, fallback: boolean): boolean {
+  // Nested shape wins: config.correction.<key> (review thread: nested-correction-settings).
+  const nested = (config as unknown as Record<string, unknown>).correction as
+    | Record<string, unknown>
+    | undefined;
+  if (nested && typeof nested[key] === "boolean") return nested[key] as boolean;
+  if (nested && typeof nested[key] === "string") return (nested[key] as string) === "true" || (nested[key] as string) === "1";
+  // Flat legacy shape: config.correction<Key>.
   const raw = (config as unknown as Record<string, unknown>)[`correction${capitalize(key)}`];
   if (typeof raw === "boolean") return raw;
   if (typeof raw === "string") return raw === "true" || raw === "1";
@@ -598,6 +629,18 @@ function readCorrectionFlag(config: PluginConfig, key: string, fallback: boolean
 
 /** Read a numeric correction value from the loosely-typed config (ratchet-safe). */
 function readCorrectionNumber(config: PluginConfig, key: string, fallback: number): number {
+  // Nested shape wins: config.correction.<key> (review thread: nested-correction-settings).
+  const nested = (config as unknown as Record<string, unknown>).correction as
+    | Record<string, unknown>
+    | undefined;
+  if (nested) {
+    const nv = nested[key];
+    if (typeof nv === "number" && Number.isFinite(nv)) return nv;
+    if (typeof nv === "string") {
+      const nn = Number(nv);
+      if (Number.isFinite(nn)) return nn;
+    }
+  }
   const raw = (config as unknown as Record<string, unknown>)[`correction${capitalize(key)}`];
   if (typeof raw === "number" && Number.isFinite(raw)) return raw;
   if (typeof raw === "string") {

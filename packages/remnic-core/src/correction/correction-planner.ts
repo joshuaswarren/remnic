@@ -150,6 +150,12 @@ export class CorrectionPlanner {
       throw new CorrectionContractError("CorrectionRequest.text too long.");
     }
 
+    if (cleaned.targetIds && cleaned.targetIds.length > this.deps.maxAffected) {
+      throw new CorrectionContractError(
+        `Correction target list (${cleaned.targetIds.length}) exceeds maxAffected (${this.deps.maxAffected}) — narrow the target set.`,
+      );
+    }
+
     const namespaces = readableNamespaces;
     if (namespaces.length === 0) {
       throw new CorrectionContractError(
@@ -184,7 +190,7 @@ export class CorrectionPlanner {
       }
     }
 
-    // 3. Map actions → affected entries (only memories the planner located).
+// 3. Map actions → affected entries (only memories the planner located).
     const affected = this.deriveAffected(located.candidates, llm);
 
     // Bulk guard (§39): refuse past maxAffected without silent truncation.
@@ -203,6 +209,29 @@ export class CorrectionPlanner {
       throw new CorrectionContractError(
         `Correction touches ${touchedCount} memories, exceeding the maxAffected limit of ${this.deps.maxAffected}. Narrow the correction text or supply explicit targetIds.`,
       );
+    }
+
+    // Defense in depth (review thread: reject-actions-outside-candidates):
+    // an LLM that hallucinates or is prompt-injected must never target a
+    // memory the planner did not locate. NOW that the bulk guard has had its
+    // chance to reject over-limit plans, drop actions whose target ID is
+    // absent from the candidate set and warn.
+    const candidateIds = new Set(located.candidates.map((c) => c.memoryId));
+    if (llm.actions.length > 0 && candidateIds.size > 0) {
+      const filtered = llm.actions.filter((action) => {
+        const id =
+          action.kind === "supersede"
+            ? action.loserId
+            : action.kind === "edit" || action.kind === "retract" || action.kind === "rescope"
+              ? action.memoryId
+              : null;
+        return id === null || candidateIds.has(id);
+      });
+      if (filtered.length < llm.actions.length) {
+        const dropped = llm.actions.length - filtered.length;
+        llm.warnings = [...llm.warnings, `${dropped} action(s) targeted memories outside the located candidate set and were dropped (prompt-injection guard).`];
+        llm.actions = filtered;
+      }
     }
 
     // 4. RENDER DIFF
