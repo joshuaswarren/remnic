@@ -2582,7 +2582,9 @@ export class EngramAccessHttpServer {
         ) ||
         (
           toolName === "engram.memory_correct_apply" ||
-          toolName === "remnic.memory_correct_apply"
+          toolName === "remnic.memory_correct_apply" ||
+          toolName === "engram.memory_correct_plan" ||
+          toolName === "remnic.memory_correct_plan"
         ) ||
         codingDecisionWrite ||
         codingArchitectureWrite ||

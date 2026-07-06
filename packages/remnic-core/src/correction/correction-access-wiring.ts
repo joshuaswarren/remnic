@@ -24,6 +24,7 @@ import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { Orchestrator } from "../orchestrator.js";
 import type { MemoryFile, MemoryStatus, PluginConfig } from "../types.js";
+import { stripAttributesSuffix } from "../structured-attributes.js";
 import {
   CorrectionContractError,
   validateCorrectionAction,
@@ -151,20 +152,54 @@ async function searchMemories(
   namespaces: readonly string[],
   limit: number,
 ): Promise<PlannerCandidate[]> {
-  const out: PlannerCandidate[] = [];
+  // Tokenized keyword search (review thread OgIql): natural-language
+  // corrections describe the new truth, not quote the old memory verbatim
+  // ("we migrated from Postgres to MySQL" vs a memory saying "Postgres is
+  // the database"). The old 32-char exact-prefix substring missed these.
+  // We tokenize the correction into keywords, score each active memory by
+  // keyword overlap, and return memories above a minimum threshold. This is
+  // deliberately lightweight (no embedding/QMD dependency) — the planner's
+  // job is to LOCATE candidates for the LLM classify+draft, not to rank with
+  // the full recall pipeline.
+  const tokens = tokenize(text);
+  if (tokens.length === 0) return [];
+  const scored: Array<{ m: MemoryFile; ns: string; score: number }> = [];
   for (const ns of namespaces) {
     const storage = await wiring.orchestrator.getStorage(ns);
     const all = await storage.readAllMemories();
-    const q = text.toLowerCase();
     for (const m of all) {
       if (m.frontmatter.status && m.frontmatter.status !== "active") continue;
       const hay = `${m.content} ${m.frontmatter.tags?.join(" ") ?? ""}`.toLowerCase();
-      if (!hay.includes(q.slice(0, Math.min(32, q.length)))) continue;
-      out.push(toCandidate(m, ns, 1 - out.length * 0.01));
-      if (out.length >= limit) return out;
+      let hits = 0;
+      for (const tok of tokens) {
+        if (hay.includes(tok)) hits++;
+      }
+      if (hits === 0) continue;
+      // Overlap ratio: how many query tokens the memory covers.
+      scored.push({ m, ns, score: hits / tokens.length });
     }
   }
-  return out;
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit).map((s, i) => toCandidate(s.m, s.ns, s.score - i * 0.01));
+}
+
+/** Tokenize correction text into lowercase search keywords (OgIql). */
+function tokenize(text: string): string[] {
+  const STOP = new Set([
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "to", "of", "in", "on", "at", "by", "for", "with", "from", "into",
+    "and", "or", "but", "not", "no", "yes", "this", "that", "these",
+    "those", "it", "its", "we", "you", "i", "he", "she", "they", "them",
+    "our", "your", "my", "his", "her", "their", "as", "so", "if", "then",
+    "than", "too", "very", "can", "will", "just", "should", "now", "has",
+    "have", "had", "do", "does", "did", "about", "which", "what", "who",
+    "when", "where", "why", "how", "all", "each", "every", "both", "few",
+    "more", "most", "other", "some", "such", "only", "own", "same", "up",
+  ]);
+  const raw = text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  const out = raw.filter((w) => w.length >= 3 && !STOP.has(w));
+  // De-dup while preserving order.
+  return [...new Set(out)];
 }
 
 async function resolveTargetMemories(
@@ -438,9 +473,15 @@ async function rescopeMemoryFn(
   if (!memory) throw new CorrectionContractError(`memory not found for rescope: ${memoryId}`);
   const destStorage = await wiring.orchestrator.getStorage(toNamespace);
   const fm = memory.frontmatter;
-  // Forward ALL frontmatter metadata so dedupe/supersession/temporal behavior
-  // is preserved (review thread: preserve-frontmatter-metadata-rescope).
-  const destId = await destStorage.writeMemory(fm.category, memory.content, {
+  // Strip the `[Attributes: …]` suffix writeMemory appended to the source body
+  // (review thread Of0p6): we forward `structuredAttributes` separately, so
+  // writeMemory will re-append the suffix on the destination. Without this
+  // strip the destination would carry the suffix TWICE, producing duplicated
+  // attribute text and a different content hash/index entry.
+  const destContent = fm.structuredAttributes
+    ? stripAttributesSuffix(memory.content)
+    : memory.content;
+  const destId = await destStorage.writeMemory(fm.category, destContent, {
     source: `correction:rescope:${namespace}`,
     ...(typeof fm.confidence === "number" ? { confidence: fm.confidence } : {}),
     ...(Array.isArray(fm.tags) ? { tags: fm.tags } : {}),
@@ -490,9 +531,19 @@ async function appendTombstoneFn(
   },
 ): Promise<string | null> {
   const storage = await wiring.orchestrator.getStorage(namespace);
-  // storage.appendTombstone is the public tombstone API (#1579). It returns
-  // null when tombstones are disabled (off = pre-feature behavior).
-  return storage.appendTombstone({
+  // storage.appendTombstone returns null for TWO reasons: tombstones disabled
+  // (off = pre-feature behavior) OR a swallowed store error (it catches I/O
+  // failures and returns null — review thread OgIqp). The executor writes the
+  // tombstone BEFORE retiring the source (PG9), so when tombstones are
+  // enabled a null return means persistence failed and the retire must NOT
+  // proceed (no tombstone → resurrection window). Distinguish the two cases
+  // via the public isTombstonesEnabled() accessor; when disabled, null is the
+  // expected pre-feature return and the action may still succeed.
+  const enabled =
+    typeof storage.isTombstonesEnabled === "function"
+      ? storage.isTombstonesEnabled()
+      : true;
+  const result = await storage.appendTombstone({
     reason: input.reason,
     createdBy: "user_correction",
     sourceMemoryId: input.sourceMemoryId,
@@ -500,6 +551,12 @@ async function appendTombstoneFn(
     ...(input.entityRef ? { entityRef: input.entityRef } : {}),
     ...(input.supersessionKey ? { supersessionKey: input.supersessionKey } : {}),
   });
+  if (result === null && enabled) {
+    throw new CorrectionContractError(
+      `tombstone persistence failed for memory ${input.sourceMemoryId} (tombstones enabled but store returned null — I/O error swallowed)`,
+    );
+  }
+  return result;
 }
 
 async function registerRedactionRuleFn(

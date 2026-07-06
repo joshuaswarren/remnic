@@ -3185,6 +3185,16 @@ export class StorageManager {
   }
 
   /**
+   * Whether tombstones are enabled on this storage. Callers that need to
+   * distinguish "tombstones disabled" (null return is expected) from
+   * "persistence failed" (appendTombstone swallows store errors and also
+   * returns null) use this to fail closed when enabled (#1580 review OgIqp).
+   */
+  isTombstonesEnabled(): boolean {
+    return this.tombstonesConfig.enabled;
+  }
+
+  /**
    * Append a tombstone for a retired memory (issue #1579 emitters).
    * Best-effort: a tombstone append failure MUST NOT fail the supersession /
    * correction that triggered it (gotcha #13 / rule 34). The memory is

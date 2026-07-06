@@ -607,3 +607,136 @@ test("PG9: tombstone failure does NOT retire the source memory (write tombstone 
     assert.equal(state.memories.get("mem-old")!.status, "active", "source memory stays active");
   });
 });
+
+test("Of0pz: supersede with a missing loser writes NO replacement (preflight before write)", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-gone", { memoryId: "mem-gone", path: "facts/mem-gone.md", content: "stale", excerpt: "stale", score: 1 }],
+    ]);
+    const state: FakeState = {
+      // The loser is absent from the executor's memory store (deleted between
+      // plan and apply). The preflight must reject before writeReplacement.
+      memories: new Map(),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-gone", replacement: { content: "new fact" } }],
+        relevance: [{ memoryId: "mem-gone", why: "stale" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "stale", targetIds: ["mem-gone"] }, ["default"]);
+    const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
+    const outcome = await executor.apply("default", plan.planId, { confirm: true });
+    // The supersede action must be failed (loser not found), and NO replacement
+    // must have been written — no orphan fact that supersedes nothing.
+    const result = outcome.results.find((r) => r.action.kind === "supersede");
+    assert.ok(result, "supersede result must be present");
+    assert.equal(result!.status, "failed");
+    assert.ok(result!.error!.includes("not found"), "error must mention not-found loser");
+    assert.equal(state.writtenReplacements.length, 0, "no replacement written for a missing loser");
+    assert.equal(state.tombstones.length, 0, "no tombstone for a preflight-rejected supersede");
+  });
+});
+
+test("OgIqp: tombstone dep throw (wiring null→throw when enabled) → source NOT retired", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-x", { memoryId: "mem-x", path: "facts/mem-x.md", content: "wrong", excerpt: "wrong", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([["mem-x", fakeMemory({ memoryId: "mem-x", content: "wrong" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+      // The wiring converts enabled+null into a throw (OgIqp). The executor
+      // sees this as a tombstone-dep throw, which retireAndTombstone catches
+      // BEFORE retireMemory runs (PG9 ordering). This test covers the failure
+      // CLASS: tombstone persistence failure → source stays active.
+      tombstoneFailOnMemoryId: "mem-x",
+    };
+    const plannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "wrong",
+        confidence: 0.9,
+        actions: [{ kind: "retract", memoryId: "mem-x" }],
+        relevance: [{ memoryId: "mem-x", why: "wrong" }],
+        warnings: [],
+      }),
+    };
+    const planner = new CorrectionPlanner(plannerDeps);
+    const plan = await planner.plan({ text: "wrong", targetIds: ["mem-x"] }, ["default"]);
+    const executor = new CorrectionExecutor(makeExecutorDeps(state), planner);
+    const outcome = await executor.apply("default", plan.planId, { confirm: true });
+    const result = outcome.results.find((r) => r.action.kind === "retract");
+    assert.equal(result!.status, "failed", "retract must fail when tombstone persistence fails");
+    assert.equal(state.retireCalls ?? 0, 0, "source must NOT be retired without a tombstone");
+    assert.equal(state.memories.get("mem-x")!.status, "active", "source stays active");
+  });
+});
+
+test("OgIqt: plan marked `applying` before mutations; markConsumed failure leaves it non-retryable", async () => {
+  await withTempDir(async (dir) => {
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-x", { memoryId: "mem-x", path: "facts/mem-x.md", content: "wrong", excerpt: "wrong", score: 1 }],
+    ]);
+    const state: FakeState = {
+      memories: new Map([["mem-x", fakeMemory({ memoryId: "mem-x", content: "wrong" })]]),
+      tombstones: [],
+      redactionRules: [],
+      auditRecords: [],
+      propagateCalls: 0,
+      writtenReplacements: [],
+    };
+    const basePlannerDeps: PlannerDeps = {
+      ...makePlannerDeps(dir, candidates),
+      classifyAndDraft: async () => ({
+        classification: "wrong",
+        confidence: 0.9,
+        actions: [{ kind: "retract", memoryId: "mem-x" }],
+        relevance: [{ memoryId: "mem-x", why: "wrong" }],
+        warnings: [],
+      }),
+    };
+    const realPlanner = new CorrectionPlanner(basePlannerDeps);
+    const plan = await realPlanner.plan({ text: "wrong", targetIds: ["mem-x"] }, ["default"]);
+    // Override markConsumed: let the optimistic "applying" mark succeed (it
+    // runs before mutations), but make the FINAL mark (applied/partial) throw
+    // — simulating a transient rename/IO error after mutations complete.
+    const originalMarkConsumed = realPlanner.markConsumed.bind(realPlanner);
+    realPlanner.markConsumed = async (ns, pid, status) => {
+      if (status === "applying") return originalMarkConsumed(ns, pid, status);
+      throw new Error("injected markConsumed failure (transient rename error)");
+    };
+    const executor = new CorrectionExecutor(makeExecutorDeps(state), realPlanner);
+    const outcome = await executor.apply("default", plan.planId, { confirm: true });
+    // The corrections DID apply (phases 1-4 succeeded) — the retract ran.
+    assert.equal(state.retireCalls ?? 0, 1, "mutations ran despite markConsumed failure");
+    assert.equal(state.tombstones.length, 1, "tombstone was emitted");
+    // But the outcome carries a warning about the mark-consumed failure.
+    const warnings = (outcome as CorrectionOutcome & { warnings?: string[] }).warnings ?? [];
+    assert.ok(warnings.some((w) => w.includes("mark-consumed")), "warning must mention mark-consumed failure");
+    // CRITICAL (OgIqt): the plan is NOT retryable. It was marked `applying`
+    // before mutations, so a second apply is rejected (not re-run).
+    const reloaded = await realPlanner.loadPlan("default", plan.planId);
+    assert.ok(reloaded, "plan must still be loadable");
+    assert.equal(reloaded!.status, "applying", "plan must be `applying`, NOT `pending`");
+    await assert.rejects(
+      executor.apply("default", plan.planId, { confirm: true }),
+      /in progress/,
+      "second apply must be rejected — plan is non-retryable after mutations",
+    );
+  });
+});

@@ -435,7 +435,7 @@ export class CorrectionPlanner {
     return plans;
   }
 
-  async markConsumed(namespace: string, planId: string, status: "applied" | "discarded" | "partial"): Promise<void> {
+  async markConsumed(namespace: string, planId: string, status: "applying" | "applied" | "discarded" | "partial"): Promise<void> {
     assertSafePlanId(planId);
     const file = path.join(await this.pendingDir(namespace), `${planId}.json`);
     await serializeMutations(`correction-plan:${file}`, async () => {

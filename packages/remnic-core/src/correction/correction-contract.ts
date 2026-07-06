@@ -90,6 +90,18 @@ export interface MemoryDraft {
   structuredAttributes?: Record<string, string>;
 }
 
+/**
+ * The known {@link MemoryCategory} values. A replacement/rescope category must
+ * be one of these — rejecting path-like or unexpected strings before they reach
+ * `StorageManager.writeMemory`, which incorporates the category into the
+ * generated memory id/path (review thread Of-XJ).
+ */
+export const MEMORY_CATEGORIES: readonly MemoryCategory[] = [
+  "fact", "preference", "correction", "entity", "decision",
+  "relationship", "principle", "commitment", "moment",
+  "skill", "rule", "procedure", "reasoning_trace",
+];
+
 export type CorrectionAction =
   /** Outdated: a new fact replaces the loser. */
   | { kind: "supersede"; loserId: string; replacement?: MemoryDraft }
@@ -148,8 +160,14 @@ export interface CorrectionPlan {
   createdAt: string;
   /** ISO timestamp after which apply rejects the plan as expired. */
   expiresAt: string;
-  /** Set by the executor when the plan is consumed (applied or discarded). */
-  status?: "pending" | "applied" | "discarded" | "partial";
+  /**
+   * Lifecycle: `pending` → `applying` → `applied`|`partial` (or `discarded`).
+   * The executor flips a plan to `applying` BEFORE running any mutation
+   * (review thread OgIqt): if the process dies mid-apply, the plan stays
+   * `applying` and is NOT silently retryable — a partially-applied plan must
+   * never be re-applied wholesale (it would duplicate succeeded actions).
+   */
+  status?: "pending" | "applying" | "applied" | "discarded" | "partial";
 }
 
 /**
@@ -336,6 +354,13 @@ export function validateMemoryDraft(draft: unknown): asserts draft is MemoryDraf
   const d = draft as Record<string, unknown>;
   if (typeof d.content !== "string" || d.content.trim().length === 0) {
     throw new CorrectionContractError("MemoryDraft.content is required and must be non-empty.");
+  }
+  if (d.category !== undefined) {
+    if (typeof d.category !== "string" || !(MEMORY_CATEGORIES as readonly string[]).includes(d.category)) {
+      throw new CorrectionContractError(
+        `MemoryDraft.category must be one of: ${MEMORY_CATEGORIES.join(", ")}.`,
+      );
+    }
   }
   if (d.confidence !== undefined && (typeof d.confidence !== "number" || d.confidence < 0 || d.confidence > 1)) {
     throw new CorrectionContractError("MemoryDraft.confidence must be a number in [0, 1].");

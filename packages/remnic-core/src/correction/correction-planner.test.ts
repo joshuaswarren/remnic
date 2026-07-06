@@ -18,6 +18,8 @@ import path from "node:path";
 import { test } from "node:test";
 import {
   CorrectionContractError,
+  MEMORY_CATEGORIES,
+  validateMemoryDraft,
   type CorrectionAction,
   type CorrectionClassification,
   type CorrectionPlan,
@@ -376,5 +378,69 @@ test("Ug8: path-traversal planId is rejected before building the plan-file path"
     // A canonical corr-... id is accepted (it returns null/not-found without throwing).
     const ok = await planner.loadPlan("default", "corr-abc-123");
     assert.equal(ok, null);
+  });
+});
+
+test("Of-XJ: validateMemoryDraft rejects categories outside the MemoryCategory allow-list", () => {
+  // A path-like or unexpected category must be rejected before it reaches
+  // StorageManager.writeMemory, which incorporates the category into the
+  // generated memory id/path (review thread Of-XJ).
+  for (const cat of ["fact", "preference", "correction", "entity"]) {
+    assert.doesNotThrow(() => validateMemoryDraft({ content: "x", category: cat }));
+  }
+  for (const bad of ["../../etc/passwd", "fact/../../meta", "unknown", "FACT", ""]) {
+    assert.throws(
+      () => validateMemoryDraft({ content: "x", category: bad }),
+      /MemoryDraft.category must be one of/,
+    );
+  }
+  assert.doesNotThrow(() => validateMemoryDraft({ content: "x" }));
+  assert.ok(MEMORY_CATEGORIES.includes("reasoning_trace"));
+});
+
+test("OgIql: untargeted search uses tokenized keyword matching (not exact-prefix substring)", async () => {
+  await withTempDir(async (dir) => {
+    // The wiring's searchMemories tokenizes the correction text and matches by
+    // keyword overlap, so "we migrated from Postgres to MySQL" finds a memory
+    // that says "Postgres is the database" — the old 32-char exact-prefix
+    // substring missed this. The planner delegates to deps.searchCorpus, so we
+    // verify the planner passes the FULL text and the tokenized search dep
+    // (mirroring the wiring logic) locates the memory.
+    const candidates = new Map<string, PlannerCandidate>([
+      ["mem-db", {
+        memoryId: "mem-db",
+        path: "facts/mem-db.md",
+        content: "Postgres is the database",
+        excerpt: "Postgres is the database",
+        score: 1,
+      }],
+    ]);
+    let classifyCandidates: PlannerCandidate[] = [];
+    const state: StubState = {
+      candidatesById: candidates,
+      llmResult: { classification: "outdated", confidence: 0.5, actions: [], relevance: [], warnings: [] },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const deps = makeDeps(dir, state);
+    // Mirror the wiring's tokenized search: split into keywords, match overlap.
+    deps.searchCorpus = async ({ text, limit }) => {
+      const STOP = new Set(["the", "a", "an", "is", "are", "to", "of", "from", "we", "and", "or", "in", "on"]);
+      const tokens = [...new Set(text.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !STOP.has(w)))];
+      const matched = [...state.candidatesById.values()].filter((c) => {
+        const hay = c.content.toLowerCase();
+        return tokens.some((t) => hay.includes(t));
+      });
+      return matched.slice(0, limit).map((c, i) => ({ ...c, score: 1 - i * 0.1 }));
+    };
+    deps.classifyAndDraft = async ({ candidates: cs }) => {
+      classifyCandidates = cs;
+      return { classification: "outdated", confidence: 0.5, actions: [], relevance: [], warnings: [] };
+    };
+    const planner = new CorrectionPlanner(deps);
+    await planner.plan({ text: "we migrated from Postgres to MySQL" }, ["default"]);
+    assert.ok(classifyCandidates.length > 0, "tokenized search must find the Postgres memory");
+    assert.equal(classifyCandidates[0].memoryId, "mem-db");
   });
 });

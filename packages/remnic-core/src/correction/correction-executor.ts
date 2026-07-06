@@ -202,9 +202,9 @@ export class CorrectionExecutor {
         `Correction plan ${planId} belongs to namespace '${plan.namespace}', not '${namespace}'.`,
       );
     }
-    if (plan.status === "applied" || plan.status === "partial") {
+    if (plan.status === "applied" || plan.status === "partial" || plan.status === "applying") {
       throw new CorrectionContractError(
-        `Correction plan ${planId} has already been applied (status=${plan.status}).`,
+        `Correction plan ${planId} has already been applied or is in progress (status=${plan.status}).`,
       );
     }
     if (plan.status === "discarded") {
@@ -226,6 +226,24 @@ export class CorrectionExecutor {
       }
     }
 
+    // Optimistically mark the plan `applying` BEFORE any mutation (review
+    // thread OgIqt). If the process dies mid-apply — or the final
+    // markConsumed("applied"|"partial") fails — the plan stays `applying`
+    // and is NOT silently retryable. A partially-applied plan must never be
+    // re-applied wholesale: re-running succeeded actions would duplicate
+    // replacements, tombstones, and audits. The operator inspects the
+    // outcome and files a NEW plan for any failed actions. This mark runs
+    // inside the serializeMutations lock so concurrent applies serialize.
+    try {
+      await this.planner.markConsumed(namespace, planId, "applying");
+    } catch {
+      // If we cannot even mark the plan in-progress, the filesystem is
+      // likely unwritable and mutations would fail too — fail closed now.
+      throw new CorrectionContractError(
+        `Correction plan ${planId}: cannot mark in-progress (filesystem unwritable?) — aborting before any mutation.`,
+      );
+    }
+
     const results: CorrectionActionResult[] = [];
     const appliedTouched: string[] = [];
 
@@ -235,6 +253,20 @@ export class CorrectionExecutor {
     // state for an action whose replacement write failed).
     for (const action of plan.actions) {
       if (action.kind === "supersede" && action.replacement) {
+        // Preflight the loser BEFORE writing the replacement (review thread
+        // Of0pz): if the loser was deleted between plan and apply, writing a
+        // replacement creates an orphan fact that supersedes nothing. Phase 2
+        // (retireAndTombstone) re-checks via getMemory, so verifying here
+        // keeps the two phases in agreement and avoids the orphan write.
+        const loser = await this.deps.getMemory(namespace, action.loserId);
+        if (!loser) {
+          results.push({
+            action,
+            status: "failed",
+            error: `supersede loser not found: ${action.loserId}`,
+          });
+          continue;
+        }
         try {
           const newId = await this.deps.writeReplacement(namespace, {
             content: action.replacement.content,
