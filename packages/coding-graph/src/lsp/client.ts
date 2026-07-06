@@ -163,6 +163,13 @@ export class LspClient {
       };
     }
 
+    if (initResult.value === null || typeof initResult.value !== "object") {
+      await client.dispose();
+      return {
+        ok: false,
+        degradation: lspDegradation("protocol_error", "initialize response missing or invalid"),
+      };
+    }
     const initResponse = initResult.value as LspInitializeResult;
     client.serverCapabilities = initResponse.capabilities;
 
@@ -348,8 +355,8 @@ export class LspClient {
     clearTimeout(entry.timer);
     this.pending.delete(id);
     if (rpc.error !== undefined) {
-      const errMsg = (rpc.error as { message?: string }).message ?? "unknown error";
-      entry.reject(lspDegradation("request_error", errMsg));
+      // Don't echo raw server error text — it may contain absolute paths.
+      entry.reject(lspDegradation("request_error", "server returned an error response"));
     } else {
       entry.resolve(rpc.result);
     }
@@ -393,7 +400,7 @@ export class LspClient {
   private onChildError(err: Error): void {
     // ENOENT = binary not found.
     this.crashed = true;
-    const detail = err.message.includes("ENOENT") ? undefined : err.message;
+    const detail = err.message.includes("ENOENT") ? undefined : "spawn error";
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
       entry.reject(lspDegradation("server_missing", detail));
