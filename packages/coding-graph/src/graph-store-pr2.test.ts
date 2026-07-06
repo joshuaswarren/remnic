@@ -603,7 +603,12 @@ test("traversePaths: endpoint reachable at len 1 AND len 2 yields a hit for each
     // The length-2 hit to b must trace a->c->b.
     const bLen2 = bHits.find((h) => h.length === 2)!;
     assert.equal(bLen2.nodeIds.length, 3);
-    assert.equal(bLen2.nodeIds[0], bLen2.nodeIds[0]); // start-first
+    // The length-2 path to b is a->c->b: middle node is c, and every hop
+    // is a CALLS edge (kilo-code-bot: the prior line was a tautology).
+    const cHit = out.hits.find((h) => h.qualifiedName === "mp.c" && h.length === 1)!;
+    assert.equal(bLen2.nodeIds[1], cHit.nodeId, "length-2 path to b is a->c->b");
+    assert.equal(bLen2.nodeIds[0], out.hits[0]!.nodeIds[0], "path starts at the start node");
+    assert.deepEqual(bLen2.edgeTypes, ["CALLS", "CALLS"]);
   } finally {
     await dispose(store, dir);
   }
@@ -665,6 +670,108 @@ test("traversePaths: maxPaths cap sets truncated and bounds the hit count", asyn
     if (!out.ok) throw new Error("expected ok");
     assert.equal(out.truncated, true, "enumeration must flag truncation");
     assert.equal(out.hits.length, 2, "hit count must not exceed the cap");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: minHops gates the cap -- shorter prefixes do not consume maxPaths (cursor Bugbot)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    // *2 (minHops 2, maxHops 2) with a tight maxPaths. Three length-2 paths
+    // exist (a->b->d, a->c->b, a->c->d); two length-1 paths exist (a->b,
+    // a->c) but must NOT count toward the cap. With maxPaths 2 we expect 2
+    // LENGTH-2 hits (truncated), and zero length-1 hits.
+    const out = store.traversePaths({ start: "mp.a", minHops: 2, maxHops: 2, maxPaths: 2 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.truncated, true, "cap is hit by in-range length-2 paths");
+    assert.equal(out.hits.length, 2);
+    assert.ok(out.hits.every((h) => h.length === 2), "no shorter prefix consumes the cap");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: minHops emits only in-range paths (no cap)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    // minHops 2, maxHops 2, default cap: all three length-2 paths, no length-1.
+    const out = store.traversePaths({ start: "mp.a", minHops: 2, maxHops: 2 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.truncated, false);
+    assert.equal(out.hits.length, 3);
+    assert.ok(out.hits.every((h) => h.length === 2));
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: edgeTypes exposes the relationship type per hop (chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const mixed: StoreFileIR = {
+      path: "src/mixed2.ts",
+      language: "typescript",
+      contentHash: "h-mixed2",
+      symbols: [sym("mx.a", "a", 0, 10), sym("mx.b", "b", 10, 20)],
+      edges: [
+        edge("mx.a", "mx.b", "CALLS"),
+        edge("mx.a", "mx.b", "USES_TYPE"),
+      ],
+    };
+    const r = await store.upsertFileBatch([mixed]);
+    assert.equal(r.ok, true);
+    // Two distinct relationships a->b (CALLS, USES_TYPE) yield two distinct
+    // relationship-simple paths with identical nodeIds but different edgeTypes.
+    const out = store.traversePaths({ start: "mx.a", maxHops: 1 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.hits.length, 2, "two distinct edges -> two distinct paths");
+    const typeSets = out.hits.map((h) => h.edgeTypes).sort();
+    assert.deepEqual(typeSets, [["CALLS"], ["USES_TYPE"]]);
+    // nodeIds are identical; only edgeTypes distinguishes them.
+    assert.deepEqual(out.hits[0]!.nodeIds, out.hits[1]!.nodeIds);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: malformed maxPaths rejected with 'invalid_query' (chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    for (const v of [-1, 1.5, Number.NaN, "100" as never, true as never] as const) {
+      const out = store.traversePaths({ start: "mp.a", maxHops: 2, maxPaths: v });
+      assert.equal(out.ok, false, `maxPaths ${JSON.stringify(v)} should fail`);
+      if (out.ok) throw new Error("expected failure");
+      assert.equal(out.code, "invalid_query");
+    }
+    // undefined still defaults (no rejection).
+    const ok = store.traversePaths({ start: "mp.a", maxHops: 1, maxPaths: undefined });
+    assert.equal(ok.ok, true);
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
+test("traversePaths: malformed minHops rejected with 'invalid_query'", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    const r = await store.upsertFileBatch([multiPathFile]);
+    assert.equal(r.ok, true);
+    for (const v of [0, -1, 1.5, Number.NaN] as const) {
+      const out = store.traversePaths({ start: "mp.a", minHops: v, maxHops: 3 });
+      assert.equal(out.ok, false, `minHops ${v} should fail`);
+      if (out.ok) throw new Error("expected failure");
+      assert.equal(out.code, "invalid_query");
+    }
   } finally {
     await dispose(store, dir);
   }

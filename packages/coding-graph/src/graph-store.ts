@@ -297,6 +297,15 @@ export interface TraversePathsQuery {
    */
   maxHops: number;
   /**
+   * Inclusive LOWER bound on EMITTED path length (hop count). Defaults
+   * to 1. The DFS still EXPLORES shorter prefixes to reach longer paths,
+   * but only EMITS (and counts toward {@link maxPaths}) paths whose length
+   * is in `[minHops, maxHops]` -- so an exact `*N` cap is not consumed by
+   * the shorter prefixes (cursor Bugbot: 'Path cap ignores hop minimum').
+   * MUST be a positive integer (>= 1) when present.
+   */
+  minHops?: number;
+  /**
    * Safety cap on total enumerated paths. Defaults to
    * {@link DEFAULT_TRAVERSE_PATHS_MAX}. When the cap is reached, enumeration
    * STOPS and the result carries `truncated: true` so callers can detect that
@@ -319,6 +328,15 @@ export interface TraversePathHit {
   length: number;
   /** Full path as node ids, start-first (`length + 1` entries). */
   nodeIds: string[];
+  /**
+   * Edge type per hop, parallel to {@link nodeIds} (`length` entries). Two
+   * distinct relationships can connect the same node pair with different
+   * types (the edges table is UNIQUE on `(src, dst, type)`); exposing the
+   * type per hop lets callers distinguish those otherwise-identical-node
+   * paths (chatgpt-codex-connector P2: 'Include edge identity in path
+   * hits').
+   */
+  edgeTypes: string[];
 }
 
 export type TraversePathsResult =
@@ -2177,12 +2195,32 @@ export class GraphStore {
     if (typeof query.start !== "string" || query.start.length === 0) {
       return { ok: false, code: "invalid_query" };
     }
-    const maxPaths =
-      typeof query.maxPaths === "number" &&
-      Number.isInteger(query.maxPaths) &&
-      query.maxPaths >= 0
-        ? query.maxPaths
-        : DEFAULT_TRAVERSE_PATHS_MAX;
+    // minHops: validate only when explicitly provided; default 1. MUST be a
+    // positive integer -- the primitive never emits length-0 paths.
+    const minHops = query.minHops === undefined ? 1 : query.minHops;
+    if (
+      typeof minHops !== "number" ||
+      !Number.isInteger(minHops) ||
+      minHops < 1
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    // maxPaths: reject a malformed EXPLICIT value rather than silently
+    // defaulting (rule 51 -- surface what's wrong). Only `undefined` defaults
+    // (chatgpt-codex-connector P2: 'Reject malformed maxPaths instead of
+    // defaulting').
+    let maxPaths: number;
+    if (query.maxPaths === undefined) {
+      maxPaths = DEFAULT_TRAVERSE_PATHS_MAX;
+    } else if (
+      typeof query.maxPaths !== "number" ||
+      !Number.isInteger(query.maxPaths) ||
+      query.maxPaths < 0
+    ) {
+      return { ok: false, code: "invalid_query" };
+    } else {
+      maxPaths = query.maxPaths;
+    }
 
     try {
       // Resolve the start node — same split id/qualified_name policy as
@@ -2299,9 +2337,14 @@ export class GraphStore {
       let truncated = false;
       const usedEdges = new Set<string>();
       const pathNodes: string[] = [startId];
+      const pathEdgeTypes: string[] = [];
 
       // Recursive DFS. `length` is the current path's hop count (edges taken).
-      // We can extend while length < maxHops.
+      // We EXPLORE while length < maxHops (shorter prefixes must be walked to
+      // reach longer paths) but EMIT only when newLength >= minHops, so the
+      // maxPaths cap protects the in-range result set instead of being
+      // consumed by discarded shorter prefixes (cursor Bugbot: 'Path cap
+      // ignores hop minimum').
       const dfs = (currentId: string, length: number): void => {
         if (truncated) return;
         if (length >= query.maxHops) return;
@@ -2309,28 +2352,32 @@ export class GraphStore {
           if (truncated) return;
           const key = `${e.src}\u0000${e.dst}\u0000${e.type}`;
           if (usedEdges.has(key)) continue;
-          // Cap check BEFORE committing this path so the count never exceeds
-          // maxPaths.
-          if (hits.length >= maxPaths) {
-            truncated = true;
-            return;
-          }
           usedEdges.add(key);
           pathNodes.push(e.neighbor);
+          pathEdgeTypes.push(e.type);
           const newLength = length + 1;
-          const info = getNode(e.neighbor);
-          if (info) {
-            hits.push({
-              nodeId: info.id,
-              qualifiedName: info.qualified_name,
-              name: info.name,
-              label: info.label,
-              filePath: info.file_path,
-              length: newLength,
-              nodeIds: pathNodes.slice(),
-            });
+          if (newLength >= minHops) {
+            // Cap check on EMITTED (in-range) hits only.
+            if (hits.length >= maxPaths) {
+              truncated = true;
+            } else {
+              const info = getNode(e.neighbor);
+              if (info) {
+                hits.push({
+                  nodeId: info.id,
+                  qualifiedName: info.qualified_name,
+                  name: info.name,
+                  label: info.label,
+                  filePath: info.file_path,
+                  length: newLength,
+                  nodeIds: pathNodes.slice(),
+                  edgeTypes: pathEdgeTypes.slice(),
+                });
+              }
+            }
           }
-          dfs(e.neighbor, newLength);
+          if (!truncated) dfs(e.neighbor, newLength);
+          pathEdgeTypes.pop();
           pathNodes.pop();
           usedEdges.delete(key);
         }

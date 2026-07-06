@@ -1469,6 +1469,10 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
           start: binding.lastNode.nodeId,
           direction: rel.direction,
           ...(rel.types.length > 0 ? { edgeTypes: rel.types } : {}),
+          // Push minHops into the store so its maxPaths cap counts only
+          // in-range paths, not the shorter prefixes an exact *N must walk
+          // (cursor Bugbot: 'Path cap ignores hop minimum').
+          minHops: Math.max(1, rel.minHops),
           maxHops: rel.maxHops,
         });
         if (!tp.ok) {
@@ -1492,8 +1496,9 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
         // A `*0..N` bound includes the trivial length-0 path (the start
         // node itself) -- traversePaths only yields length >= 1 paths.
         if (rel.minHops === 0) candidates.push(binding.lastNode);
+        // traversePaths already restricts emitted paths to
+        // [max(1, minHops), maxHops], so no length filter is needed here.
         for (const hit of tp.hits) {
-          if (hit.length < rel.minHops || hit.length > rel.maxHops) continue;
           candidates.push(nodeToValue(hit));
         }
       } else {
