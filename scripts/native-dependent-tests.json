@@ -6,6 +6,7 @@
     "integrations/amb/install-remnic-provider.test.mjs",
     "integrations/amb/run-remnic-amb.test.mjs",
     "packages/bench/src/adapters/remnic-adapter.test.ts",
+    "packages/bench/src/coding-graph/harness.test.ts",
     "packages/import-lossless-claw/src/importer.test.ts",
     "packages/import-lossless-claw/src/source.test.ts",
     "packages/remnic-core/src/lcm-engine.test.ts",
