@@ -900,6 +900,21 @@ test("INVARIANT: every documented label maps to a db label", () => {
 });
 
 
+test("REJECT: variable-length depth above the supported cap fails with invalid_query (not a silent empty result)", async () => {
+  const { store, dir } = await tempStoreWithFile(multiPathCypherFile);
+  try {
+    const r = executeCypher(
+      store,
+      'MATCH (a:Function {name: "a"})-[:CALLS*2000]->(b) RETURN b',
+    );
+    assert.equal(r.ok, false, "*2000 must fail, not silently return an empty success");
+    if (r.ok) throw new Error("expected failure");
+    assert.equal(r.code, "invalid_query");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
 test("ACCEPT: truncated flag surfaces when variable-length enumeration hits the path cap (cursor Bugbot)", async () => {
   // A complete directed graph on 23 nodes (no self-loops): 506 edges.
   // *1..3 from one node enumerates 22 + 22*22 + 22*22*22 = 11_154 paths,

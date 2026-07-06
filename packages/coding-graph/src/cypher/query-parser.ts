@@ -114,6 +114,8 @@ import type {
   TraversePathHit,
 } from "../graph-store.js";
 
+import { MAX_TRAVERSE_PATHS_HOPS } from "../graph-store.js";
+
 // ──────────────────────────────────────────────────────────────────────────
 // Label universe — the documented schema's node labels.
 //
@@ -1456,6 +1458,23 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
     const rel = ast.match.rels[idx]!;
     const nodePattern = ast.match.nodes[idx + 1]!;
     const nextBindings: Binding[] = [];
+    // Surface an oversized variable-length depth as a query-level failure
+    // instead of letting the store cap silently drop results: the store
+    // rejects maxHops > MAX_TRAVERSE_PATHS_HOPS, but this loop's invalid_query
+    // skip would otherwise hide it and return an empty success
+    // (cursor Bugbot: 'Hop cap yields silent drops'; chatgpt-codex-
+    // connector P2: 'Propagate oversized variable-length').
+    if (rel.isVarLength && rel.maxHops > MAX_TRAVERSE_PATHS_HOPS) {
+      const range =
+        rel.minHops === rel.maxHops
+          ? `*${rel.maxHops}`
+          : `*${rel.minHops}..${rel.maxHops}`;
+      return {
+        ok: false,
+        code: "invalid_query",
+        message: `Variable-length ${range} exceeds the maximum supported traversal depth (${MAX_TRAVERSE_PATHS_HOPS}). Narrow the range.`,
+      };
+    }
     for (const binding of bindings) {
       // Collect candidate endpoint nodes for THIS binding + rel.
       const candidates: CypherNodeValue[] = [];
