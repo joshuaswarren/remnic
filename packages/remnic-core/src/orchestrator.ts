@@ -15157,13 +15157,10 @@ export class Orchestrator {
         // #1671 — before short-circuiting, backfill bi-temporal bounds
         // onto the existing source-namespace copy if it lacks bounds the
         // incoming fact now carries (re-extraction with a resolved invalidAt).
-        // Skip when the fact would be routed to pending_review (faithfulness
-        // enforce verdict or requireSpans) — a pending candidate must not
-        // expire an active fact without review (chatgpt-codex P1).
+        // Skip when the fact would be rejected/deferred/pending by downstream
+        // gates — a non-durable candidate must not expire an active fact
+        // (chatgpt-codex P1: faithfulness, requireSpans, extraction judge).
         if (biTemporal && biTemporal.validUntil) {
-          // Skip backfill when the fact would be routed to pending_review
-          // (faithfulness enforce verdict or requireSpans) — a pending
-          // candidate must not expire an active fact without review.
           const fr = faithfulnessResultsByFactIndex?.get(factLoopIndex);
           const faithfulnessWouldPending =
             faithfulnessMode === "enforce" &&
@@ -15172,7 +15169,16 @@ export class Orchestrator {
           const requireSpansWouldPending =
             this.config.provenance?.requireSpans === true &&
             fact.requireSpansPending === true;
-          if (!faithfulnessWouldPending && !requireSpansWouldPending) {
+          const judgeVerdict = judgeVerdictsByFactIndex?.get(factLoopIndex);
+          const judgeWouldGate =
+            !this.config.extractionJudgeShadow &&
+            judgeVerdict !== undefined &&
+            !judgeVerdict.durable;
+          if (
+            !faithfulnessWouldPending &&
+            !requireSpansWouldPending &&
+            !judgeWouldGate
+          ) {
             await this.backfillTemporalBoundsOnDedupHit(
               targetStorage,
               contentHashDedupKey,
