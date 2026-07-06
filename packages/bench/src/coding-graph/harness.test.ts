@@ -371,3 +371,63 @@ test("regression gate: fixture mismatch fails the gate", () => {
   assert.ok(result.summary.includes("Fixture mismatch"), "summary must explain fixture mismatch");
   assert.equal(result.regressions.length, 0, "no metric regressions — only fixture mismatch");
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// 6b. Regression gate — a seed-only mismatch still fails (every knob counts).
+// ──────────────────────────────────────────────────────────────────────────
+
+test("regression gate: seed-only fixture mismatch fails the gate", () => {
+  const baseReport: CodingGraphBenchReport = {
+    schemaVersion: 1,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    machine: {
+      arch: "arm64",
+      platform: "darwin",
+      nodeVersion: "v22.0.0",
+      cpuModel: "test",
+      cpuCores: 8,
+      totalMemoryMb: 16384,
+    },
+    fixture: {
+      config: { seed: 99, fileCount: 20, symbolsPerFile: 10, callDensity: 0.3, language: "typescript" },
+      approximateLoc: 1000,
+      fileCount: 20,
+      symbolCount: 200,
+      edgeCount: 60,
+    },
+    fullIndexMs: { ms: 10 },
+    fullIndexLocsPerSecond: 100000,
+    incrementalUpdate: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    tracePath: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    searchGraph: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    deadCodeMs: { ms: 1 },
+    dbBytesPerKloc: 1000,
+    peakRssBytes: 1000000,
+    dbBytes: 1000,
+    graphNodeCount: 200,
+    graphEdgeCount: 60,
+  };
+
+  const baseline: CodingGraphBaseline = {
+    schemaVersion: 1,
+    machine: baseReport.machine,
+    // Identical except seed: 42 vs 99 — every other knob matches.
+    fixtureConfig: { seed: 42, fileCount: 20, symbolsPerFile: 10, callDensity: 0.3, language: "typescript" },
+    metrics: {
+      fullIndexMs: 10,
+      fullIndexLocsPerSecond: 100000,
+      incrementalUpdateP50Ms: 1,
+      incrementalUpdateP95Ms: 2,
+      tracePathP95Ms: 2,
+      searchGraphP95Ms: 2,
+      deadCodeMs: 1,
+      dbBytesPerKloc: 1000,
+    },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    note: "seed-different baseline",
+  };
+
+  const result = checkCodingGraphRegression(baseReport, baseline, 30);
+  assert.equal(result.passed, false, "seed-only mismatch must fail the gate");
+  assert.ok(result.summary.includes("seed"), "summary must name the mismatched knob (seed)");
+});

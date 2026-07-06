@@ -74,22 +74,26 @@ export function checkCodingGraphRegression(
   const regressions: RegressionMetricDetail[] = [];
 
   // Guard: a regression comparison is only meaningful when the report's
-  // fixture matches the baseline's fixture. Comparing a 10k-node fixture
-  // against a 1k-node baseline would produce nonsense deltas.
-  if (
-    report.fixture.config.fileCount !== baseline.fixtureConfig.fileCount ||
-    report.fixture.config.symbolsPerFile !== baseline.fixtureConfig.symbolsPerFile ||
-    report.fixture.config.callDensity !== baseline.fixtureConfig.callDensity
-  ) {
+  // fixture matches the baseline's fixture on EVERY knob. A different seed
+  // or language produces a structurally different synthetic repo, so timing
+  // deltas across mismatched fixtures are meaningless. Compare all keys
+  // present in the baseline config so new knobs are covered automatically.
+  const reportFixture = report.fixture.config;
+  const baselineFixture = baseline.fixtureConfig;
+  const mismatchedKeys = (Object.keys(baselineFixture) as Array<
+    keyof typeof baselineFixture
+  >).filter((key) => reportFixture[key] !== baselineFixture[key]);
+  if (mismatchedKeys.length > 0) {
+    const diffs = mismatchedKeys
+      .map(
+        (key) =>
+          `${key}: report=${reportFixture[key]} baseline=${baselineFixture[key]}`,
+      )
+      .join(", ");
     return {
       passed: false,
       regressions: [],
-      summary:
-        `Fixture mismatch: report fixture (files=${report.fixture.config.fileCount}, ` +
-        `symbols=${report.fixture.config.symbolsPerFile}, density=${report.fixture.config.callDensity}) ` +
-        `differs from baseline fixture (files=${baseline.fixtureConfig.fileCount}, ` +
-        `symbols=${baseline.fixtureConfig.symbolsPerFile}, density=${baseline.fixtureConfig.callDensity}). ` +
-        `Metrics are not comparable across different fixtures.`,
+      summary: `Fixture mismatch (${diffs}). Metrics are not comparable across different fixtures.`,
     };
   }
 

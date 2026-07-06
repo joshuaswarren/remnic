@@ -208,31 +208,44 @@ export async function runCodingGraphBenchmark(
       const traceSamples: number[] = [];
       if (startName) {
         for (let i = 0; i < iterations; i++) {
-          const { ms } = timeSync(() =>
+          const traceRes = timeSync(() =>
             store.traverse({
               start: startName,
               maxDepth: traceDepth,
               direction: "outgoing",
             } satisfies TraverseQuery),
           );
-          traceSamples.push(ms);
+          if (!traceRes.result.ok) {
+            throw new Error(
+              `trace_path failed: ${traceRes.result.code}`,
+            );
+          }
+          traceSamples.push(traceRes.ms);
         }
       }
 
       // ── Metric 5: search_graph name-pattern p50/p95 ──
       const searchSamples: number[] = [];
       for (let i = 0; i < iterations; i++) {
-        const { ms } = timeSync(() =>
+        const searchRes = timeSync(() =>
           store.searchGraph({
             namePattern: "%function%",
             limit: 50,
           } satisfies SearchQuery),
         );
-        searchSamples.push(ms);
+        if (!searchRes.result.ok) {
+          throw new Error(
+            `search_graph failed: ${searchRes.result.code}`,
+          );
+        }
+        searchSamples.push(searchRes.ms);
       }
 
       // ── Metric 6: dead-code query wall time ──
       const deadCode = timeSync(() => store.deadCode());
+      if (!deadCode.result.ok) {
+        throw new Error(`dead_code failed: ${deadCode.result.code}`);
+      }
 
       // ── Metric 7: DB size ──
       await store.drain();
