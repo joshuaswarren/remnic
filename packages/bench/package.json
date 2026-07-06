@@ -1,6 +1,6 @@
 {
   "name": "@remnic/bench",
-  "version": "9.3.711",
+  "version": "9.3.713",
   "description": "Retrieval latency ladder benchmarks + CI regression gates for @remnic/core",
   "type": "module",
   "main": "./dist/index.js",
@@ -41,6 +41,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@remnic/coding-graph": "workspace:^",
     "@remnic/core": "workspace:^",
     "hyparquet": "^1.25.7",
     "yaml": "^2.4.2"

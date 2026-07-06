@@ -1009,6 +1009,8 @@ export interface EngramAccessObserveRequest {
   namespace?: string;
   authenticatedPrincipal?: string;
   skipExtraction?: boolean;
+  /** Optional idempotency key (issue #1649): a retried POST with the same key is deduplicated server-side; divergent reuse is a conflict. */
+  idempotencyKey?: string;
   /**
    * Working directory of the calling agent session (issue #569 wiring).
    * When provided and no `codingContext` is attached for this session,
@@ -1068,6 +1070,8 @@ export interface EngramAccessObserveResponse {
   scopeDebug?: EngramAccessScopeDebug;
   lcmArchived: boolean;
   extractionQueued: boolean;
+  /** True when replayed from the idempotency cache (issue #1649); lets the HTTP surface skip the write-quota slot, matching memory_store replay semantics. */
+  idempotencyReplay?: boolean;
 }
 
 export interface EngramAccessLcmSearchRequest {
@@ -2524,8 +2528,8 @@ export class EngramAccessService {
     }
   }
 
-  private async handleIdempotentWrite<T extends EngramAccessWriteResponse>(options: {
-    operation: T["operation"];
+  private async handleIdempotentWrite<T extends { idempotencyReplay?: boolean }>(options: {
+    operation: string;
     idempotencyKey?: string;
     requestFingerprint: unknown;
     skip?: boolean;
@@ -5741,7 +5745,63 @@ export class EngramAccessService {
     return shapeMemorySummary(memory, baseDir, disclosure, rawExcerpts);
   }
 
-  async observe(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
+  async observe(
+    request: EngramAccessObserveRequest,
+    hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+  ): Promise<EngramAccessObserveResponse> {
+    // Issue #1649: dedup retried observe POSTs server-side. A retry with the
+    // same `idempotencyKey` replays the cached response and skips every side
+    // effect (LCM/extraction/objective-state); divergent payload OR principal
+    // reuse is a conflict (fingerprint folds in authenticatedPrincipal, so a
+    // cross-identity replay can never be silent). `enforceWriteQuota` runs as
+    // `beforeExecute` inside the lock — only on a real miss — so a response-lost
+    // retry never 429s even when the first attempt filled the window (#1434).
+    //
+    // The fingerprint folds in the EFFECTIVE coding context (#1649 codex P2):
+    // runObserve's scope can be derived from the session's ATTACHED coding
+    // context (which takes PRECEDENCE over per-call cwd/projectTag per
+    // resolveMemoryScopePlan), so neither cwd/projectTag NOR the raw ambient
+    // context alone fully captures the effective scope. The effective context
+    // is computed the SAME way resolveMemoryScopePlan does — session-attached
+    // first, per-call cwd/projectTag fallback — but READ-ONLY: it does NOT seed
+    // the session, so a conflict/quota-rejection path leaves no orphaned binding.
+    // The value is stable across replays because resolveMemoryScopePlan's
+    // seeding writes the IDENTICAL context that resolveCodingContextFromOptions
+    // derives — so getCodingContextForSession returns the same object on the
+    // replay as resolveCodingContextFromOptions returned on the first call.
+    // Only computed when a key is present; non-keyed observes skip the work.
+    const idempotencyKey = request.idempotencyKey?.trim();
+    let effectiveCodingContext: CodingContext | null | undefined;
+    if (idempotencyKey && !(typeof request.namespace === "string" && request.namespace.trim().length > 0)) {
+      // Explicit namespace pins the scope (resolveMemoryScopePlan returns early),
+      // so the coding context is irrelevant — skip it to avoid false conflicts
+      // when the session context changes under a namespace-pinned observe.
+      // resolveCodingContextFromOptions self-gates on projectScope (no scattered
+      // config read here).
+      effectiveCodingContext =
+        (typeof this.orchestrator.getCodingContextForSession === "function"
+          ? this.orchestrator.getCodingContextForSession(request.sessionKey)
+          : null) ?? (await this.resolveCodingContextFromOptions(request));
+    }
+    return this.handleIdempotentWrite<EngramAccessObserveResponse>({
+      operation: "observe",
+      idempotencyKey: request.idempotencyKey,
+      requestFingerprint: {
+        sessionKey: request.sessionKey,
+        messages: request.messages,
+        namespace: request.namespace,
+        skipExtraction: request.skipExtraction,
+        authenticatedPrincipal: request.authenticatedPrincipal,
+        cwd: request.cwd,
+        projectTag: request.projectTag,
+        effectiveCodingContext: effectiveCodingContext ?? null,
+      },
+      beforeExecute: hooks?.enforceWriteQuota,
+      execute: () => this.runObserve(request),
+    });
+  }
+
+  private async runObserve(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
     if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
       throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
     }

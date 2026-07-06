@@ -3,11 +3,15 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ES2022"],
+    "lib": [
+      "ES2022"
+    ],
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "declaration": true,
     "outDir": "dist",
     "rootDir": "src"
@@ -32,7 +36,8 @@
     "src/benchmarks/published/**/*.ts",
     "src/benchmarks/custom/**/*.ts",
     "src/benchmarks/remnic/**/*.ts",
-    "src/security/**/*.ts"
+    "src/security/**/*.ts",
+    "src/coding-graph/**/*.ts"
   ],
   "exclude": [
     "src/**/*.test.ts"

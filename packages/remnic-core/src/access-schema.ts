@@ -216,6 +216,14 @@ export const observeRequestSchema = z.object({
   messages: z.array(messageSchema).min(1, "messages must be a non-empty array"),
   namespace: namespaceSchema,
   skipExtraction: z.boolean().optional(),
+  /**
+   * Optional idempotency key for server-side dedup of retried observe POSTs
+   * (issue #1649). A retry that reaches the daemon after the first attempt
+   * already processed is replayed from cache instead of re-ingested. When the
+   * key is reused with a DIFFERENT payload the request is rejected as a
+   * conflict (same contract as memory_store/suggestion_submit).
+   */
+  idempotencyKey: idempotencyKeySchema,
   /** Working directory for auto git-context resolution (issue #569). */
   cwd: z.string().trim().min(1, "cwd must be non-empty when provided").max(2048).optional(),
   /**

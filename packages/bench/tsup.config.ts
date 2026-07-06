@@ -8,5 +8,5 @@ export default defineConfig({
   outDir: "dist",
   clean: true,
   dts: true,
-  external: ["@remnic/core"],
+  external: ["@remnic/core", "@remnic/coding-graph"],
 });
