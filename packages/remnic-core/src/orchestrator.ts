@@ -136,6 +136,7 @@ import {
   type TierMigrationStatusSnapshot,
 } from "./recall-state.js";
 import {
+  MEMORY_ID_PATTERN,
   parseIdOrHandle,
   renderHandlesForInjection,
   resolveHandle,
@@ -12090,9 +12091,17 @@ export class Orchestrator {
       // Only when handles are enabled: if injection is off, no handle is ever
       // rendered, so there is nothing to resolve and we skip the write.
       if (this.config.recallMemoryHandles && recalledMemoryIds.length > 0) {
-        this.handleHistory
-          .record(sessionKey, recalledMemoryIds)
-          .catch((err) => log.debug(`handle history record failed: ${err}`));
+        // Only handle-eligible ids aid resolution; filter out non-memory .md
+        // basenames (entity reconstructions) so the resolver never records a
+        // citation target that cannot be loaded.
+        const handleEligibleIds = recalledMemoryIds.filter((id) =>
+          MEMORY_ID_PATTERN.test(id),
+        );
+        if (handleEligibleIds.length > 0) {
+          this.handleHistory
+            .record(sessionKey, handleEligibleIds)
+            .catch((err) => log.debug(`handle history record failed: ${err}`));
+        }
       }
     }
     if (sessionKey) {
@@ -17496,7 +17505,12 @@ export class Orchestrator {
       const idIndexByResult: Array<number | null> = results.map((r) => {
         const match = r.path.match(/([^/]+)\.md$/);
         if (!match) return null;
-        ids.push(match[1] as string);
+        const candidate = match[1] as string;
+        // Only real memory ids are handle-eligible: entity reconstructions and
+        // other non-memory .md rows (e.g. entities/Widget.md) must NOT receive a
+        // handle — citing one would resolve to a basename no storage can load.
+        if (!MEMORY_ID_PATTERN.test(candidate)) return null;
+        ids.push(candidate);
         return ids.length - 1;
       });
       const entries = renderHandlesForInjection(ids);

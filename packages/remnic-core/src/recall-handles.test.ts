@@ -71,7 +71,7 @@ test("appendHandle adds a single space before the handle and trims trailing ws",
 
 // ─── renderHandlesForInjection: collision extension ───────────────────────
 
-test("renderHandlesForInjection widens the SECOND colliding id to 6 chars", () => {
+test("renderHandlesForInjection widens EVERY member of a colliding group to 6 chars", () => {
   // Engineer a collision: two synthetic ids whose sha256 prefix collides at 4
   // chars. Search a small id space for a real collision so the test is honest.
   let idA = "";
@@ -88,16 +88,17 @@ test("renderHandlesForInjection widens the SECOND colliding id to 6 chars", () =
       seen.set(h, id);
     }
   }
-  // If no collision found in the probe space, synthesize by aliasing: still
-  // verify the non-collision path produces all-4-char handles below.
   if (idA && idB) {
     const entries = renderHandlesForInjection([idA, idB]);
     assert.equal(entries.length, 2);
-    assert.equal(entries[0]!.width, HANDLE_DEFAULT_WIDTH);
+    // BOTH colliding members widen: leaving the first at 4 chars would make its
+    // displayed handle ambiguous to resolve against the group (codex review).
+    assert.equal(entries[0]!.width, HANDLE_EXTENDED_WIDTH);
     assert.equal(entries[1]!.width, HANDLE_EXTENDED_WIDTH);
-    // Both rendered tokens are unique in the set.
+    // Both rendered tokens are unique in the set (6-char handles differ).
     const tokens = entries.map((e) => e.handle);
     assert.equal(new Set(tokens).size, tokens.length);
+    assert.notEqual(tokens[0], tokens[1]);
   }
 });
 

@@ -166,6 +166,25 @@ test("formatQmdResults: result without an .md id gets no handle (entity reconstr
   }
 });
 
+test("formatQmdResults: a non-memory .md row (entity reconstruction) gets no handle (codex review)", async () => {
+  // Entity reconstructions can carry an `.md` path whose basename is a bare
+  // entity name (e.g. entities/Widget.md). Such a basename is not a loadable
+  // memory id, so it must NOT receive a handle — citing one would resolve to
+  // "Widget", which no storage can getMemoryById.
+  const { orchestrator, memoryDir } = await makeHarness({ recallMemoryHandles: true });
+  try {
+    const out = formatQmd(orchestrator, "Workspace Context", [
+      { docid: "Widget", path: "/mem/default/entities/Widget.md", line: 1, snippet: "entity reconstruction", score: 0.5 },
+      qmdResult(ID_A, "real memory"),
+    ]);
+    assert.doesNotMatch(out, /\[m:[0-9a-f]{4,8}\].*Widget|Widget.*\[m:/);
+    // The real memory still gets its handle.
+    assert.ok(out.includes(`[m:${handleFor(ID_A)}]`));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 // ─── resolveMemoryIdOrHandle: the shared resolver every consumer calls ──────
 
 test("resolveMemoryIdOrHandle: raw memory id passes through unchanged", async () => {

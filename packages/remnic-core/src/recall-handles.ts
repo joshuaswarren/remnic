@@ -59,6 +59,16 @@ export const HANDLE_MAX_WIDTH = 8;
 export const HANDLE_REGEX = /\[m:[0-9a-f]{4,8}\]/g;
 
 /**
+ * Memory ids are `<category>-<timestamp>-<suffix>` (e.g. `fact-1770469224307-eelr`,
+ * `artifact-...`, plus parent-`-chunk-N` variants). Entity reconstructions and
+ * other non-memory `.md` rows use bare names (`Widget`) that must NOT receive a
+ * handle — citing one would resolve to a basename no storage can load. This
+ * pattern gates handle rendering/recording to plausible memory ids only
+ * (issue #1582, codex review).
+ */
+export const MEMORY_ID_PATTERN = /^[a-z]+-\d+-[a-z0-9-]+$/;
+
+/**
  * Derive the deterministic handle hex for a memory id at a given width.
  *
  * `handleFor(id) === handleFor(id)` always, and `handleFor(id, w)` is a prefix
@@ -127,33 +137,36 @@ export function renderHandlesForInjection(
   memoryIds: readonly string[],
 ): InjectionHandleEntry[] {
   const entries: InjectionHandleEntry[] = [];
-  // default-width handle → first id that claimed it (so the second colliding
-  // id gets widened, not both).
-  const defaultClaimedBy = new Map<string, string>();
+  // Group ids by their default-width handle so EVERY member of a colliding
+  // group widens — not just the later one. Widening only the second id would
+  // leave the first rendering a 4-char token whose resolution is ambiguous
+  // against the group: a user citing that displayed 4-char handle hits both
+  // ids and cannot resolve (codex review). Widening all members guarantees
+  // each rendered token is unique at its own width.
+  const idsByDefaultHandle = new Map<string, string[]>();
+  for (const memoryId of memoryIds) {
+    if (!memoryId) continue;
+    const defaultHandle = handleFor(memoryId, HANDLE_DEFAULT_WIDTH);
+    const group = idsByDefaultHandle.get(defaultHandle);
+    if (group) group.push(memoryId);
+    else idsByDefaultHandle.set(defaultHandle, [memoryId]);
+  }
   // rendered token → memoryId, to guarantee uniqueness even after widening.
   const tokenToId = new Map<string, string>();
 
   for (const memoryId of memoryIds) {
     if (!memoryId) continue;
     const defaultHandle = handleFor(memoryId, HANDLE_DEFAULT_WIDTH);
-    let width = HANDLE_DEFAULT_WIDTH;
-    const owner = defaultClaimedBy.get(defaultHandle);
-    if (owner !== undefined && owner !== memoryId) {
-      // Collision: widen THIS id. The first owner keeps its 4-char handle so
-      // the common case stays compact.
-      width = HANDLE_EXTENDED_WIDTH;
-    }
+    const group = idsByDefaultHandle.get(defaultHandle) ?? [memoryId];
+    let width = group.length > 1 ? HANDLE_EXTENDED_WIDTH : HANDLE_DEFAULT_WIDTH;
     let token = `[m:${handleFor(memoryId, width)}]`;
-    // Guard against a pathological 6-char collision too (extremely unlikely
-    // for real memory ids): keep widening up to HANDLE_MAX_WIDTH.
-    let guard = HANDLE_EXTENDED_WIDTH + 1;
+    // Guard against a pathological collision at the widened width too (extremely
+    // unlikely for real memory ids): keep widening up to HANDLE_MAX_WIDTH.
+    let guard = width + 1;
     while (tokenToId.has(token) && tokenToId.get(token) !== memoryId && guard <= HANDLE_MAX_WIDTH) {
       width = guard;
       token = `[m:${handleFor(memoryId, width)}]`;
       guard += 1;
-    }
-    if (!defaultClaimedBy.has(defaultHandle)) {
-      defaultClaimedBy.set(defaultHandle, memoryId);
     }
     tokenToId.set(token, memoryId);
     entries.push({ memoryId, width, handle: token });
@@ -193,8 +206,11 @@ export function stripHandles(text: string): string {
   if (typeof text !== "string" || text.length === 0) return text;
   // Remove the token and the single preceding space that {@link appendHandle}
   // added, then tidy any double space left behind.
+  // \\s? (not \\s*): the renderer appends exactly one preceding space, and a
+  // bounded quantifier avoids the polynomial-ReDoS flag on uncontrolled input.
+  // A stray run of spaces is collapsed by the following line.
   return text
-    .replace(/\s*\[m:[0-9a-f]{4,8}\]/g, "")
+    .replace(/\s?\[m:[0-9a-f]{4,8}\]/g, "")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/[ \t]+$/g, "");
 }
