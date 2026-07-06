@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "machine": {
+    "arch": "arm64",
+    "platform": "darwin",
+    "nodeVersion": "v22.20.0",
+    "cpuModel": "Apple M2 Max",
+    "cpuCores": 12,
+    "totalMemoryMb": 98304
+  },
+  "fixtureConfig": {
+    "seed": 42,
+    "fileCount": 20,
+    "symbolsPerFile": 10,
+    "callDensity": 0.3,
+    "language": "typescript"
+  },
+  "metrics": {
+    "fullIndexMs": 17.59079200000042,
+    "fullIndexLocsPerSecond": 115174,
+    "incrementalUpdateP50Ms": 0.1873329999998532,
+    "incrementalUpdateP95Ms": 0.2571250000000873,
+    "tracePathP95Ms": 0.1447080000002643,
+    "searchGraphP95Ms": 0.2923749999999927,
+    "deadCodeMs": 0.6742499999995744,
+    "dbBytesPerKloc": 2022
+  },
+  "createdAt": "2026-07-06T10:22:25.193Z",
+  "note": "Initial baseline — captured on first harness run (issue #1557 PR1)."
+}

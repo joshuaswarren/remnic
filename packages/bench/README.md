@@ -200,3 +200,60 @@ If you're an AI agent extending a Remnic-based stack: **do not** import `@remnic
 ## License
 
 MIT. See the root [LICENSE](https://github.com/joshuaswarren/remnic/blob/main/LICENSE) file.
+
+## Coding-graph benchmark harness (issue #1557)
+
+A dedicated benchmark suite for [`@remnic/coding-graph`](https://www.npmjs.com/package/@remnic/coding-graph) — the symbol-extraction engine + SQLite knowledge-graph store for codebase memory. The harness is the authority for every performance claim: no number ships in docs without a harness measurement behind it (rule 55, #1527 stub-honesty).
+
+### What it measures
+
+| Metric | Description |
+|---|---|
+| `fullIndexMs` | Wall time to index the entire fixture in one batch. |
+| `fullIndexLocsPerSecond` | Sustained LOC/s during full index (higher is better). |
+| `incrementalUpdateP50Ms` / `incrementalUpdateP95Ms` | Single-file re-ingest latency (p50/p95 over ≥20 iterations). |
+| `tracePathP95Ms` | `trace_path` (BFS, depth ≤ 5) p95. |
+| `searchGraphP95Ms` | `search_graph` name-pattern p95. |
+| `deadCodeMs` | Dead-code query wall time. |
+| `dbBytesPerKloc` | SQLite DB bytes per KLOC after index. |
+
+### Synthetic fixture generator
+
+The harness ships a **deterministic** synthetic repo generator (`generateSyntheticRepo`): parameterized by files × symbols-per-file × call-density × language. Same seed + same params always produces byte-identical IR output (rule 38). Fixtures are synthetic code only — no real repos, no user data (public-repo policy).
+
+### Baseline + regression gate
+
+The measured numbers live in [`baselines/coding-graph-baseline.json`](./baselines/coding-graph-baseline.json) — bench-owned, separate from the structural ratchets in `scripts/ratchet-baseline.json`. The regression gate (`checkCodingGraphRegression`) compares a report against the baseline with a generous tolerance (default 30%). It hard-fails on gross regression — a real failing step, not a warning (rule 50). Tightening the baseline is a deliberate PR act (mirrors `check-ratchets --update`).
+
+### Measured numbers (first baseline)
+
+> Numbers below are from the **baseline JSON file** — this section is checked against it so prose can't drift from measurement. Run `remnic bench coding-graph` to reproduce.
+
+| Metric | Value | Machine |
+|---|---|---|
+| Full index | ~17.6 ms, ~115k LOC/s | Apple M2 Max, Node v22 |
+| Incremental update p95 | ~0.26 ms | Apple M2 Max |
+| trace_path p95 | ~0.14 ms | Apple M2 Max |
+| search_graph p95 | ~0.29 ms | Apple M2 Max |
+| dead_code | ~0.67 ms | Apple M2 Max |
+| DB size | ~2 KB/KLOC | Apple M2 Max |
+
+These are **working targets on a small fixture (20 files, 200 symbols)**, NOT parity claims against codebase-memory-mcp's published numbers (28M LOC in 3 min, <1ms Cypher). Scale targets at 1M+ LOC are tracked as stretch goals — the harness will measure them when Tier-L fixtures are wired (issue #1557 PR2).
+
+### Usage
+
+```typescript
+import { runCodingGraphBenchmark, checkCodingGraphRegression } from "@remnic/bench";
+
+const report = await runCodingGraphBenchmark({
+  fixture: { fileCount: 1000, symbolsPerFile: 10, callDensity: 0.2 },
+  iterations: 25,
+});
+
+const baseline = require("@remnic/bench/baselines/coding-graph-baseline.json");
+const gate = checkCodingGraphRegression(report, baseline, 30);
+if (!gate.passed) {
+  console.error(gate.summary);
+  process.exit(1);
+}
+```
