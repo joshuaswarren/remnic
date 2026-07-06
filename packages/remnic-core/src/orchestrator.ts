@@ -13800,6 +13800,8 @@ export class Orchestrator {
       return attachCitation(content, citationContext, citationTemplate);
     };
     const persistedIds: string[] = [];
+    const supersessionOrderingAt = (validAt?: string): string =>
+      validAt && validAt.length > 0 ? validAt : new Date().toISOString();
     // #1635: pending_review persisted ids, excluded from the thread episode set below.
     const pendingReviewPersistedIds: string[] = [];
     const persistedIdsByStorage = new Map<
@@ -13811,8 +13813,7 @@ export class Orchestrator {
       id: string,
       options: {
         includeReturnedIds?: boolean;
-        /** Mark this id as a pending_review fact (#1635) so it is kept out of
-         * the persisted thread episode set. */
+        /** #1635: keep this id out of the persisted thread episode set. */
         pendingReview?: boolean;
       } = {},
     ): void => {
