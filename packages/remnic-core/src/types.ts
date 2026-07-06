@@ -993,6 +993,31 @@ export interface PluginConfig {
    * once the benchmark shows precision tie-or-win.
    */
   recallMemoryWorthFilterEnabled: boolean;
+  // Unified TrustScore recall stage (issue #1577). Combines memory-worth,
+  // provenance, faithfulness, corroboration, contradiction, feedback, recency,
+  // and optional domain calibration into one [0,1] trust score applied as a
+  // bounded recall multiplier. Subsumes the Memory Worth multiplier when on
+  // (the orchestrator runs exactly one of the two — rule 39).
+  /**
+   * Master gate for the unified TrustScore recall stage. Default `false`: off
+   * = the stage is absent and ranking is byte-identical to the pre-feature
+   * pipeline (rule 39). Flip via #1574 ablation evidence only.
+   */
+  trustScoreEnabled: boolean;
+  /** Append epistemic hedge suffixes to injected memory lines. Separate gate. */
+  trustScoreEpistemicRendering: boolean;
+  /**
+   * Exclude hard-negative (quarantine-band) items from injection. Default
+   * `true`; only effective under the master gate. Quarantined items stay
+   * visible in X-ray with a reason (rule 34).
+   */
+  trustScoreQuarantine: boolean;
+  /** Lower bound of the trust multiplier (default 0.5). */
+  trustScoreMinMultiplier: number;
+  /** Upper bound of the trust multiplier (default 1.25). */
+  trustScoreMaxMultiplier: number;
+  /** Per-component weights for the TrustScore blend; invalid weights rejected at parse. */
+  trustScoreWeights: TrustWeights;
   /**
    * Recall-audit anomaly detector (issue #565 PR 5/5). When true,
    * access surfaces run the anomaly detector over a tail of the audit
@@ -2783,6 +2808,23 @@ export interface FaithfulnessFrontmatter {
   rationale?: string;
   /** ISO-8601 timestamp the check ran. */
   at?: string;
+}
+
+/**
+ * Per-component weights for the unified TrustScore blend (issue #1577). Every
+ * field is optional and defaults to the documented value in `trust-score.ts`;
+ * weights are sum-normalized at score time so only relative magnitudes matter.
+ * Invalid weights (non-finite, outside `[0,1]`) are rejected at config parse.
+ */
+export interface TrustWeights {
+  memoryWorth?: number;
+  provenance?: number;
+  faithfulness?: number;
+  corroboration?: number;
+  contradiction?: number;
+  domainCalibration?: number;
+  feedback?: number;
+  recency?: number;
 }
 
 /** Memory link relationship types */
