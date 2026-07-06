@@ -12156,12 +12156,8 @@ export class Orchestrator {
       role,
       content,
       timestamp: captureTimestamp,
-      // #1578: anchor live-capture turns to their wall-clock timestamp when
-      // bi-temporal extraction is on, so resolveFactEventTime has an observed-
-      // time reference for facts captured in the normal processTurn path.
-      // Replay/import turns carry sourceValidAt explicitly (or omit it to stay
-      // intentionally undated); only live capture reuses the timestamp as the
-      // anchor — undated replay batches must remain valid_at-free (codex P1).
+      // #1578: anchor live-capture turns to wall-clock when bi-temporal is on;
+      // replay/import turns carry sourceValidAt explicitly (codex P1).
       ...(this.config.temporalBiTemporal
         ? { sourceValidAt: captureTimestamp }
         : {}),
@@ -15260,9 +15256,7 @@ export class Orchestrator {
                   intentEntityTypes: inferredIntent?.entityTypes,
                   memoryKind,
                   validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
-                  // #1578: propagate bi-temporal end bound + ingestion provenance
-                  // to chunks so an independently-surfaced chunk expires at the
-                  // same invalid_at as its parent (cursor bugbot).
+                  // #1578: propagate end bound + provenance to chunks (cursor bugbot).
                   ...(biTemporal
                     ? {
                         observedAt: biTemporal.observedAt,

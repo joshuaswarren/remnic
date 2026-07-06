@@ -6,6 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 
 import { resolveFactEventTime } from "./event-time.js";
 import { ExtractionEngine } from "./extraction.js";
+import { ExtractedFactSchema } from "./schemas.js";
 import { StorageManager } from "./storage.js";
 
 /**
@@ -115,6 +116,33 @@ test("extraction normalization: absent eventTime → undefined (assumed deferred
     entities: [],
   });
   assert.equal(result.facts[0].eventTime, undefined);
+});
+
+// ── 2b. Schema preserves snake_case event_time (gateway fix, chatgpt-codex) ─
+
+test("ExtractedFactSchema: snake_case event_time survives schema parse (gateway strip-unknown fix)", () => {
+  // Zod .object() strips unknown keys by default. Before the event_time alias
+  // was added, the gateway fallback path (parseWithSchemaDetailed → schema.parse)
+  // silently dropped event_time, losing the temporal bound (#1578).
+  const parsed = ExtractedFactSchema.parse({
+    content: "Switched to PostgreSQL.",
+    category: "fact",
+    confidence: 0.9,
+    tags: [],
+    event_time: "2025-01-15",
+  });
+  assert.equal(parsed.event_time, "2025-01-15");
+});
+
+test("ExtractedFactSchema: camelCase eventTime also survives schema parse (no regression)", () => {
+  const parsed = ExtractedFactSchema.parse({
+    content: "We moved offices in March.",
+    category: "fact",
+    confidence: 0.8,
+    tags: [],
+    eventTime: "2025-03",
+  });
+  assert.equal(parsed.eventTime, "2025-03");
 });
 
 // ── 3. Storage round-trips invalid_at ────────────────────────────────────

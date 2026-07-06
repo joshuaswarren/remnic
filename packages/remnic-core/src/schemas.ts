@@ -173,6 +173,11 @@ export const ExtractedFactSchema = z.object({
     .describe(
       'Optional event-time expression for bi-temporal validity (#1578). An ISO date ("2025-03-01") or a relative expression verbatim ("last March", "yesterday", "since 2024", "until 2025-06-01"). Resolved against the source turn timestamp at write time — NOT wall-clock. Omit when the fact has no explicit temporal anchor.',
     ),
+  event_time: z
+    .string()
+    .optional()
+    .nullable()
+    .describe("Alias for eventTime (snake_case). Gateway-tolerance shim (#1578)."),
 }).superRefine((value, ctx) => {
   if (value.category === "procedure" && (!Array.isArray(value.procedureSteps) || value.procedureSteps.length < 2)) {
     ctx.addIssue({
