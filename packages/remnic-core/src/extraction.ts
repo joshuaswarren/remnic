@@ -1691,6 +1691,7 @@ ${existingEntities.join(", ")}
 
 When you see something that matches a known entity, use THAT name exactly. Only create a NEW entity if nothing in this list represents it.
 ` : ""}
+${this.eventTimePromptInstruction()}
 Also extract relationships between entities mentioned in the conversation.
 - Format: {source: "entity-name", target: "entity-name", label: "relationship description"}
 - Max 5 relationships per extraction

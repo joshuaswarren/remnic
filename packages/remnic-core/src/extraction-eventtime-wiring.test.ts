@@ -152,3 +152,37 @@ test("storage: invalid_at round-trips through writeMemoryFrontmatter → readAll
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("storage: writeMemory accepts invalidAt directly (end-bound at extraction write time)", async () => {
+  // Proves Fix C: writeMemory now accepts invalidAt so "until X" expressions
+  // persist invalid_at at write time without a separate updateMemoryFrontmatter call.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-et-writeMem-invalid-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const id = await storage.writeMemory("fact", "We used MongoDB until June 2025.", {
+      validAt: "2024-01-01T00:00:00.000Z",
+      invalidAt: "2025-06-01T00:00:00.000Z",
+      observedAt: "2025-06-20T00:00:00.000Z",
+      eventTimeSource: "extracted",
+    });
+    const mems = await storage.readAllMemories();
+    const mem = mems.find((m) => m.frontmatter.id === id);
+    assert.ok(mem);
+    assert.equal(mem!.frontmatter.valid_at, "2024-01-01T00:00:00.000Z");
+    assert.equal(mem!.frontmatter.invalid_at, "2025-06-01T00:00:00.000Z");
+    assert.equal(mem!.frontmatter.observedAt, "2025-06-20T00:00:00.000Z");
+    assert.equal(mem!.frontmatter.eventTimeSource, "extracted");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveFactEventTime: 'through 2026' → validUntil only (open-ended end bound)", () => {
+  const result = resolveFactEventTime("through 2026", "2025-06-20T00:00:00.000Z");
+  assert.equal(result.eventTimeSource, "extracted");
+  assert.equal(result.validFrom, undefined);
+  assert.ok(result.validUntil, "validUntil must be set for an end-bound expression");
+  // "through 2026" → exclusive end = start of 2027.
+  assert.equal(result.validUntil, "2027-01-01T00:00:00.000Z");
+});

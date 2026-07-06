@@ -1021,8 +1021,8 @@ function latestSourceValidAtFromTurns(turns: readonly BufferTurn[]): string | un
   let latestMs: number | null = null;
   for (const turn of turns) {
     if (turn.extractionContextOnly === true) continue;
-    if (typeof turn.sourceValidAt !== "string") continue;
-    const parsed = parseFlexibleIsoTimestamp(turn.sourceValidAt.trim());
+    const candidate = turn.sourceValidAt ?? turn.timestamp; // #1578: fall back so live extractions anchor too
+    const parsed = parseFlexibleIsoTimestamp(candidate.trim());
     if (parsed === null) continue;
     if (latestMs === null || parsed > latestMs) {
       latestMs = parsed;
@@ -15188,7 +15188,7 @@ export class Orchestrator {
               memoryKind,
               structuredAttributes: fact.structuredAttributes,
               validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
-              ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource } : {}),
+              ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
               contentHashSource: rawChunkedContent,
               // Faithfulness gate (issue #1576).
               ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
@@ -15483,7 +15483,7 @@ export class Orchestrator {
           memoryKind,
           structuredAttributes: fact.structuredAttributes,
           validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
-          ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource } : {}),
+          ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
           contentHashSource: writeCategory === "fact" ? fact.content : undefined,
           // Faithfulness gate (issue #1576).
           ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),

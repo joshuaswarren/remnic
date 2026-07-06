@@ -3580,6 +3580,7 @@ export class StorageManager {
       // or assumed from the ingestion anchor.  Both validate on serialize.
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
+      invalidAt?: string;
       structuredAttributes?: Record<string, string>;
       /**
        * When provided, this string is used as the source for the fact-content
@@ -3665,6 +3666,7 @@ export class StorageManager {
       valid_at: validAt,
       observedAt,
       eventTimeSource: options.eventTimeSource,
+      invalid_at: normalizeMemoryWriteTimestamp("invalidAt", options.invalidAt),
       structuredAttributes: options.structuredAttributes,
     };
     if (options.status !== undefined) {
@@ -4504,12 +4506,10 @@ export class StorageManager {
     // is disabled, missing, or unhealthy. RECALL_FALLBACK_DIRS is the single
     // source of truth derived from ALL_CATEGORY_DIRS (shared with
     // ensureDirectories() and the write routing in utils/category-dir.ts).
-    //
     // These paths resolve identically to the legacy this.factsDir /
     // this.correctionsDir / this.proceduresDir / this.reasoningTracesDir
     // getters (all `path.join(this.baseDir, <dir>)`), so the scan stays
     // namespace-aware: this.baseDir is per-namespace, set by the storage router.
-    //
     // Deliberately EXCLUDED (issue #1497 + PR #1503 review): the non-category
     // content dirs that ensureDirectories() also creates — entities/, state/,
     // artifacts/, identity/, config/ — plus the root profile.md, AND the
