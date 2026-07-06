@@ -14,6 +14,7 @@ import { defineOperation, type OperationContext } from "./access-boundary.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import type { RecallPlanMode, RecallDisclosure } from "./types.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
+import { expandTildePath } from "./utils/path.js";
 
 // ---------------------------------------------------------------------------
 // Shared helpers — type-safe extraction from unknown input (no `any`)
@@ -267,6 +268,9 @@ defineOperation({
     const result = await ctx.service.actionConfidence({
       intendedAction: optStr(input.intendedAction),
       confidence: optNum(input.confidence),
+      risk: optStr(input.risk) as import("./action-confidence.js").ActionConfidenceRiskCategory | undefined,
+      contextReadiness: optStr(input.contextReadiness) as import("./action-confidence.js").ActionConfidenceContextReadiness | undefined,
+      currentContextScopes: optStrArr(input.currentContextScopes),
     });
     return { result };
   },
@@ -328,7 +332,7 @@ defineOperation({
   schema: looseSchema,
   handler: async (input, ctx) => {
     const result = await ctx.service.capsuleImport({
-      archivePath: optStr(input.archivePath) ?? "",
+      archivePath: expandTildePath(optStr(input.archivePath) ?? ""),
       namespace: optStr(input.namespace),
       mode: optStr(input.mode) as "skip" | "overwrite" | "fork" | undefined,
       passphrase: optStr(input.passphrase),
@@ -469,7 +473,7 @@ defineOperation({
   description: "List the review queue.",
   schema: looseSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.reviewQueue(optStr(input.runId) ?? "", ctx.authenticatedPrincipal);
+    const result = await ctx.service.reviewQueue(optStr(input.runId) ?? "", optStr(input.namespace), ctx.authenticatedPrincipal);
     return { result };
   },
 });
@@ -767,7 +771,7 @@ defineOperation({
       learning: optStr(input.learning) ?? "",
       outcome: optStr(input.outcome) ?? "",
       severity: optStr(input.severity) as "high" | "low" | "medium" | undefined,
-      confidence: optStr(input.confidence) as number | undefined,
+      confidence: optNum(input.confidence),
       workflow: optStr(input.workflow),
       tags: optStrArr(input.tags),
       evidenceWindowStart: optStr(input.evidenceWindowStart),
@@ -1261,7 +1265,7 @@ defineOperation({
   description: "Forget a peer.",
   schema: looseSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.peerForget(optStr(input.id) ?? "", { confirm: input.confirm === true ? "yes" : "" });
+    const result = await ctx.service.peerForget(optStr(input.id) ?? "", { confirm: input.confirm === true || optStr(input.confirm) === "yes" ? "yes" : "" });
     return { result };
   },
 });
