@@ -8,6 +8,7 @@ import {
   HANDLE_EXTENDED_WIDTH,
   handleFor,
   isHandleToken,
+  MEMORY_ID_PATTERN,
   normalizeHandle,
   parseHandles,
   parseIdOrHandle,
@@ -258,4 +259,25 @@ test("resolveHandle: newest-first ordering prefers the most recent recall", () =
   // Same id appears in two snapshots; resolution still yields a single match.
   const res = resolveHandle(HANDLE_A, [snap(ID_A), snap(ID_A)]);
   assert.equal(res.ok, true);
+});
+
+
+// ─── MEMORY_ID_PATTERN: handle eligibility gate (codex review) ──────────────
+
+test("MEMORY_ID_PATTERN accepts underscore categories like reasoning_trace", () => {
+  // MemoryCategory includes reasoning_trace; StorageManager writes ids as
+  // `${category}-${Date.now()}-...`, so these must be handle-eligible.
+  assert.equal(MEMORY_ID_PATTERN.test("reasoning_trace-1770469224307-eelr"), true);
+  assert.equal(MEMORY_ID_PATTERN.test("fact-1770469224307-eelr"), true);
+  assert.equal(MEMORY_ID_PATTERN.test("artifact-1770469224308-ab12"), true);
+});
+
+test("MEMORY_ID_PATTERN rejects entity basenames and non-memory rows", () => {
+  // Entity reconstructions (entities/Widget.md) and bare names must NOT receive
+  // a handle — citing one would resolve to an unloadable basename.
+  assert.equal(MEMORY_ID_PATTERN.test("Widget"), false);
+  assert.equal(MEMORY_ID_PATTERN.test("entities/Widget.md"), false);
+  assert.equal(MEMORY_ID_PATTERN.test("Widget.md"), false);
+  // Category must start lowercase; capitalized names fail.
+  assert.equal(MEMORY_ID_PATTERN.test("Reasoning_trace-1-abc"), false);
 });

@@ -60,13 +60,15 @@ export const HANDLE_REGEX = /\[m:[0-9a-f]{4,8}\]/g;
 
 /**
  * Memory ids are `<category>-<timestamp>-<suffix>` (e.g. `fact-1770469224307-eelr`,
- * `artifact-...`, plus parent-`-chunk-N` variants). Entity reconstructions and
- * other non-memory `.md` rows use bare names (`Widget`) that must NOT receive a
- * handle — citing one would resolve to a basename no storage can load. This
- * pattern gates handle rendering/recording to plausible memory ids only
- * (issue #1582, codex review).
+ * `artifact-...`, `reasoning_trace-...`, plus parent-`-chunk-N` variants). The
+ * category segment allows underscores because `MemoryCategory` includes
+ * `reasoning_trace` (codex review); bare names (`Widget`) still fail. Entity
+ * reconstructions and other non-memory `.md` rows use bare names (`Widget`)
+ * that must NOT receive a handle — citing one would resolve to a basename no
+ * storage can load. This pattern gates handle rendering/recording to plausible
+ * memory ids only (issue #1582, codex review).
  */
-export const MEMORY_ID_PATTERN = /^[a-z]+-\d+-[a-z0-9-]+$/;
+export const MEMORY_ID_PATTERN = /^[a-z][a-z0-9_]*-\d+-[a-z0-9-]+$/;
 
 /**
  * Derive the deterministic handle hex for a memory id at a given width.

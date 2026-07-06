@@ -217,10 +217,18 @@ export async function getMemoryForActiveMemory(
   // caller's session before the storage read, so OpenClaw active-memory agents
   // can cite injected handles through the SAME shared path as memory_get /
   // correction (cursor review). Raw ids pass through unchanged.
-  const resolvedId =
-    isHandleToken(id) && typeof orchestrator.resolveMemoryIdOrHandle === "function"
-      ? orchestrator.resolveMemoryIdOrHandle(id, options.sessionKey)
-      : id;
+  //
+  // A handle that misses, collides, or has no session key becomes not_found —
+  // the SAME behavior a bad raw id yields below — instead of throwing, so an
+  // active-memory caller gets a uniform not-found contract (cursor review).
+  let resolvedId = id;
+  if (isHandleToken(id) && typeof orchestrator.resolveMemoryIdOrHandle === "function") {
+    try {
+      resolvedId = orchestrator.resolveMemoryIdOrHandle(id, options.sessionKey);
+    } catch {
+      return { error: "not_found" };
+    }
+  }
   const memory = await storage?.getMemoryById?.(resolvedId);
   if (!memory) return { error: "not_found" };
   return {

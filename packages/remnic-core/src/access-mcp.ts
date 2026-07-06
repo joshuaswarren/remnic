@@ -1003,6 +1003,11 @@ export class EngramMcpServer {
           properties: {
             memoryId: { type: "string" },
             namespace: { type: "string" },
+            // Issue #1582 — when memoryId is a `[m:xxxx]` handle, sessionKey
+            // scopes resolution to this session's recent recall history.
+            // Advertising it here lets the transport inject its session key
+            // (toolAcceptsArgument) so MCP callers can cite handles (codex review).
+            sessionKey: { type: "string" },
           },
           required: ["memoryId"],
           additionalProperties: false,

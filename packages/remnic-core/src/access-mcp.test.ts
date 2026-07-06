@@ -484,6 +484,34 @@ test("MCP session override is injected only into tools that accept sessionKey", 
   assert.equal((observeResponse as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError, false);
 });
 
+test("MCP memory_get advertises sessionKey so the override reaches the resolver (#1582)", async () => {
+  // The engram.memory_get inputSchema must advertise sessionKey, otherwise
+  // toolAcceptsArgument skips the override injection and an MCP caller citing a
+  // [m:xxxx] handle gets "cannot be resolved without a session key" (codex
+  // review). With the field advertised, the transport session key flows through
+  // the registry op into service.memoryGet as the 4th positional arg.
+  let receivedSessionKey: string | undefined;
+  const service = {
+    ...makeMockService(),
+    memoryGet: (_id: string, _ns?: string, _principal?: string, sessionKey?: string) => {
+      receivedSessionKey = sessionKey;
+      return Promise.resolve({ found: false, namespace: "default" });
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service);
+
+  const response = await server.handleRequest(
+    makeToolRequest("engram.memory_get", { memoryId: "[m:4f2a]" }),
+    { sessionKeyOverride: "adapter-session" },
+  );
+
+  assert.equal(receivedSessionKey, "adapter-session");
+  assert.equal(
+    (response as Record<string, unknown> & { result?: { isError?: boolean } }).result?.isError,
+    false,
+  );
+});
+
 test("MCP capsule import forwards encrypted archive passphrase", async () => {
   let received: Record<string, unknown> | undefined;
   const service = {

@@ -1546,6 +1546,10 @@ export class EngramAccessHttpServer {
     if (req.method === "GET" && memoryMatch) {
       const memoryId = decodeURIComponent(memoryMatch[1] ?? "");
       const namespace = parsed.searchParams.get("namespace") ?? undefined;
+      // Issue #1582 — thread the transport session key so a `[m:xxxx]` handle in
+      // the path resolves against this session's recall history (codex review).
+      // resolveRequestIdentity reads it from adapter identity / request headers.
+      const sessionKey = this.resolveRequestIdentity(req).sessionKey;
       // Migrated through the access boundary (issue #1525): the registry
       // entry owns memoryId presence/shape validation (rule 51: reject empty
       // ids loudly instead of silently passing "" into the service) and the
@@ -1555,7 +1559,7 @@ export class EngramAccessHttpServer {
         throw new EngramAccessInputError("access-boundary: operation not registered: memory_get");
       }
       const output = (await op.run(
-        { memoryId, namespace: namespace ?? null },
+        { memoryId, namespace: namespace ?? null, sessionKey: sessionKey ?? null },
         { service: this.service, authenticatedPrincipal: this.resolveRequestPrincipal(req) },
       )) as { result: EngramAccessMemoryResponse };
       const response = output.result;
