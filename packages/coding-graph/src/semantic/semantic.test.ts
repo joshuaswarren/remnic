@@ -844,3 +844,76 @@ test("SIMILAR_TO: bodyless declarations yield no MinHash candidates", async () =
   }
 });
 
+// ──────────────────────────────────────────────────────────────────────────
+// Host-provided enabled is coerced — "false"/"0" must not become truthy
+// and silently enable vector indexing (chatgpt-codex-connector: 'Coerce
+// host enabled before trusting it').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("config: host enabled string 'false'/'0' coerce to false (not truthy)", () => {
+  assert.equal(resolveSemanticConfig({ enabled: "false" as never }).enabled, false);
+  assert.equal(resolveSemanticConfig({ enabled: "0" as never }).enabled, false);
+  assert.equal(resolveSemanticConfig({ enabled: "no" as never }).enabled, false);
+  assert.equal(resolveSemanticConfig({ enabled: "" as never }).enabled, false);
+  assert.equal(resolveSemanticConfig({ enabled: "true" as never }).enabled, true);
+  assert.equal(resolveSemanticConfig({ enabled: true }).enabled, true);
+  assert.equal(resolveSemanticConfig({ enabled: false }).enabled, false);
+  // Absent host value still falls through to env/default (false).
+  assert.equal(resolveSemanticConfig({}).enabled, false);
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// snippetFor honors a query-level repoRoot override, so a store opened
+// without repoRoot can still hydrate snippets when the caller supplies one
+// (chatgpt-codex-connector + cursor: 'Snippet hydration ignores query
+// repoRoot').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("snippetFor: query repoRoot overrides a store opened without repoRoot", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "semroot-"));
+  const dbPath = path.join(dir, "graph.db");
+  const store = await GraphStore.open({ dbPath }); // NO repoRoot
+  try {
+    const src = "function greet(name) { return 'hi ' + name; }";
+    await writeFile(path.join(dir, "a.ts"), src);
+    const ir = makeFileIR("a.ts", [
+      { name: "greet", qname: "mod.greet", kind: "function", start: 0, end: src.length },
+    ], src);
+    await store.upsertFileBatch([ir]);
+    const nodeId = nodeIdFor({ qualifiedName: "mod.greet", filePath: "a.ts", label: "function" });
+
+    // No override → store has no repoRoot → repo_root_unset.
+    const noRoot = await store.snippetFor({ nodeId });
+    assert.equal(noRoot.ok, false);
+    if (!noRoot.ok) assert.equal(noRoot.code, "repo_root_unset");
+
+    // Override supplied → snippet resolves from the caller's repoRoot.
+    const withRoot = await store.snippetFor({ nodeId, repoRoot: dir });
+    assert.equal(withRoot.ok, true);
+    if (withRoot.ok) assert.ok(withRoot.text.includes("greet"), "snippet hydrates from the query repoRoot");
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// writeSymbolVector reports whether it persisted (returns false on a
+// closed store) so the indexer does not count dropped writes as embedded
+// (cursor Bugbot: 'Embedded count after dropped writes').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("writeSymbolVector: returns false on a closed store (write dropped)", async () => {
+  const { store, cleanup } = await tempStore();
+  await store.close();
+  const persisted = await store.writeSymbolVector({
+    nodeId: "deadbeef",
+    modelId: "m",
+    contentHash: "h".repeat(64),
+    dims: 8,
+    vector: new Float32Array(8),
+  });
+  assert.equal(persisted, false, "closed store must report the write as not persisted");
+  await cleanup();
+});
+

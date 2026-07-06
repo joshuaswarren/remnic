@@ -157,9 +157,17 @@ export async function indexSymbolVectors(
       maxBodyLines: config.canonicalBodyLines,
     });
 
-    // Cache check: skip re-embed when content_hash matches.
+    // Cache check: skip re-embed when content_hash matches AND the stored
+    // dims still equal the active provider's declared dimensions. A model
+    // that keeps the same model_id but changes vector size would otherwise
+    // leave stale-dimensionality rows cached (cursor Bugbot: 'Cache ignores
+    // embedding dimension changes').
     const cachedRow = store.readSymbolVector(node.nodeId, modelId);
-    if (cachedRow && cachedRow.contentHash === hash) {
+    if (
+      cachedRow &&
+      cachedRow.contentHash === hash &&
+      cachedRow.dims === provider.dimensions
+    ) {
       cached += 1;
       continue;
     }
@@ -195,14 +203,22 @@ export async function indexSymbolVectors(
       continue;
     }
     const float32 = new Float32Array(vec);
-    await store.writeSymbolVector({
+    // Only count a persisted embed — writeSymbolVector returns false (and
+    // is a no-op) when the store is closing/closed, so progress reporting
+    // must not claim an embedding that was dropped (cursor Bugbot: 'Embedded
+    // count after dropped writes').
+    const persisted = await store.writeSymbolVector({
       nodeId: node.nodeId,
       modelId,
       contentHash: hash,
       dims: float32.length,
       vector: float32,
     });
-    embedded += 1;
+    if (persisted) {
+      embedded += 1;
+    } else {
+      skipped += 1;
+    }
   }
 
   return { ok: true, embedded, cached, skipped };

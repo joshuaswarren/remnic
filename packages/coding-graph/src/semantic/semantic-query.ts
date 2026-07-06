@@ -134,7 +134,7 @@ export async function semanticQuery(input: SemanticQueryInput): Promise<Semantic
       // hit 'ambiguous_name' and leave the snippet empty even though the
       // vector row identified the precise node (chatgpt-codex-connector
       // P2: 'Hydrate snippets by node id as well').
-      const snippetResult = await store.snippetFor({ nodeId: h.nodeId });
+      const snippetResult = await store.snippetFor({ nodeId: h.nodeId, repoRoot });
       if (snippetResult.ok) snippet = snippetResult.text;
     } catch {
       // snippetFor returns tagged failures, not throws — this is defensive.

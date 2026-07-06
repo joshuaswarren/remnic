@@ -354,6 +354,14 @@ export interface SnippetQuery {
    */
   qualifiedName?: string;
   /**
+   * Optional repo root override. When set, the snippet is read from this
+   * root instead of the root captured at GraphStore.open() time, so a
+   * caller that supplies its own repoRoot (e.g. semanticQuery) hydrates
+   * snippets even when the store was opened without one (chatgpt-codex-
+   * connector + cursor: 'Snippet hydration ignores query repoRoot').
+   */
+  repoRoot?: string;
+  /**
    * Optional deterministic node id. When set, the lookup resolves by
    * `nodes.id` (unique) instead of `qualified_name`, so a hit whose
    * qualified name is duplicated across files still hydrates the exact
@@ -2373,7 +2381,10 @@ export class GraphStore {
     ) {
       return { ok: false, code: "invalid_query" };
     }
-    if (this.repoRoot === undefined) {
+    const root = typeof query.repoRoot === "string" && query.repoRoot.length > 0
+      ? query.repoRoot
+      : this.repoRoot;
+    if (root === undefined) {
       return { ok: false, code: "repo_root_unset" };
     }
     // Wrap the DB lookup in try/catch (cursor Bugbot: 'SQLite errors
@@ -2412,7 +2423,7 @@ export class GraphStore {
     if (rows.length === 0) return { ok: false, code: "not_found" };
     if (rows.length > 1) return { ok: false, code: "ambiguous_name" };
     const node = rows[0]!;
-    const absolutePath = path.resolve(this.repoRoot, node.file_path);
+    const absolutePath = path.resolve(root, node.file_path);
     // Read the file from disk and slice the span. readFile is the
     // single fs call — no streaming, no mmap, just one allocation per
     // request. The store caches nothing; the caller may.
@@ -2531,13 +2542,13 @@ export class GraphStore {
     readonly contentHash: string;
     readonly dims: number;
     readonly vector: Float32Array;
-  }): Promise<void> {
+  }): Promise<boolean> {
     // Honor the closing flag (not just closed) and serialize via the write
     // queue, matching upsertFileBatch / upsertEdges / clearSemanticSimilarToEdges
     // — otherwise concurrent graph ingestion can interleave a vector upsert
     // with a transactional node delete (cursor Bugbot: 'Vector writes ignore
     // closing flag' + 'Vector writes bypass write queue').
-    if (this.closed || this.closing) return;
+    if (this.closed || this.closing) return false;
     const buf = Buffer.from(input.vector.buffer, input.vector.byteOffset, input.vector.byteLength);
     await this.queue.schedule(async () => {
       this.db
@@ -2551,6 +2562,7 @@ export class GraphStore {
         )
         .run(input.nodeId, input.modelId, input.contentHash, input.dims, buf);
     });
+    return true;
   }
 
   /**

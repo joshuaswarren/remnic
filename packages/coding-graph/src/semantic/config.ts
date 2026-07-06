@@ -130,6 +130,26 @@ const ENV_MAX_SYMBOLS = ["REMNIC_CODING_GRAPH_SEMANTIC_MAX_SYMBOLS_PER_RUN", "EN
 /**
  * Resolve a boolean env var. Accepts true/false/1/0 (case-insensitive).
  */
+/**
+ * Coerce a host-provided boolean (which may arrive as a string/number from
+ * JSON or CLI config) to a real boolean, so "false"/"0"/"no" do not become
+ * truthy and silently enable vector indexing despite an explicit opt-out
+ * (chatgpt-codex-connector: 'Coerce host enabled before trusting it').
+ * undefined/null → undefined (fall through to env/default).
+ */
+function coerceHostBool(value: unknown): boolean | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (v === "false" || v === "0" || v === "no" || v === "") return false;
+    if (v === "true" || v === "1" || v === "yes") return true;
+    return true;
+  }
+  if (typeof value === "number") return value !== 0;
+  return Boolean(value);
+}
+
 function resolveBoolEnv(names: readonly string[], fallback: boolean, env: NodeJS.ProcessEnv): boolean {
   for (const name of names) {
     const raw = env[name];
@@ -169,7 +189,7 @@ export function resolveSemanticConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): SemanticConfig {
   const enabled =
-    host?.enabled ?? resolveBoolEnv(ENV_ENABLED, false, env);
+    coerceHostBool(host?.enabled) ?? resolveBoolEnv(ENV_ENABLED, false, env);
   const similarToThreshold =
     host?.similarToThreshold ?? resolveNumberEnv(ENV_THRESHOLD, DEFAULT_SIMILAR_TO_THRESHOLD, env);
   const maxSymbolsPerRun =

@@ -108,8 +108,10 @@ const config = resolveSemanticConfig({ enabled: true });
 // Index: embed symbols, cache by canonical-text hash
 const indexResult = await indexSymbolVectors({ store, provider, repoRoot, config });
 
-// SIMILAR_TO: MinHash/LSH candidates → cosine confirmation
-const similar = computeSimilarTo({ store, provider, config });
+// SIMILAR_TO: MinHash/LSH candidates → cosine confirmation.
+// repoRoot (or prebuilt bodies) is required so the pipeline hashes real
+// symbol bodies, not qualified names.
+const similar = computeSimilarTo({ store, provider, repoRoot, config });
 if (similar.ok) {
   await store.upsertEdges(similarEdgesToEdgeIR(similar.edges));
 }
