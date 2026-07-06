@@ -41,20 +41,25 @@
  *
  * ## Compile target
  *
- * Single-node patterns compile to `searchGraph({ label })`. Relationship
- * patterns compile to `traverse({ start, direction, edgeTypes, maxDepth })`,
- * filtering the returned hits to the relationship's depth range. Property
- * filters in node patterns (`{name: "foo"}`) and WHERE conditions are
- * applied in JS as post-filters on the bound nodes.
+ * Single-node patterns compile to `searchGraph({ label })`. Fixed-length
+ * relationship patterns compile to `traverse({ start, direction, edgeTypes,
+ * maxDepth })`, filtering the returned hits to the relationship's depth
+ * range. VARIABLE-length patterns (`*M..N` / `*N`) compile to the path-
+ * enumerating primitive `traversePaths` (issue #1650) so an exact `*N`
+ * honors concrete length-N paths; endpoints are filtered by PATH LENGTH
+ * and deduped by node id. Property filters in node patterns
+ * (`{name: "foo"}`) and WHERE conditions are applied in JS as post-filters
+ * on the bound nodes.
  *
- * Variable-length depth uses `traverse`'s BFS, which visits each node ONCE
- * at its shortest-path depth. So `*M..N` returns nodes whose SHORTEST path
- * from the start is in `[M, N]` — correct for "reachable within N hops".
- * Exact `*N` (N > 1) is honored only for nodes whose shortest path is
- * exactly N; a node reachable at both a shorter and a length-N path is
- * returned at the shorter depth only. True path-enumeration semantics
- * (returning a node once per distinct length-N path) needs a path-
- * enumerating store primitive and is tracked as a follow-up.
+ * Variable-length patterns enumerate concrete relationship-simple paths via
+ * `traversePaths` (issue #1650). Each path is cycle-safe under RELATIONSHIP
+ * UNIQUENESS (a single path never reuses an edge), capped at `maxHops` and a
+ * total-path cap. `*M..N` returns a node when a path of length in `[M, N]`
+ * reaches it; exact `*N` (N > 1) thus includes a node reachable at BOTH a
+ * shorter and a length-N path (the length-N path qualifies). The result is
+ * deduped by node id, so `*1..N` ("reachable within N hops") is unchanged
+ * from the prior BFS behavior — only exact `*N` (N > 1) gains paths the
+ * shortest-depth BFS dropped.
  *
  * ## Read-only by construction
  *
@@ -95,14 +100,16 @@
  * clauses are NOT pushed down — they fall back to the capped scan, so on
  * graphs with more than 1000 nodes of the starting label such queries can
  * still false-negative; use the inline literal form for guaranteed
- * resolution. Relationship expansion uses `traverse` (BFS, full reachable
- * subgraph up to maxDepth) — see the compile-target note for the BFS
- * shortest-depth semantics of variable-length `*N`.
+ * Relationship expansion uses `traverse` (fixed hops) or `traversePaths`
+ * (variable length, issue #1650); both are cycle-safe and depth/length
+ * capped. See the compile-target note for the path-length semantics of
+ * variable-length `*N`.
  */
 import type {
   GraphStore,
   SearchHit,
   TraverseHit,
+  TraversePathHit,
 } from "../graph-store.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -225,6 +232,8 @@ interface RelPattern {
   minHops: number;
   /** Inclusive maximum hop count. Equal to minHops when `*N` form used. */
   maxHops: number;
+  /** True when a `*` range was parsed (variable-length). Drives the path-enumerating compile target (issue #1650). */
+  isVarLength: boolean;
 }
 
 interface Comparison {
@@ -727,11 +736,13 @@ class Parser {
     }
     let minHops = 1;
     let maxHops = 1;
+    let isVarLength = false;
     if (this.peek().type === "STAR") {
       this.advance();
       const range = this.parseRange();
       minHops = range.min;
       maxHops = range.max;
+      isVarLength = true;
     }
     this.expect("RBRACK", "closing `]` of the relationship bracket");
 
@@ -750,7 +761,7 @@ class Parser {
         `Relationship range max (${maxHops}) is less than min (${minHops}).`,
       );
     }
-    return { direction, types, minHops, maxHops };
+    return { direction, types, minHops, maxHops, isVarLength };
   }
 
   private parseRange(): { min: number; max: number } {
@@ -1266,7 +1277,7 @@ const PROP_ALIASES: Record<string, keyof CypherNodeValue> = {
   id: "nodeId",
 };
 
-function nodeToValue(hit: SearchHit | TraverseHit): CypherNodeValue {
+function nodeToValue(hit: SearchHit | TraverseHit | TraversePathHit): CypherNodeValue {
   return {
     nodeId: hit.nodeId,
     qualifiedName: hit.qualifiedName,
@@ -1432,34 +1443,75 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
     const nodePattern = ast.match.nodes[idx + 1]!;
     const nextBindings: Binding[] = [];
     for (const binding of bindings) {
-      const t = store.traverse({
-        start: binding.lastNode.nodeId,
-        direction: rel.direction,
-        ...(rel.types.length > 0 ? { edgeTypes: rel.types } : {}),
-        maxDepth: rel.maxHops,
-      });
-      if (!t.ok) {
-        // unknown_start can happen if the node vanished between search
-        // and traverse — skip this binding rather than fail the whole
-        // query. Genuine db errors propagate.
-        if (
-          t.code === "unknown_start" ||
-          t.code === "ambiguous_start" ||
-          t.code === "invalid_query"
-        ) {
-          continue;
+      // Collect candidate endpoint nodes for THIS binding + rel.
+      const candidates: CypherNodeValue[] = [];
+      if (rel.isVarLength) {
+        // Variable-length (`*M..N` / `*N`) compiles to the path-enumerating
+        // primitive (issue #1650) so an exact `*N` honors concrete length-N
+        // paths, not just BFS shortest-depth reachability. A node reachable
+        // at both a shorter and a length-N path is now returned for the
+        // length-N path, fixing the dropped-endpoint bug.
+        const tp = store.traversePaths({
+          start: binding.lastNode.nodeId,
+          direction: rel.direction,
+          ...(rel.types.length > 0 ? { edgeTypes: rel.types } : {}),
+          maxHops: rel.maxHops,
+        });
+        if (!tp.ok) {
+          // unknown_start can happen if the node vanished between search
+          // and traverse -- skip this binding rather than fail the whole
+          // query. Genuine db errors propagate.
+          if (
+            tp.code === "unknown_start" ||
+            tp.code === "ambiguous_start" ||
+            tp.code === "invalid_query"
+          ) {
+            continue;
+          }
+          return storeFailureToCypher(tp);
         }
-        return storeFailureToCypher(t);
+        // A `*0..N` bound includes the trivial length-0 path (the start
+        // node itself) -- traversePaths only yields length >= 1 paths.
+        if (rel.minHops === 0) candidates.push(binding.lastNode);
+        for (const hit of tp.hits) {
+          if (hit.length < rel.minHops || hit.length > rel.maxHops) continue;
+          candidates.push(nodeToValue(hit));
+        }
+      } else {
+        // Fixed-length single hop (no `*`): BFS traverse is exact for
+        // direct neighbors -- the original compile target, unchanged.
+        const t = store.traverse({
+          start: binding.lastNode.nodeId,
+          direction: rel.direction,
+          ...(rel.types.length > 0 ? { edgeTypes: rel.types } : {}),
+          maxDepth: rel.maxHops,
+        });
+        if (!t.ok) {
+          if (
+            t.code === "unknown_start" ||
+            t.code === "ambiguous_start" ||
+            t.code === "invalid_query"
+          ) {
+            continue;
+          }
+          return storeFailureToCypher(t);
+        }
+        // Depth filter: traverse's depth is inclusive; the relationship's
+        // minHops/maxHops are inclusive bounds (depth in [minHops, maxHops]).
+        for (const hit of t.hits) {
+          if (hit.depth < rel.minHops || hit.depth > rel.maxHops) continue;
+          candidates.push(nodeToValue(hit));
+        }
       }
-      // Depth filter: half-open per traverse, but the relationship's
-      // minHops/maxHops are inclusive bounds (depth ∈ [minHops, maxHops]).
-      // The start node itself is at depth 0; for hops we want depth >= 1.
+      // Shared: dedupe by node id (one binding per distinct endpoint),
+      // apply the target node pattern, then bind. Deduping by node id
+      // preserves the read-subset's reachability contract for `*1..N`
+      // (one row per reachable node), even though var-length now
+      // enumerates paths internally (issue #1650).
       const seen = new Set<string>();
-      for (const hit of t.hits) {
-        if (hit.depth < rel.minHops || hit.depth > rel.maxHops) continue;
-        if (seen.has(hit.nodeId)) continue;
-        seen.add(hit.nodeId);
-        const node = nodeToValue(hit);
+      for (const node of candidates) {
+        if (seen.has(node.nodeId)) continue;
+        seen.add(node.nodeId);
         if (!matchesNodePattern(node, nodePattern)) continue;
         const varByName = new Map(binding.varByName);
         if (nodePattern.varName) {

@@ -268,6 +268,65 @@ export type TraverseResult =
   | { ok: false; code: "unknown_start" | "ambiguous_start" | "invalid_query" };
 
 /**
+ * Default cap on the number of concrete paths {@link GraphStore.traversePaths}
+ * enumerates before stopping and flagging `truncated`. Bounds the worst-case
+ * exponential blowup of relationship-simple path enumeration on dense
+ * subgraphs (issue #1650). Callers may override per-query via
+ * {@link TraversePathsQuery.maxPaths}.
+ */
+export const DEFAULT_TRAVERSE_PATHS_MAX = 10_000;
+
+/**
+ * Path-enumerating traversal query (issue #1650). Mirrors {@link TraverseQuery}
+ * but yields CONCRETE paths rather than BFS-shortest-depth reachability, so an
+ * exact `*N` (N > 1) hop count is honored for nodes reachable at both a shorter
+ * and a length-N path.
+ */
+export interface TraversePathsQuery {
+  /** Start node id or qualified name (same resolution rules as {@link TraverseQuery.start}). */
+  start: string;
+  /** Default `"outgoing"`. */
+  direction?: TraverseDirection;
+  /** Edge types to follow; omitted/empty means every type. */
+  edgeTypes?: readonly string[];
+  /**
+   * Inclusive upper bound on enumerated path LENGTH (hop count). MUST be a
+   * non-negative integer. A `maxHops` of 0 yields no paths (every enumerated
+   * path has length >= 1); callers that need the length-0 trivial path add it
+   * themselves.
+   */
+  maxHops: number;
+  /**
+   * Safety cap on total enumerated paths. Defaults to
+   * {@link DEFAULT_TRAVERSE_PATHS_MAX}. When the cap is reached, enumeration
+   * STOPS and the result carries `truncated: true` so callers can detect that
+   * the result is incomplete (e.g. to narrow the query or raise the cap).
+   */
+  maxPaths?: number;
+}
+
+/**
+ * One enumerated path. The endpoint node is fully resolved; the full node-id
+ * sequence lets callers reconstruct the path (issue #1650 acceptance).
+ */
+export interface TraversePathHit {
+  nodeId: string;
+  qualifiedName: string;
+  name: string;
+  label: string;
+  filePath: string;
+  /** Length of this path in hops (>= 1). */
+  length: number;
+  /** Full path as node ids, start-first (`length + 1` entries). */
+  nodeIds: string[];
+}
+
+export type TraversePathsResult =
+  | { ok: true; hits: TraversePathHit[]; truncated: boolean }
+  | ({ ok: false } & GraphStoreFailure)
+  | { ok: false; code: "unknown_start" | "ambiguous_start" | "invalid_query" };
+
+/**
  * Structured node search. All filters are AND-combined; every filter
  * is optional so the bare query `{}` returns the whole graph (capped
  * by `limit`). Patterns use SQLite `LIKE` semantics — `%` matches any
@@ -2063,6 +2122,207 @@ export class GraphStore {
     } catch (error) {
       logWriteFailure(error);
       return classifyReadError(error) as TraverseResult;
+    }
+  }
+  /**
+   * Path-enumerating traversal (issue #1650). Unlike {@link traverse}'s BFS —
+   * which visits each node ONCE at its shortest-path depth and so cannot honor
+   * an exact `*N` (N > 1) hop count for nodes reachable at both a shorter and a
+   * length-N path — this primitive enumerates concrete relationship-simple
+   * paths from the start, yielding one hit per distinct (path, endpoint) pair
+   * up to {@link TraversePathsQuery.maxHops}.
+   *
+   * Cycle safety uses RELATIONSHIP UNIQUENESS (the real Cypher rule): a single
+   * path never traverses the same edge twice, keyed by the edge's canonical
+   * `(src, dst, type)` identity. A node MAY recur in a path via distinct edges
+   * (e.g. A->B->A over two different edges) — that is correct Cypher behavior.
+   * The {@link TraversePathsQuery.maxHops} cap bounds each path's length;
+   * {@link TraversePathsQuery.maxPaths} bounds the total enumerated count so a
+   * dense subgraph cannot blow enumeration up exponentially without notice
+   * (when hit, enumeration stops and the result carries `truncated: true`).
+   *
+   * Every yielded path has length >= 1 (at least one edge). A length-0 "path"
+   * (the trivial start->start) is NOT enumerated; callers that need the start
+   * node for a `*0..N` bound add it themselves.
+   */
+  traversePaths(query: TraversePathsQuery): TraversePathsResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
+    // Guard the query object before any dereference (mirrors traverse).
+    if (query == null || typeof query !== "object") {
+      return { ok: false, code: "invalid_query" };
+    }
+    if (
+      typeof query.maxHops !== "number" ||
+      !Number.isInteger(query.maxHops) ||
+      query.maxHops < 0
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    const direction: TraverseDirection =
+      query.direction === undefined ? "outgoing" : query.direction;
+    if (
+      direction !== "outgoing" &&
+      direction !== "incoming" &&
+      direction !== "both"
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    if (
+      query.edgeTypes !== undefined &&
+      (!Array.isArray(query.edgeTypes) ||
+        !query.edgeTypes.every((e) => typeof e === "string"))
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    if (typeof query.start !== "string" || query.start.length === 0) {
+      return { ok: false, code: "invalid_query" };
+    }
+    const maxPaths =
+      typeof query.maxPaths === "number" &&
+      Number.isInteger(query.maxPaths) &&
+      query.maxPaths >= 0
+        ? query.maxPaths
+        : DEFAULT_TRAVERSE_PATHS_MAX;
+
+    try {
+      // Resolve the start node — same split id/qualified_name policy as
+      // traverse (cursor Bugbot: 'Traverse start conflates id and name').
+      const isNodeId = /^[0-9a-f]{64}$/.test(query.start);
+      const rows = expectRows<{ id: string }>(
+        this.db
+          .prepare(
+            isNodeId
+              ? "SELECT id FROM nodes WHERE id = ?"
+              : "SELECT id FROM nodes WHERE qualified_name = ?",
+          )
+          .all(query.start),
+        ["id"],
+      );
+      if (rows.length === 0) return { ok: false, code: "unknown_start" };
+      if (rows.length > 1) return { ok: false, code: "ambiguous_start" };
+      const startId = rows[0]!.id;
+
+      // maxHops === 0 -> no edge paths exist.
+      if (query.maxHops === 0) {
+        return { ok: true, hits: [], truncated: false };
+      }
+
+      const edgeTypes = query.edgeTypes ?? [];
+      const typeClause =
+        edgeTypes.length > 0
+          ? `AND type IN (${edgeTypes.map(() => "?").join(", ")})`
+          : "";
+      // Return the canonical (src, dst, type) so relationship-uniqueness keys
+      // are direction-independent: traversing edge A->B outgoing then B->A
+      // incoming reuses the SAME relationship and is blocked.
+      const outgoingStmt = this.db.prepare(
+        `SELECT dst AS neighbor, src, dst, type FROM edges WHERE src = ? ${typeClause}`,
+      );
+      const incomingStmt = this.db.prepare(
+        `SELECT src AS neighbor, src, dst, type FROM edges WHERE dst = ? ${typeClause}`,
+      );
+      const nodeStmt = this.db.prepare(
+        "SELECT n.id, n.qualified_name, n.name, n.label, f.path AS file_path FROM nodes n JOIN files f ON n.file_id = f.id WHERE n.id = ?",
+      );
+
+      type NodeRow = {
+        id: string;
+        qualified_name: string;
+        name: string;
+        label: string;
+        file_path: string;
+      };
+      type EdgeRow = {
+        neighbor: string;
+        src: string;
+        dst: string;
+        type: string;
+      };
+
+      const nodeCache = new Map<string, NodeRow>();
+      const getNode = (id: string): NodeRow | undefined => {
+        const cached = nodeCache.get(id);
+        if (cached) return cached;
+        const row = expectRow<NodeRow>(nodeStmt.get(id), [
+          "id",
+          "qualified_name",
+          "name",
+          "label",
+          "file_path",
+        ]);
+        if (row) nodeCache.set(id, row);
+        return row;
+      };
+
+      const neighborsOf = (id: string): EdgeRow[] => {
+        const params = [id, ...edgeTypes];
+        const out: EdgeRow[] =
+          direction === "outgoing" || direction === "both"
+            ? expectRows<EdgeRow>(outgoingStmt.all(...params), [
+                "neighbor",
+                "src",
+                "dst",
+                "type",
+              ])
+            : [];
+        const inn: EdgeRow[] =
+          direction === "incoming" || direction === "both"
+            ? expectRows<EdgeRow>(incomingStmt.all(...params), [
+                "neighbor",
+                "src",
+                "dst",
+                "type",
+              ])
+            : [];
+        return [...out, ...inn];
+      };
+
+      const hits: TraversePathHit[] = [];
+      let truncated = false;
+      const usedEdges = new Set<string>();
+      const pathNodes: string[] = [startId];
+
+      // Recursive DFS. `length` is the current path's hop count (edges taken).
+      // We can extend while length < maxHops.
+      const dfs = (currentId: string, length: number): void => {
+        if (truncated) return;
+        if (length >= query.maxHops) return;
+        for (const e of neighborsOf(currentId)) {
+          if (truncated) return;
+          const key = `${e.src}\u0000${e.dst}\u0000${e.type}`;
+          if (usedEdges.has(key)) continue;
+          // Cap check BEFORE committing this path so the count never exceeds
+          // maxPaths.
+          if (hits.length >= maxPaths) {
+            truncated = true;
+            return;
+          }
+          usedEdges.add(key);
+          pathNodes.push(e.neighbor);
+          const newLength = length + 1;
+          const info = getNode(e.neighbor);
+          if (info) {
+            hits.push({
+              nodeId: info.id,
+              qualifiedName: info.qualified_name,
+              name: info.name,
+              label: info.label,
+              filePath: info.file_path,
+              length: newLength,
+              nodeIds: pathNodes.slice(),
+            });
+          }
+          dfs(e.neighbor, newLength);
+          pathNodes.pop();
+          usedEdges.delete(key);
+        }
+      };
+
+      dfs(startId, 0);
+      return { ok: true, hits, truncated };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyReadError(error) as TraversePathsResult;
     }
   }
   /**

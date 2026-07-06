@@ -164,6 +164,7 @@ export {
 export {
   GraphStore,
   nodeIdFor,
+  DEFAULT_TRAVERSE_PATHS_MAX,
   DEAD_CODE_EXCLUSION,
   type ByteSpan,
   type DeadCodeHit,
@@ -189,6 +190,9 @@ export {
   type TraverseDirection,
   type TraverseHit,
   type TraverseQuery,
+  type TraversePathHit,
+  type TraversePathsQuery,
+  type TraversePathsResult,
   type TraverseResult,
   type ReadCoChangeEdge,
   type ReadCoChangesResult,
