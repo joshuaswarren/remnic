@@ -292,7 +292,13 @@ export function normalizeOptionalPath(value: unknown): string | undefined {
 export function formatZodIssues(error: z.ZodError): string {
   const parts: string[] = [];
   for (const issue of error.issues) {
-    const path = issue.path.length > 0 ? issue.path.join(".") : "(root)";
+    // Collapse array-index paths (e.g. ["currentContextScopes", 1]) to
+    // the field name so the message reads "field: must be ..." not
+    // "field.1: must be ...".
+    const hasNumeric = issue.path.some((p) => typeof p === "number");
+    const path = hasNumeric
+      ? issue.path.filter((p) => typeof p === "string").join(".") || "(root)"
+      : issue.path.length > 0 ? issue.path.join(".") : "(root)";
     const options = enumOptionsFromIssue(issue);
     const suffix = options ? `. Valid: ${options.join(", ")}` : "";
     parts.push(`${path}: ${issue.message}${suffix}`);
@@ -326,6 +332,33 @@ const registry = new Map<OperationName, BoundOperation>();
  * registration is a programming error, not a runtime input fault, so it throws
  * a plain Error (not the input-error class surfaces translate for clients).
  */
+/**
+ * Error map that converts Zod's generic type-mismatch messages into
+ * human-readable "must be a <type>" messages (rule 51).  Applied at the
+ * boundary chokepoint so every operation gets consistent messaging
+ * without per-handler boilerplate.
+ */
+const humanReadableErrorMap: z.ZodErrorMap = (issue, ctx) => {
+  if (issue.code === z.ZodIssueCode.invalid_type) {
+    if (issue.received === "undefined") return { message: ctx.defaultError };
+    // Array-element type errors — collapse to field-level message.
+    if (issue.path.some((p) => typeof p === "number")) {
+      const arrField = issue.path.filter((p) => typeof p === "string").join(".");
+      return { message: `${arrField} must be an array of ${issue.expected}s` };
+    }
+    const fieldName = issue.path.length > 0 ? String(issue.path[issue.path.length - 1]) : "value";
+    switch (issue.expected) {
+      case "string": return { message: `${fieldName} must be a string` };
+      case "boolean": return { message: `${fieldName} must be a boolean` };
+      case "number": return { message: `${fieldName} must be a number` };
+      case "array": return { message: `${fieldName} must be an array` };
+      case "object": return { message: `${fieldName} must be an object` };
+      default: return { message: ctx.defaultError };
+    }
+  }
+  return { message: ctx.defaultError };
+};
+
 export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOperation<In, Out> {
   if (registry.has(spec.name)) {
     throw new Error(`access-boundary: operation already registered: ${spec.name}`);
@@ -333,7 +366,7 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
   const bound: BoundOperation<In, Out> = {
     spec,
     run: async (rawInput, ctx) => {
-      const parseResult = spec.schema.safeParse(rawInput);
+      const parseResult = spec.schema.safeParse(rawInput, { errorMap: humanReadableErrorMap });
       if (!parseResult.success) {
         throw new EngramAccessInputError(formatZodIssues(parseResult.error));
       }
