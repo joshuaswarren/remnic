@@ -121,6 +121,7 @@ import {
   shouldFilterSupersededFromRecall,
 } from "./temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "./temporal-validity.js";
+import { resolveFactEventTime } from "./event-time.js";
 import { RelevanceStore } from "./relevance.js";
 import { NegativeExampleStore } from "./negative.js";
 import {
@@ -12150,10 +12151,16 @@ export class Orchestrator {
         : typeof sessionKey === "string" && sessionKey.length > 0
           ? sessionKey
           : "default";
+    const captureTimestamp = new Date().toISOString();
     const turn: BufferTurn = {
       role,
       content,
-      timestamp: new Date().toISOString(),
+      timestamp: captureTimestamp,
+      // #1578: anchor live-capture turns to wall-clock when bi-temporal is on;
+      // replay/import turns carry sourceValidAt explicitly (codex P1).
+      ...(this.config.temporalBiTemporal
+        ? { sourceValidAt: captureTimestamp }
+        : {}),
       sessionKey,
       logicalSessionKey: options.logicalSessionKey ?? bufferKey,
       providerThreadId: options.providerThreadId ?? null,
@@ -13922,6 +13929,11 @@ export class Orchestrator {
       intentEntityTypes?: string[];
       memoryKind?: MemoryFrontmatter["memoryKind"];
       validAt?: string;
+      // #1578 — bi-temporal bounds + ingestion provenance forwarded to profile-
+      // target copies (same defect class as shared promotion; cursor bugbot).
+      invalidAt?: string;
+      observedAt?: string;
+      eventTimeSource?: "extracted" | "assumed";
       source: string;
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
@@ -13980,6 +13992,10 @@ export class Orchestrator {
               intentEntityTypes: options.intentEntityTypes,
               memoryKind: options.memoryKind,
               validAt: options.validAt,
+              // #1578 — forward bi-temporal bounds + ingestion provenance.
+              ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
+              ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+              ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
               contentHashSource: options.category === "fact" ? dedupContent : rawContent,
               ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
               ...(options.provenance ? { provenance: options.provenance } : {}),
@@ -13999,7 +14015,7 @@ export class Orchestrator {
                 entityRef: options.entityRef,
                 structuredAttributes: options.structuredAttributes,
                 createdAt: supersessionOrderingAt(options.validAt),
-                enabled: true,
+                enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
               });
             } catch (profileSupersessionErr) {
               log.warn(
@@ -14042,6 +14058,12 @@ export class Orchestrator {
       intentEntityTypes?: string[];
       memoryKind?: MemoryFrontmatter["memoryKind"];
       validAt?: string;
+      // #1578 — bi-temporal bounds + ingestion provenance forwarded to the
+      // shared-namespace copy so shared recall honours the same invalid_at
+      // window as the source fact (cursor bugbot).
+      invalidAt?: string;
+      observedAt?: string;
+      eventTimeSource?: "extracted" | "assumed";
       source: string;
       /** Claim-level provenance spans (issue #1575 PR 2). */
       sources?: ProvenanceSource[];
@@ -14196,7 +14218,7 @@ export class Orchestrator {
                   entityRef: options.entityRef,
                   structuredAttributes: options.structuredAttributes,
                   createdAt: supersessionOrderingAt(options.validAt),
-                  enabled: true,
+                  enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
                   useCallerTimestamp: true,
                 });
                 // Catalog touch (issue #1499 — codex P2 NElSf): this dedup branch
@@ -14271,6 +14293,10 @@ export class Orchestrator {
             intentEntityTypes: options.intentEntityTypes,
             memoryKind: options.memoryKind,
             validAt: options.validAt,
+            // #1578 — forward bi-temporal bounds + ingestion provenance.
+            ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
+            ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+            ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
             contentHashSource: options.category === "fact" ? dedupContent : rawContent,
             // Claim-level provenance spans (issue #1575 PR 2).
             ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
@@ -14296,7 +14322,7 @@ export class Orchestrator {
               entityRef: options.entityRef,
               structuredAttributes: options.structuredAttributes,
               createdAt: supersessionOrderingAt(options.validAt),
-              enabled: true,
+              enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
             });
           } catch (sharedSupersessionErr) {
             log.warn(
@@ -14677,7 +14703,7 @@ export class Orchestrator {
         typeof (fact as any).confidence === "number"
           ? (fact as any).confidence
           : 0.7;
-
+      const biTemporal = this.config.temporalBiTemporal && sourceContext?.validAt ? resolveFactEventTime(fact.eventTime, sourceContext.validAt) : undefined;
       // Content-hash dedup check (v6.0)
       //
       // Canonicalize pre-tagged facts before hashing (Codex P2 — issue #369).
@@ -15159,7 +15185,6 @@ export class Orchestrator {
           // back, leaving a dangling deindex with no replacement reference.
           // Child chunks intentionally do NOT carry supersedes; only the
           // parent represents the logical memory unit.
-          //
           // Canonicalize contentHashSource before writing (Thread 3 — Codex P2,
           // issue #369). If fact.content already carries an inline citation
           // (e.g. re-processed or relayed fact), strip it so contentHashSource
@@ -15187,7 +15212,8 @@ export class Orchestrator {
               intentEntityTypes: inferredIntent?.entityTypes,
               memoryKind,
               structuredAttributes: fact.structuredAttributes,
-              validAt: sourceContext?.validAt,
+              validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
+              ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
               contentHashSource: rawChunkedContent,
               // Faithfulness gate (issue #1576).
               ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
@@ -15229,7 +15255,17 @@ export class Orchestrator {
                   intentActionType: inferredIntent?.actionType,
                   intentEntityTypes: inferredIntent?.entityTypes,
                   memoryKind,
-                  validAt: sourceContext?.validAt,
+                  validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
+                  // #1578: propagate end bound + provenance to chunks (cursor bugbot).
+                  ...(biTemporal
+                    ? {
+                        observedAt: biTemporal.observedAt,
+                        eventTimeSource: biTemporal.eventTimeSource,
+                        ...(biTemporal.validUntil
+                          ? { invalidAt: biTemporal.validUntil }
+                          : {}),
+                      }
+                    : {}),
                   // Faithfulness gate (issue #1576): propagate the parent
                   // fact's verdict + enforce status so a pending_review fact
                   // is not indexed as active through its chunks (chatgpt P2).
@@ -15287,8 +15323,12 @@ export class Orchestrator {
                 newMemoryId: parentId,
                 entityRef: supersessionEntityRef,
                 structuredAttributes: fact.structuredAttributes,
-                createdAt: supersessionOrderingAt(sourceContext?.validAt),
-                enabled: this.config.temporalSupersessionEnabled,
+                createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
+                // #1578 r3: an extracted end-only bound (validFrom absent) is
+                // historical, not a new authoritative state — never let it
+                // supersede a later active fact (codex P1 on :15534).
+                enabled: this.config.temporalSupersessionEnabled &&
+                  !(biTemporal && !biTemporal.validFrom),
               });
             } catch (err) {
               log.warn(`temporal-supersession (chunked): unexpected error: ${err}`);
@@ -15311,7 +15351,14 @@ export class Orchestrator {
             intentActionType: inferredIntent?.actionType,
             intentEntityTypes: inferredIntent?.entityTypes,
             memoryKind,
-            validAt: sourceContext?.validAt,
+            validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
+            ...(biTemporal
+              ? {
+                  observedAt: biTemporal.observedAt,
+                  eventTimeSource: biTemporal.eventTimeSource,
+                  ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}),
+                }
+              : {}),
             source: extractionWriteSource,
             ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
             ...(fact.provenance ? { provenance: fact.provenance } : {}),
@@ -15444,13 +15491,11 @@ export class Orchestrator {
             : undefined;
 
       // Normal write (no chunking)
-      //
       // Compute the cited content once so that writeMemory and writeArtifact
       // (when verbatim artifacts are enabled) share the same citation timestamp.
       // Calling applyInlineCitation twice on the same raw content would produce
       // two different timestamps, creating duplicate citations with divergent
       // provenance metadata on the memory and artifact copies of the same fact.
-      //
       // Pass the RAW (pre-citation) fact as `contentHashSource` so the
       // fact-content hash index records the hash of the canonical fact text
       // rather than the citation-annotated variant. When inline attribution is
@@ -15483,7 +15528,8 @@ export class Orchestrator {
           intentEntityTypes: inferredIntent?.entityTypes,
           memoryKind,
           structuredAttributes: fact.structuredAttributes,
-          validAt: sourceContext?.validAt,
+          validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
+          ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource, ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}) } : {}),
           contentHashSource: writeCategory === "fact" ? fact.content : undefined,
           // Faithfulness gate (issue #1576).
           ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
@@ -15516,8 +15562,9 @@ export class Orchestrator {
             newMemoryId: memoryId,
             entityRef: supersessionEntityRef,
             structuredAttributes: fact.structuredAttributes,
-            createdAt: supersessionOrderingAt(sourceContext?.validAt),
-            enabled: this.config.temporalSupersessionEnabled,
+            createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
+            enabled: this.config.temporalSupersessionEnabled &&
+              !(biTemporal && !biTemporal.validFrom),
           });
         } catch (err) {
           log.warn(`temporal-supersession: unexpected error: ${err}`);
@@ -15564,7 +15611,14 @@ export class Orchestrator {
           intentActionType: inferredIntent?.actionType,
           intentEntityTypes: inferredIntent?.entityTypes,
           memoryKind,
-          validAt: sourceContext?.validAt,
+          validAt: biTemporal ? biTemporal.validFrom : sourceContext?.validAt,
+          ...(biTemporal
+            ? {
+                observedAt: biTemporal.observedAt,
+                eventTimeSource: biTemporal.eventTimeSource,
+                ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}),
+              }
+            : {}),
           source: extractionWriteSource,
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),

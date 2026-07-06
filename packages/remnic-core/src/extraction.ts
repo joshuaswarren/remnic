@@ -279,6 +279,12 @@ export class ExtractionEngine {
               typeof f?.quote === "string" && f.quote.trim().length > 0
                 ? f.quote
                 : undefined,
+            eventTime:
+              typeof f?.eventTime === "string" && f.eventTime.trim().length > 0
+                ? f.eventTime.trim()
+                : typeof f?.event_time === "string" && f.event_time.trim().length > 0
+                  ? f.event_time.trim()
+                  : undefined,
           }))
           .filter((f: any) => f.content.length > 0)
       : [];
@@ -750,6 +756,11 @@ export class ExtractionEngine {
       this.config.provenance?.enabled
         ? '- Source quotes: For each fact, include a "quote" field with the EXACT verbatim words from the conversation that support the fact (a contiguous span from a single turn, not a paraphrase). Cap at ~300 chars.'
         : "",
+      // #1578: emit the same event-time guidance as the primary extraction
+      // paths so proactive-recovered facts also carry an optional eventTime
+      // (chatgpt-codex thread on extraction.ts:1607). Returns "" when the
+      // bi-temporal gate is off, keeping the prompt unchanged by default.
+      this.eventTimePromptInstruction(),
       "",
       "Base extracted facts (do not repeat):",
       factsPreview || "(none)",
@@ -1250,10 +1261,23 @@ export class ExtractionEngine {
         // reasoningTrace through normalizeReasoningTrace before passing it on so
         // gateway output matches the shape local/direct-client paths produce.
         const normalizedFacts = result.facts.map((f: any) => {
-          if (!f?.reasoningTrace) return f;
+          if (!f) return f;
+          // Gateway tolerance: collapse snake_case event_time → camelCase
+          // eventTime so the gateway path matches the local/direct/proactive
+          // normalization (#1578 r3 — cursor bugbot).
+          const eventTime =
+            typeof f.eventTime === "string" && f.eventTime.trim().length > 0
+              ? f.eventTime.trim()
+              : typeof f.event_time === "string" && f.event_time.trim().length > 0
+                ? f.event_time.trim()
+                : undefined;
+          if (!f.reasoningTrace && eventTime === undefined) return f;
           return {
             ...f,
-            reasoningTrace: normalizeReasoningTrace(f.reasoningTrace) ?? undefined,
+            ...(f.reasoningTrace
+              ? { reasoningTrace: normalizeReasoningTrace(f.reasoningTrace) ?? undefined }
+              : {}),
+            ...(eventTime !== undefined ? { eventTime } : {}),
           };
         });
         const sanitized = this.sanitizeExtractionResult({
@@ -1394,7 +1418,7 @@ Examples of when to add structuredAttributes:
 - Decisions: {"chosen": "PostgreSQL", "rejected": "MongoDB", "reason": "ACID compliance"}
 - Quantities/measurements: {"budget": "50000", "team_size": "5", "deadline": "2024-06-01"}
 Only add structuredAttributes when there are concrete values. Skip for abstract or narrative facts.
-
+${this.eventTimePromptInstruction()}
 Also generate:
 1. 1-3 genuine questions you're curious about from this conversation
 2. Profile updates about user patterns/behaviors (if any)
@@ -1596,6 +1620,28 @@ ${truncatedConversation}`;
   }
 
   /**
+   * Bi-temporal event-time extraction instruction (#1578 PR2). Emitted on
+   * every extraction entry path when `temporal.biTemporal` is on so the LLM
+   * emits an optional per-fact `eventTime` expression. The expression is
+   * resolved against the source turn timestamp at write time — never
+   * wall-clock — so replay/import of old transcripts anchors correctly.
+   * Returns an empty string when the gate is off (byte-identical prompt).
+   */
+  private eventTimePromptInstruction(): string {
+    if (!this.config.temporalBiTemporal) return "";
+    return `
+=== Event Time (bi-temporal) ===
+When a fact has an explicit temporal anchor — a date, month, season, or relative time expression stating WHEN the fact became (or stopped being) true — capture it verbatim in an "eventTime" field on that fact. Examples:
+- "We moved offices in March" → "eventTime": "last March"
+- "The API has been rate-limited since 2024" → "eventTime": "since 2024"
+- "I switched to PostgreSQL on 2025-01-15" → "eventTime": "2025-01-15"
+- "We used MongoDB until June 2025" → "eventTime": "until 2025-06"
+Accepted forms: ISO dates ("2025-03-01"), year-month ("2025-03"), month/season + year ("March 2025", "summer 2024"), relative ("yesterday", "last week", "this month", "next year", "last December"), and open-ended ("since 2024", "until 2025-06").
+Omit "eventTime" when the fact has no explicit temporal anchor — do NOT guess or infer dates. The system resolves the expression against the conversation's own timestamp, not today's date.
+`;
+  }
+
+  /**
    * Build extraction instructions shared between local and cloud LLM.
    */
   private buildExtractionInstructions(existingEntities?: string[]): string {
@@ -1663,6 +1709,7 @@ ${existingEntities.join(", ")}
 
 When you see something that matches a known entity, use THAT name exactly. Only create a NEW entity if nothing in this list represents it.
 ` : ""}
+${this.eventTimePromptInstruction()}
 Also extract relationships between entities mentioned in the conversation.
 - Format: {source: "entity-name", target: "entity-name", label: "relationship description"}
 - Max 5 relationships per extraction
