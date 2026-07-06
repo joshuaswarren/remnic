@@ -218,7 +218,6 @@ export interface ResolveOptions {
   readonly applyUpgrades: (
     upgrades: readonly EdgeUpgrade[],
   ) => Promise<void>;
-  readonly perRequestTimeoutMs?: number;
   /**
    * Workspace root for resolving repo-relative file paths to absolute LSP
    * URIs and normalizing returned URIs back to repo-relative paths.

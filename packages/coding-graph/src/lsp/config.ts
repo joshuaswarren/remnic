@@ -8,7 +8,6 @@
  * Env overrides follow gotcha 9: `REMNIC_CODING_GRAPH_LSP_ENABLED` with
  * `ENGRAM_` fallback.
  */
-import { spawn } from "node:child_process";
 import process from "node:process";
 
 import type { CodingGraphLanguage } from "@remnic/core";

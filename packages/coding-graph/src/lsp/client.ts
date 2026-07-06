@@ -33,6 +33,7 @@ import {
 import {
   lspDegradation,
   type LspDegradation,
+  type LspDegradationCode,
   type LspResult,
 } from "./degradation.js";
 import type { LspServerLaunchSpec } from "./config.js";
@@ -76,6 +77,7 @@ export class LspClient {
   private readonly pending = new Map<number, PendingRequest>();
   private disposed = false;
   private crashed = false;
+  private crashCode: LspDegradationCode | null = null;
   private serverCapabilities: LspInitializeResult["capabilities"] | null = null;
 
   private constructor(child: ChildProcess, rootUri: string | null, timeoutMs: number) {
@@ -139,7 +141,7 @@ export class LspClient {
     if (client.crashed) {
       return {
         ok: false,
-        degradation: lspDegradation("server_missing"),
+        degradation: lspDegradation(client.crashCode ?? "server_crashed"),
       };
     }
 
@@ -388,6 +390,7 @@ export class LspClient {
     // Normal exit during dispose — don't mark as crashed.
     if (this.disposed) return;
     this.crashed = true;
+    this.crashCode = "server_crashed";
     const detail =
       code !== null ? `server exited with code ${code}` : `server killed by ${signal}`;
     for (const [id, entry] of this.pending) {
@@ -401,12 +404,14 @@ export class LspClient {
    * Handle a spawn error (ENOENT etc). Marks the server as missing.
    */
   private onChildError(err: Error): void {
-    // ENOENT = binary not found.
+    // ENOENT = binary not found; other spawn errors = server present but failing.
     this.crashed = true;
-    const detail = err.message.includes("ENOENT") ? undefined : "spawn error";
+    const isENOENT = err.message.includes("ENOENT");
+    this.crashCode = isENOENT ? "server_missing" : "server_crashed";
+    const detail = isENOENT ? undefined : "spawn error";
     for (const [id, entry] of this.pending) {
       clearTimeout(entry.timer);
-      entry.reject(lspDegradation("server_missing", detail));
+      entry.reject(lspDegradation(this.crashCode, detail));
       this.pending.delete(id);
     }
   }
@@ -450,8 +455,10 @@ export class LspClient {
  */
 export function pathToUri(filePath: string): string {
   const abs = path.isAbsolute(filePath) ? filePath : path.resolve(filePath);
-  // On Windows, prepend / before the drive letter.
-  return `file://${abs.replace(/\\/g, "/")}`;
+  const normalized = abs.replace(/\\/g, "/");
+  // Windows drive paths need a leading slash: C:/foo → /C:/foo → file:///C:/foo
+  const withSlash = /^[A-Za-z]:/.test(normalized) ? `/${normalized}` : normalized;
+  return `file://${withSlash}`;
 }
 
 /**
