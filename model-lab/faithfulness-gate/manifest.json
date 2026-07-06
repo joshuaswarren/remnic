@@ -13,8 +13,16 @@
   "schemaVersion": 1,
   "status": "pending-training",
   "contract": {
-    "inputFields": ["factText", "quote", "context"],
-    "outputLabels": ["entailed", "contradicted", "unsupported"],
+    "inputFields": [
+      "factText",
+      "quote",
+      "context"
+    ],
+    "outputLabels": [
+      "entailed",
+      "contradicted",
+      "unsupported"
+    ],
     "source": "FaithfulnessCheckInput (issue #1576)"
   },
   "baseModel": null,
@@ -22,7 +30,9 @@
     "generatorPath": "model-lab/faithfulness-gate/generate-data.py",
     "generatorGitSha": null,
     "seed": 1337,
-    "sources": ["synthetic-perturbation"],
+    "sources": [
+      "synthetic-perturbation"
+    ],
     "counts": {
       "entailed": null,
       "contradicted": null,
@@ -51,5 +61,19 @@
     "actualParamsB": null,
     "escapeHatchUsed": false,
     "$comment": "Issue #1585 policy: target models <=4B for this classification task. 8B LoRA is an escape hatch requiring written justification here."
+  },
+  "trainingStack": {
+    "python": null,
+    "libs": {
+      "torch": null,
+      "transformers": null,
+      "datasets": null,
+      "huggingface-hub": null,
+      "accelerate": null,
+      "sentencepiece": null
+    },
+    "pipFreezeSha256": null,
+    "capturedAt": null,
+    "$comment": "SCHEMA EXAMPLE. Exact interpreter + lib versions a real run used; captured by common.training_stack.capture_training_stack() at train time. Pin source: model-lab/requirements.txt (encoder baseline stack). Filled in the #1585 GPU-run follow-up (rule 55)."
   }
 }

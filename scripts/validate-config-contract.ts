@@ -53,7 +53,49 @@ function getPluginConfigKeys(source: ts.SourceFile): Set<string> {
   throw new Error("Could not find interface PluginConfig in packages/remnic-core/src/types.ts");
 }
 
-function getParseConfigReturnKeys(source: ts.SourceFile): Set<string> {
+function collectObjectLiteralKeys(expr: ts.ObjectLiteralExpression): Set<string> {
+  const keys = new Set<string>();
+  for (const prop of expr.properties) {
+    if (ts.isPropertyAssignment(prop)) {
+      const name = prop.name;
+      if (ts.isIdentifier(name) || ts.isStringLiteral(name)) keys.add(name.text);
+    } else if (ts.isShorthandPropertyAssignment(prop)) {
+      keys.add(prop.name.text);
+    }
+  }
+  return keys;
+}
+
+/**
+ * Resolve keys contributed by a `...parseXxxConfig(cfg)` spread in
+ * parseConfig's return. Supports the #1526 extraction pattern: a god-file
+ * helper is extracted to its own module and spread back into parseConfig, so
+ * the contract validator must follow the spread to the helper's own
+ * object-literal return or it would report every extracted key as missing.
+ * Searches every non-declaration source file in the program for a
+ * FunctionDeclaration with the callee name whose body returns an object
+ * literal, and merges those keys.
+ */
+function resolveSpreadKeys(expr: ts.Expression, program: ts.Program): Set<string> {
+  const keys = new Set<string>();
+  if (!ts.isCallExpression(expr)) return keys;
+  const callee = expr.expression;
+  if (!ts.isIdentifier(callee)) return keys;
+  const fnName = callee.text;
+  for (const sf of program.getSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    for (const stmt of sf.statements) {
+      if (!ts.isFunctionDeclaration(stmt) || stmt.name?.text !== fnName || !stmt.body) continue;
+      for (const s of stmt.body.statements) {
+        if (!ts.isReturnStatement(s) || !s.expression || !ts.isObjectLiteralExpression(s.expression)) continue;
+        for (const k of collectObjectLiteralKeys(s.expression)) keys.add(k);
+      }
+    }
+  }
+  return keys;
+}
+
+function getParseConfigReturnKeys(source: ts.SourceFile, program: ts.Program): Set<string> {
   for (const stmt of source.statements) {
     if (!ts.isFunctionDeclaration(stmt) || stmt.name?.text !== "parseConfig" || !stmt.body) continue;
     for (const s of stmt.body.statements) {
@@ -65,6 +107,8 @@ function getParseConfigReturnKeys(source: ts.SourceFile): Set<string> {
           if (ts.isIdentifier(name) || ts.isStringLiteral(name)) keys.add(name.text);
         } else if (ts.isShorthandPropertyAssignment(prop)) {
           keys.add(prop.name.text);
+        } else if (ts.isSpreadAssignment(prop)) {
+          for (const k of resolveSpreadKeys(prop.expression, program)) keys.add(k);
         }
       }
       return keys;
@@ -222,7 +266,7 @@ function main() {
   }
 
   const pluginConfigKeys = getPluginConfigKeys(typesSf);
-  const parseConfigReturnKeys = getParseConfigReturnKeys(configSf);
+  const parseConfigReturnKeys = getParseConfigReturnKeys(configSf, program);
   const pluginJson = JSON.parse(fs.readFileSync(pluginJsonPath, "utf8"));
   const schemaKeys = new Set<string>(Object.keys(pluginJson?.configSchema?.properties ?? {}));
 

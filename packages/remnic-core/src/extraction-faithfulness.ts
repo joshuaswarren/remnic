@@ -34,6 +34,10 @@ import { log } from "./logger.js";
 import type { PluginConfig, MemoryFrontmatter, FaithfulnessFrontmatter } from "./types.js";
 import type { LocalLlmClient } from "./local-llm.js";
 import { type FallbackLlmClient, gatewayTaskChainOptions } from "./fallback-llm.js";
+import {
+  callOpenAiCompatibleChat,
+  resolveFaithfulnessGateEndpoint,
+} from "./local-model-endpoint.js";
 import { extractJsonCandidates } from "./json-extract.js";
 
 // Re-export for callers importing from this module.
@@ -280,13 +284,54 @@ async function callFaithfulnessLlm(
   fallbackLlm: FallbackLlmClient | null,
   timeoutMs: number,
   signal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<LlmCallResult> {
   const messages: Array<{ role: "system" | "user"; content: string }> = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ];
 
-  const modelOverride = config.extractionFaithfulnessModel || undefined;
+  // Issue #1585 model-lab pointer: when an explicit local fine-tuned endpoint
+  // is configured (base URL + model name), try it FIRST — it is the cheapest,
+  // deterministic path the operator opted into by setting
+  // extractionFaithfulnessBaseUrl. Unset (the default) skips this entirely,
+  // preserving byte-identical pre-feature routing (rule 39). Any failure
+  // (network, non-2xx, malformed body, timeout) returns null and falls through
+  // to the configured chain (checklist §4 graceful degradation).
+  const localEndpoint = resolveFaithfulnessGateEndpoint(config);
+  if (localEndpoint) {
+    // Give the local probe a SMALLER budget than the outer batch timeout so a
+    // wedged local model returns null (and falls through to the configured
+    // chain) before the batch timer fires. The local endpoint is meant to be
+    // the fast path; if it cannot answer within half the budget (min 500ms),
+    // abandon it and let the fallback chain use the remainder (codex P2 — the
+    // advertised graceful fallback must actually reach the chain, not be starved
+    // by a hanging probe sharing the full batch budget).
+    const probeBudgetMs = Math.max(500, Math.floor(timeoutMs / 2));
+    const result = await callOpenAiCompatibleChat(
+      localEndpoint,
+      messages,
+      { temperature: 0.1, maxTokens: 2048, responseFormatJson: true, timeoutMs: probeBudgetMs },
+      fetchImpl,
+    );
+    if (result?.content) {
+      return { content: result.content, modelUsed: result.modelUsed };
+    }
+    log.debug(
+      "extraction-faithfulness: local model-lab endpoint unavailable, trying configured chain",
+    );
+  }
+
+  // extractionFaithfulnessModel is the LOCAL served model's name (e.g.
+  // remnic-faithfulness-gate-v1). When a local endpoint is configured it
+  // belongs to that endpoint ONLY — it must NOT leak into the fallback chain
+  // as a gateway/local-LLM override, or a local outage forces the configured
+  // chain onto an unavailable local-only model and turns graceful fallback
+  // into backend_unavailable (codex P2 PRRT_kwDORJXyws6Otp-L). Decouple: the
+  // override reaches the fallback chain only when NO local endpoint is
+  // configured (the pre-feature model-override contract, preserved
+  // byte-identical — rule 39).
+  const modelOverride = localEndpoint ? undefined : (config.extractionFaithfulnessModel || undefined);
 
   // Skip the local backend when (a) modelSource is "gateway", or (b) a
   // faithfulness model override is set. The local client always sends
@@ -415,6 +460,12 @@ export async function checkFaithfulnessBatch(
   config: PluginConfig,
   localLlm: LocalLlmClient | null,
   fallbackLlm: FallbackLlmClient | null,
+  /**
+   * Optional fetch injection (issue #1585). The orchestrator does not pass it
+   * (uses global fetch); tests pass a stub to exercise the local model-lab
+   * endpoint path without a live server. See callFaithfulnessLlm.
+   */
+  fetchImpl?: typeof fetch,
 ): Promise<FaithfulnessBatchResult> {
   const timeoutMs =
     typeof config.extractionFaithfulnessTimeoutMs === "number" &&
@@ -486,6 +537,7 @@ export async function checkFaithfulnessBatch(
       fallbackLlm,
       timeoutMs,
       controller.signal,
+      fetchImpl,
     );
     const settled = await Promise.race([
       callPromise.then(

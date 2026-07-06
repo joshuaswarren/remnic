@@ -1207,12 +1207,30 @@ export interface PluginConfig {
   // extracted facts against their verified source spans from #1575.
   /** Gate mode: "off" (default, byte-identical pre-feature), "shadow" (record only), "enforce" (route to pending_review). */
   extractionFaithfulnessGate: "off" | "shadow" | "enforce";
-  /** Override model/endpoint; empty string = default routing chain. */
+  /** Override model name; empty string = default routing chain. */
   extractionFaithfulnessModel: string;
+  /**
+   * Base URL of a local openai-compatible endpoint serving a fine-tuned
+   * faithfulness gate (issue #1585 model-lab), e.g.
+   * `http://localhost:11434/v1` (Ollama) or `http://localhost:8000/v1` (vLLM).
+   * Empty string (default) preserves the existing routing chain exactly;
+   * set together with `extractionFaithfulnessModel` to route the gate to the
+   * local model first, falling back to the chain on failure.
+   */
+  extractionFaithfulnessBaseUrl: string;
   /** Context window (chars) around the quote sent to the verifier. Default 400. */
   extractionFaithfulnessContextChars: number;
   /** Per-batch timeout in ms; timeout → tagged error, never blocks writes. Default 8000. */
   extractionFaithfulnessTimeoutMs: number;
+  /**
+   * Correction-intent model-lab pointer (issue #1581 / #1585). When both this
+   * and `correctionIntentBaseUrl` are set, the detection path can route to a
+   * local fine-tuned correction-intent classifier. Empty default keeps the
+   * rule-based passive-correction detector as the sole path (byte-identical).
+   */
+  correctionIntentModel: string;
+  /** Base URL of a local openai-compatible endpoint serving the correction-intent classifier (issue #1585). Empty default = rule-based detection. */
+  correctionIntentBaseUrl: string;
   // Hourly summaries
   hourlySummariesEnabled: boolean;
   daySummaryEnabled: boolean;
