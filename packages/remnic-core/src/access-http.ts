@@ -2260,7 +2260,7 @@ export class EngramAccessHttpServer {
           reason: body.reason,
         });
         // actor is derived from the authenticated principal inside adminPromoteMemory;
-        if (result.ok) this.recordWriteRateLimitHit();
+        this.recordWriteRateLimitHit();
         this.respondJson(res, 200, result);
       } catch (err) {
         if (err instanceof EngramAccessInputError) {

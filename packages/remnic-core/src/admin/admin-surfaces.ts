@@ -78,7 +78,7 @@ function walkRedact(value: unknown, key: string | undefined): unknown {
       return REDACTED;
     }
     if (BEARER_VALUE_RE.test(value)) return REDACTED;
-    if (LONG_OPAQUE_RE.test(value) && value.length >= 40 && !/^[0-9a-f]{16}$/.test(value)) {
+    if (!(key && SAFE_DIAGNOSTIC_KEYS.has(key)) && LONG_OPAQUE_RE.test(value) && value.length >= 40 && !/^[0-9a-f]{16}$/.test(value)) {
       return REDACTED;
     }
     return value;
