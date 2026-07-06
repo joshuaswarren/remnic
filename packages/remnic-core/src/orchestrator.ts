@@ -1722,28 +1722,16 @@ export function resolveRecentThreadMemoryPaths(options: {
     buildMemoryPathById(options.allMemsForGraph, options.storageDir);
   if (pathById.size === 0) return [];
 
-  // #1635 (defensive): never resolve a thread-predecessor path to a
-  // pending_review memory, even if a legacy/pre-existing thread episode set
-  // still references one. The append boundary (appendPersistedThreadEpisodes)
-  // keeps new pending ids out of the thread file; this guards reads of any
-  // episode set that predates that fix. Built lazily — the common case (no
-  // pending_review memories) allocates nothing.
-  let pendingReviewIds: Set<string> | null = null;
-  if (Array.isArray(options.allMemsForGraph)) {
-    for (const mem of options.allMemsForGraph) {
-      if (
-        mem.frontmatter.status === "pending_review" &&
-        typeof mem.frontmatter.id === "string"
-      ) {
-        if (!pendingReviewIds) pendingReviewIds = new Set<string>();
-        pendingReviewIds.add(mem.frontmatter.id);
-      }
-    }
-  }
+  // #1635 (defensive): skip pending_review ids from legacy episode sets.
+  const pendingReviewIds = new Set<string>(
+    (options.allMemsForGraph ?? [])
+      .filter((m) => m.frontmatter.status === "pending_review" && m.frontmatter.id)
+      .map((m) => m.frontmatter.id as string),
+  );
 
   return options.threadEpisodeIds
     .filter((id) => id !== options.currentMemoryId)
-    .filter((id) => !pendingReviewIds || !pendingReviewIds.has(id))
+    .filter((id) => !pendingReviewIds.has(id))
     .slice(-maxRecent)
     .map((id) => pathById.get(id))
     .filter((p): p is string => typeof p === "string" && p.length > 0);
@@ -1870,10 +1858,8 @@ export class Orchestrator {
    */
   private lastPersistExtractionDeferredCount: number = 0;
   /**
-   * Side-channel (#1635): persisted fact ids routed to pending_review by the
-   * faithfulness gate in the most recent `persistExtraction` call. runExtraction
-   * reads this to exclude them from `appendEpisodeIds` so they never enter the
-   * thread file and re-seed predecessor edges on the next extraction.
+   * Side-channel (#1635): pending_review persisted ids from the last
+   * persistExtraction; runExtraction excludes them from the thread episode set.
    */
   private lastPersistExtractionPendingReviewIds: string[] = [];
   private readonly _fastGatewayLlm: FallbackLlmClient | null;
@@ -13450,9 +13436,7 @@ export class Orchestrator {
     }
 
     // Batch-append persisted IDs so non-fact memories (entities/questions) are
-    // always attached to the thread. Pending_review fact ids (#1635) are
-    // excluded inside the helper so they never enter the thread file and
-    // re-seed predecessor edges on the next extraction in this thread.
+    // always attached to the thread. The helper excludes pending_review ids (#1635).
     if (
       this.config.threadingEnabled &&
       threadIdForExtraction &&
@@ -13816,9 +13800,7 @@ export class Orchestrator {
       return attachCitation(content, citationContext, citationTemplate);
     };
     const persistedIds: string[] = [];
-    // #1635: persisted fact ids routed to pending_review by the faithfulness
-    // gate. Surfaced to runExtraction via lastPersistExtractionPendingReviewIds
-    // so they can be excluded from the thread episode set (appendEpisodeIds).
+    // #1635: pending_review persisted ids, excluded from the thread episode set below.
     const pendingReviewPersistedIds: string[] = [];
     const persistedIdsByStorage = new Map<
       string,
@@ -15941,24 +15923,15 @@ export class Orchestrator {
       log.debug(`temporal-index update error (non-fatal): ${err}`),
     );
 
-    // #1635: surface pending_review fact ids to runExtraction so they can be
-    // excluded from the thread episode set (appendEpisodeIds). Without this,
-    // pending ids persist into the thread file and re-seed threadEpisodeIdsForGraph
-    // on the next extraction in the same thread, building predecessor edges to
-    // unfaithful memories.
+    // #1635: surface pending_review ids so the thread episode set excludes them.
     this.lastPersistExtractionPendingReviewIds = pendingReviewPersistedIds;
     // Return the persisted fact IDs for threading
     return persistedIds;
   }
   /**
-   * Append this extraction's persisted ids to the thread's episode set,
-   * EXCLUDING any pending_review fact ids (issue #1635). A pending_review
-   * memory is an unfaithful extraction awaiting review; persisting its id into
-   * the thread file would re-seed `threadEpisodeIdsForGraph` (via `loadThread`)
-   * on the next extraction in the same thread and build time/causal predecessor
-   * edges to an unfaithful memory. The pending set is surfaced from
-   * `persistExtraction` via `lastPersistExtractionPendingReviewIds`. Fail-open
-   * like the raw `appendEpisodeIds` call it replaces.
+   * Append persisted ids to the thread episode set, excluding pending_review
+   * fact ids (#1635) so they don't re-seed predecessor edges. Fail-open like
+   * the raw appendEpisodeIds call it replaces.
    */
   private async appendPersistedThreadEpisodes(
     threadId: string,
