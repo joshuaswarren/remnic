@@ -82,6 +82,10 @@ if [[ "$MODE" == "quick" ]]; then
   # Access boundary fitness test — enforces catalog completeness and the
   # unmigrated-handler ratchet on every quick preflight (issue #1525).
   run pnpm exec tsx --test packages/remnic-core/src/access-surface-catalog.test.ts
+  # CLI command-surface contract tests — pin every subcommand dispatches +
+  # validation rejects bad input (issue #1532 Phase A). Guards the cli.ts
+  # decomposition: a dropped/renamed command fails here before review.
+  run pnpm exec tsx --test packages/remnic-cli/src/cli-command-surface.test.ts
 else
   run npm test
   run npm run build
