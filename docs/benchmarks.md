@@ -32,6 +32,12 @@ The runner plumbing is in `@remnic/bench` — notably:
 - CI regression guard: `.github/workflows/bench-smoke.yml`
   ([issue #566 slice 7](https://github.com/joshuaswarren/remnic/pull/584))
 - Explicit cue recall hardening: issues #841 through #850
+- Local-lab runtime profile: `packages/bench/profiles/local-lab-3090.json`
+  (issue #1573 — single-GPU sequential-phase profile)
+- Judge-result cache: `packages/bench/src/judges/judge-cache.ts`
+  (issue #1573 — zero judge calls on unchanged answers)
+- Cross-tier judge calibration: `packages/bench/src/judges/calibration-slice.ts`
+  (issue #1573 — Cohen's kappa between local and frontier judges)
 
 ## What to expect
 
@@ -62,6 +68,78 @@ When real numbers land they will be:
   JSON files (one per benchmark × model × run).
 - Rendered on <https://remnic.ai/benchmarks>.
 - Called out in `CHANGELOG.md` under the release that introduced them.
+
+## Two-tier benchmark protocol
+
+Remnic benchmark runs are categorized into two tiers that **must never
+be conflated** in any published number, leaderboard claim, or
+regression graph. The tier is recorded on every artifact as
+`tier: "local" | "frontier"`.
+
+### Tier L — local regression
+
+| Attribute | Value |
+|---|---|
+| Profile | `local-lab-3090` (or a custom local-lab manifest) |
+| Models | Operator-hosted (Ollama, vLLM, llama.cpp); pinned quant + seed |
+| Cost | Free — runs entirely on local hardware |
+| Purpose | Nightly/on-demand trend lines, ablations, iteration speed |
+| Judge | Local judge model; calibrated against Tier F via Cohen's kappa |
+
+Tier L artifacts carry `hardware: { gpu, vramGb, quantization }` so the
+exact deployment is reproducible. A Tier L number is **never** a
+public leaderboard claim.
+
+### Tier F — frontier leaderboard
+
+| Attribute | Value |
+|---|---|
+| Profile | Cloud providers (Anthropic, OpenAI-compatible, LiteLLM) |
+| Models | Frontier API models |
+| Cost | Paid — bounded by the judge-result cache on re-runs |
+| Purpose | Public claims, release-time validation, cross-system comparison |
+| Judge | Frontier judge (the gold standard) |
+
+### Why the tiers stay separate
+
+A Tier L score reflects a *specific local model at a specific
+quantization on specific hardware* — it is a regression signal, not a
+capability ceiling. A Tier F score reflects Remnic's recall quality
+under a frontier model. Publishing a Tier L number without the tier
+label, hardware, and quantization is misleading. **Tier L artifacts
+MUST include `hardware`** (the protocol requires it; the parser
+validates its shape when present but does not reject a local artifact
+that omits it — reviewers and publishers must enforce this invariant).
+
+### Cross-tier judge calibration
+
+Before trusting a Tier L judge for regression, run:
+
+```bash
+remnic bench judge-calibrate --benchmark locomo \
+  --local-lab-manifest packages/bench/profiles/local-lab-3090.json \
+  --judge-provider anthropic --judge-model <frontier-judge-id>
+```
+
+This scores a fixed 50-question calibration slice with both the local
+and frontier judges and reports **Cohen's kappa**. The kappa is
+persisted (`~/.remnic/bench/calibration/`) and lands in subsequent
+Tier L artifacts as
+`judgeCalibration: { kappa, sampleSize, threshold, warning }`.
+A kappa below **0.7** renders a loud "local judge unreliable for this
+benchmark" warning in the report and on the artifact. The calibration
+slice is question-ids-only — no dataset content is committed (per the
+ethics contract below).
+
+### Judge-result cache
+
+Both tiers benefit from the content-keyed judge cache
+(`packages/bench/src/judges/judge-cache.ts`). Re-running a benchmark
+with **unchanged answers performs zero judge model calls** — observable
+via the judge-call counter in the report. This makes iterative
+development affordable on both tiers. Disable with `--no-judge-cache`
+when forced re-judging is needed; point the cache at a custom directory
+with `--judge-cache-dir`.
 
 ## Reproducibility
 

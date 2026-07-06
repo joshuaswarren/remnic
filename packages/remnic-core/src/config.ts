@@ -2142,6 +2142,38 @@ export function parseConfig(
       if (fromFlat !== undefined && fromFlat > 0) return fromFlat;
       return 24;
     })(),
+    // Passive correction capture (issue #1581). Parsed from
+    // `correctionCapture.<key>` (nested) or flat legacy keys. Default "off" —
+    // operators opt in (rule 48). Invalid mode → rejected listing options (rule 51).
+    correctionCaptureMode: (() => {
+      const nested = (cfg.correctionCapture as Record<string, unknown> | undefined)?.mode;
+      const raw = nested !== undefined ? nested : cfg.correctionCaptureMode;
+      if (raw === undefined || raw === null) return "off" as const;
+      if (raw === "off" || raw === "queue" || raw === "auto") return raw;
+      throw new Error(
+        `Invalid correctionCapture.mode: expected one of "off", "queue", "auto", got ${JSON.stringify(raw)}`,
+      );
+    })(),
+    correctionCaptureConfidenceFloor: (() => {
+      const nested = (cfg.correctionCapture as Record<string, unknown> | undefined)?.confidenceFloor;
+      const raw = nested !== undefined ? nested : cfg.correctionCaptureConfidenceFloor;
+      if (raw === undefined || raw === null) return 0.85;
+      const n = coerceNumber(raw);
+      if (n === undefined || !Number.isFinite(n) || n < 0 || n > 1) {
+        throw new Error(`Invalid correctionCapture.confidenceFloor: expected a number in [0, 1], got ${JSON.stringify(raw)}`);
+      }
+      return n;
+    })(),
+    correctionCaptureAutoApplyMaxAffected: (() => {
+      const nested = (cfg.correctionCapture as Record<string, unknown> | undefined)?.autoApplyMaxAffected;
+      const raw = nested !== undefined ? nested : cfg.correctionCaptureAutoApplyMaxAffected;
+      if (raw === undefined || raw === null) return 2;
+      const n = coerceNumber(raw);
+      if (n === undefined || !Number.isFinite(n) || n < 1) {
+        throw new Error(`Invalid correctionCapture.autoApplyMaxAffected: expected an integer >= 1, got ${JSON.stringify(raw)}`);
+      }
+      return Math.floor(n);
+    })(),
     // Tombstones — non-resurrection invariant (issue #1579). The invariant is
     // the point, so it ships ON by default; `false` restores pre-feature
     // behavior for rollback safety (rule 30). Uses coerceBool so CLI string
