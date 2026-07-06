@@ -1335,12 +1335,16 @@ export class GraphStore {
            confidence = excluded.confidence,
            provenance = excluded.provenance`,
     );
-    // node-id existence check (issue #1677). `nodes.id` is the PRIMARY KEY,
-    // so this is a unique, unambiguous lookup — a SIMILAR_TO edge between
-    // two same-qualified-name symbols resolves here instead of being
-    // dropped by the ambiguous qualified-name fallback.
-    const nodeIdExists = this.db.prepare(
-      "SELECT 1 FROM nodes WHERE id = ? LIMIT 1",
+    // node-id resolution (issue #1677). `nodes.id` is the PRIMARY KEY, so
+    // this is a unique, unambiguous lookup — a SIMILAR_TO edge between two
+    // same-qualified-name symbols resolves here instead of being dropped by
+    // the ambiguous qualified-name fallback. The row's qualified_name is
+    // returned so the caller's (src|dst)QualifiedName can be matched against
+    // it: a stale or mismatched id+qname pair is skipped (counted in
+    // `skipped`) rather than silently writing an edge from the wrong node
+    // (chatgpt-codex-connector P2 — id/qname consistency at the boundary).
+    const nodeById = this.db.prepare(
+      "SELECT qualified_name FROM nodes WHERE id = ? LIMIT 1",
     );
     try {
       let persisted = 0;
@@ -1364,16 +1368,15 @@ export class GraphStore {
           // Prefer the content-derived node id when the caller supplied one
           // (issue #1677). Only fall through to qualified-name resolution
           // when no id is present, preserving the existing trace/HTTP_CALLS
-          // path verbatim.
+          // path verbatim. When an id IS supplied, its row's qualified_name
+          // MUST match the edge's (src|dst)QualifiedName — a mismatched pair
+          // (stale body map, custom integration) is skipped like a dangling
+          // edge instead of corrupting the graph (chatgpt-codex-connector P2).
           const srcId = edge.srcNodeId
-            ? nodeIdExists.get(edge.srcNodeId)
-              ? edge.srcNodeId
-              : undefined
+            ? resolveByNodeId(nodeById, edge.srcNodeId, edge.srcQualifiedName)
             : resolveNodeId(edge.srcQualifiedName, emptyBatch, this.db);
           const dstId = edge.dstNodeId
-            ? nodeIdExists.get(edge.dstNodeId)
-              ? edge.dstNodeId
-              : undefined
+            ? resolveByNodeId(nodeById, edge.dstNodeId, edge.dstQualifiedName)
             : resolveNodeId(edge.dstQualifiedName, emptyBatch, this.db);
           if (!srcId || !dstId) {
             skipped += 1;
@@ -3284,6 +3287,30 @@ function resolveNodeId(
     return undefined;
   }
   return rows[0]?.id;
+}
+
+/**
+ * Resolve a standalone-edge endpoint by content-derived node id (issue #1677).
+ *
+ * `nodes.id` is the PRIMARY KEY, so the lookup is unique and unambiguous —
+ * this is what lets a SIMILAR_TO edge between two same-qualified-name symbols
+ * resolve where the qualified-name fallback would be ambiguous. The supplied
+ * `qualifiedName` is validated against the row: a stale or mismatched
+ * id+qname pair (stale body map, custom integration) returns `undefined` so
+ * the caller skips the edge like a dangling endpoint instead of silently
+ * writing an edge from the wrong node (chatgpt-codex-connector P2 — id/qname
+ * consistency at the store boundary). `stmt` is the caller's prepared
+ * `SELECT qualified_name FROM nodes WHERE id = ?`.
+ */
+function resolveByNodeId(
+  stmt: { get(...args: unknown[]): unknown },
+  nodeId: string,
+  qualifiedName: string,
+): string | undefined {
+  const row = expectRow<{ qualified_name: string }>(stmt.get(nodeId), ["qualified_name"]);
+  if (!row) return undefined;
+  if (row.qualified_name !== qualifiedName) return undefined;
+  return nodeId;
 }
 // ──────────────────────────────────────────────────────────────────────────
 // Error classification — tag SQLITE_BUSY / SQLITE_CORRUPT into the failure

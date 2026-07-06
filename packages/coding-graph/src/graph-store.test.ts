@@ -1335,6 +1335,65 @@ test("upsertEdges: a node id that does not reference an indexed node is skipped 
   }
 });
 
+test("upsertEdges: a node id whose qualified_name does not match is skipped (issue #1677, chatgpt-codex-connector P2)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Two files, same qname "dup.Foo" → two distinct node ids.
+    const fileOne: StoreFileIR = {
+      path: "src/one.ts",
+      language: "typescript",
+      contentHash: "h-one",
+      symbols: [sym("dup.Foo", "Foo", 0, 100, "function")],
+    };
+    const fileTwo: StoreFileIR = {
+      path: "src/two.ts",
+      language: "typescript",
+      contentHash: "h-two",
+      symbols: [sym("dup.Foo", "Foo", 0, 100, "function")],
+    };
+    await store.upsertFileBatch([fileOne, fileTwo]);
+    const idOne = nodeIdFor({ qualifiedName: "dup.Foo", filePath: "src/one.ts", label: "function" });
+    const idTwo = nodeIdFor({ qualifiedName: "dup.Foo", filePath: "src/two.ts", label: "function" });
+
+    // idOne exists and resolves "dup.Foo" — this edge is fine.
+    const ok = await store.upsertEdges([
+      {
+        srcQualifiedName: "dup.Foo",
+        dstQualifiedName: "dup.Foo",
+        srcNodeId: idOne,
+        dstNodeId: idTwo,
+        type: "SIMILAR_TO",
+        confidence: 0.9,
+        provenance: "semantic",
+      },
+    ]);
+    assert.equal(ok.ok && ok.persisted, 1, "correctly-paired id+qname persists");
+
+    // idOne is a REAL node id, but the edge claims its qname is "wrong.qname"
+    // — the id/qname pair is inconsistent and MUST be skipped rather than
+    // silently writing an edge from node idOne under a misleading name
+    // (chatgpt-codex-connector P2: id/qname consistency at the boundary).
+    const bad = await store.upsertEdges([
+      {
+        srcQualifiedName: "wrong.qname",
+        dstQualifiedName: "dup.Foo",
+        srcNodeId: idOne,
+        dstNodeId: idTwo,
+        type: "SIMILAR_TO",
+        confidence: 0.9,
+        provenance: "semantic",
+      },
+    ]);
+    assert.equal(bad.ok, true);
+    if (!bad.ok) throw new Error("expected ok");
+    assert.equal(bad.persisted, 0, "mismatched id+qname → not persisted");
+    assert.equal(bad.skipped, 1, "mismatched id+qname counted as skipped");
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("upsertEdges: edges without node ids still use the qname path (issue #1677 back-compat)", async () => {
   const { store, dir } = await tempStore();
   try {
