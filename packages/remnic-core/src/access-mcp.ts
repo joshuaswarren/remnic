@@ -2338,7 +2338,13 @@ export class EngramMcpServer {
           argumentsObject = { ...argumentsObject, sessionKey: options.sessionKeyOverride };
         }
         const effectivePrincipal = options?.principalOverride ?? this.authenticatedPrincipal;
-        const result = await this.callTool(name, argumentsObject, effectivePrincipal, options?.sessionId);
+        // Forward the MCP session scope (namespace/sessionKey overrides) so
+        // tools like memory_chat bind the caller active scope (Thread 17).
+        const mcpScope = {
+          ...(options?.namespaceOverride ? { namespace: options.namespaceOverride } : {}),
+          ...(options?.sessionKeyOverride ? { sessionKey: options.sessionKeyOverride } : {}),
+        };
+        const result = await this.callTool(name, argumentsObject, effectivePrincipal, options?.sessionId, mcpScope);
         return {
           jsonrpc: "2.0",
           id,
@@ -2526,7 +2532,7 @@ export class EngramMcpServer {
       }));
   }
 
-  private async callTool(name: string, args: Record<string, unknown>, effectivePrincipal?: string, mcpSessionId?: string): Promise<unknown> {
+  private async callTool(name: string, args: Record<string, unknown>, effectivePrincipal?: string, mcpSessionId?: string, scope?: { namespace?: string; sessionKey?: string }): Promise<unknown> {
     // Migrated operations dispatch through the access boundary (issue #1525):
     // one registry entry owns schema validation, normalization (rules
     // 17/28/36/48/51), and error mapping for every surface. The switch
@@ -3702,6 +3708,8 @@ export class EngramMcpServer {
           message,
           ...(chatSessionId ? { chatSessionId } : {}),
           ...(effectivePrincipal ? { principal: effectivePrincipal } : {}),
+          ...(scope?.namespace ? { namespace: scope.namespace } : {}),
+          ...(scope?.sessionKey ? { sessionKey: scope.sessionKey } : {}),
         });
       }
       default:

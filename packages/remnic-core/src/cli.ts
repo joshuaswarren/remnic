@@ -9350,7 +9350,7 @@ export function registerCli(
             service: new EngramAccessService(orchestrator),
             config: orchestrator.config?.chat,
             memoryDir: orchestrator.config.memoryDir,
-            principal: typeof options.principal === "string" ? options.principal : undefined,
+            principal: resolveAccessPrincipalOverride(options.principal, orchestrator.config.agentAccessHttp.principal),
             ...(typeof options.session === "string" ? { sessionId: options.session } : {}),
             ...(options.once === true ? { once: true } : {}),
           });

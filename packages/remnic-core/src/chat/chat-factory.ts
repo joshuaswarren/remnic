@@ -81,6 +81,9 @@ export async function processChatMessage(opts: {
   message: string;
   chatSessionId?: string;
   principal?: string;
+  /** Namespace/sessionKey forwarded from the MCP request scope (Thread 17). */
+  namespace?: string;
+  sessionKey?: string;
 }): Promise<ChatTurnResult> {
   if (!opts.config?.enabled) {
     throw new Error("chat_disabled");
@@ -100,7 +103,11 @@ export async function processChatMessage(opts: {
       throw new Error("access_denied");
     }
   } else {
-    session = await createChatSession(opts.memoryDir, { principal: opts.principal });
+    session = await createChatSession(opts.memoryDir, {
+      principal: opts.principal,
+      ...(opts.namespace ? { namespace: opts.namespace } : {}),
+      ...(opts.sessionKey ? { sessionKey: opts.sessionKey } : {}),
+    });
   }
 
   const engine = createChatEngine({
@@ -121,6 +128,12 @@ export async function processChatMessage(opts: {
     content: opts.message,
   });
 
+  // Snapshot pending state BEFORE the turn so we only persist a marker when
+  // state actually changed (Thread 15 — a normal turn must not clear an
+  // active pending plan/promotion from an earlier turn).
+  const priorPendingPlanId = session.pendingPlanId;
+  const priorPendingPromotionId = session.pendingPromotionId;
+
   const result = await engine.processMessage(opts.message, session);
 
   await appendTranscriptEntry(opts.memoryDir, session.id, {
@@ -132,12 +145,17 @@ export async function processChatMessage(opts: {
   // (append-only — loadChatSession scans for the latest unresolved marker).
   if (result.pendingPlan?.planId) {
     await markPendingPlan(opts.memoryDir, session.id, result.pendingPlan.planId);
-  } else if (session.pendingPromotionId) {
+  } else if (session.pendingPromotionId && !priorPendingPromotionId) {
+    // A promotion just became pending this turn.
     await markPendingPromotion(opts.memoryDir, session.id, session.pendingPromotionId);
-  } else {
-    // Turn resolved any pending state — record the resolution.
-    await markPlanResolved(opts.memoryDir, session.id, "resolved");
+  } else if (priorPendingPlanId && !session.pendingPlanId) {
+    // A pending plan was consumed (applied) this turn.
+    await markPlanResolved(opts.memoryDir, session.id, priorPendingPlanId);
+  } else if (priorPendingPromotionId && !session.pendingPromotionId) {
+    // A pending promotion was consumed (applied) this turn.
+    await markPromotionResolved(opts.memoryDir, session.id, priorPendingPromotionId);
   }
+  // else: no pending-state change this turn — do NOT append a marker.
 
   return result;
 }

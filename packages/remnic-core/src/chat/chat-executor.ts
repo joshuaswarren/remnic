@@ -54,6 +54,7 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
         ...(sessionKey ? { sessionKey } : {}),
         ...(namespace ? { namespace } : {}),
         ...(principal ? { authenticatedPrincipal: principal } : {}),
+        ...(query ? { query } : {}),
       });
       return JSON.stringify(result);
     },

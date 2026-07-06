@@ -30,6 +30,7 @@ import {
   markPendingPlan,
   markPlanResolved,
   markPendingPromotion,
+  markPromotionResolved,
 } from "./chat-session.js";
 
 export interface ChatHttpHandlerOptions {
@@ -116,6 +117,12 @@ export async function handleChatMessage(
     content: message,
   });
 
+  // Snapshot pending state BEFORE the turn so we only persist a marker when
+  // state actually changed (Thread 15 — a normal turn must not clear an
+  // active pending plan/promotion from an earlier turn).
+  const priorPendingPlanId = session.pendingPlanId;
+  const priorPendingPromotionId = session.pendingPromotionId;
+
   const result: ChatTurnResult = await engine.processMessage(message, session);
 
   await appendTranscriptEntry(opts.memoryDir, session.id, {
@@ -123,13 +130,16 @@ export async function handleChatMessage(
     content: result.reply,
   });
 
-  // Persist pending-plan/promotion state (append-only markers).
+  // Persist pending-plan/promotion state (append-only markers). Only append
+  // when state actually changed.
   if (result.pendingPlan?.planId) {
     await markPendingPlan(opts.memoryDir, session.id, result.pendingPlan.planId);
-  } else if (session.pendingPromotionId) {
+  } else if (session.pendingPromotionId && !priorPendingPromotionId) {
     await markPendingPromotion(opts.memoryDir, session.id, session.pendingPromotionId);
-  } else {
-    await markPlanResolved(opts.memoryDir, session.id, "resolved");
+  } else if (priorPendingPlanId && !session.pendingPlanId) {
+    await markPlanResolved(opts.memoryDir, session.id, priorPendingPlanId);
+  } else if (priorPendingPromotionId && !session.pendingPromotionId) {
+    await markPromotionResolved(opts.memoryDir, session.id, priorPendingPromotionId);
   }
 
   // Strip internal error details from the wire response (CodeQL — no stack

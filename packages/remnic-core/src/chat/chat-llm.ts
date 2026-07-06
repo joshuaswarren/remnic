@@ -52,6 +52,15 @@ export function createProductionChatLlmAdapter(
         if (m.role === "system") {
           return { role: m.role, content: m.content + "\n\n" + toolInstruction };
         }
+        // Normalize tool results to a provider-safe role. The underlying
+        // chat-completion clients do not implement native tool-call envelopes,
+        // so a bare role:"tool" (without tool_call_id) is rejected by
+        // OpenAI/Anthropic/Ollama endpoints. Surface the result as a user
+        // message so the follow-up LLM turn always succeeds (P1).
+        if (m.role === "tool") {
+          const tag = m.toolCallId ? `[tool:${m.toolCallId}]` : "[tool]";
+          return { role: "user", content: `${tag} ${m.content}` };
+        }
         return { role: m.role, content: m.content };
       });
       const result = await client.chatCompletion(mapped, {
@@ -122,14 +131,20 @@ export function parseToolCalls(content: string): ChatLlmToolCall[] {
       candidates.push(trimmed);
     }
   }
+  const seen = new Set<string>();
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate) as { tool?: string; arguments?: Record<string, unknown> };
       if (typeof parsed.tool === "string" && parsed.tool.length > 0) {
+        const args = parsed.arguments ?? {};
+        // De-duplicate: a fenced block and its inner bare line can both match.
+        const key = parsed.tool + ":" + JSON.stringify(args);
+        if (seen.has(key)) continue;
+        seen.add(key);
         calls.push({
           id: `call_${calls.length + 1}`,
           name: parsed.tool,
-          arguments: parsed.arguments ?? {},
+          arguments: args,
         });
       }
     } catch {

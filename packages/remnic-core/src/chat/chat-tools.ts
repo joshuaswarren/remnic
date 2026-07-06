@@ -98,9 +98,9 @@ const RECALL_EXPLAIN_SCHEMA: ChatToolSchema = {
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "The query to explain recall for." },
+        query: { type: "string", description: "Optional query to explain recall for. When omitted, explains the most recent recall." },
       },
-      required: ["query"],
+      required: [],
       additionalProperties: false,
     },
   },

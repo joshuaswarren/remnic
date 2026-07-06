@@ -152,7 +152,7 @@ export class ChatEngine {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return {
-            reply: `[error] Failed to apply correction: ${msg}`,
+            reply: "[error] Failed to apply the correction. Please try again or re-request the plan.",
             chatSessionId: session.id,
             error: msg,
           };
@@ -171,7 +171,7 @@ export class ChatEngine {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return {
-            reply: `[error] Failed to promote memory: ${msg}`,
+            reply: "[error] Failed to promote the memory. Please try again.",
             chatSessionId: session.id,
             error: msg,
           };
@@ -222,7 +222,7 @@ export class ChatEngine {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          reply: `[error] LLM request failed: ${msg}`,
+          reply: "[error] The model request failed. Check your model configuration and retry.",
           chatSessionId: session.id,
           error: msg,
         };
@@ -276,8 +276,10 @@ export class ChatEngine {
                 const plan = await this.executor.correctionPlan(
                   `retrieve plan ${planId}`,
                 );
-                pendingPlan = { planId: plan.planId, preview: plan.preview };
-                session.pendingPlanId = plan.planId;
+                // Bind the REQUESTED planId so the confirmation fast-path applies
+                // the exact plan shown (not an executor re-minted id).
+                pendingPlan = { planId, preview: plan.preview };
+                session.pendingPlanId = planId;
                 conversation.push({
                   role: "tool",
                   content: JSON.stringify({
