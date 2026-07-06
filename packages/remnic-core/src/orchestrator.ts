@@ -44,6 +44,11 @@ import {
   createFaithfulnessCounters,
   runFaithfulnessGateBatch,
 } from "./extraction-faithfulness.js";
+import {
+  contentMatchesRedactionRules,
+  loadRedactionRules,
+  type CompiledRedactionRule,
+} from "./extraction-redaction-rules.js";
 import type { FaithfulnessGateCounters } from "./extraction-faithfulness.js";
 import {
   EXTRACTION_JUDGE_VERDICT_CATEGORY,
@@ -13998,6 +14003,21 @@ export class Orchestrator {
     // (declared here, inside persistExtraction) so a transient hiccup in one
     // batch does not permanently disable dedup in future batches.
     let batchBackendUnavailable = false;
+    // #1669: per-namespace redaction-rule cache for this persist pass. A
+    // `never_store` / redaction_rule correction persists patterns under each
+    // namespace's state/corrections/redaction-rules/ dir; we consult them
+    // before a fact reaches the storage write chokepoint so matching content
+    // is withheld entirely rather than landing as pending_review. Cached per
+    // dir so a multi-fact batch over one namespace reads the dir once.
+    let redactionGatedCount = 0;
+    const redactionRulesByDir = new Map<string, CompiledRedactionRule[]>();
+    const redactionRulesFor = async (dir: string): Promise<CompiledRedactionRule[]> => {
+      const cached = redactionRulesByDir.get(dir);
+      if (cached) return cached;
+      const loaded = await loadRedactionRules(dir);
+      redactionRulesByDir.set(dir, loaded);
+      return loaded;
+    };
     const behaviorSignalsByStorage = new Map<
       string,
       { storage: StorageManager; events: BehaviorSignalEvent[] }
@@ -14977,6 +14997,26 @@ export class Orchestrator {
             `scope-routing: skipped shared namespace for global fact because active scope profile ${scopeProfileWritePlan?.profileId ?? "none"} does not authorize serverShared writes`,
           );
         }
+      }
+      // #1669 redaction-rule gate: consult the target namespace's persisted
+      // never-store/redaction patterns BEFORE any dedup/importance work. A
+      // `redaction_rule` correction is meaningless if matching content can
+      // still land in the store, so matching facts are withheld entirely
+      // (never stored, never pending_review) — one stage earlier than the
+      // tombstone chokepoint. Fails open on read error (loadRedactionRules
+      // returns [] for a missing/corrupt dir).
+      try {
+        const redactionRules = await redactionRulesFor(targetStorage.dir);
+        if (redactionRules.length > 0 && contentMatchesRedactionRules(fact.content, redactionRules)) {
+          redactionGatedCount++;
+          log.debug(
+            `extraction: redaction-rule withheld "${fact.content.slice(0, 60)}…" in ${targetStorage.dir}`,
+          );
+          continue;
+        }
+      } catch (redactionErr) {
+        // Never block extraction on a redaction-rule read failure.
+        log.warn(`extraction: redaction-rule gate failed open: ${redactionErr}`);
       }
 
       // Procedures: fingerprint the full serialized body (title + steps), not
@@ -16061,8 +16101,10 @@ export class Orchestrator {
       importanceGatedCount > 0 ? ` (${importanceGatedCount} gated)` : "";
     const judgeSuffix =
       judgeGatedCount > 0 ? ` (${judgeGatedCount} judge-rejected)` : "";
+    const redactionSuffix =
+      redactionGatedCount > 0 ? ` (${redactionGatedCount} redacted)` : "";
     log.info(
-      `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
+      `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
     );
 
     // Update temporal + tag indexes (v8.1) — fire-and-forget, fail-open
