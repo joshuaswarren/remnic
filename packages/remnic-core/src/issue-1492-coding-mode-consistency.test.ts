@@ -38,7 +38,8 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -54,9 +55,37 @@ import {
   parseSessionIdentity,
   sessionStoragePaths,
 } from "./session-identity.js";
-import { encodeStoragePathSegment } from "./storage-paths.js";
+import { HourlySummarizer } from "./summarizer.js";
+import type { HourlySummary, PluginConfig } from "./types.js";
 import { StorageManager } from "./storage.js";
 import { RECALL_FALLBACK_DIRS } from "./utils/category-dir.js";
+
+/** Recursively collect the immediate child directory names under `root` that
+ *  contain at least one file, into `out`. Used to verify the summarizer wrote
+ *  each session's summary into its OWN dir (no conflation). */
+async function walkCollectDirs(root: string, out: Set<string>): Promise<void> {
+  let entries: Dirent[];
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const child = path.join(root, entry.name);
+    let childEntries: Dirent[];
+    try {
+      childEntries = await readdir(child, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    if (childEntries.some((e) => e.isFile())) {
+      out.add(entry.name);
+    } else {
+      await walkCollectDirs(child, out);
+    }
+  }
+}
 
 // ─── Symptom A: coding-namespace derivation is stable across write/read ────
 
@@ -115,38 +144,69 @@ test("#1492 Symptom A: combineNamespaces is idempotent under re-derivation (no d
 
 // ─── Symptom B: arbitrary session keys never conflate ──────────────────────
 
-test("#1492 Symptom B: arbitrary session keys (pi-geek/pi/myuser prefixes) get distinct session/<hash> paths, never other/default", () => {
+test("#1492 Symptom B: arbitrary session keys get distinct transcript AND summarizer paths, never other/default", async () => {
   // Exact keys from the issue body. Pre-fix these all collapsed into
-  // transcripts/other/default/*.jsonl (and the matching summary dir),
-  // conflating every non-agent-prefixed session.
+  // transcripts/other/default/*.jsonl AND summaries/other/default/*.md,
+  // conflating every non-agent-prefixed session in BOTH subsystems.
   const keys = ["pi-geek:abc123", "pi:abc123", "myuser:abc123", "pi-friend:def456"];
 
+  // ── Transcript path (sessionStoragePaths, consumed by transcript.ts) ──
   const transcriptDirs = new Set<string>();
-  const summaryDirs = new Set<string>();
-
   for (const key of keys) {
     const id = parseSessionIdentity(key);
-    // Every arbitrary key is a first-class session identity.
     assert.equal(id.legacy, false, `${key} must not be treated as a legacy agent: key`);
     assert.equal(id.channelType, SESSION_CHANNEL_TYPE, `${key} channelType must be "session"`);
     assert.notEqual(id.channelType, "other", `${key} must not fall back to "other"`);
     assert.notEqual(id.channelId, "default", `${key} must not fall back to "default"`);
-
     const paths = sessionStoragePaths(key);
-    // Transcript dir: session/<hash>
     assert.match(paths.dir, /^session\/[0-9a-f]{16}$/, `${key} transcript dir must be session/<hash>`);
     transcriptDirs.add(paths.dir);
-
-    // Summarizer dir: encodeStoragePathSegment(sessionKey, "session"). Pre-fix
-    // the summarizer derived the dir from the brittle parsed components too.
-    const summaryDir = encodeStoragePathSegment(key, "session");
-    assert.ok(summaryDir.length > 0 && summaryDir !== "other" && summaryDir !== "default");
-    summaryDirs.add(summaryDir);
   }
-
-  // Distinct keys get distinct, collision-resistant paths — no conflation.
   assert.equal(transcriptDirs.size, keys.length, "each session key must map to a distinct transcript dir");
-  assert.equal(summaryDirs.size, keys.length, "each session key must map to a distinct summary dir");
+
+  // ── Summarizer path: exercise the REAL HourlySummarizer.saveSummary() so a
+  //    regression in summarizer.ts itself (reverting to the old parsed-session
+  //    bucket) is caught here, not just a regression in session-identity.ts.
+  //    Pre-fix the summarizer derived its dir from the same brittle split(':')
+  //    parser; this round-trip proves the written summary files land in
+  //    distinct per-session dirs (no other/default conflation). ──
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-1492-sum-"));
+  try {
+    const config = {
+      memoryDir,
+      localLlmEnabled: false,
+      localLlmFallback: false,
+      localLlmUrl: "http://localhost:1234/v1",
+      localLlmModel: "local-model",
+    } as PluginConfig;
+    const summarizer = new HourlySummarizer(config);
+
+    const summary: HourlySummary = {
+      hour: "2026-06-28T14:00:00.000Z",
+      sessionKey: "", // set per key below
+      bullets: ["worked on shared memory pool"],
+      turnCount: 2,
+      generatedAt: "2026-06-28T14:05:00.000Z",
+    };
+
+    for (const key of keys) {
+      await summarizer.saveSummary({ ...summary, sessionKey: key });
+    }
+
+    // Walk summaries/hourly/ and collect the distinct per-session dirs that
+    // actually received a file. Each must be the encoded session key, never
+    // "other" or "default".
+    const hourlyRoot = path.join(memoryDir, "summaries", "hourly");
+    const sessionDirs = new Set<string>();
+    await walkCollectDirs(hourlyRoot, sessionDirs);
+    assert.ok(sessionDirs.size >= keys.length, "each session key must produce a distinct summary dir");
+    for (const dir of sessionDirs) {
+      assert.notEqual(dir, "other", `summary dir "${dir}" must not be the legacy "other" bucket`);
+      assert.notEqual(dir, "default", `summary dir "${dir}" must not be the legacy "default" bucket`);
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
 
 test("#1492 Symptom B: legacy agent: keys keep their readable identity (no regression from the fix)", () => {
