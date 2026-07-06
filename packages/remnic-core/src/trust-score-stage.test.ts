@@ -8,7 +8,7 @@ import {
   projectTrustForXray,
   type TrustStageCandidate,
 } from "./trust-score-stage.js";
-import type { TrustScoreResult } from "./trust-score.js";
+import type { TrustScoreResult, TrustSignals } from "./trust-score.js";
 
 /**
  * Issue #1577 PR 2 — signal adapters + recall stage tests.
@@ -133,7 +133,7 @@ test("stage: empty candidate list → empty output", () => {
 // ─── multiplier application ───────────────────────────────────────────────
 
 test("stage: high-trust candidate is boosted, low-trust candidate is damped", () => {
-  const signals = new Map<string, unknown>([
+  const signals = new Map<string, TrustSignals>([
     ["high.md", { memoryWorth: { score: 0.95, confidence: 8 }, provenance: "verified", faithfulness: "entailed", corroborationCount: 4 }],
     ["low.md", { faithfulness: "unsupported" }],
   ]);
@@ -142,7 +142,7 @@ test("stage: high-trust candidate is boosted, low-trust candidate is damped", ()
       { path: "high.md", score: 5 },
       { path: "low.md", score: 5 },
     ],
-    { signals: signals as never, minMultiplier: 0.5, maxMultiplier: 1.25 },
+    { signals: signals, minMultiplier: 0.5, maxMultiplier: 1.25 },
   );
   const high = out.admitted.find((x) => x.path === "high.md")!;
   const low = out.admitted.find((x) => x.path === "low.md")!;
@@ -152,7 +152,7 @@ test("stage: high-trust candidate is boosted, low-trust candidate is damped", ()
 });
 
 test("stage: reorder sorts admitted by descending multiplied score", () => {
-  const signals = new Map<string, unknown>([
+  const signals = new Map<string, TrustSignals>([
     ["boost.md", { memoryWorth: { score: 0.95, confidence: 5 } }],
   ]);
   const out = applyTrustScoreStage(
@@ -160,7 +160,7 @@ test("stage: reorder sorts admitted by descending multiplied score", () => {
       { path: "plain.md", score: 8 },
       { path: "boost.md", score: 5 }, // low base but boosted
     ],
-    { signals: signals as never, minMultiplier: 0.5, maxMultiplier: 1.25, reorder: true },
+    { signals: signals, minMultiplier: 0.5, maxMultiplier: 1.25, reorder: true },
   );
   // boost.md (5 * >1) vs plain.md (8 * 1). With a strong boost, boost.md may
   // overtake; either way the order must be descending by score.
@@ -173,7 +173,7 @@ test("stage: reorder sorts admitted by descending multiplied score", () => {
 });
 
 test("stage: reorder=false preserves input order", () => {
-  const signals = new Map<string, unknown>([
+  const signals = new Map<string, TrustSignals>([
     ["boost.md", { memoryWorth: { score: 0.95, confidence: 5 } }],
   ]);
   const out = applyTrustScoreStage(
@@ -181,7 +181,7 @@ test("stage: reorder=false preserves input order", () => {
       { path: "plain.md", score: 8 },
       { path: "boost.md", score: 5 },
     ],
-    { signals: signals as never, reorder: false },
+    { signals: signals, reorder: false },
   );
   assert.deepEqual(
     out.admitted.map((x) => x.path),
@@ -192,7 +192,7 @@ test("stage: reorder=false preserves input order", () => {
 // ─── quarantine ───────────────────────────────────────────────────────────
 
 test("stage: quarantine excludes contradicted item from injection but keeps it in `all`", () => {
-  const signals = new Map<string, unknown>([
+  const signals = new Map<string, TrustSignals>([
     ["bad.md", { faithfulness: "contradicted" }],
   ]);
   const out = applyTrustScoreStage(
@@ -200,7 +200,7 @@ test("stage: quarantine excludes contradicted item from injection but keeps it i
       { path: "bad.md", score: 9 },
       { path: "good.md", score: 3 },
     ],
-    { signals: signals as never, quarantine: true },
+    { signals: signals, quarantine: true },
   );
   assert.equal(out.admitted.length, 1);
   assert.equal(out.admitted[0]!.path, "good.md");
@@ -212,12 +212,12 @@ test("stage: quarantine excludes contradicted item from injection but keeps it i
 });
 
 test("stage: quarantine=false keeps hard negatives in the injected set", () => {
-  const signals = new Map<string, unknown>([
+  const signals = new Map<string, TrustSignals>([
     ["bad.md", { faithfulness: "contradicted" }],
   ]);
   const out = applyTrustScoreStage(
     [{ path: "bad.md", score: 9 }],
-    { signals: signals as never, quarantine: false },
+    { signals: signals, quarantine: false },
   );
   assert.equal(out.admitted.length, 1);
   assert.equal(out.quarantined.length, 0);
@@ -229,12 +229,12 @@ test("stage: quarantine=false keeps hard negatives in the injected set", () => {
 test("stage: negative base score is clamped to 0 before multiplying", () => {
   // Mirrors memory-worth-filter.ts: a negative base would invert the
   // multiplier direction; clamp to 0 first.
-  const signals = new Map<string, unknown>([
+  const signals = new Map<string, TrustSignals>([
     ["hi.md", { memoryWorth: { score: 0.95, confidence: 5 } }],
   ]);
   const out = applyTrustScoreStage(
     [{ path: "hi.md", score: -2 }],
-    { signals: signals as never, minMultiplier: 0.5, maxMultiplier: 1.25 },
+    { signals: signals, minMultiplier: 0.5, maxMultiplier: 1.25 },
   );
   const item = out.admitted[0]!;
   assert.equal(item.score, 0); // 0 * multiplier
@@ -250,12 +250,12 @@ test("double-multiplier prevention: stage applies trust once; neutral memory-wor
   // (which already incorporates memory-worth), so re-applying a memory-worth
   // multiplier on top would change the score — here we assert the stage's
   // multiplier equals trustMultiplier(trust.score) exactly.
-  const signals = new Map<string, unknown>([
+  const signals = new Map<string, TrustSignals>([
     ["mw.md", { memoryWorth: { score: 0.8, confidence: 4 } }],
   ]);
   const out = applyTrustScoreStage(
     [{ path: "mw.md", score: 10 }],
-    { signals: signals as never, minMultiplier: 0.5, maxMultiplier: 1.25 },
+    { signals: signals, minMultiplier: 0.5, maxMultiplier: 1.25 },
   );
   const item = out.admitted[0]!;
   // multiplier is a pure function of the trust score.
@@ -270,12 +270,12 @@ test("double-multiplier prevention: stage applies trust once; neutral memory-wor
 // ─── X-ray projection ─────────────────────────────────────────────────────
 
 test("xray projection: admitted item has no quarantineReason", () => {
-  const signals = new Map<string, unknown>([
+  const signals = new Map<string, TrustSignals>([
     ["ok.md", { memoryWorth: { score: 0.9, confidence: 3 } }],
   ]);
   const out = applyTrustScoreStage(
     [{ path: "ok.md", score: 5 }],
-    { signals: signals as never },
+    { signals: signals },
   );
   const proj = projectTrustForXray(out.admitted[0]!);
   assert.equal(proj.quarantined, false);
@@ -285,12 +285,12 @@ test("xray projection: admitted item has no quarantineReason", () => {
 });
 
 test("xray projection: quarantined item carries a deterministic reason", () => {
-  const signals = new Map<string, unknown>([
+  const signals = new Map<string, TrustSignals>([
     ["bad.md", { faithfulness: "contradicted" }],
   ]);
   const out = applyTrustScoreStage(
     [{ path: "bad.md", score: 5 }],
-    { signals: signals as never },
+    { signals: signals },
   );
   const proj = projectTrustForXray(out.quarantined[0]!);
   assert.equal(proj.quarantined, true);

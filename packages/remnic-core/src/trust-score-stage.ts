@@ -82,7 +82,13 @@ export function buildTrustSignalMap(
     }
 
     if (fm.provenance !== undefined) signals.provenance = fm.provenance;
-    if (fm.faithfulness !== undefined) signals.faithfulness = fm.faithfulness.verdict;
+    if (fm.faithfulness !== undefined) {
+      // `skipped_no_span` (legacy fact lacking a verified source span) carries
+      // no entailment signal — collapse it to `unchecked` so the scorer treats
+      // it as the neutral "no verdict" case rather than a hard negative.
+      signals.faithfulness =
+        fm.faithfulness.verdict === "skipped_no_span" ? "unchecked" : fm.faithfulness.verdict;
+    }
 
     // Corroboration = distinct source sessions/turns backing the fact.
     if (Array.isArray(fm.sources) && fm.sources.length > 0) {
@@ -277,3 +283,108 @@ export function explainQuarantine(trust: TrustScoreResult): string {
   return "hard-negative trust signal";
 }
 
+
+// ─── Recall-stage signal builder (I/O orchestration) ──────────────────────
+
+/**
+ * Narrow callbacks the signal builder needs from its host (the orchestrator).
+ * Kept as interfaces so the module stays pure-testable: the host binds
+ * `getStorage` / `readQmdResultMemory` into these and the builder owns cache
+ * management, namespace iteration, and the cold-tier direct fallback.
+ */
+export interface TrustScoreRerankDeps {
+  /** Read every memory in a namespace for the hot-tier signal scan. */
+  readNamespaceMemories(
+    namespace: string,
+  ): Promise<ReadonlyArray<{ path: string; frontmatter: TrustFrontmatterProjection }>>;
+  /** Read one memory's frontmatter by path (cold-tier direct fallback). */
+  readMemoryFrontmatter(path: string): Promise<TrustFrontmatterProjection | null>;
+}
+
+/** Per-namespace signal cache the host owns and the builder mutates. */
+export interface TrustScoreSignalCache {
+  cache: Map<string, { at: number; signals: ReadonlyMap<string, TrustSignals> }>;
+  ttlMs: number;
+}
+
+/**
+ * Build the `path → TrustSignals` map for recall candidates using a
+ * per-namespace cache plus a direct-path fallback for cold-tier candidates
+ * absent from the hot scan. Extracted from the orchestrator (issue #1577) so
+ * the god file carries only thin wiring — the scoring itself is
+ * {@link applyTrustScoreStage}.
+ *
+ * Fail-open: a single unreadable namespace or memory is logged and skipped so
+ * a storage hiccup never breaks recall (mirrors `memory-worth-filter.ts`).
+ */
+export async function buildTrustSignalsForRerank(
+  candidatePaths: readonly string[],
+  namespaces: readonly string[],
+  deps: TrustScoreRerankDeps,
+  signalCache: TrustScoreSignalCache,
+  now: Date,
+  options: {
+    recencyHalfLifeDays?: number;
+    logDebug?: (message: string, context: Record<string, unknown>) => void;
+  } = {},
+): Promise<Map<string, TrustSignals>> {
+  const nowMs = now.getTime();
+  const logDebug = options.logDebug ?? (() => {});
+  const signals = new Map<string, TrustSignals>();
+
+  // Evict expired cache entries (mirrors the worth-cache discipline).
+  for (const [key, entry] of signalCache.cache) {
+    if (nowMs - entry.at >= signalCache.ttlMs) signalCache.cache.delete(key);
+  }
+
+  // Per-namespace hot scan with cache.
+  const seenNamespaces = new Set<string>();
+  for (const ns of namespaces) {
+    if (seenNamespaces.has(ns)) continue;
+    seenNamespaces.add(ns);
+    try {
+      const cached = signalCache.cache.get(ns);
+      let nsMap: ReadonlyMap<string, TrustSignals> | undefined;
+      if (cached && nowMs - cached.at < signalCache.ttlMs) {
+        nsMap = cached.signals;
+      } else {
+        const memories = await deps.readNamespaceMemories(ns);
+        nsMap = buildTrustSignalMap(memories, now, {
+          recencyHalfLifeDays: options.recencyHalfLifeDays,
+        });
+        signalCache.cache.set(ns, { at: nowMs, signals: nsMap });
+      }
+      for (const [path, s] of nsMap) signals.set(path, s);
+    } catch (err) {
+      logDebug("trust-score: failed to read namespace, skipping", {
+        namespace: ns,
+        error: (err as Error).message,
+      });
+    }
+  }
+
+  // Direct per-path fallback for cold-tier candidates absent from the hot scan.
+  const missing = candidatePaths.filter((p) => !signals.has(p));
+  if (missing.length > 0) {
+    const fallbackMemories: Array<{ path: string; frontmatter: TrustFrontmatterProjection }> = [];
+    for (const path of missing) {
+      try {
+        const frontmatter = await deps.readMemoryFrontmatter(path);
+        if (frontmatter) fallbackMemories.push({ path, frontmatter });
+      } catch (err) {
+        logDebug("trust-score: direct path lookup failed", {
+          path,
+          error: (err as Error).message,
+        });
+      }
+    }
+    if (fallbackMemories.length > 0) {
+      const fallbackSignals = buildTrustSignalMap(fallbackMemories, now, {
+        recencyHalfLifeDays: options.recencyHalfLifeDays,
+      });
+      for (const [path, s] of fallbackSignals) signals.set(path, s);
+    }
+  }
+
+  return signals;
+}

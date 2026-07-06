@@ -25,6 +25,7 @@ import type {
   ScopeTeamConfig,
   SemanticChunkingConfigShape,
   SessionObserverBandConfig,
+  SlotBehaviorConfig,
   SlotMismatchMode,
   TriggerMode,
   TrustWeights,

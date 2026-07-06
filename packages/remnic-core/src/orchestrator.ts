@@ -112,6 +112,9 @@ import {
   buildMemoryWorthCounterMap,
   type MemoryWorthCounters,
 } from "./memory-worth-filter.js";
+import { applyTrustScoreStage, buildTrustSignalsForRerank } from "./trust-score-stage.js";
+import type { TrustStageResultItem } from "./trust-score-stage.js";
+import { renderEpistemicHedge, type TrustSignals } from "./trust-score.js";
 import { reorderRecallResultsWithMmr } from "./recall-mmr.js";
 import { applyReasoningTraceBoost } from "./reasoning-trace-recall.js";
 import { buildRetrievedMemoryProvenance } from "./memory-provenance.js";
@@ -1936,6 +1939,25 @@ export class Orchestrator {
     { at: number; counters: ReadonlyMap<string, MemoryWorthCounters> }
   >();
   private static readonly MEMORY_WORTH_CACHE_TTL_MS = 30_000;
+  /**
+   * Issue #1577 — per-namespace TrustScore signal map cache. Same TTL/shape
+   * discipline as {@link memoryWorthCounterCache}: seconds-scale, evicted on
+   * every call, keyed by namespace. Holds the frontmatter-derived signals
+   * (worth, provenance, faithfulness, corroboration, recency) so the trust
+   * stage doesn't trigger a fresh `readAllMemories` scan per query.
+   */
+  private readonly trustSignalCache = new Map<
+    string,
+    { at: number; signals: ReadonlyMap<string, TrustSignals> }
+  >();
+  private static readonly TRUST_SIGNAL_CACHE_TTL_MS = 30_000;
+  /**
+   * Issue #1577 — most recent TrustScore stage output keyed by memory path,
+   * populated by {@link applyTrustScoreRerank} and consumed by the injection
+   * formatter (epistemic hedge) and the X-ray capture path (per-result trust
+   * components + quarantine reasons). Cleared at the start of every recall.
+   */
+  private lastTrustByPath: Map<string, TrustStageResultItem> | null = null;
   /**
    * Per-session workspace selections keyed by sessionKey.
    * Set by the before_agent_start hook so recall() uses the correct
@@ -7232,6 +7254,12 @@ export class Orchestrator {
     caps: CapabilitySet = resolveCapabilities(this.config),
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
   ): Promise<string> {
+    // Issue #1577 — clear stale TrustScore data at recall entry so the
+    // epistemic-rendering formatter never surfaces trust hedges from a
+    // previous recall (e.g. when the gate is off this round, or the
+    // stage fails open). lastTrustByPath is repopulated only by
+    // applyTrustScoreRerank when the stage actually runs.
+    this.lastTrustByPath = null;
     const recallStart = Date.now();
     // Backend degradations observed by this recall's QMD searches (#1536):
     // collected via the execution-options observer and attached to the
@@ -11055,13 +11083,18 @@ export class Orchestrator {
         );
       }
 
-      // Memory Worth recall filter (issue #560 PR 4). When enabled, multiply
-      // each candidate's score by its Memory Worth factor so memories with
-      // a history of failed outcomes sink. Default off in this PR; PR 5
-      // flips the default once bench shows tie-or-win. Fail-open: any
-      // lookup error leaves the original scores untouched rather than
-      // breaking recall for the whole namespace.
-      if (caps.recallMemoryWorthFilter && memoryResults.length > 0) {
+      // Trust-reweighting stage. TrustScore (issue #1577) SUBSUMES the Memory
+      // Worth multiplier — when it is on, the standalone worth filter MUST NOT
+      // also run (rule 39: one multiplier, one application point; the
+      // double-multiplier test in trust-score-stage.test.ts pins it). Fail-open
+      // on lookup errors so a storage hiccup never breaks recall.
+      if (caps.recallTrustScore && memoryResults.length > 0) {
+        try {
+          memoryResults = await this.applyTrustScoreRerank(memoryResults, recallNamespaces);
+        } catch (err) {
+          log.debug("trust-score stage failed open", { error: (err as Error).message });
+        }
+      } else if (caps.recallMemoryWorthFilter && memoryResults.length > 0) {
         try {
           memoryResults = await this.applyMemoryWorthRerank(memoryResults, recallNamespaces);
         } catch (err) {
@@ -17545,6 +17578,13 @@ export class Orchestrator {
       results,
       this.config.recallMemoryHandles === true && sessionKey != null,
     );
+    // Issue #1577 — epistemic hedge. Append a deterministic, component-derived
+    // suffix so the downstream model knows each memory's trust status (the
+    // cheap lever against confident-stale-answer failures). Gated separately
+    // from scoring so rendering can ship after the stage is stable. High-band
+    // and neutral items get no suffix (don't waste tokens on the common case).
+    const renderHedge = this.config.trustScoreEpistemicRendering && this.lastTrustByPath !== null;
+    const trustByPath = renderHedge ? this.lastTrustByPath : null;
     const lines = results.map((r, i) => {
       const snippet = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
@@ -17552,7 +17592,16 @@ export class Orchestrator {
       const source = typeof r.line === "number" ? `${r.path}:${r.line}` : r.path;
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
       const handle = handleByIndex.get(i);
-      return handle ? `${head.replace(/\s+$/, "")} ${handle}` : head;
+      const hedged = head.replace(/\s+$/, "");
+      const withHandle = handle ? `${hedged} ${handle}` : hedged;
+      if (trustByPath) {
+        const item = trustByPath.get(r.path);
+        if (item) {
+          const hedge = renderEpistemicHedge(item.trust);
+          if (hedge.length > 0) return `${withHandle} ${hedge}`;
+        }
+      }
+      return withHandle;
     });
     return `## ${title}\n\n${lines.join("\n\n")}`;
   }
@@ -18338,6 +18387,79 @@ export class Orchestrator {
     return reordered;
   }
 
+  /**
+   * Issue #1577 — unified TrustScore recall stage. Thin wiring over the pure
+   * {@link applyTrustScoreStage} scorer + the {@link buildTrustSignalsForRerank}
+   * signal builder. The stage subsumes the Memory Worth multiplier — the
+   * orchestrator runs exactly one of the two (mutual exclusion, rule 39; the
+   * double-multiplier test in trust-score-stage.test.ts pins it structurally).
+   *
+   * Quarantine-band items are dropped from the returned (injectable) list but
+   * recorded in {@link lastTrustByPath} with `quarantined: true` so the X-ray
+   * capture path can surface them with a reason (rule 34).
+   */
+  private async applyTrustScoreRerank(
+    results: QmdSearchResult[],
+    namespaces: string[],
+  ): Promise<QmdSearchResult[]> {
+    if (results.length === 0) return results;
+    const now = new Date();
+    const halfLifeDays =
+      this.config.recallMemoryWorthHalfLifeMs > 0
+        ? this.config.recallMemoryWorthHalfLifeMs / (24 * 60 * 60 * 1000)
+        : undefined;
+    // Cold-tier direct-fallback reader: resolve once, reuse for every missing
+    // candidate (mirrors the memory-worth filter's reader selection).
+    let fallbackReader: StorageManager | null = null;
+    const signals = await buildTrustSignalsForRerank(
+      results.map((r) => r.path),
+      namespaces,
+      {
+        readNamespaceMemories: async (ns) => (await this.getStorage(ns)).readAllMemories(),
+        readMemoryFrontmatter: async (path) => {
+          if (!fallbackReader) {
+            for (const ns of namespaces) {
+              try {
+                fallbackReader = await this.getStorage(ns);
+                break;
+              } catch {
+                // try next namespace
+              }
+            }
+          }
+          if (!fallbackReader) return null;
+          const memory = await this.readQmdResultMemory(path, fallbackReader, namespaces);
+          return memory ? memory.frontmatter : null;
+        },
+      },
+      { cache: this.trustSignalCache, ttlMs: Orchestrator.TRUST_SIGNAL_CACHE_TTL_MS },
+      now,
+      {
+        recencyHalfLifeDays: halfLifeDays,
+        logDebug: (message, context) => log.debug(message, context),
+      },
+    );
+    if (signals.size === 0) {
+      this.lastTrustByPath = null;
+      return results;
+    }
+    // Synthetic monotone-decreasing rank so the multiplier rebias is applied
+    // on top of upstream ordering, not raw QMD scores (see applyMemoryWorthRerank).
+    const rankedInputs = results.map((r, i) => ({ path: r.path, score: results.length - i }));
+    const stage = applyTrustScoreStage(rankedInputs, {
+      signals,
+      weights: this.config.trustScoreWeights,
+      minMultiplier: this.config.trustScoreMinMultiplier,
+      maxMultiplier: this.config.trustScoreMaxMultiplier,
+      quarantine: this.config.trustScoreQuarantine,
+    });
+    this.lastTrustByPath = new Map(stage.all.map((item) => [item.path, item]));
+    const byPath = new Map(results.map((r) => [r.path, r]));
+    return stage.admitted
+      .map((item) => byPath.get(item.path))
+      .filter((r): r is QmdSearchResult => r !== undefined);
+  }
+
   private diversifyAndLimitRecallResults(
     sectionId: string,
     results: QmdSearchResult[],
@@ -19054,10 +19176,19 @@ export class Orchestrator {
       );
     }
 
-    // Memory Worth filter — must fire on the cold fallback path too, or the
-    // feature flag produces divergent behavior by retrieval path (CLAUDE.md
-    // rule 39). Fail-open on lookup errors.
-    if (caps.recallMemoryWorthFilter && results.length > 0) {
+    // Trust-reweighting — must fire on the cold fallback path too, or the
+    // feature flag produces divergent behavior by retrieval path (rule 39).
+    // TrustScore subsumes the Memory Worth multiplier; run exactly one.
+    // Fail-open on lookup errors.
+    if (caps.recallTrustScore && results.length > 0) {
+      try {
+        results = await this.applyTrustScoreRerank(results, options.recallNamespaces);
+      } catch (err) {
+        log.debug("trust-score stage (cold) failed open", {
+          error: (err as Error).message,
+        });
+      }
+    } else if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
         results = await this.applyMemoryWorthRerank(results, options.recallNamespaces);
       } catch (err) {
