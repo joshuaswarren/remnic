@@ -179,13 +179,19 @@ export function renderHandlesForInjection(
       if (indices.length < 2) continue;
       const uniqueIds = new Set(indices.map((idx) => entries[idx]!.memoryId));
       if (uniqueIds.size < 2) continue; // same id listed twice — same handle is fine
+      // Only continue widening if at least one entry has room to grow.
+      // When every member has reached HANDLE_MAX_WIDTH the collision is
+      // irreducible (two ids with identical sha256 8-char prefixes —
+      // astronomically unlikely for real data); stop to avoid an infinite loop.
+      let anyWidened = false;
       for (const idx of indices) {
         const entry = entries[idx]!;
         if (entry.width >= HANDLE_MAX_WIDTH) continue;
         entry.width += 1;
         entry.handle = `[m:${handleFor(entry.memoryId, entry.width)}]`;
+        anyWidened = true;
       }
-      widened = true;
+      if (anyWidened) widened = true;
     }
   }
   return entries;
