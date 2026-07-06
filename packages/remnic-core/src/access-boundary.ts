@@ -154,7 +154,10 @@ export type OperationName =
   | "trust_zones_demo_seed"
   | "citations_observed"
   | "contradiction_detail"
-  | "graph_events";
+  | "graph_events"
+  // Chat surface — conversational memory inspection/correction (issue #1583).
+  | "chat_message"
+  | "chat_events";
 
 // ---------------------------------------------------------------------------
 // Operation context — what every handler receives

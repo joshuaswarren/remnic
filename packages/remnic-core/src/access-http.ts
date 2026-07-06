@@ -1979,6 +1979,7 @@ export class EngramAccessHttpServer {
 
     // ── Chat endpoints (issue #1583) ────────────────────────────────────────
     if (req.method === "POST" && pathname === "/engram/v1/chat/message") {
+      void getOperation("chat_message"); // boundary dispatch (issue #1525)
       const body = await this.readJsonBody(req) as Record<string, unknown>;
       await handleChatMessage(
         req, res, body,
@@ -1989,6 +1990,7 @@ export class EngramAccessHttpServer {
     }
     const chatEventsMatch = /^\/engram\/v1\/chat\/events\/([^/]+)$/.exec(pathname);
     if (req.method === "GET" && chatEventsMatch) {
+      void getOperation("chat_events"); // boundary dispatch (issue #1525)
       await handleChatEventsSSE(
         req, res, chatEventsMatch[1] ?? "",
         { service: this.service, config: this.service.configRef.chat, memoryDir: this.service.memoryDir },

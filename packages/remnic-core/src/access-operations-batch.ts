@@ -1466,3 +1466,17 @@ defineOperation({
   schema: looseSchema,
   handler: async (_input, _ctx) => ({ result: { stream: "sse" } }),
 });
+
+defineOperation({
+  name: "chat_message",
+  description: "Send a message to Remnic Chat (issue #1583). Endpoint registration only — the handler enforces the chat_disabled gate, message validation, and the confirmation protocol.",
+  schema: looseSchema,
+  handler: async (_input, _ctx) => ({ result: { ok: true } }),
+});
+
+defineOperation({
+  name: "chat_events",
+  description: "Stream chat session transcript events (SSE, issue #1583). Endpoint registration only.",
+  schema: looseSchema,
+  handler: async (_input, _ctx) => ({ result: { stream: "sse" } }),
+});
