@@ -438,11 +438,7 @@ import type {
   EntityStructuredSection,
   EntityTimelineEntry,
 } from "./types.js";
-import {
-  getDefaultArchiveScoring,
-  memoryFileToScoreItem,
-  type ArchiveScoringStrategy,
-} from "./recall/archive-scoring.js";
+import { getDefaultArchiveScoring, memoryFileToScoreItem, type ArchiveScoringStrategy } from "./recall/archive-scoring.js";
 
 export interface BulkImportBatchIngestResult {
   attemptedTurnCount: number;
@@ -1834,22 +1830,8 @@ export function resolvePersistedMemoryRelativePath(options: {
 
 export class Orchestrator {
 
-  // Issue #1674: off-thread archive-scoring strategy for the cold-fallback
-  // recall path. Lazy default uses a worker_threads pool so concurrent recall
-  // requests run on separate cores instead of serializing on the main thread.
+  /** Issue #1674 — off-thread archive-scoring strategy (lazy worker pool). */
   private _archiveScoring: ArchiveScoringStrategy | null = null;
-
-  private get archiveScoring(): ArchiveScoringStrategy {
-    if (this._archiveScoring === null) {
-      this._archiveScoring = getDefaultArchiveScoring();
-    }
-    return this._archiveScoring;
-  }
-
-  /** @internal — test injection point for the archive-scoring strategy. */
-  public setArchiveScoringStrategyForTest(strategy: ArchiveScoringStrategy): void {
-    this._archiveScoring = strategy;
-  }
   readonly storage: StorageManager;
   private readonly storageRouter: NamespaceStorageRouter;
   /** Rebuildable namespace catalog (issue #1499). Inert unless namespaces enabled. */
@@ -18944,12 +18926,8 @@ export class Orchestrator {
     // context changed. Aborts are checked at the boundaries (before submit
     // and after result); the worker's work is bounded by the file count.
     throwIfRecallAborted(abortSignal);
-    const scoreItems = archivedMemories.map(memoryFileToScoreItem);
-    const scoredResults = await this.archiveScoring.score(
-      scoreItems,
-      tokens,
-      abortSignal,
-    );
+    const scoring = this._archiveScoring ?? (this._archiveScoring = getDefaultArchiveScoring());
+    const scoredResults = await scoring.score(archivedMemories.map(memoryFileToScoreItem), tokens, abortSignal);
     throwIfRecallAborted(abortSignal);
     const scored: QmdSearchResult[] = scoredResults.map((r) => ({
       docid: r.docid,
