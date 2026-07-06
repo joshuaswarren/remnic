@@ -879,8 +879,11 @@ echo "[check] Ad-hoc non-active status exclusion lists..."
 # adding a new status means every such site must be updated individually.
 # Use the shared ACTIVE_STATUSES set from contradiction-scan.ts instead.
 # WARN-level — existing sites need migration to ACTIVE_STATUSES over time.
-# Pattern for non-active status string literal comparisons
-RULE53_RE='(status|frontmatter\.status)\s*(===|!==)\s*"(superseded|archived|quarantined|rejected|forgotten|pending_review)"'
+# Pattern for non-active status string literal comparisons.
+# Uses (^|[^.]) before bare 'status' to exclude property accesses like
+# settled.status (Promise.allSettled results) that are NOT memory lifecycle
+# filters. frontmatter.status is matched separately since the dot is expected.
+RULE53_RE='((^|[^.])status|frontmatter\.status)\s*(===|!==)\s*"(superseded|archived|quarantined|rejected|forgotten|pending_review)"'
 
 # Get files with at least one match
 ADHOC_STATUS_FILES=$(grep -rlE "$RULE53_RE" \
@@ -892,12 +895,13 @@ ADHOC_STATUS_FILES=$(grep -rlE "$RULE53_RE" \
   | grep -v ".test." \
   || true)
 
-# For each file, count total matches (grep -o splits multi-match lines)
-# and skip files that already reference ACTIVE_STATUSES
+# For each file, count total matches (grep -o splits multi-match lines).
+# No file-level ACTIVE_STATUSES skip — a file can import the set for one
+# function while still having ad-hoc comparisons in another. The WARN
+# nudges migration; each site is visible to reviewers.
 if [[ -n "$ADHOC_STATUS_FILES" ]]; then
   while IFS= read -r f; do
-    if grep -q "ACTIVE_STATUSES" "$f" 2>/dev/null; then continue; fi
-    COUNT=$(grep -oE "$RULE53_RE" "$f" 2>/dev/null | wc -l | tr -d ' ')
+    COUNT=$(grep -noE "$RULE53_RE" "$f" 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$COUNT" -ge 2 ]]; then
       warn "$f — enumerates $COUNT non-active status literals without ACTIVE_STATUSES (rule 53). Use the shared set from contradiction-scan.ts."
       grep -nE "$RULE53_RE" "$f" 2>/dev/null | head -5 | sed 's/^/    /'
