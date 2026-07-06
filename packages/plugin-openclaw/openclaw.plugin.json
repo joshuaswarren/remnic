@@ -2412,6 +2412,25 @@
         "default": 24,
         "description": "Hours a pending correction plan remains valid before it expires and must be re-planned (#1580)."
       },
+      "correctionCaptureMode": {
+        "type": "string",
+        "enum": ["off", "queue", "auto"],
+        "default": "off",
+        "description": "Passive correction capture (#1581) — detects corrections expressed in conversation during extraction and routes them to the Correction Contract (#1580). \"off\" disables detection (default, rule 48); \"queue\" plans corrections for human review in the review list; \"auto\" applies immediately when all safety guards pass (confidence floor, blast-radius cap, allowed action/classification), otherwise falls back to queue. Invalid values are rejected (rule 51)."
+      },
+      "correctionCaptureConfidenceFloor": {
+        "type": "number",
+        "minimum": 0,
+        "maximum": 1,
+        "default": 0.85,
+        "description": "Minimum planner confidence required to auto-apply a passively-detected correction in \"auto\" mode (#1581). Plans below this floor are queued even when mode is \"auto\". Default 0.85."
+      },
+      "correctionCaptureAutoApplyMaxAffected": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 2,
+        "description": "Maximum number of memories a passively-detected correction may affect in \"auto\" mode (#1581). Plans touching more memories than this are queued even when mode is \"auto\" — a blast-radius cap. Default 2."
+      },
       "tombstonesSemanticMatch": {
         "type": "boolean",
         "default": false,
