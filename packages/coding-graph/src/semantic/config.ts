@@ -70,7 +70,7 @@ export const DEFAULT_CANONICAL_BODY_LINES = 16;
  * clones (most shingles survive a single rename), large enough that
  * boilerplate coincidence does not flood the candidate set.
  */
-export const MINHASH_SHINGLE_WIDTH = 3;
+export const MINHASH_SHINGLE_WIDTH = 2;
 
 /**
  * Number of MinHash permutations (hash functions). More = tighter Jaccard
