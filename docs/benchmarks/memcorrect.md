@@ -171,7 +171,7 @@ must not. If a Remnic run fails that floor, **file the bugs against
 1. Implement `MemCorrectSystemAdapter` for your system (see the contract
    above). `reset()` must return a clean slate; no call may touch another
    system's durable store.
-2. Run `remnic bench run --benchmark memcorrect` with your adapter under
+2. Run `remnic bench run memcorrect-v1` with your adapter under
    `benchmarkOptions.adapter`. Submit the resulting artifact.
 3. The leaderboard row (`buildMemCorrectLeaderboardRow`) carries your
    adapter label, the seed, the dataset hash, and all 8 metrics — that is
