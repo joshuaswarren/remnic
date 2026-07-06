@@ -23,9 +23,7 @@ import {
   LspFrameDecoder,
 } from "./framing.js";
 import {
-  isResponseError,
   type JsonRpcRequest,
-  type JsonRpcResponse,
   type LspInitializeParams,
   type LspInitializeResult,
   type LspLocation,
@@ -232,15 +230,16 @@ export class LspClient {
     // Try graceful shutdown: send shutdown request, then exit notification.
     if (!this.crashed && this.child.stdin && !this.child.stdin.destroyed) {
       try {
-        const { promise, resolve } = Promise.withResolvers<void>();
-        // Send shutdown — don't wait for a response longer than the timeout.
-        this.child.stdin.write(encodeLspFrame({ jsonrpc: "2.0", id: 0, method: "shutdown" }));
-        this.child.stdin.write(encodeLspFrame({ jsonrpc: "2.0", method: "exit" }));
-        // Give the server a brief window to exit cleanly.
-        const timer = setTimeout(resolve, 500);
-        this.child.on("exit", () => {
-          clearTimeout(timer);
-          resolve();
+        const promise = new Promise<void>((resolve) => {
+          // Send shutdown — don't wait for a response longer than the timeout.
+          this.child.stdin?.write(encodeLspFrame({ jsonrpc: "2.0", id: 0, method: "shutdown" }));
+          this.child.stdin?.write(encodeLspFrame({ jsonrpc: "2.0", method: "exit" }));
+          // Give the server a brief window to exit cleanly.
+          const timer = setTimeout(resolve, 500);
+          this.child.on("exit", () => {
+            clearTimeout(timer);
+            resolve();
+          });
         });
         await promise;
       } catch {
@@ -283,40 +282,33 @@ export class LspClient {
     }
     const id = this.nextId++;
     const message: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
-    const { promise, resolve, reject } = Promise.withResolvers<unknown>();
-
-    const timer = setTimeout(() => {
-      const entry = this.pending.get(id);
-      if (entry) {
-        this.pending.delete(id);
-        entry.reject(lspDegradation("request_timeout", `method=${method}`));
-      }
-    }, this.timeoutMs);
-
-    this.pending.set(id, { resolve, reject, timer });
-
-    try {
-      const frame = encodeLspFrame(message);
-      if (!this.child.stdin || this.child.stdin.destroyed) {
+    const promise = new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const entry = this.pending.get(id);
+        if (entry) {
+          this.pending.delete(id);
+          entry.reject(lspDegradation("request_timeout", `method=${method}`));
+        }
+      }, this.timeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        const frame = encodeLspFrame(message);
+        if (!this.child.stdin || this.child.stdin.destroyed) {
+          clearTimeout(timer);
+          this.pending.delete(id);
+          reject(lspDegradation("server_crashed"));
+          return;
+        }
+        this.child.stdin.write(frame);
+      } catch {
         clearTimeout(timer);
         this.pending.delete(id);
-        return Promise.resolve({
-          ok: false,
-          degradation: lspDegradation("server_crashed"),
-        });
+        reject(lspDegradation("server_crashed"));
       }
-      this.child.stdin.write(frame);
-    } catch {
-      clearTimeout(timer);
-      this.pending.delete(id);
-      return Promise.resolve({
-        ok: false,
-        degradation: lspDegradation("server_crashed"),
-      });
-    }
+    });
 
     return promise.then(
-      (value) => ({ ok: true as const, value }),
+      (value: unknown) => ({ ok: true as const, value }),
       (degradation: LspDegradation) => ({ ok: false as const, degradation }),
     );
   }
@@ -340,27 +332,26 @@ export class LspClient {
    * requests by id; ignores server-initiated notifications (we don't
    * need them for the resolution pass).
    */
+  /**
+   * Dispatch a decoded JSON-RPC message. Correlates responses to pending
+   * requests by id; ignores server-initiated notifications.
+   */
   private dispatchMessage(msg: unknown): void {
     if (typeof msg !== "object" || msg === null) return;
-    const rpc = msg as Partial<JsonRpcResponse>;
-    // Only handle responses (have id + result|error).
+    const rpc = msg as Record<string, unknown>;
     if (rpc.id === undefined || (rpc.result === undefined && rpc.error === undefined)) {
       return;
     }
-
     const id = typeof rpc.id === "number" ? rpc.id : Number(rpc.id);
     const entry = this.pending.get(id);
-    if (!entry) return; // response for a request we already timed out
-
+    if (!entry) return;
     clearTimeout(entry.timer);
     this.pending.delete(id);
-
-    if (isResponseError(rpc as JsonRpcResponse)) {
-      entry.reject(
-        lspDegradation("request_error", (rpc as JsonRpcResponse).error.message),
-      );
+    if (rpc.error !== undefined) {
+      const errMsg = (rpc.error as { message?: string }).message ?? "unknown error";
+      entry.reject(lspDegradation("request_error", errMsg));
     } else {
-      entry.resolve((rpc as JsonRpcResponse).result);
+      entry.resolve(rpc.result);
     }
   }
 
@@ -371,7 +362,6 @@ export class LspClient {
   private onStdoutData(chunk: Buffer | string): void {
     const result = this.decoder.feed(chunk);
     if (!result.ok) {
-      // Protocol error — reject ALL pending with protocol_error.
       this.handleProtocolError(result.error.detail);
       return;
     }

@@ -167,7 +167,7 @@ function makeMockClient(
   definitionResults: Map<string, { ok: true; locations: LspLocation[] } | { ok: false; code: string }>,
 ): LspClient {
   return {
-    definition: async (params) => {
+    definition: async (params: { textDocument: { uri: string }; position: { line: number; character: number } }) => {
       // Key by uri+line+character for deterministic lookup.
       const key = `${params.textDocument.uri}:${params.position.line}:${params.position.character}`;
       const result = definitionResults.get(key);

@@ -253,21 +253,21 @@ function waitForCondition(
   timeoutMs: number,
   intervalMs: number,
 ): Promise<boolean> {
-  const { promise, resolve } = Promise.withResolvers<boolean>();
-  const deadline = Date.now() + timeoutMs;
-  const check = () => {
-    if (cond()) {
-      resolve(true);
-      return;
-    }
-    if (Date.now() >= deadline) {
-      resolve(false);
-      return;
-    }
-    setTimeout(check, intervalMs);
-  };
-  check();
-  return promise;
+  return new Promise<boolean>((resolve) => {
+    const deadline = Date.now() + timeoutMs;
+    const check = () => {
+      if (cond()) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        resolve(false);
+        return;
+      }
+      setTimeout(check, intervalMs);
+    };
+    check();
+  });
 }
 
 // Suppress unhandled rejection noise from the fake server's exit events

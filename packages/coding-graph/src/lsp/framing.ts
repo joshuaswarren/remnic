@@ -87,7 +87,7 @@ export class LspFrameDecoder {
    */
   feed(chunk: Buffer | string): FrameDecodeResult {
     const buf = typeof chunk === "string" ? Buffer.from(chunk, "utf8") : chunk;
-    this.buffer = this.buffer.length === 0 ? buf : Buffer.concat([this.buffer, buf]);
+    this.buffer = this.buffer.length === 0 ? Buffer.from(buf) : Buffer.concat([this.buffer, buf]);
     const messages: unknown[] = [];
 
     // Loop: extract as many complete frames as the current buffer holds.
