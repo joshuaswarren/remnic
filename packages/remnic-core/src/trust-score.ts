@@ -191,11 +191,17 @@ function provenanceValue(tag: TrustSignals["provenance"]): number | undefined {
   return undefined;
 }
 
-/** Map a faithfulness verdict to a `[0,1]` contribution. Absent → neutral. */
+/** Map a faithfulness verdict to a `[0,1]` contribution. Absent → dropped. */
 function faithfulnessValue(verdict: TrustSignals["faithfulness"]): number | undefined {
   if (verdict === undefined) return undefined;
   if (verdict === "entailed") return 1;
-  if (verdict === "unchecked") return NEUTRAL_TRUST_SCORE;
+  // "unchecked" means the gate ran but could not verify — it carries NO signal.
+  // Return undefined (absent) so a memory whose ONLY signal is unchecked
+  // faithfulness scores truly neutral, not "active 0.5". This stops the
+  // epistemic hedge from spuriously firing on unverifiable memories (review
+  // Oqg_0: unchecked-as-absent for hedging) and stops the component from
+  // masquerading as measured evidence.
+  if (verdict === "unchecked") return undefined;
   if (verdict === "unsupported") return 0.35;
   // "contradicted" is a hard negative — it also forces quarantine (see below),
   // but as a component it contributes 0 so the blended score sinks.

@@ -7382,6 +7382,15 @@ export class Orchestrator {
     // (quarantine filtering on ALL paths), and the X-ray capture (trust
     // projection + quarantined-item visibility — rule 34).
     let recallTrustByPath: Map<string, TrustStageResultItem> | null = null;
+    // Issue #1577 — sink for the cold-fallback pipeline's trust map. The cold
+    // pipeline scores internally (applyColdFallbackPipeline) and writes its
+    // per-path trust map here; each cold caller reads it back into
+    // recallTrustByPath so cold/embedding/recent paths feed the same X-ray +
+    // epistemic-rendering + publisher-quarantine consumers the hot path uses
+    // (rule 41: the feature gate applies across ALL parallel recall paths).
+    const trustByPathSink: { trustByPath: Map<string, TrustStageResultItem> | null } = {
+      trustByPath: null,
+    };
     const lcmStructuredXrayResults: RecallXrayResult[] = [];
     // Per-branch pre-limit candidate pool size for the X-ray filter
     // trace (issue #570 PR 1).  `recalledMemoryCount` is assigned
@@ -11079,24 +11088,19 @@ export class Orchestrator {
       }
 
       // Trust-reweighting stage. TrustScore (issue #1577) SUBSUMES the Memory
-      // Worth multiplier — when it is on, the standalone worth filter MUST NOT
-      // also run (rule 39: one multiplier, one application point; the
-      // double-multiplier test in trust-score-stage.test.ts pins it). Fail-open
-      // on lookup errors so a storage hiccup never breaks recall.
-      if (caps.recallTrustScore && memoryResults.length > 0) {
-        try {
-          const trustOutcome = await this.applyTrustScoreRerank(memoryResults, recallNamespaces);
-          memoryResults = trustOutcome.results;
-          recallTrustByPath = trustOutcome.trustByPath;
-        } catch (err) {
-          log.debug("trust-score stage failed open", { error: (err as Error).message });
-        }
-      } else if (caps.recallMemoryWorthFilter && memoryResults.length > 0) {
-        try {
-          memoryResults = await this.applyMemoryWorthRerank(memoryResults, recallNamespaces);
-        } catch (err) {
-          log.debug("memory-worth filter failed open", { error: (err as Error).message });
-        }
+      // Worth multiplier — exactly one runs (rule 39; the double-multiplier
+      // test in trust-score-stage.test.ts pins it structurally). Applied on
+      // EVERY recall path via applyTrustScoreToBranch so the gate is consistent
+      // (rule 41 parity). Fail-open on lookup errors so recall never breaks.
+      {
+        const trustOutcome = await this.applyTrustScoreToBranch(
+          memoryResults,
+          recallNamespaces,
+          caps,
+          "hot-qmd",
+        );
+        memoryResults = trustOutcome.results;
+        recallTrustByPath = trustOutcome.trustByPath;
       }
 
       // Synapse-inspired confidence gate: check scores BEFORE slicing so
@@ -11227,7 +11231,7 @@ export class Orchestrator {
         // low-relevance results from polluting context.
         const queryAwarePrefilter = await queryAwarePrefilterPromise;
         if (queryAwarePrefilter.candidatePaths?.size !== 0) {
-        const scoped = await awaitAssemblyStep(
+        let scoped = await awaitAssemblyStep(
           "embedding-fallback",
           async () => {
             const embeddingResults = await this.searchEmbeddingFallback(
@@ -11270,6 +11274,18 @@ export class Orchestrator {
           },
           [] as QmdSearchResult[],
         );
+        // Issue #1577 — apply TrustScore on the embedding-fallback path so the
+        // feature gate is consistent across ALL recall paths (rule 41 parity).
+        {
+          const trustOutcome = await this.applyTrustScoreToBranch(
+            scoped,
+            recallNamespaces,
+            caps,
+            "embedding-fallback",
+          );
+          scoped = trustOutcome.results;
+          recallTrustByPath = trustOutcome.trustByPath;
+        }
         if (scoped.length > 0) {
           if (shouldPersistGraphSnapshot) {
             graphSnapshotFinalResults = this.buildGraphRecallRankedResults(
@@ -11312,10 +11328,15 @@ export class Orchestrator {
               backendDegradations.push(degradation);
             },
             xrayPoolSizeSink: xrayColdPoolSink,
+            trustByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
+          // Issue #1577 — read the cold pipeline's trust map back so cold
+          // results feed X-ray + epistemic rendering + publisher quarantine
+          // filtering (rule 41 parity; review: the sink was never read back).
+          recallTrustByPath = trustByPathSink.trustByPath;
           if (longTerm.length > 0) {
             if (shouldPersistGraphSnapshot) {
               graphSnapshotFinalResults = this.buildGraphRecallRankedResults(
@@ -11389,7 +11410,7 @@ export class Orchestrator {
       // Fallback: embeddings first, then recency-only.
       const queryAwarePrefilter = await queryAwarePrefilterPromise;
       if (queryAwarePrefilter.candidatePaths?.size !== 0) {
-        const scoped = await awaitAssemblyStep(
+        let scoped = await awaitAssemblyStep(
           "embedding-fallback",
           async () => {
             const embeddingResults = await this.searchEmbeddingFallback(
@@ -11432,6 +11453,18 @@ export class Orchestrator {
           },
           [] as QmdSearchResult[],
         );
+        // Issue #1577 — apply TrustScore on the embedding-fallback path so the
+        // feature gate is consistent across ALL recall paths (rule 41 parity).
+        {
+          const trustOutcome = await this.applyTrustScoreToBranch(
+            scoped,
+            recallNamespaces,
+            caps,
+            "embedding-fallback",
+          );
+          scoped = trustOutcome.results;
+          recallTrustByPath = trustOutcome.trustByPath;
+        }
       if (scoped.length > 0) {
         if (shouldPersistGraphSnapshot) {
           graphSnapshotFinalResults = this.buildGraphRecallRankedResults(
@@ -11542,10 +11575,13 @@ export class Orchestrator {
                 backendDegradations.push(degradation);
               },
               xrayPoolSizeSink: xrayColdPoolSink,
+              trustByPathSink,
               deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
               asOfMs,
               ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
             });
+            // Issue #1577 — read the cold pipeline's trust map back (rule 41).
+            recallTrustByPath = trustByPathSink.trustByPath;
             if (longTerm.length > 0) {
               recallSource = "cold_fallback";
               recalledMemoryCount = longTerm.length;
@@ -11570,7 +11606,7 @@ export class Orchestrator {
               impressionRecorded = true;
             }
           } else {
-            const recent = await awaitAssemblyStep(
+            let recent = await awaitAssemblyStep(
               "recent-memory-scan",
               async () => {
                 const recentSorted = queryAwareScopedMemories.sort(
@@ -11616,6 +11652,18 @@ export class Orchestrator {
               },
               [] as QmdSearchResult[],
             );
+            // Issue #1577 — apply TrustScore on the recent-scan path so the
+            // feature gate is consistent across ALL recall paths (rule 41).
+            {
+              const trustOutcome = await this.applyTrustScoreToBranch(
+                recent,
+                recallNamespaces,
+                caps,
+                "recent-scan",
+              );
+              recent = trustOutcome.results;
+              recallTrustByPath = trustOutcome.trustByPath;
+            }
 
             if (recent.length > 0) {
               if (shouldPersistGraphSnapshot) {
@@ -11659,10 +11707,13 @@ export class Orchestrator {
                   backendDegradations.push(degradation);
                 },
                 xrayPoolSizeSink: xrayColdPoolSink,
+                trustByPathSink,
                 deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                 asOfMs,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
+              // Issue #1577 — read the cold pipeline's trust map back (rule 41).
+              recallTrustByPath = trustByPathSink.trustByPath;
               if (longTerm.length > 0) {
                 if (shouldPersistGraphSnapshot) {
                   graphSnapshotFinalResults =
@@ -11709,10 +11760,13 @@ export class Orchestrator {
               backendDegradations.push(degradation);
             },
             xrayPoolSizeSink: xrayColdPoolSink,
+            trustByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
+          // Issue #1577 — read the cold pipeline's trust map back (rule 41).
+          recallTrustByPath = trustByPathSink.trustByPath;
           if (longTerm.length > 0) {
             if (shouldPersistGraphSnapshot) {
               graphSnapshotFinalResults = this.buildGraphRecallRankedResults(
@@ -18508,6 +18562,46 @@ export class Orchestrator {
       .map((item) => byPath.get(item.path))
       .filter((r): r is QmdSearchResult => r !== undefined);
     return { results: admitted, trustByPath };
+  }
+
+  /**
+   * Issue #1577 — apply the TrustScore stage (or, when trust is off, the Memory
+   * Worth multiplier fallback) to ONE recall branch's results, returning the
+   * scored results + the per-path trust map. Thin wiring over
+   * {@link applyTrustScoreRerank} so every recall path — hot QMD, embedding
+   * fallback, recent scan — applies the SAME multiplier gate (rule 41: a
+   * feature gate must apply across ALL parallel recall paths). TrustScore
+   * subsumes Memory Worth; exactly one runs (rule 39). Fail-open on lookup
+   * errors so a storage hiccup never breaks a fallback path.
+   */
+  private async applyTrustScoreToBranch(
+    results: QmdSearchResult[],
+    namespaces: string[],
+    caps: CapabilitySet,
+    label: string,
+  ): Promise<{
+    results: QmdSearchResult[];
+    trustByPath: Map<string, TrustStageResultItem> | null;
+  }> {
+    if (caps.recallTrustScore && results.length > 0) {
+      try {
+        return await this.applyTrustScoreRerank(results, namespaces);
+      } catch (err) {
+        log.debug(`trust-score stage (${label}) failed open`, {
+          error: (err as Error).message,
+        });
+      }
+    } else if (caps.recallMemoryWorthFilter && results.length > 0) {
+      try {
+        const filtered = await this.applyMemoryWorthRerank(results, namespaces);
+        return { results: filtered, trustByPath: null };
+      } catch (err) {
+        log.debug(`memory-worth filter (${label}) failed open`, {
+          error: (err as Error).message,
+        });
+      }
+    }
+    return { results, trustByPath: null };
   }
 
   private diversifyAndLimitRecallResults(

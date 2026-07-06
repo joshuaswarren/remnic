@@ -234,3 +234,49 @@ test("disabled weight: zero-weight component does not contribute to blend", () =
   assert.equal(result.components.memoryWorth?.weight, 0, "zero-weight component echoed with weight 0");
   assert.ok(result.components.provenance?.weight > 0, "active component has non-zero weight");
 });
+
+// ─── Issue #1577 — scoring edges (review Oqg_0 / Op_0X / Op_0b) ─────────────
+
+test("unchecked faithfulness as the ONLY signal → truly neutral (absent, not active 0.5)", () => {
+  // Review Oqg_0: "unchecked" means the gate ran but could not verify — it
+  // carries NO signal. A memory whose ONLY signal is unchecked faithfulness
+  // must score the neutral prior (neutral: true), NOT "active 0.5", so the
+  // epistemic hedge never spuriously fires on an unverifiable memory and the
+  // component never masquerades as measured evidence.
+  const result = computeTrustScore({ faithfulness: "unchecked" });
+  assert.equal(result.neutral, true, "unchecked-only must be truly neutral");
+  assert.equal(result.score, NEUTRAL_TRUST_SCORE);
+  assert.equal(result.band, "medium");
+  assert.equal(Object.keys(result.components).length, 0, "unchecked must not appear as a component");
+  assert.equal(renderEpistemicHedge(result), "", "no hedge on an unverifiable memory");
+});
+
+test("unchecked faithfulness mixed with another signal → dropped (does not dilute)", () => {
+  // When unchecked co-occurs with a real signal, unchecked is ABSENT (not a
+  // neutral 0.5 component pulling toward the middle). The memory scores purely
+  // on the present signal — identical to a memory that never had a faithfulness
+  // verdict at all.
+  const withUnchecked = computeTrustScore({ faithfulness: "unchecked", provenance: "verified" });
+  const justVerified = computeTrustScore({ provenance: "verified" });
+  assert.equal(withUnchecked.score, justVerified.score, "unchecked must not dilute a present signal");
+  assert.equal(withUnchecked.components.faithfulness, undefined, "unchecked dropped from components");
+  assert.ok(withUnchecked.components.provenance !== undefined, "verified provenance present");
+});
+
+test("disabled weight is neutral across all recall paths: present+disabled vs absent", () => {
+  // Review Op_0X: a disabled (weight 0) component must be neutral, not damning.
+  // A memory with provenance=verified AND a zero-weight memoryWorth signal must
+  // score identically to a memory with provenance=verified alone — the disabled
+  // component contributes nothing and the active one is sum-normalized to 1.0.
+  const disabled = computeTrustScore(
+    { memoryWorth: { score: 0.1, confidence: 5 }, provenance: "verified" },
+    { memoryWorth: 0, provenance: 1, faithfulness: 1 },
+  );
+  const absent = computeTrustScore(
+    { provenance: "verified" },
+    { memoryWorth: 0, provenance: 1, faithfulness: 1 },
+  );
+  assert.equal(disabled.score, absent.score, "disabled-weight signal must be neutral (== absent)");
+  assert.equal(disabled.components.memoryWorth?.weight, 0, "disabled component echoed with weight 0");
+  assert.equal(disabled.components.provenance?.weight, 1, "sole active component normalizes to full weight");
+});

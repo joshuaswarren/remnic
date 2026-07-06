@@ -568,6 +568,26 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
       provenance: ss.provenance,
     };
   }
+  // Issue #1577 — preserve the trust projection through the clone so
+  // getLastXraySnapshot surfaces trust score/band/quarantine reason (review
+  // Oqg_o: cloneResult was silently dropping the field). Deep-copy the scalar +
+  // record fields so the snapshot is independent of the caller's object,
+  // matching the structuredClone contract used for every other field above.
+  if (result.trust) {
+    const t = result.trust;
+    const components: Record<string, { value: number; weight: number }> = {};
+    for (const [k, v] of Object.entries(t.components)) {
+      components[k] = { value: v.value, weight: v.weight };
+    }
+    out.trust = {
+      score: t.score,
+      band: t.band,
+      components,
+      multiplier: t.multiplier,
+      quarantined: t.quarantined,
+      ...(t.quarantineReason ? { quarantineReason: t.quarantineReason } : {}),
+    };
+  }
   return out;
 }
 
