@@ -139,6 +139,8 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
       // rule 35: >= threshold confirms (decided once, here).
       if (cos >= config.similarToThreshold) {
         edges.push({
+          srcNodeId: c.aNodeId,
+          dstNodeId: c.bNodeId,
           srcQualifiedName: c.aQualifiedName,
           dstQualifiedName: c.bQualifiedName,
           confidence: cos,
@@ -158,6 +160,8 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
       // 0.3-0.8; the MINHASH_JACCARD_GATE is the documented floor.
       if (c.jaccard >= MINHASH_JACCARD_GATE) {
         edges.push({
+          srcNodeId: c.aNodeId,
+          dstNodeId: c.bNodeId,
           srcQualifiedName: c.aQualifiedName,
           dstQualifiedName: c.bQualifiedName,
           confidence: MINHASH_ONLY_CONFIDENCE,
@@ -183,6 +187,12 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
 /**
  * Convert SimilarEdge[] to the store's EdgeIR[] for persistence via
  * upsertEdges. Provenance is always "semantic"; type is SIMILAR_TO.
+ *
+ * Carries the content-derived node ids onto the EdgeIR (issue #1677) so
+ * the store resolves each endpoint by `nodes.id` (unique) instead of by
+ * qualified name — two symbols that share a qualified name across files
+ * get distinct, non-colliding SIMILAR_TO edges instead of being dropped
+ * as ambiguous.
  */
 export function similarEdgesToEdgeIR(edges: readonly SimilarEdge[]): EdgeIR[] {
   return edges.map((e) => ({
@@ -191,6 +201,8 @@ export function similarEdgesToEdgeIR(edges: readonly SimilarEdge[]): EdgeIR[] {
     type: SIMILAR_TO_EDGE_TYPE,
     confidence: e.confidence,
     provenance: SEMANTIC_PROVENANCE,
+    srcNodeId: e.srcNodeId,
+    dstNodeId: e.dstNodeId,
   }));
 }
 
