@@ -163,8 +163,12 @@ test("every recognised command dispatches to its own handler, not the banner", a
   // full coverage of the switch's routing branches that can be exercised
   // deterministically.
   const fast: Record<string, string[]> = {
-    init: ["init"],
-    migrate: ["migrate", "--json"],
+    // NOTE: `init` and `migrate` are intentionally excluded — both have
+    // filesystem side effects (init writes remnic.config.json to cwd;
+    // migrate writes ~/.remnic state). init is covered by its dedicated
+    // cwd-isolated test below; migrate's dispatch is covered by its own
+    // subsystem tests. Keeping them out of this map avoids polluting the
+    // worktree root with stray files.
     status: ["status"],
     doctor: ["doctor"],
     config: ["config"],
