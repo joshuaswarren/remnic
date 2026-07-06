@@ -367,10 +367,17 @@ export class ChatEngine {
           content: `[system] Tool budget exhausted (${this.maxToolCallsPerTurn} calls). ${skippedTools.length} tool(s) were skipped: ${skippedTools.join(", ")}. Please summarize what you found.`,
         });
         // One more LLM call for the summary, then we're done.
-        const summaryResponse = await this.llm.complete(conversation, {
-          tools: [], // No more tools — force a text reply.
-          ...(this.model ? { model: this.model } : {}),
-        });
+        let summaryResponse;
+        try {
+          summaryResponse = await this.llm.complete(conversation, {
+            tools: [], // No more tools — force a text reply.
+            ...(this.model ? { model: this.model } : {}),
+          });
+        } catch {
+          // Budget-exhaustion summary is best-effort — don't mask the partial
+          // results with a transport error (kilo review, Thread 16).
+          summaryResponse = null;
+        }
         const summaryText = summaryResponse?.content ?? "I reached my tool-call budget. Here is what I found so far, but some queries were skipped.";
         return {
           reply: summaryText,

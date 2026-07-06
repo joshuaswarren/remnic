@@ -85,23 +85,9 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
     ): Promise<{ content: string } | null>;
   });
 
-  const executor = createChatExecutor({
-    service: opts.service,
-    principal: opts.principal,
-    namespace: opts.namespace,
-    sessionKey: opts.sessionKey,
-  });
-
-  const engine = new ChatEngine({
-    llm: adapter,
-    executor,
-    maxToolCallsPerTurn: config.maxToolCallsPerTurn,
-    ...(config.model ? { model: config.model } : {}),
-    correctionAvailable: false,
-    scopeInspectAvailable: false,
-  });
-
-  // Load or create session.
+  // Load or create session FIRST so the executor inherits the session's
+  // stored namespace/sessionKey scope — a resumed session created via MCP
+  // must not lose its scope binding (codex review, Thread 19).
   let session;
   if (opts.sessionId) {
     session = await loadChatSession(opts.memoryDir, opts.sessionId);
@@ -120,6 +106,22 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
       namespace: opts.namespace,
     });
   }
+
+  const executor = createChatExecutor({
+    service: opts.service,
+    principal: opts.principal,
+    ...(session.namespace ? { namespace: session.namespace } : {}),
+    ...(session.sessionKey ? { sessionKey: session.sessionKey } : {}),
+  });
+
+  const engine = new ChatEngine({
+    llm: adapter,
+    executor,
+    maxToolCallsPerTurn: config.maxToolCallsPerTurn,
+    ...(config.model ? { model: config.model } : {}),
+    correctionAvailable: false,
+    scopeInspectAvailable: false,
+  });
 
   // ── Non-TTY / --once mode ───────────────────────────────────────────
   if (opts.once) {

@@ -241,3 +241,32 @@ test("cleanupExpiredChatSessions removes old sessions", async () => {
   const removed = await cleanupExpiredChatSessions(dir, 0);
   assert.ok(removed >= 1);
 });
+
+// ---------------------------------------------------------------------------
+// Review-round fixes (Thread 16: budget summary error handling)
+// ---------------------------------------------------------------------------
+
+test("budget exhaustion summary LLM failure does not crash (Thread 16)", async () => {
+  const executor = makeStubExecutor();
+  // With maxToolCallsPerTurn=1: call 1 executes the tool, call 2's tool is
+  // skipped (budget exhausted), call 3 is the summary. Make the summary throw.
+  const llm = new StubChatLlmAdapter([
+    { toolCalls: [{ name: "memory_search", arguments: { query: "a" } }] },
+  ]);
+  let callCount = 0;
+  const originalComplete = llm.complete.bind(llm);
+  llm.complete = async (messages, options) => {
+    callCount++;
+    // 3rd call is the budget-exhaustion summary — throw to verify the try/catch.
+    if (callCount === 3) throw new Error("summary LLM transport failure");
+    return originalComplete(messages, options);
+  };
+  const engine = makeEngine(llm, executor, { maxToolCallsPerTurn: 1 });
+
+  const session = await createChatSession(await makeTempDir(), {});
+  const result = await engine.processMessage("search a", session);
+
+  // Should return a partial reply, not throw.
+  assert.ok(result.reply.length > 0, "Should return a fallback reply");
+  assert.ok(result.skippedTools !== undefined, "Should report skipped tools");
+});

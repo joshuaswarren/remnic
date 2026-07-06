@@ -33,7 +33,7 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
       const result = await service.memorySearch({
         query,
         ...(namespace ? { namespace } : {}),
-        ...(maxResults ? { maxResults } : {}),
+        ...(maxResults !== undefined ? { maxResults } : {}),
         ...(principal ? { principal } : {}),
       });
       return JSON.stringify(result);

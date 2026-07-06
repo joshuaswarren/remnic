@@ -3767,7 +3767,7 @@ export class EngramMcpServer {
           throw new EngramAccessInputError("message is required");
         }
         const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId : undefined;
-        return processChatMessage({
+        const chatResult = await processChatMessage({
           service: this.service,
           config: this.service.configRef?.chat,
           memoryDir: this.service.memoryDir,
@@ -3777,6 +3777,13 @@ export class EngramMcpServer {
           ...(scope?.namespace ? { namespace: scope.namespace } : {}),
           ...(scope?.sessionKey ? { sessionKey: scope.sessionKey } : {}),
         });
+        // Strip internal error details — MCP clients get the tagged reply only,
+        // matching the HTTP handler (cursor security review, Thread 17).
+        if (chatResult && typeof chatResult === "object" && "error" in chatResult) {
+          const { error: _stripped, ...wireResult } = chatResult as unknown as Record<string, unknown>;
+          return wireResult;
+        }
+        return chatResult;
       }
       default:
         throw new Error(`unknown tool: ${name}`);

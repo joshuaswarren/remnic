@@ -33,6 +33,7 @@ import {
 import { processChatMessage } from "./chat-factory.js";
 import type { ChatToolExecutor } from "./chat-engine.js";
 import type { EngramAccessService } from "../access-service.js";
+import { createChatExecutor } from "./chat-executor.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -376,4 +377,25 @@ test("recall_explain: forwards the query argument to the executor", async () => 
   const session = await createChatSession(await makeTempDir(), {});
   await engine.processMessage("why did you recall that?", session);
   assert.equal(capturedQuery, "why postgres", "recall_explain must forward the query to the executor");
+});
+
+// ---------------------------------------------------------------------------
+// P2 — Executor forwards maxResults=0 (Thread 14, kilo review)
+// ---------------------------------------------------------------------------
+
+test("executor: maxResults=0 is forwarded, not dropped by falsy check (Thread 14)", async () => {
+  let capturedArgs: Record<string, unknown> = {};
+  const mockService = {
+    briefingEnabled: false,
+    memorySearch: async (args: Record<string, unknown>) => {
+      capturedArgs = args;
+      return { results: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const executor = createChatExecutor({
+    service: mockService,
+    principal: "test",
+  });
+  await executor.memorySearch("query", 0);
+  assert.equal(capturedArgs.maxResults, 0, "maxResults=0 must be forwarded, not dropped");
 });

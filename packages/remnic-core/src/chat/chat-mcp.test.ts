@@ -99,3 +99,37 @@ test("MCP memory_chat: rejects empty message with input error", async () => {
   assert.equal(result?.isError, true, "empty message must surface an input error");
   await rm(memoryDir, { recursive: true, force: true });
 });
+
+test("MCP memory_chat: strips internal error from structuredContent (Thread 17)", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "chat-mcp-leak-"));
+  // LLM returns null → engine tags the result with error: "no_llm_available".
+  const llm = {
+    chatCompletion: async () => null,
+  };
+  const service = makeBaseService({
+    fallbackLlmRef: llm,
+    memoryDir,
+    configRef: parseConfig({ memoryDir, chat: { ...DEFAULT_CHAT_CONFIG, enabled: true } }),
+  });
+  const server = new EngramMcpServer(service, { chatVisible: true, principal: "alice" });
+
+  const response = await server.handleRequest(
+    makeCallRequest("engram.memory_chat", { message: "what database?" }),
+  );
+  const result = (response as {
+    result?: {
+      content?: { text?: string }[];
+      structuredContent?: Record<string, unknown>;
+      isError?: boolean;
+    };
+  }).result;
+  assert.equal(result?.isError, false, "should not be a JSON-RPC error");
+  // The text content and structuredContent must NOT expose the raw error field.
+  const sc = result?.structuredContent ?? {};
+  assert.ok(!("error" in sc), "structuredContent must not leak the error field");
+  const text = result?.content?.[0]?.text ?? "";
+  const parsed = JSON.parse(text) as Record<string, unknown>;
+  assert.ok(!("error" in parsed), "text content must not leak the error field");
+  assert.ok(typeof parsed.reply === "string", "reply must be present");
+  await rm(memoryDir, { recursive: true, force: true });
+});
