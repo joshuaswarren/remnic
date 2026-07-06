@@ -70,6 +70,15 @@ const ADHOC_RESOLUTION_RE =
   /\b(resolveWritableNamespace|namespaceFromStorageDir|configuredNamespaces)\s*\(/g;
 const SCOPE_PLAN_REL = "packages/remnic-core/src/scopes/scope-plan.ts";
 const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
+/**
+ * Direct imports of the main `storage.ts` module (issue #1533 Phase B): counts
+ * non-test source files that import from `./storage.js` or `../storage.js` (the
+ * 7.7k-LOC god file) rather than the extracted `storage/*` interface modules.
+ * The ratchet may only DECREASE as Phase B migrates the 51+ importers to the
+ * `MemoryStorage` interface. Matches relative imports ending in exactly
+ * `storage.js` — not sub-paths like `namespaces/storage.js` or `secure-fs.js`.
+ */
+const DIRECT_STORAGE_IMPORT_RE = /from\s+"(?:\.\.?\/)+storage\.js"/;
 
 function usage() {
   return [
@@ -142,6 +151,7 @@ function collectMetrics(oversizeThresholdLoc) {
   const oversizedFiles = [];
   let scatteredConfigFlagReads = 0;
   let adHocNamespaceResolutions = 0;
+  let directStorageImports = 0;
   for (const file of sourceFiles) {
     const relPosix = toPosix(path.relative(ROOT, file));
     const content = readFileSync(file, "utf8");
@@ -161,6 +171,18 @@ function collectMetrics(oversizeThresholdLoc) {
         adHocNamespaceResolutions += adHocMatches.length;
       }
     }
+    // Issue #1533: count files importing directly from the main storage.ts
+    // (exclude storage.ts itself, and exclude the test-only storage-contract/
+    // harness dir — it imports storage.js by design to exercise the public
+    // surface, not as a production caller). May only decrease as Phase B
+    // migrates real importers to the MemoryStorage interface.
+    if (
+      relPosix !== "packages/remnic-core/src/storage.ts" &&
+      !relPosix.includes("/storage-contract/") &&
+      DIRECT_STORAGE_IMPORT_RE.test(content)
+    ) {
+      directStorageImports++;
+    }
   }
 
   return {
@@ -170,6 +192,7 @@ function collectMetrics(oversizeThresholdLoc) {
     oversizedFileCount: oversizedFiles.length,
     scatteredConfigFlagReads,
     adHocNamespaceResolutions,
+    directStorageImports,
   };
 }
 
@@ -204,7 +227,7 @@ function readBaseline() {
       fail(`baseline metrics.watchlistLoc entry ${file} must be a non-negative integer`);
     }
   }
-  for (const key of ["oversizedFileCount", "scatteredConfigFlagReads", "adHocNamespaceResolutions"]) {
+  for (const key of ["oversizedFileCount", "scatteredConfigFlagReads", "adHocNamespaceResolutions", "directStorageImports"]) {
     if (!Number.isInteger(metrics[key]) || metrics[key] < 0) {
       fail(`baseline metrics.${key} must be a non-negative integer`);
     }
@@ -228,6 +251,7 @@ function writeBaseline(metrics, oversizeThresholdLoc) {
       oversizedFileCount: metrics.oversizedFileCount,
       scatteredConfigFlagReads: metrics.scatteredConfigFlagReads,
       adHocNamespaceResolutions: metrics.adHocNamespaceResolutions,
+      directStorageImports: metrics.directStorageImports,
     },
   };
   writeFileSync(BASELINE_PATH, `${JSON.stringify(baseline, null, 2)}\n`, "utf8");
@@ -267,6 +291,7 @@ function main() {
     console.log(`[ratchet]   oversizedFileCount (> ${DEFAULT_OVERSIZE_THRESHOLD_LOC} LOC): ${metrics.oversizedFileCount}`);
     console.log(`[ratchet]   scatteredConfigFlagReads: ${metrics.scatteredConfigFlagReads}`);
     console.log(`[ratchet]   adHocNamespaceResolutions: ${metrics.adHocNamespaceResolutions}`);
+    console.log(`[ratchet]   directStorageImports: ${metrics.directStorageImports}`);
     return;
   }
 
@@ -338,6 +363,17 @@ function main() {
   } else if (current.adHocNamespaceResolutions < baseline.metrics.adHocNamespaceResolutions) {
     improvements.push(
       `ad-hoc namespace-resolution call sites: ${baseline.metrics.adHocNamespaceResolutions} -> ${current.adHocNamespaceResolutions}`,
+    );
+  }
+
+  if (current.directStorageImports > baseline.metrics.directStorageImports) {
+    failures.push(
+      `direct storage.ts imports grew from ${baseline.metrics.directStorageImports} ` +
+        `to ${current.directStorageImports} (migrate importers to the MemoryStorage interface; see #1533)`,
+    );
+  } else if (current.directStorageImports < baseline.metrics.directStorageImports) {
+    improvements.push(
+      `direct storage.ts imports: ${baseline.metrics.directStorageImports} -> ${current.directStorageImports}`,
     );
   }
 

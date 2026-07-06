@@ -12,6 +12,7 @@
     },
     "oversizedFileCount": 11,
     "scatteredConfigFlagReads": 561,
-    "adHocNamespaceResolutions": 53
+    "adHocNamespaceResolutions": 53,
+    "directStorageImports": 38
   }
 }
