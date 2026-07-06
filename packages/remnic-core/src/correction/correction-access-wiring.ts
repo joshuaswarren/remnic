@@ -377,10 +377,16 @@ async function retireMemoryFn(
   const storage = await wiring.orchestrator.getStorage(namespace);
   const memory = await storage.getMemoryById(memoryId);
   if (!memory) throw new CorrectionContractError(`memory not found for retire: ${memoryId}`);
+  // Map the correction-domain status to the storage-domain MemoryStatus.
+  // `retracted` (a correction concept) becomes `forgotten` — the soft-delete
+  // status that excludes the memory from recall/browse/attribution while
+  // keeping a page-version snapshot for reversibility (#686). `superseded`
+  // maps to itself.
+  const storageStatus: MemoryStatus = opts.status === "retracted" ? "forgotten" : "superseded";
   // Flip status + stamp validUntil (when bi-temporal is on, #1578) +
   // link the superseder. writeMemoryFrontmatter is the chokepoint.
   await storage.writeMemoryFrontmatter(memory, {
-    status: opts.status,
+    status: storageStatus,
     ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
     ...(opts.status === "superseded" ? { supersededAt: new Date().toISOString() } : {}),
     // validUntil is the bi-temporal end; absent when the gate is off.
@@ -699,12 +705,12 @@ function fallbackClassification(
   };
 }
 
-// Re-export for the barrel.
+// Re-export the local helpers for tests that import this module directly.
+// (deterministicFallbackPlan and newPlanId live in correction-contract.ts and
+// are re-exported by the barrel from there — not duplicated here.)
 export {
   buildAuditBody,
   buildClassifyPrompt,
   CLASSIFY_SYSTEM_PROMPT,
-  deterministicFallbackPlan,
-  newPlanId,
   parseClassifyResponse,
 };
