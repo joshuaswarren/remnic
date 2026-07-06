@@ -95,6 +95,7 @@ import { WebDavServer } from "./network/webdav.js";
 import { GraphDashboardServer, type DashboardStatus } from "./dashboard-runtime.js";
 import { EngramAccessService } from "./access-service.js";
 import { EngramAccessHttpServer } from "./access-http.js";
+import { runChatCli } from "./chat/chat-cli.js";
 import {
   buildActionConfidenceInputFromOptions,
   evaluateActionConfidence,
@@ -2807,6 +2808,7 @@ export async function runAccessMcpServeCliCommand(
       architectureCardVisible: service.architectureCardSurfaceVisible,
       codegraphVisible: service.codegraphSurfaceVisible,
       sessionDeltaVisible: service.sessionDeltaSurfaceVisible,
+      chatVisible: service.configRef?.chat?.enabled === true,
       correctionVisible: service.correctionSurfaceVisible,
     });
   await server.runStdio(options.stdin ?? process.stdin, options.stdout ?? process.stdout);
@@ -9335,6 +9337,24 @@ export function registerCli(
               }
             }
           }
+        });
+      // ── Chat — conversational memory inspection + correction (#1583) ────
+      cmd
+        .command("chat")
+        .description("Conversational memory inspection and correction (issue #1583)")
+        .option("--session <id>", "Resume an existing chat session")
+        .option("--once", "Process a single message from stdin and exit (non-TTY/scripting)")
+        .option("--principal <principal>", "Trusted principal (defaults to config/env)")
+        .action(async (...args: unknown[]) => {
+          const options = (args[0] ?? {}) as Record<string, unknown>;
+          await runChatCli({
+            service: new EngramAccessService(orchestrator),
+            config: orchestrator.config?.chat,
+            memoryDir: orchestrator.config.memoryDir,
+            principal: resolveAccessPrincipalOverride(options.principal, orchestrator.config.agentAccessHttp.principal),
+            ...(typeof options.session === "string" ? { sessionId: options.session } : {}),
+            ...(options.once === true ? { once: true } : {}),
+          });
         });
     },
     { commands: ["engram"] },

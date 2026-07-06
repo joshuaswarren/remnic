@@ -75,6 +75,9 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   // Correction Contract (issue #1580) — one plan/apply pipeline.
   { tool: "memory_correct_plan", operation: "memory_correct_plan" },
   { tool: "memory_correct_apply", operation: "memory_correct_apply" },
+  // Conversational memory inspection + correction (issue #1583) — unmigrated
+  // handler dispatched to processChatMessage (not a boundary operation).
+  { tool: "memory_chat", operation: null },
   { tool: "coding_decision", operation: "coding_decision" },
   { tool: "coding_architecture", operation: "coding_architecture" },
   // codegraph parity tools (issue #1554)
@@ -229,6 +232,8 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   // streaming lifecycle is owned by the HTTP transport (handleGraphEventsSSE).
   { method: "GET", pathname: "/engram/v1/offline-sync/snapshot-stream", operation: "offline_sync_snapshot_stream" },
   { method: "GET", pathname: "/engram/v1/graph/events", operation: "graph_events" },
+  { method: "POST", pathname: "/engram/v1/chat/message", operation: "chat_message" },
+  { method: "GET", pathname: "/engram/v1/chat/events/:id", operation: "chat_events" },
 ];
 
 /**

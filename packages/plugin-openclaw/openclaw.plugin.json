@@ -3417,6 +3417,36 @@
         "default": true,
         "description": "Enable transcript archiving"
       },
+      "chat": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "Conversational memory inspection and correction (issue #1583). A bounded tool-loop agent over read-only + confirmation-gated mutating tools. Off by default — spawns LLM calls so explicit opt-in (rule 48).",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Master gate. Off = no chat tools/endpoints/CLI registered (byte-identical surfaces, rule 39)."
+          },
+          "model": {
+            "type": "string",
+            "default": "",
+            "description": "Routing override for the chat LLM. Empty = use the default routing chain (local Ollama/vLLM fully supported)."
+          },
+          "maxToolCallsPerTurn": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 64,
+            "default": 8,
+            "description": "Max tool calls per user turn before partial-reply fallback (rule 34 — never a silent stall)."
+          },
+          "sessionTtlHours": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 72,
+            "description": "Hours after which idle chat session state is cleaned up."
+          }
+        }
+      },
       "captureMode": {
         "type": "string",
         "enum": [
