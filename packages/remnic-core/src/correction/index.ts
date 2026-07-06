@@ -41,3 +41,27 @@ export type { CorrectionNamespacePolicy, CorrectionServiceDeps } from "./correct
 
 export { createCorrectionService, isCorrectionFeatureEnabled } from "./correction-access-wiring.js";
 export type { CorrectionAccessWiring } from "./correction-access-wiring.js";
+
+export { detectPassiveCorrections, extractHandles } from "./passive-correction-detector.js";
+export type { PassiveCorrection, PassiveCorrectionPolarity, DetectorTurn } from "./passive-correction-detector.js";
+
+export {
+  capturePassiveCorrections,
+  evaluateAutoApplyGuards,
+  emptyTelemetry,
+} from "./passive-capture.js";
+export type {
+  CorrectionCaptureMode,
+  PassiveCaptureConfig,
+  PassiveCaptureContext,
+  PassiveCaptureDeps,
+  PassiveCaptureResult,
+  PassiveCaptureTelemetry,
+  AutoApplySuppressionReason,
+} from "./passive-capture.js";
+
+export {
+  enqueuePassiveCorrectionNotification,
+  drainPassiveCorrectionNotifications,
+} from "./passive-correction-notifications.js";
+export type { PassiveCorrectionNotification } from "./passive-correction-notifications.js";

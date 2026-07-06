@@ -24,6 +24,10 @@ import { SmartBuffer } from "./buffer.js";
 import { chunkContent, type ChunkingConfig } from "./chunking.js";
 import { semanticChunkContent, type SemanticChunkResult } from "./semantic-chunking.js";
 import { ExtractionEngine } from "./extraction.js";
+import { detectPassiveCorrections } from "./correction/passive-correction-detector.js";
+import { capturePassiveCorrections, type PassiveCaptureConfig } from "./correction/passive-capture.js";
+import { createCorrectionService } from "./correction/correction-access-wiring.js";
+import type { CorrectionService } from "./correction/correction-service.js";
 import { isAboveImportanceThreshold, scoreImportance } from "./importance.js";
 import {
   judgeFactDurability,
@@ -1979,6 +1983,16 @@ export class Orchestrator {
     string,
     { count: number; lastAccessed: string }
   > = new Map();
+
+  // Passive correction capture (issue #1581) — dedup state + lazy service.
+  private passiveCorrectionDedup: Set<string> = new Set();
+  private _passiveCorrectionService: CorrectionService | null = null;
+  private passiveCorrectionTelemetry: {
+    detected: number;
+    queued: number;
+    autoApplied: number;
+    suppressedReasonCounts: Record<string, number>;
+  } = { detected: 0, queued: 0, autoApplied: 0, suppressedReasonCounts: {} };
 
   // Background serial queue for extractions (agent_end optimization)
   // Queue stores promises that resolve when extraction should run
@@ -13012,6 +13026,111 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Passive correction capture (issue #1581) — detects corrections expressed
+   * passively in conversation turns and routes them to the Correction Contract
+   * (#1580). Called from `runExtraction` after persistence completes.
+   *
+   * Thin wiring: delegates ALL correction logic to the detector + capture
+   * modules + the CorrectionService. This method only checks gates, calls the
+   * detector, and routes results. Fail-open: capture errors never block the
+   * extraction return path.
+   */
+  private async maybeCapturePassiveCorrections(
+    turns: readonly BufferTurn[],
+    opts: {
+      sessionKey: string;
+      principal?: string;
+      namespace: string;
+      bufferKey: string;
+      isLiveSession: boolean;
+    },
+  ): Promise<void> {
+    const mode = this.config.correctionCaptureMode;
+    if (mode === "off") return;
+    if (!this.config.correctionEnabled) return;
+
+    try {
+      const corrections = detectPassiveCorrections(
+        turns.map((t) => ({ role: t.role, content: t.content })),
+      );
+      if (corrections.length === 0) return;
+
+      // Replay/import: force queue-only mode even if config says auto.
+      const effectiveMode = opts.isLiveSession ? mode : "queue";
+      const captureConfig: PassiveCaptureConfig = {
+        mode: effectiveMode,
+        confidenceFloor: this.config.correctionCaptureConfidenceFloor,
+        autoApplyMaxAffected: this.config.correctionCaptureAutoApplyMaxAffected,
+      };
+
+      const service = this.passiveCorrectionService();
+      const result = await capturePassiveCorrections(
+        corrections,
+        {
+          correctionEnabled: this.config.correctionEnabled,
+          isLiveSession: opts.isLiveSession,
+          bufferKey: opts.bufferKey,
+          sessionKey: opts.sessionKey,
+          principal: opts.principal,
+          namespace: opts.namespace,
+        },
+        captureConfig,
+        {
+          planCorrection: (req) => service.plan(req),
+          applyCorrection: (planId, applyOpts) => service.apply(planId, applyOpts),
+          storageDir: async (ns) => (await this.getStorage(ns)).dir,
+        },
+        this.passiveCorrectionDedup,
+      );
+
+      // Accumulate telemetry
+      this.passiveCorrectionTelemetry.detected += result.telemetry.detected;
+      this.passiveCorrectionTelemetry.queued += result.telemetry.queued;
+      this.passiveCorrectionTelemetry.autoApplied += result.telemetry.autoApplied;
+      for (const [reason, count] of Object.entries(result.telemetry.suppressedReasons)) {
+        this.passiveCorrectionTelemetry.suppressedReasonCounts[reason] =
+          (this.passiveCorrectionTelemetry.suppressedReasonCounts[reason] ?? 0) + count;
+      }
+    } catch (err) {
+      // Fail-open: passive capture never blocks extraction.
+      log.debug(
+        `passive-correction: capture failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** Lazily construct the CorrectionService for passive capture. Stateless
+   *  across requests (per #1580 design); cached for the orchestrator's life. */
+  private passiveCorrectionService(): CorrectionService {
+    if (this._passiveCorrectionService) return this._passiveCorrectionService;
+    this._passiveCorrectionService = createCorrectionService({
+      orchestrator: this,
+      resolveAuthorizedNamespace: async (req) =>
+        req.namespace ?? this.config.defaultNamespace,
+      resolveReadableNamespaces: (req) => [
+        req.namespace ?? this.config.defaultNamespace,
+      ],
+      canWriteNamespace: async () => true,
+      llmComplete: async ({ system, user }) => {
+        const llmResult = await this.localLlm.chatCompletion(
+          [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          { operation: "correction-classify", priority: "background" },
+        );
+        if (!llmResult) {
+          throw new Error(
+            "passive correction classify+draft: local LLM unavailable (disabled or in cooldown)",
+          );
+        }
+        return llmResult.content;
+      },
+    });
+    return this._passiveCorrectionService;
+  }
+
   private async runExtraction(
     turns: BufferTurn[],
     options: {
@@ -13444,6 +13563,19 @@ export class Orchestrator {
     }
 
     await clearBuffer({ ignoreAbort: true });
+
+    // Passive correction capture (issue #1581) — detect corrections expressed
+    // passively in the extracted turns and route to the Correction Contract.
+    // Runs AFTER persistence + buffer clear so a capture failure never blocks
+    // the extraction return. `clearBufferAfterExtraction` gates live-session
+    // auto-apply (replay/import → queue-only).
+    await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+      sessionKey,
+      principal,
+      namespace: selfNamespace,
+      bufferKey,
+      isLiveSession: clearBufferAfterExtraction,
+    });
 
     // Build memory box from this extraction (v8.0 Phase 2A)
     // Topics are derived from the current extraction's facts and entities only —

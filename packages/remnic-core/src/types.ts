@@ -862,6 +862,29 @@ export interface PluginConfig {
    * `24`. Parsed from `correction.planTtlHours` / `correctionPlanTtlHours`.
    */
   correctionPlanTtlHours: number;
+  /**
+   * Passive correction capture (issue #1581) — detects corrections expressed
+   * passively in conversation turns during extraction and routes them to the
+   * Correction Contract (#1580). `"off"` disables detection entirely; `"queue"`
+   * plans corrections for human review (conservative); `"auto"` applies
+   * immediately when all safety guards pass, otherwise falls back to queue.
+   * Default `"off"` — operators opt in (rule 48). Parsed from
+   * `correctionCapture.mode` / `correctionCaptureMode`.
+   */
+  correctionCaptureMode: "off" | "queue" | "auto";
+  /**
+   * Minimum planner confidence for auto-apply (issue #1581). Plans below this
+   * floor are queued even in `"auto"` mode. Default `0.85`. Parsed from
+   * `correctionCapture.confidenceFloor` / `correctionCaptureConfidenceFloor`.
+   */
+  correctionCaptureConfidenceFloor: number;
+  /**
+   * Maximum affected memories for auto-apply (issue #1581). Plans touching more
+   * memories than this are queued even in `"auto"` mode — a blast-radius cap.
+   * Default `2`. Parsed from `correctionCapture.autoApplyMaxAffected` /
+   * `correctionCaptureAutoApplyMaxAffected`.
+   */
+  correctionCaptureAutoApplyMaxAffected: number;
   // Tombstones — non-resurrection invariant (issue #1579).
   /**
    * Master gate for the tombstone non-resurrection invariant. When `true`
