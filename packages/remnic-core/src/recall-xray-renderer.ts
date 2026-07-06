@@ -174,6 +174,12 @@ function renderResultTextLines(
       lines.push(`    safety: ${result.provenance.safety}${reasonSuffix}`);
     }
   }
+  if (result.sourceSpan) {
+    const q = truncateForXray(result.sourceSpan.quote, 120);
+    lines.push(
+      `    source: "${q}" (observed ${result.sourceSpan.observedAt}) [${result.sourceSpan.provenance}]`,
+    );
+  }
   if (result.admittedBy.length > 0) {
     lines.push(`    admitted-by: ${result.admittedBy.join(", ")}`);
   }
@@ -374,6 +380,12 @@ function renderResultMarkdownLines(
       );
     }
   }
+  if (result.sourceSpan) {
+    const q = truncateForXray(result.sourceSpan.quote, 120);
+    lines.push(
+      `- **Source:** "${mdEscape(q)}" (${mdInlineCode(result.sourceSpan.observedAt)}) \u2014 ${result.sourceSpan.provenance}`,
+    );
+  }
   if (result.admittedBy.length > 0) {
     lines.push(
       `- **Admitted by:** ${result.admittedBy.map(mdInlineCode).join(", ")}`,
@@ -470,6 +482,22 @@ function mdEscape(value: string): string {
   // Pipe is the only character that breaks GFM table rendering; escape
   // backslash first so we do not re-escape the escape character.
   return value.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+}
+
+/**
+ * Truncate a quote for X-ray display (issue #1575 PR 3). Collapses internal
+ * whitespace runs (including newlines/carriage returns) to single spaces so
+ * a multi-line source excerpt cannot split what is meant to be a single X-ray
+ * row, then caps at `maxChars` on a word boundary with an ellipsis marker.
+ * The JSON \`sourceSpan.quote\` stays verbatim — this is display-only.
+ */
+function truncateForXray(text: string, maxChars: number): string {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= maxChars) return collapsed;
+  const slice = collapsed.slice(0, maxChars);
+  const lastSpace = slice.lastIndexOf(" ");
+  const cut = lastSpace > Math.floor(maxChars * 0.5) ? slice.slice(0, lastSpace) : slice;
+  return `${cut}\u2026`;
 }
 
 function mdInlineCode(value: string): string {

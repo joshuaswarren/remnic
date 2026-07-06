@@ -554,3 +554,43 @@ export type {
   MitigatedBaselineConfig,
   MitigatedTargetConfig,
 } from "./security/extraction-attack/index.js";
+
+// ---------------------------------------------------------------------------
+// Coding-graph benchmark harness (issue #1557): deterministic synthetic repo
+// generator, metric runner, and regression gate. Reached via the optional
+// loader (rule 57). Bench-owned baseline JSON lives in baselines/.
+// ---------------------------------------------------------------------------
+export {
+  createSeededRng as createCodingGraphSeededRng,
+  generateSyntheticRepo,
+  pickStableQualifiedName,
+  runCodingGraphBenchmark,
+  captureMachineFingerprint,
+  checkCodingGraphRegression,
+  extractMetrics as extractCodingGraphMetrics,
+  buildBaselineFromReport,
+} from "./coding-graph/index.js";
+export type {
+  RegressionMetricKey as CodingGraphRegressionKey,
+  SyntheticRepoConfig,
+  GeneratedRepo,
+  SyntheticFileIR,
+  SyntheticSymbol,
+  SyntheticEdge,
+  MachineFingerprint as CodingGraphMachineFingerprint,
+  MicroMetric,
+  WallMetric,
+  CodingGraphMetricKey,
+  CodingGraphBenchReport,
+  CodingGraphBaseline,
+  RegressionMetricDetail as CodingGraphRegressionDetail,
+  RegressionGateResult as CodingGraphRegressionResult,
+  CodingGraphBenchConfig,
+} from "./coding-graph/index.js";
+export {
+  DEFAULT_SMOKE_FIXTURE as CODING_GRAPH_SMOKE_FIXTURE,
+  DEFAULT_10K_FIXTURE as CODING_GRAPH_10K_FIXTURE,
+  MIN_ITERATIONS as CODING_GRAPH_MIN_ITERATIONS,
+  DEFAULT_TOLERANCE_PERCENT as CODING_GRAPH_DEFAULT_TOLERANCE,
+  CODING_GRAPH_BENCH_SCHEMA_VERSION,
+} from "./coding-graph/index.js";

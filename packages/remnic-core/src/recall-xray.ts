@@ -171,6 +171,20 @@ export interface RecallXrayResult {
    * capture when the memory frontmatter was already loaded by retrieval.
    */
   provenance?: RetrievedMemoryProvenance;
+  /**
+   * Claim-level provenance span (issue #1575 PR 3). The first source excerpt
+   * backing this memory, surfaced so X-ray consumers can see the literal
+   * utterance each fact derives from alongside retrieval provenance. Absent
+   * when the memory carries no source spans (legacy or `provenance: "none"`).
+   */
+  sourceSpan?: {
+    /** Verbatim quote excerpt (capped at write time by `provenance.maxQuoteChars`). */
+    quote: string;
+    /** ISO timestamp of the source turn. */
+    observedAt: string;
+    /** Coarse strength tag from the frontmatter. */
+    provenance: "verified" | "unverified" | "none";
+  };
 }
 
 /**
@@ -521,6 +535,24 @@ function cloneResult(result: RecallXrayResult): RecallXrayResult {
   const provenance = normalizeRetrievedMemoryProvenance(result.provenance);
   if (provenance !== undefined) {
     out.provenance = provenance;
+  }
+  // Claim-level provenance span (#1575 PR 3). Deep-copy the three scalar
+  // fields so the snapshot returned by getLastXraySnapshot is independent
+  // of the caller's object (matches the structuredClone contract).
+  const ss = result.sourceSpan;
+  if (
+    ss &&
+    typeof ss.quote === "string" &&
+    typeof ss.observedAt === "string" &&
+    (ss.provenance === "verified" ||
+      ss.provenance === "unverified" ||
+      ss.provenance === "none")
+  ) {
+    out.sourceSpan = {
+      quote: ss.quote,
+      observedAt: ss.observedAt,
+      provenance: ss.provenance,
+    };
   }
   return out;
 }

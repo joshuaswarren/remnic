@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "machine": {
+    "arch": "arm64",
+    "platform": "darwin",
+    "nodeVersion": "v22.20.0",
+    "cpuModel": "Apple M2 Max",
+    "cpuCores": 12,
+    "totalMemoryMb": 98304
+  },
+  "fixtureConfig": {
+    "seed": 42,
+    "fileCount": 20,
+    "symbolsPerFile": 10,
+    "callDensity": 0.3,
+    "language": "typescript"
+  },
+  "metrics": {
+    "fullIndexMs": 14.864042000000154,
+    "fullIndexLocsPerSecond": 136302,
+    "incrementalUpdateP50Ms": 0.19358299999998962,
+    "incrementalUpdateP95Ms": 0.26237500000002,
+    "tracePathP95Ms": 0.15750000000002728,
+    "searchGraphP95Ms": 0.19700000000011642,
+    "deadCodeMs": 2.29424999999992,
+    "dbBytesPerKloc": 280636
+  },
+  "createdAt": "2026-07-06T10:50:56.821Z",
+  "note": "Initial baseline — first harness run with WAL-aware DB sizing (issue #1557 PR1)."
+}
