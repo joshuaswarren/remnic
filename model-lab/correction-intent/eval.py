@@ -96,8 +96,13 @@ def _gold_labels(rows: list[dict[str, Any]]) -> list[str]:
 
 def _span_overlaps(rows: list[dict[str, Any]], pred_rows: list[dict[str, Any]]) -> list[float]:
     """Token overlap between predicted + gold correctedAssertion (corrections only)."""
+    if len(rows) != len(pred_rows):
+        raise ValueError(
+            f"length mismatch: gold={len(rows)} pred={len(pred_rows)} "
+            "(--held-out and --predictions must have one row per turn)"
+        )
     overlaps: list[float] = []
-    for gold, pred in zip(rows, pred_rows, strict=True):
+    for gold, pred in zip(rows, pred_rows):
         if gold.get("label") != "correction":
             continue
         g_assert = ""
@@ -110,6 +115,22 @@ def _span_overlaps(rows: list[dict[str, Any]], pred_rows: list[dict[str, Any]]) 
             p_assert = str(pred_corr[0].get("correctedAssertion", ""))
         overlaps.append(span_overlap(p_assert, g_assert))
     return overlaps
+
+
+def _held_out_is_predictions(held_out: Path, predictions: Path) -> bool:
+    """True when --predictions resolves to the same file as --held-out.
+
+    Pure (no torch) so the guard is unit-testable; ``main`` calls this before
+    loading rows. Uses resolve() so a symlink or a rel/abs alias can't bypass the
+    guard (codex P1 — scoring gold against itself fabricates a perfect eval that
+    could be copied into the manifest, rule 55).
+    """
+    try:
+        return held_out.resolve() == predictions.resolve()
+    except OSError:
+        # A broken symlink shouldn't crash eval; the is_file() checks above
+        # already rejected a missing predictions file.
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -136,6 +157,20 @@ def main(argv: list[str] | None = None) -> int:
             "eval.py: --predictions <model-output.jsonl> is required to score the model.\n"
             "  Run the trained checkpoint's inference over the held-out split first;\n"
             "  scoring gold labels against themselves is refused (no fabricated evals, rule 55).",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Refuse the held-out file (or a symlink/hardlink to it) as --predictions:
+    # scoring gold against itself emits perfect detection/span metrics with no
+    # inference — a fabrication that could be copied into the manifest (codex
+    # P1). _held_out_is_predictions compares RESOLVED paths so a symlink or a
+    # relative/absolute alias can't bypass the guard.
+    if _held_out_is_predictions(args.held_out, args.predictions):
+        print(
+            "eval.py: --predictions resolves to the same file as --held-out.\n"
+            "  Scoring gold labels against themselves is refused (no fabricated "
+            "evals, rule 55). Point --predictions at model-inference output.",
             file=sys.stderr,
         )
         return 2

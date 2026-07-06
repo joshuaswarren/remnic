@@ -152,3 +152,89 @@ test(
     }
   },
 );
+
+
+/** A fully-valid "trained" correction-intent manifest; mutate one field to seed a violation. */
+function makeValidTrainedManifest() {
+  return JSON.parse(JSON.stringify({
+    task: "correction-intent",
+    schemaVersion: 1,
+    status: "trained",
+    contract: { inputFields: ["turns"], outputShape: "corrections[]", source: "PassiveCorrection" },
+    baseModel: { name: "Qwen/Qwen2.5-3B-Instruct" },
+    dataRecipe: {
+      generatorPath: "model-lab/correction-intent/generate-data.py",
+      generatorGitSha: "deadbeef",
+      seed: 1337,
+      sources: ["synthetic-morphology"],
+      counts: { correction: 50, none: 50, total: 100 },
+      datasetSha256: "abc123hash",
+    },
+    trainingStack: {
+      python: "3.12.3",
+      libs: {
+        torch: "2.12.1", transformers: "5.3.0", trl: "0.11.1", peft: "0.10.0",
+        datasets: "2.18.0", "huggingface-hub": "0.25.0", bitsandbytes: "0.43.1",
+      },
+      pipFreezeSha256: "freezehash",
+      capturedAt: "2026-07-06",
+    },
+    hyperparams: { lr: 1e-4, epochs: 3 },
+    trainedAt: "2026-07-06T00:00:00Z",
+    hardware: { gpu: "RTX 3090" },
+    eval: { heldOut: { macroF1: 0.91 }, downstream: null },
+    artifact: { hfRepo: "op/correction-intent-v1", revision: "abc", quantizations: ["fp16"] },
+    policyCompliance: { targetMaxParamsB: 4, actualParamsB: 3, escapeHatchUsed: false },
+  }));
+}
+
+test(
+  "manifest schema: strict mode REJECTS a declared trainingStack lib left null (kilo PRRT_kwDORJXyws6OtyS-)",
+  { skip: skipReason },
+  () => {
+    const m = makeValidTrainedManifest();
+    m.trainingStack.libs.trl = null; // declared but unpinned — must not pass strict
+    const tmp = path.join(os.tmpdir(), `remnic-ci-libs-${process.pid}.json`);
+    fs.writeFileSync(tmp, JSON.stringify(m));
+    try {
+      const { errors } = validateManifest(tmp, false);
+      assert.ok(
+        errors.some((e) => e.includes("trainingStack.libs.trl")),
+        `strict mode must reject a null trl pin, got: ${JSON.stringify(errors)}`,
+      );
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  },
+);
+
+test(
+  "manifest schema: strict mode REJECTS a 'trained' manifest whose dataRecipe lacks provenance (codex P2 PRRT_kwDORJXyws6Otp-E)",
+  { skip: skipReason },
+  () => {
+    const m = makeValidTrainedManifest();
+    m.dataRecipe.datasetSha256 = null; // unhashed dataset must not pass strict
+    m.dataRecipe.generatorGitSha = null;
+    const tmp = path.join(os.tmpdir(), `remnic-ci-datarecipe-${process.pid}.json`);
+    fs.writeFileSync(tmp, JSON.stringify(m));
+    try {
+      const { errors } = validateManifest(tmp, false);
+      assert.ok(
+        errors.some((e) => e.includes("dataRecipe.datasetSha256")),
+        `strict mode must reject a null dataRecipe.datasetSha256, got: ${JSON.stringify(errors)}`,
+      );
+      assert.ok(
+        errors.some((e) => e.includes("dataRecipe.generatorGitSha")),
+        `strict mode must reject a null dataRecipe.generatorGitSha, got: ${JSON.stringify(errors)}`,
+      );
+      // A fully-valid trained manifest must still pass (no false positives).
+      const tmp2 = path.join(os.tmpdir(), `remnic-ci-datarecipe-ok-${process.pid}.json`);
+      fs.writeFileSync(tmp2, JSON.stringify(makeValidTrainedManifest()));
+      const { errors: okErrors } = validateManifest(tmp2, false);
+      assert.deepEqual(okErrors, [], `a fully-recorded trained manifest must be valid, got: ${JSON.stringify(okErrors)}`);
+      fs.unlinkSync(tmp2);
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  },
+);

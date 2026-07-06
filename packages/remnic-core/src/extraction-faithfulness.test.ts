@@ -1395,3 +1395,37 @@ test("checkFaithfulnessBatch: no local endpoint pointer → byte-identical routi
   );
   assert.equal(fetchCalled, false, "no local-endpoint fetch when pointer is unset");
 });
+
+
+test("checkFaithfulnessBatch: local-endpoint failure does NOT leak the local model name into the fallback chain (codex P2 PRRT_kwDORJXyws6Otp-L)", async () => {
+  // extractionFaithfulnessModel is the LOCAL served model's name. When the
+  // local endpoint is configured but fails, that name must NOT be forwarded to
+  // the gateway/fallback as options.model — otherwise the configured chain is
+  // forced onto an unavailable local-only model and a local outage becomes
+  // backend_unavailable instead of graceful fallback to the configured chain.
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = parseConfig({
+    extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
+    extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
+    extractionFaithfulnessTimeoutMs: 5000,
+  });
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
+  // Local endpoint returns 500 -> caller returns null -> gate falls through.
+  const failingFetch = (() =>
+    Promise.resolve(new Response("err", { status: 500 }))) as unknown as typeof fetch;
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    null,
+    stubFallbackLlm(JSON.stringify([{ index: 0, verdict: "entailed" }]), fallbackCalls),
+    failingFetch,
+  );
+  assert.equal(fallbackCalls.length, 1, "fallback chain must run on local-endpoint failure");
+  const opts = fallbackCalls[0]?.options as Record<string, unknown>;
+  assert.equal(
+    opts?.model,
+    undefined,
+    "local-only model name must NOT leak into the fallback chain on endpoint failure",
+  );
+  assert.equal(result.results[0]?.ok, true);
+});

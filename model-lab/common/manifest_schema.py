@@ -116,9 +116,9 @@ def validate_manifest(
         stack_errs = _validate_training_stack(stack, allow_pending=allow_pending)
         errors.extend(stack_errs)
 
-    # eval + artifact blocks: structural presence only. allow_pending controls
-    # whether the null/pending placeholder is accepted.
-    for block_key in ("eval", "artifact"):
+    # eval + artifact + dataRecipe blocks: structural presence only.
+    # allow_pending controls whether the null/pending placeholder is accepted.
+    for block_key in ("eval", "artifact", "dataRecipe"):
         block = manifest.get(block_key)
         if _is_pending(block):
             if not allow_pending:
@@ -139,6 +139,18 @@ def validate_manifest(
         artifact_block = manifest.get("artifact")
         if isinstance(artifact_block, Mapping) and _is_pending(artifact_block.get("hfRepo")):
             errors.append("artifact.hfRepo is pending — a real run must publish weights")
+        # dataRecipe provenance (codex P2 PRRT_kwDORJXyws6Otp-E): a published run
+        # must carry the dataset hash + generator git-sha so the eval split is
+        # reproducible. The committed scaffold leaves them null (no canonical
+        # dataset in git); a real run fills them. Without this gate a
+        # status:"trained" manifest with dataRecipe present but unhashed passes.
+        data_recipe = manifest.get("dataRecipe")
+        if isinstance(data_recipe, Mapping):
+            for field_key in ("generatorGitSha", "datasetSha256"):
+                if _is_pending(data_recipe.get(field_key)):
+                    errors.append(
+                        f"dataRecipe.{field_key} is pending — a real run must record dataset provenance"
+                    )
 
     # Real-run top-level fields (issue #1585): baseModel / hyperparams /
     # trainedAt / hardware must be CONCRETE when allow_pending=False so a
@@ -185,8 +197,15 @@ def _validate_training_stack(stack: Mapping[str, Any], *, allow_pending: bool) -
     if not isinstance(libs, Mapping):
         errors.append("trainingStack.libs must be an object mapping lib → exact version")
     elif not allow_pending:
-        # A real run must pin at least the load-bearing libs the recipes import.
-        for lib in ("torch", "transformers"):
+        # A real run must pin an exact version for torch + transformers
+        # (universal across both tasks) AND for every other lib the manifest
+        # DECLARES. The previous check only covered torch/transformers, so a
+        # correction-intent manifest with trl/peft/bitsandbytes left null passed
+        # strict validation and undermined the no-half-recorded-run gate (kilo
+        # WARNING PRRT_kwDORJXyws6OtyS-). Iterating over declared libs also
+        # respects that the two tasks pin different stacks (encoder vs causal-LM).
+        check_libs = dict.fromkeys(("torch", "transformers", *libs.keys()))
+        for lib in check_libs:
             ver = libs.get(lib)
             if _is_pending(ver) or not isinstance(ver, str):
                 errors.append(f"trainingStack.libs.{lib} must pin an exact version for a real run")

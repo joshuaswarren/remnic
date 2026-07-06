@@ -322,7 +322,16 @@ async function callFaithfulnessLlm(
     );
   }
 
-  const modelOverride = config.extractionFaithfulnessModel || undefined;
+  // extractionFaithfulnessModel is the LOCAL served model's name (e.g.
+  // remnic-faithfulness-gate-v1). When a local endpoint is configured it
+  // belongs to that endpoint ONLY — it must NOT leak into the fallback chain
+  // as a gateway/local-LLM override, or a local outage forces the configured
+  // chain onto an unavailable local-only model and turns graceful fallback
+  // into backend_unavailable (codex P2 PRRT_kwDORJXyws6Otp-L). Decouple: the
+  // override reaches the fallback chain only when NO local endpoint is
+  // configured (the pre-feature model-override contract, preserved
+  // byte-identical — rule 39).
+  const modelOverride = localEndpoint ? undefined : (config.extractionFaithfulnessModel || undefined);
 
   // Skip the local backend when (a) modelSource is "gateway", or (b) a
   // faithfulness model override is set. The local client always sends

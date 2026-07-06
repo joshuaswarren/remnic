@@ -103,7 +103,12 @@ def capture_training_stack() -> dict[str, object]:
         if "==" not in line:
             continue
         name, _, version = line.partition("==")
-        name = name.split("[", 1)[0].strip().lower()
+        # PEP 503: distribution names are case-insensitive and treat "-", "_",
+        # and "." as equivalent. pip freeze may emit either form (e.g.
+        # huggingface_hub) while PINNED_LIBS + requirements.txt use hyphens, so
+        # normalize before matching or the version is silently omitted from
+        # stack.libs (cursor review PRRT_kwDORJXyws6Otn36).
+        name = name.split("[", 1)[0].strip().lower().replace("_", "-")
         if name in PINNED_LIBS:
             libs[name] = version
     return {
@@ -129,8 +134,15 @@ def assert_stack_matches_requirements(
     libs = stack.get("libs")
     if not isinstance(libs, Mapping):
         return ["stack.libs must be an object"]
+
+    def _norm(lib_name: str) -> str:
+        # PEP 503 equivalence: a stack captured with underscore keys must still
+        # match a hyphen-form pin (cursor review PRRT_kwDORJXyws6Otn36).
+        return lib_name.strip().lower().replace("_", "-")
+
+    normalized = {_norm(str(k)): v for k, v in libs.items()}
     for lib, want in pinned.items():
-        got = libs.get(lib)
+        got = normalized.get(_norm(lib))
         if got is None:
             errors.append(f"stack.libs.{lib} missing (pinned at {want})")
         elif got != want:
