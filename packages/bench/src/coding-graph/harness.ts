@@ -34,6 +34,7 @@ import {
   type SearchQuery,
   type SymbolKind,
   type CodingGraphLanguage,
+  type UpsertBatchResult,
 } from "@remnic/coding-graph";
 
 import { generateSyntheticRepo } from "./generator.js";
