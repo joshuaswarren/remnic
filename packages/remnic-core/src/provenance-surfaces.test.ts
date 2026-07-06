@@ -118,6 +118,35 @@ test("renderXrayText: long quote is truncated to ~120 chars with ellipsis", () =
 
 // ─── X-ray markdown rendering ─────────────────────────────────────────────
 
+test("renderXrayText: quote with newlines is collapsed to a single line", () => {
+  const snap = buildXraySnapshot({
+    query: "q",
+    tierExplain: null,
+    results: [
+      {
+        memoryId: "fact-newline",
+        path: "facts/multi.md",
+        servedBy: "hybrid",
+        scoreDecomposition: { final: 0.5 },
+        admittedBy: [],
+        sourceSpan: {
+          quote: "line one\nline two\r\nline three",
+          observedAt: "2026-06-01T00:00:00.000Z",
+          provenance: "verified",
+        },
+      },
+    ],
+    filters: [],
+    budget: { chars: 4096, used: 0 },
+  });
+  const text = renderXrayText(snap);
+  const sourceLine = text.split("\n").find((l) => l.includes("source:"));
+  assert.ok(sourceLine);
+  // Newlines must be collapsed to spaces — the source line must be a single line
+  assert.match(sourceLine!, /line one line two line three/);
+  assert.doesNotMatch(sourceLine!, /\n|\r/);
+});
+
 test("renderXrayMarkdown: sourceSpan renders as a Source line", () => {
   const md = renderXrayMarkdown(snapshotWithSourceSpan());
   assert.match(

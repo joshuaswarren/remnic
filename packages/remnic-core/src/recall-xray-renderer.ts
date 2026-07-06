@@ -485,12 +485,16 @@ function mdEscape(value: string): string {
 }
 
 /**
- * Truncate a quote for X-ray display (issue #1575 PR 3). Caps at `maxChars`
- * on a word boundary with an ellipsis marker so the row stays readable.
+ * Truncate a quote for X-ray display (issue #1575 PR 3). Collapses internal
+ * whitespace runs (including newlines/carriage returns) to single spaces so
+ * a multi-line source excerpt cannot split what is meant to be a single X-ray
+ * row, then caps at `maxChars` on a word boundary with an ellipsis marker.
+ * The JSON \`sourceSpan.quote\` stays verbatim — this is display-only.
  */
 function truncateForXray(text: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  const slice = text.slice(0, maxChars);
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (collapsed.length <= maxChars) return collapsed;
+  const slice = collapsed.slice(0, maxChars);
   const lastSpace = slice.lastIndexOf(" ");
   const cut = lastSpace > Math.floor(maxChars * 0.5) ? slice.slice(0, lastSpace) : slice;
   return `${cut}\u2026`;
