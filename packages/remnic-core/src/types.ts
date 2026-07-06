@@ -2201,6 +2201,19 @@ export interface BriefingResult {
    * Allows callers to distinguish "no events today" from "source unavailable".
    */
   calendarSourceErrors?: BriefingCalendarSourceError[];
+  /**
+   * Auto-applied passive corrections drained from the notification queue at
+   * briefing time (issue #1581). Each carries a one-line summary and the undo
+   * command. Drained exactly once — the queue file is cleared on read, so a
+   * notification appears in at most one briefing. Absent when the correction
+   * capture feature is off or no corrections were auto-applied.
+   */
+  correctionNotifications?: ReadonlyArray<{
+    planId: string;
+    summary: string;
+    undoCommand: string;
+    createdAt: string;
+  }>;
 }
 
 /**

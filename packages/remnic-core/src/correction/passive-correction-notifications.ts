@@ -3,7 +3,9 @@
  * for auto-applied passive corrections (issue #1581).
  *
  * When passive capture auto-applies a correction, it enqueues a one-line
- * notification here: `✎ Memory updated: <summary> (undo: remnic correct --revert <planId>)`.
+ * notification here: `✎ Memory updated: <summary> (auto-applied (plan <planId>))`.
+ * The plan id is referenced (not a revert command) because `remnic correct`
+ * has no `--revert` flag — corrections are page-versioned for manual revert.
  * The next session-start briefing drains the queue ONCE (temp-file-then-rename,
  * rule 54) and clears it, so a notification is shown exactly once.
  *

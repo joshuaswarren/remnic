@@ -13275,28 +13275,25 @@ export class Orchestrator {
       // being below the char/user-turn threshold (review: "skipped extraction
       // skips capture"). A short correction like "stop using Vim" is under
       // extractionMinChars but is exactly the high-value case this feature
-      // exists for. Best-effort namespace: writeNamespaceOverride wins, else
-      // the session self namespace (coding overlay included). The ACL in
-      // passiveCorrectionService authorizes the actual plan/apply.
+      // exists for. The write namespace resolves through the SAME scope-profile
+      // plan as the full extraction path so corrections target the active
+      // profile's write layer, not just resolveSelfNamespace (review:
+      // "below-threshold wrong namespace"). The ACL in passiveCorrectionService
+      // authorizes the actual plan/apply.
       {
         const capturePrincipal =
           typeof options.principalOverride === "string" && options.principalOverride.length > 0
             ? options.principalOverride
             : resolvePrincipal(sessionKey, this.config);
-        const captureNamespace =
-          typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
-            ? options.writeNamespaceOverride
-            : this.resolveSelfNamespace(sessionKey);
-        await this.maybeCapturePassiveCorrections(
-          normalizedTurns as BufferTurn[],
-          {
-            sessionKey,
-            principal: capturePrincipal,
-            namespace: captureNamespace,
-            bufferKey,
-            isLiveSession: clearBufferAfterExtraction,
-          },
-        );
+        const captureWO = typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
+          ? options.writeNamespaceOverride : undefined;
+        const captureCodingCtx = sessionKey ? this.getCodingContextForSession(sessionKey) : null;
+        const captureCodingOv = resolveCodingNamespaceOverlay(captureCodingCtx, this.config.codingMode, this.config.defaultNamespace);
+        const captureScopePlan = resolveScopeProfilePlan({ config: this.config, principal: capturePrincipal, codingContext: captureCodingCtx, codingOverlay: captureCodingOv });
+        const captureNamespace = captureWO ?? captureScopePlan?.writeNamespace ?? this.resolveSelfNamespace(sessionKey);
+        await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+          sessionKey, principal: capturePrincipal, namespace: captureNamespace, bufferKey, isLiveSession: clearBufferAfterExtraction,
+        });
       }
       return {
         status: "skipped",

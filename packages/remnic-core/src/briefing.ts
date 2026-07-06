@@ -20,6 +20,7 @@ import os from "node:os";
 import path from "node:path";
 import { log } from "./logger.js";
 import { extractJsonCandidates } from "./json-extract.js";
+import { drainPassiveCorrectionNotifications } from "./correction/passive-correction-notifications.js";
 import { normalizeEntityName, StorageManager } from "./storage.js";
 import { readEnvVar, resolveHomeDir } from "./runtime/env.js";
 import type {
@@ -908,6 +909,24 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
     suggestedFollowups: followups,
   };
 
+  // Drain auto-applied passive-correction notifications (issue #1581). The
+  // queue is cleared on read, so each notification surfaces in exactly one
+  // briefing. Fail-open: a drain error never blocks the briefing.
+  let correctionNotifications: BriefingResult["correctionNotifications"];
+  try {
+    const drained = await drainPassiveCorrectionNotifications(options.storage.dir);
+    if (drained.length > 0) {
+      correctionNotifications = drained.map((n) => ({
+        planId: n.planId,
+        summary: n.summary,
+        undoCommand: n.undoCommand,
+        createdAt: n.createdAt,
+      }));
+    }
+  } catch (err) {
+    log.debug(`briefing: correction notification drain failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   const windowIso = { from: window.from.toISOString(), to: window.to.toISOString() };
   const markdown = renderBriefingMarkdown({
     sections,
@@ -916,6 +935,7 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
     followupsUnavailableReason,
     generatedAt: now,
     namespace: options.namespace,
+    correctionNotifications,
   });
 
   const json: Record<string, unknown> = {
@@ -923,6 +943,7 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
     window: windowIso,
     focus,
     namespace: options.namespace ?? null,
+    correctionNotifications: correctionNotifications ?? null,
     sections,
     followupsUnavailableReason: followupsUnavailableReason ?? null,
     calendarSourceErrors: calendarSourceErrors.length > 0 ? calendarSourceErrors : null,
@@ -1351,6 +1372,8 @@ interface RenderContext {
   followupsUnavailableReason?: string;
   generatedAt: Date;
   namespace?: string;
+  /** Auto-applied passive corrections drained for this briefing (#1581). */
+  correctionNotifications?: BriefingResult["correctionNotifications"];
 }
 
 export function renderBriefingMarkdown(ctx: RenderContext): string {
@@ -1365,6 +1388,14 @@ export function renderBriefingMarkdown(ctx: RenderContext): string {
     lines.push(`_Namespace: ${ctx.namespace}_`);
   }
   lines.push("");
+
+  if (ctx.correctionNotifications && ctx.correctionNotifications.length > 0) {
+    lines.push(`## Memory updates`);
+    for (const n of ctx.correctionNotifications) {
+      lines.push(`- ✎ ${n.summary} (undo: ${n.undoCommand})`);
+    }
+    lines.push("");
+  }
 
   lines.push(`## Active threads`);
   if (ctx.sections.activeThreads.length === 0) {

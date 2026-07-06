@@ -239,6 +239,19 @@ test("auto mode: suppressed — disallowed action kind (rescope) → queued", as
   assert.strictEqual(result.telemetry.suppressedReasons.disallowed_action_kind, 1);
 });
 
+test("auto mode: suppressed — empty action list (no-op plan) → queued (review: empty-plan guard)", async () => {
+  const appliedPlans: string[] = [];
+  const plan = makePlan({ actions: [], confidence: 0.9 });
+  const deps = mockDeps(plan, { appliedPlans });
+  const dedup = new Set<string>();
+
+  const result = await capturePassiveCorrections([makeCorrection()], LIVE_CTX, AUTO_CONFIG, deps, dedup);
+
+  assert.strictEqual(result.telemetry.autoApplied, 0);
+  assert.strictEqual(result.telemetry.suppressedReasons.empty_plan, 1);
+  assert.strictEqual(appliedPlans.length, 0, "empty plan must not be auto-applied");
+});
+
 test("auto mode: suppressed — non-live session (replay) → queued", async () => {
   const appliedPlans: string[] = [];
   const plan = makePlan();
@@ -278,7 +291,8 @@ test("auto mode: auto-applied correction enqueues notification", async () => {
   const notifications = await drainPassiveCorrectionNotifications(tmpDir);
   assert.strictEqual(notifications.length, 1);
   assert.strictEqual(notifications[0].planId, "corr-test-001");
-  assert.ok(notifications[0].undoCommand.includes("remnic correct --revert"));
+  assert.ok(notifications[0].undoCommand.includes("auto-applied"));
+  assert.ok(notifications[0].undoCommand.includes("corr-test-001"));
 
   await rm(tmpDir, { recursive: true, force: true });
 });
@@ -335,7 +349,7 @@ test("notifications: drains once then returns empty", async () => {
   await mkdir(tmpDir, { recursive: true });
 
   await enqueuePassiveCorrectionNotification(tmpDir, {
-    planId: "p1", summary: "test", undoCommand: "remnic correct --revert p1", createdAt: new Date().toISOString(),
+    planId: "p1", summary: "test", undoCommand: "auto-applied (plan p1)", createdAt: new Date().toISOString(),
   });
 
   const first = await drainPassiveCorrectionNotifications(tmpDir);
@@ -352,10 +366,10 @@ test("notifications: accumulates multiple", async () => {
   await mkdir(tmpDir, { recursive: true });
 
   await enqueuePassiveCorrectionNotification(tmpDir, {
-    planId: "p1", summary: "first", undoCommand: "remnic correct --revert p1", createdAt: new Date().toISOString(),
+    planId: "p1", summary: "first", undoCommand: "auto-applied (plan p1)", createdAt: new Date().toISOString(),
   });
   await enqueuePassiveCorrectionNotification(tmpDir, {
-    planId: "p2", summary: "second", undoCommand: "remnic correct --revert p2", createdAt: new Date().toISOString(),
+    planId: "p2", summary: "second", undoCommand: "auto-applied (plan p2)", createdAt: new Date().toISOString(),
   });
 
   const drained = await drainPassiveCorrectionNotifications(tmpDir);

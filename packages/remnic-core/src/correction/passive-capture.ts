@@ -139,7 +139,8 @@ export type AutoApplySuppressionReason =
   | "confidence_below_floor"
   | "classification_not_allowed"
   | "affected_too_large"
-  | "disallowed_action_kind";
+  | "disallowed_action_kind"
+  | "empty_plan";
 
 /**
  * Evaluate all auto-apply guards. Returns the suppression reason (if any), or
@@ -157,6 +158,13 @@ export function evaluateAutoApplyGuards(
   }
   if (plan.affected.length > config.autoApplyMaxAffected) {
     return "affected_too_large";
+  }
+  // An empty action list is a no-op plan (review: "queue plans that contain no
+  // actions"). Auto-applying it would mark a correction as applied, write an
+  // audit record + notification, and record the dedup fingerprint — yet nothing
+  // changed. Suppress so it queues for human review instead.
+  if (plan.actions.length === 0) {
+    return "empty_plan";
   }
   for (const action of plan.actions) {
     if (!AUTO_APPLICABLE_ACTION_KINDS.has(action.kind)) {
@@ -277,7 +285,7 @@ export async function capturePassiveCorrections(
         await enqueuePassiveCorrectionNotification(dir, {
           planId: plan.planId,
           summary: buildNotificationSummary(plan),
-          undoCommand: `remnic correct --revert ${plan.planId}`,
+          undoCommand: `auto-applied (plan ${plan.planId})`,
           createdAt: new Date().toISOString(),
         });
       } catch (err) {
