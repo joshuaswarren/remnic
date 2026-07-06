@@ -14019,7 +14019,7 @@ export class Orchestrator {
                 entityRef: options.entityRef,
                 structuredAttributes: options.structuredAttributes,
                 createdAt: supersessionOrderingAt(options.validAt),
-                enabled: true,
+                enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
               });
             } catch (profileSupersessionErr) {
               log.warn(
@@ -14222,7 +14222,7 @@ export class Orchestrator {
                   entityRef: options.entityRef,
                   structuredAttributes: options.structuredAttributes,
                   createdAt: supersessionOrderingAt(options.validAt),
-                  enabled: true,
+                  enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
                   useCallerTimestamp: true,
                 });
                 // Catalog touch (issue #1499 — codex P2 NElSf): this dedup branch
@@ -14326,7 +14326,7 @@ export class Orchestrator {
               entityRef: options.entityRef,
               structuredAttributes: options.structuredAttributes,
               createdAt: supersessionOrderingAt(options.validAt),
-              enabled: true,
+              enabled: !(options.eventTimeSource === "extracted" && !options.validAt),
             });
           } catch (sharedSupersessionErr) {
             log.warn(
@@ -15330,7 +15330,11 @@ export class Orchestrator {
                 entityRef: supersessionEntityRef,
                 structuredAttributes: fact.structuredAttributes,
                 createdAt: supersessionOrderingAt(sourceContext?.validAt),
-                enabled: this.config.temporalSupersessionEnabled,
+                // #1578 r3: an extracted end-only bound (validFrom absent) is
+                // historical, not a new authoritative state — never let it
+                // supersede a later active fact (codex P1 on :15534).
+                enabled: this.config.temporalSupersessionEnabled &&
+                  !(biTemporal && !biTemporal.validFrom),
               });
             } catch (err) {
               log.warn(`temporal-supersession (chunked): unexpected error: ${err}`);
@@ -15565,7 +15569,8 @@ export class Orchestrator {
             entityRef: supersessionEntityRef,
             structuredAttributes: fact.structuredAttributes,
             createdAt: supersessionOrderingAt(sourceContext?.validAt),
-            enabled: this.config.temporalSupersessionEnabled,
+            enabled: this.config.temporalSupersessionEnabled &&
+              !(biTemporal && !biTemporal.validFrom),
           });
         } catch (err) {
           log.warn(`temporal-supersession: unexpected error: ${err}`);

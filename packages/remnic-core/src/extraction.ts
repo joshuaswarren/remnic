@@ -1261,10 +1261,23 @@ export class ExtractionEngine {
         // reasoningTrace through normalizeReasoningTrace before passing it on so
         // gateway output matches the shape local/direct-client paths produce.
         const normalizedFacts = result.facts.map((f: any) => {
-          if (!f?.reasoningTrace) return f;
+          if (!f) return f;
+          // Gateway tolerance: collapse snake_case event_time → camelCase
+          // eventTime so the gateway path matches the local/direct/proactive
+          // normalization (#1578 r3 — cursor bugbot).
+          const eventTime =
+            typeof f.eventTime === "string" && f.eventTime.trim().length > 0
+              ? f.eventTime.trim()
+              : typeof f.event_time === "string" && f.event_time.trim().length > 0
+                ? f.event_time.trim()
+                : undefined;
+          if (!f.reasoningTrace && eventTime === undefined) return f;
           return {
             ...f,
-            reasoningTrace: normalizeReasoningTrace(f.reasoningTrace) ?? undefined,
+            ...(f.reasoningTrace
+              ? { reasoningTrace: normalizeReasoningTrace(f.reasoningTrace) ?? undefined }
+              : {}),
+            ...(eventTime !== undefined ? { eventTime } : {}),
           };
         });
         const sanitized = this.sanitizeExtractionResult({
