@@ -118,9 +118,9 @@ test("buildGraphSnapshot returns nodes/edges from a fixture memory dir", async (
     const snapshot = await buildGraphSnapshot({
       memoryDir: dir,
       graphConfig: {
-        entityGraphEnabled: true,
-        timeGraphEnabled: true,
-        causalGraphEnabled: true,
+        entityGraph: true,
+        timeGraph: true,
+        causalGraph: true,
       },
       request: {},
       loadNode: buildLoader(),
@@ -155,9 +155,9 @@ test("buildGraphSnapshot enforces limit", async () => {
     const snapshot = await buildGraphSnapshot({
       memoryDir: dir,
       graphConfig: {
-        entityGraphEnabled: true,
-        timeGraphEnabled: true,
-        causalGraphEnabled: true,
+        entityGraph: true,
+        timeGraph: true,
+        causalGraph: true,
       },
       request: { limit: 1 },
       loadNode: buildLoader(),
@@ -175,9 +175,9 @@ test("buildGraphSnapshot focusNodeId returns only neighborhood", async () => {
     const snapshot = await buildGraphSnapshot({
       memoryDir: dir,
       graphConfig: {
-        entityGraphEnabled: true,
-        timeGraphEnabled: true,
-        causalGraphEnabled: true,
+        entityGraph: true,
+        timeGraph: true,
+        causalGraph: true,
       },
       request: { focusNodeId: "facts/2026-04-20/alpha.md" },
       loadNode: buildLoader(),
@@ -202,9 +202,9 @@ test("buildGraphSnapshot categories filter requires both endpoints to match", as
     const snapshot = await buildGraphSnapshot({
       memoryDir: dir,
       graphConfig: {
-        entityGraphEnabled: true,
-        timeGraphEnabled: true,
-        causalGraphEnabled: true,
+        entityGraph: true,
+        timeGraph: true,
+        causalGraph: true,
       },
       request: { categories: ["fact"] },
       loadNode: buildLoader(),
@@ -227,9 +227,9 @@ test("buildGraphSnapshot since filter drops older edges", async () => {
     const snapshot = await buildGraphSnapshot({
       memoryDir: dir,
       graphConfig: {
-        entityGraphEnabled: true,
-        timeGraphEnabled: true,
-        causalGraphEnabled: true,
+        entityGraph: true,
+        timeGraph: true,
+        causalGraph: true,
       },
       request: { since: "2026-04-20T12:08:00Z" },
       loadNode: buildLoader(),
@@ -283,9 +283,9 @@ test("buildGraphSnapshot streaming category filter does not silently truncate la
     const snapshot = await buildGraphSnapshot({
       memoryDir: dir,
       graphConfig: {
-        entityGraphEnabled: true,
-        timeGraphEnabled: true,
-        causalGraphEnabled: true,
+        entityGraph: true,
+        timeGraph: true,
+        causalGraph: true,
       },
       request: { categories: ["fact"], limit: 10 },
       loadNode,
@@ -386,9 +386,9 @@ test("graphSnapshot loader rejects path traversal in edge endpoints", async () =
     const snapshot = await buildGraphSnapshot({
       memoryDir: nsA,
       graphConfig: {
-        entityGraphEnabled: true,
-        timeGraphEnabled: true,
-        causalGraphEnabled: true,
+        entityGraph: true,
+        timeGraph: true,
+        causalGraph: true,
       },
       request: {},
       loadNode: guardedLoader,
@@ -427,9 +427,9 @@ test("buildGraphSnapshot rejects empty categories array", async () => {
       buildGraphSnapshot({
         memoryDir: dir,
         graphConfig: {
-          entityGraphEnabled: true,
-          timeGraphEnabled: true,
-          causalGraphEnabled: true,
+          entityGraph: true,
+          timeGraph: true,
+          causalGraph: true,
         },
         request: { categories: [] },
         loadNode: buildLoader(),
@@ -967,9 +967,9 @@ test(
       const snapshot = await buildGraphSnapshot({
         memoryDir: ns,
         graphConfig: {
-          entityGraphEnabled: true,
-          timeGraphEnabled: true,
-          causalGraphEnabled: true,
+          entityGraph: true,
+          timeGraph: true,
+          causalGraph: true,
         },
         request: {},
         loadNode: guardedLoader,

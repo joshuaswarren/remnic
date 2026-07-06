@@ -15,6 +15,7 @@ import * as path from "node:path";
 
 import { readEdgeConfidence } from "./graph-edge-reinforcement.js";
 import { emitGraphEvent } from "./graph-events.js";
+import type { GraphConstructionCapabilitySet } from "./capabilities.js";
 
 export type GraphType = "entity" | "time" | "causal";
 
@@ -198,12 +199,12 @@ export async function readEdgesStrict(memoryDir: string, type: GraphType): Promi
  */
 export async function readAllEdges(
   memoryDir: string,
-  config: Pick<GraphConfig, "entityGraphEnabled" | "timeGraphEnabled" | "causalGraphEnabled">
+  graphCaps: Pick<GraphConstructionCapabilitySet, "entityGraph" | "timeGraph" | "causalGraph">,
 ): Promise<GraphEdge[]> {
   const parts: GraphEdge[][] = await Promise.all([
-    config.entityGraphEnabled ? readEdges(memoryDir, "entity") : Promise.resolve([]),
-    config.timeGraphEnabled ? readEdges(memoryDir, "time") : Promise.resolve([]),
-    config.causalGraphEnabled ? readEdges(memoryDir, "causal") : Promise.resolve([]),
+    graphCaps.entityGraph ? readEdges(memoryDir, "entity") : Promise.resolve([]),
+    graphCaps.timeGraph ? readEdges(memoryDir, "time") : Promise.resolve([]),
+    graphCaps.causalGraph ? readEdges(memoryDir, "causal") : Promise.resolve([]),
   ]);
   return parts.flat();
 }
@@ -396,9 +397,9 @@ export class GraphIndex {
       return this.edgeCache.allEdges;
     }
     const allEdges = await readAllEdges(this.memoryDir, {
-      entityGraphEnabled: this.cfg.entityGraphEnabled,
-      timeGraphEnabled: this.cfg.timeGraphEnabled,
-      causalGraphEnabled: this.cfg.causalGraphEnabled,
+      entityGraph: this.cfg.entityGraphEnabled,
+      timeGraph: this.cfg.timeGraphEnabled,
+      causalGraph: this.cfg.causalGraphEnabled,
     });
     this.edgeCache = { allEdges, loadedAt: Date.now() };
     return allEdges;

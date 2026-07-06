@@ -56,6 +56,13 @@ export interface CapabilitySet {
   readonly graphAssistInFullMode: boolean;
   /** `graphExpandedIntentEnabled` — promote broad-intent asks to graph mode. */
   readonly graphExpandedIntent: boolean;
+  // --- Issue #1566 Cluster C: mixed-operation flags (recall + summarizer/CLI/writes) ---
+  /** `rerankEnabled` — optional LLM reranking of recall candidates. */
+  readonly rerank: boolean;
+  /** `harmonicRetrievalEnabled` — abstraction-node harmonic retrieval tier. */
+  readonly harmonicRetrieval: boolean;
+  /** `parallelRetrievalEnabled` — three-agent parallel retrieval (DirectFact + Contextual + Temporal). */
+  readonly parallelRetrieval: boolean;
 }
 
 /**
@@ -87,6 +94,10 @@ export function resolveCapabilities(config: PluginConfig): CapabilitySet {
     // migrated call sites used (`!== false` = default-on, `=== true` = default-off).
     graphAssistInFullMode: config.graphAssistInFullModeEnabled !== false,
     graphExpandedIntent: config.graphExpandedIntentEnabled === true,
+    // Issue #1566 Cluster C: mixed-operation flags resolved once per recall op.
+    rerank: config.rerankEnabled,
+    harmonicRetrieval: config.harmonicRetrievalEnabled,
+    parallelRetrieval: config.parallelRetrievalEnabled,
   });
 }
 
@@ -148,5 +159,47 @@ export function resolveGraphConstructionCapabilities(
     // Optional flag: preserve the exact default-when-undefined semantics the
     // migrated call site used (`!== false` = default-on).
     graphWriteSessionAdjacency: config.graphWriteSessionAdjacencyEnabled !== false,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Access-setup capability set (issue #1566 Cluster B).
+//
+// These two flags gate cross-namespace recall budgeting and anomaly-detection
+// auditing. Resolved once at access-service handler entry (and the operator
+// doctor check) rather than re-derived from raw config at each site.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of access-setup feature gates (issue #1566 Cluster B).
+ *
+ * Every field is `readonly boolean`. Composition (including the default-off
+ * semantics for the optional `recallAuditAnomalyDetectionEnabled`) lives ONLY
+ * in {@link resolveAccessSetupCapabilities}.
+ */
+export interface AccessSetupCapabilitySet {
+  /** `recallCrossNamespaceBudgetEnabled` — rolling cross-namespace recall budget. */
+  readonly recallCrossNamespaceBudget: boolean;
+  /** `recallAuditAnomalyDetectionEnabled` — access-audit anomaly detection (default-off). */
+  readonly recallAuditAnomalyDetection: boolean;
+}
+
+/**
+ * Resolve the {@link AccessSetupCapabilitySet} from parsed config.
+ *
+ * Call this ONCE at access-service handler entry and thread the result down.
+ */
+export type AccessSetupConfigProjection = Pick<
+  PluginConfig,
+  "recallCrossNamespaceBudgetEnabled" | "recallAuditAnomalyDetectionEnabled"
+>;
+
+export function resolveAccessSetupCapabilities(
+  config: AccessSetupConfigProjection,
+): AccessSetupCapabilitySet {
+  return Object.freeze({
+    recallCrossNamespaceBudget: config.recallCrossNamespaceBudgetEnabled,
+    // Optional/default-off flag: preserve `=== true` semantics.
+    recallAuditAnomalyDetection: config.recallAuditAnomalyDetectionEnabled === true,
   });
 }

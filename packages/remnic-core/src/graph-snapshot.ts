@@ -132,9 +132,9 @@ export function parseGraphSnapshotSince(raw: string | undefined): number | undef
 export async function buildGraphSnapshot(opts: {
   memoryDir: string;
   graphConfig: {
-    entityGraphEnabled: boolean;
-    timeGraphEnabled: boolean;
-    causalGraphEnabled: boolean;
+    entityGraph: boolean;
+    timeGraph: boolean;
+    causalGraph: boolean;
   };
   request: GraphSnapshotRequest;
   loadNode: GraphSnapshotNodeLoader;
