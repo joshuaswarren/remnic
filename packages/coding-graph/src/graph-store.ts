@@ -106,6 +106,17 @@ export type SymbolKind =
  * can resolve them against the same batch's symbol set plus the on-disk
  * node table. PR1 only carries CALLS-style edges; PR2 adds the rest of
  * #1552's edge types.
+ *
+ * Optional `srcNodeId` / `dstNodeId` (issue #1677) carry the content-
+ * derived node id (the same canonical hash form the store uses as
+ * `nodes.id`, see `nodeIdFor`). When present, the standalone
+ * `upsertEdges` path resolves the endpoint by `nodes.id` (unique) instead
+ * of by qualified name, so a SIMILAR_TO edge between two symbols that
+ * share a qualified name across files is persisted rather than dropped as
+ * ambiguous. The qname-keyed file-batch path and the existing
+ * `ambiguous … drops edges` behavior are unchanged. Only populated by
+ * callers that originate edges from node-id-keyed pairs (the semantic
+ * SIMILAR_TO pipeline); structural/trace edges keep the qname path.
  */
 export interface EdgeIR {
   /** Qualified name of the source node (caller / definition site). */
@@ -115,6 +126,14 @@ export interface EdgeIR {
   type: string;
   confidence: number;
   provenance: EdgeProvenance;
+  /**
+   * Optional content-derived source node id (`nodes.id`). When present on
+   * a standalone-edge upsert, the store resolves the endpoint by id
+   * (unambiguous) instead of falling back to qualified-name resolution.
+   */
+  readonly srcNodeId?: string;
+  /** Optional content-derived destination node id — see {@link EdgeIR.srcNodeId}. */
+  readonly dstNodeId?: string;
 }
 
 /**
@@ -854,11 +873,17 @@ export class GraphStore {
    * observations as edges with `provenance: "trace"` — upgrading
    * confidence on existing edges and inserting new ones.
    *
-   * Both `src` and `dst` are resolved by qualified_name via the global
-   * `resolveNodeId` fallback (unambiguous single-match policy). Edges
-   * whose endpoints do not resolve to exactly one node are skipped (and
-   * counted in `skipped`) rather than attached to the wrong node — the
-   * dangling-edge policy from `upsertFileBatch` applies.
+   * Endpoint resolution: when an edge carries `srcNodeId` / `dstNodeId`
+   * (issue #1677 — the SIMILAR_TO pipeline populates them from
+   * content-derived node ids), the endpoint is resolved by `nodes.id`
+   * (unique primary key), so an edge between two symbols that share a
+   * qualified name across files is persisted rather than dropped as
+   * ambiguous. Edges WITHOUT node ids fall back to qualified_name
+   * resolution via the global `resolveNodeId` (unambiguous single-match
+   * policy). Edges whose endpoints do not resolve (missing node id row OR
+   * an ambiguous/dangling qualified name) are skipped (and counted in
+   * `skipped`) rather than attached to the wrong node — the dangling-edge
+   * policy from `upsertFileBatch` applies.
    *
    * Serialized on the store's write queue like `upsertFileBatch` so a
    * concurrent file-batch upsert and a trace upsert cannot interleave
@@ -1310,6 +1335,13 @@ export class GraphStore {
            confidence = excluded.confidence,
            provenance = excluded.provenance`,
     );
+    // node-id existence check (issue #1677). `nodes.id` is the PRIMARY KEY,
+    // so this is a unique, unambiguous lookup — a SIMILAR_TO edge between
+    // two same-qualified-name symbols resolves here instead of being
+    // dropped by the ambiguous qualified-name fallback.
+    const nodeIdExists = this.db.prepare(
+      "SELECT 1 FROM nodes WHERE id = ? LIMIT 1",
+    );
     try {
       let persisted = 0;
       let skipped = 0;
@@ -1329,8 +1361,20 @@ export class GraphStore {
               `graph-store: edge confidence ${edge.confidence} is out of range [0, 1] for edge ${edge.srcQualifiedName} → ${edge.dstQualifiedName}`,
             );
           }
-          const srcId = resolveNodeId(edge.srcQualifiedName, emptyBatch, this.db);
-          const dstId = resolveNodeId(edge.dstQualifiedName, emptyBatch, this.db);
+          // Prefer the content-derived node id when the caller supplied one
+          // (issue #1677). Only fall through to qualified-name resolution
+          // when no id is present, preserving the existing trace/HTTP_CALLS
+          // path verbatim.
+          const srcId = edge.srcNodeId
+            ? nodeIdExists.get(edge.srcNodeId)
+              ? edge.srcNodeId
+              : undefined
+            : resolveNodeId(edge.srcQualifiedName, emptyBatch, this.db);
+          const dstId = edge.dstNodeId
+            ? nodeIdExists.get(edge.dstNodeId)
+              ? edge.dstNodeId
+              : undefined
+            : resolveNodeId(edge.dstQualifiedName, emptyBatch, this.db);
           if (!srcId || !dstId) {
             skipped += 1;
             continue;

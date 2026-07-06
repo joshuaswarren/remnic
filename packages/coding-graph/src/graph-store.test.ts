@@ -1240,3 +1240,122 @@ test("upsertEdges: rejects invalid provenance / out-of-range confidence at the b
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// upsertEdges: node-id-keyed endpoints (issue #1677 — duplicate qualified-name
+// support). A SIMILAR_TO edge between two symbols that share a qualified name
+// across two files is persisted by node id, NOT dropped as ambiguous.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("upsertEdges: srcNodeId/dstNodeId persist an edge between same-qualified-name nodes (issue #1677)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // Two files, each declaring a symbol with the SAME qualified name
+    // "dup.Foo" but a different file path → distinct deterministic node ids
+    // (identity is (qualifiedName, filePath, label)). The qualified-name
+    // fallback would be AMBIGUOUS here and drop the edge.
+    const fileOne: StoreFileIR = {
+      path: "src/one.ts",
+      language: "typescript",
+      contentHash: "h-one",
+      symbols: [sym("dup.Foo", "Foo", 0, 100, "function")],
+    };
+    const fileTwo: StoreFileIR = {
+      path: "src/two.ts",
+      language: "typescript",
+      contentHash: "h-two",
+      symbols: [sym("dup.Foo", "Foo", 0, 100, "function")],
+    };
+    await store.upsertFileBatch([fileOne, fileTwo]);
+
+    const idOne = nodeIdFor({ qualifiedName: "dup.Foo", filePath: "src/one.ts", label: "function" });
+    const idTwo = nodeIdFor({ qualifiedName: "dup.Foo", filePath: "src/two.ts", label: "function" });
+    assert.notEqual(idOne, idTwo, "two same-qname symbols in different files have distinct node ids");
+
+    // Edge keyed by node ids — the SIMILAR_TO pipeline shape.
+    const result = await store.upsertEdges([
+      {
+        srcQualifiedName: "dup.Foo",
+        dstQualifiedName: "dup.Foo",
+        srcNodeId: idOne,
+        dstNodeId: idTwo,
+        type: "SIMILAR_TO",
+        confidence: 0.93,
+        provenance: "semantic",
+      },
+    ]);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("expected ok");
+    assert.equal(result.persisted, 1, "node-id-keyed edge persisted despite duplicate qualified name");
+    assert.equal(result.skipped, 0, "edge must NOT be dropped as ambiguous");
+
+    // The edge is traversable from either node by id.
+    const t = store.traverse({ start: idOne, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
+    assert.equal(t.ok, true);
+    if (t.ok) {
+      assert.ok(
+        t.hits.some((h) => h.nodeId === idTwo),
+        "SIMILAR_TO edge reaches the exact same-qname node by id",
+      );
+    }
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("upsertEdges: a node id that does not reference an indexed node is skipped (issue #1677)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await store.upsertFileBatch([fileA]);
+
+    // srcNodeId resolves (a.greet exists) but dstNodeId points at a node
+    // that was never ingested → dangling, counted as skipped (consistent
+    // with the qname dangling-edge policy).
+    const bogusDst = nodeIdFor({ qualifiedName: "ghost", filePath: "src/ghost.ts", label: "function" });
+    const result = await store.upsertEdges([
+      {
+        srcQualifiedName: "a.greet",
+        dstQualifiedName: "ghost",
+        srcNodeId: nodeIdFor({ qualifiedName: "a.greet", filePath: "src/a.ts", label: "function" }),
+        dstNodeId: bogusDst,
+        type: "SIMILAR_TO",
+        confidence: 0.9,
+        provenance: "semantic",
+      },
+    ]);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("expected ok");
+    assert.equal(result.persisted, 0, "dangling dst node id → not persisted");
+    assert.equal(result.skipped, 1, "dangling node id counted as skipped");
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("upsertEdges: edges without node ids still use the qname path (issue #1677 back-compat)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // The existing trace/HTTP_CALLS path passes no node ids — it MUST keep
+    // resolving by qualified name exactly as before.
+    await store.upsertFileBatch([fileA]);
+    const result = await store.upsertEdges([
+      {
+        srcQualifiedName: "a.greet",
+        dstQualifiedName: "a.farewell",
+        type: "CALLS",
+        confidence: 0.8,
+        provenance: "heuristic",
+      },
+    ]);
+    assert.equal(result.ok, true);
+    if (!result.ok) throw new Error("expected ok");
+    assert.equal(result.persisted, 1, "qname-only edge still persists via the fallback path");
+    assert.equal(result.skipped, 0);
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
