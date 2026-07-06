@@ -273,7 +273,7 @@ function describeAfterState(action: CorrectionAction): string {
     case "rescope":
       return `(moved to namespace '${action.toNamespace}')`;
     case "redaction_rule":
-      return `(future extraction blocked by pattern '${action.pattern}')`;
+      return `(redaction rule persisted for pattern '${action.pattern}')`;
   }
 }
 
