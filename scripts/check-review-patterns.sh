@@ -911,7 +911,7 @@ if [[ -n "$ADHOC_STATUS_FILES" ]]; then
     COUNT=$((DIRECT + ARRAY))
     if [[ "$COUNT" -ge 2 ]]; then
       warn "$f — enumerates $COUNT non-active status literals without ACTIVE_STATUSES (rule 53). Use the shared set from contradiction-scan.ts."
-      grep -nE "$RULE53_RE|$RULE53_ARRAY_RE" "$f" 2>/dev/null | head -5 | sed 's/^/    /'
+      { grep -nE "$RULE53_RE|$RULE53_ARRAY_RE" "$f" 2>/dev/null || true; } | head -5 | sed 's/^/    /'
     fi
   done <<< "$ADHOC_STATUS_FILES"
 fi
