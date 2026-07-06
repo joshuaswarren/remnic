@@ -1396,12 +1396,11 @@ export async function resolveRecallModeDecisionAsync(
   options: RecallModeGraphOptions & {
     config: PluginConfig;
     /**
-     * Recall-operation capability gates (issue #1523). OPTIONAL and additive:
-     * the recall orchestrator passes a resolved set, but existing callers that
-     * only pass `config` + planner flags stay backward-compatible — the LLM
-     * planner gate falls back to `config.recallPlannerLlmEnabled` when omitted.
+     * Recall-operation capability gates (issue #1523). REQUIRED: the recall
+     * orchestrator always passes a resolved set — the LLM planner gate reads
+     * `caps.recallPlannerLlm`, never re-derives from config.
      */
-    caps?: CapabilitySet;
+    caps: CapabilitySet;
     hints?: string[];
     llm?: FallbackLlmClient;
     signal?: AbortSignal;
@@ -1410,10 +1409,8 @@ export async function resolveRecallModeDecisionAsync(
   const heuristicDecision = resolveRecallModeDecision(options);
 
   // Planner globally off, or LLM planning not opted into → heuristic only.
-  // Prefer the resolved capability when supplied; otherwise fall back to the
-  // config flag so callers on the old option shape get identical gating.
-  const plannerLlmEnabled =
-    options.caps?.recallPlannerLlm ?? options.config.recallPlannerLlmEnabled;
+  // Read the resolved capability (issue #1523) — never re-derive from config.
+  const plannerLlmEnabled = options.caps.recallPlannerLlm;
   if (!options.plannerEnabled || !plannerLlmEnabled) {
     return heuristicDecision;
   }
@@ -1423,9 +1420,9 @@ export async function resolveRecallModeDecisionAsync(
     options.prompt,
     options.hints,
     options.config,
+    options.caps,
     options.llm,
     options.signal,
-    options.caps,
   );
 
   // Shadow mode: record what the LLM would have chosen but keep the heuristic

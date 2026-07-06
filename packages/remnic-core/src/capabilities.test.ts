@@ -96,6 +96,34 @@ test("resolveCapabilities returns a frozen object", () => {
   assert.equal(Object.isFrozen(caps), true, "CapabilitySet must be frozen");
 });
 
+test("resolveCapabilities is deterministic — same config always yields identical gate values (one-resolution-per-op #1523)", () => {
+  // The one-resolution-per-op contract (issue #1523): resolve ONCE at the
+  // operation entry, thread the frozen result down. This test proves the
+  // resolution is deterministic — calling it twice with the same config
+  // produces identical values for every gate, so there is never a reason to
+  // re-resolve mid-operation.
+  const config = parseConfig({
+    rerankCacheEnabled: true,
+    recallDirectAnswerEnabled: false,
+    recallMmrEnabled: true,
+    recallPlannerLlmEnabled: true,
+    graphRecallEnabled: true,
+  });
+  const first = resolveCapabilities(config);
+  const second = resolveCapabilities(config);
+  for (const field of FIELDS) {
+    assert.equal(
+      first[field],
+      second[field],
+      `field ${field} must be deterministic across resolutions`,
+    );
+  }
+  // Both must be frozen — a mid-operation mutation would break the contract.
+  assert.equal(Object.isFrozen(first), true);
+  assert.equal(Object.isFrozen(second), true);
+});
+
+
 // ---------------------------------------------------------------------------
 // GraphConstructionCapabilitySet — gate-parity tests (issue #1566 Cluster A).
 //
