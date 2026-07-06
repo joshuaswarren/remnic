@@ -328,9 +328,9 @@ export function createRemnicMemCorrectAdapter(
     async reset() {
       await adapter.reset();
     },
-    async ingestTurn(sessionKey, role, text, _at) {
+    async ingestTurn(sessionKey, role, text, at) {
       await adapter.store(`${sessionPrefix}:${sessionKey}`, [
-        { role, content: text },
+        { role, content: text, timestamp: at },
       ]);
     },
     async recall(query, sessionKey) {
@@ -346,13 +346,15 @@ export function createRemnicMemCorrectAdapter(
         .map((s) => s.trim())
         .filter((s) => s.length > 0);
     },
-    async correct(text, sessionKey) {
+    async correct(text, sessionKey, at) {
       // Today: observe the correction as a user turn through the public
       // store path. When #1580's correction contract is available, this
       // routes through the contract tool instead (the adapter surface is
-      // unchanged; only the internal call differs).
+      // unchanged; only the internal call differs). The seeded corpus
+      // timestamp is preserved so temporal reasoning is evaluated against
+      // the scenario timeline, not wall-clock ingestion time.
       await adapter.store(`${sessionPrefix}:${sessionKey}`, [
-        { role: "user", content: text },
+        { role: "user", content: text, timestamp: at },
       ]);
     },
     async runMaintenance() {

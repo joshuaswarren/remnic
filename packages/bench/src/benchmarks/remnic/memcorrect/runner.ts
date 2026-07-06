@@ -33,7 +33,7 @@ import { aggregateTaskScores } from "../../../scorer.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
 import { generateMemCorrectCorpus, corpusHash } from "./generator.js";
 import { validateCorpus } from "./schema.js";
-import { computeMetricBundle } from "./metrics.js";
+import { computeMetricBundle, containsAll } from "./metrics.js";
 import {
   PromptOnlyBaselineAdapter,
   createRemnicMemCorrectAdapter,
@@ -65,6 +65,19 @@ export const memcorrectDefinition: BenchmarkDefinition = {
       "Remnic MemCorrect v1 (issue #1584). Open benchmark; adapter contract is the public contribution.",
   },
 };
+
+/**
+ * MemCorrect metrics where a LOWER value is better. Used by the bench
+ * comparison tool (getBenchmarkLowerIsBetter) so regressions in latency or
+ * false-apply are reported as regressions, not improvements. `collateral_delta`
+ * is target-zero (signed after − before) and is intentionally excluded from
+ * directional verdicts — a magnitude check, not a lower-is-better one.
+ */
+export const MEMCORRECT_LOWER_IS_BETTER: ReadonlySet<string> = new Set([
+  "uptake_latency",
+  "uptake_latency_censored",
+  "false_apply",
+]);
 const QUICK_OPTIONS = {
   personaCount: 2,
   factsPerPersona: 4,
@@ -181,12 +194,12 @@ async function runScenario(
     const recalled = await adapter.recall(probe.query, sessionKey);
     recordProbe("baseline", probe.query, sessionKey, recalled, scenario.correction.turn.at);
     collateralBefore.push(
-      recalled.some((r) => r.toLowerCase().includes(probe.expectedContent.toLowerCase())) ? 1 : 0,
+      containsAll(recalled.join(" "), [probe.expectedContent]) ? 1 : 0,
     );
   }
 
   // --- Correction ---
-  await adapter.correct(scenario.correction.turn.text, sessionKey);
+  await adapter.correct(scenario.correction.turn.text, sessionKey, scenario.correction.turn.at);
   turn += 1;
   const correctionTurnIndex = turn;
 
@@ -218,6 +231,18 @@ async function runScenario(
     turn += 1;
     const recalled = await adapter.recall(scenario.probe.query, scenario.scopedTwin.namespace);
     recordProbe("post_correction", scenario.probe.query, scenario.scopedTwin.namespace, recalled, scenario.correction.turn.at);
+  }
+
+  // --- Collateral after: re-probe unrelated facts IMMEDIATELY after the
+  // correction (before maintenance / re-ingest / re-assertion) so the delta
+  // isolates correction collateral damage rather than conflating it with
+  // later protocol steps that can also change unrelated recall.
+  const collateralAfter: number[] = [];
+  for (const probe of scenario.unrelatedProbes) {
+    const recalled = await adapter.recall(probe.query, sessionKey);
+    collateralAfter.push(
+      containsAll(recalled.join(" "), [probe.expectedContent]) ? 1 : 0,
+    );
   }
 
   // --- Maintenance cycles (non_resurrection) ---
@@ -262,14 +287,6 @@ async function runScenario(
     };
   }
 
-  // --- Collateral after: re-probe the unrelated facts ---
-  const collateralAfter: number[] = [];
-  for (const probe of scenario.unrelatedProbes) {
-    const recalled = await adapter.recall(probe.query, sessionKey);
-    collateralAfter.push(
-      recalled.some((r) => r.toLowerCase().includes(probe.expectedContent.toLowerCase())) ? 1 : 0,
-    );
-  }
 
   const correction: ResolvedCorrection = {
     scenarioId: scenario.id,

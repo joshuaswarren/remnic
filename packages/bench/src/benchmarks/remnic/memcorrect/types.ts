@@ -184,7 +184,7 @@ export interface MemCorrectSystemAdapter {
   /** Ranked memory/context strings for a probe query in a session. */
   recall(query: string, sessionKey: string): Promise<string[]>;
   /** However the system accepts a correction (explicit tool, turn, contract). */
-  correct(text: string, sessionKey: string): Promise<void>;
+  correct(text: string, sessionKey: string, at?: string): Promise<void>;
   /**
    * Consolidation / dreams / pattern-reinforcement / contradiction scan.
    * A no-op is allowed; the protocol runs this N times between phases and
