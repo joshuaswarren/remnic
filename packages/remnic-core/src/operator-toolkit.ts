@@ -25,6 +25,11 @@ import {
 } from "./evals.js";
 import { analyzeGraphHealth, type GraphHealthReport } from "./graph.js";
 import {
+  resolveAccessSetupCapabilities,
+  resolveCapabilities,
+  resolveGraphConstructionCapabilities,
+} from "./capabilities.js";
+import {
   analyzeSessionIntegrity,
   applySessionRepair,
   planSessionRepair,
@@ -412,7 +417,12 @@ export interface BenchmarkRecallOptions {
 export interface OperatorRepairOptions {
   config: Pick<
     PluginConfig,
-    "memoryDir" | "entityGraphEnabled" | "timeGraphEnabled" | "causalGraphEnabled"
+    | "memoryDir"
+    | "entityGraphEnabled"
+    | "timeGraphEnabled"
+    | "causalGraphEnabled"
+    | "multiGraphMemoryEnabled"
+    | "graphWriteSessionAdjacencyEnabled"
   >;
   apply?: boolean;
   dryRun?: boolean;
@@ -904,6 +914,9 @@ async function buildOperatorConfigReviewReport(input: {
   config: PluginConfig;
 }): Promise<OperatorConfigReviewReport> {
   const { now, configStatus, config } = input;
+  // Resolve recall-operation gates once so this diagnostic reads capabilities,
+  // not scattered config flags (#1566 Cluster C — rerank is a mixed-op flag).
+  const caps = resolveCapabilities(config);
   const findings: OperatorConfigReviewFinding[] = [];
   const searchBackend = config.searchBackend ?? "qmd";
   const workspaceBootstrapFiles = [
@@ -920,7 +933,7 @@ async function buildOperatorConfigReviewReport(input: {
     config.memoryOsPreset !== "local-llm-heavy" &&
     config.queryAwareIndexingEnabled === false &&
     config.verbatimArtifactsEnabled === false &&
-    config.rerankEnabled === false
+    !caps.rerank
   ) {
     findings.push(buildConfigReviewFinding({
       key: "balanced_preset",
@@ -1855,8 +1868,10 @@ function summarizeSecurityMitigations(
     | "recallAuditAnomalyRapidFireLimit"
   >,
 ): OperatorDoctorCheck {
-  const budgetEnabled = config.recallCrossNamespaceBudgetEnabled === true;
-  const anomalyEnabled = config.recallAuditAnomalyDetectionEnabled === true;
+  // Resolve access-setup gates once (#1566 Cluster B).
+  const accessCaps = resolveAccessSetupCapabilities(config);
+  const budgetEnabled = accessCaps.recallCrossNamespaceBudget;
+  const anomalyEnabled = accessCaps.recallAuditAnomalyDetection;
 
   if (!budgetEnabled && !anomalyEnabled) {
     return {
@@ -2338,10 +2353,12 @@ export async function runOperatorRepair(options: OperatorRepairOptions): Promise
   const sessionRepairApply = await applySessionRepair({
     plan: sessionRepairPlan,
   });
+  // Resolve graph-construction gates once for this diagnostic (#1566 Cluster A).
+  const graphCaps = resolveGraphConstructionCapabilities(options.config);
   const graphHealth = await analyzeGraphHealth(options.config.memoryDir, {
-    entityGraphEnabled: options.config.entityGraphEnabled,
-    timeGraphEnabled: options.config.timeGraphEnabled,
-    causalGraphEnabled: options.config.causalGraphEnabled,
+    entityGraphEnabled: graphCaps.entityGraph,
+    timeGraphEnabled: graphCaps.timeGraph,
+    causalGraphEnabled: graphCaps.causalGraph,
     includeRepairGuidance: true,
   });
   return {

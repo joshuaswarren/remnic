@@ -243,6 +243,7 @@ import {
   type ActionConfidenceResult,
 } from "./action-confidence.js";
 import { formatProfileTraceAscii } from "./profiling.js";
+import { resolveAccessSetupCapabilities, resolveGraphConstructionCapabilities } from "./capabilities.js";
 
 export class EngramAccessInputError extends Error {}
 
@@ -1299,14 +1300,15 @@ export class EngramAccessService {
 
   constructor(private readonly orchestrator: Orchestrator) {
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
+    const accessCaps = resolveAccessSetupCapabilities(orchestrator.config); // #1566 Cluster B
     this.budget = new CrossNamespaceBudget({
-      enabled: orchestrator.config.recallCrossNamespaceBudgetEnabled,
+      enabled: accessCaps.recallCrossNamespaceBudget,
       windowMs: orchestrator.config.recallCrossNamespaceBudgetWindowMs,
       softLimit: orchestrator.config.recallCrossNamespaceBudgetSoftLimit,
       hardLimit: orchestrator.config.recallCrossNamespaceBudgetHardLimit,
     });
 
-    const auditEnabled = orchestrator.config.recallAuditAnomalyDetectionEnabled === true;
+    const auditEnabled = accessCaps.recallAuditAnomalyDetection;
     const auditLogEnabled = false; // Audit JSONL logging — off until wired to a directory
     if (auditEnabled || auditLogEnabled) {
       const auditConfig: AccessAuditConfig = {
@@ -7512,6 +7514,7 @@ export class EngramAccessService {
     );
     const storage = await this.orchestrator.getStorage(namespace);
     const cfg = this.orchestrator.config;
+    const graphCaps = resolveGraphConstructionCapabilities(cfg);
     // Canonicalize the storage root once — through `realpath` so that any
     // symlink in the namespace root path itself is resolved before we
     // compare children against it.  This is required because
@@ -7608,9 +7611,9 @@ export class EngramAccessService {
     return buildGraphSnapshot({
       memoryDir: namespaceRootReal,
       graphConfig: {
-        entityGraphEnabled: cfg.entityGraphEnabled === true,
-        timeGraphEnabled: cfg.timeGraphEnabled === true,
-        causalGraphEnabled: cfg.causalGraphEnabled === true,
+        entityGraph: graphCaps.entityGraph,
+        timeGraph: graphCaps.timeGraph,
+        causalGraph: graphCaps.causalGraph,
       },
       request: {
         limit: request.limit,

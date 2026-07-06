@@ -125,6 +125,7 @@ import {
   validateEvalBenchmarkPack,
 } from "./evals.js";
 import { analyzeGraphHealth, type GraphHealthReport } from "./graph.js";
+import { resolveGraphConstructionCapabilities } from "./capabilities.js";
 import {
   getCausalTrajectoryStoreStatus,
   type CausalTrajectoryStoreStatus,
@@ -6360,11 +6361,12 @@ export function registerCli(
         .option("--repair-guidance", "Include non-destructive repair guidance")
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
+          const graphCaps = resolveGraphConstructionCapabilities(orchestrator.config);
           const report = await runGraphHealthCliCommand({
             memoryDir: orchestrator.config.memoryDir,
-            entityGraphEnabled: orchestrator.config.entityGraphEnabled,
-            timeGraphEnabled: orchestrator.config.timeGraphEnabled,
-            causalGraphEnabled: orchestrator.config.causalGraphEnabled,
+            entityGraphEnabled: graphCaps.entityGraph,
+            timeGraphEnabled: graphCaps.timeGraph,
+            causalGraphEnabled: graphCaps.causalGraph,
             includeRepairGuidance: options.repairGuidance === true,
           });
           console.log(JSON.stringify(report, null, 2));
@@ -6415,12 +6417,15 @@ export function registerCli(
         .option("--json", "Emit machine-readable JSON only")
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
+          const repairGraphCaps = resolveGraphConstructionCapabilities(orchestrator.config);
           const report = await runOperatorRepair({
             config: {
               memoryDir: orchestrator.config.memoryDir,
-              entityGraphEnabled: orchestrator.config.entityGraphEnabled,
-              timeGraphEnabled: orchestrator.config.timeGraphEnabled,
-              causalGraphEnabled: orchestrator.config.causalGraphEnabled,
+              entityGraphEnabled: repairGraphCaps.entityGraph,
+              timeGraphEnabled: repairGraphCaps.timeGraph,
+              causalGraphEnabled: repairGraphCaps.causalGraph,
+              multiGraphMemoryEnabled: repairGraphCaps.multiGraphMemory,
+              graphWriteSessionAdjacencyEnabled: repairGraphCaps.graphWriteSessionAdjacency,
             },
             apply: options.apply === true,
             dryRun: options.dryRun === true,
