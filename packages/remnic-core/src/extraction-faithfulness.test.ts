@@ -1290,7 +1290,7 @@ test("checkFaithfulnessBatch: local model-lab endpoint is tried first when confi
     extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
     extractionFaithfulnessTimeoutMs: 5000,
   });
-  const fallbackCalls: Array<{ options: unknown }> = [];
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
   const { fetch: fakeFetch, requests } = fakeFetchFor("http://localhost:11434/v1", (body) => ({
     model: body.model,
     choices: [{ message: { content: JSON.stringify([{ index: 0, verdict: "contradicted" }]) } }],
@@ -1320,7 +1320,7 @@ test("checkFaithfulnessBatch: local endpoint failure falls back to the configure
     extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
     extractionFaithfulnessTimeoutMs: 5000,
   });
-  const fallbackCalls: Array<{ options: unknown }> = [];
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
   // Local endpoint returns 500 → caller returns null → gate falls through to fallback.
   const failingFetch = (() =>
     Promise.resolve(new Response("err", { status: 500 }))) as unknown as typeof fetch;
