@@ -438,6 +438,7 @@ import type {
   EntityStructuredSection,
   EntityTimelineEntry,
 } from "./types.js";
+import { disposeDefaultArchiveScoring, getDefaultArchiveScoring, memoryFileToScoreItem } from "./recall/archive-scoring.js";
 
 export interface BulkImportBatchIngestResult {
   attemptedTurnCount: number;
@@ -1828,6 +1829,7 @@ export function resolvePersistedMemoryRelativePath(options: {
 }
 
 export class Orchestrator {
+
   readonly storage: StorageManager;
   private readonly storageRouter: NamespaceStorageRouter;
   /** Rebuildable namespace catalog (issue #1499). Inert unless namespaces enabled. */
@@ -2111,6 +2113,8 @@ export class Orchestrator {
     if (this.conversationQmd && this.conversationQmd !== this.qmd) {
       await (this.conversationQmd as { dispose?: () => void | Promise<void> }).dispose?.();
     }
+    // Issue #1674: terminate archive-scoring worker threads on destroy.
+    await disposeDefaultArchiveScoring();
   }
 
   /** Set per-session workspace for the next recall() call (compaction reset). @internal */
@@ -19113,29 +19117,22 @@ export class Orchestrator {
       await this.readArchivedMemoriesForNamespaces(recallNamespaces);
     if (archivedMemories.length === 0) return scopedSeedResults;
 
-    const scored: QmdSearchResult[] = [];
-    for (const memory of archivedMemories) {
-      throwIfRecallAborted(abortSignal);
-      const haystack = [
-        memory.content,
-        memory.frontmatter.category,
-        ...(memory.frontmatter.tags ?? []),
-      ]
-        .join(" ")
-        .toLowerCase();
-      let hits = 0;
-      for (const token of tokens) {
-        if (haystack.includes(token)) hits += 1;
-      }
-      if (hits === 0) continue;
-      const normalized = hits / tokens.length;
-      scored.push({
-        docid: memory.frontmatter.id,
-        path: memory.path,
-        score: normalized,
-        snippet: memory.content.slice(0, 400).replace(/\n/g, " "),
-      });
-    }
+    // Issue #1674: off-load the CPU-bound archive-scoring loop to a
+    // worker_threads pool so concurrent recall requests run on separate
+    // cores instead of serializing on the main JS thread. The pure scoring
+    // function is identical to the old inline loop — only the execution
+    // context changed. Aborts are checked at the boundaries (before submit
+    // and after result); the worker's work is bounded by the file count.
+    throwIfRecallAborted(abortSignal);
+    const scoring = getDefaultArchiveScoring();
+    const scoredResults = await scoring.score(archivedMemories.map(memoryFileToScoreItem), tokens, abortSignal);
+    throwIfRecallAborted(abortSignal);
+    const scored: QmdSearchResult[] = scoredResults.map((r) => ({
+      docid: r.docid,
+      path: r.path,
+      score: r.score,
+      snippet: r.snippet,
+    }));
 
     const mergedByPath = new Map<string, QmdSearchResult>();
     for (const result of [...scopedSeedResults, ...scored]) {
@@ -19336,17 +19333,17 @@ export class Orchestrator {
       }
     }
     if (longTerm.length === 0) {
+      // Deadline-aware abort: terminate the scoring worker when the shared
+      // assembly deadline wins, not just when the caller aborts (#1674).
+      const da = new AbortController();
+      if (options.abortSignal?.aborted) da.abort();
+      else options.abortSignal?.addEventListener("abort", () => da.abort(), { once: true });
       longTerm = await runColdStepWithinDeadline(
-        "archive scan",
-        [],
-        () =>
-          this.searchLongTermArchiveFallback(
-            options.prompt,
-            options.recallNamespaces,
-            options.recallResultLimit,
-            options.queryAwarePrefilter,
-            options.abortSignal,
-          ),
+        "archive scan", [],
+        () => this.searchLongTermArchiveFallback(
+          options.prompt, options.recallNamespaces, options.recallResultLimit,
+          options.queryAwarePrefilter, da.signal),
+        () => da.abort(),
       );
       if (longTerm.length > 0) {
         log.debug("cold-tier recall source=archive-scan");
