@@ -1564,7 +1564,11 @@ export class EngramAccessHttpServer {
       // Issue #1582 — thread the transport session key so a `[m:xxxx]` handle in
       // the path resolves against this session's recall history (codex review).
       // resolveRequestIdentity reads it from adapter identity / request headers.
-      const sessionKey = this.resolveRequestIdentity(req).sessionKey;
+      const sessionKey =
+        this.resolveRequestIdentity(req).sessionKey
+        ?? parsed.searchParams.get("session")
+        ?? parsed.searchParams.get("sessionKey")
+        ?? undefined;
       // Migrated through the access boundary (issue #1525): the registry
       // entry owns memoryId presence/shape validation (rule 51: reject empty
       // ids loudly instead of silently passing "" into the service) and the
