@@ -72,6 +72,9 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
   { tool: "memory_get", operation: "memory_get" },
   { tool: "memory_timeline", operation: null },
   { tool: "memory_store", operation: "memory_store" },
+  // Correction Contract (issue #1580) — one plan/apply pipeline.
+  { tool: "memory_correct_plan", operation: "memory_correct_plan" },
+  { tool: "memory_correct_apply", operation: "memory_correct_apply" },
   { tool: "coding_decision", operation: "coding_decision" },
   { tool: "coding_architecture", operation: "coding_architecture" },
   // codegraph parity tools (issue #1554)
@@ -184,6 +187,10 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "POST", pathname: "/engram/v1/lcm/compaction/flush", operation: "lcm_compaction_flush" },
   { method: "POST", pathname: "/engram/v1/lcm/compaction/record", operation: "lcm_compaction_record" },
   { method: "GET", pathname: "/engram/v1/lcm/status", operation: "lcm_status" },
+  // Correction Contract (issue #1580) — plan/apply/pending.
+  { method: "POST", pathname: "/engram/v1/correction/plan", operation: "memory_correct_plan" },
+  { method: "POST", pathname: "/engram/v1/correction/apply", operation: "memory_correct_apply" },
+  { method: "GET", pathname: "/engram/v1/correction/pending", operation: null },
   { method: "POST", pathname: "/engram/v1/memories", operation: "memory_store" },
   { method: "POST", pathname: "/engram/v1/coding/decisions", operation: "coding_decision" },
   { method: "POST", pathname: "/engram/v1/coding/architecture", operation: "coding_architecture" },

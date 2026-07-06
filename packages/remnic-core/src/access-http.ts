@@ -8,6 +8,7 @@ import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
 import { EngramAccessInputError, type EngramAccessService, type EngramAccessMemoryResponse, type EngramAccessWriteResponse } from "./access-service.js";
+import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js";
 import { EngramMcpServer } from "./access-mcp.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
@@ -319,6 +320,7 @@ export class EngramAccessHttpServer {
       architectureCardVisible: this.service.architectureCardSurfaceVisible,
       codegraphVisible: this.service.codegraphSurfaceVisible,
       sessionDeltaVisible: this.service.sessionDeltaSurfaceVisible,
+      correctionVisible: this.service.correctionSurfaceVisible,
     });
   }
 
@@ -341,6 +343,10 @@ export class EngramAccessHttpServer {
           }
           if (err instanceof EngramAccessInputError) {
             this.respondJson(res, 400, { error: err.message, code: "input_error" });
+            return;
+          }
+          if (err instanceof CorrectionContractError) {
+            this.respondJson(res, 400, { error: err.message, code: "correction_contract_error" });
             return;
           }
           if (res.headersSent) {
@@ -1429,6 +1435,58 @@ export class EngramAccessHttpServer {
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
       this.respondJson(res, 200, output.result);
+      return;
+    }
+
+    // ── Correction Contract (issue #1580) — plan / apply / pending ─────────
+    // All three routes dispatch through the boundary operations so schema
+    // validation + namespace policy reach every correction path (rule 22/39).
+    if (req.method === "POST" && pathname === "/engram/v1/correction/plan") {
+      // Planning persists a pending plan JSON file on every successful call
+      // (review thread UhA), so it is a state write for rate-limit purposes —
+      // mirror the apply route's precheck + accounting to bound files under
+      // state/corrections/pending instead of letting an HTTP client create
+      // unbounded plan files without consuming write quota.
+      this.ensureWriteRateLimitAvailable();
+      const body = await this.readJsonBody(req);
+      const op = getOperation("memory_correct_plan");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: memory_correct_plan");
+      }
+      const output = (await op.run(body, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      })) as { result: unknown };
+      this.recordWriteRateLimitHit();
+      this.respondJson(res, 200, output.result);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/engram/v1/correction/apply") {
+      this.ensureWriteRateLimitAvailable();
+      const body = await this.readJsonBody(req);
+      const op = getOperation("memory_correct_apply");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: memory_correct_apply");
+      }
+      const output = (await op.run(body, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      })) as { result: unknown };
+      this.recordWriteRateLimitHit();
+      this.respondJson(res, 200, output.result);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/engram/v1/correction/pending") {
+      const namespace = parsed.searchParams.get("namespace") ?? undefined;
+      const sessionKey = parsed.searchParams.get("sessionKey") ?? undefined;
+      const plans = await this.service.correctionListPending({
+        ...(namespace ? { namespace } : {}),
+        ...(sessionKey ? { sessionKey } : {}),
+        principal: this.resolveRequestPrincipal(req),
+      });
+      this.respondJson(res, 200, plans);
       return;
     }
 
@@ -2527,6 +2585,12 @@ export class EngramAccessHttpServer {
             toolName === "remnic.memory_action_apply"
           )
         ) ||
+        (
+          toolName === "engram.memory_correct_apply" ||
+          toolName === "remnic.memory_correct_apply" ||
+          toolName === "engram.memory_correct_plan" ||
+          toolName === "remnic.memory_correct_plan"
+        ) ||
         codingDecisionWrite ||
         codingArchitectureWrite ||
         codegraphWrite
@@ -2561,7 +2625,12 @@ export class EngramAccessHttpServer {
       // would consume the write quota despite no mutation occurring
       // (issue #1554 review thread: don't bill rejected calls as writes).
       const isRejectedCodegraph = structured?.ok === false;
-      if (!isError && !isRejectedCodegraph && structured && this.shouldCountWriteRateLimit(structured)) {
+      // A write tool that succeeded without structuredContent (e.g.
+      // memory_correct_apply, which returns a CorrectionOutcome) still
+      // consumed a write — count it. Tools WITH structuredContent use the
+      // dryRun/idempotencyReplay guards.
+      const counts = structured ? this.shouldCountWriteRateLimit(structured) : true;
+      if (!isError && !isRejectedCodegraph && counts) {
         this.recordWriteRateLimitHit();
       }
     }

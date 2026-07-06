@@ -2391,6 +2391,27 @@
         "default": true,
         "description": "Master gate for the tombstone non-resurrection invariant (#1579). When true, a fact that matches an active tombstone at the storage chokepoint is persisted as pending_review + blockedBy instead of becoming active — visible, never a silent drop. Off restores pre-feature behavior for rollback safety."
       },
+      "correctionEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Master gate for the Correction Contract (#1580) — the unified plan/apply pipeline for memory corrections (supersede/edit/retract/rescope/never-store). When false, the correction surfaces (CLI/HTTP/MCP) are disabled."
+      },
+      "correctionApplyRequiresConfirm": {
+        "type": "boolean",
+        "default": true,
+        "description": "When true (default), memory_correct_apply requires confirm: true before mutating memory (#1580). Off allows one-shot apply without an explicit confirmation."
+      },
+      "correctionMaxAffected": {
+        "type": "integer",
+        "minimum": 1,
+        "default": 10,
+        "description": "Maximum number of memories a single correction plan may affect (#1580). A plan exceeding this is refused rather than silently truncated. Invalid values (0/negative/non-numeric) are rejected."
+      },
+      "correctionPlanTtlHours": {
+        "type": "number",
+        "default": 24,
+        "description": "Hours a pending correction plan remains valid before it expires and must be re-planned (#1580)."
+      },
       "tombstonesSemanticMatch": {
         "type": "boolean",
         "default": false,

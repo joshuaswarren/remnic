@@ -2097,6 +2097,49 @@ export function parseConfig(
     // (docs kept honest — review: wire resolver before exposing the gate).
     temporalBiTemporal: coerceBool(cfg.temporalBiTemporal) ?? false,
     temporalExpiredInInjection: coerceBool(cfg.temporalExpiredInInjection) ?? false,
+    // Correction Contract (issue #1580). Parsed here so operators can actually
+    // set the documented toggles/limits (review thread Txp): parseConfig builds
+    // an explicit output, so without these lines the raw `correction` block /
+    // flat legacy keys are dropped and the runtime always sees defaults. Nested
+    // `correction.<key>` wins; flat `correction<Key>` is the legacy fallback.
+    correctionEnabled: (() => {
+      const nested = (cfg.correction as Record<string, unknown> | undefined)?.enabled;
+      const raw = nested !== undefined ? nested : cfg.correctionEnabled;
+      if (raw === undefined || raw === null) return true;
+      const v = coerceBool(raw);
+      if (v === undefined) {
+        throw new Error(`Invalid correction.enabled: expected a boolean, got ${JSON.stringify(raw)}`);
+      }
+      return v;
+    })(),
+    correctionApplyRequiresConfirm: (() => {
+      const nested = (cfg.correction as Record<string, unknown> | undefined)?.applyRequiresConfirm;
+      const raw = nested !== undefined ? nested : cfg.correctionApplyRequiresConfirm;
+      if (raw === undefined || raw === null) return true;
+      const v = coerceBool(raw);
+      if (v === undefined) {
+        throw new Error(`Invalid correction.applyRequiresConfirm: expected a boolean, got ${JSON.stringify(raw)}`);
+      }
+      return v;
+    })(),
+    correctionMaxAffected: (() => {
+      const rawNested = (cfg.correction as Record<string, unknown> | undefined)?.maxAffected;
+      const raw = rawNested !== undefined ? rawNested : cfg.correctionMaxAffected;
+      if (raw === undefined || raw === null) return 10;
+      const n = coerceNumber(raw);
+      if (n === undefined || !Number.isFinite(n) || n < 1) {
+        throw new Error(`Invalid correction.maxAffected: expected an integer >= 1, got ${JSON.stringify(raw)}`);
+      }
+      return Math.floor(n);
+    })(),
+    correctionPlanTtlHours: (() => {
+      const nested = (cfg.correction as Record<string, unknown> | undefined)?.planTtlHours;
+      const fromNested = nested !== undefined ? coerceNumber(nested) : undefined;
+      if (fromNested !== undefined && fromNested > 0) return fromNested;
+      const fromFlat = coerceNumber(cfg.correctionPlanTtlHours);
+      if (fromFlat !== undefined && fromFlat > 0) return fromFlat;
+      return 24;
+    })(),
     // Tombstones — non-resurrection invariant (issue #1579). The invariant is
     // the point, so it ships ON by default; `false` restores pre-feature
     // behavior for rollback safety (rule 30). Uses coerceBool so CLI string

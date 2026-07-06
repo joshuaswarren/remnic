@@ -822,6 +822,33 @@ export interface PluginConfig {
    * deployments prefer the older (always-inject) behavior. Default `false`.
    */
   temporalExpiredInInjection: boolean;
+  /**
+   * Correction Contract (issue #1580) — one plan/apply pipeline for memory
+   * corrections. Master visibility + enforcement gate for the
+   * `memory_correct_plan` / `memory_correct_apply` tools. Default `true`:
+   * planning is read-only (locates candidates + drafts a pending plan file)
+   * and safe to ship on; `false` hides the tools and rejects runtime calls so
+   * the surface cannot drift out of sync. Parsed from `correction.enabled`
+   * (nested) or `correctionEnabled` (flat legacy).
+   */
+  correctionEnabled: boolean;
+  /**
+   * Whether `memory_correct_apply` requires an explicit `confirm: true` to
+   * mutate memories. Default `true` (least-privileged). Parsed from
+   * `correction.applyRequiresConfirm` / `correctionApplyRequiresConfirm`.
+   */
+  correctionApplyRequiresConfirm: boolean;
+  /**
+   * Max memories a single correction plan may touch; over-limit plans are
+   * rejected, never silently truncated (review thread). Default `10`. Parsed
+   * from `correction.maxAffected` / `correctionMaxAffected`.
+   */
+  correctionMaxAffected: number;
+  /**
+   * Plan time-to-live in hours; expired plans are rejected at apply. Default
+   * `24`. Parsed from `correction.planTtlHours` / `correctionPlanTtlHours`.
+   */
+  correctionPlanTtlHours: number;
   // Tombstones — non-resurrection invariant (issue #1579).
   /**
    * Master gate for the tombstone non-resurrection invariant. When `true`

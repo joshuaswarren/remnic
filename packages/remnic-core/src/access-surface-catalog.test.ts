@@ -44,7 +44,12 @@ import {
 // catalog-completeness correction: adding routes that were always live but
 // omitted from the catalog (review-caught). Such a bump MUST be accompanied
 // by the newly-cataloged entries; the higher count is the honest baseline.
-const UNMIGRATED_HANDLER_BASELINE = 80;
+// #1580 Correction Contract adds GET /engram/v1/correction/pending — a read-only
+// list route (namespace/sessionKey query params, no body), so it stays unmigrated
+// alongside the other GET list routes (baseline 80 from #1525 + 1 = 81). Also a
+// catalog-completeness correction: POST /engram/v1/memories (operation memory_store)
+// was always live but omitted from HTTP_ROUTES — it is migrated, so no count change.
+const UNMIGRATED_HANDLER_BASELINE = 81;
 
 // Keep the import live — `getOperation` is the call surfaces use at dispatch
 // time; referencing it here pins the registry's lookup contract.

@@ -53,6 +53,8 @@ export type OperationName =
   | "codegraph_search_code"
   | "codegraph_manage_adr"
   | "codegraph_ingest_traces"
+  | "memory_correct_plan"
+  | "memory_correct_apply"
   | "coding_delta"
   // Remaining MCP/HTTP handlers migrated through the boundary (issue #1525).
   | "recall"

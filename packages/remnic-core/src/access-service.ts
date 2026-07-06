@@ -49,6 +49,14 @@ import {
   type DeltaSurfaceStorage,
 } from "./coding/session-delta-surfaces.js";
 import { defaultGitInvoker } from "./coding/git-context.js";
+import {
+  createCorrectionService,
+  isCorrectionFeatureEnabled,
+  CorrectionService,
+  type CorrectionOutcome,
+  type CorrectionPlan,
+  type CorrectionRequest,
+} from "./correction/index.js";
 import { createVersion } from "./page-versioning.js";
 import { WorkStorage } from "./work/storage.js";
 import {
@@ -4713,6 +4721,90 @@ export class EngramAccessService {
       },
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Correction Contract (issue #1580) — one plan/apply pipeline for every
+  // memory correction. The CorrectionService owns the planner + executor; the
+  // access-service constructs it lazily via the wiring helper and delegates.
+  // Each method below is thin wiring (≤4 lines) per the god-file ratchet.
+  // -------------------------------------------------------------------------
+  /** Whether the memory_correct_plan / memory_correct_apply tools should appear in tools/list (rule 39). Same reader as the runtime gate so visibility + enforcement stay in sync. */
+  get correctionSurfaceVisible(): boolean {
+    return isCorrectionFeatureEnabled(this.orchestrator.config);
+  }
+
+
+  private _correctionService: CorrectionService | null = null;
+
+  /** Lazily construct + cache the CorrectionService with deps wired from the orchestrator. */
+  private correctionService(): CorrectionService {
+    if (this._correctionService) return this._correctionService;
+    const service = createCorrectionService({
+      orchestrator: this.orchestrator,
+      resolveAuthorizedNamespace: async (req) =>
+        this.resolveWritableNamespace(req.namespace, req.sessionKey, req.principal),
+      resolveReadableNamespaces: (req) => {
+        const principal = this.resolveRequestPrincipal(req.sessionKey, req.principal);
+        return recallNamespacesForPrincipal(principal, this.orchestrator.config);
+      },
+      canWriteNamespace: (req) => {
+        // resolveWritableNamespace resolves + checks writability in one step;
+        // reusing it avoids a second ad-hoc namespace-resolution call site.
+        try {
+          this.resolveWritableNamespace(req.namespace, req.sessionKey, req.principal);
+          return Promise.resolve(true);
+        } catch {
+          return Promise.resolve(false);
+        }
+      },
+      // Wire the orchestrator's extraction LLM so classify+draft actually
+      // drafts actions instead of always hitting the deterministic fallback
+      // (review thread PG5). The planner's classifyAndDraft already falls back
+      // on any LLM outage, so returning null (LLM disabled/cooldown) or a
+      // thrown error both degrade safely to the deterministic path (rule 13).
+      llmComplete: async ({ system, user }) => {
+        const result = await this.orchestrator.localLlm.chatCompletion(
+          [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          { operation: "correction-classify", priority: "background" },
+        );
+        if (!result) {
+          throw new Error("correction classify+draft: local LLM unavailable (disabled or in cooldown)");
+        }
+        return result.content;
+      },
+    });
+    this._correctionService = service;
+    return service;
+  }
+
+  async correctionPlan(request: CorrectionRequest): Promise<CorrectionPlan> {
+    return this.correctionService().plan(request);
+  }
+
+  async correctionApply(
+    planId: string,
+    opts: { confirm?: boolean; namespace?: string; sessionKey?: string; principal?: string },
+  ): Promise<CorrectionOutcome> {
+    return this.correctionService().apply(planId, opts);
+  }
+
+  async correctionListPending(opts: {
+    namespace?: string;
+    sessionKey?: string;
+    principal?: string;
+  }): Promise<CorrectionPlan[]> {
+    return this.correctionService().listPending(opts);
+  }
+
+  async correctionDiscard(
+    planId: string,
+    opts: { namespace?: string; sessionKey?: string; principal?: string },
+  ): Promise<void> {
+    return this.correctionService().discard(planId, opts);
   }
 
   async memoryBrowse(

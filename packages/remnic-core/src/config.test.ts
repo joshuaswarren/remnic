@@ -2082,3 +2082,13 @@ test("parseConfig extractionFaithfulnessTimeoutMs rejects non-numeric and non-in
     );
   }
 });
+
+test("parseConfig rejects invalid correction.enabled instead of silently enabling (#1580)", () => {
+  assert.throws(() => parseConfig({ correction: { enabled: "flase" } }), /Invalid correction\.enabled/);
+  assert.throws(() => parseConfig({ correctionEnabled: "nope" }), /Invalid correction\.enabled/);
+  assert.throws(() => parseConfig({ correction: { applyRequiresConfirm: "sure" } }), /Invalid correction\.applyRequiresConfirm/);
+  // Valid + absent still resolve correctly (no regression).
+  assert.equal(parseConfig({ correction: { enabled: false } }).correctionEnabled, false);
+  assert.equal(parseConfig({ correctionEnabled: "0" }).correctionEnabled, false);
+  assert.equal(parseConfig({}).correctionEnabled, true);
+});
