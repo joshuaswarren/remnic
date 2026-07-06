@@ -196,3 +196,31 @@ test("appendMemoryToGraphContext is no-op when graph context list is unavailable
     });
   });
 });
+
+test("resolveRecentThreadMemoryPaths skips pending_review memories so no predecessor edge references an unfaithful memory (#1635)", () => {
+  const storageDir = "/tmp/memory";
+  const allMems: MemoryFile[] = [
+    makeMemory("/tmp/memory/facts/2026-02-22/active.md", "active"),
+    {
+      ...makeMemory("/tmp/memory/facts/2026-02-22/pending.md", "pending"),
+      frontmatter: {
+        ...makeMemory("/tmp/memory/facts/2026-02-22/pending.md", "pending")
+          .frontmatter,
+        status: "pending_review",
+      },
+    },
+  ];
+
+  const recent = resolveRecentThreadMemoryPaths({
+    threadEpisodeIds: ["active", "pending", "current-id"],
+    currentMemoryId: "current-id",
+    allMemsForGraph: allMems,
+    storageDir,
+    maxRecent: 3,
+  });
+
+  // The pending_review id is present in the (legacy) thread episode set and
+  // IS locatable in allMemsForGraph, but it must be excluded so no graph
+  // predecessor edge is ever built to an unfaithful memory.
+  assert.deepEqual(recent, ["facts/2026-02-22/active.md"]);
+});

@@ -1731,8 +1731,16 @@ export function resolveRecentThreadMemoryPaths(options: {
     buildMemoryPathById(options.allMemsForGraph, options.storageDir);
   if (pathById.size === 0) return [];
 
+  // #1635 (defensive): skip pending_review ids from legacy episode sets.
+  const pendingReviewIds = new Set<string>(
+    (options.allMemsForGraph ?? [])
+      .filter((m) => m.frontmatter.status === "pending_review" && m.frontmatter.id)
+      .map((m) => m.frontmatter.id as string),
+  );
+
   return options.threadEpisodeIds
     .filter((id) => id !== options.currentMemoryId)
+    .filter((id) => !pendingReviewIds.has(id))
     .slice(-maxRecent)
     .map((id) => pathById.get(id))
     .filter((p): p is string => typeof p === "string" && p.length > 0);
@@ -1858,6 +1866,11 @@ export class Orchestrator {
    * callers already destructure `persistedIds` by position.
    */
   private lastPersistExtractionDeferredCount: number = 0;
+  /**
+   * Side-channel (#1635): pending_review persisted ids from the last
+   * persistExtraction; runExtraction excludes them from the thread episode set.
+   */
+  private lastPersistExtractionPendingReviewIds: string[] = [];
   private readonly _fastGatewayLlm: FallbackLlmClient | null;
 
   get fastGatewayLlm(): FallbackLlmClient | null {
@@ -13461,23 +13474,16 @@ export class Orchestrator {
     }
 
     // Batch-append persisted IDs so non-fact memories (entities/questions) are
-    // always attached to the thread.
+    // always attached to the thread. The helper excludes pending_review ids (#1635).
     if (
       this.config.threadingEnabled &&
       threadIdForExtraction &&
       persistedIds.length > 0
     ) {
-      try {
-        await this.threading.appendEpisodeIds(
-          threadIdForExtraction,
-          persistedIds,
-        );
-      } catch (err) {
-        log.warn(
-          "[threading] appendEpisodeIds failed after persistence (non-fatal)",
-          err,
-        );
-      }
+      await this.appendPersistedThreadEpisodes(
+        threadIdForExtraction,
+        persistedIds,
+      );
     }
 
     // Thread title update for the already-established thread context.
@@ -13831,9 +13837,11 @@ export class Orchestrator {
       // to avoid a maintenance hazard where the two guard paths could diverge.
       return attachCitation(content, citationContext, citationTemplate);
     };
+    const persistedIds: string[] = [];
     const supersessionOrderingAt = (validAt?: string): string =>
       validAt && validAt.length > 0 ? validAt : new Date().toISOString();
-    const persistedIds: string[] = [];
+    // #1635: pending_review persisted ids, excluded from the thread episode set below.
+    const pendingReviewPersistedIds: string[] = [];
     const persistedIdsByStorage = new Map<
       string,
       { storage: StorageManager; ids: string[] }
@@ -13841,10 +13849,17 @@ export class Orchestrator {
     const trackPersistedId = (
       targetStorage: StorageManager,
       id: string,
-      options: { includeReturnedIds?: boolean } = {},
+      options: {
+        includeReturnedIds?: boolean;
+        /** #1635: keep this id out of the persisted thread episode set. */
+        pendingReview?: boolean;
+      } = {},
     ): void => {
       if (options.includeReturnedIds !== false) {
         persistedIds.push(id);
+      }
+      if (options.pendingReview) {
+        pendingReviewPersistedIds.push(id);
       }
       const key = targetStorage.dir;
       const existing = persistedIdsByStorage.get(key);
@@ -15347,7 +15362,9 @@ export class Orchestrator {
           log.debug(
             `chunked memory ${parentId} into ${chunkResult.chunks.length} chunks`,
           );
-          trackPersistedId(targetStorage, parentId);
+          trackPersistedId(targetStorage, parentId, {
+            pendingReview: faithfulnessEnforceStatus === "pending_review",
+          });
           // #1576 (cursor Medium): keep pending_review ids out of threadEpisodeIdsForGraph — else later active facts build thread-predecessor edges to an unfaithful memory.
           if (
             faithfulnessEnforceStatus !== "pending_review" &&
@@ -15633,8 +15650,9 @@ export class Orchestrator {
             source: "extraction",
           }),
         );
-        trackPersistedId(targetStorage, memoryId);
-        // #1576 (cursor Medium): same thread-episode guard on the non-chunked path.
+        trackPersistedId(targetStorage, memoryId, {
+          pendingReview: faithfulnessEnforceStatus === "pending_review",
+        });
         if (
           faithfulnessEnforceStatus !== "pending_review" &&
           threadEpisodeIdsForGraph &&
@@ -15944,8 +15962,34 @@ export class Orchestrator {
       log.debug(`temporal-index update error (non-fatal): ${err}`),
     );
 
+    // #1635: surface pending_review ids so the thread episode set excludes them.
+    this.lastPersistExtractionPendingReviewIds = pendingReviewPersistedIds;
     // Return the persisted fact IDs for threading
     return persistedIds;
+  }
+  /**
+   * Append persisted ids to the thread episode set, excluding pending_review
+   * fact ids (#1635) so they don't re-seed predecessor edges. Fail-open like
+   * the raw appendEpisodeIds call it replaces.
+   */
+  private async appendPersistedThreadEpisodes(
+    threadId: string,
+    persistedIds: string[],
+  ): Promise<void> {
+    const pendingReviewIds = this.lastPersistExtractionPendingReviewIds ?? [];
+    const episodeIds =
+      pendingReviewIds.length > 0
+        ? persistedIds.filter((id) => !pendingReviewIds.includes(id))
+        : persistedIds;
+    if (episodeIds.length === 0) return;
+    try {
+      await this.threading.appendEpisodeIds(threadId, episodeIds);
+    } catch (err) {
+      log.warn(
+        "[threading] appendEpisodeIds failed after persistence (non-fatal)",
+        err,
+      );
+    }
   }
 
   private async indexPersistedMemory(
