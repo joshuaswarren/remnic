@@ -3,7 +3,7 @@
 # Codex, CodeQL) repeatedly flagged across PRs #343-#408 (700+ review comments).
 # Run this before pushing. Zero exit = clean.
 # Updated: 2026-04-12 (added checks 7-10 from iteration 2, 11-14 from iteration 3, 15-17 from iteration 4, 18-21 from iteration 5, 22-23 from iteration 7, 24-26 from iteration 8, 27-29 from iteration 10, 30-34 from iteration 12).
-# 2026-07-06: added check 35 (rule 27 slice-guard, WARN) + check 36 (rule 26 cross-package imports, BLOCKING).
+# 2026-07-06: added check 37 (rule 53 ad-hoc status exclusion, WARN). Graduated rules 36 (→check #19), 46 (→check #26), 53 (→check #37).
 # 2026-07-05: check 15 graduated to BLOCKING + added codex-* prefix + maxdepth-1 scope (rule 31, PR #TBD).
 set -euo pipefail
 
@@ -869,6 +869,53 @@ if [[ -n "$CROSS_PKG_IMPORTS" ]]; then
     fail "$line — cross-package relative import (rule 26). Use import from \"@remnic/core\" instead."
   done <<< "$CROSS_PKG_IMPORTS"
 fi
+
+# ---- 37. Ad-hoc non-active status exclusion (CLAUDE.md rule 53) ----
+echo "[check] Ad-hoc non-active status exclusion lists..."
+
+# Rule 53: code that enumerates 2+ non-active status string literals
+# (superseded, archived, quarantined, rejected, forgotten, pending_review)
+# as an exclusion list without referencing ACTIVE_STATUSES is fragile —
+# adding a new status means every such site must be updated individually.
+# Use the shared ACTIVE_STATUSES set from contradiction-scan.ts instead.
+# WARN-level — existing sites need migration to ACTIVE_STATUSES over time.
+# Patterns for non-active status string literal comparisons.
+# RULE53_RE: direct status ===/!== comparisons. Uses (^|[^.]) before bare
+# 'status' to exclude property accesses like settled.status (Promise.allSettled
+# results) that are NOT memory lifecycle filters. frontmatter.status matched
+# separately since the dot is expected.
+# RULE53_ARRAY_RE: array-based exclusion lists like
+# ["superseded", "archived"].includes(status) — same anti-pattern, different
+# syntax.
+RULE53_RE='((^|[^.])status|frontmatter\.status)\s*(===|!==)\s*"(superseded|archived|quarantined|rejected|forgotten|pending_review)"'
+RULE53_ARRAY_RE='"(superseded|archived|quarantined|rejected|forgotten|pending_review)"\s*,\s*"(superseded|archived|quarantined|rejected|forgotten|pending_review)"'
+
+# Get files with at least one match (either pattern)
+ADHOC_STATUS_FILES=$(grep -rlE "$RULE53_RE|$RULE53_ARRAY_RE" \
+  --include="*.ts" \
+  packages/remnic-core/src/ packages/remnic-cli/src/ \
+  2>/dev/null \
+  | grep -v node_modules \
+  | grep -v dist \
+  | grep -v ".test." \
+  || true)
+
+# For each file, count total matches from both patterns.
+# No file-level ACTIVE_STATUSES skip — a file can import the set for one
+# function while still having ad-hoc comparisons in another. The WARN
+# nudges migration; each site is visible to reviewers.
+if [[ -n "$ADHOC_STATUS_FILES" ]]; then
+  while IFS= read -r f; do
+    DIRECT=$( { grep -noE "$RULE53_RE" "$f" 2>/dev/null || true; } | wc -l | tr -d ' ')
+    ARRAY=$( { grep -noE "$RULE53_ARRAY_RE" "$f" 2>/dev/null | grep -vi 'enum' || true; } | wc -l | tr -d ' ')
+    COUNT=$((DIRECT + ARRAY))
+    if [[ "$COUNT" -ge 2 ]]; then
+      warn "$f — enumerates $COUNT non-active status literals without ACTIVE_STATUSES (rule 53). Use the shared set from contradiction-scan.ts."
+      { grep -nE "$RULE53_RE|$RULE53_ARRAY_RE" "$f" 2>/dev/null || true; } | head -5 | sed 's/^/    /'
+    fi
+  done <<< "$ADHOC_STATUS_FILES"
+fi
+
 
 if [[ $ERRORS -gt 0 ]]; then
   echo "[check] FAILED — $ERRORS issue(s) found. Fix before pushing."
