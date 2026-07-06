@@ -13494,13 +13494,12 @@ export class Orchestrator {
         meta.lastExtractionAt = new Date().toISOString();
         await storage.saveMeta(meta);
       }
+      // Correction-only turns that meet char/user-turn thresholds but yield
+      // zero facts still need passive capture (review: "empty extraction skips
+      // capture"). selfNamespace/principal already resolved above.
+      await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], { sessionKey, principal, namespace: selfNamespace, bufferKey, isLiveSession: clearBufferAfterExtraction });
       await clearBuffer();
-      return {
-        status: "skipped",
-        reason: "empty_extraction_result",
-        persistedCount: 0,
-        durableOutputCount: 0,
-      };
+      return { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
     }
 
     let threadIdForExtraction: string | null = null;

@@ -277,6 +277,13 @@ export async function capturePassiveCorrections(
         ...(ctx.sessionKey ? { sessionKey: ctx.sessionKey } : {}),
         ...(ctx.principal ? { principal: ctx.principal } : {}),
       });
+      // A partial outcome means some actions failed (per-action races or
+      // storage failures). Don't count it as auto-applied or notify — queue
+      // for human review instead (review: "partial outcomes as failures").
+      if (outcome.status !== "applied") {
+        telemetry.queued += 1;
+        continue;
+      }
       telemetry.autoApplied += 1;
 
       // Enqueue notification for the next briefing

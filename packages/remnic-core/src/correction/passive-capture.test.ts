@@ -297,6 +297,27 @@ test("auto mode: auto-applied correction enqueues notification", async () => {
   await rm(tmpDir, { recursive: true, force: true });
 });
 
+test("auto mode: partial outcome queues instead of counting as applied (review: partial outcomes)", async () => {
+  const plan = makePlan({ confidence: 0.9 });
+  const deps: PassiveCaptureDeps = {
+    planCorrection: async () => plan,
+    applyCorrection: async (planId) => ({
+      planId,
+      status: "partial" as const,
+      results: [{ action: plan.actions[0], status: "failed" as const }],
+      auditMemoryId: "audit",
+      appliedAt: new Date().toISOString(),
+    }),
+    storageDir: async () => "/tmp/test-passive-capture",
+  };
+  const dedup = new Set<string>();
+
+  const result = await capturePassiveCorrections([makeCorrection()], LIVE_CTX, AUTO_CONFIG, deps, dedup);
+
+  assert.strictEqual(result.telemetry.autoApplied, 0, "partial outcome must not count as auto-applied");
+  assert.strictEqual(result.telemetry.queued, 1);
+});
+
 // ---------------------------------------------------------------------------
 // evaluateAutoApplyGuards — direct unit tests
 // ---------------------------------------------------------------------------
