@@ -851,10 +851,11 @@ fi
 echo "[check] Cross-package relative imports (BLOCKING)..."
 
 # Rule 26: import from "@remnic/core", not "../../../remnic-core/src/foo".
+# Also covers @remnic/cli and @remnic/server.
 # Relative cross-package imports break silently on directory renames and hide
 # package dependency signals. Flag any import using ../ that reaches into
 # another package's src directory.
-CROSS_PKG_IMPORTS=$(grep -rnE 'from .*\.\..*remnic-(core|cli)/src' \
+CROSS_PKG_IMPORTS=$(grep -rnE 'from .*\.\..*remnic-(core|cli|server)/src' \
   --include="*.ts" \
   packages/ \
   2>/dev/null \
