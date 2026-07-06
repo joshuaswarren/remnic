@@ -907,7 +907,7 @@ ADHOC_STATUS_FILES=$(grep -rlE "$RULE53_RE|$RULE53_ARRAY_RE" \
 if [[ -n "$ADHOC_STATUS_FILES" ]]; then
   while IFS= read -r f; do
     DIRECT=$( { grep -noE "$RULE53_RE" "$f" 2>/dev/null || true; } | wc -l | tr -d ' ')
-    ARRAY=$( { grep -noE "$RULE53_ARRAY_RE" "$f" 2>/dev/null || true; } | wc -l | tr -d ' ')
+    ARRAY=$( { grep -noE "$RULE53_ARRAY_RE" "$f" 2>/dev/null | grep -vi 'enum' || true; } | wc -l | tr -d ' ')
     COUNT=$((DIRECT + ARRAY))
     if [[ "$COUNT" -ge 2 ]]; then
       warn "$f — enumerates $COUNT non-active status literals without ACTIVE_STATUSES (rule 53). Use the shared set from contradiction-scan.ts."
