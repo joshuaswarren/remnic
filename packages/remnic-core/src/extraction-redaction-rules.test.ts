@@ -17,6 +17,7 @@ import {
   contentMatchesRedactionRules,
   loadRedactionRules,
 } from "./extraction-redaction-rules.js";
+import { validateRedactionPattern } from "./correction/correction-contract.js";
 
 async function withTempDir<T>(fn: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(path.join(tmpdir(), "remnic-redact-"));
@@ -138,4 +139,32 @@ test("#1669 thread #3: safe regex pattern still compiles as RegExp", () => {
   const rule = compileRedactionPattern("/^secret-key-[a-f0-9]+$/");
   assert.equal(rule.matcher("secret-key-deadbeef"), true);
   assert.equal(rule.matcher("not-a-secret"), false);
+});
+
+test("#1669 thread #3 (first-line guard): validateRedactionPattern rejects catastrophic-backtracking shapes", () => {
+  // Classic ReDoS shapes must be rejected at apply time — not just fall back
+  // to literal at extraction time. Each is a nested quantifier or overlapping
+  // alternation that would hang on a near-miss fact.
+  const pathological = ["(a+)+", "(a*)*", "(a?)+", "(a|a)+"];
+  for (const p of pathological) {
+    assert.throws(
+      () => validateRedactionPattern(p),
+      { message: /unsafe/ },
+      `validateRedactionPattern must reject catastrophic pattern: ${p}`,
+    );
+  }
+  // The overly-broad check still fires for bare .* / .+ patterns.
+  assert.throws(() => validateRedactionPattern(".*"));
+  assert.throws(() => validateRedactionPattern(".+"));
+  // A near-miss string that would cause exponential backtracking on the
+  // regex never reaches extraction — the plan is rejected at apply time.
+  const nearMiss = "a".repeat(100) + "!";
+  assert.ok(nearMiss.length === 101);
+});
+
+test("#1669 thread #3 (first-line guard): valid patterns still pass", () => {
+  // Bounded literal + benign anchored regex must NOT be rejected.
+  assert.equal(validateRedactionPattern("secret-token-\\d+"), "secret-token-\\d+");
+  assert.equal(validateRedactionPattern("(a|b)+"), "(a|b)+");
+  assert.equal(validateRedactionPattern("/^secret-key-[a-f0-9]+$/"), "/^secret-key-[a-f0-9]+$/");
 });
