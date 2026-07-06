@@ -2737,15 +2737,25 @@ export class Orchestrator {
    * before bi-temporal wiring existed. Without this backfill, recall keeps
    * surfacing an expired fact even though the source copy now expires correctly.
    *
-   * Finds the active fact in `targetStorage` whose normalized content matches
-   * `dedupContent`, then patches the temporal frontmatter the existing copy is
-   * missing. Best-effort / fail-open — any I/O error is logged and swallowed
-   * so the dedup short-circuit is never blocked by a backfill failure.
+   * Finds the active fact in `targetStorage` matching `dedupContent`, then
+   * patches the temporal frontmatter the existing copy is missing. Best-effort
+   * / fail-open — any I/O error is logged and swallowed so the dedup
+   * short-circuit is never blocked by a backfill failure.
+   *
+   * Matching: the stored `frontmatter.contentHash` is compared against
+   * `ContentHashIndex.computeHash(dedupContent)` first (the exact hash the
+   * content-hash index uses), then falls back to stripping citations and
+   * comparing normalized bodies. This handles inline-attribution deployments
+   * where the persisted body carries a citation marker the dedup key does not.
+   *
+   * I/O gate: only triggers when `invalidAt` is present (the end bound that
+   * actually changes recall behavior by expiring the fact). `observedAt` and
+   * `eventTimeSource` alone don'\''t expire a fact, so backfilling them without
+   * an end bound would cause a full readAllMemories scan on every dedup hit
+   * under biTemporal for no recall benefit.
    *
    * Only patches fields the existing copy LACKS — never overwrites a bound the
-   * copy already carries (a later re-resolution should not clobber an earlier
-   * explicit bound). Gated on the incoming fact actually carrying bounds so
-   * no I/O occurs when bi-temporal is off or the fact has no end bound.
+   * copy already carries.
    */
   private async backfillTemporalBoundsOnDedupHit(
     targetStorage: StorageManager,
@@ -2756,39 +2766,41 @@ export class Orchestrator {
       eventTimeSource?: "extracted" | "assumed";
     },
   ): Promise<void> {
-    // Gate: skip entirely when no bounds to forward (avoids readAllMemories I/O).
-    if (
-      !bounds.invalidAt &&
-      !bounds.observedAt &&
-      !bounds.eventTimeSource
-    ) {
-      return;
-    }
+    // I/O gate: only scan when there is an end bound to backfill. Without
+    // invalidAt there is nothing that changes recall behavior — observedAt
+    // and eventTimeSource alone do not expire a fact. This avoids a full
+    // readAllMemories on every dedup short-circuit under biTemporal.
+    if (!bounds.invalidAt) return;
     try {
+      const incomingHash = ContentHashIndex.computeHash(dedupContent);
       const normalizedIncoming = ContentHashIndex.normalizeContent(dedupContent);
       const all = await targetStorage.readAllMemories();
       const existing = all.find((m) => {
         if (m.frontmatter.category !== "fact") return false;
         if ((m.frontmatter.status ?? "active") !== "active") return false;
+        // Prefer the stored contentHash (what the hash index actually keys
+        // on) — it is computed from contentHashSource (the raw/enriched
+        // body before citation), matching the dedupContent the caller passes.
+        if (m.frontmatter.contentHash) {
+          return m.frontmatter.contentHash === incomingHash;
+        }
+        // Legacy facts without a stored hash: strip citations then compare
+        // normalized bodies so inline-attribution markers don'\''t prevent
+        // a match.
         return (
-          ContentHashIndex.normalizeContent(m.content ?? "") ===
-          normalizedIncoming
+          ContentHashIndex.normalizeContent(
+            stripCitationForTemplate(m.content ?? "", this.config.inlineSourceAttributionFormat),
+          ) === normalizedIncoming
         );
       });
       if (!existing) return;
       // Build a patch containing ONLY the fields the existing copy lacks.
       const patch: Partial<MemoryFrontmatter> = {};
       const fm = existing.frontmatter;
-      if (
-        bounds.invalidAt &&
-        (!fm.invalid_at || fm.invalid_at.length === 0)
-      ) {
+      if (bounds.invalidAt && (!fm.invalid_at || fm.invalid_at.length === 0)) {
         patch.invalid_at = bounds.invalidAt;
       }
-      if (
-        bounds.observedAt &&
-        (!fm.observedAt || fm.observedAt.length === 0)
-      ) {
+      if (bounds.observedAt && (!fm.observedAt || fm.observedAt.length === 0)) {
         patch.observedAt = bounds.observedAt;
       }
       if (
@@ -2797,7 +2809,6 @@ export class Orchestrator {
       ) {
         patch.eventTimeSource = bounds.eventTimeSource;
       }
-      // Nothing to patch — the copy already carries all the bounds.
       if (Object.keys(patch).length === 0) return;
       const ok = await targetStorage.writeMemoryFrontmatter(existing, patch);
       if (ok) {
@@ -14242,10 +14253,11 @@ export class Orchestrator {
           ) {
             // #1671 — backfill bi-temporal bounds the existing promoted copy
             // lacks (re-extraction with a now-resolved invalidAt). Best-effort,
-            // fail-open, gated on the incoming fact carrying bounds.
-            if (options.invalidAt || options.observedAt || options.eventTimeSource) {
+            // fail-open; the helper gates on invalidAt to avoid I/O when no
+            // end bound is present.
+            if (options.invalidAt) {
               await this.backfillTemporalBoundsOnDedupHit(targetStorage, dedupContent, {
-                ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
+                invalidAt: options.invalidAt,
                 ...(options.observedAt ? { observedAt: options.observedAt } : {}),
                 ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
               });
@@ -14416,10 +14428,10 @@ export class Orchestrator {
           // #1671 — backfill bi-temporal bounds onto the existing shared copy
           // before the supersession short-circuit. Covers all return paths below
           // (supersession-hit, catch-skip, and the no-supersession short-circuit)
-          // in one shot. Best-effort / fail-open; gated on incoming bounds.
-          if (options.invalidAt || options.observedAt || options.eventTimeSource) {
+          // in one shot. Best-effort / fail-open; the helper gates on invalidAt.
+          if (options.invalidAt) {
             await this.backfillTemporalBoundsOnDedupHit(sharedStorage, dedupContent, {
-              ...(options.invalidAt ? { invalidAt: options.invalidAt } : {}),
+              invalidAt: options.invalidAt,
               ...(options.observedAt ? { observedAt: options.observedAt } : {}),
               ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
             });
@@ -15118,13 +15130,28 @@ export class Orchestrator {
         // #1671 — before short-circuiting, backfill bi-temporal bounds
         // onto the existing source-namespace copy if it lacks bounds the
         // incoming fact now carries (re-extraction with a resolved invalidAt).
-        // Best-effort / fail-open; gated on biTemporal so no I/O when off.
-        if (biTemporal) {
-          await this.backfillTemporalBoundsOnDedupHit(targetStorage, contentHashDedupKey, {
-            ...(biTemporal.validUntil ? { invalidAt: biTemporal.validUntil } : {}),
-            observedAt: biTemporal.observedAt,
-            eventTimeSource: biTemporal.eventTimeSource,
-          });
+        // Skip when the fact would be routed to pending_review (faithfulness
+        // enforce verdict or requireSpans) — a pending candidate must not
+        // expire an active fact without review (chatgpt-codex P1).
+        if (biTemporal && biTemporal.validUntil) {
+          // Skip backfill when the fact would be routed to pending_review
+          // (faithfulness enforce verdict or requireSpans) — a pending
+          // candidate must not expire an active fact without review.
+          const fr = faithfulnessResultsByFactIndex?.get(factLoopIndex);
+          const faithfulnessWouldPending =
+            faithfulnessMode === "enforce" &&
+            fr?.ok === true &&
+            (fr.verdict === "unsupported" || fr.verdict === "contradicted");
+          const requireSpansWouldPending =
+            this.config.provenance?.requireSpans === true &&
+            fact.requireSpansPending === true;
+          if (!faithfulnessWouldPending && !requireSpansWouldPending) {
+            await this.backfillTemporalBoundsOnDedupHit(targetStorage, contentHashDedupKey, {
+              invalidAt: biTemporal.validUntil,
+              observedAt: biTemporal.observedAt,
+              eventTimeSource: biTemporal.eventTimeSource,
+            });
+          }
         }
         log.debug(
           `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…" in storage ${targetStorage.dir}`,
