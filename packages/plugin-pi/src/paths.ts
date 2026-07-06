@@ -1,7 +1,9 @@
 import os from "node:os";
 import path from "node:path";
 
-import { expandTildePath } from "@remnic/core";
+// Leaf submodule (not the `@remnic/core` barrel) so the omp pre-bundle's
+// `bun build` does not pull the rest of core into the extension bundle.
+import { expandTildePath } from "@remnic/core/utils/path";
 
 export const REMNIC_PI_EXTENSION_DIR_NAME = "remnic";
 

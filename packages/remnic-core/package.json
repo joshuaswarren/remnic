@@ -1476,6 +1476,21 @@
       "remnic-source": "./src/memory-worth.ts",
       "import": "./dist/memory-worth.js"
     },
+    "./message-parts": {
+      "types": "./dist/message-parts/index.d.ts",
+      "remnic-source": "./src/message-parts/index.ts",
+      "import": "./dist/message-parts/index.js"
+    },
+    "./message-parts/index": {
+      "types": "./dist/message-parts/index.d.ts",
+      "remnic-source": "./src/message-parts/index.ts",
+      "import": "./dist/message-parts/index.js"
+    },
+    "./message-parts/index.js": {
+      "types": "./dist/message-parts/index.d.ts",
+      "remnic-source": "./src/message-parts/index.ts",
+      "import": "./dist/message-parts/index.js"
+    },
     "./migrate/from-engram": {
       "types": "./dist/migrate/from-engram.d.ts",
       "remnic-source": "./src/migrate/from-engram.ts",
@@ -2805,6 +2820,16 @@
       "types": "./dist/utils/serialize-mutations.d.ts",
       "remnic-source": "./src/utils/serialize-mutations.ts",
       "import": "./dist/utils/serialize-mutations.js"
+    },
+    "./utils/path": {
+      "types": "./dist/utils/path.d.ts",
+      "remnic-source": "./src/utils/path.ts",
+      "import": "./dist/utils/path.js"
+    },
+    "./utils/path.js": {
+      "types": "./dist/utils/path.d.ts",
+      "remnic-source": "./src/utils/path.ts",
+      "import": "./dist/utils/path.js"
     },
     "./verified-recall": {
       "types": "./dist/verified-recall.d.ts",
