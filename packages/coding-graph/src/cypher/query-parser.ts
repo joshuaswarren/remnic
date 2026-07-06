@@ -59,7 +59,9 @@
  * shorter and a length-N path (the length-N path qualifies). The result is
  * deduped by node id, so `*1..N` ("reachable within N hops") is unchanged
  * from the prior BFS behavior — only exact `*N` (N > 1) gains paths the
- * shortest-depth BFS dropped.
+ * shortest-depth BFS dropped. If enumeration hits the store's maxPaths cap,
+ * the success result carries `truncated: true` so callers can detect a
+ * partial endpoint set instead of silently dropping reachable nodes.
  *
  * ## Read-only by construction
  *
@@ -205,6 +207,14 @@ export interface CypherSuccess {
   /** Column names in RETURN order; each row has these keys. */
   columns: string[];
   rows: CypherRow[];
+  /**
+   * Present and `true` ONLY when a variable-length expansion hit the
+   * `traversePaths` maxPaths cap — the rows are a PARTIAL endpoint set and
+   * some reachable nodes may be omitted. Callers that must know the result
+   * is complete should treat `truncated: true` as unreliable. Absent means
+   * the enumeration completed (issue #1650).
+   */
+  truncated?: boolean;
 }
 
 export type CypherResult = CypherSuccess | CypherFailure;
@@ -1434,6 +1444,10 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
       return { varByName, lastNode: node };
     });
 
+  // OR-across every variable-length expansion: any traversePaths cap hit
+  // makes the final result a partial endpoint set (issue #1650).
+  let truncated = false;
+
   // 2. Walk the remaining (rel, node) pairs, expanding each binding via
   //    traverse. The traverse start is the binding's POSITIONAL lastNode,
   //    not a named variable — so anonymous nodes anywhere in the path
@@ -1470,6 +1484,11 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
           }
           return storeFailureToCypher(tp);
         }
+        // Path enumeration may have stopped at the maxPaths cap -- surface
+        // that so callers can detect an incomplete result instead of
+        // silently omitting reachable nodes (cursor Bugbot: 'Ignores path
+        // enumeration truncation').
+        if (tp.truncated) truncated = true;
         // A `*0..N` bound includes the trivial length-0 path (the start
         // node itself) -- traversePaths only yields length >= 1 paths.
         if (rel.minHops === 0) candidates.push(binding.lastNode);
@@ -1558,7 +1577,9 @@ export function executeAst(store: GraphStore, ast: CypherAst): CypherResult {
     return row;
   });
 
-  return { ok: true, columns, rows };
+  return truncated
+    ? { ok: true, columns, rows, truncated: true }
+    : { ok: true, columns, rows };
 }
 
 function matchesNodePattern(node: CypherNodeValue, pattern: NodePattern): boolean {

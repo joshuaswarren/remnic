@@ -899,6 +899,46 @@ test("INVARIANT: every documented label maps to a db label", () => {
   }
 });
 
+
+test("ACCEPT: truncated flag surfaces when variable-length enumeration hits the path cap (cursor Bugbot)", async () => {
+  // A complete directed graph on 23 nodes (no self-loops): 506 edges.
+  // *1..3 from one node enumerates 22 + 22*22 + 22*22*22 = 11_154 paths,
+  // exceeding the DEFAULT_TRAVERSE_PATHS_MAX (10_000) cap. The executor
+  // must surface `truncated: true` rather than silently returning a
+  // partial endpoint set.
+  const N = 23;
+  const symbols: SymbolIR[] = [];
+  for (let i = 0; i < N; i += 1) {
+    symbols.push(sym("cp." + i, String(i), i * 10, i * 10 + 9));
+  }
+  const edges: EdgeIR[] = [];
+  for (let i = 0; i < N; i += 1) {
+    for (let j = 0; j < N; j += 1) {
+      if (i !== j) edges.push(edge("cp." + i, "cp." + j));
+    }
+  }
+  const completeFile: StoreFileIR = {
+    path: "src/complete.ts",
+    language: "typescript",
+    contentHash: "h-complete",
+    symbols,
+    edges,
+  };
+  const { store, dir } = await tempStoreWithFile(completeFile);
+  try {
+    const r = executeCypher(
+      store,
+      'MATCH (a:Function {name: "0"})-[:CALLS*1..3]->(b) RETURN b.qualifiedName',
+    );
+    assert.equal(r.ok, true, "query should succeed (partial result, not failure)");
+    if (!r.ok) throw new Error("expected ok");
+    assert.equal(r.truncated, true, "truncated must be true when the path cap is hit");
+    assert.ok(r.rows.length > 0, "partial endpoint set is still returned");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
 test("INVARIANT: the 13 documented labels are all present", () => {
   // Project, Package, Folder, File, Module, Class, Function, Method,
   // Interface, Enum, Type, Route, Resource (issue #1552 body).
