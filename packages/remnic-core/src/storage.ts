@@ -7359,6 +7359,12 @@ export class StorageManager {
       sources?: ProvenanceSource[];
       /** Coarse provenance tag (issue #1575 PR 2), propagated from the parent. */
       provenance?: "verified" | "unverified" | "none";
+      // Issue #1578 — bi-temporal bounds + ingestion provenance propagated from
+      // the parent fact so an independently-surfaced chunk expires at the same
+      // invalid_at window and carries the same observed-at anchor.
+      invalidAt?: string;
+      observedAt?: string;
+      eventTimeSource?: "extracted" | "assumed";
     } = {},
   ): Promise<string> {
     await this.ensureDirectories();
@@ -7368,6 +7374,8 @@ export class StorageManager {
     const conf = options.confidence ?? 0.8;
     const tier = confidenceTier(conf);
     const validAt = normalizeMemoryWriteTimestamp("validAt", options.validAt);
+    const chunkInvalidAt = normalizeMemoryWriteTimestamp("invalidAt", options.invalidAt);
+    const chunkObservedAt = normalizeMemoryWriteTimestamp("observedAt", options.observedAt);
 
     const fm: MemoryFrontmatter = {
       id,
@@ -7388,6 +7396,9 @@ export class StorageManager {
       intentEntityTypes: options.intentEntityTypes,
       memoryKind: options.memoryKind,
       valid_at: validAt,
+      invalid_at: chunkInvalidAt,
+      observedAt: chunkObservedAt,
+      eventTimeSource: options.eventTimeSource,
       ...(options.status ? { status: options.status } : {}),
       ...(options.faithfulness ? { faithfulness: options.faithfulness } : {}),
       ...(options.sources ? { sources: options.sources } : {}),
