@@ -1,14 +1,14 @@
 {
   "version": 1,
-  "note": "Structural ratchets (issue #1529, epic #1520). Counts may only decrease. Regenerate with: node scripts/check-ratchets.mjs --update",
+  "note": "Structural ratchets (issue #1529, epic #1520). Counts may only decrease. Regenerate with: node scripts/check-ratchets.mjs --update\n\nJustification for cli.ts 9363→9382 (+19) and config.ts 4558→4560 (+2) at #1583: thin registration only — cli.ts gains the `remnic chat` commander declaration (.command/.option/.action delegating to chat/runChatCli); config.ts gains one import + one `chat: parseChatConfig(cfg.chat)` line. The chat engine, tools, executor, session, and surfaces all live in packages/remnic-core/src/chat/ (rule 4 — god files gain thin wiring only).",
   "oversizeThresholdLoc": 3000,
   "metrics": {
     "watchlistLoc": {
       "packages/remnic-core/src/orchestrator.ts": 19965,
-      "packages/remnic-core/src/cli.ts": 9363,
+      "packages/remnic-core/src/cli.ts": 9382,
       "packages/remnic-core/src/access-service.ts": 8781,
       "packages/remnic-core/src/storage.ts": 7720,
-      "packages/remnic-core/src/config.ts": 4558
+      "packages/remnic-core/src/config.ts": 4560
     },
     "oversizedFileCount": 11,
     "scatteredConfigFlagReads": 561,

@@ -9345,22 +9345,13 @@ export function registerCli(
         .option("--principal <principal>", "Trusted principal (defaults to config/env)")
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
-          const service = new EngramAccessService(orchestrator);
-          let input: string | undefined;
-          if (options.once === true) {
-            const chunks: Buffer[] = [];
-            for await (const chunk of process.stdin) {
-              chunks.push(chunk as Buffer);
-            }
-            input = Buffer.concat(chunks).toString("utf8").trim();
-          }
           await runChatCli({
-            service,
+            service: new EngramAccessService(orchestrator),
             config: orchestrator.config.chat,
             memoryDir: orchestrator.config.memoryDir,
             principal: typeof options.principal === "string" ? options.principal : undefined,
             ...(typeof options.session === "string" ? { sessionId: options.session } : {}),
-            ...(options.once === true ? { once: true, input } : {}),
+            ...(options.once === true ? { once: true } : {}),
           });
         });
     },

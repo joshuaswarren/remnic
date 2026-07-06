@@ -29,6 +29,17 @@ import {
 } from "./chat-session.js";
 import { isConfirmationMessage } from "./chat-engine.js";
 
+/**
+ * Read all of stdin to a UTF-8 string (non-TTY / scripting mode).
+ */
+async function readAllStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8").trim();
+}
+
 export interface ChatCliOptions {
   service: EngramAccessService;
   config: ChatConfig;
@@ -105,7 +116,8 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
 
   // ── Non-TTY / --once mode ───────────────────────────────────────────
   if (opts.once) {
-    const message = opts.input ?? "";
+    // Read stdin here (not in cli.ts) so the god-file wiring stays thin.
+    const message = opts.input ?? await readAllStdin();
     if (!message.trim()) {
       process.stdout.write("[error] No input provided.\n");
       return;
