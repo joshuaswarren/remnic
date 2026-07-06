@@ -75,6 +75,20 @@ export type LspConfigParseResult =
   | { readonly ok: false; readonly degradation: LspDegradation };
 
 /**
+ * Parse the `enabled` flag strictly. Boolean values pass through; strings
+ * like `"false"`, `"0"`, `"no"`, and `""` are false (so env/CLI overrides
+ * work as operators expect). Any other truthy value enables.
+ */
+function parseEnabledFlag(v: unknown): boolean {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "string") {
+    const lower = v.trim().toLowerCase();
+    return lower !== "false" && lower !== "0" && lower !== "no" && lower !== "";
+  }
+  return Boolean(v);
+}
+
+/**
  * Parse and validate user-supplied LSP config. Unknown keys in `servers`
  * are rejected with a degradation listing supported languages (rule 51).
  * Non-executable absolute paths are rejected (rule 24 analog).
@@ -102,7 +116,7 @@ export function parseLspConfig(
   const obj = raw as Record<string, unknown>;
   const knownSet = new Set(knownLanguages);
 
-  const enabled = obj.enabled === undefined ? false : Boolean(obj.enabled);
+  const enabled = obj.enabled === undefined ? false : parseEnabledFlag(obj.enabled);
   const timeoutMs = obj.timeoutMs === undefined ? DEFAULT_LSP_TIMEOUT_MS : Number(obj.timeoutMs);
   const maxRequestsPerRun =
     obj.maxRequestsPerRun === undefined ? DEFAULT_LSP_MAX_REQUESTS_PER_RUN : Number(obj.maxRequestsPerRun);

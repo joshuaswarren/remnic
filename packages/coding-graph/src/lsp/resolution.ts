@@ -8,11 +8,11 @@
  *      decides which call sites to query and in what order. Pure function —
  *      no side effects, no I/O. Deterministic output for deterministic input.
  *
- *   2. **Executor**: sends `textDocument/definition` for each planned
- *      request via the LSP client, maps returned locations back to graph
- *      nodes by file + half-open span containment (rule 35), and applies
- *      edge upgrades transactionally per batch. A mid-batch failure
- *      leaves zero partial upgrades (rule 25 — tested).
+ *   2. **Executor**: sends `textDocument/didOpen` + `textDocument/definition`
+ *      for each planned request via the LSP client, maps returned locations
+ *      back to graph nodes by file + half-open span containment (rule 35),
+ *      and applies edge upgrades transactionally per batch. A mid-batch
+ *      failure leaves zero partial upgrades (rule 25 — tested).
  *
  * Budgets (issue #1555): `maxRequestsPerRun` caps the worst case. Remaining
  * call sites keep their Phase A resolution. Everything degrades to Phase A
@@ -21,6 +21,8 @@
  * Files whose ingest failed are excluded (rule 44 — the executor never
  * queries for a file that isn't in the store).
  */
+
+import path from "node:path";
 
 import type { CodingGraphLanguage } from "@remnic/core";
 
@@ -130,6 +132,22 @@ export type NodeLocator = (
   byteOffset: number,
 ) => string | null;
 
+/**
+ * Context for mapping an LSP location to a graph node. Provides the
+ * caller's file path and content (for same-file definitions), plus
+ * optional workspace-root normalization and cross-file content resolution.
+ */
+export interface MapLocationContext {
+  /** Repo-relative path of the caller file. */
+  readonly callerFilePath: string;
+  /** Full content of the caller file. */
+  readonly callerContent: string;
+  /** Workspace root for normalizing absolute LSP URIs to repo-relative paths. */
+  readonly workspaceRoot?: string;
+  /** Resolve content for a target file path (repo-relative). */
+  readonly resolveContent?: (filePath: string) => string | null;
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Planner — pure function, no side effects
 // ──────────────────────────────────────────────────────────────────────────
@@ -201,6 +219,17 @@ export interface ResolveOptions {
     upgrades: readonly EdgeUpgrade[],
   ) => Promise<void>;
   readonly perRequestTimeoutMs?: number;
+  /**
+   * Workspace root for resolving repo-relative file paths to absolute LSP
+   * URIs and normalizing returned URIs back to repo-relative paths.
+   */
+  readonly workspaceRoot?: string;
+  /**
+   * Resolve the content of a target file by repo-relative path. Used for
+   * cross-file definition positions — without this, cross-file byte-offset
+   * conversion falls back to the caller's content (best-effort).
+   */
+  readonly resolveContent?: (filePath: string) => string | null;
 }
 
 /**
@@ -215,10 +244,21 @@ export interface EdgeUpgrade {
 }
 
 /**
+ * Map a {@link CodingGraphLanguage} to its LSP languageId string. Most
+ * tier-1 languages use their own name; a few differ (tsx → typescriptreact,
+ * bash → shellscript).
+ */
+const LANGUAGE_ID_MAP: Partial<Record<CodingGraphLanguage, string>> = {
+  tsx: "typescriptreact",
+  bash: "shellscript",
+};
+
+/**
  * Execute the resolution pass: for each planned request, send a
- * `textDocument/definition` query, map the returned location to a graph
- * node, and collect edge upgrades. Upgrades are applied in file-batched
- * transactions — a mid-batch failure leaves zero partial upgrades.
+ * `textDocument/didOpen` + `textDocument/definition` query, map the
+ * returned location to a graph node, and collect edge upgrades. Upgrades
+ * are applied in file-batched transactions — a mid-batch failure leaves
+ * zero partial upgrades.
  *
  * Never throws — degrades to Phase A results with a tagged degradation.
  */
@@ -248,11 +288,21 @@ export async function executeLspResolution(
     const upgrades: EdgeUpgrade[] = [];
     let batchFailed = false;
 
+    // Open the document with full text before querying definitions (LSP 3.17).
+    // The server needs the content to answer definition requests accurately.
+    const firstReq = batchReqs[0];
+    client.didOpen({
+      uri: filePathToUri(filePath, options.workspaceRoot),
+      languageId: LANGUAGE_ID_MAP[firstReq.language] ?? firstReq.language,
+      version: 1,
+      text: firstReq.content,
+    });
+
     for (const req of batchReqs) {
       if (degradation) break; // server is dead — stop sending
 
       const defResult = await client.definition({
-        textDocument: { uri: filePathToUri(req.filePath) },
+        textDocument: { uri: filePathToUri(req.filePath, options.workspaceRoot) },
         position: req.position,
       });
 
@@ -264,6 +314,10 @@ export async function executeLspResolution(
           defResult.degradation.code === "protocol_error"
         ) {
           degradation = defResult.degradation;
+          // Mark the batch failed so collected upgrades are NOT committed
+          // (rule 25 — per-batch atomicity; a degraded batch must not
+          // persist partial LSP edges).
+          batchFailed = true;
           break;
         }
         // request_timeout / request_error — count as unresolved, continue.
@@ -273,7 +327,12 @@ export async function executeLspResolution(
 
       const dstQName = mapLocationToNode(
         defResult.locations,
-        req.content,
+        {
+          callerFilePath: req.filePath,
+          callerContent: req.content,
+          workspaceRoot: options.workspaceRoot,
+          resolveContent: options.resolveContent,
+        },
         nodeLocator,
       );
       if (dstQName === null) {
@@ -289,7 +348,12 @@ export async function executeLspResolution(
       });
     }
 
-    if (batchFailed) break;
+    if (batchFailed) {
+      // The batch was poisoned — collected upgrades must NOT be committed.
+      // Count them as unresolved for reporting accuracy.
+      unresolved += upgrades.length;
+      break;
+    }
 
     // Apply upgrades transactionally per file batch. If the apply throws,
     // zero upgrades from this batch persist (rule 25 — the applyUpgrades
@@ -329,36 +393,41 @@ export async function executeLspResolution(
  * If multiple locations are returned, the FIRST one that maps to a node
  * wins (LSP servers typically return the most relevant definition first).
  *
+ * For same-file definitions, the caller's content is used for byte-offset
+ * conversion (exact). For cross-file definitions, `context.resolveContent`
+ * is used to fetch the target file's content; if unavailable, the caller's
+ * content is used as a best-effort fallback.
+ *
  * Returns null if no location maps to an indexed node.
  */
 export function mapLocationToNode(
   locations: readonly LspLocation[],
-  callerContent: string,
+  context: MapLocationContext,
   nodeLocator: NodeLocator,
 ): string | null {
   for (const loc of locations) {
-    const filePath = uriToPath(loc.uri);
-    // Build a line-offset map for the DEFINITION file. We don't have its
-    // content (it may be a different file), but positionToByteOffset
-    // needs the content. For locations in the SAME file as the caller,
-    // we can use the caller's content. For cross-file locations, we
-    // need the definition file's content.
-    //
-    // Design decision: the resolution pass only resolves definitions
-    // WITHIN the indexed codebase. If the definition is in a library
-    // or an un-indexed file, we return null. This keeps the pass simple
-    // and correct — cross-file resolution within the codebase is handled
-    // because the nodeLocator queries the store which has ALL indexed
-    // files' node spans.
-    //
-    // For the byte conversion, we pass the caller's content as a
-    // best-effort. If the definition is in the same file, this is exact.
-    // If it's in a different file, the line/character → byte conversion
-    // may be slightly off for files with different encodings. The
-    // nodeLocator uses half-open containment which tolerates small
-    // offsets (the byte offset just needs to fall within the node's span).
-    const map = buildLineOffsetMap(callerContent);
-    const startByte = positionToByteOffset(callerContent, loc.range.start, map);
+    const filePath = normalizeLocationPath(loc.uri, context.workspaceRoot);
+
+    // Resolve content for this location's file.
+    let content: string;
+    if (filePath === context.callerFilePath) {
+      // Same file as the caller — use the caller's exact content.
+      content = context.callerContent;
+    } else if (context.resolveContent) {
+      // Cross-file — use the content resolver for exact conversion.
+      const resolved = context.resolveContent(filePath);
+      if (resolved === null) continue; // file not indexed — skip
+      content = resolved;
+    } else {
+      // Cross-file without a resolver — best-effort fallback to caller
+      // content. The byte offset may be imprecise for files with different
+      // line lengths or Unicode, but the half-open containment check
+      // tolerates small offsets.
+      content = context.callerContent;
+    }
+
+    const map = buildLineOffsetMap(content);
+    const startByte = positionToByteOffset(content, loc.range.start, map);
     const qName = nodeLocator(filePath, startByte);
     if (qName !== null) return qName;
   }
@@ -366,21 +435,42 @@ export function mapLocationToNode(
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// URI helpers — re-exported from client for the executor's internal use.
+// URI helpers
 // ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Convert a repo-relative file path to a file:// URI for LSP requests.
- * Delegates to the client's pathToUri. Kept as a local helper so the
- * executor doesn't need to import from client.ts (it receives the client
- * via options).
+ * Convert a repo-relative file path to a `file://` URI for LSP requests.
+ * When `workspaceRoot` is provided, relative paths are resolved against
+ * it to produce an absolute URI (e.g. `file:///workspace/src/a.ts`). LSP
+ * servers do not reinterpret URIs relative to `rootUri`, so the URI must
+ * be absolute.
  */
-function filePathToUri(filePath: string): string {
-  // Simple file:// URI for repo-relative paths. The LSP server resolves
-  // relative to rootUri. For absolute paths, the path is used as-is.
+function filePathToUri(filePath: string, workspaceRoot?: string): string {
   const isAbsolute = filePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(filePath);
   if (isAbsolute) {
     return `file://${filePath.replace(/\\/g, "/")}`;
   }
+  if (workspaceRoot) {
+    const abs = path.join(workspaceRoot, filePath).replace(/\\/g, "/");
+    return `file://${abs}`;
+  }
+  // No workspace root — best-effort for backward compatibility.
   return `file:///${filePath.replace(/\\/g, "/")}`;
+}
+
+/**
+ * Normalize an LSP `Location.uri` to a repo-relative file path. Strips the
+ * workspace root prefix so the result matches the store's canonical paths.
+ * Without `workspaceRoot`, returns the absolute path from the URI.
+ */
+function normalizeLocationPath(uri: string, workspaceRoot?: string): string {
+  const absPath = uriToPath(uri);
+  if (workspaceRoot) {
+    const root = path.resolve(workspaceRoot);
+    const rel = path.relative(root, absPath);
+    if (!rel.startsWith("..") && rel !== "") {
+      return rel.replace(/\\/g, "/");
+    }
+  }
+  return absPath;
 }

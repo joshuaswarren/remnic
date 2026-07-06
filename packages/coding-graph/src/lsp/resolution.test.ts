@@ -7,6 +7,10 @@
  *   - Executor: location doesn't map → unresolved
  *   - Executor: mid-batch applyUpgrades failure → caught, counted as unresolved
  *   - Executor: server crash mid-run → degradation, remaining sites unresolved
+ *   - Executor: fatal error after upgrade in same batch → NOT committed (rule 25)
+ *   - Executor: didOpen sent before definition requests (LSP 3.17)
+ *   - Executor: workspaceRoot resolves repo-relative paths to absolute URIs
+ *   - mapLocationToNode: same-file, cross-file with resolver, fallback
  *   - Characterization: with lsp.enabled=false, resolution is a no-op
  */
 import assert from "node:assert/strict";
@@ -120,7 +124,11 @@ test("mapLocationToNode: location in span → returns qualified name", () => {
   ];
   // callerContent is used for position→byte conversion.
   // character 5 on line 0 = byte 5 (ASCII content).
-  const result = mapLocationToNode(locations, "abcdefghij", locator);
+  const result = mapLocationToNode(
+    locations,
+    { callerFilePath: "src/target.ts", callerContent: "abcdefghij" },
+    locator,
+  );
   assert.equal(result, "mod.target");
 });
 
@@ -132,7 +140,11 @@ test("mapLocationToNode: location outside span → null", () => {
       range: { start: { line: 0, character: 0 }, end: { line: 0, character: 5 } },
     },
   ];
-  const result = mapLocationToNode(locations, "abcdef", locator);
+  const result = mapLocationToNode(
+    locations,
+    { callerFilePath: "src/target.ts", callerContent: "abcdef" },
+    locator,
+  );
   assert.equal(result, null);
 });
 
@@ -146,14 +158,64 @@ test("mapLocationToNode: multiple locations — first match wins", () => {
     { uri: "file:///a.ts", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } },
     { uri: "file:///b.ts", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } },
   ];
-  const result = mapLocationToNode(locations, "abc", locator);
+  const result = mapLocationToNode(
+    locations,
+    { callerFilePath: "src/a.ts", callerContent: "abc" },
+    locator,
+  );
   assert.equal(result, "mod.second");
 });
 
 test("mapLocationToNode: empty locations → null", () => {
   const locator: NodeLocator = () => "should-not-be-called";
-  const result = mapLocationToNode([], "abc", locator);
+  const result = mapLocationToNode(
+    [],
+    { callerFilePath: "src/a.ts", callerContent: "abc" },
+    locator,
+  );
   assert.equal(result, null);
+});
+
+test("mapLocationToNode: cross-file definition uses resolveContent", () => {
+  // Target file has different content than the caller. The correct byte
+  // offset can only be computed from the target file's content.
+  // Target: "ab\ncdefgh\n" — line 1 starts at byte 3, character 2 = byte 5.
+  const locator: NodeLocator = (filePath, byteOffset) => {
+    if (filePath === "src/target.ts" && byteOffset === 5) return "mod.target";
+    return null;
+  };
+  const locations: LspLocation[] = [
+    {
+      uri: "file:///workspace/src/target.ts",
+      range: { start: { line: 1, character: 2 }, end: { line: 1, character: 5 } },
+    },
+  ];
+  const result = mapLocationToNode(
+    locations,
+    {
+      callerFilePath: "src/caller.ts",
+      callerContent: "XXXXXXXXXX", // wrong content — must NOT be used
+      workspaceRoot: "/workspace",
+      resolveContent: (fp) => (fp === "src/target.ts" ? "ab\ncdefgh\n" : null),
+    },
+    locator,
+  );
+  assert.equal(result, "mod.target");
+});
+
+test("mapLocationToNode: cross-file without resolveContent → callerContent fallback", () => {
+  // Without a content resolver, cross-file definitions fall back to the
+  // caller's content (best-effort, documented behavior).
+  const locator: NodeLocator = () => "mod.fallback";
+  const locations: LspLocation[] = [
+    { uri: "file:///src/other.ts", range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } } },
+  ];
+  const result = mapLocationToNode(
+    locations,
+    { callerFilePath: "src/caller.ts", callerContent: "abc" },
+    locator,
+  );
+  assert.equal(result, "mod.fallback");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -294,6 +356,45 @@ test("executor: server crash mid-run → degradation, remaining unresolved", asy
   assert.equal(result.upgraded, 0);
 });
 
+test("executor: fatal error after upgrade in same batch → NOT committed (rule 25)", async () => {
+  // Two call sites in the SAME file. First succeeds, second crashes.
+  // The first upgrade must NOT be committed — per-batch atomicity.
+  const sites = [
+    makeCallSite("src/a.ts", "first", 0, "a.x"),
+    makeCallSite("src/a.ts", "second", 6, "a.y"),
+  ];
+  const requests = planLspUpgrades(sites, { maxRequests: 100 }).requests;
+
+  const mockClient = makeMockClient(new Map([
+    // byte 0 → line 0, char 0 — succeeds.
+    ["file:///src/a.ts:0:0", {
+      ok: true as const,
+      locations: [{
+        uri: "file:///src/a.ts",
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } },
+      }],
+    }],
+    // byte 6 → line 1, char 0 — server crashes.
+    ["file:///src/a.ts:1:0", { ok: false as const, code: "server_crashed" }],
+  ]));
+
+  let applyCalled = false;
+  const result = await executeLspResolution(requests, {
+    client: mockClient,
+    nodeLocator: () => "mod.target",
+    applyUpgrades: async () => { applyCalled = true; },
+  });
+
+  // Per-batch atomicity: the upgrade from the first request is NOT
+  // committed because the batch was poisoned by the fatal error.
+  assert.equal(result.upgraded, 0);
+  assert.equal(applyCalled, false, "applyUpgrades must NOT be called for a poisoned batch");
+  assert.ok(result.degradation);
+  assert.equal(result.degradation.code, "server_crashed");
+  // The lost upgrade is counted as unresolved.
+  assert.equal(result.unresolved, 1);
+});
+
 test("executor: request_timeout counts as unresolved, pass continues", async () => {
   const sites = [
     makeCallSite("src/a.ts", "slow", 0, "a.x"),
@@ -335,4 +436,62 @@ test("executor: empty requests → zero upgraded, zero unresolved", async () => 
   });
   assert.equal(result.upgraded, 0);
   assert.equal(result.unresolved, 0);
+});
+
+test("executor: didOpen sent before definition request (LSP 3.17)", async () => {
+  const requests = planLspUpgrades(
+    [makeCallSite("src/a.ts", "target", 0, "a.caller")],
+    { maxRequests: 100 },
+  ).requests;
+
+  const didOpenCalls: { uri: string; languageId: string; text: string }[] = [];
+  const mockClient = {
+    definition: async () => ({ ok: true as const, locations: [] }),
+    didOpen: (item: { uri: string; languageId: string; text: string }) => {
+      didOpenCalls.push({ uri: item.uri, languageId: item.languageId, text: item.text });
+    },
+    dispose: async () => {},
+  } as unknown as LspClient;
+
+  await executeLspResolution(requests, {
+    client: mockClient,
+    nodeLocator: () => null,
+    applyUpgrades: async () => {},
+  });
+
+  assert.equal(didOpenCalls.length, 1, "didOpen must be called once per file batch");
+  assert.equal(didOpenCalls[0].uri, "file:///src/a.ts");
+  assert.equal(didOpenCalls[0].languageId, "typescript");
+  assert.equal(didOpenCalls[0].text, "line0\nline1\nline2");
+});
+
+test("executor: workspaceRoot resolves repo-relative paths to absolute URIs", async () => {
+  const requests = planLspUpgrades(
+    [makeCallSite("src/a.ts", "target", 0, "a.caller")],
+    { maxRequests: 100 },
+  ).requests;
+
+  // With workspaceRoot, the URI sent to the server is absolute.
+  const definitionUris: string[] = [];
+  const didOpenUris: string[] = [];
+  const mockClient = {
+    definition: async (params: { textDocument: { uri: string } }) => {
+      definitionUris.push(params.textDocument.uri);
+      return { ok: true as const, locations: [] };
+    },
+    didOpen: (item: { uri: string }) => { didOpenUris.push(item.uri); },
+    dispose: async () => {},
+  } as unknown as LspClient;
+
+  await executeLspResolution(requests, {
+    client: mockClient,
+    nodeLocator: () => null,
+    applyUpgrades: async () => {},
+    workspaceRoot: "/workspace",
+  });
+
+  assert.equal(didOpenUris.length, 1);
+  assert.equal(didOpenUris[0], "file:///workspace/src/a.ts");
+  assert.equal(definitionUris.length, 1);
+  assert.equal(definitionUris[0], "file:///workspace/src/a.ts");
 });
