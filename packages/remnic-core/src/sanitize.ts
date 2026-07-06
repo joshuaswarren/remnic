@@ -56,3 +56,9 @@ export function sanitizeMemoryContent(text: string): SanitizeResult {
 export function isSafeMemoryContent(text: string): boolean {
   return sanitizeMemoryContent(text).clean;
 }
+
+// Issue #1582 hygiene §2 — handles are render-time-only tokens; when an agent
+// echoes one back into a turn, the orchestrator strips it via this name before
+// the turn enters the extraction buffer (rule 23). Re-exported from the pure
+// recall-handles module so every content-sanitization concern lives here.
+export { stripHandles as stripMemoryHandles } from "./recall-handles.js";

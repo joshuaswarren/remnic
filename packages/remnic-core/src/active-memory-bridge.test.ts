@@ -311,3 +311,75 @@ test("getMemoryForActiveMemory ignores explicit namespace overrides when namespa
   assert.equal(result.id, "shared-memory");
   assert.equal(result.text, "shared text");
 });
+
+
+test("getMemoryForActiveMemory resolves a [m:xxxx] handle via the orchestrator resolver (#1582)", async () => {
+  const resolved: string[] = [];
+  const orchestrator = {
+    config: { namespacesEnabled: false },
+    resolveSelfNamespace: () => "readable-session",
+    getStorageForNamespace: async () => ({
+      getMemoryById: async (id: string) =>
+        id === "fact-1" ? ({ content: "text", frontmatter: {} } as never) : null,
+    }),
+    resolveMemoryIdOrHandle: (ref: string) => {
+      resolved.push(ref);
+      return "fact-1";
+    },
+  };
+
+  const result = await getMemoryForActiveMemory(
+    orchestrator as never,
+    "[m:4f2a]",
+    { sessionKey: "session-x" },
+  );
+  assert.deepEqual(resolved, ["[m:4f2a]"]);
+  assert.equal(result.error, undefined);
+  assert.equal(result.id, "fact-1");
+});
+
+test("getMemoryForActiveMemory passes a raw id through unchanged (no resolver call) (#1582)", async () => {
+  const orchestrator = {
+    config: { namespacesEnabled: false },
+    resolveSelfNamespace: () => "readable-session",
+    getStorageForNamespace: async () => ({
+      getMemoryById: async (id: string) =>
+        id === "fact-1" ? ({ content: "text", frontmatter: {} } as never) : null,
+    }),
+    resolveMemoryIdOrHandle: () => {
+      throw new Error("resolver must not be called for a raw id");
+    },
+  };
+
+  const result = await getMemoryForActiveMemory(
+    orchestrator as never,
+    "fact-1",
+    { sessionKey: "session-x" },
+  );
+  assert.equal(result.id, "fact-1");
+});
+
+test("getMemoryForActiveMemory returns not_found when a handle cannot be resolved (#1582, cursor review)", async () => {
+  // A missing session key, unknown handle, or ambiguous handle makes the
+  // orchestrator resolver THROW. The active-memory get path must yield the SAME
+  // not_found contract a bad raw id gets — not propagate the throw and crash an
+  // OpenClaw active-memory caller.
+  const orchestrator = {
+    config: { namespacesEnabled: false },
+    resolveSelfNamespace: () => "readable-session",
+    getStorageForNamespace: async () => ({
+      getMemoryById: async () => null,
+    }),
+    resolveMemoryIdOrHandle: () => {
+      throw new Error("Memory handle [m:dead] cannot be resolved without a session key.");
+    },
+  };
+
+  const result = await getMemoryForActiveMemory(
+    orchestrator as never,
+    "[m:dead]",
+    // No sessionKey → resolver throws "without a session key".
+    {},
+  );
+  assert.equal(result.error, "not_found");
+});
