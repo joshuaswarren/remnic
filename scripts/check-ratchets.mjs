@@ -22,6 +22,13 @@
  *                                read/write path should consume a resolved
  *                                ScopePlan instead (issue #1521); this ratchet
  *                                pins the residual count so it can only shrink.
+ *   5. unmigratedHandlerCount   — entries in the access-surface catalog
+ *                                (access-surface-catalog.ts) with
+ *                                `operation: null`: handlers not yet routed
+ *                                through the access boundary (issue #1525).
+ *                                Every handler must dispatch through the
+ *                                operation registry; this ratchet pins the
+ *                                residual count so it can only shrink.
  *
  * Improvements pass and print a reminder to tighten the baseline with:
  *   node scripts/check-ratchets.mjs --update
@@ -69,6 +76,16 @@ const FLAG_READ_RE = /\bconfig\.[A-Za-z0-9_]+Enabled\b/g;
 const ADHOC_RESOLUTION_RE =
   /\b(resolveWritableNamespace|namespaceFromStorageDir|configuredNamespaces)\s*\(/g;
 const SCOPE_PLAN_REL = "packages/remnic-core/src/scopes/scope-plan.ts";
+
+/**
+ * Unmigrated access-surface handlers (issue #1525): entries in the surface
+ * catalog with `operation: null` have not yet been routed through the access
+ * boundary. The goal is zero — every handler must dispatch through the
+ * operation registry. This ratchet pins the residual count so it can only
+ * shrink as domain-group migrations land.
+ */
+const UNMIGRATED_HANDLER_RE = /operation:\s*null\b/;
+const SURFACE_CATALOG_REL = "packages/remnic-core/src/access-surface-catalog.ts";
 const SKIPPED_DIR_NAMES = new Set(["node_modules", "dist", ".git"]);
 
 function usage() {
@@ -163,6 +180,22 @@ function collectMetrics(oversizeThresholdLoc) {
     }
   }
 
+  // Unmigrated access-surface handlers (issue #1525): count catalog entries
+  // still routed through surface-local validation instead of the boundary.
+  // Only data-entry lines (start with `{`) are counted — doc comments also
+  // mention `operation: null` and must not inflate the count.
+  const catalogPath = path.join(ROOT, ...SURFACE_CATALOG_REL.split("/"));
+  let unmigratedHandlerCount = 0;
+  if (existsSync(catalogPath) && statSync(catalogPath).isFile()) {
+    const catalogSrc = readFileSync(catalogPath, "utf8");
+    for (const line of catalogSrc.split("\n")) {
+      const t = line.trim();
+      if (t.startsWith("{") && UNMIGRATED_HANDLER_RE.test(t)) {
+        unmigratedHandlerCount += 1;
+      }
+    }
+  }
+
   return {
     watchlistLoc,
     missingWatchlistFiles,
@@ -170,6 +203,7 @@ function collectMetrics(oversizeThresholdLoc) {
     oversizedFileCount: oversizedFiles.length,
     scatteredConfigFlagReads,
     adHocNamespaceResolutions,
+    unmigratedHandlerCount,
   };
 }
 
@@ -204,7 +238,7 @@ function readBaseline() {
       fail(`baseline metrics.watchlistLoc entry ${file} must be a non-negative integer`);
     }
   }
-  for (const key of ["oversizedFileCount", "scatteredConfigFlagReads", "adHocNamespaceResolutions"]) {
+  for (const key of ["oversizedFileCount", "scatteredConfigFlagReads", "adHocNamespaceResolutions", "unmigratedHandlerCount"]) {
     if (!Number.isInteger(metrics[key]) || metrics[key] < 0) {
       fail(`baseline metrics.${key} must be a non-negative integer`);
     }
@@ -228,6 +262,7 @@ function writeBaseline(metrics, oversizeThresholdLoc) {
       oversizedFileCount: metrics.oversizedFileCount,
       scatteredConfigFlagReads: metrics.scatteredConfigFlagReads,
       adHocNamespaceResolutions: metrics.adHocNamespaceResolutions,
+      unmigratedHandlerCount: metrics.unmigratedHandlerCount,
     },
   };
   writeFileSync(BASELINE_PATH, `${JSON.stringify(baseline, null, 2)}\n`, "utf8");
@@ -267,6 +302,7 @@ function main() {
     console.log(`[ratchet]   oversizedFileCount (> ${DEFAULT_OVERSIZE_THRESHOLD_LOC} LOC): ${metrics.oversizedFileCount}`);
     console.log(`[ratchet]   scatteredConfigFlagReads: ${metrics.scatteredConfigFlagReads}`);
     console.log(`[ratchet]   adHocNamespaceResolutions: ${metrics.adHocNamespaceResolutions}`);
+    console.log(`[ratchet]   unmigratedHandlerCount: ${metrics.unmigratedHandlerCount}`);
     return;
   }
 
@@ -338,6 +374,17 @@ function main() {
   } else if (current.adHocNamespaceResolutions < baseline.metrics.adHocNamespaceResolutions) {
     improvements.push(
       `ad-hoc namespace-resolution call sites: ${baseline.metrics.adHocNamespaceResolutions} -> ${current.adHocNamespaceResolutions}`,
+    );
+  }
+
+  if (current.unmigratedHandlerCount > baseline.metrics.unmigratedHandlerCount) {
+    failures.push(
+      `unmigrated access-surface handlers grew from ${baseline.metrics.unmigratedHandlerCount} ` +
+        `to ${current.unmigratedHandlerCount} (route new handlers through the access boundary; see #1525)`,
+    );
+  } else if (current.unmigratedHandlerCount < baseline.metrics.unmigratedHandlerCount) {
+    improvements.push(
+      `unmigrated access-surface handlers: ${baseline.metrics.unmigratedHandlerCount} -> ${current.unmigratedHandlerCount}`,
     );
   }
 
