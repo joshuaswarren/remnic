@@ -154,8 +154,20 @@ export class SyncArchiveScoring implements ArchiveScoringStrategy {
     tokens: ReadonlyArray<string>,
     abortSignal?: AbortSignal
   ): Promise<ArchiveScoreResult[]> {
+    if (items.length === 0 || tokens.length === 0) return [];
     if (abortSignal?.aborted) return [];
-    return scoreArchiveMemories(items, tokens);
+    // Process in chunks so an abort during a large archive scan is observed
+    // without burning the full synchronous CPU pass (#1674 review: sync
+    // fallback should check mid-scoring abort, like the old inline loop).
+    const CHUNK = 500;
+    if (items.length <= CHUNK) return scoreArchiveMemories(items, tokens);
+    const results: ArchiveScoreResult[] = [];
+    for (let i = 0; i < items.length; i += CHUNK) {
+      if (abortSignal?.aborted) return [];
+      const scored = scoreArchiveMemories(items.slice(i, i + CHUNK), tokens);
+      for (const r of scored) results.push(r);
+    }
+    return results;
   }
 }
 
@@ -236,7 +248,7 @@ class ArchiveScoringWorkerPool {
   private readonly targetSize: number;
   private workers: Worker[] = [];
   private idle: Worker[] = [];
-  private waiters: Array<(worker: Worker) => void> = [];
+  private waiters: Array<{ resolve: (worker: Worker) => void; reject: (err: Error) => void }> = [];
   private terminated = false;
 
   constructor(size: number = defaultPoolSize()) {
@@ -245,10 +257,9 @@ class ArchiveScoringWorkerPool {
 
   async run(task: ScoreTask, abortSignal?: AbortSignal): Promise<ArchiveScoreResult[]> {
     if (this.terminated) throw new Error("archive-scoring pool terminated");
-    const worker = await this.acquire();
-    // If the caller already aborted before we could dispatch, return the
-    // freshly-acquired worker to the idle pool instead of retiring it — it was
-    // never posted to, so terminating a healthy worker is wasteful (#1674).
+    const worker = await this.acquire(abortSignal);
+    // If the caller already aborted before dispatch, return the worker to idle
+    // instead of retiring it — it was never posted to (#1674).
     if (abortSignal?.aborted) {
       this.release(worker);
       return [];
@@ -259,37 +270,49 @@ class ArchiveScoringWorkerPool {
         abandoned = true;
       });
     } finally {
-      if (abandoned) {
-        // The dispatch was abandoned (timeout/abort) while the worker may
-        // still be processing. Terminate it to prevent cross-request
-        // contamination (a stale reply arriving on a reused worker).
-        // A fresh worker will be spawned on the next acquire.
-        this.retireWorker(worker);
-      } else {
-        this.release(worker);
-      }
+      if (abandoned) this.retireWorker(worker);
+      else this.release(worker);
     }
   }
 
   async terminate(): Promise<void> {
+    if (this.terminated) return;
     this.terminated = true;
+    // Reject all queued waiters so they don't hang indefinitely (#1674).
+    const queued = this.waiters;
+    this.waiters = [];
+    for (const w of queued) w.reject(new Error("archive-scoring pool terminated"));
     const all = [...this.workers];
     this.workers = [];
     this.idle = [];
     await Promise.allSettled(all.map((w) => w.terminate()));
   }
 
-  private async acquire(): Promise<Worker> {
+  private async acquire(abortSignal?: AbortSignal): Promise<Worker> {
     const idle = this.idle.pop();
     if (idle) return idle;
     if (this.workers.length < this.targetSize) return this.spawn();
-    return new Promise<Worker>((resolve) => this.waiters.push(resolve));
+    // Park until a worker is released. If the caller aborts (or the pool
+    // terminates) while queued, reject so the recall falls back to sync
+    // instead of consuming a worker for a request that already timed out.
+    return new Promise<Worker>((resolve, reject) => {
+      const entry = { resolve, reject };
+      this.waiters.push(entry);
+      if (!abortSignal) return;
+      const onAbort = () => {
+        const idx = this.waiters.indexOf(entry);
+        if (idx !== -1) this.waiters.splice(idx, 1);
+        reject(new Error("archive-scoring acquire aborted"));
+      };
+      if (abortSignal.aborted) { onAbort(); return; }
+      abortSignal.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   private release(worker: Worker): void {
     const next = this.waiters.shift();
     if (next) {
-      next(worker);
+      next.resolve(worker);
     } else if (!this.terminated) {
       this.idle.push(worker);
     } else {
@@ -303,21 +326,13 @@ class ArchiveScoringWorkerPool {
     const idx = this.workers.indexOf(worker);
     if (idx !== -1) this.workers.splice(idx, 1);
     void worker.terminate();
-    // If a waiter is queued, give it a fresh worker.
     const next = this.waiters.shift();
-    if (next) {
-      next(this.spawn());
-    }
+    if (next) next.resolve(this.spawn());
   }
 
   private spawn(): Worker {
-    // Inline eval mode — no file resolution needed. Works identically under
-    // tsx (source), compiled dist (bundled chunks), and published npm packages.
     const worker = new Worker(WORKER_SOURCE, { eval: true });
-    // Unref so idle workers never keep the event loop alive — one-shot CLIs
-    // exit naturally after recall completes. During an active dispatch the
-    // DISPATCH_TIMEOUT_MS timer keeps the loop alive, so worker replies are
-    // always received before the process would consider exiting (#1674).
+    // Unref so idle workers never keep the event loop alive (#1674).
     worker.unref();
     this.workers.push(worker);
     return worker;
@@ -336,7 +351,7 @@ class ArchiveScoringWorkerPool {
         settled = true;
         cleanup();
         onAbandon();
-        log.debug(`archive-scoring dispatch timed out after ${DISPATCH_TIMEOUT_MS}ms — worker retired, falling back to sync scoring`);
+        log.debug(`archive-scoring dispatch timed out after ${DISPATCH_TIMEOUT_MS}ms — falling back to sync`);
         reject(new Error(`archive-scoring dispatch timed out after ${DISPATCH_TIMEOUT_MS}ms`));
       }, DISPATCH_TIMEOUT_MS);
 
@@ -344,11 +359,8 @@ class ArchiveScoringWorkerPool {
         if (settled) return;
         settled = true;
         cleanup();
-        if (reply.ok) {
-          resolve(reply.results);
-        } else {
-          reject(new Error(reply.error));
-        }
+        if (reply.ok) resolve(reply.results);
+        else reject(new Error(reply.error));
       };
       const onError = (err: Error) => {
         if (settled) return;
@@ -357,7 +369,16 @@ class ArchiveScoringWorkerPool {
         onAbandon();
         reject(err);
       };
-
+      // worker.terminate() ends via 'exit', not 'error' — listen so in-flight
+      // dispatches during pool shutdown reject immediately instead of hanging
+      // until the 120s timeout (#1674).
+      const onExit = (code: number) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        onAbandon();
+        reject(new Error(`archive-scoring worker exited with code ${code}`));
+      };
       const onAbort = () => {
         if (settled) return;
         settled = true;
@@ -370,11 +391,13 @@ class ArchiveScoringWorkerPool {
         clearTimeout(timer);
         worker.off("message", onMessage);
         worker.off("error", onError);
+        worker.off("exit", onExit);
         abortSignal?.removeEventListener("abort", onAbort);
       };
 
       worker.on("message", onMessage);
       worker.on("error", onError);
+      worker.on("exit", onExit);
       abortSignal?.addEventListener("abort", onAbort, { once: true });
       worker.postMessage(task);
     });

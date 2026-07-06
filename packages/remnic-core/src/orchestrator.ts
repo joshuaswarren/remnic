@@ -438,7 +438,7 @@ import type {
   EntityStructuredSection,
   EntityTimelineEntry,
 } from "./types.js";
-import { disposeDefaultArchiveScoring, getDefaultArchiveScoring, memoryFileToScoreItem, type ArchiveScoringStrategy } from "./recall/archive-scoring.js";
+import { disposeDefaultArchiveScoring, getDefaultArchiveScoring, memoryFileToScoreItem } from "./recall/archive-scoring.js";
 
 export interface BulkImportBatchIngestResult {
   attemptedTurnCount: number;
@@ -1830,8 +1830,6 @@ export function resolvePersistedMemoryRelativePath(options: {
 
 export class Orchestrator {
 
-  /** Issue #1674 — off-thread archive-scoring strategy (lazy worker pool). */
-  private _archiveScoring: ArchiveScoringStrategy | null = null;
   readonly storage: StorageManager;
   private readonly storageRouter: NamespaceStorageRouter;
   /** Rebuildable namespace catalog (issue #1499). Inert unless namespaces enabled. */
@@ -2117,7 +2115,6 @@ export class Orchestrator {
     }
     // Issue #1674: terminate archive-scoring worker threads on destroy.
     await disposeDefaultArchiveScoring();
-    this._archiveScoring = null;
   }
 
   /** Set per-session workspace for the next recall() call (compaction reset). @internal */
@@ -18929,7 +18926,7 @@ export class Orchestrator {
     // context changed. Aborts are checked at the boundaries (before submit
     // and after result); the worker's work is bounded by the file count.
     throwIfRecallAborted(abortSignal);
-    const scoring = this._archiveScoring ?? (this._archiveScoring = getDefaultArchiveScoring());
+    const scoring = getDefaultArchiveScoring();
     const scoredResults = await scoring.score(archivedMemories.map(memoryFileToScoreItem), tokens, abortSignal);
     throwIfRecallAborted(abortSignal);
     const scored: QmdSearchResult[] = scoredResults.map((r) => ({
