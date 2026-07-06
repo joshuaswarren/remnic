@@ -454,3 +454,38 @@ test("tool gate: memory_promote is rejected when correctionAvailable is false", 
   await engine.processMessage("promote something", session);
   assert.equal(promoteCalled, false, "memory_promote must NOT execute when not in the active schema set");
 });
+
+// ---------------------------------------------------------------------------
+// HIGH — Failed apply restores pending state (cursor OlACo/OlACg)
+// ---------------------------------------------------------------------------
+
+test("failed correction apply restores pendingPlanId for retry (OlACo)", async () => {
+  const executor = makeStubExecutor({
+    async correctionApply() { throw new Error("disk full"); },
+  });
+  const llm = new StubChatLlmAdapter([]);
+  const engine = makeEngine(llm, executor, { correctionAvailable: true });
+  const session = await createChatSession(await makeTempDir(), {});
+  session.pendingPlanId = "plan-xyz";
+
+  const result = await engine.processMessage("apply", session);
+
+  assert.ok(result.reply.includes("[error]"), "Should return an error reply");
+  assert.equal(session.pendingPlanId, "plan-xyz", "pendingPlanId must be restored after failure");
+  assert.ok(!session.confirmedPlanIds.has("plan-xyz"), "confirmedPlanIds must not retain the failed planId");
+});
+
+test("failed promotion apply restores pendingPromotionId for retry (OlACo)", async () => {
+  const executor = makeStubExecutor({
+    async memoryPromote() { throw new Error("network error"); },
+  });
+  const llm = new StubChatLlmAdapter([]);
+  const engine = makeEngine(llm, executor, { correctionAvailable: true });
+  const session = await createChatSession(await makeTempDir(), {});
+  session.pendingPromotionId = "mem-abc";
+
+  const result = await engine.processMessage("apply", session);
+
+  assert.ok(result.reply.includes("[error]"), "Should return an error reply");
+  assert.equal(session.pendingPromotionId, "mem-abc", "pendingPromotionId must be restored after failure");
+});

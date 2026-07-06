@@ -136,9 +136,9 @@ export async function handleChatMessage(
     await markPendingPlan(opts.memoryDir, session.id, result.pendingPlan.planId);
   } else if (session.pendingPromotionId && !priorPendingPromotionId) {
     await markPendingPromotion(opts.memoryDir, session.id, session.pendingPromotionId);
-  } else if (priorPendingPlanId && !session.pendingPlanId) {
+  } else if (priorPendingPlanId && !session.pendingPlanId && !result.error) {
     await markPlanResolved(opts.memoryDir, session.id, priorPendingPlanId);
-  } else if (priorPendingPromotionId && !session.pendingPromotionId) {
+  } else if (priorPendingPromotionId && !session.pendingPromotionId && !result.error) {
     await markPromotionResolved(opts.memoryDir, session.id, priorPendingPromotionId);
   }
 

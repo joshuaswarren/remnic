@@ -137,12 +137,16 @@ export async function loadChatSession(
         if (pm) pendingPlanId = pm[1];
         const pp = entry.content.match(/^pending_promotion:(.+)$/);
         if (pp) pendingPromotionId = pp[1];
-        const resolved = entry.content.match(/^(?:plan_applied|plan_cancelled|promotion_applied|promotion_cancelled):/);
+        const resolved = entry.content.match(/^(plan_applied|plan_cancelled|promotion_applied|promotion_cancelled):/);
         if (resolved) {
-          // Any resolution marker clears the pending state (plans/promotions
-          // are consumed one-at-a-time per session).
-          pendingPlanId = undefined;
-          pendingPromotionId = undefined;
+          // Only clear the matching pending — a plan resolution must not drop
+          // an active promotion (and vice versa) (cursor Medium OlACs).
+          if (entry.content.startsWith("plan_")) {
+            pendingPlanId = undefined;
+          }
+          if (entry.content.startsWith("promotion_")) {
+            pendingPromotionId = undefined;
+          }
         }
       }
     } catch {

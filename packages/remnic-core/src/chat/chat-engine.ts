@@ -154,6 +154,10 @@ export class ChatEngine {
             ...(session.pendingPromotionId ? {} : {}),
           };
         } catch (err) {
+          // Roll back: the plan was NOT applied — restore the pending state
+          // so the user can retry (cursor HIGH OlACo).
+          session.confirmedPlanIds.delete(planId);
+          session.pendingPlanId = planId;
           const msg = err instanceof Error ? err.message : String(err);
           return {
             reply: "[error] Failed to apply the correction. Please try again or re-request the plan.",
@@ -173,6 +177,8 @@ export class ChatEngine {
             chatSessionId: session.id,
           };
         } catch (err) {
+          // Roll back: the promotion was NOT applied — restore pending state.
+          session.pendingPromotionId = memoryId;
           const msg = err instanceof Error ? err.message : String(err);
           return {
             reply: "[error] Failed to promote the memory. Please try again.",
