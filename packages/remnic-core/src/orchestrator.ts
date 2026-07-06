@@ -11918,6 +11918,7 @@ export class Orchestrator {
           }
           const resultNamespace = this.namespaceFromPath(recalledPath);
           let provenance: RecallXrayResult["provenance"] | undefined;
+          let sourceSpan: RecallXrayResult["sourceSpan"] | undefined;
           try {
             const resultStorage =
               await this.storageRouter.storageFor(resultNamespace);
@@ -11928,6 +11929,17 @@ export class Orchestrator {
                 retrievalReason: `served-by=${servedBy}`,
                 currentContextScopes: options.currentContextScopes,
               });
+              // Claim-level provenance span (#1575 PR 3): surface the first
+              // source excerpt so the X-ray shows the literal utterance this
+              // fact derives from. Thin read from already-loaded frontmatter.
+              const fm = memory.frontmatter;
+              if (fm.sources && fm.sources.length > 0) {
+                sourceSpan = {
+                  quote: fm.sources[0]!.quote,
+                  observedAt: fm.sources[0]!.observedAt,
+                  provenance: fm.provenance ?? "none",
+                };
+              }
             }
           } catch {
             // X-ray capture is best-effort; missing provenance must not
@@ -11940,6 +11952,7 @@ export class Orchestrator {
             scoreDecomposition,
             admittedBy: [],
             ...(provenance ? { provenance } : {}),
+            ...(sourceSpan ? { sourceSpan } : {}),
           });
         }
         // `considered` must reflect the pool size of the branch that
