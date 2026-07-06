@@ -607,10 +607,19 @@ function buildAuditBody(record: {
   outcome: CorrectionOutcome;
   requestText: string;
 }): string {
+  // Never-store / redaction corrections carry the very secret/pattern the user
+  // asked Remnic NOT to retain — withhold the request text from the durable
+  // audit memory so we don't persist it verbatim (#1580 review, P1).
+  const sensitive =
+    record.classification === "never_store" ||
+    record.outcome.results.some((r) => r.action.kind === "redaction_rule");
+  const safeRequest = sensitive
+    ? "[redacted — never-store/redaction correction text withheld from the audit trail]"
+    : record.requestText.slice(0, 200);
   const lines = [
     `Correction plan ${record.planId} applied (${record.outcome.status}).`,
     "",
-    `Request: ${record.requestText.slice(0, 200)}`,
+    `Request: ${safeRequest}`,
     `Classification: ${record.classification}`,
     `Applied at: ${record.outcome.appliedAt}`,
     "",

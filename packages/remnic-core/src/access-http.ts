@@ -8,6 +8,7 @@ import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
 import { EngramAccessInputError, type EngramAccessService, type EngramAccessMemoryResponse, type EngramAccessWriteResponse } from "./access-service.js";
+import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js";
 import { EngramMcpServer } from "./access-mcp.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
@@ -342,6 +343,10 @@ export class EngramAccessHttpServer {
           }
           if (err instanceof EngramAccessInputError) {
             this.respondJson(res, 400, { error: err.message, code: "input_error" });
+            return;
+          }
+          if (err instanceof CorrectionContractError) {
+            this.respondJson(res, 400, { error: err.message, code: "correction_contract_error" });
             return;
           }
           if (res.headersSent) {

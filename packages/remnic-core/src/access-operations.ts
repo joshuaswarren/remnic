@@ -16,6 +16,8 @@ import { z } from "zod";
 
 import { defineOperation } from "./access-boundary.js";
 import { memoryStoreRequestSchema, type MemoryStoreRequest } from "./access-schema.js";
+import { EngramAccessInputError } from "./access-service.js";
+import { CorrectionContractError } from "./correction/correction-contract.js";
 import type {
   EngramAccessMemoryResponse,
   EngramAccessWriteResponse,
@@ -392,14 +394,19 @@ export const memoryCorrectPlanOperation = defineOperation<
     "Plan a memory correction from a plain-language statement (issue #1580). Returns a CorrectionPlan with a diff preview; apply via memory_correct_apply.",
   schema: memoryCorrectPlanSchema as z.ZodType<MemoryCorrectPlanInput>,
   handler: async (input, ctx) => {
-    const result = await ctx.service.correctionPlan({
-      text: input.text,
-      ...(input.targetIds ? { targetIds: input.targetIds } : {}),
-      ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
-      ...(input.namespace ? { namespace: input.namespace } : {}),
-      ...(ctx.authenticatedPrincipal ? { principal: ctx.authenticatedPrincipal } : {}),
-    });
-    return { result };
+    try {
+      const result = await ctx.service.correctionPlan({
+        text: input.text,
+        ...(input.targetIds ? { targetIds: input.targetIds } : {}),
+        ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
+        ...(input.namespace ? { namespace: input.namespace } : {}),
+        ...(ctx.authenticatedPrincipal ? { principal: ctx.authenticatedPrincipal } : {}),
+      });
+      return { result };
+    } catch (err) {
+      if (err instanceof CorrectionContractError) throw new EngramAccessInputError(err.message);
+      throw err;
+    }
   },
 });
 
@@ -442,13 +449,18 @@ export const memoryCorrectApplyOperation = defineOperation<
     "Apply a planned memory correction by planId (issue #1580). Requires confirm: true when correction.applyRequiresConfirm is on (default).",
   schema: memoryCorrectApplySchema as z.ZodType<MemoryCorrectApplyInput>,
   handler: async (input, ctx) => {
-    const result = await ctx.service.correctionApply(input.planId, {
-      confirm: input.confirm === true,
-      ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
-      ...(input.namespace ? { namespace: input.namespace } : {}),
-      ...(ctx.authenticatedPrincipal ? { principal: ctx.authenticatedPrincipal } : {}),
-    });
-    return { result };
+    try {
+      const result = await ctx.service.correctionApply(input.planId, {
+        confirm: input.confirm === true,
+        ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
+        ...(input.namespace ? { namespace: input.namespace } : {}),
+        ...(ctx.authenticatedPrincipal ? { principal: ctx.authenticatedPrincipal } : {}),
+      });
+      return { result };
+    } catch (err) {
+      if (err instanceof CorrectionContractError) throw new EngramAccessInputError(err.message);
+      throw err;
+    }
   },
 });
 

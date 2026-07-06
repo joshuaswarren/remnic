@@ -2104,13 +2104,23 @@ export function parseConfig(
     // `correction.<key>` wins; flat `correction<Key>` is the legacy fallback.
     correctionEnabled: (() => {
       const nested = (cfg.correction as Record<string, unknown> | undefined)?.enabled;
-      if (nested !== undefined) return coerceBool(nested) ?? true;
-      return coerceBool(cfg.correctionEnabled) ?? true;
+      const raw = nested !== undefined ? nested : cfg.correctionEnabled;
+      if (raw === undefined || raw === null) return true;
+      const v = coerceBool(raw);
+      if (v === undefined) {
+        throw new Error(`Invalid correction.enabled: expected a boolean, got ${JSON.stringify(raw)}`);
+      }
+      return v;
     })(),
     correctionApplyRequiresConfirm: (() => {
       const nested = (cfg.correction as Record<string, unknown> | undefined)?.applyRequiresConfirm;
-      if (nested !== undefined) return coerceBool(nested) ?? true;
-      return coerceBool(cfg.correctionApplyRequiresConfirm) ?? true;
+      const raw = nested !== undefined ? nested : cfg.correctionApplyRequiresConfirm;
+      if (raw === undefined || raw === null) return true;
+      const v = coerceBool(raw);
+      if (v === undefined) {
+        throw new Error(`Invalid correction.applyRequiresConfirm: expected a boolean, got ${JSON.stringify(raw)}`);
+      }
+      return v;
     })(),
     correctionMaxAffected: (() => {
       const nested = (cfg.correction as Record<string, unknown> | undefined)?.maxAffected;
