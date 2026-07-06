@@ -15009,8 +15009,11 @@ export class Orchestrator {
         const redactionRules = await redactionRulesFor(targetStorage.dir);
         if (redactionRules.length > 0 && contentMatchesRedactionRules(fact.content, redactionRules)) {
           redactionGatedCount++;
+          // P1 (review thread vMLJ): never log the withheld content — debug
+          // logging is a durable surface and the fact may start with the very
+          // secret the rule is meant to keep out. Log the count + namespace only.
           log.debug(
-            `extraction: redaction-rule withheld "${fact.content.slice(0, 60)}…" in ${targetStorage.dir}`,
+            `extraction: redaction-rule withheld a fact (#${redactionGatedCount}) in ${targetStorage.dir}`,
           );
           continue;
         }

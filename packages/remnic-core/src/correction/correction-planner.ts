@@ -135,6 +135,7 @@ export interface LlmClassificationResult {
  * redaction so the transient pending-plan file never holds the secret.
  */
 const REDACTED_REQUEST_TEXT = "[redacted — never-store/redaction correction text withheld from the pending-plan file]";
+const REDACTED_PATTERN = "[redacted — redaction-rule pattern withheld from the pending-plan file]";
 
 // ---------------------------------------------------------------------------
 // Planner
@@ -400,8 +401,20 @@ export class CorrectionPlanner {
     const sensitive =
       plan.classification === "never_store" ||
       plan.actions.some((a) => a.kind === "redaction_rule");
+    // P1 (review thread vMLN): the redaction_rule.pattern IS the secret the
+    // user asked Remnic NOT to store — redact it in the persisted actions too,
+    // not just request.text. The in-memory plan keeps the original pattern so
+    // the executor can register it; only the on-disk JSON is sanitized.
     const persistedPlan: CorrectionPlan = sensitive
-      ? { ...plan, request: { ...plan.request, text: REDACTED_REQUEST_TEXT } }
+      ? {
+          ...plan,
+          request: { ...plan.request, text: REDACTED_REQUEST_TEXT },
+          actions: plan.actions.map((a) =>
+            a.kind === "redaction_rule" && a.pattern
+              ? { ...a, pattern: REDACTED_PATTERN }
+              : a,
+          ),
+        }
       : plan;
     await serializeMutations(`correction-plan:${target}`, async () => {
       await mkdir(dir, { recursive: true });

@@ -475,6 +475,10 @@ test("#1678: never_store plan redacts the request text in the persisted pending-
       "the persisted pending-plan file must NOT contain the never-store secret");
     assert.ok(raw.includes("redacted"),
       "the persisted request text must be the redaction placeholder");
+    // P1 (review thread vMLN): the redaction_rule.pattern IS the secret — it
+    // must also be redacted in the persisted actions, not just request.text.
+    assert.ok(!raw.includes("sk-secret-\\d"),
+      "the persisted redaction_rule.pattern must NOT contain the original pattern");
 
     // loadPlan reads from disk → the reloaded plan has the redacted text.
     const reloaded = await planner.loadPlan("default", plan.planId);
