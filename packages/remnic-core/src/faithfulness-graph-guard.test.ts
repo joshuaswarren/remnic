@@ -25,8 +25,7 @@ import { Orchestrator } from "./orchestrator.js";
 import { readEdges } from "./graph.js";
 import type { ExtractionResult, PluginConfig } from "./types.js";
 import type { LocalLlmClient } from "./local-llm.js";
-import type { BufferTurn } from "./types.js";
-import type { ConversationThread } from "./threading.js";
+import type { BufferTurn, ConversationThread } from "./types.js";
 
 /**
  * Stub local LLM whose `chatCompletion` only answers faithfulness-gate calls
