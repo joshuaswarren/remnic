@@ -756,6 +756,11 @@ export class ExtractionEngine {
       this.config.provenance?.enabled
         ? '- Source quotes: For each fact, include a "quote" field with the EXACT verbatim words from the conversation that support the fact (a contiguous span from a single turn, not a paraphrase). Cap at ~300 chars.'
         : "",
+      // #1578: emit the same event-time guidance as the primary extraction
+      // paths so proactive-recovered facts also carry an optional eventTime
+      // (chatgpt-codex thread on extraction.ts:1607). Returns "" when the
+      // bi-temporal gate is off, keeping the prompt unchanged by default.
+      this.eventTimePromptInstruction(),
       "",
       "Base extracted facts (do not repeat):",
       factsPreview || "(none)",
