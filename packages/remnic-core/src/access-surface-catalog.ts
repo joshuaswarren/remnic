@@ -188,7 +188,6 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "POST", pathname: "/engram/v1/lcm/compaction/flush", operation: null },
   { method: "POST", pathname: "/engram/v1/lcm/compaction/record", operation: null },
   { method: "GET", pathname: "/engram/v1/lcm/status", operation: null },
-  { method: "POST", pathname: "/engram/v1/coding/delta", operation: "coding_delta" },
   // Correction Contract (issue #1580) — plan/apply/pending.
   { method: "POST", pathname: "/engram/v1/correction/plan", operation: "memory_correct_plan" },
   { method: "POST", pathname: "/engram/v1/correction/apply", operation: "memory_correct_apply" },

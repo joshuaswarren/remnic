@@ -301,8 +301,8 @@ function makeExecutorDeps(
       registerRedactionRuleFn(wiring, namespace, pattern),
     appendAuditRecord: async (namespace, record) =>
       appendAuditRecordFn(wiring, namespace, record),
-    propagate: async (_namespace, touchedMemoryIds) =>
-      propagateFn(wiring, touchedMemoryIds),
+    propagate: async (namespace, touchedMemoryIds) =>
+      propagateFn(wiring, namespace, touchedMemoryIds),
     biTemporalEnabled: opts.biTemporalEnabled,
     now: () => new Date(),
   };
@@ -519,6 +519,7 @@ function buildAuditBody(record: {
 
 async function propagateFn(
   wiring: CorrectionAccessWiring,
+  namespace: string,
   touchedMemoryIds: readonly string[],
 ): Promise<void> {
   // Best-effort post-write propagation. The orchestrator's indexPersistedMemory
@@ -526,13 +527,14 @@ async function propagateFn(
   // is non-fatal — the executor records it as a warning, never a failed action.
   for (const id of touchedMemoryIds) {
     try {
-      // indexPersistedMemory is keyed by storage dir; use the default namespace.
+      // indexPersistedMemory is keyed by the namespace's storage, NOT the
+      // default namespace (review thread: propagation-hardcodes-default-ns).
+      const storage = await wiring.orchestrator.getStorage(namespace);
       const orchestrator = wiring.orchestrator as unknown as {
         indexPersistedMemory?(storage: unknown, memoryId: string): Promise<void>;
-        storage: { dir: string };
       };
       if (typeof orchestrator.indexPersistedMemory === "function") {
-        await orchestrator.indexPersistedMemory(orchestrator.storage, id);
+        await orchestrator.indexPersistedMemory(storage, id);
       }
     } catch {
       // Swallow — propagation is best-effort.

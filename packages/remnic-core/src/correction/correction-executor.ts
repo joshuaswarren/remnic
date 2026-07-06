@@ -362,7 +362,16 @@ export class CorrectionExecutor {
     }
 
     // ── Phase 5: mark plan consumed ───────────────────────────────────────
-    await this.planner.markConsumed(namespace, planId, status);
+    // Corrections are already applied (phases 1-4 succeeded). A markConsumed
+    // failure must NOT propagate — that would make a client retry re-apply all
+    // corrections (review thread: applyInternal-plan-unconsumed). Record as a
+    // warning; the pending plan is reconciled by TTL discard on the next pass.
+    try {
+      await this.planner.markConsumed(namespace, planId, status);
+    } catch (err) {
+      const w = outcome as CorrectionOutcome & { warnings?: string[] };
+      w.warnings = [...(w.warnings ?? []), `plan mark-consumed failed (non-fatal): ${errMsg(err)}`];
+    }
     return outcome;
   }
 

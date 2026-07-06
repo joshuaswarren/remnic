@@ -401,7 +401,7 @@ export class CorrectionPlanner {
       }
       if (plan && plan.status === "pending") plans.push(plan);
     }
-    plans.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    plans.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
     return plans;
   }
 
