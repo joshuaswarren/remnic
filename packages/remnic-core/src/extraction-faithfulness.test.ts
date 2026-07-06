@@ -1338,6 +1338,45 @@ test("checkFaithfulnessBatch: local endpoint failure falls back to the configure
   }
 });
 
+test("checkFaithfulnessBatch: a wedged local endpoint falls back to the chain BEFORE the batch timeout (codex P2 — probe budget)", async () => {
+  // The local probe must use a SMALLER budget than the outer batch timeout so a
+  // hanging endpoint returns null and the configured chain runs before the batch
+  // timer fires. extractionFaithfulnessTimeoutMs: 1000 → probe budget = 500ms.
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = parseConfig({
+    extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
+    extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
+    extractionFaithfulnessTimeoutMs: 1000,
+  });
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
+  // A fetch that hangs forever on its own but HONORS the probe's AbortSignal —
+  // the probe's controller aborts it at 500ms (half the batch budget), the call
+  // returns null, and the gate falls through to the configured chain.
+  const wedgedFetch = ((_url: string, init: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      const sig = init.signal;
+      if (!sig) return;
+      if (sig.aborted) reject(new Error("aborted"));
+      else sig.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    })) as unknown as typeof fetch;
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    null,
+    stubFallbackLlm(JSON.stringify([{ index: 0, verdict: "entailed" }]), fallbackCalls),
+    wedgedFetch,
+  );
+  assert.equal(
+    fallbackCalls.length,
+    1,
+    "a wedged local probe must reach the configured chain before the batch budget elapses",
+  );
+  assert.equal(result.results[0]?.ok, true);
+  if (result.results[0]?.ok) {
+    assert.equal(result.results[0].verdict, "entailed", "fallback chain verdict is used");
+  }
+});
+
 test("checkFaithfulnessBatch: no local endpoint pointer → byte-identical routing (regression guard)", async () => {
   // Default config (no baseUrl) must never attempt a local-endpoint fetch.
   const inputs = [{ factText: "Fact", quote: "Quote" }];

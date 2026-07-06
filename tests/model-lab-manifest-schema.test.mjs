@@ -17,6 +17,8 @@ import test from "node:test";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import os from "node:os";
 
 import { skipUnlessCommand } from "./helpers/capability-probe.mjs";
 
@@ -104,5 +106,49 @@ test(
       errors.some((e) => e.includes("pending") || e.includes("trainingStack")),
       `strict mode should reject the pending scaffold, got: ${JSON.stringify(errors)}`,
     );
+  },
+);
+
+test(
+  "manifest schema: validator REJECTS a 'trained' manifest missing real-run fields (baseModel/hyperparams/trainedAt/hardware) in strict mode (codex P2)",
+  { skip: skipReason },
+  () => {
+    // A half-recorded run: concrete version-pin + eval + artifact, but the
+    // reproducibility fields left null. Strict mode must reject it so a
+    // half-recorded run cannot ship as complete.
+    const scaffold = JSON.parse(
+      fs.readFileSync(
+        path.join(repoRoot, "model-lab/faithfulness-gate/manifest.json"),
+        "utf8",
+      ),
+    );
+    const half = {
+      ...scaffold,
+      status: "trained",
+      trainingStack: {
+        python: "3.12.3",
+        libs: { torch: "2.12.1", transformers: "5.3.0" },
+        pipFreezeSha256: "abc123",
+        capturedAt: "2026-07-06",
+      },
+      eval: { heldOut: { macroF1: 0.92 }, downstream: null },
+      artifact: { hfRepo: "op/model", revision: "abc", quantizations: ["fp16"] },
+      // baseModel / hyperparams / trainedAt / hardware intentionally left null.
+    };
+    const tmp = path.join(os.tmpdir(), `remnic-ci-manifest-${process.pid}.json`);
+    fs.writeFileSync(tmp, JSON.stringify(half));
+    try {
+      const { errors } = validateManifest(tmp, false);
+      assert.ok(
+        errors.some((e) => e.includes("baseModel")),
+        `strict mode must reject a null baseModel, got: ${JSON.stringify(errors)}`,
+      );
+      assert.ok(
+        errors.some((e) => e.includes("hardware")),
+        `strict mode must reject null hardware, got: ${JSON.stringify(errors)}`,
+      );
+    } finally {
+      fs.unlinkSync(tmp);
+    }
   },
 );

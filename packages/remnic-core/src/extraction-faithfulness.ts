@@ -300,10 +300,18 @@ async function callFaithfulnessLlm(
   // to the configured chain (checklist §4 graceful degradation).
   const localEndpoint = resolveFaithfulnessGateEndpoint(config);
   if (localEndpoint) {
+    // Give the local probe a SMALLER budget than the outer batch timeout so a
+    // wedged local model returns null (and falls through to the configured
+    // chain) before the batch timer fires. The local endpoint is meant to be
+    // the fast path; if it cannot answer within half the budget (min 500ms),
+    // abandon it and let the fallback chain use the remainder (codex P2 — the
+    // advertised graceful fallback must actually reach the chain, not be starved
+    // by a hanging probe sharing the full batch budget).
+    const probeBudgetMs = Math.max(500, Math.floor(timeoutMs / 2));
     const result = await callOpenAiCompatibleChat(
       localEndpoint,
       messages,
-      { temperature: 0.1, maxTokens: 2048, responseFormatJson: true, timeoutMs },
+      { temperature: 0.1, maxTokens: 2048, responseFormatJson: true, timeoutMs: probeBudgetMs },
       fetchImpl,
     );
     if (result?.content) {

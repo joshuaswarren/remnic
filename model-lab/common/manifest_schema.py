@@ -126,6 +126,23 @@ def validate_manifest(
         elif not isinstance(block, Mapping):
             errors.append(f"{block_key} must be an object (or null when pending)")
 
+    # Real-run top-level fields (issue #1585): baseModel / hyperparams /
+    # trainedAt / hardware must be CONCRETE when allow_pending=False so a
+    # reviewer can reproduce the eval. The scaffold leaves them null; a
+    # half-recorded run (concrete trainingStack/eval/artifact but no base model
+    # or hardware) must not validate as a complete run. baseModel/hyperparams/
+    # hardware are objects; trainedAt is a string timestamp.
+    _OBJECT_RUN_FIELDS = ("baseModel", "hyperparams", "hardware")
+    for field_key in ("baseModel", "hyperparams", "trainedAt", "hardware"):
+        value = manifest.get(field_key)
+        if _is_pending(value):
+            if not allow_pending:
+                errors.append(
+                    f"{field_key} is pending — a real run must record it for reproducibility"
+                )
+        elif field_key in _OBJECT_RUN_FIELDS and not isinstance(value, Mapping):
+            errors.append(f"{field_key} must be an object (or null when pending)")
+
     # policyCompliance must always be concrete — even the scaffold states the
     # target ceiling, so a reviewer can see the model-size guardrail up front.
     policy = manifest.get("policyCompliance")

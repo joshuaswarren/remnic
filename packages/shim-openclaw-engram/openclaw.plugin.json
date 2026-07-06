@@ -3784,6 +3784,21 @@
         "default": 8000,
         "description": "Per-batch timeout in ms for the faithfulness check. Timeout produces a tagged error and never blocks memory writes (graceful degradation)."
       },
+      "extractionFaithfulnessBaseUrl": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of a local openai-compatible endpoint serving a fine-tuned faithfulness gate (model-lab, issue #1585). When set AND extractionFaithfulnessModel is set, the gate routes there first and falls back to the configured chain on any failure. Empty = existing routing (byte-identical pre-feature path)."
+      },
+      "correctionIntentModel": {
+        "type": "string",
+        "default": "",
+        "description": "Model name of a local fine-tuned correction-intent classifier (model-lab, issue #1581 / #1585). When set AND correctionIntentBaseUrl is set, passive-correction detection can route to it. Empty = rule-based detectPassiveCorrections is the sole detector."
+      },
+      "correctionIntentBaseUrl": {
+        "type": "string",
+        "default": "",
+        "description": "Base URL of a local openai-compatible endpoint serving a fine-tuned correction-intent classifier (model-lab, issue #1585). Empty = rule-based detector only."
+      },
       "inlineSourceAttributionEnabled": {
         "type": "boolean",
         "default": false,
