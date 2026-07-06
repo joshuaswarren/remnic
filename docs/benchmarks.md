@@ -86,7 +86,7 @@ regression graph. The tier is recorded on every artifact as
 | Purpose | Nightly/on-demand trend lines, ablations, iteration speed |
 | Judge | Local judge model; calibrated against Tier F via Cohen's kappa |
 
-Tier L artifacts carry `hardware: { gpu, vram, quantization }` so the
+Tier L artifacts carry `hardware: { gpu, vramGb, quantization }` so the
 exact deployment is reproducible. A Tier L number is **never** a
 public leaderboard claim.
 
@@ -106,9 +106,10 @@ A Tier L score reflects a *specific local model at a specific
 quantization on specific hardware* — it is a regression signal, not a
 capability ceiling. A Tier F score reflects Remnic's recall quality
 under a frontier model. Publishing a Tier L number without the tier
-label, hardware, and quantization is misleading; the artifact schema
-makes all three mandatory on local runs (`parseBenchmarkArtifact()`
-rejects a `tier: "local"` artifact that omits hardware).
+label, hardware, and quantization is misleading. **Tier L artifacts
+MUST include `hardware`** (the protocol requires it; the parser
+validates its shape when present but does not reject a local artifact
+that omits it — reviewers and publishers must enforce this invariant).
 
 ### Cross-tier judge calibration
 
