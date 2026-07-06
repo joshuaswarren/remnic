@@ -80,7 +80,7 @@ test("shared-namespace promotion updates the shared namespace lastWriteAt in the
       "writtenSince must now surface the shared namespace after promotion",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -148,7 +148,7 @@ test("persistExtraction shared promotion records a shared-namespace catalog writ
       "the shared promotion must record a write touch on the shared namespace",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -228,7 +228,7 @@ test("scope profile shared reads do not imply automatic shared promotion", async
       "shared read/write access must not bypass the active profile autoPromote gate",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -311,7 +311,7 @@ test("scope profile auto-promotion does not require legacy global promotion", as
       "active scope profile autoPromote.enabled should promote without the legacy global flag",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -412,7 +412,7 @@ test("shared promotion records catalog write after shared temporal supersession"
       "shared catalog lastWriteAt must not precede supersession frontmatter mutation",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -533,7 +533,7 @@ test("shared hash-dedup supersession-only update records a shared-namespace cata
       );
     }
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -576,7 +576,7 @@ test("no_recall recall does not record catalog read touches", async () => {
       );
     }
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -620,7 +620,7 @@ test("zero recall result limit (topK:0) records no catalog read touches", async 
       );
     }
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -670,7 +670,7 @@ test("namespaceFromStorageDir preserves a token-shaped literal raw namespace nam
       "a genuine tokenized dir must still decode to its namespace identity",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -719,7 +719,7 @@ test("namespaceFromStorageDir preserves a CONFIGURED namespace named like a cano
       "an unconfigured genuine tokenized dir still decodes to its identity",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -759,7 +759,7 @@ test("namespaceFromStorageDir preserves a CATALOGED dynamic namespace named like
       "an uncataloged genuine tokenized dir still decodes to its identity",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -804,7 +804,7 @@ test("namespaceFromStorageDir ignores catalog hints whose storageDir belongs to 
       "a catalog row for alpha must not claim beta's tokenized storage root",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -866,7 +866,7 @@ test("namespaceFromStorageDir compacts catalog hints before choosing token-root 
       "configured namespace alpha must own its tokenized root over a stale literal ns-* alias",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -939,7 +939,7 @@ test("persistExtraction records non-fact catalog touch when a later non-fact wri
     // when the profile error escapes.
     assert.notEqual(touchIndex, -1, "catalog touch must fire before the later write error escapes");
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -985,7 +985,7 @@ test("an already-aborted recall records no catalog read touches", async () => {
       );
     }
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -1073,7 +1073,7 @@ test("autoConsolidateIdentity records a catalog write for a dynamic namespace wh
       "writtenSince must surface a namespace mutated only by identity consolidation",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -1175,7 +1175,7 @@ test("semantic consolidation records a catalog write when archival fails after c
       "writtenSince must surface the namespace after a partial semantic consolidation write",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -1263,7 +1263,7 @@ test("persistExtraction records non-chunked source catalog touch after graph and
     );
   } finally {
     await cleanup?.().catch(() => undefined);
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -1318,7 +1318,7 @@ test("maintenanceNamespaces skips absent catalog-only read rows but includes exi
       "read-only catalog rows with an existing data root must still enter maintenance fanout",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
 
@@ -1356,7 +1356,7 @@ test("maintenanceNamespaces skips catalog write rows whose storage root was dele
     const before = await orchestrator.maintenanceNamespaces();
     assert.ok(before.includes(ns), "precondition: live write root enters maintenance fanout");
 
-    await rm(storage.dir, { recursive: true, force: true });
+    await rm(storage.dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     const record = await orchestrator.namespaceCatalog.getNamespaceRecord(ns);
     assert.ok(record?.lastWriteAt, "precondition: stale catalog row still carries lastWriteAt");
 
@@ -1366,6 +1366,6 @@ test("maintenanceNamespaces skips catalog write rows whose storage root was dele
       "a deleted dynamic write root must not enter maintenance fanout just because lastWriteAt is set",
     );
   } finally {
-    await rm(memoryDir, { recursive: true, force: true });
+    await rm(memoryDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
