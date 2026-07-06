@@ -319,6 +319,7 @@ export class EngramAccessHttpServer {
       architectureCardVisible: this.service.architectureCardSurfaceVisible,
       codegraphVisible: this.service.codegraphSurfaceVisible,
       sessionDeltaVisible: this.service.sessionDeltaSurfaceVisible,
+      correctionVisible: this.service.correctionSurfaceVisible,
     });
   }
 
@@ -1404,6 +1405,50 @@ export class EngramAccessHttpServer {
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
       this.respondJson(res, 200, output.result);
+      return;
+    }
+
+    // ── Correction Contract (issue #1580) — plan / apply / pending ─────────
+    // All three routes dispatch through the boundary operations so schema
+    // validation + namespace policy reach every correction path (rule 22/39).
+    if (req.method === "POST" && pathname === "/engram/v1/correction/plan") {
+      const body = await this.readJsonBody(req);
+      const op = getOperation("memory_correct_plan");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: memory_correct_plan");
+      }
+      const output = (await op.run(body, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      })) as { result: unknown };
+      this.respondJson(res, 200, output.result);
+      return;
+    }
+
+    if (req.method === "POST" && pathname === "/engram/v1/correction/apply") {
+      this.ensureWriteRateLimitAvailable();
+      const body = await this.readJsonBody(req);
+      const op = getOperation("memory_correct_apply");
+      if (!op) {
+        throw new EngramAccessInputError("access-boundary: operation not registered: memory_correct_apply");
+      }
+      const output = (await op.run(body, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+      })) as { result: unknown };
+      this.respondJson(res, 200, output.result);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/engram/v1/correction/pending") {
+      const namespace = parsed.searchParams.get("namespace") ?? undefined;
+      const sessionKey = parsed.searchParams.get("sessionKey") ?? undefined;
+      const plans = await this.service.correctionListPending({
+        ...(namespace ? { namespace } : {}),
+        ...(sessionKey ? { sessionKey } : {}),
+        principal: this.resolveRequestPrincipal(req),
+      });
+      this.respondJson(res, 200, plans);
       return;
     }
 

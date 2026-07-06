@@ -4728,6 +4728,14 @@ export class EngramAccessService {
   // access-service constructs it lazily via the wiring helper and delegates.
   // Each method below is thin wiring (≤4 lines) per the god-file ratchet.
   // -------------------------------------------------------------------------
+  /** Whether the memory_correct_plan / memory_correct_apply tools should appear in tools/list (rule 39). */
+  get correctionSurfaceVisible(): boolean {
+    const correction = (this.orchestrator.config as unknown as Record<string, unknown>).correction as
+      | Record<string, unknown>
+      | undefined;
+    return correction?.enabled !== false;
+  }
+
 
   private _correctionService: CorrectionService | null = null;
 

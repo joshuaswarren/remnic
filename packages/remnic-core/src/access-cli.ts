@@ -15,7 +15,7 @@ import { projectTagProjectId } from "./coding/coding-namespace.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
-type CommandName = "browse" | "store" | "decision" | "architecture" | "delta";
+type CommandName = "browse" | "store" | "decision" | "architecture" | "delta" | "correct";
 
 type ParsedArgs = {
   command: CommandName;
@@ -139,6 +139,7 @@ function usage(): string {
     "  engram-access decision [options]",
     "  engram-access architecture [options]",
     "  engram-access delta [options]",
+    "  engram-access correct [options]",
     "",
     "Browse options:",
     "  --namespace <name>",
@@ -186,6 +187,18 @@ function usage(): string {
     "  --principal <principal>",
     "  --project-tag <tag> (attach coding context for this invocation)",
     "  --repo-root <path> (repo to scan for refresh; defaults to the current directory)",
+    "",
+    "Correct options (issue #1580 — one plan/apply pipeline for all corrections):",
+    "  --text \"<correction>\"          plan a correction from natural language",
+    "  --id <memoryId> (repeatable)   explicit target memory ids",
+    "  --apply                        apply a pending plan (requires --plan-id + --confirm)",
+    "  --plan-id <id>                 the plan to apply or discard",
+    "  --confirm                      confirm the apply (safety guard, rule 48)",
+    "  --list                         list pending plans",
+    "  --discard                      discard a pending plan (requires --plan-id)",
+    "  --namespace <name>             namespace (validated by policy)",
+    "  --session-key <key>            session identifier for namespace resolution",
+    "  --principal <principal>",
   ].join("\n");
 }
 
@@ -260,6 +273,17 @@ const COMMAND_SPECS: Record<CommandName, CommandSpec> = {
     ]),
     flagOptions: new Set(),
   },
+  correct: {
+    valueOptions: new Set([
+      "text",
+      "id",
+      "plan-id",
+      "namespace",
+      "session-key",
+      "principal",
+    ]),
+    flagOptions: new Set(["apply", "list", "discard", "confirm", "yes"]),
+  },
 };
 const BROWSE_SORT_VALUES = Object.freeze([
   "updated_desc",
@@ -277,7 +301,7 @@ type BrowseSort = (typeof BROWSE_SORT_VALUES)[number];
  * `command: commandRaw` assignment below (codex review P2).
  */
 function isCommandName(value: string): value is CommandName {
-  return value === "browse" || value === "store" || value === "decision" || value === "architecture" || value === "delta";
+  return value === "browse" || value === "store" || value === "decision" || value === "architecture" || value === "delta" || value === "correct";
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -695,6 +719,69 @@ async function runDelta(args: ParsedArgs, preferredId?: string): Promise<void> {
   console.log(JSON.stringify(output.result, null, 2));
 }
 
+/**
+ * Correction Contract surface (issue #1580). Dispatches through the same
+ * `memory_correct_plan` / `memory_correct_apply` operations as the MCP tool
+ * and HTTP route — one validation boundary, three transports.
+ *
+ * Modes:
+ *   remnic correct "<text>" [--id <id>...]   → plan + print diff
+ *   remnic correct --apply <planId> [--confirm] → apply a pending plan
+ *   remnic correct --list                      → list pending plans
+ *   remnic correct --discard <planId>          → discard a pending plan
+ */
+async function runCorrect(args: ParsedArgs, preferredId?: string): Promise<void> {
+  const { config, service } = buildRuntime(preferredId);
+  const principal = getLastOption(args, "principal") ?? config.agentAccessHttp.principal;
+  const namespace = getLastOption(args, "namespace");
+  const sessionKey = getLastOption(args, "session-key");
+
+  if (args.flags.has("list")) {
+    const plans = await service.correctionListPending({
+      ...(namespace ? { namespace } : {}),
+      ...(sessionKey ? { sessionKey } : {}),
+      principal,
+    });
+    console.log(JSON.stringify(plans, null, 2));
+    return;
+  }
+
+  if (args.flags.has("discard")) {
+    const planId = requireOption(args, "plan-id");
+    await service.correctionDiscard(planId, {
+      ...(namespace ? { namespace } : {}),
+      ...(sessionKey ? { sessionKey } : {}),
+      principal,
+    });
+    console.log(JSON.stringify({ discarded: planId }));
+    return;
+  }
+
+  if (args.flags.has("apply")) {
+    const planId = requireOption(args, "plan-id");
+    const outcome = await service.correctionApply(planId, {
+      confirm: args.flags.has("confirm") || args.flags.has("yes"),
+      ...(namespace ? { namespace } : {}),
+      ...(sessionKey ? { sessionKey } : {}),
+      principal,
+    });
+    console.log(JSON.stringify(outcome, null, 2));
+    return;
+  }
+
+  // Default mode: plan from text.
+  const text = requireOption(args, "text");
+  const targetIds = getAllOptions(args, "id");
+  const plan = await service.correctionPlan({
+    text,
+    ...(targetIds.length > 0 ? { targetIds } : {}),
+    ...(sessionKey ? { sessionKey } : {}),
+    ...(namespace ? { namespace } : {}),
+    principal,
+  });
+  console.log(JSON.stringify(plan, null, 2));
+}
+
 export async function main(
   argv: string[] = process.argv.slice(2),
   options: AccessCliOptions = {},
@@ -714,6 +801,10 @@ export async function main(
   }
   if (args.command === "delta") {
     await runDelta(args, options.preferredId);
+    return;
+  }
+  if (args.command === "correct") {
+    await runCorrect(args, options.preferredId);
     return;
   }
   await runStore(args, options.preferredId);
