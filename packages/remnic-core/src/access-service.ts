@@ -49,6 +49,13 @@ import {
   type DeltaSurfaceStorage,
 } from "./coding/session-delta-surfaces.js";
 import { defaultGitInvoker } from "./coding/git-context.js";
+import {
+  createCorrectionService,
+  CorrectionService,
+  type CorrectionOutcome,
+  type CorrectionPlan,
+  type CorrectionRequest,
+} from "./correction/index.js";
 import { createVersion } from "./page-versioning.js";
 import { WorkStorage } from "./work/storage.js";
 import {
@@ -4713,6 +4720,57 @@ export class EngramAccessService {
       },
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Correction Contract (issue #1580) — one plan/apply pipeline for every
+  // memory correction. The CorrectionService owns the planner + executor; the
+  // access-service constructs it lazily via the wiring helper and delegates.
+  // Each method below is thin wiring (≤4 lines) per the god-file ratchet.
+  // -------------------------------------------------------------------------
+
+  private _correctionService: CorrectionService | null = null;
+
+  /** Lazily construct + cache the CorrectionService with deps wired from the orchestrator. */
+  private correctionService(): CorrectionService {
+    if (this._correctionService) return this._correctionService;
+    const service = createCorrectionService({
+      orchestrator: this.orchestrator,
+      resolveAuthorizedNamespace: async (req) =>
+        this.resolveWritableNamespace(req.namespace, req.sessionKey, req.principal),
+      resolveReadableNamespaces: (req) => {
+        const principal = this.resolveRequestPrincipal(req.sessionKey, req.principal);
+        return recallNamespacesForPrincipal(principal, this.orchestrator.config);
+      },
+    });
+    this._correctionService = service;
+    return service;
+  }
+
+  async correctionPlan(request: CorrectionRequest): Promise<CorrectionPlan> {
+    return this.correctionService().plan(request);
+  }
+
+  async correctionApply(
+    planId: string,
+    opts: { confirm?: boolean; namespace?: string; sessionKey?: string; principal?: string },
+  ): Promise<CorrectionOutcome> {
+    return this.correctionService().apply(planId, opts);
+  }
+
+  async correctionListPending(opts: {
+    namespace?: string;
+    sessionKey?: string;
+    principal?: string;
+  }): Promise<CorrectionPlan[]> {
+    return this.correctionService().listPending(opts);
+  }
+
+  async correctionDiscard(
+    planId: string,
+    opts: { namespace?: string; sessionKey?: string; principal?: string },
+  ): Promise<void> {
+    return this.correctionService().discard(planId, opts);
   }
 
   async memoryBrowse(
