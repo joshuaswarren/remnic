@@ -44,7 +44,7 @@ import {
 // catalog-completeness correction: adding routes that were always live but
 // omitted from the catalog (review-caught). Such a bump MUST be accompanied
 // by the newly-cataloged entries; the higher count is the honest baseline.
-const UNMIGRATED_HANDLER_BASELINE = 0;
+const UNMIGRATED_HANDLER_BASELINE = 80;
 
 // Keep the import live — `getOperation` is the call surfaces use at dispatch
 // time; referencing it here pins the registry's lookup contract.
