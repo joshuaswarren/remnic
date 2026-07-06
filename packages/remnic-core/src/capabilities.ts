@@ -38,6 +38,8 @@ export interface CapabilitySet {
   readonly recallDirectAnswer: boolean;
   /** `recallMemoryWorthFilterEnabled` — Memory-Worth score reweighting. */
   readonly recallMemoryWorthFilter: boolean;
+  /** `trustScoreEnabled` — unified TrustScore recall stage (issue #1577). */
+  readonly recallTrustScore: boolean;
   /** `recallMmrEnabled` — maximal-marginal-relevance diversification. */
   readonly recallMmr: boolean;
   /** `recallReasoningTraceBoostEnabled` — boost reasoning-trace memories. */
@@ -72,6 +74,9 @@ export function resolveCapabilities(config: PluginConfig): CapabilitySet {
     rerankCache: config.rerankCacheEnabled,
     recallDirectAnswer: config.recallDirectAnswerEnabled,
     recallMemoryWorthFilter: config.recallMemoryWorthFilterEnabled,
+    // Issue #1577: TrustScore subsumes the Memory Worth multiplier when on;
+    // the orchestrator runs exactly one of the two (mutual exclusion, rule 39).
+    recallTrustScore: config.trustScoreEnabled === true,
     recallMmr: config.recallMmrEnabled,
     recallReasoningTraceBoost: config.recallReasoningTraceBoostEnabled,
     recallPlannerLlm: config.recallPlannerLlmEnabled,

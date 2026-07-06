@@ -22,6 +22,7 @@ const FIELD_TO_FLAG: Record<keyof CapabilitySet, string> = {
   rerankCache: "rerankCacheEnabled",
   recallDirectAnswer: "recallDirectAnswerEnabled",
   recallMemoryWorthFilter: "recallMemoryWorthFilterEnabled",
+  recallTrustScore: "trustScoreEnabled",
   recallMmr: "recallMmrEnabled",
   recallReasoningTraceBoost: "recallReasoningTraceBoostEnabled",
   recallPlannerLlm: "recallPlannerLlmEnabled",

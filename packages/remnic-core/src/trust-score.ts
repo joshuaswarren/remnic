@@ -36,30 +36,15 @@
  */
 
 /**
- * Per-component weights. Every field is optional and defaults to the
- * `DEFAULT_TRUST_WEIGHTS` value; the caller passes the config-resolved object.
- * Weights are sum-normalized at score time, so their absolute scale is
- * irrelevant — only their relative magnitudes matter (rule 51: invalid weight
- * rejected at config parse, here we only defend against runtime corruption).
+ * Per-component weights. Defined canonically in `types.ts` (the PluginConfig
+ * home) and re-exported here so callers of the pure scorer don't need a second
+ * import path. Every field is optional and defaults to
+ * `DEFAULT_TRUST_WEIGHTS`; weights are sum-normalized at score time, so only
+ * their relative magnitudes matter (rule 51: invalid weight rejected at config
+ * parse, here we only defend against runtime corruption).
  */
-export interface TrustWeights {
-  /** Laplace-smoothed outcome probability (memory worth `score`). */
-  memoryWorth?: number;
-  /** Provenance strength tag mapped to `[0,1]` (verified→1, unverified→0.5, none→neutral). */
-  provenance?: number;
-  /** Faithfulness verdict mapped to `[0,1]` (entailed→1, unchecked→neutral, contradicted→0). */
-  faithfulness?: number;
-  /** Independent corroboration count, log-saturated. */
-  corroboration?: number;
-  /** Contradiction review status (pending_review / resolved_superseded push toward 0). */
-  contradiction?: number;
-  /** Belief-ledger per-domain accuracy calibration (`0..1`), when available. */
-  domainCalibration?: number;
-  /** Feedback balance (thumbs up/down), when available. */
-  feedback?: number;
-  /** Recency vs per-category half-life (newer → higher). */
-  recency?: number;
-}
+export type { TrustWeights } from "./types.js";
+import type { TrustWeights } from "./types.js";
 
 /**
  * Default per-component weights. Chosen so that, with all signals at neutral,

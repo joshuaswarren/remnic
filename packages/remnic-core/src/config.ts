@@ -25,9 +25,9 @@ import type {
   ScopeTeamConfig,
   SemanticChunkingConfigShape,
   SessionObserverBandConfig,
-  SlotBehaviorConfig,
   SlotMismatchMode,
   TriggerMode,
+  TrustWeights,
 } from "./types.js";
 import { log } from "./logger.js";
 import { cloneDefaultSessionObserverBands } from "./session-observer-bands.js";
@@ -2304,6 +2304,27 @@ export function parseConfig(
       const n = coerceNumber(cfg.recallMemoryWorthHalfLifeMs);
       return n !== undefined && n >= 0 ? n : 0;
     })(),
+    // Unified TrustScore recall stage (issue #1577). Default off: the stage
+    // is absent and ranking is byte-identical to the pre-feature pipeline
+    // (rule 39). Flip the master gate via #1574 ablation evidence only.
+    trustScoreEnabled: coerceBool(cfg.trustScoreEnabled) ?? false,
+    // Epistemic rendering ships behind its own gate so scoring can land first.
+    trustScoreEpistemicRendering: coerceBool(cfg.trustScoreEpistemicRendering) ?? false,
+    // Quarantine defaults on (only effective under the master gate); keeps
+    // hard negatives out of injection but visible in X-ray (rule 34).
+    trustScoreQuarantine: coerceBool(cfg.trustScoreQuarantine) ?? true,
+    trustScoreMinMultiplier: (() => {
+      const n = coerceNumber(cfg.trustScoreMinMultiplier);
+      return n !== undefined && n >= 0 && n <= 1 ? n : 0.5;
+    })(),
+    trustScoreMaxMultiplier: (() => {
+      const n = coerceNumber(cfg.trustScoreMaxMultiplier);
+      return n !== undefined && n >= 1 && n <= 4 ? n : 1.25;
+    })(),
+    // Per-component weights. Accept a nested object from config; invalid
+    // entries (non-finite, outside [0,1]) are dropped by resolveTrustWeights,
+    // which falls back to the documented defaults (rule 51).
+    trustScoreWeights: parseTrustScoreWeights(cfg.trustScoreWeights),
     // Memory Linking (Phase 3A)
     memoryLinkingEnabled: cfg.memoryLinkingEnabled === true, // Off by default initially
     // Conversation Threading (Phase 3B)
@@ -4606,4 +4627,33 @@ function buildRecallPipelineConfig(cfg: Record<string, unknown>): RecallPipeline
     : buildDefaultRecallPipeline(cfg);
 
   return { recallBudgetChars, pipeline };
+}
+
+/**
+ * Parse the `trustScoreWeights` config value into a {@link TrustWeights}
+ * object. Accepts a plain object of per-component numbers; non-finite or
+ * out-of-`[0,1]` entries are dropped (the scorer falls back to defaults via
+ * `resolveTrustWeights`). A non-object value yields `{}` → all defaults.
+ * Rule 51: invalid weight rejected, never silently clamped to an extreme.
+ */
+function parseTrustScoreWeights(value: unknown): TrustWeights {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const src = value as Record<string, unknown>;
+  const out: TrustWeights = {};
+  const keys: Array<keyof TrustWeights> = [
+    "memoryWorth",
+    "provenance",
+    "faithfulness",
+    "corroboration",
+    "contradiction",
+    "domainCalibration",
+    "feedback",
+    "recency",
+  ];
+  for (const key of keys) {
+    const raw = src[key as string];
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0 || raw > 1) continue;
+    (out as Record<string, number>)[key as string] = raw;
+  }
+  return out;
 }
