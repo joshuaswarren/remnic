@@ -394,6 +394,7 @@ export class CorrectionPlanner {
 
   /** Load a pending plan by id (used by the service / executor). */
   async loadPlan(namespace: string, planId: string): Promise<CorrectionPlan | null> {
+    assertSafePlanId(planId);
     const file = path.join(await this.pendingDir(namespace), `${planId}.json`);
     return serializeMutations(`correction-plan:${file}`, async () => {
       let raw: string;
@@ -434,8 +435,8 @@ export class CorrectionPlanner {
     return plans;
   }
 
-  /** Mark a plan consumed (applied / discarded / partial) — atomic rewrite. */
   async markConsumed(namespace: string, planId: string, status: "applied" | "discarded" | "partial"): Promise<void> {
+    assertSafePlanId(planId);
     const file = path.join(await this.pendingDir(namespace), `${planId}.json`);
     await serializeMutations(`correction-plan:${file}`, async () => {
       let raw: string;
@@ -455,8 +456,8 @@ export class CorrectionPlanner {
     });
   }
 
-  /** Delete a plan file (used by discard). Idempotent. */
   async deletePlan(namespace: string, planId: string): Promise<void> {
+    assertSafePlanId(planId);
     const file = path.join(await this.pendingDir(namespace), `${planId}.json`);
     await serializeMutations(`correction-plan:${file}`, async () => {
       try {
@@ -474,6 +475,33 @@ export class CorrectionPlanner {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Reject caller-supplied plan ids that would escape the pending-plan dir
+ * (review thread Ug8): `correct --discard --plan-id ../../meta` must not let
+ * `path.join(pendingDir, "../../meta.json")` unlink arbitrary `.json` files
+ * under the storage root. A safe plan id is a bare basename with no path
+ * separators and no parent-segment shape. The canonical format is
+ * `corr-<base36>-<base36>` (see {@link newPlanId}); this guard accepts any
+ * single-segment id so future formats need not touch it, but blocks every
+ * traversal vector (`/`, `\`, `..`, leading dots, NUL).
+ */
+function assertSafePlanId(planId: string): void {
+  if (
+    typeof planId !== "string" ||
+    planId.length === 0 ||
+    planId.includes("/") ||
+    planId.includes("\\") ||
+    planId.includes("\0") ||
+    planId === "." ||
+    planId === ".." ||
+    planId.startsWith(".") ||
+    planId.includes("..")
+  ) {
+    throw new CorrectionContractError(
+      `Invalid plan id: ${JSON.stringify(planId)} — must be a bare file basename with no path separators or parent segments.`,
+    );
+  }
+}
 function clampConfidence(n: number): number {
   if (!Number.isFinite(n)) return 0;
   return Math.min(1, Math.max(0, n));

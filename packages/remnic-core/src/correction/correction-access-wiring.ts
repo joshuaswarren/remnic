@@ -118,8 +118,8 @@ function makePlannerDeps(
       searchMemories(wiring, text, namespaces, limit),
     resolveTargets: async ({ targetIds, namespaces }) =>
       resolveTargetMemories(wiring, targetIds, namespaces),
-    expandNeighbors: async ({ seedIds, limit }) =>
-      expandEntityNeighbors(wiring, seedIds, limit),
+    expandNeighbors: async ({ seedIds, namespaces, limit }) =>
+      expandEntityNeighbors(wiring, seedIds, namespaces, limit),
     classifyAndDraft: async ({ text, candidates }) =>
       classifyAndDraft(wiring, text, candidates),
     renderDiff: async ({ candidates, actions }) =>
@@ -182,35 +182,45 @@ async function resolveTargetMemories(
 async function expandEntityNeighbors(
   wiring: CorrectionAccessWiring,
   seedIds: readonly string[],
+  namespaces: readonly string[],
   limit: number,
 ): Promise<PlannerCandidate[]> {
-  // 1-hop entity-graph neighbors via the graph snapshot. The orchestrator
-  // exposes a graph snapshot reader per namespace; we look up edges for each
-  // seed memory's entityRef and return the linked memories.
-  if (seedIds.length === 0 || limit <= 0) return [];
+  // 1-hop entity-graph neighbors via entityRef-tagged siblings. We expand
+  // across the AUTHORIZED namespaces the planner supplied (review thread PG8),
+  // NOT only `config.defaultNamespace` — a correction planned in a non-default
+  // writable namespace must only ever draft siblings from that same authorized
+  // scope, or apply will fail as not-found / mutate a same-ID memory in the
+  // wrong namespace. The conservative entityRef fallback searches every
+  // readable namespace and tags each candidate with the namespace it was read
+  // from; a richer graph expansion can ride on top later (rule 57 — additive).
+  if (seedIds.length === 0 || limit <= 0 || namespaces.length === 0) return [];
   const out: PlannerCandidate[] = [];
   const seen = new Set<string>(seedIds);
-  // Without a rich graph API here, fall back to entityRef-tagged siblings in
-  // the default namespace. This is the conservative, always-available path;
-  // a richer graph expansion can ride on top later without changing the
-  // contract (rule 57 — additive).
-  const defaultNs = wiring.orchestrator.config.defaultNamespace;
-  const storage = await wiring.orchestrator.getStorage(defaultNs);
-  const all = await storage.readAllMemories();
+  // Collect the seed entityRefs across every authorized namespace (a seed
+  // memory may live in any of them), then surface active siblings sharing one.
   const seedRefs = new Set<string>();
-  for (const m of all) {
-    if (seedIds.includes(m.frontmatter.id) && m.frontmatter.entityRef) {
-      seedRefs.add(m.frontmatter.entityRef);
+  for (const ns of namespaces) {
+    const storage = await wiring.orchestrator.getStorage(ns);
+    const all = await storage.readAllMemories();
+    for (const m of all) {
+      if (seedIds.includes(m.frontmatter.id) && m.frontmatter.entityRef) {
+        seedRefs.add(m.frontmatter.entityRef);
+      }
     }
   }
   if (seedRefs.size === 0) return [];
-  for (const m of all) {
-    if (seen.has(m.frontmatter.id)) continue;
-    if (m.frontmatter.status && m.frontmatter.status !== "active") continue;
-    if (m.frontmatter.entityRef && seedRefs.has(m.frontmatter.entityRef)) {
-      out.push(toCandidate(m, defaultNs, 0.5));
-      seen.add(m.frontmatter.id);
+  for (const ns of namespaces) {
+    if (out.length >= limit) break;
+    const storage = await wiring.orchestrator.getStorage(ns);
+    const all = await storage.readAllMemories();
+    for (const m of all) {
       if (out.length >= limit) break;
+      if (seen.has(m.frontmatter.id)) continue;
+      if (m.frontmatter.status && m.frontmatter.status !== "active") continue;
+      if (m.frontmatter.entityRef && seedRefs.has(m.frontmatter.entityRef)) {
+        out.push(toCandidate(m, ns, 0.5));
+        seen.add(m.frontmatter.id);
+      }
     }
   }
   return out;

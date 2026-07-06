@@ -1412,6 +1412,12 @@ export class EngramAccessHttpServer {
     // All three routes dispatch through the boundary operations so schema
     // validation + namespace policy reach every correction path (rule 22/39).
     if (req.method === "POST" && pathname === "/engram/v1/correction/plan") {
+      // Planning persists a pending plan JSON file on every successful call
+      // (review thread UhA), so it is a state write for rate-limit purposes —
+      // mirror the apply route's precheck + accounting to bound files under
+      // state/corrections/pending instead of letting an HTTP client create
+      // unbounded plan files without consuming write quota.
+      this.ensureWriteRateLimitAvailable();
       const body = await this.readJsonBody(req);
       const op = getOperation("memory_correct_plan");
       if (!op) {
@@ -1421,6 +1427,7 @@ export class EngramAccessHttpServer {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
+      this.recordWriteRateLimitHit();
       this.respondJson(res, 200, output.result);
       return;
     }

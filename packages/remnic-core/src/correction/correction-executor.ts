@@ -404,17 +404,23 @@ export class CorrectionExecutor {
         return;
       }
       const validUntil = this.deps.biTemporalEnabled ? this.deps.now().toISOString() : undefined;
-      await this.deps.retireMemory(namespace, memoryId, {
-        status: reason === "supersession" ? "superseded" : "retracted",
-        ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
-        ...(validUntil ? { validUntil } : {}),
-      });
+      // Write the tombstone BEFORE retiring the source memory (review thread
+      // PG9): if appendTombstone throws here, retireMemory has not run yet, so
+      // the source stays active, the action fails cleanly, and a retry
+      // operates on un-mutated state with no resurrection window. A tombstone
+      // for a still-active memory (if retire later fails) is benign — it only
+      // blocks re-ingestion of the same content, which is exactly the intent.
       const tombstoneId = await this.deps.appendTombstone(namespace, {
         reason,
         sourceMemoryId: memoryId,
         rawContent: memory.rawContent,
         ...(memory.entityRef ? { entityRef: memory.entityRef } : {}),
         ...(memory.supersessionKey ? { supersessionKey: memory.supersessionKey } : {}),
+      });
+      await this.deps.retireMemory(namespace, memoryId, {
+        status: reason === "supersession" ? "superseded" : "retracted",
+        ...(opts.supersededBy ? { supersededBy: opts.supersededBy } : {}),
+        ...(validUntil ? { validUntil } : {}),
       });
       results.push({
         action,
