@@ -31,7 +31,7 @@ import {
 
 export interface ChatHttpHandlerOptions {
   service: EngramAccessService;
-  config: ChatConfig;
+  config: ChatConfig | undefined;
   memoryDir: string;
 }
 
@@ -48,7 +48,7 @@ export async function handleChatMessage(
   opts: ChatHttpHandlerOptions,
   principal?: string,
 ): Promise<void> {
-  if (!opts.config.enabled) {
+  if (!opts.config?.enabled) {
     respondJson(res, 404, { error: "chat_disabled", code: "chat_disabled" });
     return;
   }
@@ -137,7 +137,7 @@ export async function handleChatEventsSSE(
   opts: ChatHttpHandlerOptions,
   principal?: string,
 ): Promise<void> {
-  if (!opts.config.enabled) {
+  if (!opts.config?.enabled) {
     respondJson(res, 404, { error: "chat_disabled", code: "chat_disabled" });
     return;
   }

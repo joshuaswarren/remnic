@@ -72,13 +72,13 @@ export function createChatEngine(opts: ChatEngineFactoryOptions): ChatEngine | n
  */
 export async function processChatMessage(opts: {
   service: EngramAccessService;
-  config: ChatConfig;
+  config: ChatConfig | undefined;
   memoryDir: string;
   message: string;
   chatSessionId?: string;
   principal?: string;
 }): Promise<ChatTurnResult> {
-  if (!opts.config.enabled) {
+  if (!opts.config?.enabled) {
     throw new Error("chat_disabled");
   }
   if (!opts.service.fallbackLlmRef && !opts.service.localLlmRef) {
@@ -86,7 +86,7 @@ export async function processChatMessage(opts: {
   }
   const engine = createChatEngine({
     service: opts.service,
-    config: opts.config,
+    config: opts.config as ChatConfig,
     fallbackLlm: opts.service.fallbackLlmRef,
     localLlm: opts.service.localLlmRef,
     principal: opts.principal,

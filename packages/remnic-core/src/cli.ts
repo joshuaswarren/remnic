@@ -9347,7 +9347,7 @@ export function registerCli(
           const options = (args[0] ?? {}) as Record<string, unknown>;
           await runChatCli({
             service: new EngramAccessService(orchestrator),
-            config: orchestrator.config.chat,
+            config: orchestrator.config?.chat,
             memoryDir: orchestrator.config.memoryDir,
             principal: typeof options.principal === "string" ? options.principal : undefined,
             ...(typeof options.session === "string" ? { sessionId: options.session } : {}),

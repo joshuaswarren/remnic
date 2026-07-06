@@ -42,7 +42,7 @@ async function readAllStdin(): Promise<string> {
 
 export interface ChatCliOptions {
   service: EngramAccessService;
-  config: ChatConfig;
+  config: ChatConfig | undefined;
   memoryDir: string;
   principal?: string;
   namespace?: string;
@@ -60,6 +60,13 @@ export interface ChatCliOptions {
  * `--once` mode, processes a single message and prints the reply to stdout.
  */
 export async function runChatCli(opts: ChatCliOptions): Promise<void> {
+  if (!opts.config?.enabled) {
+    const msg = "[error] Remnic Chat is disabled. Set \"chat.enabled\": true in your config to enable it.";
+    if (opts.once) { process.stdout.write(msg + "\n"); return; }
+    console.error(msg);
+    return;
+  }
+  const config = opts.config;
   const llm = opts.service.fallbackLlmRef ?? opts.service.localLlmRef;
   if (!llm) {
     const msg = "[error] No LLM model is available. Configure a local or cloud model to use Remnic Chat.";
@@ -88,8 +95,8 @@ export async function runChatCli(opts: ChatCliOptions): Promise<void> {
   const engine = new ChatEngine({
     llm: adapter,
     executor,
-    maxToolCallsPerTurn: opts.config.maxToolCallsPerTurn,
-    ...(opts.config.model ? { model: opts.config.model } : {}),
+    maxToolCallsPerTurn: config.maxToolCallsPerTurn,
+    ...(config.model ? { model: config.model } : {}),
     correctionAvailable: false,
     scopeInspectAvailable: false,
   });

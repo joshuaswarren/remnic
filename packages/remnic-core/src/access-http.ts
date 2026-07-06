@@ -320,7 +320,7 @@ export class EngramAccessHttpServer {
       architectureCardVisible: this.service.architectureCardSurfaceVisible,
       codegraphVisible: this.service.codegraphSurfaceVisible,
       sessionDeltaVisible: this.service.sessionDeltaSurfaceVisible,
-      chatVisible: this.service.configRef.chat.enabled,
+      chatVisible: this.service.configRef?.chat?.enabled === true,
     });
   }
 
@@ -1983,7 +1983,7 @@ export class EngramAccessHttpServer {
       const body = await this.readJsonBody(req) as Record<string, unknown>;
       await handleChatMessage(
         req, res, body,
-        { service: this.service, config: this.service.configRef.chat, memoryDir: this.service.memoryDir },
+        { service: this.service, config: this.service.configRef?.chat, memoryDir: this.service.memoryDir },
         this.resolveRequestPrincipal(req),
       );
       return;
@@ -1993,7 +1993,7 @@ export class EngramAccessHttpServer {
       void getOperation("chat_events"); // boundary dispatch (issue #1525)
       await handleChatEventsSSE(
         req, res, chatEventsMatch[1] ?? "",
-        { service: this.service, config: this.service.configRef.chat, memoryDir: this.service.memoryDir },
+        { service: this.service, config: this.service.configRef?.chat, memoryDir: this.service.memoryDir },
         this.resolveRequestPrincipal(req),
       );
       return;

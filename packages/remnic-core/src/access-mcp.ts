@@ -3697,7 +3697,7 @@ export class EngramMcpServer {
         const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId : undefined;
         return processChatMessage({
           service: this.service,
-          config: this.service.configRef.chat,
+          config: this.service.configRef?.chat,
           memoryDir: this.service.memoryDir,
           message,
           ...(chatSessionId ? { chatSessionId } : {}),
