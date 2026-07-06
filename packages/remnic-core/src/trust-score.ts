@@ -278,7 +278,7 @@ function isHardNegative(signals: TrustSignals): boolean {
  * usable signal is present, so uninstrumented memories are untouched.
  */
 export function computeTrustScore(
-  signals: TrustSignals,
+  signals: TrustSignals = {},
   weights: Readonly<TrustWeights> = DEFAULT_TRUST_WEIGHTS,
 ): TrustScoreResult {
   const resolved = resolveTrustWeights(weights);
