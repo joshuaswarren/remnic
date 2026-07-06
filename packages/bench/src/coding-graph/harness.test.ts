@@ -311,3 +311,63 @@ test("regression gate: higherIsBetter metric regresses when throughput drops", (
   assert.ok(throughputRegression, "LOC/s regression must be detected");
   assert.equal(throughputRegression!.direction, "higher-is-better");
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// 6. Regression gate — fixture mismatch is a hard failure.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("regression gate: fixture mismatch fails the gate", () => {
+  const mockReport: CodingGraphBenchReport = {
+    schemaVersion: 1,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    machine: {
+      arch: "arm64",
+      platform: "darwin",
+      nodeVersion: "v22.0.0",
+      cpuModel: "test",
+      cpuCores: 8,
+      totalMemoryMb: 16384,
+    },
+    fixture: {
+      config: { seed: 42, fileCount: 1000, symbolsPerFile: 10, callDensity: 0.2, language: "typescript" },
+      approximateLoc: 100000,
+      fileCount: 1000,
+      symbolCount: 10000,
+      edgeCount: 2000,
+    },
+    fullIndexMs: { ms: 500 },
+    fullIndexLocsPerSecond: 200000,
+    incrementalUpdate: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    tracePath: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    searchGraph: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    deadCodeMs: { ms: 5 },
+    dbBytesPerKloc: 1000,
+    peakRssBytes: 1000000,
+    dbBytes: 1000,
+    graphNodeCount: 50,
+    graphEdgeCount: 20,
+  };
+
+  const baseline: CodingGraphBaseline = {
+    schemaVersion: 1,
+    machine: mockReport.machine,
+    fixtureConfig: { seed: 42, fileCount: 20, symbolsPerFile: 10, callDensity: 0.3, language: "typescript" },
+    metrics: {
+      fullIndexMs: 500,
+      fullIndexLocsPerSecond: 200000,
+      incrementalUpdateP50Ms: 1,
+      incrementalUpdateP95Ms: 2,
+      tracePathP95Ms: 2,
+      searchGraphP95Ms: 2,
+      deadCodeMs: 5,
+      dbBytesPerKloc: 1000,
+    },
+    createdAt: "2026-01-01T00:00:00.000Z",
+    note: "different fixture baseline",
+  };
+
+  const result = checkCodingGraphRegression(mockReport, baseline, 30);
+  assert.equal(result.passed, false, "fixture mismatch must fail the gate");
+  assert.ok(result.summary.includes("Fixture mismatch"), "summary must explain fixture mismatch");
+  assert.equal(result.regressions.length, 0, "no metric regressions — only fixture mismatch");
+});

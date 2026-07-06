@@ -73,6 +73,26 @@ export function checkCodingGraphRegression(
   const baselineMetrics = baseline.metrics;
   const regressions: RegressionMetricDetail[] = [];
 
+  // Guard: a regression comparison is only meaningful when the report's
+  // fixture matches the baseline's fixture. Comparing a 10k-node fixture
+  // against a 1k-node baseline would produce nonsense deltas.
+  if (
+    report.fixture.config.fileCount !== baseline.fixtureConfig.fileCount ||
+    report.fixture.config.symbolsPerFile !== baseline.fixtureConfig.symbolsPerFile ||
+    report.fixture.config.callDensity !== baseline.fixtureConfig.callDensity
+  ) {
+    return {
+      passed: false,
+      regressions: [],
+      summary:
+        `Fixture mismatch: report fixture (files=${report.fixture.config.fileCount}, ` +
+        `symbols=${report.fixture.config.symbolsPerFile}, density=${report.fixture.config.callDensity}) ` +
+        `differs from baseline fixture (files=${baseline.fixtureConfig.fileCount}, ` +
+        `symbols=${baseline.fixtureConfig.symbolsPerFile}, density=${baseline.fixtureConfig.callDensity}). ` +
+        `Metrics are not comparable across different fixtures.`,
+    };
+  }
+
   for (const key of Object.keys(METRIC_DIRECTION) as RegressionMetricKey[]) {
     const baseVal = baselineMetrics[key];
     const measVal = measured[key];

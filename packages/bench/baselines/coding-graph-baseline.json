@@ -16,15 +16,15 @@
     "language": "typescript"
   },
   "metrics": {
-    "fullIndexMs": 17.59079200000042,
-    "fullIndexLocsPerSecond": 115174,
-    "incrementalUpdateP50Ms": 0.1873329999998532,
-    "incrementalUpdateP95Ms": 0.2571250000000873,
-    "tracePathP95Ms": 0.1447080000002643,
-    "searchGraphP95Ms": 0.2923749999999927,
-    "deadCodeMs": 0.6742499999995744,
-    "dbBytesPerKloc": 2022
+    "fullIndexMs": 14.864042000000154,
+    "fullIndexLocsPerSecond": 136302,
+    "incrementalUpdateP50Ms": 0.19358299999998962,
+    "incrementalUpdateP95Ms": 0.26237500000002,
+    "tracePathP95Ms": 0.15750000000002728,
+    "searchGraphP95Ms": 0.19700000000011642,
+    "deadCodeMs": 2.29424999999992,
+    "dbBytesPerKloc": 280636
   },
-  "createdAt": "2026-07-06T10:22:25.193Z",
-  "note": "Initial baseline — captured on first harness run (issue #1557 PR1)."
+  "createdAt": "2026-07-06T10:50:56.821Z",
+  "note": "Initial baseline — first harness run with WAL-aware DB sizing (issue #1557 PR1)."
 }

@@ -22,6 +22,7 @@
 
 import { performance } from "node:perf_hooks";
 import { mkdtemp, rm, stat } from "node:fs/promises";
+import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import os from "node:os";
@@ -157,6 +158,13 @@ export async function runCodingGraphBenchmark(
   const repo = generateSyntheticRepo(fixtureConfig);
   const storeFiles = toStoreFiles(repo);
 
+  // Track peak RSS across the entire run — a single end-of-run sample
+  // misses the peak from index/traverse/dead-code operations.
+  let peakRss = 0;
+  const sampleRss = () => {
+    peakRss = Math.max(peakRss, process.memoryUsage().rss);
+  };
+
   // Open a temp DB.
   const dir = await mkdtemp(path.join(tmpdir(), "coding-graph-bench-"));
   const dbPath = path.join(dir, "bench.sqlite");
@@ -173,6 +181,8 @@ export async function runCodingGraphBenchmark(
       const locsPerSecond =
         fullIndex.ms > 0 ? repo.approximateLoc / (fullIndex.ms / 1000) : 0;
 
+      sampleRss();
+
       // ── Metric 2: graph stats (node/edge counts for the report) ──
       const stats = store.schemaStats();
       const graphNodeCount = stats.ok ? stats.stats.nodes : 0;
@@ -183,10 +193,13 @@ export async function runCodingGraphBenchmark(
       const incrementalSamples: number[] = [];
       for (let i = 0; i < iterations; i++) {
         const fileIdx = i % storeFiles.length;
-        const { ms } = await timeAsync(() =>
+        const incResult = await timeAsync(() =>
           store.upsertFileBatch([storeFiles[fileIdx]]),
         );
-        incrementalSamples.push(ms);
+        if (!incResult.result.ok) {
+          throw new Error(`incremental update failed: ${incResult.result.code}`);
+        }
+        incrementalSamples.push(incResult.ms);
       }
 
       // ── Metric 4: trace_path (depth ≤ 5) p50/p95 ──
@@ -223,13 +236,21 @@ export async function runCodingGraphBenchmark(
 
       // ── Metric 7: DB size ──
       await store.drain();
-      const dbStat = await stat(dbPath);
-      const dbBytes = dbStat.size;
+      // Include WAL files in DB-size measurement — GraphStore opens in WAL
+      // mode, so the -wal file holds committed writes that haven't
+      // checkpointed yet. Measuring only the main DB file underreports.
+      let dbBytes = statSync(dbPath).size;
+      try {
+        dbBytes += statSync(dbPath + "-wal").size;
+      } catch {
+        // No WAL file — already checkpointed or deleted on close.
+      }
       const kloc = Math.max(1, repo.approximateLoc / 1000);
       const dbBytesPerKloc = dbBytes / kloc;
 
-      // ── Metric 8: peak RSS ──
-      const peakRssBytes = process.memoryUsage().rss;
+      // ── Metric 8: peak RSS (tracked across the run) ──
+      sampleRss();
+      const peakRssBytes = peakRss;
 
       return {
         schemaVersion: CODING_GRAPH_BENCH_SCHEMA_VERSION,
