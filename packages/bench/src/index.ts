@@ -42,6 +42,10 @@ export type {
   CustomBenchmarkSpec,
   CustomBenchmarkTask,
 } from "./benchmarks/custom/types.js";
+export type {
+  MemCorrectSystemAdapter,
+  MemCorrectGeneratorOptions,
+} from "./benchmarks/remnic/memcorrect/types.js";
 
 export type {
   Message,
