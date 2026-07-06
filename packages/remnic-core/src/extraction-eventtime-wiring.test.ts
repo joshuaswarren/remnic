@@ -186,3 +186,42 @@ test("resolveFactEventTime: 'through 2026' → validUntil only (open-ended end b
   // "through 2026" → exclusive end = start of 2027.
   assert.equal(result.validUntil, "2027-01-01T00:00:00.000Z");
 });
+test("storage: writeChunk propagates invalidAt/observedAt/eventTimeSource from the parent fact (#1578 PR2)", async () => {
+  // Proves the cursor-bugbot fix: an independently-surfaced chunk expires at the
+  // same invalid_at window as its parent so recall's isValidityExpiredNow check
+  // fires on chunks too, not just the chunked parent write.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-et-chunk-invalid-"));
+  try {
+    const storage = new StorageManager(dir);
+    await storage.ensureDirectories();
+    const parentId = await storage.writeMemory("fact", "We used MongoDB until June 2025.", {
+      validAt: "2024-01-01T00:00:00.000Z",
+      invalidAt: "2025-06-01T00:00:00.000Z",
+      observedAt: "2025-06-20T00:00:00.000Z",
+      eventTimeSource: "extracted",
+    });
+    const chunkId = await storage.writeChunk(
+      parentId,
+      0,
+      1,
+      "fact",
+      "We used MongoDB until June 2025.",
+      {
+        validAt: "2024-01-01T00:00:00.000Z",
+        invalidAt: "2025-06-01T00:00:00.000Z",
+        observedAt: "2025-06-20T00:00:00.000Z",
+        eventTimeSource: "extracted",
+      },
+    );
+    const mems = await storage.readAllMemories();
+    const chunk = mems.find((m) => m.frontmatter.id === chunkId);
+    assert.ok(chunk, "chunk must be readable");
+    assert.equal(chunk!.frontmatter.valid_at, "2024-01-01T00:00:00.000Z");
+    assert.equal(chunk!.frontmatter.invalid_at, "2025-06-01T00:00:00.000Z",
+      "chunk must carry the parent's end bound so it expires independently");
+    assert.equal(chunk!.frontmatter.observedAt, "2025-06-20T00:00:00.000Z");
+    assert.equal(chunk!.frontmatter.eventTimeSource, "extracted");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
