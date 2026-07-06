@@ -15938,7 +15938,7 @@ export class Orchestrator {
     threadId: string,
     persistedIds: string[],
   ): Promise<void> {
-    const pendingReviewIds = this.lastPersistExtractionPendingReviewIds;
+    const pendingReviewIds = this.lastPersistExtractionPendingReviewIds ?? [];
     const episodeIds =
       pendingReviewIds.length > 0
         ? persistedIds.filter((id) => !pendingReviewIds.includes(id))
