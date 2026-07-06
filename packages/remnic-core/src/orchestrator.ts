@@ -2765,6 +2765,7 @@ export class Orchestrator {
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
     },
+    entityRef?: string,
   ): Promise<void> {
     // I/O gate: only scan when there is an end bound to backfill. Without
     // invalidAt there is nothing that changes recall behavior — observedAt
@@ -2774,10 +2775,26 @@ export class Orchestrator {
     try {
       const incomingHash = ContentHashIndex.computeHash(dedupContent);
       const normalizedIncoming = ContentHashIndex.normalizeContent(dedupContent);
+      // Normalize the entity for same-entity scoping when provided — two
+      // entities can share identical fact text, and patching a different
+      // entity'\''s fact would corrupt its temporal bounds (cursor review).
+      const incomingEntityNorm = entityRef
+        ? normalizeSupersessionKey(entityRef)
+        : undefined;
       const all = await targetStorage.readAllMemories();
       const existing = all.find((m) => {
         if (m.frontmatter.category !== "fact") return false;
         if ((m.frontmatter.status ?? "active") !== "active") return false;
+        // Same-entity guard: when an entityRef is provided, only consider
+        // facts whose normalized entity matches. Without this, a shared-
+        // namespace backfill could patch an unrelated entity'\''s copy that
+        // happens to share the same content hash.
+        if (incomingEntityNorm) {
+          if (!m.frontmatter.entityRef) return false;
+          if (normalizeSupersessionKey(m.frontmatter.entityRef) !== incomingEntityNorm) {
+            return false;
+          }
+        }
         // Prefer the stored contentHash (what the hash index actually keys
         // on) — it is computed from contentHashSource (the raw/enriched
         // body before citation), matching the dedupContent the caller passes.
@@ -14256,11 +14273,16 @@ export class Orchestrator {
             // fail-open; the helper gates on invalidAt to avoid I/O when no
             // end bound is present.
             if (options.invalidAt) {
-              await this.backfillTemporalBoundsOnDedupHit(targetStorage, dedupContent, {
-                invalidAt: options.invalidAt,
-                ...(options.observedAt ? { observedAt: options.observedAt } : {}),
-                ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
-              });
+              await this.backfillTemporalBoundsOnDedupHit(
+                targetStorage,
+                dedupContent,
+                {
+                  invalidAt: options.invalidAt,
+                  ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+                  ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
+                },
+                options.entityRef,
+              );
             }
             continue;
           }
@@ -14430,11 +14452,16 @@ export class Orchestrator {
           // (supersession-hit, catch-skip, and the no-supersession short-circuit)
           // in one shot. Best-effort / fail-open; the helper gates on invalidAt.
           if (options.invalidAt) {
-            await this.backfillTemporalBoundsOnDedupHit(sharedStorage, dedupContent, {
-              invalidAt: options.invalidAt,
-              ...(options.observedAt ? { observedAt: options.observedAt } : {}),
-              ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
-            });
+            await this.backfillTemporalBoundsOnDedupHit(
+              sharedStorage,
+              dedupContent,
+              {
+                invalidAt: options.invalidAt,
+                ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+                ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
+              },
+              options.entityRef,
+            );
           }
           // Uj6H fix: shared-namespace temporal supersession must also run when
           // the hash-dedup short-circuit fires.  Without this, an existing shared
@@ -15146,11 +15173,16 @@ export class Orchestrator {
             this.config.provenance?.requireSpans === true &&
             fact.requireSpansPending === true;
           if (!faithfulnessWouldPending && !requireSpansWouldPending) {
-            await this.backfillTemporalBoundsOnDedupHit(targetStorage, contentHashDedupKey, {
-              invalidAt: biTemporal.validUntil,
-              observedAt: biTemporal.observedAt,
-              eventTimeSource: biTemporal.eventTimeSource,
-            });
+            await this.backfillTemporalBoundsOnDedupHit(
+              targetStorage,
+              contentHashDedupKey,
+              {
+                invalidAt: biTemporal.validUntil,
+                observedAt: biTemporal.observedAt,
+                eventTimeSource: biTemporal.eventTimeSource,
+              },
+              fact.entityRef,
+            );
           }
         }
         log.debug(
