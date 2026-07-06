@@ -391,8 +391,8 @@ test("executor: fatal error after upgrade in same batch → NOT committed (rule 
   assert.equal(applyCalled, false, "applyUpgrades must NOT be called for a poisoned batch");
   assert.ok(result.degradation);
   assert.equal(result.degradation.code, "server_crashed");
-  // The lost upgrade is counted as unresolved.
-  assert.equal(result.unresolved, 1);
+  // The crashed request (1) + the lost upgrade (1) = 2 unresolved.
+  assert.equal(result.unresolved, 2);
 });
 
 test("executor: request_timeout counts as unresolved, pass continues", async () => {

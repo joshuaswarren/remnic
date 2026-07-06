@@ -297,8 +297,13 @@ export async function executeLspResolution(
       text: firstReq.content,
     });
 
-    for (const req of batchReqs) {
-      if (degradation) break; // server is dead — stop sending
+    for (let i = 0; i < batchReqs.length; i++) {
+      const req = batchReqs[i];
+      if (degradation) {
+        // Server died in a previous batch — count remaining unattempted.
+        unresolved += batchReqs.length - i;
+        break;
+      }
 
       const defResult = await client.definition({
         textDocument: { uri: filePathToUri(req.filePath, options.workspaceRoot) },
@@ -313,6 +318,9 @@ export async function executeLspResolution(
           defResult.degradation.code === "protocol_error"
         ) {
           degradation = defResult.degradation;
+          // Count this request plus all remaining unattempted requests
+          // in this batch as unresolved for accurate reporting.
+          unresolved += batchReqs.length - i;
           // Mark the batch failed so collected upgrades are NOT committed
           // (rule 25 — per-batch atomicity; a degraded batch must not
           // persist partial LSP edges).
