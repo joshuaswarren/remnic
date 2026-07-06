@@ -40,7 +40,7 @@ export function createChatExecutor(bindings: ChatExecutorBindings): ChatToolExec
     },
 
     async memoryGet(memoryId: string): Promise<string> {
-      const result = await service.memoryGet(memoryId, namespace, principal);
+      const result = await service.memoryGet(memoryId, namespace, principal, sessionKey);
       return JSON.stringify(result);
     },
 
