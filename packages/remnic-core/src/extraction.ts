@@ -279,6 +279,12 @@ export class ExtractionEngine {
               typeof f?.quote === "string" && f.quote.trim().length > 0
                 ? f.quote
                 : undefined,
+            eventTime:
+              typeof f?.eventTime === "string" && f.eventTime.trim().length > 0
+                ? f.eventTime.trim()
+                : typeof f?.event_time === "string" && f.event_time.trim().length > 0
+                  ? f.event_time.trim()
+                  : undefined,
           }))
           .filter((f: any) => f.content.length > 0)
       : [];
@@ -1394,7 +1400,7 @@ Examples of when to add structuredAttributes:
 - Decisions: {"chosen": "PostgreSQL", "rejected": "MongoDB", "reason": "ACID compliance"}
 - Quantities/measurements: {"budget": "50000", "team_size": "5", "deadline": "2024-06-01"}
 Only add structuredAttributes when there are concrete values. Skip for abstract or narrative facts.
-
+${this.eventTimePromptInstruction()}
 Also generate:
 1. 1-3 genuine questions you're curious about from this conversation
 2. Profile updates about user patterns/behaviors (if any)
@@ -1593,6 +1599,28 @@ ${truncatedConversation}`;
     }
 
     return { facts, entities, profileUpdates: [], questions: [] };
+  }
+
+  /**
+   * Bi-temporal event-time extraction instruction (#1578 PR2). Emitted on
+   * every extraction entry path when `temporal.biTemporal` is on so the LLM
+   * emits an optional per-fact `eventTime` expression. The expression is
+   * resolved against the source turn timestamp at write time — never
+   * wall-clock — so replay/import of old transcripts anchors correctly.
+   * Returns an empty string when the gate is off (byte-identical prompt).
+   */
+  private eventTimePromptInstruction(): string {
+    if (!this.config.temporalBiTemporal) return "";
+    return `
+=== Event Time (bi-temporal) ===
+When a fact has an explicit temporal anchor — a date, month, season, or relative time expression stating WHEN the fact became (or stopped being) true — capture it verbatim in an "eventTime" field on that fact. Examples:
+- "We moved offices in March" → "eventTime": "last March"
+- "The API has been rate-limited since 2024" → "eventTime": "since 2024"
+- "I switched to PostgreSQL on 2025-01-15" → "eventTime": "2025-01-15"
+- "We used MongoDB until June 2025" → "eventTime": "until 2025-06"
+Accepted forms: ISO dates ("2025-03-01"), month/season + year ("March 2025", "summer 2024"), relative ("yesterday", "last week", "this month", "next year", "last December"), and open-ended ("since 2024", "until 2025-06-01").
+Omit "eventTime" when the fact has no explicit temporal anchor — do NOT guess or infer dates. The system resolves the expression against the conversation's own timestamp, not today's date.
+`;
   }
 
   /**

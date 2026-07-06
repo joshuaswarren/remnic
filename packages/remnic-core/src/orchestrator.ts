@@ -121,6 +121,7 @@ import {
   shouldFilterSupersededFromRecall,
 } from "./temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "./temporal-validity.js";
+import { resolveFactEventTime } from "./event-time.js";
 import { RelevanceStore } from "./relevance.js";
 import { NegativeExampleStore } from "./negative.js";
 import {
@@ -14677,7 +14678,7 @@ export class Orchestrator {
         typeof (fact as any).confidence === "number"
           ? (fact as any).confidence
           : 0.7;
-
+      const biTemporal = this.config.temporalBiTemporal && sourceContext?.validAt ? resolveFactEventTime(fact.eventTime, sourceContext.validAt) : undefined;
       // Content-hash dedup check (v6.0)
       //
       // Canonicalize pre-tagged facts before hashing (Codex P2 — issue #369).
@@ -15159,7 +15160,6 @@ export class Orchestrator {
           // back, leaving a dangling deindex with no replacement reference.
           // Child chunks intentionally do NOT carry supersedes; only the
           // parent represents the logical memory unit.
-          //
           // Canonicalize contentHashSource before writing (Thread 3 — Codex P2,
           // issue #369). If fact.content already carries an inline citation
           // (e.g. re-processed or relayed fact), strip it so contentHashSource
@@ -15187,7 +15187,8 @@ export class Orchestrator {
               intentEntityTypes: inferredIntent?.entityTypes,
               memoryKind,
               structuredAttributes: fact.structuredAttributes,
-              validAt: sourceContext?.validAt,
+              validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
+              ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource } : {}),
               contentHashSource: rawChunkedContent,
               // Faithfulness gate (issue #1576).
               ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
@@ -15229,7 +15230,7 @@ export class Orchestrator {
                   intentActionType: inferredIntent?.actionType,
                   intentEntityTypes: inferredIntent?.entityTypes,
                   memoryKind,
-                  validAt: sourceContext?.validAt,
+                  validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
                   // Faithfulness gate (issue #1576): propagate the parent
                   // fact's verdict + enforce status so a pending_review fact
                   // is not indexed as active through its chunks (chatgpt P2).
@@ -15311,7 +15312,7 @@ export class Orchestrator {
             intentActionType: inferredIntent?.actionType,
             intentEntityTypes: inferredIntent?.entityTypes,
             memoryKind,
-            validAt: sourceContext?.validAt,
+            validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
             source: extractionWriteSource,
             ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
             ...(fact.provenance ? { provenance: fact.provenance } : {}),
@@ -15444,13 +15445,11 @@ export class Orchestrator {
             : undefined;
 
       // Normal write (no chunking)
-      //
       // Compute the cited content once so that writeMemory and writeArtifact
       // (when verbatim artifacts are enabled) share the same citation timestamp.
       // Calling applyInlineCitation twice on the same raw content would produce
       // two different timestamps, creating duplicate citations with divergent
       // provenance metadata on the memory and artifact copies of the same fact.
-      //
       // Pass the RAW (pre-citation) fact as `contentHashSource` so the
       // fact-content hash index records the hash of the canonical fact text
       // rather than the citation-annotated variant. When inline attribution is
@@ -15483,7 +15482,8 @@ export class Orchestrator {
           intentEntityTypes: inferredIntent?.entityTypes,
           memoryKind,
           structuredAttributes: fact.structuredAttributes,
-          validAt: sourceContext?.validAt,
+          validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
+          ...(biTemporal ? { observedAt: biTemporal.observedAt, eventTimeSource: biTemporal.eventTimeSource } : {}),
           contentHashSource: writeCategory === "fact" ? fact.content : undefined,
           // Faithfulness gate (issue #1576).
           ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
@@ -15564,7 +15564,7 @@ export class Orchestrator {
           intentActionType: inferredIntent?.actionType,
           intentEntityTypes: inferredIntent?.entityTypes,
           memoryKind,
-          validAt: sourceContext?.validAt,
+          validAt: biTemporal?.validFrom ?? sourceContext?.validAt,
           source: extractionWriteSource,
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),

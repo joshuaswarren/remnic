@@ -546,3 +546,57 @@ function resolveEndBound(anchorMs: number, period: string): number | null {
   }
   return null;
 }
+
+/**
+ * Resolved bi-temporal fields for a single extracted fact (issue #1578 PR2).
+ *
+ * - `validFrom` / `validUntil` — the event-time `[from, until)` interval.
+ *   When `eventTimeSource === "assumed"`, `validFrom` is copied from
+ *   `observedAt` (the ingestion anchor) so every bi-temporal-on fact carries
+ *   at least a start bound.
+ * - `observedAt` — always the ingestion anchor (the source turn timestamp).
+ * - `eventTimeSource` — `"extracted"` when the expression resolved to a real
+ *   event-time interval; `"assumed"` when the expression was absent or
+ *   unresolvable.
+ *
+ * This is the single write-time helper every extraction entry path calls
+ * (rule 39). It is pure: (expression, anchor) in, interval out. Resolution
+ * never touches `Date.now()` — replay/import of old transcripts resolves
+ * against the old anchor.
+ */
+export interface FactEventTime {
+  validFrom?: string;
+  validUntil?: string;
+  observedAt: string;
+  eventTimeSource: "extracted" | "assumed";
+}
+
+/**
+ * Resolve a single fact's event-time expression against the ingestion anchor.
+ *
+ * Returns the bi-temporal interval to persist alongside the fact. When the
+ * expression is absent, empty, or unresolvable, falls back to
+ * `eventTimeSource: "assumed"` with `validFrom = observedAt` — per the
+ * #1578 frontmatter contract. When the expression resolves but only pins one
+ * bound ("since 2024" → validFrom only; "until 2025-06" → validUntil only),
+ * only the resolved bound is returned.
+ */
+export function resolveFactEventTime(
+  expression: string | undefined | null,
+  anchorIso: string,
+): FactEventTime {
+  const resolved = resolveEventTime(expression, anchorIso);
+  if (resolved.ok && (resolved.validFrom !== undefined || resolved.validUntil !== undefined)) {
+    return {
+      ...(resolved.validFrom !== undefined ? { validFrom: resolved.validFrom } : {}),
+      ...(resolved.validUntil !== undefined ? { validUntil: resolved.validUntil } : {}),
+      observedAt: anchorIso,
+      eventTimeSource: "extracted",
+    };
+  }
+  return {
+    validFrom: anchorIso,
+    observedAt: anchorIso,
+    eventTimeSource: "assumed",
+  };
+}
