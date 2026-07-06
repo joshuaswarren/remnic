@@ -133,9 +133,12 @@ function extractSymbols(root: TSNode, language: Language, lang: CodingGraphLangu
       // Go/Rust methods sit outside their receiver struct, so byte-span
       // nesting cannot determine the parent. Use the captured receiver
       // type instead.
+      // The last stack entry's qualifiedName already contains the full
+      // ancestor chain (e.g. "Server.start"), so use it directly rather
+      // than joining all entries (which would duplicate ancestors).
       const parentQualifiedName =
         def.receiverType ??
-        (stack.length > 0 ? stack.map((s) => s.qualifiedName).join(".") : undefined);
+        (stack.length > 0 ? stack[stack.length - 1].qualifiedName : undefined);
       const qualifiedName = parentQualifiedName
         ? `${parentQualifiedName}.${def.name}`
         : def.name;
