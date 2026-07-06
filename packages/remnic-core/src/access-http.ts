@@ -1270,11 +1270,17 @@ export class EngramAccessHttpServer {
         namespace: this.resolveNamespace(req, body.namespace),
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
         skipExtraction: body.skipExtraction === true,
+        // Issue #1649: optional server-side dedup key for retried POSTs.
+        idempotencyKey: body.idempotencyKey,
         // Forward cwd/projectTag for auto git-context resolution (issue #569).
         cwd: body.cwd,
         projectTag: body.projectTag,
       });
-      this.recordWriteRateLimitHit();
+      // A replayed (deduplicated) observe must not consume a second write-quota
+      // slot — same invariant as memory_store/suggestion_submit (#1434).
+      if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
+        this.recordWriteRateLimitHit();
+      }
       this.respondJson(res, 202, response);
       return;
     }

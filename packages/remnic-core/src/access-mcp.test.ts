@@ -477,6 +477,7 @@ test("MCP session override is injected only into tools that accept sessionKey", 
     namespace: undefined,
     authenticatedPrincipal: undefined,
     skipExtraction: false,
+    idempotencyKey: undefined,
     cwd: undefined,
     projectTag: undefined,
   });

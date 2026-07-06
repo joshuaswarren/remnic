@@ -1008,6 +1008,8 @@ export interface EngramAccessObserveRequest {
   namespace?: string;
   authenticatedPrincipal?: string;
   skipExtraction?: boolean;
+  /** Optional idempotency key (issue #1649): a retried POST with the same key is deduplicated server-side; divergent reuse is a conflict. */
+  idempotencyKey?: string;
   /**
    * Working directory of the calling agent session (issue #569 wiring).
    * When provided and no `codingContext` is attached for this session,
@@ -1067,6 +1069,8 @@ export interface EngramAccessObserveResponse {
   scopeDebug?: EngramAccessScopeDebug;
   lcmArchived: boolean;
   extractionQueued: boolean;
+  /** True when replayed from the idempotency cache (issue #1649); lets the HTTP surface skip the write-quota slot, matching memory_store replay semantics. */
+  idempotencyReplay?: boolean;
 }
 
 export interface EngramAccessLcmSearchRequest {
@@ -2523,8 +2527,8 @@ export class EngramAccessService {
     }
   }
 
-  private async handleIdempotentWrite<T extends EngramAccessWriteResponse>(options: {
-    operation: T["operation"];
+  private async handleIdempotentWrite<T extends { idempotencyReplay?: boolean }>(options: {
+    operation: string;
     idempotencyKey?: string;
     requestFingerprint: unknown;
     skip?: boolean;
@@ -5701,6 +5705,27 @@ export class EngramAccessService {
   }
 
   async observe(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
+    // Issue #1649: dedup retried observe POSTs server-side. A retry with the
+    // same `idempotencyKey` replays the cached response and skips every side
+    // effect (LCM/extraction/objective-state); divergent payload reuse is a
+    // conflict (same contract as memory_store). Validation + effects live in
+    // `runObserve`, reached only on a cache miss.
+    return this.handleIdempotentWrite<EngramAccessObserveResponse>({
+      operation: "observe",
+      idempotencyKey: request.idempotencyKey,
+      requestFingerprint: {
+        sessionKey: request.sessionKey,
+        messages: request.messages,
+        namespace: request.namespace,
+        skipExtraction: request.skipExtraction,
+        cwd: request.cwd,
+        projectTag: request.projectTag,
+      },
+      execute: () => this.runObserve(request),
+    });
+  }
+
+  private async runObserve(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
     if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
       throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
     }

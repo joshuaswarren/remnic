@@ -1,0 +1,186 @@
+/**
+ * #1649: a retried observe POST (same `idempotencyKey`) must be deduplicated
+ * server-side — the batch is ingested exactly once even when the HTTP response
+ * is lost and the client replays the request. Without the key the daemon
+ * re-runs every side effect under `skipDedupeCheck: true` and the turn is
+ * queued for extraction twice.
+ *
+ * Verified here against the `EngramAccessService.observe` path with a stub
+ * orchestrator that records every namespace-bearing side effect (LCM enqueue +
+ * extraction replay), the same probe shape used by the #1495 observe-scope
+ * tests. The idempotency store is filesystem-backed, so `memoryDir` is a real
+ * temp directory (not the synthetic path the scope tests use, which never touch
+ * the store because they omit the key).
+ */
+import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import test from "node:test";
+
+import { EngramAccessService } from "./access-service.js";
+import { EngramAccessInputError } from "./access-service.js";
+import { Orchestrator } from "./orchestrator.js";
+import type { EngramAccessObserveRequest } from "./access-service.js";
+import type { CodingContext, PluginConfig } from "./types.js";
+
+interface ObserveProbe {
+  orch: Orchestrator;
+  contexts: Map<string, CodingContext>;
+  lcmCalls: Array<{ sessionKey: string }>;
+  extractionCalls: Array<{
+    sessionKeys: string[];
+    writeNamespaceOverride?: string;
+    principalOverride?: string;
+  }>;
+}
+
+function makeObserveProbe(memoryDir: string): ObserveProbe {
+  const contexts = new Map<string, CodingContext>();
+  const lcmCalls: ObserveProbe["lcmCalls"] = [];
+  const extractionCalls: ObserveProbe["extractionCalls"] = [];
+
+  const config = {
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    namespacePolicies: [
+      { name: "pi-geek", readPrincipals: ["pi-geek"], writePrincipals: ["pi-geek"] },
+    ],
+    codingMode: { projectScope: true },
+    memoryDir,
+    // Disable objective-state snapshots so the probe doesn't need a writable
+    // storage backend — the idempotency contract under test is LCM + extraction.
+    objectiveStateMemoryEnabled: false,
+    objectiveStateSnapshotWritesEnabled: false,
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "pi-geek:", principal: "pi-geek" }],
+    recallCrossNamespaceBudgetEnabled: false,
+    recallCrossNamespaceBudgetWindowMs: 60_000,
+    recallCrossNamespaceBudgetSoftLimit: 10,
+    recallCrossNamespaceBudgetHardLimit: 30,
+  } as unknown as PluginConfig;
+
+  const orch = {
+    config,
+    getCodingContextForSession: (sk: string | undefined) =>
+      (sk ? contexts.get(sk) : null) ?? null,
+    setCodingContextForSession: (sk: string, ctx: CodingContext | null) => {
+      if (ctx === null) contexts.delete(sk);
+      else contexts.set(sk, ctx);
+    },
+    applyCodingNamespaceOverlay: (sk: string | undefined, base: string) =>
+      Orchestrator.prototype.applyCodingNamespaceOverlay.call(orch, sk, base),
+    getStorage: async (ns: string) => ({ dir: join(memoryDir, "storage", ns) }),
+    lcmEngine: {
+      enabled: true,
+      enqueueObserveMessages: (sessionKey: string) => {
+        lcmCalls.push({ sessionKey });
+      },
+    },
+    ingestReplayBatch: async (
+      turns: Array<{ sessionKey: string }>,
+      options: { writeNamespaceOverride?: string; principalOverride?: string } = {},
+    ) => {
+      extractionCalls.push({
+        sessionKeys: turns.map((t) => t.sessionKey),
+        writeNamespaceOverride: options.writeNamespaceOverride,
+        principalOverride: options.principalOverride,
+      });
+    },
+  } as unknown as Orchestrator;
+
+  return { orch, contexts, lcmCalls, extractionCalls };
+}
+
+function observeRequest(
+  overrides: Partial<EngramAccessObserveRequest>,
+): EngramAccessObserveRequest {
+  return {
+    sessionKey: "pi-geek:abc123",
+    messages: [
+      { role: "user", content: "what database are we using?" },
+      { role: "assistant", content: "we use postgres for the primary store" },
+    ],
+    ...overrides,
+  } as EngramAccessObserveRequest;
+}
+
+test("#1649 a retried observe with the same idempotencyKey is deduplicated to a single ingest", async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-idem-"));
+  try {
+    const probe = makeObserveProbe(memoryDir);
+    const service = new EngramAccessService(probe.orch);
+    const key = "observe-batch-pi-geek-abc123-#1";
+
+    const first = await service.observe(observeRequest({ idempotencyKey: key }));
+    // First attempt is a real ingest.
+    assert.equal(first.idempotencyReplay, undefined, "first attempt is not a replay");
+    assert.equal(probe.extractionCalls.length, 1, "first attempt ingests once");
+    assert.equal(probe.lcmCalls.length, 1, "first attempt archives LCM once");
+
+    // Retry: same key, same payload — the daemon already processed the body, so
+    // this is the response-lost-after-process case the issue describes.
+    const second = await service.observe(observeRequest({ idempotencyKey: key }));
+    assert.equal(second.idempotencyReplay, true, "retry is served from the cache");
+    assert.equal(second.accepted, first.accepted, "retry reports the same accepted count");
+    assert.equal(
+      second.effectiveNamespace,
+      first.effectiveNamespace,
+      "retry reports the same effective namespace",
+    );
+
+    // The defining contract: NO second ingest, NO second LCM archive.
+    assert.equal(probe.extractionCalls.length, 1, "retry must not queue extraction a second time");
+    assert.equal(probe.lcmCalls.length, 1, "retry must not archive LCM a second time");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#1649 observe without an idempotencyKey is never deduplicated (backward compatible)", async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-nokey-"));
+  try {
+    const probe = makeObserveProbe(memoryDir);
+    const service = new EngramAccessService(probe.orch);
+
+    await service.observe(observeRequest({}));
+    await service.observe(observeRequest({}));
+
+    assert.equal(probe.extractionCalls.length, 2, "no key ⇒ both calls ingest");
+    assert.equal(probe.lcmCalls.length, 2, "no key ⇒ both calls archive LCM");
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#1649 reusing an idempotencyKey with a divergent payload is rejected as a conflict", async () => {
+  const memoryDir = mkdtempSync(join(tmpdir(), "remnic-observe-conflict-"));
+  try {
+    const probe = makeObserveProbe(memoryDir);
+    const service = new EngramAccessService(probe.orch);
+    const key = "observe-batch-pi-geek-abc123-#2";
+
+    await service.observe(observeRequest({ idempotencyKey: key }));
+
+    // Same key, DIFFERENT messages — a stale key must never silently mask a
+    // unrelated batch. Same contract as memory_store/suggestion_submit.
+    await assert.rejects(
+      service.observe(
+        observeRequest({
+          idempotencyKey: key,
+          messages: [
+            { role: "user", content: "completely different question" },
+            { role: "assistant", content: "completely different answer" },
+          ],
+        }),
+      ),
+      (err: unknown) =>
+        err instanceof EngramAccessInputError &&
+        /idempotencyKey reuse conflict/.test(err.message),
+      "divergent payload under a reused key must throw a conflict",
+    );
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
