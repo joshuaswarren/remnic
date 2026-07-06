@@ -19135,17 +19135,17 @@ export class Orchestrator {
       }
     }
     if (longTerm.length === 0) {
+      // Deadline-aware abort: terminate the scoring worker when the shared
+      // assembly deadline wins, not just when the caller aborts (#1674).
+      const da = new AbortController();
+      if (options.abortSignal?.aborted) da.abort();
+      else options.abortSignal?.addEventListener("abort", () => da.abort(), { once: true });
       longTerm = await runColdStepWithinDeadline(
-        "archive scan",
-        [],
-        () =>
-          this.searchLongTermArchiveFallback(
-            options.prompt,
-            options.recallNamespaces,
-            options.recallResultLimit,
-            options.queryAwarePrefilter,
-            options.abortSignal,
-          ),
+        "archive scan", [],
+        () => this.searchLongTermArchiveFallback(
+          options.prompt, options.recallNamespaces, options.recallResultLimit,
+          options.queryAwarePrefilter, da.signal),
+        () => da.abort(),
       );
       if (longTerm.length > 0) {
         log.debug("cold-tier recall source=archive-scan");
