@@ -44,7 +44,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--held-out",
         type=Path,
-        help="Held-out JSONL (gold labels). If omitted, eval is not run.",
+        help="Held-out JSONL (gold labels). Required to score.",
+    )
+    parser.add_argument(
+        "--predictions",
+        type=Path,
+        help=(
+            "Model-inference output JSONL (one row per held-out turn, with a "
+            "'label' and optional 'corrections[]'). REQUIRED: scoring gold "
+            "labels against themselves is refused (no fabricated evals, rule 55)."
+        ),
     )
     parser.add_argument(
         "--latency-samples",
@@ -112,17 +121,27 @@ def main(argv: list[str] | None = None) -> int:
     if not args.held_out or not args.held_out.is_file():
         print(
             "eval.py: --held-out <gold.jsonl> is required to score the model.\n"
-            "  The actual scoring loop lands in the #1585 GPU-run follow-up.\n"
             "  No manifest eval block is written without a real run (rule 55).",
             file=sys.stderr,
         )
         return 2
 
+    # Predictions MUST come from model inference. Scoring gold against itself
+    # (pred == gold) would emit perfect detection/span metrics with no trained
+    # checkpoint loaded — a fabrication that could be copied into the manifest
+    # (codex P1). Refuse it; the model-inference loop lands in the #1585 GPU-run
+    # follow-up, or an operator supplies --predictions from a served model.
+    if not args.predictions or not args.predictions.is_file():
+        print(
+            "eval.py: --predictions <model-output.jsonl> is required to score the model.\n"
+            "  Run the trained checkpoint's inference over the held-out split first;\n"
+            "  scoring gold labels against themselves is refused (no fabricated evals, rule 55).",
+            file=sys.stderr,
+        )
+        return 2
+
     gold_rows = load_jsonl(args.held_out)
-    # The model-inference loop is GPU-gated. Demonstrate the held-out block
-    # assembly against the GOLD labels (pred == gold) so the metric shape is
-    # exercised; a real run replaces this with model predictions.
-    pred_rows = gold_rows
+    pred_rows = load_jsonl(args.predictions)
     block = correction_held_out_block(
         _gold_labels(gold_rows),
         _gold_labels(pred_rows),
@@ -132,7 +151,10 @@ def main(argv: list[str] | None = None) -> int:
     out: dict[str, Any] = {"heldOut": block}
     if args.latency_samples and args.latency_samples.is_file():
         samples = [float(x) for x in args.latency_samples.read_text().splitlines() if x.strip()]
-        out["heldOutLatencyMs"] = summarize(samples)
+        if samples:
+            out["heldOutLatencyMs"] = summarize(samples)
+        else:
+            print("eval.py: --latency-samples file has no non-blank lines; skipping latency block.", file=sys.stderr)
 
     print(json.dumps({"task": "correction-intent", "eval": out}, indent=2))
     print(
