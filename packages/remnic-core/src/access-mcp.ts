@@ -128,6 +128,9 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
   "engram.codegraph_manage_adr": "codegraph_manage_adr",
   "engram.codegraph_ingest_traces": "codegraph_ingest_traces",
   "engram.coding_delta": "coding_delta",
+  // Correction Contract (issue #1580) — one plan/apply pipeline.
+  "engram.memory_correct_plan": "memory_correct_plan",
+  "engram.memory_correct_apply": "memory_correct_apply",
 };
 
 function resolveChatGptInspectorRecallSessionKey(
@@ -356,6 +359,14 @@ export class EngramMcpServer {
   private readonly codegraphVisible: boolean;
   private readonly sessionDeltaVisible: boolean;
   /**
+   * Whether the two correction tools (memory_correct_plan / memory_correct_apply)
+   * should appear in `tools/list` (issue #1580). Gated on `correction.enabled`
+   * (default true — plan is read-only; safe on). When false the tools array is
+   * byte-identical to pre-feature.
+   */
+  private readonly correctionVisible: boolean;
+
+  /**
    * Whether the `memory_chat` tool should appear in `tools/list` (issue
    * #1583). Gated on `chat.enabled`. When false the tools array is
    * byte-identical to pre-feature (rule 39).
@@ -373,6 +384,7 @@ export class EngramMcpServer {
       architectureCardVisible?: boolean;
       codegraphVisible?: boolean;
       sessionDeltaVisible?: boolean;
+      correctionVisible?: boolean;
       chatVisible?: boolean;
     } = {},
   ) {
@@ -383,6 +395,8 @@ export class EngramMcpServer {
     this.architectureCardVisible = options.architectureCardVisible === true;
     this.codegraphVisible = options.codegraphVisible === true;
     this.sessionDeltaVisible = options.sessionDeltaVisible === true;
+    // correction defaults to visible (enabled by default — plan is read-only).
+    this.correctionVisible = options.correctionVisible !== false;
     this.chatVisible = options.chatVisible === true;
     this.authenticatedPrincipal =
       options.principal?.trim() ||
@@ -2157,6 +2171,58 @@ export class EngramMcpServer {
         this.emitLegacyTools,
       );
       this.tools = [...this.tools, ...deltaTools];
+    }
+    if (this.correctionVisible) {
+      // Correction Contract (issue #1580) — one plan/apply pipeline for every
+      // memory correction. Both tools dispatch through the boundary operations
+      // (memory_correct_plan / memory_correct_apply) which delegate to the
+      // CorrectionService.
+      const planTool = withToolAliases(
+        {
+          name: "engram.memory_correct_plan",
+          description:
+            "Plan a memory correction from a plain-language statement (issue #1580). Returns a CorrectionPlan with a diff preview; apply via memory_correct_apply.",
+          inputSchema: {
+            type: "object",
+            properties: {
+              text: {
+                type: "string",
+                description: "The natural-language correction (e.g. \"we migrated to MySQL in March\").",
+              },
+              targetIds: {
+                type: "array",
+                items: { type: "string" },
+                description: "Optional explicit target memory ids. When omitted, the planner searches.",
+              },
+              sessionKey: { type: "string", description: "Session identifier for namespace resolution." },
+              namespace: { type: "string", description: "Optional explicit namespace (validated by policy)." },
+            },
+            required: ["text"],
+            additionalProperties: false,
+          },
+        },
+        this.emitLegacyTools,
+      );
+      const applyTool = withToolAliases(
+        {
+          name: "engram.memory_correct_apply",
+          description:
+            "Apply a planned memory correction by planId (issue #1580). Requires confirm: true when correction.applyRequiresConfirm is on (default).",
+          inputSchema: {
+            type: "object",
+            properties: {
+              planId: { type: "string", description: "The plan id returned by memory_correct_plan." },
+              confirm: { type: "boolean", description: "Must be true to apply (safety guard, rule 48)." },
+              sessionKey: { type: "string", description: "Session identifier for namespace resolution." },
+              namespace: { type: "string", description: "Optional explicit namespace (validated by policy)." },
+            },
+            required: ["planId"],
+            additionalProperties: false,
+          },
+        },
+        this.emitLegacyTools,
+      );
+      this.tools = [...this.tools, ...planTool, ...applyTool];
     }
     if (this.chatVisible) {
       const chatTools = withToolAliases(

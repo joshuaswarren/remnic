@@ -348,7 +348,27 @@ export type DeadCodeResult =
  * and slices `[span_start, span_end)` from the on-disk bytes.
  */
 export interface SnippetQuery {
-  qualifiedName: string;
+  /**
+   * Qualified name to resolve. Optional when `nodeId` is supplied — the
+   * guard requires at least one of the two.
+   */
+  qualifiedName?: string;
+  /**
+   * Optional repo root override. When set, the snippet is read from this
+   * root instead of the root captured at GraphStore.open() time, so a
+   * caller that supplies its own repoRoot (e.g. semanticQuery) hydrates
+   * snippets even when the store was opened without one (chatgpt-codex-
+   * connector + cursor: 'Snippet hydration ignores query repoRoot').
+   */
+  repoRoot?: string;
+  /**
+   * Optional deterministic node id. When set, the lookup resolves by
+   * `nodes.id` (unique) instead of `qualified_name`, so a hit whose
+   * qualified name is duplicated across files still hydrates the exact
+   * node's snippet instead of failing with `ambiguous_name`
+   * (chatgpt-codex-connector P2: 'Hydrate snippets by node id as well').
+   */
+  nodeId?: string;
   /**
    * Optional lines of context to include before and after the span
    * (default 0 — exact span only). Context is line-aligned: the slice
@@ -609,6 +629,18 @@ export class GraphStore {
   private readonly repoRoot: string | undefined;
   private closed = false;
   private closing = false;
+  /**
+   * True once close() has begun (closing) or completed (closed). Public so
+   * callers that hold a GraphStore reference can return the documented
+   * 'store_closed' degradation code instead of treating a closed store as
+   * an empty graph (cursor Bugbot: 'Closed store reports success'). The
+   * read primitives already short-circuit on this internally; this getter
+   * lets the semantic entry points do the same BEFORE calling a read that
+   * would return [].
+   */
+  get isClosed(): boolean {
+    return this.closed || this.closing;
+  }
   // Shared drain-and-close promise so a second close() called while the
   // first is still draining awaits the same completion instead of
   // resolving early (chatgpt-codex-connector P2: 'Wait for an
@@ -2325,9 +2357,13 @@ export class GraphStore {
     if (query == null || typeof query !== "object") {
       return { ok: false, code: "invalid_query" };
     }
+    // Prefer a deterministic node id when supplied — it is unique, so it
+    // never hits the qualified-name ambiguity path.
+    const hasNodeId = typeof query.nodeId === "string" && query.nodeId.length > 0;
     if (
-      typeof query.qualifiedName !== "string" ||
-      query.qualifiedName.length === 0
+      !hasNodeId &&
+      (typeof query.qualifiedName !== "string" ||
+        query.qualifiedName.length === 0)
     ) {
       return { ok: false, code: "invalid_query" };
     }
@@ -2345,7 +2381,10 @@ export class GraphStore {
     ) {
       return { ok: false, code: "invalid_query" };
     }
-    if (this.repoRoot === undefined) {
+    const root = typeof query.repoRoot === "string" && query.repoRoot.length > 0
+      ? query.repoRoot
+      : this.repoRoot;
+    if (root === undefined) {
       return { ok: false, code: "repo_root_unset" };
     }
     // Wrap the DB lookup in try/catch (cursor Bugbot: 'SQLite errors
@@ -2372,9 +2411,9 @@ export class GraphStore {
             `SELECT n.id, n.qualified_name, n.span_start, n.span_end, n.lang,
                     f.path AS file_path
                FROM nodes n JOIN files f ON n.file_id = f.id
-              WHERE n.qualified_name = ?`,
+              WHERE ${hasNodeId ? "n.id = ?" : "n.qualified_name = ?"}`,
           )
-          .all(query.qualifiedName),
+          .all(hasNodeId ? query.nodeId : query.qualifiedName),
         ["id", "qualified_name", "file_path", "span_start", "span_end", "lang"],
       );
     } catch (error) {
@@ -2384,7 +2423,7 @@ export class GraphStore {
     if (rows.length === 0) return { ok: false, code: "not_found" };
     if (rows.length > 1) return { ok: false, code: "ambiguous_name" };
     const node = rows[0]!;
-    const absolutePath = path.resolve(this.repoRoot, node.file_path);
+    const absolutePath = path.resolve(root, node.file_path);
     // Read the file from disk and slice the span. readFile is the
     // single fs call — no streaming, no mmap, just one allocation per
     // request. The store caches nothing; the caller may.
@@ -2482,6 +2521,293 @@ export class GraphStore {
       endByte: node.span_end,
       text,
       lang: node.lang,
+    };
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Semantic layer (issue #1556): symbol_vectors table read/write.
+  // The db is private; these methods are the ONLY surface the semantic
+  // indexer/query path uses. Vectors are float32 BLOBs; content_hash is
+  // the canonical-text hash (rule 37 — the cache invalidation key).
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Upsert one symbol vector. Idempotent on (node_id, model_id). The
+   * caller (the semantic indexer) has ALREADY decided to re-embed (the
+   * content_hash differs from the cached row); this method just persists.
+   */
+  async writeSymbolVector(input: {
+    readonly nodeId: string;
+    readonly modelId: string;
+    readonly contentHash: string;
+    readonly dims: number;
+    readonly vector: Float32Array;
+  }): Promise<boolean> {
+    // Honor the closing flag (not just closed) and serialize via the write
+    // queue, matching upsertFileBatch / upsertEdges / clearSemanticSimilarToEdges
+    // — otherwise concurrent graph ingestion can interleave a vector upsert
+    // with a transactional node delete (cursor Bugbot: 'Vector writes ignore
+    // closing flag' + 'Vector writes bypass write queue').
+    if (this.closed || this.closing) return false;
+    const buf = Buffer.from(input.vector.buffer, input.vector.byteOffset, input.vector.byteLength);
+    await this.queue.schedule(async () => {
+      this.db
+        .prepare(
+          `INSERT INTO symbol_vectors (node_id, model_id, content_hash, dims, vector)
+             VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(node_id, model_id) DO UPDATE SET
+             content_hash = excluded.content_hash,
+             dims = excluded.dims,
+             vector = excluded.vector`,
+        )
+        .run(input.nodeId, input.modelId, input.contentHash, input.dims, buf);
+    });
+    return true;
+  }
+
+  /**
+   * Read one vector row by (node_id, model_id). Returns null when absent.
+   * Used by the indexer's cache-check path (skip re-embed when content_hash
+   * matches) and by the cache-hit test.
+   */
+  readSymbolVector(
+    nodeId: string,
+    modelId: string,
+  ): { readonly contentHash: string; readonly dims: number; readonly vector: Float32Array } | null {
+    if (this.closed) return null;
+    const row = expectRow<{ content_hash: string; dims: number; vector: Uint8Array }>(
+      this.db
+        .prepare(
+          `SELECT content_hash, dims, vector FROM symbol_vectors
+            WHERE node_id = ? AND model_id = ?`,
+        )
+        .get(nodeId, modelId),
+      ["content_hash", "dims", "vector"],
+    );
+    if (!row) return null;
+    return {
+      contentHash: row.content_hash,
+      dims: row.dims,
+      vector: new Float32Array(row.vector.buffer, row.vector.byteOffset, row.vector.byteLength / 4),
+    };
+  }
+
+  /**
+   * Read every vector row for a given model. Used by brute-force cosine
+   * retrieval (SIMILAR_TO confirmation + semantic_query). Returns node
+   * metadata alongside the vector so callers can hydrate hits without a
+   * second round-trip.
+   */
+  readAllSymbolVectors(modelId: string): readonly {
+    readonly nodeId: string;
+    readonly qualifiedName: string;
+    readonly filePath: string;
+    readonly kind: string;
+    readonly dims: number;
+    readonly vector: Float32Array;
+    readonly contentHash: string;
+  }[] {
+    if (this.closed) return [];
+    const rows = expectRows<{
+      node_id: string;
+      qualified_name: string;
+      label: string;
+      file_path: string;
+      dims: number;
+      vector: Uint8Array;
+      content_hash: string;
+    }>(
+      this.db
+        .prepare(
+          `SELECT sv.node_id, sv.dims, sv.vector, sv.content_hash,
+                  n.qualified_name, n.label, f.path AS file_path
+             FROM symbol_vectors sv
+             JOIN nodes n ON sv.node_id = n.id
+             JOIN files f ON n.file_id = f.id
+            WHERE sv.model_id = ?`,
+        )
+        .all(modelId),
+      ["node_id", "qualified_name", "label", "file_path", "dims", "vector", "content_hash"],
+    );
+    return rows.map((r) => ({
+      nodeId: r.node_id,
+      qualifiedName: r.qualified_name,
+      filePath: r.file_path,
+      kind: r.label,
+      dims: r.dims,
+      contentHash: r.content_hash,
+      vector: new Float32Array(r.vector.buffer, r.vector.byteOffset, r.vector.byteLength / 4),
+    }));
+  }
+
+  /**
+   * Delete vector rows for a set of node ids (all models). Used by the
+   * cache-invalidation path when a symbol's canonical text changed AND
+   * it could not be re-embedded (provider gone) — the stale vector must
+   * not survive to pollute cosine retrieval. Cascades via the schema's
+   * ON DELETE CASCADE on nodes(id) when a node is pruned, so this method
+   * is only for the targeted-invalidation path.
+   */
+  async deleteSymbolVectors(nodeIds: readonly string[]): Promise<void> {
+    // Same closing-flag + write-queue discipline as writeSymbolVector
+    // (cursor Bugbot: 'Vector writes ignore closing flag' + 'Vector writes
+    // bypass write queue').
+    if (this.closed || this.closing || nodeIds.length === 0) return;
+    await this.queue.schedule(async () => {
+      this.runChunkedDelete(
+        "DELETE FROM symbol_vectors WHERE node_id IN (%PH%)",
+        nodeIds,
+      );
+    });
+  }
+
+  /**
+   * Remove every SIMILAR_TO edge written by the semantic similarity
+   * pipeline (type 'SIMILAR_TO', provenance 'semantic'). The pipeline
+   * recomputes the FULL near-clone edge set on each run, so callers MUST
+   * clear the prior set before upserting the new one — otherwise an edge
+   * between two symbols that stopped being similar survives indefinitely
+   * and graph traversal keeps reporting a stale clone relationship
+   * (chatgpt-codex-connector P2: 'Replace old SIMILAR_TO edges on
+   * recompute'). Scoped to provenance 'semantic' so non-semantic edges
+   * are untouched. Serialized via the write queue so it cannot interleave
+   * a concurrent file-batch edge upsert.
+   */
+  async clearSemanticSimilarToEdges(): Promise<void> {
+    if (this.closed || this.closing) return;
+    await this.queue.schedule(async () => {
+      this.db
+        .prepare("DELETE FROM edges WHERE type = ? AND provenance = ?")
+        .run("SIMILAR_TO", "semantic");
+    });
+  }
+
+  /**
+   * Read every node with its file path + span, for the semantic indexer.
+   * The indexer reads source text from disk (via repoRoot) and builds
+   * canonical text per node. Returns kind + qualified_name + span so the
+   * indexer can reconstruct the SymbolIR-equivalent without a second
+   * join. Ordered by qualified_name for deterministic processing order.
+   */
+  readNodesForSemantic(): readonly {
+    readonly nodeId: string;
+    readonly qualifiedName: string;
+    readonly kind: string;
+    readonly filePath: string;
+    readonly startByte: number;
+    readonly endByte: number;
+    readonly lang: string;
+  }[] {
+    if (this.closed) return [];
+    const rows = expectRows<{
+      id: string;
+      qualified_name: string;
+      label: string;
+      file_path: string;
+      span_start: number;
+      span_end: number;
+      lang: string;
+    }>(
+      this.db
+        .prepare(
+          `SELECT n.id, n.qualified_name, n.label, n.span_start, n.span_end, n.lang,
+                  f.path AS file_path
+             FROM nodes n JOIN files f ON n.file_id = f.id
+            ORDER BY n.qualified_name ASC`,
+        )
+        .all(),
+      ["id", "qualified_name", "label", "file_path", "span_start", "span_end", "lang"],
+    );
+    return rows.map((r) => ({
+      nodeId: r.id,
+      qualifiedName: r.qualified_name,
+      kind: r.label,
+      filePath: r.file_path,
+      startByte: r.span_start,
+      endByte: r.span_end,
+      lang: r.lang,
+    }));
+  }
+
+  /**
+   * Read the callers and callees of a node by qualified name, for
+   * semantic_query hydration (the issue: hydrate each hit with graph
+   * context — defining file, direct callers/callees).
+   */
+  readNeighbors(
+    qualifiedName: string,
+  ): { readonly callers: readonly string[]; readonly callees: readonly string[] } {
+    if (this.closed) return { callers: [], callees: [] };
+    // Resolve the node id first.
+    const nodeRow = expectRow<{ id: string }>(
+      this.db
+        .prepare("SELECT id FROM nodes WHERE qualified_name = ?")
+        .get(qualifiedName),
+      ["id"],
+    );
+    if (!nodeRow) return { callers: [], callees: [] };
+    const id = nodeRow.id;
+    // Callers: nodes that CALL this node (edges where dst = id, type CALLS).
+    const callerRows = expectRows<{ qualified_name: string }>(
+      this.db
+        .prepare(
+          `SELECT n.qualified_name FROM edges e
+             JOIN nodes n ON e.src = n.id
+            WHERE e.dst = ? AND e.type = 'CALLS'`,
+        )
+        .all(id),
+      ["qualified_name"],
+    );
+    // Callees: nodes this node CALLS (edges where src = id, type CALLS).
+    const calleeRows = expectRows<{ qualified_name: string }>(
+      this.db
+        .prepare(
+          `SELECT n.qualified_name FROM edges e
+             JOIN nodes n ON e.dst = n.id
+            WHERE e.src = ? AND e.type = 'CALLS'`,
+        )
+        .all(id),
+      ["qualified_name"],
+    );
+    return {
+      callers: callerRows.map((r) => r.qualified_name),
+      callees: calleeRows.map((r) => r.qualified_name),
+    };
+  }
+
+  /**
+   * Read callers/callees by node id directly (avoids the qualified-name
+   * ambiguity when duplicate names exist across files). Used by
+   * semantic_query hydration (chatgpt-codex-connector: 'Use the hit node
+   * id when hydrating neighbors').
+   */
+  readNeighborsByNodeId(
+    nodeId: string,
+  ): { readonly callers: readonly string[]; readonly callees: readonly string[] } {
+    if (this.closed) return { callers: [], callees: [] };
+    const callerRows = expectRows<{ qualified_name: string }>(
+      this.db
+        .prepare(
+          `SELECT n.qualified_name FROM edges e
+             JOIN nodes n ON e.src = n.id
+            WHERE e.dst = ? AND e.type = 'CALLS'`,
+        )
+        .all(nodeId),
+      ["qualified_name"],
+    );
+    const calleeRows = expectRows<{ qualified_name: string }>(
+      this.db
+        .prepare(
+          `SELECT n.qualified_name FROM edges e
+             JOIN nodes n ON e.dst = n.id
+            WHERE e.src = ? AND e.type = 'CALLS'`,
+        )
+        .all(nodeId),
+      ["qualified_name"],
+    );
+    return {
+      callers: callerRows.map((r) => r.qualified_name),
+      callees: calleeRows.map((r) => r.qualified_name),
     };
   }
 }

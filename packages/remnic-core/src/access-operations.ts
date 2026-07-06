@@ -16,6 +16,8 @@ import { z } from "zod";
 
 import { defineOperation } from "./access-boundary.js";
 import { memoryStoreRequestSchema, type MemoryStoreRequest } from "./access-schema.js";
+import { EngramAccessInputError } from "./access-service.js";
+import { CorrectionContractError } from "./correction/correction-contract.js";
 import type {
   EngramAccessMemoryResponse,
   EngramAccessWriteResponse,
@@ -345,6 +347,124 @@ export const codingDeltaOperation = defineOperation<
 });
 
 // ---------------------------------------------------------------------------
+// memory_correct_plan / memory_correct_apply — Correction Contract (#1580)
+// ---------------------------------------------------------------------------
+//
+// One plan/apply pipeline for every memory correction (supersession,
+// invalidation, tombstone, edit, rescope, redaction). The MCP/HTTP/CLI
+// surfaces all dispatch through these two ops so the boundary's validation +
+// error mapping reach every correction path (rule 22 / 39).
+
+const memoryCorrectPlanSchema = z.preprocess(
+  (data) => {
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+        if (v !== null) out[k] = v;
+      }
+      return out;
+    }
+    return data;
+  },
+  z.object({
+    text: z.string().trim().min(1).max(10_000),
+    targetIds: z.array(z.string().trim().min(1).max(512)).optional(),
+    sessionKey: z.string().trim().max(512).optional(),
+    namespace: z.string().trim().max(256).optional(),
+  }),
+);
+
+export interface MemoryCorrectPlanInput {
+  text: string;
+  targetIds?: string[];
+  sessionKey?: string;
+  namespace?: string;
+}
+
+export interface MemoryCorrectPlanOutput {
+  readonly result: unknown; // CorrectionPlan — opaque to the boundary
+}
+
+export const memoryCorrectPlanOperation = defineOperation<
+  MemoryCorrectPlanInput,
+  MemoryCorrectPlanOutput
+>({
+  name: "memory_correct_plan",
+  description:
+    "Plan a memory correction from a plain-language statement (issue #1580). Returns a CorrectionPlan with a diff preview; apply via memory_correct_apply.",
+  schema: memoryCorrectPlanSchema as z.ZodType<MemoryCorrectPlanInput>,
+  handler: async (input, ctx) => {
+    try {
+      const result = await ctx.service.correctionPlan({
+        text: input.text,
+        ...(input.targetIds ? { targetIds: input.targetIds } : {}),
+        ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
+        ...(input.namespace ? { namespace: input.namespace } : {}),
+        ...(ctx.authenticatedPrincipal ? { principal: ctx.authenticatedPrincipal } : {}),
+      });
+      return { result };
+    } catch (err) {
+      if (err instanceof CorrectionContractError) throw new EngramAccessInputError(err.message);
+      throw err;
+    }
+  },
+});
+
+const memoryCorrectApplySchema = z.preprocess(
+  (data) => {
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(data as Record<string, unknown>)) {
+        if (v !== null) out[k] = v;
+      }
+      return out;
+    }
+    return data;
+  },
+  z.object({
+    planId: z.string().trim().min(1).max(512),
+    confirm: z.boolean().optional(),
+    sessionKey: z.string().trim().max(512).optional(),
+    namespace: z.string().trim().max(256).optional(),
+  }),
+);
+
+export interface MemoryCorrectApplyInput {
+  planId: string;
+  confirm?: boolean;
+  sessionKey?: string;
+  namespace?: string;
+}
+
+export interface MemoryCorrectApplyOutput {
+  readonly result: unknown; // CorrectionOutcome — opaque to the boundary
+}
+
+export const memoryCorrectApplyOperation = defineOperation<
+  MemoryCorrectApplyInput,
+  MemoryCorrectApplyOutput
+>({
+  name: "memory_correct_apply",
+  description:
+    "Apply a planned memory correction by planId (issue #1580). Requires confirm: true when correction.applyRequiresConfirm is on (default).",
+  schema: memoryCorrectApplySchema as z.ZodType<MemoryCorrectApplyInput>,
+  handler: async (input, ctx) => {
+    try {
+      const result = await ctx.service.correctionApply(input.planId, {
+        confirm: input.confirm === true,
+        ...(input.sessionKey ? { sessionKey: input.sessionKey } : {}),
+        ...(input.namespace ? { namespace: input.namespace } : {}),
+        ...(ctx.authenticatedPrincipal ? { principal: ctx.authenticatedPrincipal } : {}),
+      });
+      return { result };
+    } catch (err) {
+      if (err instanceof CorrectionContractError) throw new EngramAccessInputError(err.message);
+      throw err;
+    }
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Surface registration map — what each transport calls the pilot ops
 // ---------------------------------------------------------------------------
 
@@ -574,4 +694,6 @@ export const REGISTERED_OPERATIONS = [
   codegraphManageAdrOperation.spec.name,
   codegraphIngestTracesOperation.spec.name,
   codingDeltaOperation.spec.name,
+  memoryCorrectPlanOperation.spec.name,
+  memoryCorrectApplyOperation.spec.name,
 ] as const;

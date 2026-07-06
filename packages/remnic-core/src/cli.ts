@@ -2809,6 +2809,7 @@ export async function runAccessMcpServeCliCommand(
       codegraphVisible: service.codegraphSurfaceVisible,
       sessionDeltaVisible: service.sessionDeltaSurfaceVisible,
       chatVisible: service.configRef?.chat?.enabled === true,
+      correctionVisible: service.correctionSurfaceVisible,
     });
   await server.runStdio(options.stdin ?? process.stdin, options.stdout ?? process.stdout);
   return { ok: true };
