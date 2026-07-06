@@ -188,16 +188,15 @@ export async function planRecallModeLLM(
   prompt: string,
   hints: string[] | undefined,
   config: PluginConfig,
+  caps: CapabilitySet,
   llm?: FallbackLlmClient,
   signal?: AbortSignal,
-  caps?: CapabilitySet,
 ): Promise<RecallPlannerLlmResult> {
   const heuristicMode = planRecallMode(prompt);
 
-  // `caps` is OPTIONAL and additive (issue #1523). Prefer the resolved
-  // capability when supplied; fall back to the config flag so existing callers
-  // that pass only `config` keep identical gating.
-  const plannerLlmEnabled = caps?.recallPlannerLlm ?? config.recallPlannerLlmEnabled;
+  // The recall-operation entry resolved this gate once (issue #1523); read the
+  // capability, never re-derive it from raw config here.
+  const plannerLlmEnabled = caps.recallPlannerLlm;
   if (!plannerLlmEnabled) {
     return heuristicResult(heuristicMode, "heuristic", "llm-disabled", 0, false);
   }
