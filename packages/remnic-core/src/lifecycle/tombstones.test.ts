@@ -502,6 +502,60 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
     await rm(lockPath, { force: true });
   });
 
+  it("rebuild preserves a peer's revocation appended before rebuild acquired the lock (cursor/codex #1639)", async () => {
+    // Regression for the rebuild race: rebuild must re-read the log under the
+    // lock (ensureFreshAgainstDisk) before computing its payload, otherwise a
+    // revocation a peer wrote while rebuild waited for the lock is dropped and
+    // the retired fact silently un-revokes (resurrection).
+    const dir = await mkdtemp(path.join(tmpdir(), "tomb-rebuild-race-"));
+    const filePath = path.join(dir, "tombstones.jsonl");
+    const opts = { enabled: true, semanticMatch: false, semanticThreshold: 0.9, hashContent: computeHash, normalizeText: normalizeContent };
+    const io = makeReadMergeWriteIo();
+    // Store A writes tombstone-1, then goes stale (never sees the peer write).
+    const storeA = new TombstoneStore(filePath, "default", opts, io);
+    const t1 = await storeA.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "fact-rebuild-1",
+      rawContent: "The DB is MySQL.",
+    });
+    // Peer (store B, same file) revokes t1 durably. Store A's in-memory index
+    // is now stale (it still thinks t1 is active).
+    const storeB = new TombstoneStore(filePath, "default", opts, io);
+    await storeB.revoke(t1, "user_correction");
+    // Store A rebuilds from a retired-memory corpus that reconstructs t1.
+    // Without the under-lock re-read, A computes existingRevocations from its
+    // stale index (empty), overwrites the file with [rebuilt-t1], and the
+    // revocation is LOST — t1 is active again (resurrection). With the fix,
+    // ensureFreshAgainstDisk reloads the revocation under the lock and rebuild
+    // preserves it.
+    await storeA.rebuild([
+      {
+        memoryId: "fact-rebuild-1",
+        rawContent: "The DB is MySQL.",
+        reason: "correction" as const,
+        createdBy: "user_correction" as const,
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    ]);
+    // The rebuilt file must still contain the revocation (the retired fact
+    // stays revoked, not silently un-revoked by the rebuild).
+    const raw = await readFile(filePath, "utf8");
+    const rebuiltLines = raw.split("\n").filter((l) => l.trim().length > 0);
+    const hasRevocation = rebuiltLines.some((l) => {
+      try { return JSON.parse(l).kind === "revocation"; } catch { return false; }
+    });
+    assert.ok(hasRevocation, "rebuild dropped the peer's revocation — resurrection risk");
+    // And the rebuilt store A must report the fact as revoked (lookup returns null).
+    await storeA.load();
+    assert.equal(
+      storeA.lookup({ namespace: "default", contentHash: computeHash("The DB is MySQL.") }),
+      null,
+      "revoked fact resurrected after rebuild",
+    );
+    await rm(path.join(dir, "tombstones.lock"), { force: true });
+  });
+
   it("in-process concurrent appends still serialize under the lock", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "tomb-inproc-lock-"));
     const filePath = path.join(dir, "tombstones.jsonl");
