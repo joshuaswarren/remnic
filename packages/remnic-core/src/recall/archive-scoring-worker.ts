@@ -49,7 +49,7 @@ type ScoreReply = { ok: true; results: ArchiveScoreResult[] } | { ok: false; err
  */
 function scoreArchiveMemories(
   items: ReadonlyArray<ArchiveScoreItem>,
-  tokens: ReadonlyArray<string>,
+  tokens: ReadonlyArray<string>
 ): ArchiveScoreResult[] {
   if (items.length === 0 || tokens.length === 0) return [];
 

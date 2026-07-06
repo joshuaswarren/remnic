@@ -17,15 +17,15 @@
  * no longer serialize on the main thread.
  */
 
-import test from "node:test";
 import assert from "node:assert/strict";
 import { performance } from "node:perf_hooks";
+import test from "node:test";
 import {
-  scoreArchiveMemories,
-  memoryFileToScoreItem,
-  SyncArchiveScoring,
-  OffThreadArchiveScoring,
   type ArchiveScoreItem,
+  OffThreadArchiveScoring,
+  SyncArchiveScoring,
+  memoryFileToScoreItem,
+  scoreArchiveMemories,
 } from "../packages/remnic-core/src/recall/archive-scoring.js";
 import type { MemoryFile } from "../packages/remnic-core/src/types.js";
 
@@ -47,9 +47,7 @@ function makeHeavyItems(count: number, matchEveryNth: number): ArchiveScoreItem[
     items.push({
       id: `mem-${i.toString().padStart(4, "0")}`,
       path: `/synthetic/archive/mem-${i.toString().padStart(4, "0")}.md`,
-      content: isMatch
-        ? `important target keyword discovery ${filler}`
-        : `nothing relevant here at all ${filler}`,
+      content: isMatch ? `important target keyword discovery ${filler}` : `nothing relevant here at all ${filler}`,
       category: "fact",
       tags: isMatch ? ["discovery", "target"] : ["misc"],
     });
@@ -149,7 +147,9 @@ test("memoryFileToScoreItem: projects MemoryFile to serializable shape", () => {
 test("OffThreadArchiveScoring produces identical results to SyncArchiveScoring", async (t) => {
   const sync = new SyncArchiveScoring();
   const offThread = new OffThreadArchiveScoring();
-  t.after(async () => { await offThread.terminate(); });
+  t.after(async () => {
+    await offThread.terminate();
+  });
 
   const syncResults = await sync.score(HEAVY_ITEMS, QUERY_TOKENS);
   const offThreadResults = await offThread.score(HEAVY_ITEMS, QUERY_TOKENS);
@@ -180,9 +180,7 @@ test("SyncArchiveScoring serializes K concurrent calls (~K× single-call latency
 
   // Measure K concurrent calls.
   const t1 = performance.now();
-  await Promise.all(
-    Array.from({ length: K }, () => sync.score(HEAVY_ITEMS, QUERY_TOKENS)),
-  );
+  await Promise.all(Array.from({ length: K }, () => sync.score(HEAVY_ITEMS, QUERY_TOKENS)));
   const concurrentMs = performance.now() - t1;
 
   const ratio = concurrentMs / singleMs;
@@ -191,7 +189,7 @@ test("SyncArchiveScoring serializes K concurrent calls (~K× single-call latency
   // allowing scheduling slack). This is the behavior that caused issue #1674.
   assert.ok(
     ratio >= 2.5,
-    `Sync scoring should serialize K=${K} concurrent calls (expected ratio >= 2.5, got ${ratio.toFixed(2)}; single=${singleMs.toFixed(0)}ms concurrent=${concurrentMs.toFixed(0)}ms)`,
+    `Sync scoring should serialize K=${K} concurrent calls (expected ratio >= 2.5, got ${ratio.toFixed(2)}; single=${singleMs.toFixed(0)}ms concurrent=${concurrentMs.toFixed(0)}ms)`
   );
 });
 
@@ -202,7 +200,9 @@ test("SyncArchiveScoring serializes K concurrent calls (~K× single-call latency
 test("OffThreadArchiveScoring parallelizes K concurrent calls (~1× single-call latency)", async (t) => {
   const K = 4;
   const offThread = new OffThreadArchiveScoring();
-  t.after(async () => { await offThread.terminate(); });
+  t.after(async () => {
+    await offThread.terminate();
+  });
 
   // Measure single call.
   const t0 = performance.now();
@@ -211,9 +211,7 @@ test("OffThreadArchiveScoring parallelizes K concurrent calls (~1× single-call 
 
   // Measure K concurrent calls.
   const t1 = performance.now();
-  await Promise.all(
-    Array.from({ length: K }, () => offThread.score(HEAVY_ITEMS, QUERY_TOKENS)),
-  );
+  await Promise.all(Array.from({ length: K }, () => offThread.score(HEAVY_ITEMS, QUERY_TOKENS)));
   const concurrentMs = performance.now() - t1;
 
   const ratio = concurrentMs / singleMs;
@@ -222,7 +220,7 @@ test("OffThreadArchiveScoring parallelizes K concurrent calls (~1× single-call 
   // below the K=4× serialization of sync scoring). This proves the fix.
   assert.ok(
     ratio < 2.0,
-    `Off-thread scoring should parallelize K=${K} concurrent calls (expected ratio < 2.0, got ${ratio.toFixed(2)}; single=${singleMs.toFixed(0)}ms concurrent=${concurrentMs.toFixed(0)}ms)`,
+    `Off-thread scoring should parallelize K=${K} concurrent calls (expected ratio < 2.0, got ${ratio.toFixed(2)}; single=${singleMs.toFixed(0)}ms concurrent=${concurrentMs.toFixed(0)}ms)`
   );
 });
 
@@ -240,7 +238,9 @@ test("SyncArchiveScoring respects pre-existing abort signal", async () => {
 
 test("OffThreadArchiveScoring respects pre-existing abort signal", async (t) => {
   const offThread = new OffThreadArchiveScoring();
-  t.after(async () => { await offThread.terminate(); });
+  t.after(async () => {
+    await offThread.terminate();
+  });
   const controller = new AbortController();
   controller.abort();
   const results = await offThread.score(HEAVY_ITEMS, QUERY_TOKENS, controller.signal);

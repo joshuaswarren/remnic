@@ -25,10 +25,10 @@
 // so the scoring semantics are byte-identical regardless of which path runs.
 // ---------------------------------------------------------------------------
 
-import { Worker } from "node:worker_threads";
 import os from "node:os";
-import type { MemoryFile } from "../types.js";
+import { Worker } from "node:worker_threads";
 import { log } from "../logger.js";
+import type { MemoryFile } from "../types.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Wire types — plain-serializable shapes that cross the worker boundary via
@@ -80,7 +80,7 @@ type ScoreReply = { ok: true; results: ArchiveScoreResult[] } | { ok: false; err
  */
 export function scoreArchiveMemories(
   items: ReadonlyArray<ArchiveScoreItem>,
-  tokens: ReadonlyArray<string>,
+  tokens: ReadonlyArray<string>
 ): ArchiveScoreResult[] {
   if (items.length === 0 || tokens.length === 0) return [];
 
@@ -131,7 +131,7 @@ export interface ArchiveScoringStrategy {
   score(
     items: ReadonlyArray<ArchiveScoreItem>,
     tokens: ReadonlyArray<string>,
-    abortSignal?: AbortSignal,
+    abortSignal?: AbortSignal
   ): Promise<ArchiveScoreResult[]>;
 }
 
@@ -152,7 +152,7 @@ export class SyncArchiveScoring implements ArchiveScoringStrategy {
   async score(
     items: ReadonlyArray<ArchiveScoreItem>,
     tokens: ReadonlyArray<string>,
-    abortSignal?: AbortSignal,
+    abortSignal?: AbortSignal
   ): Promise<ArchiveScoreResult[]> {
     if (abortSignal?.aborted) return [];
     return scoreArchiveMemories(items, tokens);
@@ -169,9 +169,7 @@ export class SyncArchiveScoring implements ArchiveScoringStrategy {
  * at 8 to bound memory overhead (each worker has its own V8 heap).
  */
 function defaultPoolSize(): number {
-  const cpus = typeof os.availableParallelism === "function"
-    ? os.availableParallelism()
-    : os.cpus().length;
+  const cpus = typeof os.availableParallelism === "function" ? os.availableParallelism() : os.cpus().length;
   return Math.max(1, Math.min(Math.max(1, cpus - 1), 8));
 }
 
@@ -206,7 +204,8 @@ class ArchiveScoringWorkerPool {
   }
 
   private async acquire(): Promise<Worker> {
-    if (this.idle.length > 0) return this.idle.pop()!;
+    const idle = this.idle.pop();
+    if (idle) return idle;
     if (this.workers.length < this.targetSize) return this.spawn();
     return new Promise<Worker>((resolve) => this.waiters.push(resolve));
   }
@@ -233,11 +232,7 @@ class ArchiveScoringWorkerPool {
     return worker;
   }
 
-  private dispatch(
-    worker: Worker,
-    task: ScoreTask,
-    abortSignal?: AbortSignal,
-  ): Promise<ArchiveScoreResult[]> {
+  private dispatch(worker: Worker, task: ScoreTask, abortSignal?: AbortSignal): Promise<ArchiveScoreResult[]> {
     return new Promise<ArchiveScoreResult[]>((resolve, reject) => {
       if (abortSignal?.aborted) {
         resolve([]);
@@ -314,7 +309,7 @@ export class OffThreadArchiveScoring implements ArchiveScoringStrategy {
   async score(
     items: ReadonlyArray<ArchiveScoreItem>,
     tokens: ReadonlyArray<string>,
-    abortSignal?: AbortSignal,
+    abortSignal?: AbortSignal
   ): Promise<ArchiveScoreResult[]> {
     if (items.length === 0 || tokens.length === 0) return [];
     if (abortSignal?.aborted) return [];
@@ -326,9 +321,7 @@ export class OffThreadArchiveScoring implements ArchiveScoringStrategy {
         this.pool = new ArchiveScoringWorkerPool();
       } catch (err) {
         this.poolFailed = true;
-        log.debug(
-          `archive-scoring: worker pool unavailable, using sync fallback — ${(err as Error).message}`,
-        );
+        log.debug(`archive-scoring: worker pool unavailable, using sync fallback — ${(err as Error).message}`);
       }
     }
 
@@ -342,9 +335,7 @@ export class OffThreadArchiveScoring implements ArchiveScoringStrategy {
         if (abortSignal?.aborted) return [];
         return results;
       } catch (err) {
-        log.debug(
-          `archive-scoring: worker dispatch failed, using sync fallback — ${(err as Error).message}`,
-        );
+        log.debug(`archive-scoring: worker dispatch failed, using sync fallback — ${(err as Error).message}`);
       }
     }
 
