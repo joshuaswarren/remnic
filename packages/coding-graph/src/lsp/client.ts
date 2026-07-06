@@ -87,6 +87,9 @@ export class LspClient {
     this.child.stdout?.setEncoding("utf8");
     this.child.stdout?.on("data", (chunk: Buffer | string) => this.onStdoutData(chunk));
 
+    // Drain stderr so the OS pipe buffer doesn't fill and block the server.
+    this.child.stderr?.on("data", () => {});
+
     // Unexpected exit → mark crashed, reject all pending.
     this.child.on("exit", (code, signal) => this.onChildExit(code, signal));
     this.child.on("error", (err) => this.onChildError(err));
@@ -456,7 +459,13 @@ export function pathToUri(filePath: string): string {
  */
 export function uriToPath(uri: string): string {
   if (uri.startsWith("file://")) {
-    const rest = uri.slice("file://".length);
+    let rest = uri.slice("file://".length);
+    // Decode percent-encoded characters (e.g. %20 → space) per RFC 8089.
+    try {
+      rest = decodeURIComponent(rest);
+    } catch {
+      // Malformed escape sequence — keep raw path (best-effort).
+    }
     // Windows: file:///C:/foo → C:/foo
     if (/^\/[A-Za-z]:/.test(rest)) {
       return rest.slice(1).replace(/\//g, path.sep);
