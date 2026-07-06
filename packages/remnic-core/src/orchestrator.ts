@@ -13245,13 +13245,13 @@ export class Orchestrator {
     );
     if (targetTurns.length === 0) {
       log.debug("skipping extraction: no non-context turns after normalization");
+      // Context-only turns may still contain corrections (review: "context-only
+      // turns skip capture"). Scan normalizedTurns before clearing the buffer.
+      if (normalizedTurns.length > 0) {
+        await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], { sessionKey, principal: resolvePrincipal(sessionKey, this.config), namespace: this.resolveSelfNamespace(sessionKey), bufferKey, isLiveSession: clearBufferAfterExtraction });
+      }
       await clearBuffer();
-      return {
-        status: "skipped",
-        reason: "empty_normalized_turns",
-        persistedCount: 0,
-        durableOutputCount: 0,
-      };
+      return { status: "skipped", reason: "empty_normalized_turns", persistedCount: 0, durableOutputCount: 0 };
     }
     const sourceValidAt = latestSourceValidAtFromTurns(targetTurns);
     throwIfDeadlineExceeded("before_extract");

@@ -955,6 +955,7 @@ export async function buildBriefing(options: BuildBriefingOptions): Promise<Brie
     sections,
     followupsUnavailableReason,
     window: windowIso,
+    ...(correctionNotifications ? { correctionNotifications } : {}),
   };
 
   if (calendarSourceErrors.length > 0) {
