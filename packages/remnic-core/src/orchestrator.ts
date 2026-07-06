@@ -93,6 +93,7 @@ import {
   gatewayTaskChainOptions,
 } from "./fallback-llm.js";
 import { MaintenanceScheduler } from "./orchestration/maintenance.js";
+import { TierMigrationCoordinator } from "./orchestration/tier-migration-coordinator.js";
 import {
   runLiveConnectorsOnce,
   type LiveConnectorsRunSummary,
@@ -1905,6 +1906,7 @@ export class Orchestrator {
   readonly lastRecall: LastRecallStore;
   readonly handleHistory: RecallHandleHistoryStore;
   readonly tierMigrationStatus: TierMigrationStatusStore;
+  readonly tierMigrationCoordinator: TierMigrationCoordinator;
   /**
    * In-memory X-ray snapshot from the most recent `recall()` call that
    * was invoked with `xrayCapture: true` (issue #570 PR 1).  Scope is
@@ -2022,8 +2024,6 @@ export class Orchestrator {
   private wearablesServiceInstance: WearablesService | null = null;
   private wearablesAutoSyncHandle: { stop(): Promise<void> } | null = null;
   private lastQmdReprobeAtMs = 0;
-  private tierMigrationInFlight = false;
-  private lastTierMigrationRunAtMs = 0;
   private readonly conversationIndexLastUpdateAtMs = new Map<string, number>();
   private lastFileHygieneRunAtMs = 0;
   // Pattern-reinforcement cadence gate (issue #687 PR 2/4).  Tracks the
@@ -2848,6 +2848,14 @@ export class Orchestrator {
       maxDepth: config.recallHandleSnapshotDepth,
     });
     this.tierMigrationStatus = new TierMigrationStatusStore(config.memoryDir);
+    this.tierMigrationCoordinator = new TierMigrationCoordinator({
+      config,
+      getQmd: () => this.qmd,
+      tierMigrationStatus: this.tierMigrationStatus,
+      getUtilityRuntimeValues: () => this.utilityRuntimeValues,
+      getCompounding: () => this.compounding,
+      createColdStorage: (parentDir) => new StorageManager(parentDir),
+    });
     this.sessionObserver = new SessionObserverState({
       memoryDir: config.memoryDir,
       debounceMs: config.sessionObserverDebounceMs ?? 120_000,
@@ -13866,192 +13874,7 @@ export class Orchestrator {
       force?: boolean;
     },
   ): Promise<TierMigrationCycleSummary> {
-    const dryRun = options?.dryRun === true;
-    const persistSkipped = options?.force === true || trigger === "manual";
-    if (!this.config.qmdTierMigrationEnabled && options?.force !== true) {
-      const skipped: TierMigrationCycleSummary = {
-        trigger,
-        scanned: 0,
-        migrated: 0,
-        promoted: 0,
-        demoted: 0,
-        limit: 0,
-        dryRun,
-        skipped: "tier_migration_disabled",
-      };
-      if (persistSkipped) await this.tierMigrationStatus.recordCycle(skipped);
-      return skipped;
-    }
-    if (
-      trigger === "maintenance" &&
-      !this.config.qmdTierAutoBackfillEnabled &&
-      options?.force !== true
-    ) {
-      const skipped: TierMigrationCycleSummary = {
-        trigger,
-        scanned: 0,
-        migrated: 0,
-        promoted: 0,
-        demoted: 0,
-        limit: 0,
-        dryRun,
-        skipped: "maintenance_backfill_disabled",
-      };
-      if (persistSkipped) await this.tierMigrationStatus.recordCycle(skipped);
-      return skipped;
-    }
-    if (this.tierMigrationInFlight) {
-      const skipped: TierMigrationCycleSummary = {
-        trigger,
-        scanned: 0,
-        migrated: 0,
-        promoted: 0,
-        demoted: 0,
-        limit: 0,
-        dryRun,
-        skipped: "migration_in_flight",
-      };
-      if (persistSkipped) await this.tierMigrationStatus.recordCycle(skipped);
-      return skipped;
-    }
-
-    const budgetTrigger = trigger === "manual" ? "maintenance" : trigger;
-    const budget =
-      this.compounding?.tierMigrationCycleBudget(budgetTrigger) ??
-      defaultTierMigrationCycleBudget(this.config, budgetTrigger);
-    const limit =
-      options?.limitOverride !== undefined
-        ? Math.max(0, Math.floor(options.limitOverride))
-        : budget.limit;
-    const nowMs = Date.now();
-    if (
-      options?.force !== true &&
-      nowMs - this.lastTierMigrationRunAtMs < budget.minIntervalMs
-    ) {
-      const skipped: TierMigrationCycleSummary = {
-        trigger,
-        scanned: 0,
-        migrated: 0,
-        promoted: 0,
-        demoted: 0,
-        limit,
-        dryRun,
-        skipped: "min_interval",
-      };
-      if (persistSkipped) await this.tierMigrationStatus.recordCycle(skipped);
-      return skipped;
-    }
-
-    const policy = applyUtilityPromotionRuntimePolicy(
-      {
-        enabled: this.config.qmdTierMigrationEnabled,
-        demotionMinAgeDays: this.config.qmdTierDemotionMinAgeDays,
-        demotionValueThreshold: this.config.qmdTierDemotionValueThreshold,
-        promotionValueThreshold: this.config.qmdTierPromotionValueThreshold,
-      },
-      this.utilityRuntimeValues,
-    );
-
-    this.tierMigrationInFlight = true;
-    try {
-      const coldStorage = new StorageManager(path.join(storage.dir, "cold"));
-      const [hotMemories, coldMemories] = await Promise.all([
-        storage.readAllMemories(),
-        coldStorage.readAllMemories(),
-      ]);
-      const now = new Date();
-      const scanLimit = Math.max(0, Math.floor(budget.scanLimit));
-      const hotScanLimit = Math.min(
-        hotMemories.length,
-        Math.ceil(scanLimit * 0.75),
-      );
-      const coldScanLimit = Math.min(
-        coldMemories.length,
-        Math.max(0, scanLimit - hotScanLimit),
-      );
-      const toTimestamp = (memory: MemoryFile): number =>
-        Date.parse(memory.frontmatter.updated ?? memory.frontmatter.created);
-      const hotCandidates = hotMemories
-        .map((memory) => ({ memory, tier: "hot" as MemoryTier }))
-        .sort((a, b) => toTimestamp(a.memory) - toTimestamp(b.memory))
-        .slice(0, hotScanLimit);
-      const coldCandidates = coldMemories
-        .map((memory) => ({ memory, tier: "cold" as MemoryTier }))
-        .sort((a, b) => toTimestamp(b.memory) - toTimestamp(a.memory))
-        .slice(0, coldScanLimit);
-      const candidates = [...hotCandidates, ...coldCandidates];
-
-      const migration = new TierMigrationExecutor({
-        storage,
-        qmd: this.qmd,
-        hotCollection: this.config.qmdCollection,
-        coldCollection:
-          this.config.qmdColdCollection ?? `${this.config.qmdCollection}-cold`,
-        autoEmbed: this.config.qmdAutoEmbedEnabled,
-      });
-
-      let migrated = 0;
-      let promoted = 0;
-      let demoted = 0;
-      for (const candidate of candidates) {
-        if (migrated >= limit) break;
-        const decision = decideTierTransition(
-          candidate.memory,
-          candidate.tier,
-          policy,
-          now,
-        );
-        if (!decision.changed) continue;
-
-        if (!dryRun) {
-          const res = await migration.migrateMemory({
-            memory: candidate.memory,
-            fromTier: candidate.tier,
-            toTier: decision.nextTier,
-            reason: `${trigger}:${decision.reason}`,
-          });
-          if (!res.changed) continue;
-        }
-        migrated += 1;
-        if (decision.nextTier === "cold") demoted += 1;
-        if (decision.nextTier === "hot") promoted += 1;
-      }
-
-      if (!dryRun) this.lastTierMigrationRunAtMs = Date.now();
-      log.debug(
-        `tier migration cycle completed: trigger=${trigger} scanned=${candidates.length} migrated=${migrated} limit=${limit}${dryRun ? " dryRun=true" : ""}`,
-      );
-      const summary: TierMigrationCycleSummary = {
-        trigger,
-        scanned: candidates.length,
-        migrated,
-        promoted,
-        demoted,
-        limit,
-        dryRun,
-      };
-      const shouldPersistCycle = trigger === "manual" || migrated > 0;
-      if (shouldPersistCycle)
-        await this.tierMigrationStatus.recordCycle(summary);
-      return summary;
-    } catch (err) {
-      this.lastTierMigrationRunAtMs = Date.now();
-      log.warn(`tier migration cycle failed (${trigger}, fail-open): ${err}`);
-      const failed: TierMigrationCycleSummary = {
-        trigger,
-        scanned: 0,
-        migrated: 0,
-        promoted: 0,
-        demoted: 0,
-        limit,
-        dryRun,
-        errorCount: 1,
-      };
-      await this.tierMigrationStatus.recordCycle(failed);
-      return failed;
-    } finally {
-      this.tierMigrationInFlight = false;
-    }
+    return this.tierMigrationCoordinator.runCycle(storage, trigger, options);
   }
 
   async getTierMigrationStatus(): Promise<TierMigrationStatusSnapshot> {
