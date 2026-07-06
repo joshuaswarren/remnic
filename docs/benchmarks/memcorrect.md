@@ -46,7 +46,7 @@ interface MemCorrectSystemAdapter {
   reset(): Promise<void>;
   ingestTurn(sessionKey: string, role: "user" | "assistant", text: string, at: string): Promise<void>;
   recall(query: string, sessionKey: string): Promise<string[]>;
-  correct(text: string, sessionKey: string): Promise<void>;
+  correct(text: string, sessionKey: string, at?: string): Promise<void>;
   runMaintenance(): Promise<void>;
 }
 ```
