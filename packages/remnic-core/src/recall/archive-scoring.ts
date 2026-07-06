@@ -444,7 +444,6 @@ export class OffThreadArchiveScoring implements ArchiveScoringStrategy {
     }
 
     if (this.pool !== null) {
-      const dispatchStart = Date.now();
       try {
         const task: ScoreTask = {
           items: items as ArchiveScoreItem[],
@@ -454,14 +453,17 @@ export class OffThreadArchiveScoring implements ArchiveScoringStrategy {
         if (abortSignal?.aborted) return [];
         return results;
       } catch (err) {
-        // Timeout or worker error — fall back to sync scoring so recall
-        // quality is never silently dropped. An already-aborted signal
-        // short-circuits first. If the dispatch consumed most of the timeout
-        // budget (genuine timeout, not a fast error), skip the sync rescore —
-        // the recall deadline has very likely expired by then (#1674).
+        const msg = (err as Error).message ?? "";
         if (abortSignal?.aborted) return [];
-        if (Date.now() - dispatchStart > DISPATCH_TIMEOUT_MS * 0.5) return [];
-        log.debug(`archive-scoring: worker dispatch failed, using sync fallback — ${(err as Error).message}`);
+        // Genuine dispatch timeout — skip sync rescore; the recall deadline
+        // has almost certainly expired after 120s of worker time (#1674).
+        if (msg.startsWith("archive-scoring dispatch timed out")) return [];
+        // Pool termination / worker exit during shutdown — don't rescore on
+        // the main thread; that delays process exit (#1674 review).
+        if (msg.startsWith("archive-scoring worker exited") ||
+            msg.startsWith("archive-scoring pool terminated")) return [];
+        // Fast error (worker crash, etc.) — fall back to sync scoring.
+        log.debug(`archive-scoring: worker dispatch failed, using sync fallback — ${msg}`);
       }
     }
 
