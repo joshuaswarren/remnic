@@ -360,14 +360,25 @@ test("SIMILAR_TO: computeSimilarTo with gate-off returns semantic_disabled", () 
   if (!r.ok) assert.equal(r.code, "semantic_disabled");
 });
 
-test("SIMILAR_TO: similarEdgesToEdgeIR maps to EdgeIR with semantic provenance", () => {
+test("SIMILAR_TO: similarEdgesToEdgeIR maps to EdgeIR with semantic provenance + node ids", () => {
   const edges = similarEdgesToEdgeIR([
-    { srcQualifiedName: "mod.a", dstQualifiedName: "mod.b", confidence: 0.95, confirmed: true },
+    {
+      srcNodeId: "id-a",
+      dstNodeId: "id-b",
+      srcQualifiedName: "mod.a",
+      dstQualifiedName: "mod.b",
+      confidence: 0.95,
+      confirmed: true,
+    },
   ]);
   assert.equal(edges.length, 1);
   assert.equal(edges[0]!.type, "SIMILAR_TO");
   assert.equal(edges[0]!.provenance, "semantic");
   assert.equal(edges[0]!.confidence, 0.95);
+  // Node ids are carried through so the store resolves endpoints by id
+  // (issue #1677 — duplicate qualified-name support).
+  assert.equal(edges[0]!.srcNodeId, "id-a");
+  assert.equal(edges[0]!.dstNodeId, "id-b");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -1004,6 +1015,63 @@ test("cache-hit: provider without dimensions still caches on reindex", async () 
       assert.equal(r2.cached, 1);
     }
     assert.equal(calls, 1, "reindex must hit cache — no second embed");
+  } finally {
+    await cleanup();
+  }
+});
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// SIMILAR_TO end-to-end: two symbols that share a qualified name across two
+// files are persisted as a SIMILAR_TO edge by node id (issue #1677). Before
+// the fix the edge was dropped because resolveNodeId returns undefined for an
+// ambiguous qualified name.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("SIMILAR_TO: duplicate qualified name across files persists by node id (issue #1677)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    // Identical bodies → MinHash candidate. Same qualified name, different
+    // files → distinct node ids, ambiguous qualified name.
+    const body = "function clone() { const x = 1; const y = 2; return x + y; }";
+    await writeFile(path.join(dir, "a.ts"), body);
+    await writeFile(path.join(dir, "b.ts"), body);
+    await store.upsertFileBatch([
+      makeFileIR("a.ts", [{ name: "clone", qname: "mod.clone", kind: "function", start: 0, end: body.length }], body),
+      makeFileIR("b.ts", [{ name: "clone", qname: "mod.clone", kind: "function", start: 0, end: body.length }], body),
+    ]);
+
+    const idA = nodeIdFor({ qualifiedName: "mod.clone", filePath: "a.ts", label: "function" });
+    const idB = nodeIdFor({ qualifiedName: "mod.clone", filePath: "b.ts", label: "function" });
+    assert.notEqual(idA, idB, "same-qname symbols in different files have distinct node ids");
+
+    // No provider → MinHash-only path (deterministic, local).
+    const r = computeSimilarTo({ store, provider: undefined, config: ENABLED_CONFIG, repoRoot: dir });
+    assert.equal(r.ok, true);
+    if (!r.ok) throw new Error("expected ok");
+    assert.ok(r.edges.length >= 1, "a near-clone candidate is produced");
+
+    // The candidate edges MUST carry node ids (the fix).
+    const pair = r.edges.find((e) => e.srcNodeId === idA && e.dstNodeId === idB);
+    assert.ok(pair, "emitted edge carries the content-derived node ids of both same-qname nodes");
+
+    // Persist via the store. Pre-fix this returned skipped=1, persisted=0.
+    const edgeIRs = similarEdgesToEdgeIR(r.edges);
+    const upsert = await store.upsertEdges(edgeIRs);
+    assert.equal(upsert.ok, true);
+    if (!upsert.ok) throw new Error("expected ok");
+    assert.equal(upsert.persisted, edgeIRs.length, "all SIMILAR_TO edges persisted by node id");
+    assert.equal(upsert.skipped, 0, "no edge dropped as an ambiguous qualified name");
+
+    // Traversal by node id confirms the edge links the two same-qname nodes.
+    const t1 = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
+    assert.equal(t1.ok, true);
+    if (t1.ok) {
+      assert.ok(
+        t1.hits.some((h) => h.nodeId === idB),
+        "SIMILAR_TO edge connects the two distinct same-qname nodes",
+      );
+    }
   } finally {
     await cleanup();
   }
