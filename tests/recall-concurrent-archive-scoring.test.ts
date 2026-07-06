@@ -130,7 +130,7 @@ test("memoryFileToScoreItem: projects MemoryFile to serializable shape", () => {
       updated: "2026-01-01T00:00:00Z",
       source: "test",
       confidence: 1,
-      confidenceTier: "high",
+      confidenceTier: "explicit",
       tags: ["a", "b"],
     },
   };
