@@ -88,6 +88,7 @@ import type {
   ScoredEntity,
   TopicScore,
   FileHygieneConfig,
+  ProvenanceSource,
 } from "./types.js";
 import { confidenceTier, SPECULATIVE_TTL_DAYS } from "./types.js";
 import {
@@ -3608,6 +3609,14 @@ export class StorageManager {
        * can consume it. Absent = gate was off or fact predates #1576.
        */
       faithfulness?: import("./types.js").FaithfulnessFrontmatter;
+      /**
+       * Claim-level provenance spans (issue #1575 PR 2). When provided,
+       * persisted to frontmatter so downstream readers (memory_get, x-ray,
+       * faithfulness gate #1576) can consume them. Absent = fact predates
+       * #1575 or provenance was disabled.
+       */
+      sources?: ProvenanceSource[];
+      provenance?: "verified" | "unverified" | "none";
     } = {},
   ): Promise<string> {
     await this.ensureDirectories();
@@ -3680,6 +3689,14 @@ export class StorageManager {
     // Faithfulness gate frontmatter (issue #1576).
     if (options.faithfulness !== undefined) {
       fm.faithfulness = options.faithfulness;
+    }
+    // Claim-level provenance (issue #1575 PR 2). Wire through to frontmatter
+    // so verified spans survive extraction → storage → memory_get end-to-end.
+    if (options.sources !== undefined) {
+      fm.sources = options.sources;
+    }
+    if (options.provenance !== undefined) {
+      fm.provenance = options.provenance;
     }
 
     // Append structured attributes as searchable suffix so QMD indexes them.
@@ -7338,6 +7355,10 @@ export class StorageManager {
       status?: import("./types.js").MemoryStatus;
       /** Faithfulness gate verdict (issue #1576), propagated from the parent fact. */
       faithfulness?: import("./types.js").FaithfulnessFrontmatter;
+      /** Claim-level provenance spans (issue #1575 PR 2), propagated from the parent fact so a chunk surfaced independently (memory_get/x-ray) preserves them (chatgpt-codex-connector thread Ocvmo). */
+      sources?: ProvenanceSource[];
+      /** Coarse provenance tag (issue #1575 PR 2), propagated from the parent. */
+      provenance?: "verified" | "unverified" | "none";
     } = {},
   ): Promise<string> {
     await this.ensureDirectories();
@@ -7369,6 +7390,8 @@ export class StorageManager {
       valid_at: validAt,
       ...(options.status ? { status: options.status } : {}),
       ...(options.faithfulness ? { faithfulness: options.faithfulness } : {}),
+      ...(options.sources ? { sources: options.sources } : {}),
+      ...(options.provenance ? { provenance: options.provenance } : {}),
     };
 
     const sanitized = sanitizeMemoryContent(content);
