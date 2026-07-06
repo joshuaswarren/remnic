@@ -1257,24 +1257,39 @@ export class EngramAccessHttpServer {
     if (req.method === "POST" && pathname === "/engram/v1/observe") {
       void getOperation("observe"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "observe");
-      this.ensureWriteRateLimitAvailable();
-      const response = await this.service.observe({
-        sessionKey: body.sessionKey,
-        messages: body.messages.map((message) => ({
-          role: message.role,
-          content: message.content,
-          sourceFormat: message.sourceFormat ?? undefined,
-          rawContent: message.rawContent ?? undefined,
-          parts: message.parts ?? undefined,
-        })),
-        namespace: this.resolveNamespace(req, body.namespace),
-        authenticatedPrincipal: this.resolveRequestPrincipal(req),
-        skipExtraction: body.skipExtraction === true,
-        // Forward cwd/projectTag for auto git-context resolution (issue #569).
-        cwd: body.cwd,
-        projectTag: body.projectTag,
-      });
-      this.recordWriteRateLimitHit();
+      const response = await this.service.observe(
+        {
+          sessionKey: body.sessionKey,
+          messages: body.messages.map((message) => ({
+            role: message.role,
+            content: message.content,
+            sourceFormat: message.sourceFormat ?? undefined,
+            rawContent: message.rawContent ?? undefined,
+            parts: message.parts ?? undefined,
+          })),
+          namespace: this.resolveNamespace(req, body.namespace),
+          authenticatedPrincipal: this.resolveRequestPrincipal(req),
+          skipExtraction: body.skipExtraction === true,
+          // Issue #1649: optional server-side dedup key for retried POSTs.
+          idempotencyKey: body.idempotencyKey,
+          // Forward cwd/projectTag for auto git-context resolution (issue #569).
+          cwd: body.cwd,
+          projectTag: body.projectTag,
+        },
+        // Enforce the write-quota INSIDE the service's idempotency lock
+        // (beforeExecute, only on a real miss). A retried observe that hits the
+        // replay path must NOT be rejected with 429 — that is exactly the
+        // response-lost-after-process case the dedup exists for. The original
+        // attempt may have consumed the last quota slot; the retry returns the
+        // cached response without requiring another. Matches memory_store's
+        // hook-in-the-lock pattern (#1434 invariant).
+        { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable() },
+      );
+      // A replayed (deduplicated) observe must not consume a second write-quota
+      // slot — same invariant as memory_store/suggestion_submit (#1434).
+      if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
+        this.recordWriteRateLimitHit();
+      }
       this.respondJson(res, 202, response);
       return;
     }
@@ -2595,7 +2610,15 @@ export class EngramAccessHttpServer {
         codingArchitectureWrite ||
         codegraphWrite
       );
-    if (isMcpWrite) {
+    // observe self-enforces quota INSIDE its idempotency lock via the
+    // enforceWriteQuota hook (issue #1649) — mirroring the direct
+    // /engram/v1/observe route — so it must NOT be pre-checked here: a
+    // pre-check would 429 a response-lost replay. It still counts as a write
+    // for post-recording (the replay guard in shouldCountWriteRateLimit skips
+    // the record). Other write tools keep the coarse pre-check.
+    const observeSelfEnforcesQuota =
+      toolName === "engram.observe" || toolName === "remnic.observe";
+    if (isMcpWrite && !observeSelfEnforcesQuota) {
       this.ensureWriteRateLimitAvailable();
     }
 
@@ -2611,6 +2634,9 @@ export class EngramAccessHttpServer {
       sessionKeyOverride: requestIdentity.sessionKey,
       sessionId,
       correlationId: mcpCorrelationId,
+      enforceWriteQuota: observeSelfEnforcesQuota
+        ? () => this.ensureWriteRateLimitAvailable()
+        : undefined,
     });
 
     if (isMcpWrite && response !== null) {

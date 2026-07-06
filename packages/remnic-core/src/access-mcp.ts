@@ -50,6 +50,12 @@ type McpRequestOptions = {
   sessionKeyOverride?: string;
   sessionId?: string;
   correlationId?: string;
+  /**
+   * Write-quota enforcer forwarded into observe's idempotency lock
+   * (issue #1649). Only the MCP-over-HTTP transport supplies this (it owns
+   * the write-rate-limit window); the standalone MCP server has no quota.
+   */
+  enforceWriteQuota?: () => void | Promise<void>;
 };
 
 type McpTool = {
@@ -1155,6 +1161,11 @@ export class EngramMcpServer {
                 additionalProperties: false,
               },
               description: "Conversation messages to observe",
+            },
+            idempotencyKey: {
+              type: "string",
+              description:
+                "Optional idempotency key (issue #1649). Deduplicates a retried observe POST server-side so the batch is ingested once even when the HTTP response is lost. Reusing the key with a different payload is rejected.",
             },
             namespace: { type: "string" },
             skipExtraction: { type: "boolean" },
@@ -2374,7 +2385,7 @@ export class EngramMcpServer {
           argumentsObject = { ...argumentsObject, sessionKey: options.sessionKeyOverride };
         }
         const effectivePrincipal = options?.principalOverride ?? this.authenticatedPrincipal;
-        const result = await this.callTool(name, argumentsObject, effectivePrincipal, options?.sessionId);
+        const result = await this.callTool(name, argumentsObject, effectivePrincipal, options?.sessionId, options?.enforceWriteQuota);
         return {
           jsonrpc: "2.0",
           id,
@@ -2562,7 +2573,7 @@ export class EngramMcpServer {
       }));
   }
 
-  private async callTool(name: string, args: Record<string, unknown>, effectivePrincipal?: string, mcpSessionId?: string): Promise<unknown> {
+  private async callTool(name: string, args: Record<string, unknown>, effectivePrincipal?: string, mcpSessionId?: string, enforceWriteQuota?: () => void | Promise<void>): Promise<unknown> {
     // Migrated operations dispatch through the access boundary (issue #1525):
     // one registry entry owns schema validation, normalization (rules
     // 17/28/36/48/51), and error mapping for every surface. The switch
@@ -3104,21 +3115,27 @@ export class EngramMcpServer {
         );
       case "engram.observe": {
         const body = parseMcpRequest("observe", args);
-        return this.service.observe({
-          sessionKey: body.sessionKey,
-          messages: body.messages.map((message) => ({
-            role: message.role,
-            content: message.content,
-            parts: message.parts ?? undefined,
-            rawContent: message.rawContent ?? undefined,
-            sourceFormat: message.sourceFormat ?? undefined,
-          })),
-          namespace: body.namespace,
-          authenticatedPrincipal: effectivePrincipal,
-          skipExtraction: body.skipExtraction === true,
-          cwd: body.cwd,
-          projectTag: body.projectTag,
-        });
+        return this.service.observe(
+          {
+            sessionKey: body.sessionKey,
+            messages: body.messages.map((message) => ({
+              role: message.role,
+              content: message.content,
+              parts: message.parts ?? undefined,
+              rawContent: message.rawContent ?? undefined,
+              sourceFormat: message.sourceFormat ?? undefined,
+            })),
+            skipExtraction: body.skipExtraction === true,
+            idempotencyKey: body.idempotencyKey,
+            namespace: body.namespace,
+            authenticatedPrincipal: effectivePrincipal,
+            cwd: body.cwd,
+            projectTag: body.projectTag,
+          },
+          // Forward the transport's write-quota enforcer into observe's
+          // idempotency lock so a replay is never 429'd (issue #1649).
+          enforceWriteQuota ? { enforceWriteQuota } : undefined,
+        );
       }
       case "engram.lcm_search":
         return this.service.lcmSearch({
