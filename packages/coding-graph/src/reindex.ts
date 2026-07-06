@@ -32,9 +32,10 @@
  * that may legitimately disagree (e.g. a session attached before the first
  * reindex run).
  */
-import { createHash } from "node:crypto";
 import { readFile as fsReadFile, realpath as fsRealpath } from "node:fs/promises";
 import path from "node:path";
+
+import { hashContent } from "./engine/emit.js";
 
 import type { ParseFileInput, ParseResult } from "@remnic/core";
 
@@ -232,12 +233,12 @@ export function readFileHashes(store: GraphStore): ReadFileHashesResult {
 }
 
 /**
- * SHA-256 of raw bytes. Matches the engine's contract
- * (`FileIR.contentHash` — rule 23: every consumer hashes the same form).
+ * SHA-256 of raw bytes — single implementation lives in the engine layer
+ * (`emit.ts`, where `FileIR.contentHash` is computed). Re-exported here
+ * for backward compatibility with index.ts and consumers that import
+ * from reindex.ts (rule 23: one hashing contract across engine + reindex).
  */
-export function hashContent(content: Uint8Array): string {
-  return createHash("sha256").update(content).digest("hex");
-}
+export { hashContent };
 
 /**
  * Reject non-canonical repo-relative paths before they reach the disk.
