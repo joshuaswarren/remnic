@@ -217,11 +217,15 @@ async function runScenario(
   for (const anti of scenario.antiEvents) {
     await adapter.ingestTurn(sessionKey, anti.turn.role, anti.turn.text, anti.turn.at);
     turn += 1;
+    // Bump the turn BEFORE the recall probe so the probe gets its own
+    // interaction turn (not the ingest's). Otherwise uptake_latency
+    // underreports by one when the anti-event probe is the first recall
+    // to reflect the correction. Mirrors the dedicated uptake probe above.
+    turn += 1;
     const recalled = await adapter.recall(anti.probeQuery, sessionKey);
     // Recorded under post_correction so false_apply (which scans
     // post_correction for the scenario) sees the leaked token.
     recordProbe("post_correction", anti.probeQuery, sessionKey, recalled, anti.turn.at);
-    turn += 1;
   }
 
   // --- Scoped twin probe (namespace-B must stay intact AFTER the correction) ---
@@ -384,6 +388,19 @@ export async function runMemCorrectBenchmark(
     aggregateProvenance.push(run.provenanceCite);
 
     const m = run.metrics;
+    // Per-task directional scores: only metrics that are both directional
+    // and applicable to the scenario. collateral_delta is target-zero (not
+    // directional); scope_precision / reassertion are n/a for non-scoped /
+    // non-re-assertion scenarios. All three remain in the full bundle under
+    // details.metrics.memcorrect so they are not lost.
+    const scores: Record<string, number> = {
+      uptake_at_next: m.uptake_at_next,
+      uptake_latency: m.uptake_latency,
+      non_resurrection: m.non_resurrection,
+      false_apply: m.false_apply,
+    };
+    if (m.scope_precision !== null) scores.scope_precision = m.scope_precision;
+    if (m.reassertion !== null) scores.reassertion = m.reassertion;
     const task: TaskResult = {
       taskId: scenario.id,
       question: scenario.probe.query,
@@ -399,19 +416,7 @@ export async function runMemCorrectBenchmark(
             (e) => e.phase === "post_correction" && e.namespace === scenario.namespace,
           )?.recalled.slice(0, 3) ?? [],
       }),
-      scores: {
-        uptake_at_next: m.uptake_at_next,
-        uptake_latency: m.uptake_latency,
-        non_resurrection: m.non_resurrection,
-        collateral_delta: m.collateral_delta,
-        scope_precision: m.scope_precision,
-        false_apply: m.false_apply,
-        reassertion: m.reassertion,
-        // provenance_fidelity is omitted from per-task scores: it is n/a
-        // unless the adapter surfaces provenance, and a -1 sentinel would
-        // pollute the aggregate mean. The value (number | null) is carried
-        // in details.metrics.memcorrect.provenance_fidelity below.
-      },
+      scores,
       latencyMs,
       tokens: { input: 0, output: 0 },
       details: {

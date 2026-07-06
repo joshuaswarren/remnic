@@ -212,8 +212,8 @@ test("scopePrecision: twin intact + primary retired passes; twin damaged fails",
   assert.equal(scopePrecision(log, corrections), 0.5);
 });
 
-test("scopePrecision: no scoped corrections returns 0", () => {
-  assert.equal(scopePrecision([], []), 0);
+test("scopePrecision: no scoped corrections returns null (n/a, not 0)", () => {
+  assert.equal(scopePrecision([], []), null);
 });
 
 // ---------------------------------------------------------------------------
@@ -288,8 +288,8 @@ test("computeMetricBundle: assembles all 8 metrics from resolved inputs", () => 
   assert.equal(bundle.uptake_latency_censored, 0);
   assert.equal(bundle.non_resurrection, 1);
   assert.equal(bundle.collateral_delta, 0);
-  assert.equal(bundle.scope_precision, 0);
+  assert.equal(bundle.scope_precision, null);
   assert.equal(bundle.false_apply, 0);
-  assert.equal(bundle.reassertion, 0);
+  assert.equal(bundle.reassertion, null);
   assert.equal(bundle.provenance_fidelity, null);
 });

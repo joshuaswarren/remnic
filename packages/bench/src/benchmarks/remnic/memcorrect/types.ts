@@ -247,9 +247,11 @@ export interface MemCorrectMetricBundle {
   uptake_latency_censored: number;
   non_resurrection: number;
   collateral_delta: number;
-  scope_precision: number;
+  /** 0..1 for scoped corrections; `null` when no scenario exercises a scoped twin. */
+  scope_precision: number | null;
   false_apply: number;
-  reassertion: number;
+  /** 0..1 for re-assertion scenarios; `null` when no scenario re-asserts. */
+  reassertion: number | null;
   /** 0..1 when the adapter exposes provenance; `null` when n/a. */
   provenance_fidelity: number | null;
 }

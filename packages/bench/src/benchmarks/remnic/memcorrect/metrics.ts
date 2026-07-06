@@ -184,7 +184,7 @@ export function collateralDelta(
 export function scopePrecision(
   log: readonly ProbeLogEntry[],
   corrections: readonly ResolvedCorrection[],
-): number {
+): number | null {
   let scopedCount = 0;
   let passed = 0;
   for (const correction of corrections) {
@@ -212,7 +212,7 @@ export function scopePrecision(
     const twinIntact = containsAll(joinedRecall(twinPost), [twin.twinContent]);
     if (primaryRetired && twinIntact) passed += 1;
   }
-  return scopedCount > 0 ? passed / scopedCount : 0;
+  return scopedCount > 0 ? passed / scopedCount : null;
 }
 
 /**
@@ -250,8 +250,8 @@ export function falseApply(
 export function reassertion(
   log: readonly ProbeLogEntry[],
   reassertions: readonly ResolvedReassertion[],
-): number {
-  if (reassertions.length === 0) return 0;
+): number | null {
+  if (reassertions.length === 0) return null;
   let recalled = 0;
   for (const re of reassertions) {
     const post = entriesFor(log, re.scenarioId, "post_reassertion");

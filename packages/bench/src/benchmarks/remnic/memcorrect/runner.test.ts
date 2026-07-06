@@ -62,7 +62,7 @@ test("registry: memcorrect-v1 is tier=remnic, status=ready, runnerAvailable", ()
 // End-to-end with the prompt-only baseline
 // ---------------------------------------------------------------------------
 
-test("runner: baseline run emits one task per scenario with all 7 score keys", async () => {
+test("runner: baseline run emits directional scores (collateral_delta excluded; scope/reassertion conditional)", async () => {
   const result = await runMemCorrectBenchmark(
     options({
       benchmarkOptions: { adapter: new PromptOnlyBaselineAdapter() },
@@ -70,19 +70,27 @@ test("runner: baseline run emits one task per scenario with all 7 score keys", a
     }),
   );
   assert.ok(result.results.tasks.length === 4, "limit=4 → 4 tasks");
-  const expected = [
+  const alwaysPresent = [
     "uptake_at_next",
     "uptake_latency",
     "non_resurrection",
-    "collateral_delta",
-    "scope_precision",
     "false_apply",
-    "reassertion",
   ];
   for (const task of result.results.tasks) {
-    for (const key of expected) {
+    for (const key of alwaysPresent) {
       assert.ok(key in task.scores, `task ${task.taskId} missing score ${key}`);
     }
+    // collateral_delta is target-zero (not directional): must NOT appear in
+    // per-task directional scores, but IS carried in the full metric bundle.
+    assert.ok(!("collateral_delta" in task.scores), "collateral_delta must not pollute directional scores");
+    const detail = task.details as { metrics?: { memcorrect?: { collateral_delta?: unknown } }; shape?: string };
+    assert.equal(typeof detail.metrics?.memcorrect?.collateral_delta, "number", "collateral_delta in details bundle");
+    // scope_precision / reassertion appear only for their applicable shapes.
+    const shape = detail.shape;
+    const hasScope = "scope_precision" in task.scores;
+    const hasReassertion = "reassertion" in task.scores;
+    assert.equal(hasScope, shape === "scoped", `scope_precision presence must match scoped shape (got ${shape})`);
+    assert.equal(hasReassertion, shape === "re-assertion", `reassertion presence must match re-assertion shape (got ${shape})`);
   }
   // Aggregate headline bundle present in config.benchmarkOptions.
   const bundle = summarizeAggregateMetrics(result);
@@ -256,4 +264,54 @@ test("runner: onTaskComplete fires for each scenario with a correct total", asyn
     [1, 2, 3],
   );
   assert.ok(completed.every((c) => c.total === 3));
+});
+
+// ---------------------------------------------------------------------------
+// Anti-event probe turn isolation (Thread 3: bump turn before recall)
+// ---------------------------------------------------------------------------
+
+test("runner: anti-event probe gets its own interaction turn (not the ingest's)", async () => {
+  // When the uptake probe fails and the anti-event probe is the first recall
+  // to reflect the correction, uptake_latency must measure the delta from the
+  // probe's own interaction turn — not the anti-event ingest's turn. Before
+  // the fix the probe shared the ingest's turn, underreporting latency by one.
+  const corpus = generateMemCorrectCorpus({
+    personaCount: 2,
+    factsPerPersona: 4,
+    seed: 4242,
+    nowIso: "2026-07-05T00:00:00.000Z",
+    maintenanceCycles: 3,
+    uptakeLatencyCap: 5,
+  });
+  const scenario = corpus.scenarios[0]!;
+  assert.ok(scenario.antiEvents.length > 0, "test scenario must have anti-events");
+  const baselineRecalls = scenario.unrelatedProbes.length;
+  let corrected = false;
+  let recallIdx = 0;
+  const adapter: MemCorrectSystemAdapter = {
+    label: "turn-isolation-test",
+    async reset() { corrected = false; recallIdx = 0; },
+    async ingestTurn() {},
+    async correct() { corrected = true; },
+    async recall() {
+      const idx = recallIdx++;
+      if (!corrected) return []; // baseline probes
+      // Uptake probe (idx === baselineRecalls) fails; anti-event probe
+      // (idx === baselineRecalls + 1) is the first to reflect the correction.
+      if (idx === baselineRecalls) return [];
+      if (idx === baselineRecalls + 1) return [...scenario.correction.correctedContent];
+      return [];
+    },
+    async runMaintenance() {},
+  };
+  const result = await runMemCorrectBenchmark(
+    options({ benchmarkOptions: { adapter }, limit: 1, seed: 4242 }),
+  );
+  const bundle = summarizeAggregateMetrics(result);
+  assert.ok(bundle, "bundle missing");
+  // After the fix: the anti-event probe lands at correctionTurnIndex + 3
+  // (one turn for the ingest, one for the probe's own interaction, plus the
+  // uptake probe's turn). Before the fix it was +2 (probe shared ingest's turn).
+  assert.equal(bundle.uptake_latency, 3, "anti-event probe must get its own interaction turn");
+  assert.equal(bundle.uptake_latency_censored, 0, "within cap, not censored");
 });
