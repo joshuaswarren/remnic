@@ -759,27 +759,41 @@ async function runCorrect(args: ParsedArgs, preferredId?: string): Promise<void>
 
   if (args.flags.has("apply")) {
     const planId = requireOption(args, "plan-id");
-    const outcome = await service.correctionApply(planId, {
-      confirm: args.flags.has("confirm") || args.flags.has("yes"),
-      ...(namespace ? { namespace } : {}),
-      ...(sessionKey ? { sessionKey } : {}),
-      principal,
-    });
-    console.log(JSON.stringify(outcome, null, 2));
+    const op = getOperation("memory_correct_apply");
+    if (!op) {
+      throw new Error("access-boundary: operation not registered: memory_correct_apply");
+    }
+    const output = (await op.run(
+      {
+        planId,
+        confirm: args.flags.has("confirm") || args.flags.has("yes"),
+        ...(sessionKey ? { sessionKey } : {}),
+        ...(namespace ? { namespace } : {}),
+      },
+      { service, authenticatedPrincipal: principal },
+    )) as { result: unknown };
+    console.log(JSON.stringify(output.result, null, 2));
     return;
   }
 
-  // Default mode: plan from text.
+  // Default mode: plan from text — dispatch through the boundary operation
+  // so schema validation + namespace policy reach this path (same as MCP/HTTP).
   const text = requireOption(args, "text");
   const targetIds = getAllOptions(args, "id");
-  const plan = await service.correctionPlan({
-    text,
-    ...(targetIds.length > 0 ? { targetIds } : {}),
-    ...(sessionKey ? { sessionKey } : {}),
-    ...(namespace ? { namespace } : {}),
-    principal,
-  });
-  console.log(JSON.stringify(plan, null, 2));
+  const planOp = getOperation("memory_correct_plan");
+  if (!planOp) {
+    throw new Error("access-boundary: operation not registered: memory_correct_plan");
+  }
+  const planOutput = (await planOp.run(
+    {
+      text,
+      ...(targetIds.length > 0 ? { targetIds } : {}),
+      ...(sessionKey ? { sessionKey } : {}),
+      ...(namespace ? { namespace } : {}),
+    },
+    { service, authenticatedPrincipal: principal },
+  )) as { result: unknown };
+  console.log(JSON.stringify(planOutput.result, null, 2));
 }
 
 export async function main(

@@ -43,7 +43,16 @@ export interface CorrectionNamespacePolicy {
     sessionKey?: string;
     principal?: string;
   }): Promise<string>;
-  /** Namespaces the caller may read — used to scope the planner's search. */
+  /**
+   * Whether the caller may WRITE a given namespace. Used to authorize rescope
+   * destinations before the executor moves a memory across namespaces.
+   */
+  canWriteNamespace(request: {
+    namespace: string;
+    sessionKey?: string;
+    principal?: string;
+  }): Promise<boolean>;
+  /** Namespaces the caller may read — scopes the planner's search. */
   readableNamespaces(request: {
     namespace?: string;
     sessionKey?: string;
@@ -87,11 +96,19 @@ export class CorrectionService {
   /**
    * Plan a correction. Read-only — produces + persists a {@link CorrectionPlan}.
    * Safe to run with the gate ON (default) since the plan writes no memory state.
+   *
+   * The plan is stored under the AUTHORIZED (writable) namespace — the same
+   * namespace apply/listPending/discard resolve — so the plan is always
+   * found by the caller that created it (review threads: plan-stored-wrong-
+   * namespace + cross-namespace candidate mismatch). Candidates are located
+   * within that single namespace too: a correction can only affect memories
+   * the principal can write, so reading from a non-writable namespace to
+   * draft a correction that can never be applied would be misleading.
    */
   async plan(request: CorrectionRequest): Promise<CorrectionPlan> {
     this.requireEnabled();
-    const readable = await this.deps.policy.readableNamespaces(request);
-    return this.planner.plan(request, readable);
+    const authorized = await this.deps.policy.resolveAuthorizedNamespace(request);
+    return this.planner.plan(request, [authorized]);
   }
 
   /**
@@ -118,7 +135,17 @@ export class CorrectionService {
       ...(opts.sessionKey ? { sessionKey: opts.sessionKey } : {}),
       ...(opts.principal ? { principal: opts.principal } : {}),
     });
-    return this.executor.apply(namespace, planId, { confirm: true });
+    return this.executor.apply(namespace, planId, {
+      confirm: true,
+      // Authorize rescope destinations through the namespace policy bound to
+      // THIS caller's principal (review thread: authorize-rescope-destination).
+      canWriteDestination: (dest) =>
+        this.deps.policy.canWriteNamespace({
+          namespace: dest,
+          ...(opts.sessionKey ? { sessionKey: opts.sessionKey } : {}),
+          ...(opts.principal ? { principal: opts.principal } : {}),
+        }),
+    });
   }
 
   /** List pending (not-yet-applied) plans for the caller's namespace. */

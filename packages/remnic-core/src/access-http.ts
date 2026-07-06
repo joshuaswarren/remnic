@@ -1436,6 +1436,7 @@ export class EngramAccessHttpServer {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
+      this.recordWriteRateLimitHit();
       this.respondJson(res, 200, output.result);
       return;
     }
@@ -2518,6 +2519,10 @@ export class EngramAccessHttpServer {
             toolName === "remnic.memory_action_apply"
           )
         ) ||
+        (
+          toolName === "engram.memory_correct_apply" ||
+          toolName === "remnic.memory_correct_apply"
+        ) ||
         codingDecisionWrite ||
         codingArchitectureWrite ||
         codegraphWrite
@@ -2552,7 +2557,12 @@ export class EngramAccessHttpServer {
       // would consume the write quota despite no mutation occurring
       // (issue #1554 review thread: don't bill rejected calls as writes).
       const isRejectedCodegraph = structured?.ok === false;
-      if (!isError && !isRejectedCodegraph && structured && this.shouldCountWriteRateLimit(structured)) {
+      // A write tool that succeeded without structuredContent (e.g.
+      // memory_correct_apply, which returns a CorrectionOutcome) still
+      // consumed a write — count it. Tools WITH structuredContent use the
+      // dryRun/idempotencyReplay guards.
+      const counts = structured ? this.shouldCountWriteRateLimit(structured) : true;
+      if (!isError && !isRejectedCodegraph && counts) {
         this.recordWriteRateLimitHit();
       }
     }

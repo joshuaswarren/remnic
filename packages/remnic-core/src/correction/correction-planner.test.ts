@@ -79,7 +79,7 @@ function makeDeps(stateDir: string, state: StubState, opts: { maxAffected?: numb
         : state.llmResult;
     },
     renderDiff: async ({ actions }) => `DIFF(${actions.length} actions)`,
-    storageDir: () => stateDir,
+    storageDir: async () => stateDir,
     maxAffected: opts.maxAffected ?? 10,
     planTtlHours: opts.planTtlHours ?? 24,
     now: () => fixedNow,

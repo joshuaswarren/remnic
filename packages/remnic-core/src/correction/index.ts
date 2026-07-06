@@ -39,5 +39,5 @@ export type { ExecutorDeps, ExecutorMemory } from "./correction-executor.js";
 export { CorrectionService } from "./correction-service.js";
 export type { CorrectionNamespacePolicy, CorrectionServiceDeps } from "./correction-service.js";
 
-export { createCorrectionService } from "./correction-access-wiring.js";
+export { createCorrectionService, isCorrectionFeatureEnabled } from "./correction-access-wiring.js";
 export type { CorrectionAccessWiring } from "./correction-access-wiring.js";

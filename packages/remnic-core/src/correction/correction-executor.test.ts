@@ -78,7 +78,7 @@ function makePlannerDeps(stateDir: string, candidates: Map<string, PlannerCandid
       warnings: [],
     }),
     renderDiff: async () => "DIFF",
-    storageDir: () => stateDir,
+    storageDir: async () => stateDir,
     maxAffected: 10,
     planTtlHours: 24,
     now: () => fixedNow,

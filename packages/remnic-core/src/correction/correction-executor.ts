@@ -167,7 +167,17 @@ export class CorrectionExecutor {
   async apply(
     namespace: string,
     planId: string,
-    opts: { confirm: boolean },
+    opts: {
+      confirm: boolean;
+      /**
+       * Authorize a rescope destination namespace. Bound per-request by the
+       * service from the namespace policy + principal so a plan can never
+       * write into a namespace the caller lacks write scope for (review
+       * thread: authorize-rescope-destination). Defaults to allow when the
+       * source namespace already resolves to a writable scope (single-tenant).
+       */
+      canWriteDestination?: (namespace: string) => Promise<boolean>;
+    },
   ): Promise<CorrectionOutcome> {
     if (!opts.confirm) {
       throw new CorrectionContractError(
@@ -177,11 +187,11 @@ export class CorrectionExecutor {
     // serializeMutations on the plan id so two concurrent applies of the SAME
     // plan serialize — the second observes the consumed status and rejects.
     return serializeMutations(`correction-apply:${namespace}:${planId}`, () =>
-      this.applyInternal(namespace, planId),
+      this.applyInternal(namespace, planId, opts.canWriteDestination),
     );
   }
 
-  private async applyInternal(namespace: string, planId: string): Promise<CorrectionOutcome> {
+  private async applyInternal(namespace: string, planId: string, canWriteDestination?: (namespace: string) => Promise<boolean>): Promise<CorrectionOutcome> {
     const plan = await this.planner.loadPlan(namespace, planId);
     if (!plan) {
       throw new CorrectionContractError(`Correction plan not found: ${planId}`);
@@ -285,6 +295,20 @@ export class CorrectionExecutor {
         await this.retireAndTombstone(namespace, action, "retraction", results, appliedTouched);
       } else if (action.kind === "rescope") {
         try {
+          // Authorize the destination namespace BEFORE the move — the plan's
+          // toNamespace comes from the LLM/persisted plan and must not bypass
+          // the write ACL (review thread: authorize-rescope-destination).
+          // canWriteDestination defaults to allow when absent (single-tenant,
+          // where the source namespace already resolved to a writable scope).
+          const allowed = canWriteDestination ? await canWriteDestination(action.toNamespace) : true;
+          if (!allowed) {
+            results.push({
+              action,
+              status: "failed",
+              error: `rescope destination namespace not writable: ${action.toNamespace}`,
+            });
+            continue;
+          }
           await this.deps.rescopeMemory(namespace, action.memoryId, action.toNamespace);
           results.push({ action, status: "applied", memoryId: action.memoryId });
           appliedTouched.push(action.memoryId);

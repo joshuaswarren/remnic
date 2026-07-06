@@ -51,6 +51,7 @@ import {
 import { defaultGitInvoker } from "./coding/git-context.js";
 import {
   createCorrectionService,
+  isCorrectionFeatureEnabled,
   CorrectionService,
   type CorrectionOutcome,
   type CorrectionPlan,
@@ -4728,12 +4729,9 @@ export class EngramAccessService {
   // access-service constructs it lazily via the wiring helper and delegates.
   // Each method below is thin wiring (≤4 lines) per the god-file ratchet.
   // -------------------------------------------------------------------------
-  /** Whether the memory_correct_plan / memory_correct_apply tools should appear in tools/list (rule 39). */
+  /** Whether the memory_correct_plan / memory_correct_apply tools should appear in tools/list (rule 39). Same reader as the runtime gate so visibility + enforcement stay in sync. */
   get correctionSurfaceVisible(): boolean {
-    const correction = (this.orchestrator.config as unknown as Record<string, unknown>).correction as
-      | Record<string, unknown>
-      | undefined;
-    return correction?.enabled !== false;
+    return isCorrectionFeatureEnabled(this.orchestrator.config);
   }
 
 
@@ -4749,6 +4747,12 @@ export class EngramAccessService {
       resolveReadableNamespaces: (req) => {
         const principal = this.resolveRequestPrincipal(req.sessionKey, req.principal);
         return recallNamespacesForPrincipal(principal, this.orchestrator.config);
+      },
+      canWriteNamespace: (req) => {
+        const principal = this.resolveRequestPrincipal(req.sessionKey, req.principal);
+        return Promise.resolve(
+          canWriteNamespace(principal, this.resolveNamespace(req.namespace), this.orchestrator.config),
+        );
       },
     });
     this._correctionService = service;

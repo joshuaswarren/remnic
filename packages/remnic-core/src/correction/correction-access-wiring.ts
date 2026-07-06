@@ -62,6 +62,12 @@ export interface CorrectionAccessWiring {
     sessionKey?: string;
     principal?: string;
   }): readonly string[];
+  /** Whether the caller may WRITE a namespace — authorizes rescope destinations. */
+  canWriteNamespace(request: {
+    namespace: string;
+    sessionKey?: string;
+    principal?: string;
+  }): Promise<boolean>;
   /**
    * Optional LLM-complete callback (Responses API only — gotcha 1). When
    * absent, the planner's classify+draft step falls back to deterministic
@@ -77,7 +83,7 @@ export interface CorrectionAccessWiring {
 
 export function createCorrectionService(wiring: CorrectionAccessWiring): CorrectionService {
   const cfg = wiring.orchestrator.config;
-  const correctionEnabled = readCorrectionFlag(cfg, "enabled", true);
+  const correctionEnabled = isCorrectionFeatureEnabled(cfg);
   const applyRequiresConfirm = readCorrectionFlag(cfg, "applyRequiresConfirm", true);
   const maxAffected = readCorrectionNumber(cfg, "maxAffected", 10);
   const planTtlHours = readCorrectionNumber(cfg, "planTtlHours", 24);
@@ -86,6 +92,7 @@ export function createCorrectionService(wiring: CorrectionAccessWiring): Correct
   const serviceDeps: CorrectionServiceDeps = {
     policy: {
       resolveAuthorizedNamespace: (req) => wiring.resolveAuthorizedNamespace(req),
+      canWriteNamespace: (req) => wiring.canWriteNamespace(req),
       readableNamespaces: (req) =>
         Promise.resolve(wiring.resolveReadableNamespaces(req)),
     },
@@ -117,7 +124,7 @@ function makePlannerDeps(
       classifyAndDraft(wiring, text, candidates),
     renderDiff: async ({ candidates, actions }) =>
       renderCorrectionDiff(wiring, candidates, actions),
-    storageDir: (namespace) => storageDirFor(wiring, namespace),
+    storageDir: async (namespace) => (await wiring.orchestrator.getStorage(namespace)).dir,
     maxAffected: opts.maxAffected,
     planTtlHours: opts.planTtlHours,
     now: () => new Date(),
@@ -537,16 +544,6 @@ async function propagateFn(
 // Helpers
 // ---------------------------------------------------------------------------
 
-function storageDirFor(wiring: CorrectionAccessWiring, namespace: string): string {
-  // Synchronous best-effort: the orchestrator's getStorage is async, but the
-  // planner's storageDir is a pure path resolver. We return the namespace-rooted
-  // path directly (the StorageManager constructor used the same root).
-  const config = wiring.orchestrator.config;
-  if (!config.namespacesEnabled || namespace === config.defaultNamespace) {
-    return config.memoryDir;
-  }
-  return path.join(config.memoryDir, "namespaces", namespace);
-}
 
 function toCandidate(m: MemoryFile, namespace: string, score: number): PlannerCandidate {
   return {
@@ -570,6 +567,23 @@ function toExecutorMemory(m: MemoryFile): ExecutorMemory {
     rawContent: m.content, // rawContent for the tombstone hash (rule 23).
     ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
   } satisfies ExecutorMemory;
+}
+
+/**
+ * The single source of truth for whether the Correction Contract feature is
+ * enabled. Reads BOTH config shapes so tool visibility and the runtime gate
+ * can never drift out of sync (review thread: correction-gate-config-mismatch):
+ *   - nested: `config.correction.enabled`
+ *   - flat:   `config.correctionEnabled`  (ratchet-safe legacy shape)
+ * Nested wins when present; both default to `true` (plan is read-only, safe on).
+ */
+export function isCorrectionFeatureEnabled(config: PluginConfig): boolean {
+  const nested = (config as unknown as Record<string, unknown>).correction as
+    | Record<string, unknown>
+    | undefined;
+  if (nested && typeof nested.enabled === "boolean") return nested.enabled;
+  if (nested && typeof nested.enabled === "string") return nested.enabled === "true" || nested.enabled === "1";
+  return readCorrectionFlag(config, "enabled", true);
 }
 
 /** Read a boolean correction flag from the loosely-typed config (ratchet-safe). */

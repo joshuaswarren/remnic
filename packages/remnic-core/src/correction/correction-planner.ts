@@ -107,7 +107,7 @@ export interface PlannerDeps {
     actions: CorrectionAction[];
   }): Promise<string>;
   /** Per-namespace storage dir root (so the plan lands in the right state/). */
-  storageDir(namespace: string): string;
+  storageDir(namespace: string): Promise<string>;
   /** Max affected memories per plan (issue config: default 10). */
   readonly maxAffected: number;
   /** Plan TTL in hours (issue config: default 24). */
@@ -346,12 +346,12 @@ export class CorrectionPlanner {
   // -------------------------------------------------------------------------
 
   /** Directory holding pending plans for one namespace. */
-  private pendingDir(namespace: string): string {
-    return path.join(this.deps.storageDir(namespace), "state", "corrections", "pending");
+  private async pendingDir(namespace: string): Promise<string> {
+    return path.join(await this.deps.storageDir(namespace), "state", "corrections", "pending");
   }
 
   private async persist(plan: CorrectionPlan): Promise<CorrectionPlan> {
-    const dir = this.pendingDir(plan.namespace);
+    const dir = await this.pendingDir(plan.namespace);
     const target = path.join(dir, `${plan.planId}.json`);
     await serializeMutations(`correction-plan:${target}`, async () => {
       await mkdir(dir, { recursive: true });
@@ -365,7 +365,7 @@ export class CorrectionPlanner {
 
   /** Load a pending plan by id (used by the service / executor). */
   async loadPlan(namespace: string, planId: string): Promise<CorrectionPlan | null> {
-    const file = path.join(this.pendingDir(namespace), `${planId}.json`);
+    const file = path.join(await this.pendingDir(namespace), `${planId}.json`);
     return serializeMutations(`correction-plan:${file}`, async () => {
       let raw: string;
       try {
@@ -381,7 +381,7 @@ export class CorrectionPlanner {
 
   /** List pending plans (newest first), excluding consumed (applied/discarded). */
   async listPending(namespace: string): Promise<CorrectionPlan[]> {
-    const dir = this.pendingDir(namespace);
+    const dir = await this.pendingDir(namespace);
     let files: string[];
     try {
       files = await readdir(dir);
@@ -407,7 +407,7 @@ export class CorrectionPlanner {
 
   /** Mark a plan consumed (applied / discarded / partial) — atomic rewrite. */
   async markConsumed(namespace: string, planId: string, status: "applied" | "discarded" | "partial"): Promise<void> {
-    const file = path.join(this.pendingDir(namespace), `${planId}.json`);
+    const file = path.join(await this.pendingDir(namespace), `${planId}.json`);
     await serializeMutations(`correction-plan:${file}`, async () => {
       let raw: string;
       try {
@@ -428,7 +428,7 @@ export class CorrectionPlanner {
 
   /** Delete a plan file (used by discard). Idempotent. */
   async deletePlan(namespace: string, planId: string): Promise<void> {
-    const file = path.join(this.pendingDir(namespace), `${planId}.json`);
+    const file = path.join(await this.pendingDir(namespace), `${planId}.json`);
     await serializeMutations(`correction-plan:${file}`, async () => {
       try {
         await unlink(file);
