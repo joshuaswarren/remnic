@@ -879,26 +879,30 @@ echo "[check] Ad-hoc non-active status exclusion lists..."
 # adding a new status means every such site must be updated individually.
 # Use the shared ACTIVE_STATUSES set from contradiction-scan.ts instead.
 # WARN-level — existing sites need migration to ACTIVE_STATUSES over time.
-ADHOC_STATUS=$(grep -rnE '(status|frontmatter\.status)\s*(===|!==)\s*"(superseded|archived|quarantined|rejected|forgotten|pending_review)"' \
+# Pattern for non-active status string literal comparisons
+RULE53_RE='(status|frontmatter\.status)\s*(===|!==)\s*"(superseded|archived|quarantined|rejected|forgotten|pending_review)"'
+
+# Get files with at least one match
+ADHOC_STATUS_FILES=$(grep -rlE "$RULE53_RE" \
   --include="*.ts" \
   packages/remnic-core/src/ packages/remnic-cli/src/ \
   2>/dev/null \
   | grep -v node_modules \
   | grep -v dist \
   | grep -v ".test." \
-  | grep -v ACTIVE_STATUSES \
   || true)
 
-# Only flag files that have 2+ such comparisons (the "enumeration" pattern)
-if [[ -n "$ADHOC_STATUS" ]]; then
-  ADHOC_FILES=$(echo "$ADHOC_STATUS" | cut -d: -f1 | sort | uniq -c | sort -rn | awk '$1 >= 2 {print $2}')
-  if [[ -n "$ADHOC_FILES" ]]; then
-    while IFS= read -r f; do
-      MATCHES=$(echo "$ADHOC_STATUS" | grep "^${f}:" | head -5)
-      warn "$f — enumerates 2+ non-active status literals without ACTIVE_STATUSES (rule 53). Use the shared set from contradiction-scan.ts."
-      echo "$MATCHES" | sed 's/^/    /'
-    done <<< "$ADHOC_FILES"
-  fi
+# For each file, count total matches (grep -o splits multi-match lines)
+# and skip files that already reference ACTIVE_STATUSES
+if [[ -n "$ADHOC_STATUS_FILES" ]]; then
+  while IFS= read -r f; do
+    if grep -q "ACTIVE_STATUSES" "$f" 2>/dev/null; then continue; fi
+    COUNT=$(grep -oE "$RULE53_RE" "$f" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$COUNT" -ge 2 ]]; then
+      warn "$f — enumerates $COUNT non-active status literals without ACTIVE_STATUSES (rule 53). Use the shared set from contradiction-scan.ts."
+      grep -nE "$RULE53_RE" "$f" 2>/dev/null | head -5 | sed 's/^/    /'
+    fi
+  done <<< "$ADHOC_STATUS_FILES"
 fi
 
 
