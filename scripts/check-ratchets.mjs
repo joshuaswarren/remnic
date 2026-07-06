@@ -172,10 +172,13 @@ function collectMetrics(oversizeThresholdLoc) {
       }
     }
     // Issue #1533: count files importing directly from the main storage.ts
-    // (exclude storage.ts itself). May only decrease as Phase B migrates
-    // importers to the MemoryStorage interface.
+    // (exclude storage.ts itself, and exclude the test-only storage-contract/
+    // harness dir — it imports storage.js by design to exercise the public
+    // surface, not as a production caller). May only decrease as Phase B
+    // migrates real importers to the MemoryStorage interface.
     if (
       relPosix !== "packages/remnic-core/src/storage.ts" &&
+      !relPosix.includes("/storage-contract/") &&
       DIRECT_STORAGE_IMPORT_RE.test(content)
     ) {
       directStorageImports++;
