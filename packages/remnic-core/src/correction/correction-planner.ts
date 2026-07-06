@@ -129,6 +129,13 @@ export interface LlmClassificationResult {
   fallback?: boolean;
 }
 
+/**
+ * Placeholder substituted for the request text when persisting a never-store /
+ * redaction-rule plan (#1678 thread Oid8t). Mirrors the durable-audit
+ * redaction so the transient pending-plan file never holds the secret.
+ */
+const REDACTED_REQUEST_TEXT = "[redacted — never-store/redaction correction text withheld from the pending-plan file]";
+
 // ---------------------------------------------------------------------------
 // Planner
 // ---------------------------------------------------------------------------
@@ -382,10 +389,24 @@ export class CorrectionPlanner {
   private async persist(plan: CorrectionPlan): Promise<CorrectionPlan> {
     const dir = await this.pendingDir(plan.namespace);
     const target = path.join(dir, `${plan.planId}.json`);
+    // #1678 (thread Oid8t): never-store/redaction corrections carry the very
+    // secret/pattern the user asked Remnic NOT to retain. The durable audit
+    // already withholds the text; the TRANSIENT pending-plan file must too,
+    // or the secret sits on disk (pending until apply/discard + TTL). Redact
+    // the request text in the persisted copy for never_store classifications
+    // or any redaction_rule action. The in-memory plan keeps the original
+    // text so the executor's audit body (which re-applies its own redaction)
+    // is unaffected; only the on-disk JSON is sanitized.
+    const sensitive =
+      plan.classification === "never_store" ||
+      plan.actions.some((a) => a.kind === "redaction_rule");
+    const persistedPlan: CorrectionPlan = sensitive
+      ? { ...plan, request: { ...plan.request, text: REDACTED_REQUEST_TEXT } }
+      : plan;
     await serializeMutations(`correction-plan:${target}`, async () => {
       await mkdir(dir, { recursive: true });
       const tmp = `${target}.${process.pid}.${Date.now().toString(36)}.tmp`;
-      await writeFile(tmp, `${JSON.stringify(plan)}\n`, "utf-8");
+      await writeFile(tmp, `${JSON.stringify(persistedPlan)}\n`, "utf-8");
       // rename() is atomic on POSIX for same-filesystem renames (rule 54).
       await rename(tmp, target);
     });

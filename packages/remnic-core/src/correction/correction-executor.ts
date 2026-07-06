@@ -47,8 +47,22 @@ export interface ExecutorMemory {
   category: string;
   /** True when the memory has frontmatter provenance (#1575 sourceQuote). */
   sourceQuote?: string;
-  /** Structured-attribute supersession key, when one exists. */
+  /** Structured-attribute supersession key, when one exists (legacy single-key). */
   supersessionKey?: string;
+  /**
+   * ALL derived supersession keys for the memory's structuredAttributes
+   * (#1672 item 4). A paraphrased re-observation may place the tombstoned
+   * attribute at a different position in structuredAttributes; without an
+   * entry for every matched key the keyed tier misses and the fact
+   * resurrects. Mirrors temporal-supersession's per-key emission.
+   */
+  supersessionKeys?: string[];
+  /**
+   * Canonical contentHash from the retired memory's frontmatter (#1672 item
+   * 4 / #1579). Carried into the tombstone so the exact tier matches
+   * re-extraction rather than recomputing from a citation-annotated body.
+   */
+  contentHash?: string;
   entityRef?: string;
   /** Raw content used for the tombstone hash (rule 23). */
   rawContent: string;
@@ -117,6 +131,15 @@ export interface ExecutorDeps {
       rawContent: string;
       entityRef?: string;
       supersessionKey?: string;
+      /**
+       * ALL derived supersession keys (#1672 item 4). When present, the
+       * implementation emits one tombstone per key so a paraphrased
+       * re-observation placing the attribute at a different key position is
+       * still blocked at the keyed tier.
+       */
+      supersessionKeys?: string[];
+      /** Canonical contentHash from the retired memory's frontmatter (#1672 item 4). */
+      contentHash?: string;
     },
   ): Promise<string | null>;
   /**
@@ -342,8 +365,12 @@ export class CorrectionExecutor {
             continue;
           }
           const destId = await this.deps.rescopeMemory(namespace, action.memoryId, action.toNamespace);
-          results.push({ action, status: "applied", memoryId: action.memoryId });
-          appliedTouched.push(action.memoryId);
+          // #1678 (thread OiiV6): report the DESTINATION memory id, not the
+          // source. The source is archived by the move; callers that re-fetch
+          // the reported id need the live (destination) memory, otherwise they
+          // observe an archived fact and the correction looks like a no-op.
+          results.push({ action, status: "applied", memoryId: destId });
+          appliedTouched.push(destId);
           // Propagate the destination memory in its namespace too (review
           // thread: propagate-rescoped-destination) — best-effort.
           try {
@@ -448,6 +475,15 @@ export class CorrectionExecutor {
         rawContent: memory.rawContent,
         ...(memory.entityRef ? { entityRef: memory.entityRef } : {}),
         ...(memory.supersessionKey ? { supersessionKey: memory.supersessionKey } : {}),
+        // #1672 item 4: carry the canonical contentHash (exact tier) and the
+        // full supersession-key set (keyed tier) so paraphrased re-observations
+        // of the same supersession identity are blocked, not just the literal
+        // body. Without these the tombstone projected from a structured fact
+        // dropped both fields and the fact could resurrect.
+        ...(memory.contentHash ? { contentHash: memory.contentHash } : {}),
+        ...(memory.supersessionKeys && memory.supersessionKeys.length > 0
+          ? { supersessionKeys: memory.supersessionKeys }
+          : {}),
       });
       await this.deps.retireMemory(namespace, memoryId, {
         status: reason === "supersession" ? "superseded" : "retracted",
@@ -467,7 +503,28 @@ export class CorrectionExecutor {
   }
 }
 
+/**
+ * Sanitize an error message before it lands in a CorrectionOutcome result
+ * (#1678). Outcome results are surfaced to MCP/HTTP/CLI callers and may be
+ * persisted in the audit memory, so they must not leak absolute filesystem
+ * paths (host layout / usernames / secrets in paths) or unbounded verbosity.
+ * Strip absolute paths and cap length; never reveal more than the message's
+ * short-form. The original error is still thrown/logged in full internally.
+ */
+export const CORRECTION_ERROR_MAX = 500;
+export function sanitizeErrorMessage(raw: string): string {
+  // Collapse any absolute POSIX path (/Users/foo/..., /home/..., /tmp/...) and
+  // Windows path (C:\Users\...) to a neutral <path> placeholder.
+  const stripped = raw
+    .replace(/(?:^|[\s:'"(])(\/(?:Users|home|tmp|var|opt|etc|root|private|mnt|srv)\/[^\s'">) ]+)/g, "$1<path>")
+    .replace(/(?:^|[\s:'"(])([A-Za-z]:\\[^\s'">)\\]+(?:\\[^\s'">) ]*)*)/g, "$1<path>");
+  const trimmed = stripped.trim();
+  return trimmed.length > CORRECTION_ERROR_MAX
+    ? `${trimmed.slice(0, CORRECTION_ERROR_MAX)}…`
+    : trimmed;
+}
+
 function errMsg(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
+  const raw = err instanceof Error ? err.message : String(err);
+  return sanitizeErrorMessage(raw);
 }

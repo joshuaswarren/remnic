@@ -27,7 +27,7 @@ import {
   type CorrectionPlan,
 } from "./correction-contract.js";
 import { CorrectionPlanner, type PlannerCandidate, type PlannerDeps } from "./correction-planner.js";
-import { CorrectionExecutor, type ExecutorDeps, type ExecutorMemory } from "./correction-executor.js";
+import { CorrectionExecutor, CORRECTION_ERROR_MAX, sanitizeErrorMessage, type ExecutorDeps, type ExecutorMemory } from "./correction-executor.js";
 
 // ---------------------------------------------------------------------------
 // Fakes
@@ -36,7 +36,7 @@ import { CorrectionExecutor, type ExecutorDeps, type ExecutorMemory } from "./co
 interface FakeState {
   /** memoryId → current memory state. */
   memories: Map<string, ExecutorMemory & { status: string; supersededBy?: string; validUntil?: string }>;
-  tombstones: Array<{ reason: string; sourceMemoryId: string; rawContent: string }>;
+  tombstones: Array<{ reason: string; sourceMemoryId: string; rawContent: string; supersessionKey?: string; supersessionKeys?: string[]; contentHash?: string }>;
   redactionRules: string[];
   auditRecords: Array<{ planId: string; outcome: CorrectionOutcome }>;
   replacementFailOnLoserId?: string;
