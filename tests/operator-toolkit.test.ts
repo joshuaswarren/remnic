@@ -658,6 +658,8 @@ test("operator repair aggregates dry-run session repair and graph guidance", asy
       entityGraphEnabled: fixture.config.entityGraphEnabled,
       timeGraphEnabled: fixture.config.timeGraphEnabled,
       causalGraphEnabled: fixture.config.causalGraphEnabled,
+      multiGraphMemoryEnabled: fixture.config.multiGraphMemoryEnabled,
+      graphWriteSessionAdjacencyEnabled: fixture.config.graphWriteSessionAdjacencyEnabled,
     },
     dryRun: true,
   });
