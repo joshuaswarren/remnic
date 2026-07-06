@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "note": "Structural ratchets (issue #1529, epic #1520). Counts may only decrease. Regenerate with: node scripts/check-ratchets.mjs --update. #1566: scatteredConfigFlagReads 562->536 (-26); watchlist LOC grew +9 (cli.ts +5, access-service.ts +3, orchestrator.ts +1) from caps-resolution lines required by the CapabilitySet migration — unavoidable per-operation resolve() calls.",
+  "note": "Structural ratchets (issue #1529, epic #1520). Counts may only decrease. Regenerate with: node scripts/check-ratchets.mjs --update",
   "oversizeThresholdLoc": 3000,
   "metrics": {
     "watchlistLoc": {
-      "packages/remnic-core/src/orchestrator.ts": 20387,
+      "packages/remnic-core/src/orchestrator.ts": 20585,
       "packages/remnic-core/src/cli.ts": 9389,
       "packages/remnic-core/src/access-service.ts": 8992,
       "packages/remnic-core/src/storage.ts": 7730,

@@ -619,3 +619,60 @@ export function resolveFactEventTime(
     eventTimeSource: "assumed",
   };
 }
+
+/**
+ * Input shape for {@link pickFactEventTimeAnchor} — a structural slice of
+ * `ExtractedFact` so the helper stays decoupled from the full type.
+ */
+export interface FactAnchorInput {
+  /** Explicit per-fact source-turn timestamp (#1670). */
+  sourceTurnTimestamp?: string;
+  /** Claim-level provenance spans (#1575), each carrying the turn's `observedAt`. */
+  sources?: { observedAt: string }[];
+}
+
+/**
+ * Issue #1670 — select the per-fact event-time anchor.
+ *
+ * Prefers the fact's explicit `sourceTurnTimestamp` (set by extractors that
+ * know the exact source turn). Falls back to the earliest provenance span's
+ * `observedAt` (the turn where the supporting quote was located). Finally
+ * falls back to the batch-wide anchor (latest source turn timestamp) when
+ * neither per-fact signal is present — preserving legacy behaviour for
+ * extractors that do not emit provenance.
+ *
+ * The earliest provenance span wins because a fact backed by quotes from
+ * multiple turns was *first* uttered at the earliest turn: a relative
+ * expression ("yesterday") on that fact should resolve against that turn,
+ * not a later turn that merely restated the claim.
+ *
+ * Returns `undefined` only when no signal is usable AND `batchAnchor` is
+ * absent — in which case the caller skips bi-temporal resolution entirely
+ * (identical to the pre-feature pipeline when biTemporal is off).
+ */
+export function pickFactEventTimeAnchor(
+  fact: FactAnchorInput,
+  batchAnchor: string | undefined,
+): string | undefined {
+  // 1. Explicit per-fact source-turn timestamp (highest priority).
+  if (
+    typeof fact.sourceTurnTimestamp === "string" &&
+    fact.sourceTurnTimestamp.trim().length > 0
+  ) {
+    const ms = parseFlexibleIsoTimestamp(fact.sourceTurnTimestamp.trim());
+    if (ms !== null) return new Date(ms).toISOString();
+  }
+  // 2. Earliest provenance span turn timestamp.
+  if (fact.sources && fact.sources.length > 0) {
+    let earliestMs: number | null = null;
+    for (const src of fact.sources) {
+      if (typeof src.observedAt !== "string") continue;
+      const ms = parseFlexibleIsoTimestamp(src.observedAt.trim());
+      if (ms === null) continue;
+      if (earliestMs === null || ms < earliestMs) earliestMs = ms;
+    }
+    if (earliestMs !== null) return new Date(earliestMs).toISOString();
+  }
+  // 3. Batch-wide anchor (legacy fallback).
+  return batchAnchor;
+}
