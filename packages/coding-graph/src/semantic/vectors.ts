@@ -94,17 +94,28 @@ export async function indexSymbolVectors(
 
   const modelId = modelIdFor(provider);
   const nodes = store.readNodesForSemantic();
-  const budget = config.maxSymbolsPerRun > 0 ? config.maxSymbolsPerRun : nodes.length;
-  // rule 27: guard slice(-n) for n=0. budget is already ≥ 0 here, but
-  // maxSymbolsPerRun=0 means unlimited (all nodes), not "zero nodes".
-  const eligible = nodes.slice(0, budget);
+  // Budget applies to EMBED WORK, not the candidate list. Slicing the
+  // full node list (ordered by qualified_name) BEFORE the cache check
+  // meant a bounded run kept re-visiting the cached alphabetical prefix
+  // and never reached uncached or changed symbols later in the list, so
+  // a bounded semantic index could remain permanently incomplete. Now
+  // every node gets a cache check and only a successful embed consumes
+  // budget, so progress accumulates across runs until every symbol is
+  // embedded (cursor Bugbot: 'Embedding budget uses alphabetical order';
+  // chatgpt-codex-connector P2: 'Apply vector budget after skipping
+  // cached rows'). maxSymbolsPerRun=0 means unlimited.
+  const limit = config.maxSymbolsPerRun;
 
   let embedded = 0;
   let cached = 0;
   let skipped = 0;
 
-  for (const node of eligible) {
+  for (const node of nodes) {
     if (signal?.aborted) break;
+    // Stop once this run has embedded `limit` symbols (0 = unlimited).
+    // Cached rows do NOT consume budget — they `continue` below before
+    // any embed call, so a bounded run still makes forward progress.
+    if (limit > 0 && embedded >= limit) break;
     // Read source text from disk.
     const absolutePath = path.resolve(repoRoot, node.filePath);
     let bytes: Buffer;

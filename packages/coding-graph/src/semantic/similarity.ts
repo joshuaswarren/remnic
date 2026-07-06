@@ -91,6 +91,19 @@ export function computeSimilarTo(input: SimilarToInput): SimilarToResult | Seman
     return { ok: false, code: "semantic_disabled" };
   }
 
+  // Without pre-built bodies AND without a repoRoot, the only available
+  // text is the qualified name, which MinHashes name similarity rather
+  // than body similarity — real copy-paste clones with different names
+  // are silently missed. Refuse to guess: require one of the two so the
+  // pipeline always MinHashes actual symbol bodies (chatgpt-codex-
+  // connector P2: 'Require source bodies before MinHashing').
+  if (!input.bodies && !input.repoRoot) {
+    return {
+      ok: false,
+      code: "repo_root_unset",
+      message: "computeSimilarTo needs either 'bodies' or 'repoRoot' to read source text",
+    };
+  }
   const bodies = input.bodies ?? readBodiesFromStore(store, input.repoRoot);
   const modelId = provider ? modelIdFor(provider) : undefined;
   const vectors = input.vectors ?? (modelId ? readVectorsMap(store, modelId) : new Map<string, Float32Array>());

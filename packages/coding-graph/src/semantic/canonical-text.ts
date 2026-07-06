@@ -88,23 +88,39 @@ export function collapseWhitespaceKeepLines(text: string): string {
  * signature includes the marker char so the canonical form is stable.
  */
 function splitSignatureBody(normalized: string): { readonly signature: string; readonly body: string } {
-  // Find the first body-open marker. `{` is the universal one; `=>` covers
-  // arrow functions; `:` covers type/enum members where the "body" is the
-  // type expression. Order matters: check multi-char markers first.
-  const markers = ["{", "=>"];
-  let cutIdx = Infinity;
-  for (const m of markers) {
-    const idx = normalized.indexOf(m);
-    if (idx >= 0 && idx < cutIdx) cutIdx = idx;
+  // Find the body-open marker. `{` is the universal one (functions,
+  // classes, blocks). When there is no `{` we fall back to the arrow
+  // form so braceless arrow functions (`const f = (x) => x + 1`) split
+  // at the arrow instead of collapsing to an empty body.
+  //
+  // collapseWhitespace's punctuation-spacer turns `=>` into `= >`, so
+  // the raw `=>` marker NEVER appears in the normalized text — search
+  // the normalized form (`= >`) or this whole branch is dead and
+  // braceless arrows lose their body (cursor Bugbot: 'Arrow bodies lost
+  // in canonical text'). Embeddings, cache hashes, and MinHash inputs
+  // then omitted arrow-function logic.
+  const braceIdx = normalized.indexOf("{");
+  if (braceIdx >= 0) {
+    const signature = normalized.slice(0, braceIdx + 1).trim();
+    const body = normalized.slice(braceIdx + 1).trim();
+    return { signature, body };
   }
-  if (cutIdx === Infinity) {
-    // No body marker — treat the whole text as signature (e.g. `type Foo = string`).
-    return { signature: normalized, body: "" };
+  const arrowIdx = normalized.indexOf("=>");
+  const arrowNormIdx = normalized.indexOf("= >");
+  if (arrowIdx >= 0) {
+    const signature = normalized.slice(0, arrowIdx + 2).trim();
+    const body = normalized.slice(arrowIdx + 2).trim();
+    return { signature, body };
   }
-  // Signature is everything up to and INCLUDING the marker.
-  const signature = normalized.slice(0, cutIdx + 1).trim();
-  const body = normalized.slice(cutIdx + 1).trim();
-  return { signature, body };
+  if (arrowNormIdx >= 0) {
+    // `= >` spans 3 chars (`= `, ` `, `>`); cut after the `>`.
+    const bodyStart = arrowNormIdx + 3;
+    const signature = normalized.slice(0, bodyStart).trim();
+    const body = normalized.slice(bodyStart).trim();
+    return { signature, body };
+  }
+  // No body marker — treat the whole text as signature (e.g. `type Foo = string`).
+  return { signature: normalized, body: "" };
 }
 
 /**

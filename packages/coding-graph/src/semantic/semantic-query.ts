@@ -102,6 +102,7 @@ export async function semanticQuery(input: SemanticQueryInput): Promise<Semantic
       nodeId: r.nodeId,
       qualifiedName: r.qualifiedName,
       filePath: r.filePath,
+      kind: r.kind,
       dims: r.dims,
       score: cosineSimilarity(queryF32, r.vector),
     }))
@@ -115,7 +116,12 @@ export async function semanticQuery(input: SemanticQueryInput): Promise<Semantic
     const neighbors = store.readNeighborsByNodeId(h.nodeId);
     let snippet = "";
     try {
-      const snippetResult = await store.snippetFor({ qualifiedName: h.qualifiedName });
+      // Hydrate by the exact node id from the vector row, not the
+      // qualified name — a name duplicated across files would otherwise
+      // hit 'ambiguous_name' and leave the snippet empty even though the
+      // vector row identified the precise node (chatgpt-codex-connector
+      // P2: 'Hydrate snippets by node id as well').
+      const snippetResult = await store.snippetFor({ nodeId: h.nodeId });
       if (snippetResult.ok) snippet = snippetResult.text;
     } catch {
       // snippetFor returns tagged failures, not throws — this is defensive.
@@ -123,7 +129,7 @@ export async function semanticQuery(input: SemanticQueryInput): Promise<Semantic
     hits.push({
       qualifiedName: h.qualifiedName,
       filePath: h.filePath,
-      kind: "",
+      kind: h.kind,
       score: h.score,
       snippet,
       callers: neighbors.callers,

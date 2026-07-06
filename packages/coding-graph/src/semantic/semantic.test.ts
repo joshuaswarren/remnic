@@ -441,3 +441,177 @@ test("semanticQuery: with vectors → returns ranked hits", async () => {
     await cleanup();
   }
 });
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// Budget applies to embed WORK, not the candidate list — a bounded run
+// must make progress across runs (cursor Bugbot + chatgpt-codex-connector
+// P2: bounded index could remain permanently incomplete).
+// ──────────────────────────────────────────────────────────────────────────
+
+test("budget: bounded run makes progress across runs (not stuck on cached prefix)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const src = "function a() { return 1; }\nfunction b() { return 2; }\nfunction c() { return 3; }\nfunction d() { return 4; }";
+    await writeFile(path.join(dir, "a.ts"), src);
+    const ir = makeFileIR("a.ts", [
+      { name: "a", qname: "mod.a", kind: "function", start: 0, end: 24 },
+      { name: "b", qname: "mod.b", kind: "function", start: 25, end: 50 },
+      { name: "c", qname: "mod.c", kind: "function", start: 51, end: 76 },
+      { name: "d", qname: "mod.d", kind: "function", start: 77, end: 102 },
+    ], src);
+    await store.upsertFileBatch([ir]);
+
+    const provider = countingProvider();
+    const config = resolveSemanticConfig({ enabled: true, maxSymbolsPerRun: 2 });
+
+    // Run 1: embeds the first 2 (a, b).
+    const r1 = await indexSymbolVectors({ store, provider, repoRoot: dir, config });
+    assert.equal(r1.ok, true);
+    if (r1.ok) assert.equal(r1.embedded, 2, "run 1 embeds 2");
+    assert.equal(provider.embedCount, 2);
+
+    // Run 2: a, b are cached (no embed); c, d are now embedded. Before the
+    // fix this re-sliced the same alphabetical prefix and embedded 0 new
+    // symbols every run.
+    const r2 = await indexSymbolVectors({ store, provider, repoRoot: dir, config });
+    assert.equal(r2.ok, true);
+    if (r2.ok) {
+      assert.equal(r2.embedded, 2, "run 2 embeds the NEXT 2 (progress)");
+      assert.equal(r2.cached, 2, "run 2 skips the 2 already-cached symbols");
+    }
+    assert.equal(provider.embedCount, 4, "4 total embeds across the two runs");
+
+    // Run 3: everything cached — zero new embeds.
+    provider.reset();
+    const r3 = await indexSymbolVectors({ store, provider, repoRoot: dir, config });
+    if (r3.ok) assert.equal(r3.embedded, 0, "run 3: all cached, no new embeds");
+    assert.equal(provider.embedCount, 0);
+  } finally {
+    await cleanup();
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// computeSimilarTo refuses to guess when it has neither bodies nor a
+// repoRoot — silent qname-MinHashing would miss real clones (chatgpt-
+// codex-connector P2: 'Require source bodies before MinHashing').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("SIMILAR_TO: no bodies and no repoRoot → repo_root_unset (not silent qname MinHash)", () => {
+  const r = computeSimilarTo({ store: null as never, provider: undefined, config: ENABLED_CONFIG });
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.equal(r.code, "repo_root_unset");
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// clearSemanticSimilarToEdges: recompute replace semantics — stale
+// SIMILAR_TO edges are removed while non-semantic edges survive
+// (chatgpt-codex-connector P2: 'Replace old SIMILAR_TO edges on recompute').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("SIMILAR_TO: clearSemanticSimilarToEdges removes only semantic SIMILAR_TO edges", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const src = "function f() { return 1; }\nfunction g() { return 2; }";
+    await writeFile(path.join(dir, "a.ts"), src);
+    const ir = makeFileIR("a.ts", [
+      { name: "f", qname: "mod.f", kind: "function", start: 0, end: 23 },
+      { name: "g", qname: "mod.g", kind: "function", start: 24, end: 47 },
+    ], src);
+    await store.upsertFileBatch([ir]);
+
+    // Seed a semantic SIMILAR_TO edge AND a structural CALLS edge f→g.
+    await store.upsertEdges([
+      { srcQualifiedName: "mod.f", dstQualifiedName: "mod.g", type: "SIMILAR_TO", confidence: 0.93, provenance: "semantic" },
+      { srcQualifiedName: "mod.f", dstQualifiedName: "mod.g", type: "CALLS", confidence: 1, provenance: "heuristic" },
+    ]);
+
+    const beforeSimilar = store.traverse({ start: "mod.f", edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
+    assert.equal(beforeSimilar.ok, true);
+    if (beforeSimilar.ok) {
+      assert.ok(beforeSimilar.hits.some((h) => h.qualifiedName === "mod.g"), "SIMILAR_TO edge present before clear");
+    }
+
+    await store.clearSemanticSimilarToEdges();
+
+    const afterSimilar = store.traverse({ start: "mod.f", edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
+    assert.equal(afterSimilar.ok, true);
+    if (afterSimilar.ok) {
+      assert.ok(!afterSimilar.hits.some((h) => h.qualifiedName === "mod.g"), "SIMILAR_TO edge gone after clear");
+    }
+    // The structural CALLS edge survives.
+    const afterCalls = store.traverse({ start: "mod.f", edgeTypes: ["CALLS"], maxDepth: 1 });
+    assert.equal(afterCalls.ok, true);
+    if (afterCalls.ok) {
+      assert.ok(afterCalls.hits.some((h) => h.qualifiedName === "mod.g"), "CALLS edge preserved");
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// semantic_query: hit.kind is the node label, not empty (cursor Bugbot:
+// 'Query hits omit symbol kind').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("semanticQuery: hits carry the symbol kind", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const src = "function greet(name) { return 'hi ' + name; }";
+    await writeFile(path.join(dir, "a.ts"), src);
+    const ir = makeFileIR("a.ts", [
+      { name: "greet", qname: "mod.greet", kind: "function", start: 0, end: src.length },
+    ], src);
+    await store.upsertFileBatch([ir]);
+
+    const provider = countingProvider();
+    await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+
+    const r = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "greet" });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.ok(r.hits.length >= 1);
+      assert.equal(r.hits[0]!.kind, "function", "hit.kind should be the node label, not empty");
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// semantic_query: snippet hydrates by node id, so a qualified name
+// duplicated across files still resolves the exact node's snippet
+// (chatgpt-codex-connector P2: 'Hydrate snippets by node id as well').
+// ──────────────────────────────────────────────────────────────────────────
+
+test("semanticQuery: duplicate qualified name still hydrates a snippet (by node id)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const srcA = "function dup() { return 1; }";
+    const srcB = "function dup() { return 2; }";
+    await writeFile(path.join(dir, "a.ts"), srcA);
+    await writeFile(path.join(dir, "b.ts"), srcB);
+    await store.upsertFileBatch([
+      makeFileIR("a.ts", [{ name: "dup", qname: "mod.dup", kind: "function", start: 0, end: srcA.length }], srcA),
+      makeFileIR("b.ts", [{ name: "dup", qname: "mod.dup", kind: "function", start: 0, end: srcB.length }], srcB),
+    ]);
+
+    const provider = countingProvider();
+    await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+
+    const r = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "dup" });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      // Both nodes share qname "mod.dup" but distinct node ids; hydrating
+      // by node id must yield a real snippet for at least one hit (the old
+      // qname path returned 'ambiguous_name' and left every snippet empty).
+      const withSnippet = r.hits.filter((h) => h.snippet.length > 0);
+      assert.ok(withSnippet.length >= 1, "at least one hit should carry a snippet despite the duplicate name");
+    }
+  } finally {
+    await cleanup();
+  }
+});
+

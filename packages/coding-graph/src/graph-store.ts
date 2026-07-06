@@ -348,7 +348,19 @@ export type DeadCodeResult =
  * and slices `[span_start, span_end)` from the on-disk bytes.
  */
 export interface SnippetQuery {
-  qualifiedName: string;
+  /**
+   * Qualified name to resolve. Optional when `nodeId` is supplied — the
+   * guard requires at least one of the two.
+   */
+  qualifiedName?: string;
+  /**
+   * Optional deterministic node id. When set, the lookup resolves by
+   * `nodes.id` (unique) instead of `qualified_name`, so a hit whose
+   * qualified name is duplicated across files still hydrates the exact
+   * node's snippet instead of failing with `ambiguous_name`
+   * (chatgpt-codex-connector P2: 'Hydrate snippets by node id as well').
+   */
+  nodeId?: string;
   /**
    * Optional lines of context to include before and after the span
    * (default 0 — exact span only). Context is line-aligned: the slice
@@ -2325,9 +2337,13 @@ export class GraphStore {
     if (query == null || typeof query !== "object") {
       return { ok: false, code: "invalid_query" };
     }
+    // Prefer a deterministic node id when supplied — it is unique, so it
+    // never hits the qualified-name ambiguity path.
+    const hasNodeId = typeof query.nodeId === "string" && query.nodeId.length > 0;
     if (
-      typeof query.qualifiedName !== "string" ||
-      query.qualifiedName.length === 0
+      !hasNodeId &&
+      (typeof query.qualifiedName !== "string" ||
+        query.qualifiedName.length === 0)
     ) {
       return { ok: false, code: "invalid_query" };
     }
@@ -2372,9 +2388,9 @@ export class GraphStore {
             `SELECT n.id, n.qualified_name, n.span_start, n.span_end, n.lang,
                     f.path AS file_path
                FROM nodes n JOIN files f ON n.file_id = f.id
-              WHERE n.qualified_name = ?`,
+              WHERE ${hasNodeId ? "n.id = ?" : "n.qualified_name = ?"}`,
           )
-          .all(query.qualifiedName),
+          .all(hasNodeId ? query.nodeId : query.qualifiedName),
         ["id", "qualified_name", "file_path", "span_start", "span_end", "lang"],
       );
     } catch (error) {
@@ -2555,6 +2571,7 @@ export class GraphStore {
     readonly nodeId: string;
     readonly qualifiedName: string;
     readonly filePath: string;
+    readonly kind: string;
     readonly dims: number;
     readonly vector: Float32Array;
     readonly contentHash: string;
@@ -2563,6 +2580,7 @@ export class GraphStore {
     const rows = expectRows<{
       node_id: string;
       qualified_name: string;
+      label: string;
       file_path: string;
       dims: number;
       vector: Uint8Array;
@@ -2571,19 +2589,20 @@ export class GraphStore {
       this.db
         .prepare(
           `SELECT sv.node_id, sv.dims, sv.vector, sv.content_hash,
-                  n.qualified_name, f.path AS file_path
+                  n.qualified_name, n.label, f.path AS file_path
              FROM symbol_vectors sv
              JOIN nodes n ON sv.node_id = n.id
              JOIN files f ON n.file_id = f.id
             WHERE sv.model_id = ?`,
         )
         .all(modelId),
-      ["node_id", "qualified_name", "file_path", "dims", "vector", "content_hash"],
+      ["node_id", "qualified_name", "label", "file_path", "dims", "vector", "content_hash"],
     );
     return rows.map((r) => ({
       nodeId: r.node_id,
       qualifiedName: r.qualified_name,
       filePath: r.file_path,
+      kind: r.label,
       dims: r.dims,
       contentHash: r.content_hash,
       vector: new Float32Array(r.vector.buffer, r.vector.byteOffset, r.vector.byteLength / 4),
@@ -2604,6 +2623,27 @@ export class GraphStore {
       "DELETE FROM symbol_vectors WHERE node_id IN (%PH%)",
       nodeIds,
     );
+  }
+
+  /**
+   * Remove every SIMILAR_TO edge written by the semantic similarity
+   * pipeline (type 'SIMILAR_TO', provenance 'semantic'). The pipeline
+   * recomputes the FULL near-clone edge set on each run, so callers MUST
+   * clear the prior set before upserting the new one — otherwise an edge
+   * between two symbols that stopped being similar survives indefinitely
+   * and graph traversal keeps reporting a stale clone relationship
+   * (chatgpt-codex-connector P2: 'Replace old SIMILAR_TO edges on
+   * recompute'). Scoped to provenance 'semantic' so non-semantic edges
+   * are untouched. Serialized via the write queue so it cannot interleave
+   * a concurrent file-batch edge upsert.
+   */
+  async clearSemanticSimilarToEdges(): Promise<void> {
+    if (this.closed || this.closing) return;
+    await this.queue.schedule(async () => {
+      this.db
+        .prepare("DELETE FROM edges WHERE type = ? AND provenance = ?")
+        .run("SIMILAR_TO", "semantic");
+    });
   }
 
   /**

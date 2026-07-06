@@ -113,3 +113,38 @@ test("canonical text: body truncated to maxBodyLines (token budget)", () => {
   assert.ok(body4.split(/\s+/).length <= 4, `truncated body should have <=4 tokens, got ${body4.split(/\s+/).length}`);
   assert.ok(bodyAll.split(/\s+/).length > 4, "full body should have more than 4 tokens");
 });
+
+// ──────────────────────────────────────────────────────────────────────────
+// Braceless arrow functions keep their body (cursor Bugbot: 'Arrow bodies
+// lost in canonical text'). collapseWhitespace splits `=>` into `= >`, so
+// the signature/body split must search the NORMALIZED arrow form.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("canonical text: braceless arrow body is captured, not empty", () => {
+  const raw = "const double = (x) => x * 2";
+  const sym = fn("mod.double", raw);
+  const text = buildCanonicalText({ symbol: sym, rawText: raw });
+  const body = text.split("BODY:")[1]!.trim();
+  assert.ok(body.length > 0, `braceless arrow should keep a non-empty body, got "${body}"`);
+  assert.ok(body.includes("x"), `body should include the expression text, got "${body}"`);
+});
+
+test("canonical text: braceless arrow variants canonicalize identically", () => {
+  const spaced = "const f = (x) => x + 1";
+  const tight = "const f=(x)=>x+1";
+  const sym = fn("mod.f", spaced);
+  assert.equal(
+    buildCanonicalText({ symbol: sym, rawText: spaced }),
+    buildCanonicalText({ symbol: sym, rawText: tight }),
+  );
+});
+
+test("canonical text: braced arrow still splits at the brace", () => {
+  const raw = "const f = (x) => { return x + 1; }";
+  const sym = fn("mod.f", raw);
+  const text = buildCanonicalText({ symbol: sym, rawText: raw });
+  const body = text.split("BODY:")[1]!.trim();
+  assert.ok(body.length > 0, "braced arrow should keep a body");
+  assert.ok(body.includes("return"), `braced arrow body should include the block, got "${body}"`);
+});
+
