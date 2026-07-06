@@ -7,6 +7,7 @@ import {
   resolveRecallModeDecisionAsync,
 } from "../src/orchestrator.js";
 import { parseConfig } from "../src/config.js";
+import { resolveCapabilities } from "../src/capabilities.js";
 import type { FallbackLlmClient } from "../src/fallback-llm.js";
 import type { RecallPlanMode } from "../src/types.js";
 
@@ -81,6 +82,7 @@ test("resolveRecallModeDecisionAsync uses heuristic when LLM planning is not opt
     multiGraphMemoryEnabled: true,
     prompt: "restart the gateway",
     config,
+    caps: resolveCapabilities(config),
     llm: stubPlannerLlm("graph_mode"),
   });
   // LLM stub says graph_mode, but it must not be consulted.
@@ -96,6 +98,7 @@ test("resolveRecallModeDecisionAsync applies the LLM classification when opted i
     multiGraphMemoryEnabled: true,
     prompt: "restart the gateway",
     config,
+    caps: resolveCapabilities(config),
     llm: stubPlannerLlm("graph_mode", "wants history"),
   });
   assert.equal(decision.effectiveMode, "graph_mode");
@@ -117,6 +120,7 @@ test("resolveRecallModeDecisionAsync gates an LLM graph_mode to full when graph 
     multiGraphMemoryEnabled: true,
     prompt: "restart the gateway",
     config,
+    caps: resolveCapabilities(config),
     llm: stubPlannerLlm("graph_mode"),
   });
   // Same graph gating as the heuristic path.
@@ -133,6 +137,7 @@ test("resolveRecallModeDecisionAsync shadow mode keeps the heuristic effective d
     multiGraphMemoryEnabled: true,
     prompt: "restart the gateway", // heuristic → minimal
     config,
+    caps: resolveCapabilities(config),
     llm: stubPlannerLlm("graph_mode"),
   });
   // Effective stays on the heuristic; the LLM's choice is recorded for comparison.
@@ -160,6 +165,7 @@ test("resolveRecallModeDecisionAsync skips the LLM entirely when the planner is 
     multiGraphMemoryEnabled: true,
     prompt: "what happened in the timeline",
     config,
+    caps: resolveCapabilities(config),
     llm,
   });
   assert.equal(decision.effectiveMode, "full");
