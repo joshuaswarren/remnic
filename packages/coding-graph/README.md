@@ -60,3 +60,60 @@ Install it alongside @remnic/core to enable codebase-graph features:
 - CLAUDE.md rule 57 (à-la-carte) and AGENTS.md rule 44 (computed-specifier dynamic import)
 - `web-tree-sitter` chosen to avoid the native-binding pain called out in
   #1518 / #1538 — see #1548 for the full design rationale
+
+## Semantic layer (#1556)
+
+The optional semantic layer adds symbol embeddings, `SIMILAR_TO` near-clone
+edges, and `semantic_query` (natural-language retrieval over the symbol graph).
+
+### Privacy posture
+
+**Default configuration sends nothing anywhere.** The semantic layer is OFF by
+default (`SemanticConfig.enabled = false`). When off, zero embedding provider
+calls are made and zero rows are written to the `symbol_vectors` table — the
+gate-off test (`semantic.test.ts: gate-off`) asserts this end to end.
+
+When `enabled = true`:
+- With **no embedding provider** configured: the feature degrades gracefully.
+  `SIMILAR_TO` edges are still produced via local, deterministic MinHash/LSH
+  (pure TypeScript, no network). `semantic_query` returns a tagged
+  `{ ok: false, code: "provider_unavailable" }` — never an empty result
+  masquerading as "no matches".
+- With a **remote embedding provider** configured (e.g. OpenAI or an
+  OpenAI-compatible endpoint via the host embedding provider registry):
+  symbol text (canonical form: kind + qualified name + signature + body
+  excerpt) leaves the machine to be embedded. This is the same path
+  @remnic/core's `EmbeddingFallback` uses for conversation embeddings —
+  no new network stack is introduced.
+
+The canonical text that is embedded is the canonical text that is hashed for
+the cache (rule 23): `signature + doc comment + first N tokens of body`,
+whitespace- and punctuation-normalized so formatting variants hash
+identically. Cached vectors are reused on re-index when the content hash is
+unchanged (rule 37).
+
+### API surface
+
+```typescript
+import {
+  resolveSemanticConfig,
+  indexSymbolVectors,
+  computeSimilarTo,
+  similarEdgesToEdgeIR,
+  semanticQuery,
+} from "@remnic/coding-graph";
+
+const config = resolveSemanticConfig({ enabled: true });
+
+// Index: embed symbols, cache by canonical-text hash
+const indexResult = await indexSymbolVectors({ store, provider, repoRoot, config });
+
+// SIMILAR_TO: MinHash/LSH candidates → cosine confirmation
+const similar = computeSimilarTo({ store, provider, config });
+if (similar.ok) {
+  await store.upsertEdges(similarEdgesToEdgeIR(similar.edges));
+}
+
+// semantic_query: embed query → top-k → hydrate with graph context
+const query = await semanticQuery({ store, provider, repoRoot, config, query: "payment processing" });
+```
