@@ -2484,6 +2484,220 @@ export class GraphStore {
       lang: node.lang,
     };
   }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Semantic layer (issue #1556): symbol_vectors table read/write.
+  // The db is private; these methods are the ONLY surface the semantic
+  // indexer/query path uses. Vectors are float32 BLOBs; content_hash is
+  // the canonical-text hash (rule 37 — the cache invalidation key).
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Upsert one symbol vector. Idempotent on (node_id, model_id). The
+   * caller (the semantic indexer) has ALREADY decided to re-embed (the
+   * content_hash differs from the cached row); this method just persists.
+   */
+  writeSymbolVector(input: {
+    readonly nodeId: string;
+    readonly modelId: string;
+    readonly contentHash: string;
+    readonly dims: number;
+    readonly vector: Float32Array;
+  }): void {
+    if (this.closed) return;
+    const buf = Buffer.from(input.vector.buffer, input.vector.byteOffset, input.vector.byteLength);
+    this.db
+      .prepare(
+        `INSERT INTO symbol_vectors (node_id, model_id, content_hash, dims, vector)
+           VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(node_id, model_id) DO UPDATE SET
+           content_hash = excluded.content_hash,
+           dims = excluded.dims,
+           vector = excluded.vector`,
+      )
+      .run(input.nodeId, input.modelId, input.contentHash, input.dims, buf);
+  }
+
+  /**
+   * Read one vector row by (node_id, model_id). Returns null when absent.
+   * Used by the indexer's cache-check path (skip re-embed when content_hash
+   * matches) and by the cache-hit test.
+   */
+  readSymbolVector(
+    nodeId: string,
+    modelId: string,
+  ): { readonly contentHash: string; readonly dims: number; readonly vector: Float32Array } | null {
+    if (this.closed) return null;
+    const row = expectRow<{ content_hash: string; dims: number; vector: Uint8Array }>(
+      this.db
+        .prepare(
+          `SELECT content_hash, dims, vector FROM symbol_vectors
+            WHERE node_id = ? AND model_id = ?`,
+        )
+        .get(nodeId, modelId),
+      ["content_hash", "dims", "vector"],
+    );
+    if (!row) return null;
+    return {
+      contentHash: row.content_hash,
+      dims: row.dims,
+      vector: new Float32Array(row.vector.buffer, row.vector.byteOffset, row.vector.byteLength / 4),
+    };
+  }
+
+  /**
+   * Read every vector row for a given model. Used by brute-force cosine
+   * retrieval (SIMILAR_TO confirmation + semantic_query). Returns node
+   * metadata alongside the vector so callers can hydrate hits without a
+   * second round-trip.
+   */
+  readAllSymbolVectors(modelId: string): readonly {
+    readonly nodeId: string;
+    readonly qualifiedName: string;
+    readonly filePath: string;
+    readonly dims: number;
+    readonly vector: Float32Array;
+    readonly contentHash: string;
+  }[] {
+    if (this.closed) return [];
+    const rows = expectRows<{
+      node_id: string;
+      qualified_name: string;
+      file_path: string;
+      dims: number;
+      vector: Uint8Array;
+      content_hash: string;
+    }>(
+      this.db
+        .prepare(
+          `SELECT sv.node_id, sv.dims, sv.vector, sv.content_hash,
+                  n.qualified_name, f.path AS file_path
+             FROM symbol_vectors sv
+             JOIN nodes n ON sv.node_id = n.id
+             JOIN files f ON n.file_id = f.id
+            WHERE sv.model_id = ?`,
+        )
+        .all(modelId),
+      ["node_id", "qualified_name", "file_path", "dims", "vector", "content_hash"],
+    );
+    return rows.map((r) => ({
+      nodeId: r.node_id,
+      qualifiedName: r.qualified_name,
+      filePath: r.file_path,
+      dims: r.dims,
+      contentHash: r.content_hash,
+      vector: new Float32Array(r.vector.buffer, r.vector.byteOffset, r.vector.byteLength / 4),
+    }));
+  }
+
+  /**
+   * Delete vector rows for a set of node ids (all models). Used by the
+   * cache-invalidation path when a symbol's canonical text changed AND
+   * it could not be re-embedded (provider gone) — the stale vector must
+   * not survive to pollute cosine retrieval. Cascades via the schema's
+   * ON DELETE CASCADE on nodes(id) when a node is pruned, so this method
+   * is only for the targeted-invalidation path.
+   */
+  deleteSymbolVectors(nodeIds: readonly string[]): void {
+    if (this.closed || nodeIds.length === 0) return;
+    this.runChunkedDelete(
+      "DELETE FROM symbol_vectors WHERE node_id IN (%PH%)",
+      nodeIds,
+    );
+  }
+
+  /**
+   * Read every node with its file path + span, for the semantic indexer.
+   * The indexer reads source text from disk (via repoRoot) and builds
+   * canonical text per node. Returns kind + qualified_name + span so the
+   * indexer can reconstruct the SymbolIR-equivalent without a second
+   * join. Ordered by qualified_name for deterministic processing order.
+   */
+  readNodesForSemantic(): readonly {
+    readonly nodeId: string;
+    readonly qualifiedName: string;
+    readonly kind: string;
+    readonly filePath: string;
+    readonly startByte: number;
+    readonly endByte: number;
+    readonly lang: string;
+  }[] {
+    if (this.closed) return [];
+    const rows = expectRows<{
+      id: string;
+      qualified_name: string;
+      label: string;
+      file_path: string;
+      span_start: number;
+      span_end: number;
+      lang: string;
+    }>(
+      this.db
+        .prepare(
+          `SELECT n.id, n.qualified_name, n.label, n.span_start, n.span_end, n.lang,
+                  f.path AS file_path
+             FROM nodes n JOIN files f ON n.file_id = f.id
+            ORDER BY n.qualified_name ASC`,
+        )
+        .all(),
+      ["id", "qualified_name", "label", "file_path", "span_start", "span_end", "lang"],
+    );
+    return rows.map((r) => ({
+      nodeId: r.id,
+      qualifiedName: r.qualified_name,
+      kind: r.label,
+      filePath: r.file_path,
+      startByte: r.span_start,
+      endByte: r.span_end,
+      lang: r.lang,
+    }));
+  }
+
+  /**
+   * Read the callers and callees of a node by qualified name, for
+   * semantic_query hydration (the issue: hydrate each hit with graph
+   * context — defining file, direct callers/callees).
+   */
+  readNeighbors(
+    qualifiedName: string,
+  ): { readonly callers: readonly string[]; readonly callees: readonly string[] } {
+    if (this.closed) return { callers: [], callees: [] };
+    // Resolve the node id first.
+    const nodeRow = expectRow<{ id: string }>(
+      this.db
+        .prepare("SELECT id FROM nodes WHERE qualified_name = ?")
+        .get(qualifiedName),
+      ["id"],
+    );
+    if (!nodeRow) return { callers: [], callees: [] };
+    const id = nodeRow.id;
+    // Callers: nodes that CALL this node (edges where dst = id, type CALLS).
+    const callerRows = expectRows<{ qualified_name: string }>(
+      this.db
+        .prepare(
+          `SELECT n.qualified_name FROM edges e
+             JOIN nodes n ON e.src = n.id
+            WHERE e.dst = ? AND e.type = 'CALLS'`,
+        )
+        .all(id),
+      ["qualified_name"],
+    );
+    // Callees: nodes this node CALLS (edges where src = id, type CALLS).
+    const calleeRows = expectRows<{ qualified_name: string }>(
+      this.db
+        .prepare(
+          `SELECT n.qualified_name FROM edges e
+             JOIN nodes n ON e.dst = n.id
+            WHERE e.src = ? AND e.type = 'CALLS'`,
+        )
+        .all(id),
+      ["qualified_name"],
+    );
+    return {
+      callers: callerRows.map((r) => r.qualified_name),
+      callees: calleeRows.map((r) => r.qualified_name),
+    };
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────────
