@@ -164,7 +164,8 @@ export async function handleChatEventsSSE(
     res.write(`data: ${JSON.stringify(entry)}\n\n`);
   }
 
-  // Heartbeat.
+  // Heartbeat. Unref'd so a lingering connection never blocks process
+  // exit (rule 47 — no shared mutable objects keep the loop alive).
   const heartbeat = setInterval(() => {
     try {
       res.write(`data: ${JSON.stringify({ type: "heartbeat" })}\n\n`);
@@ -172,6 +173,7 @@ export async function handleChatEventsSSE(
       // Connection closed — clearInterval below.
     }
   }, 25_000);
+  heartbeat.unref();
 
   req.on("close", () => {
     clearInterval(heartbeat);
