@@ -706,6 +706,33 @@ test("traversePaths: direction=incoming follows edges backward", async () => {
   }
 });
 
+test("traversePaths: direction=both does not double a self-loop (one hit per distinct path)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    // A single self-loop edge s->s is matched by BOTH the outgoing and
+    // incoming SELECTs under direction "both"; without dedup the same
+    // relationship-simple path is emitted twice (chatgpt-codex-connector
+    // P2: 'Deduplicate self-loop edges for both-direction traversal').
+    const selfFile: StoreFileIR = {
+      path: "src/self.ts",
+      language: "typescript",
+      contentHash: "h-self",
+      symbols: [sym("sl.s", "s", 0, 10)],
+      edges: [edge("sl.s", "sl.s")],
+    };
+    const r = await store.upsertFileBatch([selfFile]);
+    assert.equal(r.ok, true);
+    const out = store.traversePaths({ start: "sl.s", direction: "both", maxHops: 1 });
+    assert.equal(out.ok, true);
+    if (!out.ok) throw new Error("expected ok");
+    assert.equal(out.hits.length, 1, "self-loop must yield exactly one path under direction both");
+    assert.equal(out.hits[0]?.length, 1);
+    assert.equal(out.hits[0]?.qualifiedName, "sl.s");
+  } finally {
+    await dispose(store, dir);
+  }
+});
+
 test("traversePaths: edgeTypes filter restricts enumerated paths", async () => {
   const { store, dir } = await tempStore();
   try {

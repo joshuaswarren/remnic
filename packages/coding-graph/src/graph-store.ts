@@ -2274,7 +2274,25 @@ export class GraphStore {
                 "type",
               ])
             : [];
-        return [...out, ...inn];
+        // Dedupe by the canonical (src, dst, type) key. Under
+        // direction "both" a SELF-LOOP (src == dst) is matched by BOTH
+        // the outgoing and incoming SELECTs, and because usedEdges is
+        // cleared after each branch the same relationship-simple path
+        // would otherwise be emitted twice -- violating the one-hit-per-
+        // distinct-path contract and double-consuming the maxPaths cap
+        // (chatgpt-codex-connector P2: 'Deduplicate self-loop edges for
+        // both-direction traversal'). The UNIQUE(src,dst,type) table
+        // constraint guarantees no dup within a single direction, so this
+        // only ever collapses the both-direction self-loop overlap.
+        const seenEdge = new Set<string>();
+        const deduped: EdgeRow[] = [];
+        for (const e of [...out, ...inn]) {
+          const k = e.src + "\u0000" + e.dst + "\u0000" + e.type;
+          if (seenEdge.has(k)) continue;
+          seenEdge.add(k);
+          deduped.push(e);
+        }
+        return deduped;
       };
 
       const hits: TraversePathHit[] = [];
