@@ -118,10 +118,12 @@ export async function runBoundedMemoryContractsBenchmark(
   const fixtureSource =
     options.mode === "quick" ? BOUNDED_MEMORY_SMOKE_FIXTURE : BOUNDED_MEMORY_FIXTURE;
 
-  // Honor options.limit like the other remnic runners: only a strictly-
-  // positive finite limit caps the task set (limit <= 0 means no cap), so a
-  // stray 0 never produces a silent empty run.
+  // Quick mode always runs the FULL smoke subset (one task per family) so the
+  // documented `remnic bench run --quick` exercises every code path — the CLI
+  // maps --quick to an implicit limit:1, which must NOT truncate the smoke set.
+  // Full mode honors a strictly-positive --limit (limit <= 0 means no cap).
   const tasks: BoundedMemoryTask[] =
+    options.mode === "full" &&
     typeof options.limit === "number" && options.limit > 0 && Number.isFinite(options.limit)
       ? fixtureSource.slice(0, Math.floor(options.limit))
       : fixtureSource;
@@ -340,7 +342,7 @@ async function writeArtifacts(
               items: slot.items,
             })),
             transcriptBlock: pack.transcriptBlock,
-            boundaryNote: pack.boundaryNote,
+            boundaryItem: pack.boundaryItem,
             totalTokens: pack.totalTokens,
             fullTranscriptTokens: pack.fullTranscriptTokens,
           },
@@ -428,9 +430,9 @@ function renderPromptPack(
     lines.push("```");
     lines.push("");
   } else {
-    if (pack.boundaryNote) {
+    if (pack.boundaryItem) {
       lines.push("## Boundaries");
-      lines.push(`- ${pack.boundaryNote}`);
+      lines.push(`- [${pack.boundaryItem.citation}] (${pack.boundaryItem.scope}, ${pack.boundaryItem.status}) ${pack.boundaryItem.content}`);
       lines.push("");
     }
     for (const slot of pack.slots) {

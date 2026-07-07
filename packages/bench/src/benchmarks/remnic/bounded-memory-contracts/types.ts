@@ -170,8 +170,8 @@ export interface AssembledMemoryPack {
   slots: Array<{ id: string; items: MemoryPackItem[] }>;
   /** C1 only: the raw transcript text block stuffed into the prompt. */
   transcriptBlock: string | null;
-  /** Boundary guidance note rendered for typed conditions, when present. */
-  boundaryNote: string | null;
+  /** Boundary memory lifted to a cited, scored pack item for typed conditions. */
+  boundaryItem: MemoryPackItem | null;
   totalTokens: number;
   /** Tokens the full untruncated transcript would consume. */
   fullTranscriptTokens: number;

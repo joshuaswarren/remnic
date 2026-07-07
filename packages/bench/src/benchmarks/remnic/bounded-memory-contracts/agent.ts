@@ -99,8 +99,8 @@ function keywordOverlap(a: readonly string[], b: readonly string[]): number {
  * - C1: every item flattened into a transcript block (no metadata exposed),
  *   most-recent-first, truncated to the shared token budget.
  * - C2: items filtered to the task scope, active, non-superseded, organized
- *   into typed slots with citations. A boundary item is lifted into a
- *   dedicated boundaryNote. NO raw transcript is appended.
+ *   into typed slots with citations. The boundary memory is lifted into a
+ *   cited boundaryItem (rendered once, scored once). NO raw transcript is appended.
  * - C3: C2 plus skills whose trigger classifier fires.
  */
 export function assemblePack(
@@ -116,7 +116,7 @@ export function assemblePack(
       condition,
       slots: [],
       transcriptBlock: null,
-      boundaryNote: null,
+      boundaryItem: null,
       totalTokens: 0,
       fullTranscriptTokens,
     };
@@ -141,8 +141,8 @@ export function assemblePack(
       slots: [{ id: "transcript", items }],
       transcriptBlock,
       // Raw transcript buries any boundary prose; it is NOT surfaced as a
-      // structured boundary note, so the agent cannot reliably act on it.
-      boundaryNote: null,
+      // structured boundary item, so the agent cannot reliably act on it.
+      boundaryItem: null,
       totalTokens: items.reduce((s, it) => s + it.tokens, 0),
       fullTranscriptTokens,
     };
@@ -152,10 +152,13 @@ export function assemblePack(
   // slot (no double-counting) and the shared token budget is enforced across
   // the whole pack, so typed conditions are held to the same cap as C1.
   const inScope = task.memoryItems.filter((m) => m.scope === task.scope);
-  const boundaryItem = inScope.find(
+  const boundaryFixture = inScope.find(
     (m) => m.category === "boundary" && m.status === "active",
   );
-  const boundaryNote = boundaryItem ? boundaryItem.content : null;
+  // Lift the boundary into a cited MemoryPackItem so it is rendered WITH its
+  // mem:<id> citation and counted in retrieval/citation scoring. Pre-claimed
+  // below so it does not also occupy the boundaries slot (single render).
+  const boundaryItem = boundaryFixture ? toPackItem(boundaryFixture, true) : null;
 
   // Rank all in-scope, non-pending-review candidates once by relevance then
   // recency. Each candidate is offered to the first accepting slot; an item
@@ -173,12 +176,9 @@ export function assemblePack(
 
   const alreadyPicked = new Set<string>();
   let budget = contract.maxTotalTokens;
-  // The boundary item is lifted to boundaryNote (rendered once at the top of
-  // the prompt); pre-claim it so it does not ALSO occupy the boundaries slot
-  // or get double-counted in totalTokens.
-  if (boundaryItem) {
-    alreadyPicked.add(boundaryItem.id);
-    budget -= boundaryItem.tokens;
+  if (boundaryFixture) {
+    alreadyPicked.add(boundaryFixture.id);
+    budget -= boundaryFixture.tokens;
   }
   const slots = contract.slots.map((slot) => {
     const items: MemoryPackItem[] = [];
@@ -227,7 +227,7 @@ export function assemblePack(
     condition,
     slots,
     transcriptBlock: null,
-    boundaryNote,
+    boundaryItem,
     totalTokens,
     fullTranscriptTokens,
   };
@@ -331,7 +331,7 @@ export function simulateAgent(
   if (task.shouldAsk === true) {
     // Correct behavior is to ASK. Typed conditions surface a structured
     // boundary note; C0/C1 do not → they act (a boundary violation).
-    const asked = pack.boundaryNote !== null;
+    const asked = pack.boundaryItem !== null;
     return {
       answer: asked ? task.expectedAnswer : "act-without-confirmation",
       askedClarification: asked,

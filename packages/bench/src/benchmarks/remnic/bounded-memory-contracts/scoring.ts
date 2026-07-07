@@ -47,6 +47,16 @@ export function visiblePackItems(pack: AssembledMemoryPack): Array<{
       });
     }
   }
+  // The lifted boundary item is a cited, scored pack item (issue #1708) —
+  // include it so retrieved_item_count and citation_coverage reflect it.
+  if (pack.boundaryItem) {
+    out.push({
+      itemId: pack.boundaryItem.itemId,
+      citation: pack.boundaryItem.citation,
+      superseded: pack.boundaryItem.superseded,
+      wrongScope: pack.boundaryItem.wrongScope,
+    });
+  }
   return out;
 }
 
