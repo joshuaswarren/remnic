@@ -472,6 +472,7 @@ test("claude-cli provider gives up once the usage-limit backoff budget is exhaus
 });
 
 test("claude-cli provider defaults concurrency to 1 and serializes calls", async () => {
+  __claudeCliProviderTestHooks.resetSharedClaudeCliGateForTests();
   let active = 0;
   let maxActive = 0;
   const order: string[] = [];
@@ -501,7 +502,48 @@ test("claude-cli provider defaults concurrency to 1 and serializes calls", async
   assert.deepEqual(order, ["start", "end", "start", "end", "start", "end"]);
 });
 
+test("claude-cli provider serializes claude -p calls across SEPARATE provider instances (shared global gate)", async () => {
+  // Regression test for PR #1735 review: a benchmark run uses distinct
+  // ClaudeCliProvider instances for the responder and the judge. Before this
+  // fix, each instance owned its own ClaudeCliConcurrencyGate, so a
+  // responder call and a judge call could run `claude -p` concurrently
+  // against the operator's single shared Claude Max quota. The gate must now
+  // be shared process-wide so two independently-constructed instances still
+  // serialize against each other.
+  __claudeCliProviderTestHooks.resetSharedClaudeCliGateForTests();
+  let active = 0;
+  let maxActive = 0;
+  const order: string[] = [];
+  const makeBlockingDeps = (label: string) => ({
+    async runClaudeCli() {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      order.push(`${label}-start`);
+      // Blocks on a shared latch (the timer) so both instances would overlap
+      // here if they were not serialized by a shared gate.
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push(`${label}-end`);
+      active -= 1;
+      return {
+        status: 0,
+        signal: null,
+        stdout: JSON.stringify({ is_error: false, result: "ok" }),
+        stderr: "",
+      };
+    },
+  });
+
+  const responder = createClaudeCliProvider({ provider: "claude-cli", model: "opus" }, makeBlockingDeps("responder"));
+  const judge = createClaudeCliProvider({ provider: "claude-cli", model: "opus" }, makeBlockingDeps("judge"));
+
+  await Promise.all([responder.complete("respond to this"), judge.complete("judge this")]);
+
+  assert.equal(maxActive, 1);
+  assert.deepEqual(order, ["responder-start", "responder-end", "judge-start", "judge-end"]);
+});
+
 test("claude-cli provider concurrency can be raised explicitly above the default of 1", async () => {
+  __claudeCliProviderTestHooks.resetSharedClaudeCliGateForTests();
   let active = 0;
   let maxActive = 0;
   const provider = createClaudeCliProvider(
@@ -523,6 +565,39 @@ test("claude-cli provider concurrency can be raised explicitly above the default
   );
 
   await Promise.all([provider.complete("one"), provider.complete("two"), provider.complete("three")]);
+
+  assert.equal(maxActive, 2);
+});
+
+test("claude-cli provider raising concurrency on one instance raises the shared limit for a second instance too", async () => {
+  // Documents/verifies the "max across all instances, never shrinks" policy
+  // from getSharedClaudeCliGate: once ANY constructed instance raises the
+  // limit, every instance sharing the process-wide gate gets that higher
+  // budget too — this is the intended, documented behavior for the
+  // local-testing opt-out, not an isolation bug.
+  __claudeCliProviderTestHooks.resetSharedClaudeCliGateForTests();
+  let active = 0;
+  let maxActive = 0;
+
+  const makeDeps = () => ({
+    async runClaudeCli() {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return {
+        status: 0,
+        signal: null,
+        stdout: JSON.stringify({ is_error: false, result: "ok" }),
+        stderr: "",
+      };
+    },
+  });
+
+  const raised = createClaudeCliProvider({ provider: "claude-cli", model: "opus", concurrency: 2 }, makeDeps());
+  const defaulted = createClaudeCliProvider({ provider: "claude-cli", model: "opus" }, makeDeps());
+
+  await Promise.all([raised.complete("one"), defaulted.complete("two")]);
 
   assert.equal(maxActive, 2);
 });

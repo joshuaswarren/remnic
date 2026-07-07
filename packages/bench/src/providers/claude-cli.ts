@@ -151,14 +151,22 @@ let claudeCliParentCleanupInstalled = false;
 /** Serializes `.complete()` calls so the harness never fires concurrent
  * `claude -p` invocations against the operator's shared Claude Max quota.
  * Defaults to 1 (fully serialized); `config.concurrency` can raise this for
- * local testing but should stay at 1 for real benchmark runs. */
+ * local testing but should stay at 1 for real benchmark runs.
+ *
+ * IMPORTANT: this gate must be shared process-wide (see
+ * `getSharedClaudeCliGate` below), not one-per-`ClaudeCliProvider`. A
+ * benchmark run constructs separate `claude-cli` provider instances for the
+ * responder and the judge; if each held its own gate, a responder call and a
+ * judge call could still run `claude -p` concurrently against the same
+ * Claude Max session, defeating the whole point of serializing (PR #1735
+ * review). */
 class ClaudeCliConcurrencyGate {
   private active = 0;
-  private readonly limit: number;
+  private limit: number;
   private readonly waiters: Array<() => void> = [];
 
   constructor(limit: number) {
-    this.limit = Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 1;
+    this.limit = normalizeGateLimit(limit);
   }
 
   async run<T>(fn: () => Promise<T>): Promise<T> {
@@ -167,6 +175,25 @@ class ClaudeCliConcurrencyGate {
       return await fn();
     } finally {
       this.release();
+    }
+  }
+
+  /** Raises the gate's limit if `limit` is higher than the current one;
+   * never lowers it. Immediately wakes any queued waiters that fit under
+   * the new, higher limit — see `getSharedClaudeCliGate` for the policy
+   * this implements (shared max across all constructed instances). */
+  raiseLimit(limit: number): void {
+    const normalized = normalizeGateLimit(limit);
+    if (normalized <= this.limit) {
+      return;
+    }
+    this.limit = normalized;
+    while (this.active < this.limit) {
+      const next = this.waiters.shift();
+      if (!next) {
+        break;
+      }
+      next();
     }
   }
 
@@ -192,6 +219,39 @@ class ClaudeCliConcurrencyGate {
   }
 }
 
+function normalizeGateLimit(limit: number): number {
+  return Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 1;
+}
+
+/** Process-wide `claude -p` concurrency gate, shared by every
+ * `ClaudeCliProvider` instance in this process (see `ClaudeCliConcurrencyGate`
+ * doc for why a per-instance gate is unsafe). Lazily created on first use
+ * with limit 1.
+ *
+ * Concurrency-sharing policy when instances disagree: the gate is a true
+ * singleton, and its limit only ever goes UP, never down — each
+ * `ClaudeCliProvider` constructor call passes its own `config.concurrency`
+ * (default 1) here, and the shared gate's limit becomes the MAX of every
+ * value seen so far. This is deliberate: 1 is the only limit that is safe
+ * for a real benchmark run sharing the operator's Claude Max session, so any
+ * single instance opting into a higher number is assumed to be an explicit,
+ * deliberate local-testing choice — and per the finding this fixes, that
+ * higher shared budget is intentionally what every other `claude-cli`
+ * instance in the same process (e.g. both the responder and the judge) gets
+ * too, since they all draw on the same underlying quota regardless of which
+ * instance raised the limit. Do not reach for a per-instance override here:
+ * that would silently reintroduce the concurrent-subprocess bug this fixes. */
+let sharedClaudeCliGate: ClaudeCliConcurrencyGate | undefined;
+
+function getSharedClaudeCliGate(requestedLimit: number): ClaudeCliConcurrencyGate {
+  if (!sharedClaudeCliGate) {
+    sharedClaudeCliGate = new ClaudeCliConcurrencyGate(requestedLimit);
+    return sharedClaudeCliGate;
+  }
+  sharedClaudeCliGate.raiseLimit(requestedLimit);
+  return sharedClaudeCliGate;
+}
+
 class ClaudeCliProvider implements LlmProvider {
   readonly provider = "claude-cli" as const;
   readonly id: string;
@@ -214,7 +274,7 @@ class ClaudeCliProvider implements LlmProvider {
     this.config = config;
     this.runClaudeCli = deps.runClaudeCli ?? runClaudeCliCommand;
     this.runClaudeVersion = deps.runClaudeVersion ?? runClaudeVersionCommand;
-    this.gate = new ClaudeCliConcurrencyGate(config.concurrency ?? 1);
+    this.gate = getSharedClaudeCliGate(config.concurrency ?? 1);
     this.id = `claude-cli:${config.model}`;
     this.name = config.model;
   }
@@ -990,4 +1050,12 @@ export const __claudeCliProviderTestHooks = {
   resolveClaudeCliExecutable,
   runClaudeCliCommand,
   terminateActiveClaudeCliChildren,
+  /** Test-only: drops the process-wide shared `claude -p` concurrency gate
+   * so each concurrency test starts from a fresh limit instead of inheriting
+   * one raised by an earlier test in the same process (the gate's limit only
+   * ever grows — see `getSharedClaudeCliGate`). Must never be called from
+   * non-test code. */
+  resetSharedClaudeCliGateForTests: () => {
+    sharedClaudeCliGate = undefined;
+  },
 };
