@@ -563,10 +563,16 @@ function classifyQmdState(qmd: AdminNamespaceQmdHealth): {
         degraded: true,
       };
     default:
+      // Preserve the ORIGINAL qmdDegraded invariant exactly: an available
+      // backend with an unrecognized collectionState was NOT degraded before
+      // this PR (the pre-image only flagged missing/unknown/unavailable). We
+      // still surface the unrecognized value HONESTLY via state/reason so the
+      // dashboard can render it, but we do not flip the degraded bit — that
+      // would change alerting and contradict the "unchanged semantics" claim.
       return {
         state: "unknown",
         reason: `QMD reported an unrecognized collection state '${qmd.collectionState}'`,
-        degraded: true,
+        degraded: false,
       };
   }
 }

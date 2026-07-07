@@ -718,3 +718,30 @@ test("inspectScope does not warn when an explicit override is writable (issue #1
     "no read-only-override warning expected for a writable override",
   );
 });
+
+test("gatherMaintenanceHealth preserves the original qmdDegraded invariant for an unrecognized collectionState (issue #1658 thread 1)", async () => {
+  // The original degraded formula was: !available || "missing" || "unknown".
+  // An available backend with any OTHER collectionState (present/skipped/and any
+  // unrecognized value) was NOT degraded. The classified qmdState surfaces the
+  // unrecognized value honestly, but the degraded bit must stay false so the
+  // aggregate alerting invariant is byte-for-byte unchanged.
+  const memoryDir = await makeTempDir();
+  try {
+    const config = makeConfig({ memoryDir });
+    const catalog = new NamespaceCatalog(config);
+    await catalog.registerConfiguredNamespaces();
+    const report = await gatherMaintenanceHealth({
+      catalog,
+      qmdHealthProvider: async (ns) =>
+        qmdFixture(ns, { collectionState: "future-state" }),
+    });
+    const entry = report.perNamespace.find((e) => e.namespace === "default");
+    assert.ok(entry);
+    assert.equal(entry!.qmdDegraded, false, "unrecognized collectionState must not flip degraded (unchanged semantics)");
+    assert.equal(entry!.qmdState, "unknown");
+    assert.match(entry!.qmdStateReason, /unrecognized collection state 'future-state'/);
+    assert.equal(report.degradedMode, false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
