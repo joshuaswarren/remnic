@@ -54,6 +54,7 @@ import type {
 } from "./types.js";
 import { reportBufferSurpriseDistribution } from "./buffer-surprise-report.js";
 import { readJudgeVerdictStats } from "./extraction-judge-telemetry.js";
+import { resolveIndexingCapabilities } from "./capabilities.js";
 
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
@@ -931,7 +932,7 @@ async function buildOperatorConfigReviewReport(input: {
     config.memoryOsPreset !== "balanced" &&
     config.memoryOsPreset !== "research-max" &&
     config.memoryOsPreset !== "local-llm-heavy" &&
-    config.queryAwareIndexingEnabled === false &&
+    resolveIndexingCapabilities(config).queryAwareIndexing === false &&
     config.verbatimArtifactsEnabled === false &&
     !caps.rerank
   ) {
@@ -1032,7 +1033,7 @@ async function buildOperatorConfigReviewReport(input: {
     }));
   }
 
-  if (config.conversationIndexEnabled && config.conversationIndexBackend === "qmd" && config.qmdEnabled === false) {
+  if (resolveIndexingCapabilities(config).conversationIndex && config.conversationIndexBackend === "qmd" && config.qmdEnabled === false) {
     findings.push(buildConfigReviewFinding({
       key: "conversation_index_qmd_requires_qmd",
       status: "problem",
@@ -1066,7 +1067,7 @@ async function buildOperatorConfigReviewReport(input: {
       qmdDaemonEnabled: config.qmdDaemonEnabled,
       nativeKnowledgeEnabled: config.nativeKnowledge?.enabled === true,
       fileHygieneEnabled: config.fileHygiene?.enabled === true,
-      conversationIndexEnabled: config.conversationIndexEnabled,
+      conversationIndexEnabled: resolveIndexingCapabilities(config).conversationIndex,
     },
     summary,
     findings,

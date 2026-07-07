@@ -10,6 +10,7 @@ import { EmbedHelper } from "./embed-helper.js";
 import { QmdClient, type QmdClientOptions } from "../qmd.js";
 import { log } from "../logger.js";
 import { FaissConversationIndexAdapter } from "../conversation-index/faiss-adapter.js";
+import { resolveIndexingCapabilities } from "../capabilities.js";
 import {
   createConversationIndexBackend,
   type ConversationIndexBackend,
@@ -135,7 +136,7 @@ export function createSearchBackend(config: PluginConfig): SearchBackend {
  * Returns undefined if conversation index is not enabled or not using qmd backend.
  */
 export function createConversationSearchBackend(config: PluginConfig): SearchBackend | undefined {
-  if (!config.conversationIndexEnabled || config.conversationIndexBackend !== "qmd") {
+  if (!resolveIndexingCapabilities(config).conversationIndex || config.conversationIndexBackend !== "qmd") {
     return undefined;
   }
 
@@ -169,7 +170,7 @@ export function createConversationIndexRuntime(
 ): ConversationIndexRuntime {
   const qmd = createConversationSearchBackend(config) as ConversationQmdRuntime | undefined;
   let faiss: FaissConversationIndexAdapter | undefined;
-  if (config.conversationIndexEnabled && config.conversationIndexBackend === "faiss") {
+  if (resolveIndexingCapabilities(config).conversationIndex && config.conversationIndexBackend === "faiss") {
     try {
       faiss = new FaissConversationIndexAdapter({
           memoryDir: config.memoryDir,
@@ -189,7 +190,7 @@ export function createConversationIndexRuntime(
   }
 
   const backend = createConversationIndexBackend({
-    enabled: config.conversationIndexEnabled,
+    enabled: resolveIndexingCapabilities(config).conversationIndex,
     backend: config.conversationIndexBackend,
     getQmd: () => overrides?.getQmd?.() ?? qmd,
     getFaiss: () => overrides?.getFaiss?.() ?? faiss,

@@ -244,7 +244,7 @@ import {
   type ActionConfidenceResult,
 } from "./action-confidence.js";
 import { formatProfileTraceAscii } from "./profiling.js";
-import { resolveAccessSetupCapabilities, resolveGraphConstructionCapabilities } from "./capabilities.js";
+import { resolveAccessSetupCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities } from "./capabilities.js";
 
 export class EngramAccessInputError extends Error {}
 
@@ -5409,7 +5409,7 @@ export class EngramAccessService {
     reason?: string;
     retryAfterMs?: number;
   }> {
-    if (!this.orchestrator.config.conversationIndexEnabled) {
+    if (!resolveIndexingCapabilities(this.orchestrator.config).conversationIndex) {
       return {
         enabled: false,
         sessions: 0,

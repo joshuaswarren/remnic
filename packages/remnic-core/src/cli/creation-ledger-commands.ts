@@ -20,6 +20,7 @@ import type { CliCommand } from "../cli.js";
 import type { CommitmentLedgerEntry } from "../commitment-ledger.js";
 import type { WorkProductLedgerEntry } from "../work-product-ledger.js";
 import type { ResumeBundle } from "../resume-bundles.js";
+import { resolveCreationMemoryCapabilities } from "../capabilities.js";
 import {
   runResumeBundleStatusCliCommand,
   runResumeBundleRecordCliCommand,
@@ -48,8 +49,8 @@ cmd
     const status = await runResumeBundleStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       resumeBundleDir: orchestrator.config.resumeBundleDir,
-      creationMemoryEnabled: orchestrator.config.creationMemoryEnabled,
-      resumeBundlesEnabled: orchestrator.config.resumeBundlesEnabled,
+      creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
+      resumeBundlesEnabled: resolveCreationMemoryCapabilities(orchestrator.config).resumeBundles,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -84,8 +85,8 @@ cmd
     const filePath = await runResumeBundleRecordCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       resumeBundleDir: orchestrator.config.resumeBundleDir,
-      creationMemoryEnabled: orchestrator.config.creationMemoryEnabled,
-      resumeBundlesEnabled: orchestrator.config.resumeBundlesEnabled,
+      creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
+      resumeBundlesEnabled: resolveCreationMemoryCapabilities(orchestrator.config).resumeBundles,
       bundle: {
         schemaVersion: 1,
         bundleId: String(options.bundleId ?? ""),
@@ -127,11 +128,11 @@ cmd
       objectiveStateStoreDir: orchestrator.config.objectiveStateStoreDir,
       workProductLedgerDir: orchestrator.config.workProductLedgerDir,
       commitmentLedgerDir: orchestrator.config.commitmentLedgerDir,
-      creationMemoryEnabled: orchestrator.config.creationMemoryEnabled,
-      resumeBundlesEnabled: orchestrator.config.resumeBundlesEnabled,
+      creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
+      resumeBundlesEnabled: resolveCreationMemoryCapabilities(orchestrator.config).resumeBundles,
       transcriptEnabled: orchestrator.config.transcriptEnabled,
       objectiveStateMemoryEnabled: orchestrator.config.objectiveStateMemoryEnabled,
-      commitmentLedgerEnabled: orchestrator.config.commitmentLedgerEnabled,
+      commitmentLedgerEnabled: resolveCreationMemoryCapabilities(orchestrator.config).commitmentLedger,
       bundleId: String(options.bundleId ?? ""),
       recordedAt: String(options.recordedAt ?? ""),
       sessionKey: String(options.sessionKey ?? ""),
@@ -152,9 +153,9 @@ cmd
     const status = await runCommitmentStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       commitmentLedgerDir: orchestrator.config.commitmentLedgerDir,
-      creationMemoryEnabled: orchestrator.config.creationMemoryEnabled,
-      commitmentLedgerEnabled: orchestrator.config.commitmentLedgerEnabled,
-      commitmentLifecycleEnabled: orchestrator.config.commitmentLifecycleEnabled,
+      creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
+      commitmentLedgerEnabled: resolveCreationMemoryCapabilities(orchestrator.config).commitmentLedger,
+      commitmentLifecycleEnabled: resolveCreationMemoryCapabilities(orchestrator.config).commitmentLifecycle,
       commitmentStaleDays: orchestrator.config.commitmentStaleDays,
       commitmentDecayDays: orchestrator.config.commitmentDecayDays,
     });
@@ -189,8 +190,8 @@ cmd
     const filePath = await runCommitmentRecordCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       commitmentLedgerDir: orchestrator.config.commitmentLedgerDir,
-      creationMemoryEnabled: orchestrator.config.creationMemoryEnabled,
-      commitmentLedgerEnabled: orchestrator.config.commitmentLedgerEnabled,
+      creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
+      commitmentLedgerEnabled: resolveCreationMemoryCapabilities(orchestrator.config).commitmentLedger,
       entry: {
         schemaVersion: 1,
         entryId: String(options.entryId ?? ""),
@@ -227,9 +228,9 @@ cmd
     const entry = await runCommitmentSetStateCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       commitmentLedgerDir: orchestrator.config.commitmentLedgerDir,
-      creationMemoryEnabled: orchestrator.config.creationMemoryEnabled,
-      commitmentLedgerEnabled: orchestrator.config.commitmentLedgerEnabled,
-      commitmentLifecycleEnabled: orchestrator.config.commitmentLifecycleEnabled,
+      creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
+      commitmentLedgerEnabled: resolveCreationMemoryCapabilities(orchestrator.config).commitmentLedger,
+      commitmentLifecycleEnabled: resolveCreationMemoryCapabilities(orchestrator.config).commitmentLifecycle,
       entryId: String(options.entryId ?? ""),
       nextState: String(options.state ?? "") as CommitmentLedgerEntry["state"],
       changedAt: String(options.changedAt ?? ""),
@@ -247,9 +248,9 @@ cmd
     const result = await runCommitmentLifecycleCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       commitmentLedgerDir: orchestrator.config.commitmentLedgerDir,
-      creationMemoryEnabled: orchestrator.config.creationMemoryEnabled,
-      commitmentLedgerEnabled: orchestrator.config.commitmentLedgerEnabled,
-      commitmentLifecycleEnabled: orchestrator.config.commitmentLifecycleEnabled,
+      creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
+      commitmentLedgerEnabled: resolveCreationMemoryCapabilities(orchestrator.config).commitmentLedger,
+      commitmentLifecycleEnabled: resolveCreationMemoryCapabilities(orchestrator.config).commitmentLifecycle,
       commitmentDecayDays: orchestrator.config.commitmentDecayDays,
       now: typeof options.now === "string" ? options.now : undefined,
     });
@@ -264,7 +265,7 @@ cmd
     const status = await runWorkProductStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       workProductLedgerDir: orchestrator.config.workProductLedgerDir,
-      creationMemoryEnabled: orchestrator.config.creationMemoryEnabled,
+      creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -296,7 +297,7 @@ cmd
     const filePath = await runWorkProductRecordCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       workProductLedgerDir: orchestrator.config.workProductLedgerDir,
-      creationMemoryEnabled: orchestrator.config.creationMemoryEnabled,
+      creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
       entry: {
         schemaVersion: 1,
         entryId: String(options.entryId ?? ""),
@@ -334,7 +335,7 @@ cmd
     const results = await runWorkProductRecallSearchCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       workProductLedgerDir: orchestrator.config.workProductLedgerDir,
-      creationMemoryEnabled: orchestrator.config.creationMemoryEnabled,
+      creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
       workProductRecallEnabled: orchestrator.config.workProductRecallEnabled,
       query,
       maxResults: Number.isFinite(maxResults) ? maxResults : 3,

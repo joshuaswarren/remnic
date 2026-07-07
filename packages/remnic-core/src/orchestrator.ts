@@ -270,9 +270,13 @@ import {
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
   resolveMemoryLifecycleCapabilities,
+  resolveIndexingCapabilities,
+  resolveCreationMemoryCapabilities,
   type CapabilitySet,
   type GraphConstructionCapabilitySet,
   type MemoryLifecycleCapabilitySet,
+  type IndexingCapabilitySet,
+  type CreationMemoryCapabilitySet,
 } from "./capabilities.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/index.js";
 import {
@@ -3781,7 +3785,7 @@ export class Orchestrator {
     await Promise.all(cacheWarmups);
     if (signal.aborted) return;
 
-    if (this.config.conversationIndexEnabled && this.conversationIndexBackend) {
+    if (resolveIndexingCapabilities(this.config).conversationIndex && this.conversationIndexBackend) {
       try {
         const init = await this.conversationIndexBackend.initialize();
         if (!init.enabled) {
@@ -4640,7 +4644,7 @@ export class Orchestrator {
             try {
               await this.embeddingFallback.removeFromIndex(m.frontmatter.id);
               if (
-                this.config.queryAwareIndexingEnabled &&
+                resolveIndexingCapabilities(this.config).queryAwareIndexing &&
                 m.path &&
                 m.frontmatter?.created
               ) {
@@ -5679,7 +5683,7 @@ export class Orchestrator {
     const lastUpdateAt =
       lastUpdateAtMs > 0 ? new Date(lastUpdateAtMs).toISOString() : null;
 
-    if (!this.config.conversationIndexEnabled) {
+    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
       return {
         enabled: false,
         backend: this.config.conversationIndexBackend,
@@ -5719,7 +5723,7 @@ export class Orchestrator {
     const lastUpdateAt =
       lastUpdateAtMs > 0 ? new Date(lastUpdateAtMs).toISOString() : null;
 
-    if (!this.config.conversationIndexEnabled) {
+    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
       return {
         enabled: false,
         backend: this.config.conversationIndexBackend,
@@ -5781,7 +5785,7 @@ export class Orchestrator {
     retryAfterMs?: number;
     embedded?: boolean;
   }> {
-    if (!this.config.conversationIndexEnabled) {
+    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
       return { chunks: 0, skipped: true, reason: "disabled", embedded: false };
     }
     const enforceMinInterval = opts?.enforceMinInterval !== false;
@@ -5842,7 +5846,7 @@ export class Orchestrator {
     embedded?: boolean;
     rebuilt?: boolean;
   }> {
-    if (!this.config.conversationIndexEnabled) {
+    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
       return {
         chunks: 0,
         skipped: true,
@@ -6447,7 +6451,7 @@ export class Orchestrator {
     prompt: string,
     recallNamespaces: string[],
   ): Promise<QueryAwarePrefilter> {
-    if (!this.config.queryAwareIndexingEnabled || !prompt.trim()) {
+    if (!resolveIndexingCapabilities(this.config).queryAwareIndexing || !prompt.trim()) {
       return {
         candidatePaths: null,
         temporalFromDate: null,
@@ -9239,7 +9243,7 @@ export class Orchestrator {
     const workProductsPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.creationMemoryEnabled ||
+        !resolveCreationMemoryCapabilities(this.config).creationMemory ||
         !this.config.workProductRecallEnabled ||
         !this.isRecallSectionEnabled(
           "work-products",
@@ -9314,7 +9318,7 @@ export class Orchestrator {
     const queryAwarePrefilterPromise =
       (async (): Promise<QueryAwarePrefilter> => {
         const t0 = Date.now();
-        if (!this.config.queryAwareIndexingEnabled || !prompt.trim()) {
+        if (!resolveIndexingCapabilities(this.config).queryAwareIndexing || !prompt.trim()) {
           recordRecallSectionMetric({
             section: "queryAware",
             priority: "enrichment",
@@ -10060,7 +10064,7 @@ export class Orchestrator {
     const conversationRecallPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.conversationIndexEnabled ||
+        !resolveIndexingCapabilities(this.config).conversationIndex ||
         queryPolicy.skipConversationRecall ||
         !this.isRecallSectionEnabled("conversation-recall", true)
       ) {
@@ -16770,7 +16774,7 @@ export class Orchestrator {
     // Enabling only parallelRetrievalEnabled without queryAwareIndexingEnabled would silently
     // produce an empty temporal index, leaving the temporal agent with no data to work from.
     if (
-      !this.config.queryAwareIndexingEnabled &&
+      !resolveIndexingCapabilities(this.config).queryAwareIndexing &&
       !caps.parallelRetrieval
     )
       return;
@@ -16885,7 +16889,7 @@ export class Orchestrator {
 
     // Build a lookup map from the already-loaded corpus to avoid repeated
     // readAllMemories() scans inside getMemoryById for pre-action deindex reads.
-    const memoryLookup = this.config.queryAwareIndexingEnabled
+    const memoryLookup = resolveIndexingCapabilities(this.config).queryAwareIndexing
       ? new Map(allMemories.map((m) => [m.frontmatter.id, m]))
       : null;
 
@@ -16893,7 +16897,7 @@ export class Orchestrator {
       switch (item.action) {
         case "INVALIDATE": {
           // Capture path/frontmatter before invalidation for index cleanup
-          const toInvalidate = this.config.queryAwareIndexingEnabled
+          const toInvalidate = resolveIndexingCapabilities(this.config).queryAwareIndexing
             ? (memoryLookup?.get(item.existingId) ?? null)
             : null;
           if (await this.storage.invalidateMemory(item.existingId)) {
@@ -16941,7 +16945,7 @@ export class Orchestrator {
             // updateMemory() only changes content/updated/supersedes/lineage — path, created, and tags
             // are preserved, so the temporal/tag index entry for the survivor is already correct.
             // Capture before invalidation for index cleanup
-            const toMergeInvalidate = this.config.queryAwareIndexingEnabled
+            const toMergeInvalidate = resolveIndexingCapabilities(this.config).queryAwareIndexing
               ? (memoryLookup?.get(item.mergeWith) ?? null)
               : null;
             if (await this.storage.invalidateMemory(item.mergeWith)) {
@@ -17027,7 +17031,7 @@ export class Orchestrator {
     if (deletedCommitments.length > 0) {
       memoryItemMutated = true;
       log.info(`cleaned ${deletedCommitments.length} expired commitments`);
-      if (this.config.queryAwareIndexingEnabled) {
+      if (resolveIndexingCapabilities(this.config).queryAwareIndexing) {
         for (const m of deletedCommitments) {
           deindexMemory(
             this.config.memoryDir,
@@ -17040,9 +17044,9 @@ export class Orchestrator {
     }
 
     if (
-      this.config.creationMemoryEnabled &&
-      this.config.commitmentLedgerEnabled &&
-      this.config.commitmentLifecycleEnabled
+      resolveCreationMemoryCapabilities(this.config).creationMemory &&
+      resolveCreationMemoryCapabilities(this.config).commitmentLedger &&
+      resolveCreationMemoryCapabilities(this.config).commitmentLifecycle
     ) {
       try {
         const lifecycle = await applyCommitmentLedgerLifecycle({
@@ -17070,7 +17074,7 @@ export class Orchestrator {
     if (deletedTTL.length > 0) {
       memoryItemMutated = true;
       log.info(`cleaned ${deletedTTL.length} TTL-expired memories`);
-      if (this.config.queryAwareIndexingEnabled) {
+      if (resolveIndexingCapabilities(this.config).queryAwareIndexing) {
         for (const m of deletedTTL) {
           deindexMemory(
             this.config.memoryDir,
@@ -17958,7 +17962,7 @@ export class Orchestrator {
         );
         await this.embeddingFallback.removeFromIndex(memory.frontmatter.id);
         if (
-          this.config.queryAwareIndexingEnabled &&
+          resolveIndexingCapabilities(this.config).queryAwareIndexing &&
           memory.path &&
           memory.frontmatter?.created
         ) {
@@ -20343,7 +20347,7 @@ export class Orchestrator {
     );
     let temporalFromDate: string | null = null;
     let promptTags: string[] = [];
-    if (this.config.queryAwareIndexingEnabled && prompt) {
+    if (resolveIndexingCapabilities(this.config).queryAwareIndexing && prompt) {
       if (isTemporalQuery(prompt)) {
         temporalFromDate = recencyWindowFromPrompt(prompt, now);
       }
@@ -20368,7 +20372,7 @@ export class Orchestrator {
     // Scope to result paths first so cross-namespace paths don't consume the cap.
     let temporalCandidates: Set<string> | null = null;
     let tagCandidates: Set<string> | null = null;
-    if (this.config.queryAwareIndexingEnabled && prompt) {
+    if (resolveIndexingCapabilities(this.config).queryAwareIndexing && prompt) {
       const maxCandidates = this.config.queryAwareIndexingMaxCandidates;
       const capSet = (s: Set<string> | null): Set<string> | null => {
         if (!s) return null;
@@ -20477,7 +20481,7 @@ export class Orchestrator {
 
         // v8.1: Temporal + Tag index boost
         // Results that match the detected temporal window or tag query get a small additive boost.
-        if (this.config.queryAwareIndexingEnabled && r.path) {
+        if (resolveIndexingCapabilities(this.config).queryAwareIndexing && r.path) {
           if (temporalCandidates?.has(r.path)) {
             score += applyUtilityRankingRuntimeDelta(
               0.08,
@@ -20791,7 +20795,7 @@ export class Orchestrator {
         contradiction.reason,
       );
       if (
-        this.config.queryAwareIndexingEnabled &&
+        resolveIndexingCapabilities(this.config).queryAwareIndexing &&
         contradiction.supersededPath
       ) {
         deindexMemory(
