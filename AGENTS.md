@@ -1646,3 +1646,71 @@ Old, low-importance memories are summarized:
 - Creates summary files with key facts
 - Archives original memories
 - Preserves important and entity-linked memories
+
+## PUBLIC REPOSITORY — Privacy Policy
+
+**This repository is PUBLIC on GitHub.** Every commit is visible to the world.
+
+### Rules for ALL agents committing to this repo:
+
+1. **NEVER commit personal data** — no names, emails, addresses, phone numbers, account IDs, or user identifiers
+2. **NEVER commit API keys, tokens, or secrets** — even in comments or examples
+3. **NEVER commit memory content** — the `facts/`, `entities/`, `corrections/`, `questions/`, `state/` directories contain user memories and must NEVER be committed
+4. **NEVER commit IDENTITY.md or profile.md** — these contain personal behavioral profiles
+5. **NEVER commit `.env` files** or any file containing credentials
+6. **NEVER reference specific users, their preferences, or their data** in code comments or commit messages
+7. **Config examples must use placeholders** — `${OPENAI_API_KEY}`, not actual keys
+8. **Test data must be synthetic** — never use real conversation data in tests
+
+### What IS safe to commit:
+- Source code (`src/`, `scripts/`)
+- Package manifests (`package.json`, `tsconfig.json`, `tsup.config.ts`)
+- Plugin manifest (`openclaw.plugin.json`)
+- Documentation (`README.md`)
+- Build configuration
+- `.gitignore`
+
+### Before every commit, verify:
+- `git diff --cached` contains NO personal information
+- No hardcoded API keys, URLs with tokens, or credentials
+- No references to specific users or their data
+
+## Agent Notes: Retrieval Explain Surface (issues #518, #570)
+
+Two adjacent surfaces with similar names — both shipped on main. Do not
+conflate them:
+
+1. **`recall/explain`** (graph-path, shipped) — `POST
+   /engram/v1/recall/explain` / `engram.recall_explain` MCP tool /
+   `EngramAccessService.recallExplain()`. Returns a graph-path
+   explanation *document* ("why these memories?" for the graph
+   subsystem). Markdown formatting delegates to the shared
+   `recall-explain-renderer.ts` so CLI / HTTP / MCP stay in sync.
+
+2. **Recall xray / tier explain** (#570, shipped) — `GET
+   /engram/v1/recall/xray` / `engram.recall_xray` MCP tool / `remnic
+   xray` CLI / `EngramAccessService.recallXray()`. Returns a
+   *structured per-result annotation* of which retrieval tier served
+   the query (`direct-answer`, `hybrid`, etc.). Attached to
+   `LastRecallSnapshot.tierExplain` only when
+   `recallDirectAnswerEnabled: true`.
+
+On-disk modules (all shipped):
+
+- `packages/remnic-core/src/direct-answer.ts` — pure eligibility
+  function over caller-resolved `DirectAnswerCandidate`s.
+- `packages/remnic-core/src/direct-answer-wiring.ts` — source-agnostic
+  `tryDirectAnswer(...)` binding invoked by the orchestrator.
+- `packages/remnic-core/src/recall-xray.ts`,
+  `recall-xray-renderer.ts`, `recall-xray-cli.ts` — tier-explain core,
+  shared renderer, and CLI surface.
+- `packages/remnic-core/src/recall-explain-renderer.ts` — shared
+  markdown renderer for the legacy graph-path `/recall/explain`
+  surface.
+- `packages/remnic-core/src/types.ts` — `RecallTierExplain` interface,
+  attached to `LastRecallSnapshot` via `recall-state.ts`.
+
+Rule 22 applies: never fork formatting — extend the renderers. If a
+shared `abort-error.ts` module is later introduced, migrate the
+private `throwIfAborted(signal)` helper in `direct-answer-wiring.ts`
+rather than re-implementing it per call site.
