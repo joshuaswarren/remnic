@@ -905,6 +905,23 @@ test("guard ordering: corrupt v2 report missing scalar metrics fails before mach
   assert.ok(result.summary.includes("fullIndexMs.ms"), "summary must name the missing scalar field");
 });
 
+test("guard ordering: report with non-numeric metric value fails (NaN guard)", () => {
+  // A JSON-loaded report may carry a string where a number is expected
+  // (fullIndexLocsPerSecond: "oops"). Without Number.isFinite validation,
+  // the NaN ratio passes the tolerance check and the gate returns true.
+  // (chatgpt-codex-connector #1688 P2: "Validate metric values as finite").
+  const report = reportWithMachine(SAME_MACHINE);
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const nonNumericReport: CodingGraphBenchReport = {
+    ...report,
+    fullIndexLocsPerSecond: "oops" as unknown as number,
+  };
+  const result = checkCodingGraphRegression(nonNumericReport, baseline, 30);
+  assert.equal(result.passed, false, "non-numeric metric must fail the gate");
+  assert.ok(result.summary.includes("fullIndexLocsPerSecond"), "summary must name the bad field");
+});
+
+
 
 
 

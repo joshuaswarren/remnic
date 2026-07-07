@@ -157,26 +157,28 @@ export function checkCodingGraphRegression(
     };
   }
 
-  // Field-presence guard: a corrupt/partial v2 report may carry
-  // schemaVersion 2 yet lack a required metric field OR a nested sub-field
-  // (a hand-edited or truncated JSON). extractMetrics dereferences both the
-  // top-level field and its nested p50/p95; without this guard a missing
-  // nested field produces undefined in the metric map, and the comparison
-  // loop silently skips it (passed: true) — letting corrupt artifacts pass
-  // (chatgpt-codex-connector #1688 P2: 'Validate nested metric fields').
-  const missingFields: string[] = [];
-  if (report.incrementalUpdate == null) missingFields.push("incrementalUpdate");
-  if (report.incrementalModifiedUpdate == null) missingFields.push("incrementalModifiedUpdate");
-  if (report.incrementalUpdate?.p50 == null) missingFields.push("incrementalUpdate.p50");
-  if (report.incrementalUpdate?.p95 == null) missingFields.push("incrementalUpdate.p95");
-  if (report.incrementalModifiedUpdate?.p50 == null) missingFields.push("incrementalModifiedUpdate.p50");
-  if (report.incrementalModifiedUpdate?.p95 == null) missingFields.push("incrementalModifiedUpdate.p95");
-  if (report.tracePath?.p95 == null) missingFields.push("tracePath.p95");
-  if (report.searchGraph?.p95 == null) missingFields.push("searchGraph.p95");
-  if (report.fullIndexMs?.ms == null) missingFields.push("fullIndexMs.ms");
-  if (report.fullIndexLocsPerSecond == null) missingFields.push("fullIndexLocsPerSecond");
-  if (report.deadCodeMs?.ms == null) missingFields.push("deadCodeMs.ms");
-  if (report.dbBytesPerKloc == null) missingFields.push("dbBytesPerKloc");
+  // Field-presence + finite-number guard: a corrupt/partial v2 report
+  // may carry schemaVersion 2 yet lack a required metric field, have a
+  // nested sub-field missing, or carry a non-numeric value from a malformed
+  // JSON (e.g. fullIndexLocsPerSecond: "oops"). extractMetrics feeds these
+  // values into ratio math; a NaN result silently passes the gate. Validate
+  // every metric as a finite number before comparing or skipping
+  // (chatgpt-codex-connector #1688 P2: 'Validate metric values as finite').
+  const metricChecks: ReadonlyArray<readonly [string, unknown]> = [
+    ["incrementalUpdate.p50", report.incrementalUpdate?.p50],
+    ["incrementalUpdate.p95", report.incrementalUpdate?.p95],
+    ["incrementalModifiedUpdate.p50", report.incrementalModifiedUpdate?.p50],
+    ["incrementalModifiedUpdate.p95", report.incrementalModifiedUpdate?.p95],
+    ["tracePath.p95", report.tracePath?.p95],
+    ["searchGraph.p95", report.searchGraph?.p95],
+    ["fullIndexMs.ms", report.fullIndexMs?.ms],
+    ["fullIndexLocsPerSecond", report.fullIndexLocsPerSecond],
+    ["deadCodeMs.ms", report.deadCodeMs?.ms],
+    ["dbBytesPerKloc", report.dbBytesPerKloc],
+  ];
+  const missingFields = metricChecks
+    .filter(([, v]) => typeof v !== "number" || !Number.isFinite(v as number))
+    .map(([k]) => k);
   if (missingFields.length > 0) {
     return {
       passed: false,
