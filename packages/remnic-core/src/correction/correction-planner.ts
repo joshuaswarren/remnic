@@ -478,6 +478,17 @@ export class CorrectionPlanner {
       const plan = parsePlan(raw);
       if (!plan) return;
       plan.status = status;
+      // #1669 thread P1: scrub redaction_rule patterns from consumed plans so
+      // a never-store pattern does not persist on disk after apply/discard.
+      // The executor reloads via loadPlan only between "applying" (step 1) and
+      // "applied" (step 4), so scrubbing at the terminal status is safe.
+      if (status !== "applying") {
+        plan.actions = plan.actions.map((a) =>
+          a.kind === "redaction_rule"
+            ? { ...a, pattern: "[redacted — pattern applied]" }
+            : a,
+        );
+      }
       const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
       await writeFile(tmp, `${JSON.stringify(plan)}\n`, "utf-8");
       await rename(tmp, file);

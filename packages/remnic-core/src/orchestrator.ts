@@ -14864,6 +14864,10 @@ export class Orchestrator {
     // into the caller's buffer-retention decision.
     this.lastPersistExtractionDeferredCount = 0;
     if (this.config.extractionJudgeEnabled) {
+      // #1669 P1: pre-filter redacted facts from judge candidates so never-store
+      // content is not persisted as judge training data.
+      let preJudgeRedactionRules: CompiledRedactionRule[] = [];
+      try { preJudgeRedactionRules = await redactionRulesFor(storage.dir); } catch { /* fail open */ }
       try {
         const judgeCandidates: JudgeCandidate[] = [];
         const candidateToFactIndex: number[] = [];
@@ -14903,6 +14907,11 @@ export class Orchestrator {
             )
           ) {
             continue;
+          }
+          if (preJudgeRedactionRules.length > 0) {
+            const rc = f.content + (f.structuredAttributes ? " " + JSON.stringify(f.structuredAttributes) : "")
+              + (f.procedureSteps ? " " + f.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""}`.trim()).join(" ") : "");
+            if (contentMatchesRedactionRules(rc, preJudgeRedactionRules)) continue;
           }
           judgeCandidates.push({
             text: f.content,
