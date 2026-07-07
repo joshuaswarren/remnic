@@ -945,3 +945,26 @@ test("toStrictIsoTimestamp path: space-separated partial YYYY-MM HH:MM is reject
     "space-separated partial timestamp must fall back to epoch, not a fabricated date",
   );
 });
+
+test("toStrictIsoTimestamp path: leading-whitespace partial timestamp is rejected (issue #1657, codex r3)", () => {
+  // Date.parse trims leading whitespace, so " 2026-05" parses as May 1 —
+  // but the ^\d{4} guard anchored at the start would not recognize the
+  // string as year-led, bypassing the partial-date rejection. Trim first.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: " 2026-05" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "leading-whitespace partial timestamp must fall back to epoch, not a fabricated date",
+  );
+});

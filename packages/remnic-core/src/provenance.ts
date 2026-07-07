@@ -188,14 +188,20 @@ function isStrictIsoTimestamp(s: string): boolean {
  */
 function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined {
   if (typeof ts !== "string" || ts.length === 0) return undefined;
-  if (isStrictIsoTimestamp(ts)) return ts;
-  const parsed = Date.parse(ts);
+  // Trim surrounding whitespace: Date.parse accepts leading/trailing
+  // whitespace, so an imported " 2026-05" would otherwise bypass the
+  // year-led partial-date guard below and fabricate May 1
+  // (chatgpt-codex-connector review on #1714, issue #1657).
+  const value = ts.trim();
+  if (value.length === 0) return undefined;
+  if (isStrictIsoTimestamp(value)) return value;
+  const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return undefined;
   // Reject bare-year / numeric-only strings that Date.parse accepts (e.g.
   // "123") — isStrictIsoTimestamp already rejected them, and the round-trip
   // below would otherwise resurrect them. Require at least one date/time
   // separator so a plain number never round-trips into a fake epoch.
-  if (!/[-:T]/.test(ts)) return undefined;
+  if (!/[-:T]/.test(value)) return undefined;
   // Reject partial year-led timestamps (issue #1657, codex thread
   // PRRT_kwDORJXyws6OdKaD). Date.parse silently fills in missing calendar
   // components for incomplete shapes — "2026-05" becomes 2026-05-01 — and
@@ -207,7 +213,7 @@ function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined
   // trusting the normalized round-trip. Non-numeric-month shapes
   // ("Jan 15 2026") do not start with a 4-digit year and fall through to
   // Date.parse unchanged.
-  if (/^\d{4}\D/.test(ts) && !/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(ts)) {
+  if (/^\d{4}\D/.test(value) && !/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(value)) {
     return undefined;
   }
   // Reject calendar-overflow dates (chatgpt-codex-connector thread dANc):
@@ -220,7 +226,7 @@ function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined
   // ([-/], not \D) so the capture cannot cross the date/time boundary and grab
   // the hour as the day — including the space-separated partial shape
   // "2026-05 10:00" (issue #1657).
-  const ymd = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/.exec(ts);
+  const ymd = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/.exec(value);
   if (ymd) {
     const [_, ys, ms, ds] = ymd;
     const y = Number(ys), mo = Number(ms), da = Number(ds);
@@ -231,7 +237,7 @@ function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined
   // these too. Try both month-first and day-first interpretations; if
   // neither is a valid calendar date, reject (chatgpt-codex-connector thread
   // dH47 — non-YMD overflow timestamps).
-  const mdy = /^(\d{1,2})\D(\d{1,2})\D(\d{4})/.exec(ts);
+  const mdy = /^(\d{1,2})\D(\d{1,2})\D(\d{4})/.exec(value);
   if (mdy) {
     const a = Number(mdy[1]), b = Number(mdy[2]), yr = Number(mdy[3]);
     if (!isValidCalendarDate(yr, a, b) && !isValidCalendarDate(yr, b, a)) {
