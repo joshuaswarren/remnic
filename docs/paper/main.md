@@ -204,6 +204,25 @@ leaderboard-safety / explicit-cue guards; reproducible on one GPU).
 artifact. **No number appears in this section until its artifact exists and
 passes the §5 publishability rubric.** Until then, every block is a TODO.
 
+- **Figures (#1731):** the §6 result figures are rendered by
+  `scripts/generate-paper-figures.mjs` (regenerate with `pnpm run figures:paper`)
+  into `docs/paper/figures/`, with full real-vs-pending provenance in
+  `docs/paper/figures/README.md`. As of this slice only the Remnic Tier-L panels
+  (Figure 1) and the TrustScore component illustration (Figure 3) carry real
+  data; every comparison panel for which no committed artifact exists is an
+  explicit DATA-PENDING placeholder keyed to the public artifact schema, so the
+  figures auto-upgrade the moment an artifact lands. No fabricated number is
+  rendered (rule 55).
+  - **Figure 1** — `figures/fig1-locomo-longmemeval.svg`: LoCoMo / LongMemEval.
+    Real = Remnic Tier-L anchor; pending = Tier-F (#1728) + Mem0/Zep/Letta
+    (#1747).
+  - **Figure 2** — `figures/fig2-memcorrect-metrics.svg`: the 8 MemCorrect
+    metrics. All adapter bars pending until a `memcorrect-v1` artifact is
+    committed (#1584 run + #1747 adapters).
+  - **Figure 3** — `figures/fig3-trustscore-components.svg`: the 8 TrustScore
+    weighted components, source-extracted from `DEFAULT_TRUST_WEIGHTS`. A system
+    illustration, not a benchmark metric (#1577).
+
 - **6.1 MemCorrect — Remnic vs baselines vs third-party adapters.**
   - `TODO(#1584)`: commit a real `memcorrect-v1` Tier-L artifact
     (`docs/benchmarks/results/`). As of this skeleton **no MemCorrect artifact
