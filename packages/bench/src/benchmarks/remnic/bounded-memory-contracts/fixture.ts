@@ -586,19 +586,10 @@ export const BOUNDED_MEMORY_SMOKE_FIXTURE: BoundedMemoryTask[] = [
  * the datasets apart. Defaults to the full fixture when no slice is passed.
  */
 export function fixtureHash(tasks?: readonly BoundedMemoryTask[]): string {
-  // Simple, stable hash over task ids + expected answers + item ids. Kept
-  // deterministic and dependency-free (no crypto of user data).
+  // Hash the FULL served payload — prompt text, memory content, answer tokens,
+  // keywords, token costs, skill steps — so any edit that changes what the
+  // benchmark actually serves invalidates the digest. (review thread 8t09)
   const source = tasks ?? BOUNDED_MEMORY_FIXTURE;
-  const payload = source.map((t) =>
-    [
-      t.id,
-      t.family,
-      t.expectedAnswer,
-      t.scope,
-      t.shouldAsk === undefined ? "-" : String(t.shouldAsk),
-      t.memoryItems.map((m) => `${m.id}:${m.status}:${m.scope}`).join(","),
-      t.skills.map((s) => s.id).join(","),
-    ].join("|"),
-  ).join("\n");
+  const payload = JSON.stringify(source);
   return createHash("sha256").update(payload, "utf8").digest("hex");
 }
