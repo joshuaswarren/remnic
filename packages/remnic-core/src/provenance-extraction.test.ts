@@ -921,3 +921,27 @@ test("toStrictIsoTimestamp path: complete YYYY-MM-DD (no time) still normalizes 
     "complete date-only timestamp normalizes to UTC midnight",
   );
 });
+
+test("toStrictIsoTimestamp path: space-separated partial YYYY-MM HH:MM is rejected (issue #1657, codex r2)", () => {
+  // "2026-05 10:00" is Date.parse-able; the date separator must be a real
+  // date separator (- or /), not the space that precedes the time component.
+  // Pre-fix the guard treated the space as a date separator and captured the
+  // hour "10" as the day, persisting a fabricated 2026-05-(10) source.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05 10:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "space-separated partial timestamp must fall back to epoch, not a fabricated date",
+  );
+});
