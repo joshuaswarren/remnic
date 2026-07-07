@@ -195,6 +195,10 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
         headers: this.authHeaders(),
         body: {
           messages: [{ role, content: text }],
+          // Letta's /messages endpoint defaults to streaming (SSE). Request a
+          // single JSON response so httpJson parses it and ingestTurn resolves
+          // only after the agent (and its memory tools) finish processing.
+          stream: false,
         },
         timeoutMs: this.timeoutMs,
       },

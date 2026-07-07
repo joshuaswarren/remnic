@@ -73,6 +73,7 @@ test("letta: ingestTurn creates agent then sends message", async () => {
     assert.ok(req.url.includes("agent-abc-123"));
     assert.deepEqual(req.body, {
       messages: [{ role: "user", content: "I work at Acme." }],
+      stream: false,
     });
   });
 });
@@ -168,6 +169,7 @@ test("letta: correct() sends a user message", async () => {
   ff.assertRequest("POST", "/messages", (req) => {
     assert.deepEqual(req.body, {
       messages: [{ role: "user", content: "Correction: now at Globex." }],
+      stream: false,
     });
   });
 });
