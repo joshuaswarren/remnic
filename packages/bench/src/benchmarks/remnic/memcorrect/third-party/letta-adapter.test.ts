@@ -225,3 +225,71 @@ test("letta: agent creation failure surfaces error", async () => {
     },
   );
 });
+
+// ---------------------------------------------------------------------------
+// #1747 review-round-3: Letta partial-failure reset must not keep dead agents
+// ---------------------------------------------------------------------------
+
+test("letta: reset() drops successfully-deleted agents even when a later delete fails", async () => {
+  // Agent-1 (s1) deletes cleanly (204); agent-2 (s2) fails (500). Without the
+  // per-entry fix, s1's mapping to the now-dead agent-1 would linger and the
+  // next ensureAgent for s1 would reuse the dead id instead of creating a new
+  // agent.
+  const ff = new FakeFetchBuilder()
+    .when(
+      "POST",
+      "/v1/agents/",
+      { status: 200, body: { id: "agent-1" } },
+      { status: 200, body: { id: "agent-2" } },
+      { status: 200, body: { id: "agent-3" } },
+    )
+    .when("POST", "/messages", { status: 200, body: { messages: [] } })
+    .when(
+      "DELETE",
+      "/v1/agents/",
+      { status: 204 },
+      { status: 500, body: { detail: "server error" } },
+    )
+    .build();
+  const adapter = new LettaMemCorrectAdapter({
+    apiKey: "k",
+    baseUrl: "http://localhost:8283",
+    model: "openai/gpt-4o",
+    fetch: ff.fetch,
+  });
+  await adapter.ingestTurn("s1", "user", "hello", "2026-07-07T00:00:00Z");
+  await adapter.ingestTurn("s2", "user", "world", "2026-07-07T00:01:00Z");
+  // reset deletes agent-1 (204 → mapping dropped), then agent-2 (500 → throws).
+  await assert.rejects(() => adapter.reset(), /Letta reset could not clean/);
+  // s1's mapping was removed by the successful delete, so re-ingesting s1 MUST
+  // create a fresh agent rather than reuse the dead agent-1 id.
+  await adapter.ingestTurn("s1", "user", "again", "2026-07-07T00:02:00Z");
+  const creations = ff.requests.filter(
+    (r) => r.method === "POST" && r.url.endsWith("/v1/agents/"),
+  ).length;
+  assert.equal(creations, 3, "s1 re-created a new agent after partial reset");
+  // The LAST message (the re-ingested turn) targeted agent-3, not the dead
+  // agent-1 — assertRequest finds the first match, so filter to the last.
+  const msgReqs = ff.requests.filter(
+    (r) => r.method === "POST" && r.url.includes("/messages"),
+  );
+  const lastMsg = msgReqs[msgReqs.length - 1];
+  assert.ok(lastMsg && lastMsg.url.includes("agent-3"), `messaged new agent, got ${lastMsg?.url}`);
+});
+
+test("letta: reset() swallows not-found (404) agent deletes without throwing", async () => {
+  const ff = new FakeFetchBuilder()
+    .when("POST", "/v1/agents/", { status: 200, body: { id: "agent-x" } })
+    .when("POST", "/messages", { status: 200, body: { messages: [] } })
+    .when("DELETE", "/v1/agents/", { status: 404, body: { detail: "not found" } })
+    .build();
+  const adapter = new LettaMemCorrectAdapter({
+    apiKey: "k",
+    baseUrl: "http://localhost:8283",
+    model: "openai/gpt-4o",
+    fetch: ff.fetch,
+  });
+  await adapter.ingestTurn("s1", "user", "hi", "2026-07-07T00:00:00Z");
+  await adapter.reset(); // does not throw — agent already absent is harmless
+  assert.equal(ff.countRequests("DELETE", "/v1/agents/"), 1);
+});

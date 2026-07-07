@@ -24,8 +24,8 @@
 import type { MemCorrectSystemAdapter } from "../types.js";
 import {
   httpJson,
+  isNotFoundDelete,
   requireCredentials,
-  resetTrackedIds,
   resolveFetch,
   type FetchLike,
   type ThirdPartyAdapterConfig,
@@ -111,23 +111,35 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
   async reset(): Promise<void> {
     this.ensureReady();
     // Destroy every agent created during this bench process for a clean slate.
-    // Only HTTP not-found (404/422) is swallowed — an already-deleted agent is
-    // harmless. Real failures (auth, server error, timeout) retain the agent id
-    // for the next reset() retry and rethrow, so a broken clean-slate surfaces
-    // rather than silently leaking stateful agents across scenarios.
-    await resetTrackedIds(
-      "Letta",
-      new Set(this.agentsBySession.values()),
-      async (agentId) => {
+    // Remove each session→agent mapping as its delete succeeds (or is not-found)
+    // so a partial failure cannot leave mappings to already-deleted agents —
+    // otherwise ensureAgent would hand back a cached id for a dead agent. Real
+    // failures (auth, server error, timeout) retain the mapping for the next
+    // reset() retry and rethrow so a broken clean-slate surfaces.
+    const failed: string[] = [];
+    for (const [sessionKey, agentId] of [...this.agentsBySession]) {
+      try {
         await httpJson(
           this.fetchImpl,
           "DELETE",
           `${this.baseUrl}/v1/agents/${encodeURIComponent(agentId)}`,
           { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
         );
-      },
-    );
-    this.agentsBySession.clear();
+        this.agentsBySession.delete(sessionKey);
+      } catch (err) {
+        if (isNotFoundDelete(err)) {
+          this.agentsBySession.delete(sessionKey);
+        } else {
+          failed.push(agentId);
+        }
+      }
+    }
+    if (failed.length > 0) {
+      throw new Error(
+        `Letta reset could not clean ${failed.length} agent(s): ${failed.join(", ")}. ` +
+          `The failed agents are retained in agentsBySession for the next reset() retry.`,
+      );
+    }
   }
 
   /** Create a Letta agent for the session if one does not yet exist. */
