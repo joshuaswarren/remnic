@@ -213,6 +213,17 @@ export function inspectScope(options: InspectScopeOptions): ScopeInspection {
       `requested namespace override '${options.namespace}' is not readable by this principal and was ignored`
     );
   }
+  // Issue #1658 thread 6: when an explicit namespace override is readable but
+  // NOT writable, it still becomes the effective write namespace (baseNamespace
+  // in the scope plan). Surface the mismatch honestly so the operator knows
+  // writes will be rejected rather than reading writeNamespace as a usable
+  // target. (The per-layer writable flag already records this, but the
+  // top-level writeNamespace field does not.)
+  if (plan.namespaceOverride && !canWriteNamespace(plan.principal, plan.namespaceOverride, config)) {
+    warnings.push(
+      `explicit namespace override '${plan.namespaceOverride}' is readable but not writable by this principal; it is the effective write namespace but writes will be rejected`
+    );
+  }
 
   const layers: ScopeInspectionLayer[] = [];
   const scopeProfilePlan = plan.scopeProfilePlan;
@@ -417,6 +428,27 @@ function toAdminEntry(record: NamespaceRecord, staleBefore: Date): AdminNamespac
 // Maintenance and QMD health
 // ---------------------------------------------------------------------------
 
+/**
+ * Honest, distinguishable classification of a namespace's QMD/search health
+ * (issue #1658 thread 1). A single `qmdDegraded` bit collapses the legitimate
+ * transient "unknown" (QMD reachable but collection status not yet populated,
+ * normal during startup/reindex) together with the actionable "missing"
+ * (collection not built — operator must act) and "unavailable" (backend down).
+ * Surfacing a classified state lets the dashboard render each case honestly
+ * instead of a flat degraded flag or a silent blank.
+ */
+export type AdminNamespaceQmdState =
+  /** Backend reachable and collection present (or intentionally skipped). */
+  | "healthy"
+  /** Backend reachable but collection status not yet determined (transient). */
+  | "unknown"
+  /** Backend reachable but the collection is not built for this namespace. */
+  | "missing"
+  /** Backend unreachable / probe threw. */
+  | "unavailable"
+  /** No QMD probe was run for this report (provider omitted or returned null). */
+  | "not_probed";
+
 /** QMD/search health snapshot for one namespace (delegated to NamespaceSearchRouter). */
 export interface AdminNamespaceQmdHealth {
   namespace: string;
@@ -438,8 +470,20 @@ export interface AdminNamespaceHealth {
   lastMaintenanceAt?: Record<string, string>;
   /** True when no maintenance has ever been recorded. */
   maintenanceMissing: boolean;
-  /** True when QMD is unavailable OR its collection is missing for this namespace. */
+  /**
+   * True when QMD is unavailable OR its collection is missing/unknown for this
+   * namespace. Matches the NamespaceSearchRouter health path so the aggregate
+   * `degradedMode` flag stays consistent with runtime alerting.
+   */
   qmdDegraded: boolean;
+  /**
+   * Honest, distinguishable QMD state (issue #1658 thread 1). Complements
+   * `qmdDegraded` so the dashboard can render "unknown" (transient) separately
+   * from "missing"/"unavailable" (action needed) instead of a flat bit.
+   */
+  qmdState: AdminNamespaceQmdState;
+  /** Human-readable explanation of {@link qmdState}, safe to show operators. */
+  qmdStateReason: string;
   qmd?: AdminNamespaceQmdHealth;
   /** Reason the QMD probe failed, when it did. */
   qmdError?: string;
@@ -473,6 +517,60 @@ export interface MaintenanceHealthOptions {
  * timestamps from the catalog and (optionally) QMD diagnostics from the
  * injected provider.
  */
+/**
+ * Classify a QMD health snapshot into an honest, distinguishable state bucket
+ * (issue #1658 thread 1). The `degraded` bit mirrors the NamespaceSearchRouter
+ * health path (unavailable / missing / unknown) so the aggregate `degradedMode`
+ * flag and any downstream alerting stay consistent; the classified `state` +
+ * `reason` let the dashboard render each case distinctly instead of a flat bit.
+ */
+function classifyQmdState(qmd: AdminNamespaceQmdHealth): {
+  state: AdminNamespaceQmdState;
+  reason: string;
+  degraded: boolean;
+} {
+  if (!qmd.available) {
+    return {
+      state: "unavailable",
+      reason: "QMD backend is unavailable for this namespace",
+      degraded: true,
+    };
+  }
+  // collectionState is the router's string ("present" | "missing" | "unknown"
+  // | "skipped"); classify defensively — an unrecognized value is reported as
+  // "unknown" rather than silently treated as healthy.
+  switch (qmd.collectionState) {
+    case "present":
+      return { state: "healthy", reason: "QMD collection is ready", degraded: false };
+    case "skipped":
+      // "skipped" means QMD is intentionally disabled for this namespace; it is
+      // neither degraded nor a blank — surface it honestly as healthy/idle.
+      return {
+        state: "healthy",
+        reason: "QMD is skipped for this namespace (intentionally disabled)",
+        degraded: false,
+      };
+    case "missing":
+      return {
+        state: "missing",
+        reason: "QMD collection is not built for this namespace — add the collection to the QMD index",
+        degraded: true,
+      };
+    case "unknown":
+      return {
+        state: "unknown",
+        reason: "QMD collection status could not be determined (transient during startup/reindex)",
+        degraded: true,
+      };
+    default:
+      return {
+        state: "unknown",
+        reason: `QMD reported an unrecognized collection state '${qmd.collectionState}'`,
+        degraded: true,
+      };
+  }
+}
+
 export async function gatherMaintenanceHealth(options: MaintenanceHealthOptions): Promise<MaintenanceHealthReport> {
   const { catalog, qmdHealthProvider } = options;
   if (!catalog.enabled) {
@@ -488,22 +586,32 @@ export async function gatherMaintenanceHealth(options: MaintenanceHealthOptions)
         lastMaintenanceAt: record.lastMaintenanceAt,
         maintenanceMissing: !record.lastMaintenanceAt || Object.keys(record.lastMaintenanceAt).length === 0,
         qmdDegraded: false,
+        qmdState: "not_probed",
+        qmdStateReason: "QMD health probe not run for this report",
       };
       if (qmdHealthProvider) {
         try {
           const qmd = await qmdHealthProvider(record.namespace);
           if (qmd) {
             entry.qmd = qmd;
-            entry.qmdDegraded =
-    !qmd.available ||
-    qmd.collectionState === "missing" ||
-    qmd.collectionState === "unknown";
+            // Classify the collection state into an honest, distinguishable
+            // bucket (issue #1658 thread 1) and derive the degraded bit from
+            // the same inputs the NamespaceSearchRouter health path uses.
+            const classified = classifyQmdState(qmd);
+            entry.qmdState = classified.state;
+            entry.qmdStateReason = classified.reason;
+            entry.qmdDegraded = classified.degraded;
+          } else {
+            entry.qmdState = "not_probed";
+            entry.qmdStateReason = "QMD health not available for this namespace";
           }
         } catch (err) {
-          entry.qmdDegraded = true;
           // Sanitize: never echo raw error messages to the dashboard. The
           // generic diagnostic is sufficient for operators; the full error
           // is logged by the qmdHealthProvider's caller (access-service).
+          entry.qmdDegraded = true;
+          entry.qmdState = "unavailable";
+          entry.qmdStateReason = "QMD health probe failed";
           entry.qmdError = "QMD health probe failed";
         }
       }
@@ -735,7 +843,24 @@ export async function promoteMemory(options: PromoteMemoryOptions): Promise<Memo
           : "explicit namespace is not writable by this principal",
       };
     }
-    const layer = scopeProfilePlan?.promotionTargets.find((t) => t.target === requested.kind);
+    if (!scopeProfilePlan) {
+      // Issue #1658 thread 2: distinguish "no active scope profile" from
+      // "profile does not configure this target". A project-scoped target
+      // (userProject/teamProject) cannot resolve without an active profile +
+      // coding context; report that honestly instead of a generic "not
+      // configured" message that implies a profile is active.
+      return {
+        target: requested.kind,
+        namespace: "",
+        authorized: false,
+        promoted: false,
+        reason:
+          requested.kind === "userProject" || requested.kind === "teamProject"
+            ? `no active scope profile; '${requested.kind}' promotion requires an active scope profile with a coding context (pass a sessionKey)`
+            : `no active scope profile; '${requested.kind}' promotion requires an active scope profile`,
+      };
+    }
+    const layer = scopeProfilePlan.promotionTargets.find((t) => t.target === requested.kind);
     if (!layer) {
       return {
         target: requested.kind,
