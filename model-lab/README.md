@@ -94,7 +94,7 @@ python model-lab/faithfulness-gate/train.py   --version-tag v1          # → mo
 python model-lab/faithfulness-gate/eval.py    --version-tag v1          # → manifest eval block
 ```
 
-`train.py` / `eval.py` lazy-import the GPU stack so `--help` works on a bare machine; the training entry point exits with code 2 and an install hint if `torch`/`transformers` are missing. **They never run in CI.**
+`train.py` / `eval.py` lazy-import the GPU stack so `--help` works on a bare machine. `train.py` exits with code 2 and an install hint if `torch`/`transformers` are missing. `eval.py`'s GPU gate is scoped to the inference path (no `--predictions`): offline scoring of pre-computed predictions is JSONL + stdlib only and runs CPU-only; the inline inference loop (which loads the checkpoint) gates the GPU stack. **They never run in CI.**
 
 ## Reproducibility model
 
