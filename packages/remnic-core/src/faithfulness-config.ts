@@ -67,6 +67,7 @@ export function parseFaithfulnessGateConfig(cfg: Record<string, unknown>): {
   extractionFaithfulnessBaseUrl: string;
   extractionFaithfulnessContextChars: number;
   extractionFaithfulnessTimeoutMs: number;
+  extractionFaithfulnessLocalParseFallback: boolean;
 } {
   const gateValue = cfg.extractionFaithfulnessGate;
   let extractionFaithfulnessGate: "off" | "shadow" | "enforce";
@@ -105,12 +106,20 @@ export function parseFaithfulnessGateConfig(cfg: Record<string, unknown>): {
     60_000,
   );
 
+  // Issue #1700 nit #6: resilient-fallback toggle for the local model-lab
+  // endpoint. Default false preserves the loud-signal behavior (a 200-with-
+  // garbage local response surfaces malformed_output so a misconfigured
+  // endpoint is visible); true falls back to the configured chain on local
+  // parse failure. Byte-identical pre-feature when unset (rule 39).
+  const extractionFaithfulnessLocalParseFallback = cfg.extractionFaithfulnessLocalParseFallback === true;
+
   return {
     extractionFaithfulnessGate,
     extractionFaithfulnessModel,
     extractionFaithfulnessBaseUrl,
     extractionFaithfulnessContextChars,
     extractionFaithfulnessTimeoutMs,
+    extractionFaithfulnessLocalParseFallback,
   };
 }
 

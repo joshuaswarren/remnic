@@ -279,6 +279,7 @@ interface LlmCallResult {
 async function callFaithfulnessLlm(
   systemPrompt: string,
   userPrompt: string,
+  expectedCount: number,
   config: PluginConfig,
   localLlm: LocalLlmClient | null,
   fallbackLlm: FallbackLlmClient | null,
@@ -311,15 +312,38 @@ async function callFaithfulnessLlm(
     const result = await callOpenAiCompatibleChat(
       localEndpoint,
       messages,
-      { temperature: 0.1, maxTokens: 2048, responseFormatJson: true, timeoutMs: probeBudgetMs },
+      {
+        temperature: 0.1,
+        maxTokens: 2048,
+        responseFormatJson: true,
+        timeoutMs: probeBudgetMs,
+        // Forward the batch signal so the probe aborts the instant the batch
+        // budget elapses, not after probeBudgetMs (issue #1700 nit #5).
+        ...(signal ? { signal } : {}),
+      },
       fetchImpl,
     );
     if (result?.content) {
-      return { content: result.content, modelUsed: result.modelUsed };
+      // Issue #1700 nit #6: pre-validate the local endpoint response shape.
+      // Default (extractionFaithfulnessLocalParseFallback=false) returns the
+      // content as-is -- a 200-with-garbage local response surfaces
+      // malformed_output, alerting the operator to a misconfigured endpoint.
+      // When the operator opts into resilient fallback, an unparseable local
+      // response falls through to the configured chain instead of surfacing.
+      if (
+        !config.extractionFaithfulnessLocalParseFallback ||
+        parseFaithfulnessResponse(result.content, expectedCount)
+      ) {
+        return { content: result.content, modelUsed: result.modelUsed };
+      }
+      log.debug(
+        "extraction-faithfulness: local endpoint returned unparseable output; falling back to configured chain",
+      );
+    } else {
+      log.debug(
+        "extraction-faithfulness: local model-lab endpoint unavailable, trying configured chain",
+      );
     }
-    log.debug(
-      "extraction-faithfulness: local model-lab endpoint unavailable, trying configured chain",
-    );
   }
 
   // extractionFaithfulnessModel is the LOCAL served model's name (e.g.
@@ -532,6 +556,7 @@ export async function checkFaithfulnessBatch(
     const callPromise = callFaithfulnessLlm(
       FAITHFULNESS_SYSTEM_PROMPT,
       userPrompt,
+      checkableInputs.length,
       config,
       localLlm,
       fallbackLlm,

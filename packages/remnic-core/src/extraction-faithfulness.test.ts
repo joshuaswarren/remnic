@@ -26,6 +26,7 @@ import type { FaithfulnessResult } from "./extraction-faithfulness.js";
 import type { FallbackLlmClient } from "./fallback-llm.js";
 import type { LocalLlmClient } from "./local-llm.js";
 import type { MemoryFrontmatter } from "./types.js";
+import { callOpenAiCompatibleChat } from "./local-model-endpoint.js";
 
 // ---------------------------------------------------------------------------
 // Helpers — stub LLM clients
@@ -1428,4 +1429,128 @@ test("checkFaithfulnessBatch: local-endpoint failure does NOT leak the local mod
     "local-only model name must NOT leak into the fallback chain on endpoint failure",
   );
   assert.equal(result.results[0]?.ok, true);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1700 nits #5 + #6: probe signal forwarding + local parse-fallback
+// ---------------------------------------------------------------------------
+
+test("callOpenAiCompatibleChat: a pre-aborted batch signal aborts the probe immediately, not after timeoutMs (#1700 nit #5)", async () => {
+  // The batch signal is ALREADY aborted when the probe starts. With nit #5 the
+  // probe forwards it and aborts instantly; without it the probe would wait for
+  // its own timeoutMs (5000ms here). Assert the probe returns null fast.
+  const endpoint = { baseUrl: "http://localhost:11434/v1", model: "remnic-faithfulness-gate-v1" };
+  const batchController = new AbortController();
+  batchController.abort();
+  const spy = ((_url: string, init: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      const sig = init.signal;
+      if (!sig) return reject(new Error("no signal"));
+      if (sig.aborted) return reject(new Error("aborted"));
+      sig.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    })) as unknown as typeof fetch;
+  const start = Date.now();
+  const result = await callOpenAiCompatibleChat(
+    endpoint,
+    [{ role: "user", content: "hi" }],
+    { timeoutMs: 5000, signal: batchController.signal },
+    spy,
+  );
+  const elapsed = Date.now() - start;
+  assert.equal(result, null, "a pre-aborted signal must fail the probe closed (null)");
+  assert.ok(
+    elapsed < 1000,
+    `probe must abort immediately on a pre-aborted signal (${elapsed}ms), not wait timeoutMs`,
+  );
+});
+
+test("checkFaithfulnessBatch: default surfaces malformed_output for a 200-with-garbage local response (#1700 nit #6)", async () => {
+  // extractionFaithfulnessLocalParseFallback unset (default false): a local
+  // endpoint returning 200 with non-verdict JSON surfaces malformed_output so a
+  // misconfigured endpoint is visible. The configured chain must NOT run.
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = parseConfig({
+    extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
+    extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
+    extractionFaithfulnessTimeoutMs: 5000,
+  });
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
+  const { fetch: garbageFetch } = fakeFetchFor("http://localhost:11434/v1", () => ({
+    model: "remnic-faithfulness-gate-v1",
+    choices: [{ message: { content: "this is not a verdict array" } }],
+  }));
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    null,
+    stubFallbackLlm(JSON.stringify([{ index: 0, verdict: "entailed" }]), fallbackCalls),
+    garbageFetch,
+  );
+  assert.equal(fallbackCalls.length, 0, "chain must NOT run when flag is off — garbage surfaces loudly");
+  assert.equal(result.results[0]?.ok, false);
+  if (!result.results[0]?.ok) {
+    assert.equal(result.results[0].error.code, "malformed_output");
+  }
+});
+
+test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls back to the chain on local parse failure (#1700 nit #6)", async () => {
+  // Flag ON: the same 200-with-garbage local response now falls through to the
+  // configured chain instead of surfacing malformed_output (resilient fallback).
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = parseConfig({
+    extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
+    extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
+    extractionFaithfulnessTimeoutMs: 5000,
+    extractionFaithfulnessLocalParseFallback: true,
+  });
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
+  const { fetch: garbageFetch } = fakeFetchFor("http://localhost:11434/v1", () => ({
+    model: "remnic-faithfulness-gate-v1",
+    choices: [{ message: { content: "this is not a verdict array" } }],
+  }));
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    null,
+    stubFallbackLlm(JSON.stringify([{ index: 0, verdict: "entailed" }]), fallbackCalls),
+    garbageFetch,
+  );
+  assert.equal(
+    fallbackCalls.length,
+    1,
+    "chain MUST run when flag is on and the local response is unparseable",
+  );
+  assert.equal(result.results[0]?.ok, true);
+  if (result.results[0]?.ok) {
+    assert.equal(result.results[0].verdict, "entailed", "fallback chain verdict is used");
+  }
+});
+
+test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback does NOT fall back when the local response is valid (#1700 nit #6 regression)", async () => {
+  // Flag ON but the local response IS a valid verdict array → use it, do not
+  // call the chain. Guards against the flag over-triggering on good responses.
+  const inputs = [{ factText: "Fact", quote: "Quote" }];
+  const config = parseConfig({
+    extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
+    extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
+    extractionFaithfulnessTimeoutMs: 5000,
+    extractionFaithfulnessLocalParseFallback: true,
+  });
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
+  const { fetch: goodFetch } = fakeFetchFor("http://localhost:11434/v1", () => ({
+    model: "remnic-faithfulness-gate-v1",
+    choices: [{ message: { content: JSON.stringify([{ index: 0, verdict: "contradicted" }]) } }],
+  }));
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    null,
+    stubFallbackLlm(JSON.stringify([{ index: 0, verdict: "entailed" }]), fallbackCalls),
+    goodFetch,
+  );
+  assert.equal(fallbackCalls.length, 0, "chain must NOT run when the local response is valid, even with the flag on");
+  assert.equal(result.results[0]?.ok, true);
+  if (result.results[0]?.ok) {
+    assert.equal(result.results[0].verdict, "contradicted", "valid local verdict is used");
+  }
 });
