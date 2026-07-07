@@ -221,6 +221,16 @@ export function isNotFoundDelete(err: unknown): boolean {
 }
 
 /**
+ * Classify an error thrown during a create (POST) as a harmless "already
+ * exists" conflict (HTTP 409). Used by ensureSession-style setup so a duplicate
+ * user/session from a prior run is swallowed, while auth, validation, and
+ * server errors propagate instead of being treated as a successful setup.
+ */
+export function isConflict(err: unknown): boolean {
+  return err instanceof HttpError && err.status === 409;
+}
+
+/**
  * Run a best-effort reset over a tracked set of ids: call `deleteFn` for each,
  * clear only ids whose delete succeeded or was not-found, and retain ids whose
  * delete failed with a real error (auth / server / timeout) for the next

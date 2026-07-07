@@ -27,6 +27,7 @@ import type { MemCorrectSystemAdapter } from "../types.js";
 import {
   delay,
   httpJson,
+  isConflict,
   isNotFoundDelete,
   requireCredentials,
   resetTrackedIds,
@@ -148,14 +149,19 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
     if (this.knownSessions.has(sessionId)) return;
     // Zep v2 requires a user to exist before a session references it. Each
     // MemCorrect session gets its own user for namespace isolation.
+    //
+    // Only HTTP 409 Conflict (entity already exists from a prior run) is
+    // swallowed. Auth / validation / server errors propagate so a broken setup
+    // surfaces instead of marking a missing session known and silently failing
+    // every later memory add / graph search against it.
     try {
       await httpJson(this.fetchImpl, "POST", `${this.baseUrl}/users`, {
         headers: this.authHeaders(),
         body: { user_id: sessionId },
         timeoutMs: this.timeoutMs,
       });
-    } catch {
-      // User may already exist from a prior run — safe to continue.
+    } catch (err) {
+      if (!isConflict(err)) throw err;
     }
     try {
       await httpJson(
@@ -168,8 +174,8 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
           timeoutMs: this.timeoutMs,
         },
       );
-    } catch {
-      // Session may already exist (409) — safe to continue.
+    } catch (err) {
+      if (!isConflict(err)) throw err;
     }
     this.knownSessions.add(sessionId);
   }

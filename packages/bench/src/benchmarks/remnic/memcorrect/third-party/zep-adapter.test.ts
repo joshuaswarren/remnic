@@ -262,3 +262,65 @@ test("zep: default sessionPrefix is unique per instance (cross-process isolation
   assert.ok(idB.startsWith("memcorrect-"), `namespaced prefix: ${idB}`);
   assert.notEqual(idA, idB, "two instances get distinct remote namespaces");
 });
+
+// ---------------------------------------------------------------------------
+// #1747 review-round-4: ensureSession must not swallow real create failures
+// ---------------------------------------------------------------------------
+
+test("zep: ensureSession swallows 409 (already exists) for user and session creates", async () => {
+  // /memory is registered before /sessions because the memory-add URL
+  // (.../sessions/<id>/memory) contains both substrings; without this order
+  // the session matcher would shadow the memory matcher.
+  const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 409, body: { detail: "already exists" } })
+    .when("POST", "/memory", { status: 200, body: {} })
+    .when("POST", "/sessions", { status: 409, body: { detail: "already exists" } })
+    .build();
+  const adapter = new ZepMemCorrectAdapter({
+    apiKey: "k",
+    sessionPrefix: "memcorrect",
+    fetch: ff.fetch,
+  });
+  // 409 on both creates is a harmless "already exists" — ingest proceeds.
+  await adapter.ingestTurn("s1", "user", "hi", "2026-07-07T00:00:00Z");
+  assert.equal(ff.countRequests("POST", "/memory"), 1);
+});
+
+test("zep: ensureSession surfaces a real session-create failure (500)", async () => {
+  const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
+    .when("POST", "/sessions", { status: 500, body: { detail: "server error" } })
+    .build();
+  const adapter = new ZepMemCorrectAdapter({
+    apiKey: "k",
+    sessionPrefix: "memcorrect",
+    fetch: ff.fetch,
+  });
+  // A 500 on session create must NOT be swallowed as "already exists" — the
+  // session is missing and every later call would fail confusingly.
+  await assert.rejects(
+    () => adapter.ingestTurn("s1", "user", "hi", "2026-07-07T00:00:00Z"),
+    (err: unknown) => {
+      assert.match((err as Error).message, /500/);
+      return true;
+    },
+  );
+});
+
+test("zep: ensureSession surfaces a real user-create failure (401)", async () => {
+  const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 401, body: { detail: "unauthorized" } })
+    .build();
+  const adapter = new ZepMemCorrectAdapter({
+    apiKey: "bad-key",
+    sessionPrefix: "memcorrect",
+    fetch: ff.fetch,
+  });
+  await assert.rejects(
+    () => adapter.ingestTurn("s1", "user", "hi", "2026-07-07T00:00:00Z"),
+    (err: unknown) => {
+      assert.match((err as Error).message, /401/);
+      return true;
+    },
+  );
+});
