@@ -66,7 +66,7 @@ test("claude-cli provider invokes claude -p in an isolated benchmark mode", asyn
     "--tools",
     "",
     "--no-session-persistence",
-    "--append-system-prompt",
+    "--system-prompt",
     "Answer using only benchmark context.",
   ]);
   assert.ok(captured.input?.includes("BENCHMARK_REQUEST_JSON:"));
@@ -77,7 +77,7 @@ test("claude-cli provider invokes claude -p in an isolated benchmark mode", asyn
   assert.notEqual(captured.cwd, process.cwd());
 });
 
-test("claude-cli provider omits --append-system-prompt when no systemPrompt is given", async () => {
+test("claude-cli provider omits --system-prompt when no systemPrompt is given", async () => {
   const captured: { args?: string[] } = {};
   const provider = createClaudeCliProvider(
     { provider: "claude-cli", model: "opus" },
@@ -96,7 +96,7 @@ test("claude-cli provider omits --append-system-prompt when no systemPrompt is g
 
   await provider.complete("hello");
 
-  assert.ok(!captured.args?.includes("--append-system-prompt"));
+  assert.ok(!captured.args?.includes("--system-prompt"));
 });
 
 test("claude-cli provider runs from a freshly created empty temp directory", async () => {
@@ -211,6 +211,54 @@ test("claude-cli provider is_error JSON response throws with a useful message", 
     provider.complete("hello"),
     /Claude CLI reported is_error: invalid model requested/,
   );
+});
+
+test("claude-cli provider treats a truthy non-boolean is_error (e.g. the string \"false\") as success, not an error", async () => {
+  // PR #1735 review, finding 2: `payload.is_error` was read with a plain
+  // truthy check, so any non-empty string — including the string "false" —
+  // would be misread as an error. The JSON payload is untrusted CLI output
+  // parsed with an `as` cast, so this is a real reachable shape, not just a
+  // type-system nicety. Only a real boolean `true` should count as an error.
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({
+            is_error: "false",
+            result: "answer despite stringly-typed is_error",
+            usage: { input_tokens: 2, output_tokens: 3 },
+          }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  const result = await provider.complete("hello");
+
+  assert.equal(result.text, "answer despite stringly-typed is_error");
+  assert.deepEqual(result.tokens, { input: 2, output: 3 });
+});
+
+test("claude-cli provider still treats a real boolean is_error: true as an error", async () => {
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({ is_error: true, result: "boom" }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(provider.complete("hello"), /Claude CLI reported is_error: boom/);
 });
 
 test("claude-cli provider surfaces non-zero CLI exits", async () => {
@@ -380,6 +428,33 @@ test("claude-cli usage-limit signal detector recognizes common phrasing", () => 
   assert.equal(isClaudeUsageLimitSignal("HTTP 429 Too Many Requests"), true);
   assert.equal(isClaudeUsageLimitSignal("invalid model requested"), false);
   assert.equal(isClaudeUsageLimitSignal(""), false);
+  // Real CLI-observed phrasing (verified via `strings` on the installed
+  // claude binary, v2.1.202): "You've hit your session limit" / "...weekly
+  // limit" / "...Opus limit" / "...Sonnet limit".
+  assert.equal(isClaudeUsageLimitSignal("You've hit your session limit · resets in 2h"), true);
+  assert.equal(isClaudeUsageLimitSignal("You've hit your weekly limit"), true);
+  assert.equal(isClaudeUsageLimitSignal("You've hit your Opus limit"), true);
+});
+
+test("claude-cli usage-limit signal detector does NOT misclassify a generic non-quota retry error (PR #1735 review, finding 1)", () => {
+  // Before this fix, the regex also matched bare "please try again later"
+  // and a standalone "resets at ... hour" pattern — generic transient-error
+  // phrasing that has nothing to do with quota. A genuine non-quota failure
+  // whose text happens to contain that phrasing must fail fast, not trigger
+  // the multi-minute usage-limit backoff.
+  const { isClaudeUsageLimitSignal } = __claudeCliProviderTestHooks;
+  assert.equal(
+    isClaudeUsageLimitSignal("Network error: connection reset, please try again later"),
+    false,
+  );
+  assert.equal(
+    isClaudeUsageLimitSignal("Transient upstream failure, please try again in a moment"),
+    false,
+  );
+  assert.equal(
+    isClaudeUsageLimitSignal("Scheduled maintenance window resets at midnight, expect an hour of downtime"),
+    false,
+  );
 });
 
 test("claude-cli provider backs off much longer on a detected usage-limit than a normal retry", async () => {
@@ -772,7 +847,7 @@ test("claude-cli parent cleanup terminates active subprocesses", async () => {
   }
 });
 
-test("claude-cli benchmark prompt carries only the user payload (system prompt goes via --append-system-prompt)", () => {
+test("claude-cli benchmark prompt carries only the user payload (system prompt goes via --system-prompt)", () => {
   const prompt = __claudeCliProviderTestHooks.buildClaudeCompletionPrompt("USER_CONTEXT: answer this");
 
   const json = prompt.slice(prompt.indexOf("{"));
@@ -782,17 +857,25 @@ test("claude-cli benchmark prompt carries only the user payload (system prompt g
   });
 });
 
-test("claude-cli buildClaudeCliArgs passes systemPrompt via --append-system-prompt, trimmed", () => {
+test("claude-cli buildClaudeCliArgs passes systemPrompt via --system-prompt (full replace, not append), trimmed", () => {
+  // PR #1735 review, finding 3: `--append-system-prompt` keeps Claude Code's
+  // default coding-agent system prompt underneath the benchmark instructions.
+  // `--system-prompt` fully replaces it instead — verified live against the
+  // installed CLI (v2.1.202): a `--system-prompt` call reported
+  // `usage.cache_read_input_tokens: 0`, while the same call with
+  // `--append-system-prompt` reported `usage.cache_read_input_tokens: 1599`
+  // (the cached default system prompt still underneath).
   const { buildClaudeCliArgs } = __claudeCliProviderTestHooks;
 
   const withPrompt = buildClaudeCliArgs({ provider: "claude-cli", model: "opus" }, "  judge this carefully  ");
-  assert.deepEqual(withPrompt.slice(-2), ["--append-system-prompt", "judge this carefully"]);
+  assert.deepEqual(withPrompt.slice(-2), ["--system-prompt", "judge this carefully"]);
+  assert.ok(!withPrompt.includes("--append-system-prompt"));
 
   const withoutPrompt = buildClaudeCliArgs({ provider: "claude-cli", model: "opus" }, undefined);
-  assert.ok(!withoutPrompt.includes("--append-system-prompt"));
+  assert.ok(!withoutPrompt.includes("--system-prompt"));
 
   const withBlankPrompt = buildClaudeCliArgs({ provider: "claude-cli", model: "opus" }, "   ");
-  assert.ok(!withBlankPrompt.includes("--append-system-prompt"));
+  assert.ok(!withBlankPrompt.includes("--system-prompt"));
 
   assert.deepEqual(withPrompt.slice(0, -2), [
     "--print",

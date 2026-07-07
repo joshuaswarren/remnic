@@ -332,7 +332,7 @@ class ClaudeCliProvider implements LlmProvider {
         }
 
         const payload = parseClaudeCliJsonResult(result.stdout);
-        if (payload.is_error) {
+        if (isClaudeCliErrorFlagSet(payload.is_error)) {
           // Usage-limit responses can surface as a zero-exit is_error JSON
           // payload, or as bare stderr with empty stdout — both land here.
           if (
@@ -470,13 +470,25 @@ class ClaudeCliProvider implements LlmProvider {
  *   allow-list, both of which `--allowedTools` is exposed to.
  * - `--strict-mcp-config` with no `--mcp-config` ensures no MCP server is
  *   ever attached, even if a global/user MCP config exists.
- * - `--append-system-prompt` carries the caller's scoring/format protocol
- *   (`opts.systemPrompt`) through the CLI's own system-prompt channel
- *   instead of embedding it in the stdin user payload (PR #1735 review).
- *   Verified live: a `claude -p --append-system-prompt "<marker>"` call
- *   correctly echoed the marker back when asked to quote its system-level
- *   instructions, confirming the flag is real and wired through on this
- *   CLI build.
+ * - `--system-prompt` (full REPLACE, not append — verified against
+ *   `claude --help` on the installed CLI, v2.1.202: "System prompt to use
+ *   for the session", distinct from `--append-system-prompt` "Append a
+ *   system prompt to the default system prompt") carries the caller's
+ *   scoring/format protocol (`opts.systemPrompt`) through the CLI's own
+ *   system-prompt channel instead of embedding it in the stdin user payload
+ *   (PR #1735 review). Using the replace flag instead of append matters here:
+ *   `--append-system-prompt` keeps Claude Code's full default coding-agent
+ *   system prompt underneath the benchmark instructions, so the model still
+ *   carries that framing into benchmark answers. Live verification (PR #1735
+ *   review, finding 3): `claude -p --system-prompt "<marker>"` asked to
+ *   reply with a fixed literal answered with EXACTLY that literal and
+ *   `usage.cache_read_input_tokens: 0` (no default system prompt was even
+ *   sent). The same call with `--append-system-prompt` produced the same
+ *   correct answer but with `usage.cache_read_input_tokens: 1599` — the
+ *   cached default Claude Code system prompt was still present underneath.
+ *   `--system-prompt` removes that framing entirely, so the child runs as a
+ *   clean benchmark endpoint rather than a coding agent that happens to obey
+ *   an appended instruction.
  * - `--output-format json` / `--input-format text` give a single parseable
  *   JSON result read from stdin (see `runClaudeCliCommand`, which pipes the
  *   prompt over stdin rather than argv — mirrors codex-cli.ts's approach so
@@ -515,7 +527,7 @@ function buildClaudeCliArgs(config: ClaudeCliProviderConfig, systemPrompt?: stri
 
   const trimmedSystemPrompt = systemPrompt?.trim();
   if (trimmedSystemPrompt) {
-    args.push("--append-system-prompt", trimmedSystemPrompt);
+    args.push("--system-prompt", trimmedSystemPrompt);
   }
 
   return args;
@@ -634,8 +646,53 @@ function nonNegativeInt(value: number | undefined): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
 }
 
+/**
+ * Strict boolean check for the CLI's `is_error` flag (PR #1735 review,
+ * finding 2). `parseClaudeCliJsonResult` casts parsed JSON straight to
+ * `ClaudeCliJsonResult` with `as`, so the declared `is_error?: boolean` type
+ * is not actually enforced at runtime — a malformed or unexpected payload
+ * could carry `is_error: "false"` (a non-empty, therefore truthy, string) or
+ * any other truthy non-boolean value. A plain `if (payload.is_error)` would
+ * treat that as an error. Only a real boolean `true` counts.
+ */
+function isClaudeCliErrorFlagSet(value: unknown): boolean {
+  return value === true;
+}
+
+/**
+ * Quota/usage-limit signal anchors (PR #1735 review, finding 1). Deliberately
+ * narrower than earlier drafts, which also matched bare `please try again
+ * later` and a standalone `resets at ... hour` pattern — both of those are
+ * generic transient-failure phrasing that can appear in a genuine
+ * non-quota error (timeouts, connection resets, ordinary retry copy), which
+ * would misclassify it as a usage limit and trigger the multi-minute
+ * usage-limit backoff instead of failing fast. Only true quota-specific
+ * anchors are matched now:
+ *
+ * - `usage limit` / `session limit` / `weekly limit` / `opus limit` /
+ *   `sonnet limit` — verified against the installed `claude` CLI binary
+ *   (v2.1.202) via `strings`: the CLI's own rate-limit-banner code builds
+ *   user-facing text as `` `You've hit your ${label}` `` where `label` is
+ *   `"session limit"` (5-hour cap), `"weekly limit"` (7-day cap), `"Opus
+ *   limit"`, or `"Sonnet limit"` depending on `rateLimitType`. Separately,
+ *   the CLI's own help/error-classification text also lists the literal
+ *   phrase `"usage limit reached"` as a recognized Anthropic API error
+ *   signal. verify: the exact wording "Claude AI usage limit reached" cited
+ *   in the review was not found verbatim in this CLI build's strings, but
+ *   `usage limit` as a substring covers it.
+ * - `rate limit` / `rate-limit` / `rate limited` / `rate-limited` —
+ *   verified: the CLI's own API-error-signal list includes the literal
+ *   string `"rate limited"`.
+ * - `429` — verified: the CLI's own retry/error-handling code checks
+ *   `status===429` and renders `"Request rejected (429)"` /
+ *   `"429 Rate Limited"`.
+ * - `too many requests` / `quota exceeded` — standard HTTP 429 / quota
+ *   terminology; verify: not found verbatim in this CLI build's strings,
+ *   kept as anchors per review guidance since they are unambiguous
+ *   quota-specific phrases unlikely to appear in ordinary error text.
+ */
 const USAGE_LIMIT_SIGNAL_REGEX =
-  /\b(usage limit|rate limit|rate-limited|rate limited|too many requests|quota exceeded|429|please try again (?:later|in)|resets? (?:at|in)\b.*\b(?:hour|minute|day))\b/i;
+  /\b(?:usage limit|session limit|weekly limit|opus limit|sonnet limit|rate[- ]limit(?:ed)?|too many requests|quota exceeded|429)\b/i;
 
 function isClaudeUsageLimitSignal(combinedOutput: string): boolean {
   return USAGE_LIMIT_SIGNAL_REGEX.test(combinedOutput);
