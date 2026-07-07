@@ -95,7 +95,18 @@ export function compareMachineFingerprints(
   if (report.arch !== baseline.arch) differing.push("arch");
   if (report.platform !== baseline.platform) differing.push("platform");
   if (nodeMajor(report) !== nodeMajor(baseline)) differing.push("nodeVersion(major)");
-  if (report.cpuModel !== baseline.cpuModel) differing.push("cpuModel");
+  // cpuModel is nullable — null means "unknown / undetected", not "different".
+  // Only count a cpuModel difference when BOTH sides report a concrete model,
+  // so a null cpuModel does not spuriously skip the gate and hide a real
+  // regression on the same machine class (cursor Bugbot: 'Fingerprint skip
+  // omits cpuModel validation').
+  if (
+    report.cpuModel !== null &&
+    baseline.cpuModel !== null &&
+    report.cpuModel !== baseline.cpuModel
+  ) {
+    differing.push("cpuModel");
+  }
   if (report.cpuCores !== baseline.cpuCores) differing.push("cpuCores");
   return { differingFields: differing };
 }
@@ -116,6 +127,11 @@ function invalidFingerprintFields(fp: MachineFingerprint): string[] {
   // nodeVersion feeds nodeMajor's .replace — a non-string throws.
   if (typeof fp.nodeVersion !== "string") bad.push("nodeVersion");
   if (typeof fp.cpuCores !== "number" || !Number.isFinite(fp.cpuCores)) bad.push("cpuCores");
+  // cpuModel is nullable (the harness sets null when no CPUs are detected),
+  // but it must still be a string-or-null — a number/object/undefined (a
+  // missing key) is corruption (cursor Bugbot: 'Fingerprint skip omits
+  // cpuModel validation').
+  if (fp.cpuModel !== null && typeof fp.cpuModel !== "string") bad.push("cpuModel");
   return bad;
 }
 

@@ -759,6 +759,45 @@ test("fingerprint guard: an empty machine object {} fails (present but fieldless
   assert.ok(result.summary.includes("arch"), "summary must name a missing field");
 });
 
+test("fingerprint guard: a non-string non-null cpuModel fails (type validation)", () => {
+  // cpuModel is nullable but must be string-or-null. A numeric/object
+  // value is corruption (cursor Bugbot: 'Fingerprint skip omits cpuModel
+  // validation').
+  const report = reportWithMachine({
+    ...SAME_MACHINE,
+    cpuModel: 123 as unknown as string,
+  });
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.passed, false, "non-string non-null cpuModel must fail the gate");
+  assert.equal(result.skipped, undefined, "must not reach the machine skip");
+  assert.ok(result.summary.includes("cpuModel"), "summary must name cpuModel");
+});
+
+test("fingerprint guard: a null cpuModel is 'unknown', not a skip-triggering difference", () => {
+  // report.cpuModel=null (undetected) vs baseline.cpuModel="Apple M2 Max".
+  // Before the fix, null !== "Apple M2 Max" pushed a cpuModel difference
+  // and SKIPPED the gate, hiding a real regression. Now null is treated as
+  // "unknown" — with every other field matching, the gate compares normally
+  // (cursor Bugbot: 'Fingerprint skip omits cpuModel validation').
+  const report = reportWithMachine({ ...SAME_MACHINE, cpuModel: null });
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.skipped, undefined, "a null cpuModel must NOT trigger the machine skip");
+  assert.equal(result.machineMismatch, undefined, "no mismatch recorded for an unknown cpuModel");
+  assert.equal(result.passed, true, "identical metrics still pass under normal comparison");
+});
+
+test("fingerprint guard: two differing concrete cpuModels still SKIP", () => {
+  // Regression guard for the cpuModel change: when BOTH sides report a
+  // concrete (non-null) but different model, the designed skip still fires.
+  const report = reportWithMachine({ ...SAME_MACHINE, cpuModel: "Apple M3 Pro" });
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.skipped, true, "two different concrete cpuModels still skip");
+  assert.ok(result.machineMismatch!.differingFields.includes("cpuModel"));
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // 9. Modified-loop restore (#1688 review) — re-ingesting the full fixture
 //    restores cross-file edges that the churn prune cascade-deleted.
