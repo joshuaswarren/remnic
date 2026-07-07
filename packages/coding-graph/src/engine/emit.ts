@@ -412,7 +412,13 @@ function extractHandlerFromArgs(argsNode: TSNode): string {
   if (lastArg.type === "function_expression") {
     return findHandlerName(lastArg) ?? "anonymous";
   }
-  return "anonymous";
+  if (lastArg.type === "arrow_function") {
+    return "anonymous";
+  }
+  // Non-handler last arg (object, number, call expression, etc.) —
+  // not a route handler. Return empty so the caller skips the route
+  // (cursor Bugbot: 'Spurious routes from client calls').
+  return "";
 }
 
 /**

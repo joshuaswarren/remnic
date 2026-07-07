@@ -1261,6 +1261,41 @@ test("1688-route: cache.get('user') does NOT produce a route (empty-handler skip
   assert.equal(cacheRoutes.length, 0, "cache.get/delete/set must NOT produce routes");
   await engine.dispose();
 });
+test("1688-route-2: HTTP client calls with options object do NOT produce spurious routes", async () => {
+  // The cursor Bugbot thread @14:47: the unified route matcher treats any
+  // call whose method name is an HTTP verb and first arg is a string as a
+  // route when there are >= 2 args. extractHandlerFromArgs previously
+  // returned "anonymous" for non-handler last args (objects, numbers),
+  // producing spurious routes from client calls like httpClient.get(url, opts).
+  // Now non-handler last args return "" so the route is skipped.
+  const engine = createCodingGraphEngine();
+  const code = [
+    'const httpClient = { get: (url, opts) => {} };',
+    'httpClient.get("https://api.example.com", { headers: { auth: "token" } });',
+    'httpClient.delete("https://api.example.com/resource", { method: "DELETE" });',
+    'httpClient.put("https://api.example.com/data", 42);',
+    "",
+    "function getUsers(req, res) { res.json([]); }",
+    'app.get("/users", getUsers);',
+    'app.post("/items", (req, res) => {});',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/client.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  // Real routes must still be captured.
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should still capture the real /users route");
+  const itemsRoute = routes.find((r) => r.pathTemplate === "/items");
+  assert.ok(itemsRoute, "should still capture the real /items route with arrow fn handler");
+  // HTTP client calls must NOT produce routes.
+  const clientRoutes = routes.filter((r) =>
+    r.pathTemplate.startsWith("https://") || r.pathTemplate.includes("api.example.com"),
+  );
+  assert.equal(clientRoutes.length, 0, "httpClient.get/delete/put must NOT produce spurious routes");
+  await engine.dispose();
+});
+
 
 
 test("1659-6: Python relative import from .models captures module", async () => {
