@@ -202,7 +202,7 @@ function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined
   // below would otherwise resurrect them. Require at least one date/time
   // separator so a plain number never round-trips into a fake epoch.
   if (!/[-:T]/.test(value)) return undefined;
-  // Reject partial year-led timestamps (issue #1657, codex thread
+  // Reject partial NUMERIC year-led timestamps (issue #1657, codex thread
   // PRRT_kwDORJXyws6OdKaD). Date.parse silently fills in missing calendar
   // components for incomplete shapes — "2026-05" becomes 2026-05-01 — and
   // the ymd guard below misparses the date/time boundary ("2026-05T10:00"
@@ -210,10 +210,13 @@ function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined
   // calendar date (YYYY<sep>MM<sep>DD) where <sep> is a real date separator
   // (- or /, NOT space — a space precedes a time component, so
   // "2026-05 10:00" must not capture the hour "10" as the day) before
-  // trusting the normalized round-trip. Non-numeric-month shapes
-  // ("Jan 15 2026") do not start with a 4-digit year and fall through to
-  // Date.parse unchanged.
-  if (/^\d{4}\D/.test(value) && !/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(value)) {
+  // trusting the normalized round-trip. The guard is scoped to numeric
+  // year-led forms (`^\d{4}\D\d`) so a complete year-first TEXTUAL-month
+  // date like "2026-Jan-15" still normalizes via Date.parse — the
+  // fabrication class only affects numeric component filling. Non-numeric
+  // year-led textual months ("Jan 15 2026") never start with a 4-digit
+  // year + digit and fall through unchanged.
+  if (/^\d{4}\D\d/.test(value) && !/^\d{4}[-/]\d{1,2}[-/]\d{1,2}/.test(value)) {
     return undefined;
   }
   // Reject calendar-overflow dates (chatgpt-codex-connector thread dANc):

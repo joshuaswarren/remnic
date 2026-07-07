@@ -968,3 +968,29 @@ test("toStrictIsoTimestamp path: leading-whitespace partial timestamp is rejecte
     "leading-whitespace partial timestamp must fall back to epoch, not a fabricated date",
   );
 });
+
+test("toStrictIsoTimestamp path: complete year-first textual-month date is preserved (issue #1657, codex r4)", () => {
+  // A complete year-first TEXTUAL-month date ("2026-Jan-15") is normalized by
+  // Date.parse and must stay verified — the partial-date guard is scoped to
+  // NUMERIC year-led forms, so it must not reject a complete textual month.
+  // (Pre-narrowing the guard matched any 4-digit year + non-digit and wrongly
+  // dropped this source.) The exact time is timezone-dependent; assert the
+  // calendar date round-trips (Jan 15, not a fabricated Jan 1).
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-Jan-15" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "complete textual-month date must stay verified");
+  assert.ok(result.sources);
+  assert.match(
+    result.sources![0]!.observedAt,
+    /^2026-01-15T/,
+    "complete textual-month date must round-trip to Jan 15, not a fabricated date",
+  );
+});
