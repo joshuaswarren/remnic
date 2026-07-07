@@ -203,3 +203,90 @@ export function resolveAccessSetupCapabilities(
     recallAuditAnomalyDetection: config.recallAuditAnomalyDetectionEnabled === true,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Memory-lifecycle capability set (issue #1523 batch 3).
+//
+// The flags below gate memory WRITE/EXTRACTION (extraction judge, scope
+// classification, dedupe, telemetry prefilter), temporal supersession of
+// stored facts, and the lifecycle policy pass (promotion / decay / stale
+// filtering). They are read on the persistExtraction write path, the recall
+// candidate-filter path, and the maintenance / lifecycle-pass path — so, like
+// the graph-construction set above, they get their own projection resolved
+// ONCE at each operation entry that reads them (never re-derived from raw
+// config mid-operation — the gate-divergence defect class #1523 targets).
+//
+// Every field projects from an already-resolved PluginConfig boolean (defaults
+// are applied at the config-parse boundary, rule 36), so the resolver is a
+// pure projection — no `!== false` / `=== true` re-coercion here.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of memory-lifecycle feature gates (issue #1523 batch 3).
+ *
+ * Resolved once per write / recall-filter / maintenance operation and threaded
+ * down. Composition lives ONLY in {@link resolveMemoryLifecycleCapabilities}.
+ */
+export interface MemoryLifecycleCapabilitySet {
+  /** `temporalSupersessionEnabled` — supersede stale structured facts on write, filter on recall. */
+  readonly temporalSupersession: boolean;
+  /** `temporalMemoryTreeEnabled` — temporal-memory-tree build + recall tier. */
+  readonly temporalMemoryTree: boolean;
+  /** `lifecyclePolicyEnabled` — lifecycle promotion / decay metadata pass. */
+  readonly lifecyclePolicy: boolean;
+  /** `lifecycleFilterStaleEnabled` — filter stale-lifecycle memories from recall. */
+  readonly lifecycleFilterStale: boolean;
+  /** `lifecycleMetricsEnabled` — emit lifecycle-pass metrics. */
+  readonly lifecycleMetrics: boolean;
+  /** `extractionScopeClassificationEnabled` — LLM classifies each fact's scope. */
+  readonly extractionScopeClassification: boolean;
+  /** `extractionJudgeEnabled` — LLM-as-judge fact-worthiness gate. */
+  readonly extractionJudge: boolean;
+  /** `extractionDedupeEnabled` — dedupe against recent extractions. */
+  readonly extractionDedupe: boolean;
+  /** `extractionTelemetryPrefilterEnabled` — skip mechanical-telemetry transcripts. */
+  readonly extractionTelemetryPrefilter: boolean;
+  /** `extractionJudgeTelemetryEnabled` — collect judge verdict telemetry. */
+  readonly extractionJudgeTelemetry: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveMemoryLifecycleCapabilities}.
+ */
+export type MemoryLifecycleConfigProjection = Pick<
+  PluginConfig,
+  | "temporalSupersessionEnabled"
+  | "temporalMemoryTreeEnabled"
+  | "lifecyclePolicyEnabled"
+  | "lifecycleFilterStaleEnabled"
+  | "lifecycleMetricsEnabled"
+  | "extractionScopeClassificationEnabled"
+  | "extractionJudgeEnabled"
+  | "extractionDedupeEnabled"
+  | "extractionTelemetryPrefilterEnabled"
+  | "extractionJudgeTelemetryEnabled"
+>;
+
+/**
+ * Resolve the {@link MemoryLifecycleCapabilitySet} from parsed config.
+ *
+ * Call this ONCE per write / recall-filter / maintenance operation entry and
+ * thread the result down — exactly the pattern {@link resolveCapabilities}
+ * established for recall.
+ */
+export function resolveMemoryLifecycleCapabilities(
+  config: MemoryLifecycleConfigProjection,
+): MemoryLifecycleCapabilitySet {
+  return Object.freeze({
+    temporalSupersession: config.temporalSupersessionEnabled,
+    temporalMemoryTree: config.temporalMemoryTreeEnabled,
+    lifecyclePolicy: config.lifecyclePolicyEnabled,
+    lifecycleFilterStale: config.lifecycleFilterStaleEnabled,
+    lifecycleMetrics: config.lifecycleMetricsEnabled,
+    extractionScopeClassification: config.extractionScopeClassificationEnabled,
+    extractionJudge: config.extractionJudgeEnabled,
+    extractionDedupe: config.extractionDedupeEnabled,
+    extractionTelemetryPrefilter: config.extractionTelemetryPrefilterEnabled,
+    extractionJudgeTelemetry: config.extractionJudgeTelemetryEnabled,
+  });
+}

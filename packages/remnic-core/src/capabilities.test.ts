@@ -153,6 +153,12 @@ import {
   type GraphConstructionCapabilitySet,
 } from "./capabilities.js";
 
+import {
+  resolveMemoryLifecycleCapabilities,
+  type MemoryLifecycleCapabilitySet,
+} from "./capabilities.js";
+
+
 const GRAPH_FIELD_TO_FLAG: Record<keyof GraphConstructionCapabilitySet, string> = {
   entityGraph: "entityGraphEnabled",
   timeGraph: "timeGraphEnabled",
@@ -304,5 +310,149 @@ test("resolveGraphConstructionCapabilities matches pre-migration config reads (p
       config.graphWriteSessionAdjacencyEnabled !== false,
       `[${label}] graphWriteSessionAdjacency parity (must match !== false)`,
     );
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// MemoryLifecycleCapabilitySet — gate-parity tests (issue #1523 batch 3).
+//
+// Same invariant as the sets above: every caps field must project from its
+// `<field>Enabled` config flag, so a future edit that maps a field to the wrong
+// flag fails loudly here. All ten flags are required booleans on PluginConfig
+// (defaults resolved at the parse boundary), so the projection is a pure
+// passthrough — no optional-default variants needed.
+//
+// Parity contract: a caps-resolved run and a config-derived run MUST produce
+// identical boolean values for every gate — on AND off.
+// ---------------------------------------------------------------------------
+
+const LIFECYCLE_FIELD_TO_FLAG: Record<keyof MemoryLifecycleCapabilitySet, string> = {
+  temporalSupersession: "temporalSupersessionEnabled",
+  temporalMemoryTree: "temporalMemoryTreeEnabled",
+  lifecyclePolicy: "lifecyclePolicyEnabled",
+  lifecycleFilterStale: "lifecycleFilterStaleEnabled",
+  lifecycleMetrics: "lifecycleMetricsEnabled",
+  extractionScopeClassification: "extractionScopeClassificationEnabled",
+  extractionJudge: "extractionJudgeEnabled",
+  extractionDedupe: "extractionDedupeEnabled",
+  extractionTelemetryPrefilter: "extractionTelemetryPrefilterEnabled",
+  extractionJudgeTelemetry: "extractionJudgeTelemetryEnabled",
+};
+
+const LIFECYCLE_FIELDS = Object.keys(LIFECYCLE_FIELD_TO_FLAG) as Array<
+  keyof MemoryLifecycleCapabilitySet
+>;
+
+test("resolveMemoryLifecycleCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(LIFECYCLE_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveMemoryLifecycleCapabilities(config);
+
+  for (const field of LIFECYCLE_FIELDS) {
+    const flag = LIFECYCLE_FIELD_TO_FLAG[field];
+    assert.equal(
+      caps[field],
+      (config as unknown as Record<string, boolean>)[flag],
+      `caps.${field} must equal config.${flag} (true variant)`,
+    );
+    assert.equal(caps[field], true, `caps.${field} should be true here`);
+  }
+});
+
+test("resolveMemoryLifecycleCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(LIFECYCLE_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveMemoryLifecycleCapabilities(config);
+
+  for (const field of LIFECYCLE_FIELDS) {
+    const flag = LIFECYCLE_FIELD_TO_FLAG[field];
+    assert.equal(
+      caps[field],
+      (config as unknown as Record<string, boolean>)[flag],
+      `caps.${field} must equal config.${flag} (false variant)`,
+    );
+    assert.equal(caps[field], false, `caps.${field} should be false here`);
+  }
+});
+
+test("resolveMemoryLifecycleCapabilities returns a frozen object", () => {
+  const config = parseConfig({});
+  const caps = resolveMemoryLifecycleCapabilities(config);
+  assert.equal(Object.isFrozen(caps), true);
+});
+
+test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (parity contract)", () => {
+  // For representative on/off combinations, the caps-resolved values MUST be
+  // identical to what the old scattered `this.config.<flag>Enabled` reads
+  // produced. All ten flags used bare reads (no `!== false`/`=== true` at the
+  // call site that would change the value — the two sites that wrote
+  // `=== true` were redundant coercion on an already-boolean config field),
+  // so parity is a direct equality against the resolved config boolean.
+  const cases: Record<string, Record<string, boolean>> = {
+    "all-off": {
+      temporalSupersessionEnabled: false,
+      temporalMemoryTreeEnabled: false,
+      lifecyclePolicyEnabled: false,
+      lifecycleFilterStaleEnabled: false,
+      lifecycleMetricsEnabled: false,
+      extractionScopeClassificationEnabled: false,
+      extractionJudgeEnabled: false,
+      extractionDedupeEnabled: false,
+      extractionTelemetryPrefilterEnabled: false,
+      extractionJudgeTelemetryEnabled: false,
+    },
+    "all-on": {
+      temporalSupersessionEnabled: true,
+      temporalMemoryTreeEnabled: true,
+      lifecyclePolicyEnabled: true,
+      lifecycleFilterStaleEnabled: true,
+      lifecycleMetricsEnabled: true,
+      extractionScopeClassificationEnabled: true,
+      extractionJudgeEnabled: true,
+      extractionDedupeEnabled: true,
+      extractionTelemetryPrefilterEnabled: true,
+      extractionJudgeTelemetryEnabled: true,
+    },
+    "temporal-on-rest-off": {
+      temporalSupersessionEnabled: true,
+      temporalMemoryTreeEnabled: true,
+      lifecyclePolicyEnabled: false,
+      lifecycleFilterStaleEnabled: false,
+      lifecycleMetricsEnabled: false,
+      extractionScopeClassificationEnabled: false,
+      extractionJudgeEnabled: false,
+      extractionDedupeEnabled: false,
+      extractionTelemetryPrefilterEnabled: false,
+      extractionJudgeTelemetryEnabled: false,
+    },
+    "extraction-on-rest-off": {
+      temporalSupersessionEnabled: false,
+      temporalMemoryTreeEnabled: false,
+      lifecyclePolicyEnabled: false,
+      lifecycleFilterStaleEnabled: false,
+      lifecycleMetricsEnabled: false,
+      extractionScopeClassificationEnabled: true,
+      extractionJudgeEnabled: true,
+      extractionDedupeEnabled: true,
+      extractionTelemetryPrefilterEnabled: true,
+      extractionJudgeTelemetryEnabled: true,
+    },
+  };
+
+  for (const [label, overrides] of Object.entries(cases)) {
+    const config = parseConfig(overrides);
+    const caps = resolveMemoryLifecycleCapabilities(config);
+
+    for (const field of LIFECYCLE_FIELDS) {
+      const flag = LIFECYCLE_FIELD_TO_FLAG[field];
+      assert.equal(
+        caps[field],
+        (config as unknown as Record<string, boolean>)[flag],
+        `[${label}] caps.${field} must equal config.${flag}`,
+      );
+    }
   }
 });
