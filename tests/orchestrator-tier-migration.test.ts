@@ -198,7 +198,7 @@ test("tier migration extraction scan prioritizes oldest hot memories for demotio
 
     const ids: string[] = [];
     for (let i = 0; i < 60; i += 1) {
-      ids.push(await storage.writeMemory("fact", `memory-${i}`, { source: "test" }));
+      ids.push((await storage.writeMemory("fact", `memory-${i}`, { source: "test" })).id);
     }
 
     const oldIds = ids.slice(0, 12);

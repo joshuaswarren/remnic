@@ -448,7 +448,7 @@ test("recallInternal reuses stale qmd cache while qmd reprobe cooldown is active
     },
   );
 
-  const memoryId = await (orchestrator as any).storage.writeMemory(
+  const { id: memoryId } = await (orchestrator as any).storage.writeMemory(
     "fact",
     "stale cache memory",
   );
@@ -512,7 +512,7 @@ test("recallInternal uses already-settled qmd results after the enrichment budge
     },
   );
 
-  const memoryId = await (orchestrator as any).storage.writeMemory(
+  const { id: memoryId } = await (orchestrator as any).storage.writeMemory(
     "fact",
     "ready qmd memory",
   );
@@ -830,7 +830,7 @@ test("recallInternal keeps qmd safety reads deadline-bound when qmd settles duri
     },
   );
 
-  const memoryId = await (orchestrator as any).storage.writeMemory(
+  const { id: memoryId } = await (orchestrator as any).storage.writeMemory(
     "fact",
     "qmd settled during wait memory",
   );

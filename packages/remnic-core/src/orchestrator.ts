@@ -4566,7 +4566,7 @@ export class Orchestrator {
         }
 
         // Write the canonical memory
-        const { id: canonicalId } = await targetStorage.writeMemory(
+        const { id: canonicalId, tombstoneBlocked: canonicalBlocked } = await targetStorage.writeMemory(
           newest.frontmatter.category,
           canonicalContent,
           {
@@ -4583,6 +4583,12 @@ export class Orchestrator {
             derivedVia: operator,
           },
         );
+        if (canonicalBlocked) {
+          // #1645: canonical matched a tombstone (pending_review). Don't archive
+          // the sources — consolidation must never delete the only active copy.
+          log.info(`[semantic-consolidation] cluster in "${cluster.category}" tombstone-blocked — keeping ${cluster.memories.length} source(s) active (pending_review ${canonicalId})`);
+          continue;
+        }
         canonicalWriteCompleted = true;
 
         result.memoriesConsolidated++;

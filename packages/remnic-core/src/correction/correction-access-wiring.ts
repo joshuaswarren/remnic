@@ -401,7 +401,7 @@ async function writeReplacementMemory(
   // writeMemory is the single storage chokepoint — catalog/dedup/reindex fire
   // here (rule 43). Tombstone blocking also fires here (#1579), so a
   // resurrected fact lands as pending_review rather than silently overwriting.
-  const { id: id } = await storage.writeMemory(
+  const { id, tombstoneBlocked } = await storage.writeMemory(
     (draft.category ?? "fact") as Parameters<typeof storage.writeMemory>[0],
     draft.content,
     {
@@ -415,6 +415,16 @@ async function writeReplacementMemory(
       ...(draft.supersedes ? { supersedes: draft.supersedes } : {}),
     },
   );
+  if (tombstoneBlocked) {
+    // #1645 (review thread): the replacement content matched a tombstone, so it
+    // landed pending_review (non-active). Returning the id would let the
+    // executor record the supersede as applied and Phase 2 retire the loser
+    // with `supersededBy` pointing at a non-active replacement — stranding
+    // the fact behind a tombstone. Fail the correction cleanly instead.
+    throw new CorrectionContractError(
+      `correction replacement was tombstone-blocked (pending_review ${id}) — cannot supersede with a non-active replacement`,
+    );
+  }
   return id;
 }
 

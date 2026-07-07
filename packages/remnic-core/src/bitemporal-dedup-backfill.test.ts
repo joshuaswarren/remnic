@@ -184,7 +184,7 @@ test("#1707 thread 2: corrected extracted validFrom overwrites a batch-anchored 
     // Old promoted copy: batch-anchored valid_at, no per-fact event-time.
     const content = "We have used Stripe for payments since 2024.";
     const batchAnchor = "2026-06-01T00:00:00.000Z";
-    const id = await storage.writeMemory("fact", content, {
+    const { id } = await storage.writeMemory("fact", content, {
       confidence: 0.9,
       validAt: batchAnchor,
       // No eventTimeSource → batch-anchored (legacy pre-#1670 copy).
@@ -225,7 +225,7 @@ test("#1707 thread 2: identical extracted validFrom is a no-op (equality short-c
     // Copy already carries an extracted per-fact anchor.
     const content = "The migration to MySQL completed in March 2025.";
     const existingValidAt: string = "2025-03-01T00:00:00.000Z";
-    const id = await storage.writeMemory("fact", content, {
+    const { id } = await storage.writeMemory("fact", content, {
       confidence: 0.9,
       validAt: existingValidAt,
       observedAt: "2025-06-01T00:00:00.000Z",
@@ -256,7 +256,7 @@ test("#1707 thread 2: differing extracted validFrom overwrites (authoritative re
     // Copy carries an older (batch-anchored) valid_at.
     const content = "We have used Stripe for payments since 2024.";
     const staleValidAt: string = "2026-06-01T00:00:00.000Z"; // batch anchor
-    const id = await storage.writeMemory("fact", content, {
+    const { id } = await storage.writeMemory("fact", content, {
       confidence: 0.9,
       validAt: staleValidAt,
     });
@@ -300,7 +300,7 @@ test("#1707 thread 2: end-only extracted provenance does NOT block a later start
     // anchor (assumed start).
     const observedAt = "2026-06-01T00:00:00.000Z";
     const content = "The service was maintained through 2026.";
-    const id = await storage.writeMemory("fact", content, {
+    const { id } = await storage.writeMemory("fact", content, {
       confidence: 0.9,
       validAt: observedAt, // valid_at === observedAt (assumed/batch start)
       observedAt,
@@ -381,8 +381,8 @@ test("#1707 thread 1: backfill patches promoted copies across multiple storages 
   try {
     const content = "The API rate limit is 100 req/min until June 2025.";
     // Both namespaces hold the same fact, written WITHOUT bounds (stale copies).
-    const sourceId = await sourceStorage.writeMemory("fact", content, { confidence: 0.9 });
-    const promotedId = await promotedStorage.writeMemory("fact", content, { confidence: 0.9 });
+    const { id: sourceId } = await sourceStorage.writeMemory("fact", content, { confidence: 0.9 });
+    const { id: promotedId } = await promotedStorage.writeMemory("fact", content, { confidence: 0.9 });
 
     // Simulate re-extraction that now carries a resolved invalidAt. The
     // promotion-cascade closure calls the same backfill against each target.
@@ -434,7 +434,7 @@ test("#1707 thread 3: backfill never patches a non-fact copy (category guard)", 
     const content = "The user prefers dark mode.";
     // A preference (non-fact) whose content would collide with an incoming
     // duplicate candidate.
-    const id = await storage.writeMemory("preference", content, { confidence: 0.9 });
+    const { id } = await storage.writeMemory("preference", content, { confidence: 0.9 });
     const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
     assert.ok(before);
     assert.equal(before!.frontmatter.category, "preference");
