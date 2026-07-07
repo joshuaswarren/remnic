@@ -130,6 +130,8 @@ export type CodingGraphMetricKey =
   | "fullIndexLocsPerSecond"
   | "incrementalUpdateP50Ms"
   | "incrementalUpdateP95Ms"
+  | "incrementalModifiedUpdateP50Ms"
+  | "incrementalModifiedUpdateP95Ms"
   | "tracePathP95Ms"
   | "searchGraphP95Ms"
   | "deadCodeMs"
@@ -155,8 +157,14 @@ export interface CodingGraphBenchReport {
   readonly fullIndexMs: WallMetric;
   /** LOC/s sustained during full index (higher is better). */
   readonly fullIndexLocsPerSecond: number;
-  /** Incremental single-file update latency distribution. */
+  /** Incremental single-file update latency distribution (idempotent
+   *  re-ingest of UNCHANGED content — the common-case no-op path). */
   readonly incrementalUpdate: MicroMetric;
+  /** Incremental MODIFIED-content re-ingest latency distribution. A
+   *  complementary metric to `incrementalUpdate`: measures the change-heavy
+   *  path (edge deletion/creation, symbol re-resolution) rather than the
+   *  cache-hit no-op (#1688 item 1). */
+  readonly incrementalModifiedUpdate: MicroMetric;
   /** trace_path (depth ≤ 5) latency distribution. */
   readonly tracePath: MicroMetric;
   /** search_graph name-pattern latency distribution. */
@@ -212,6 +220,24 @@ export interface RegressionGateResult {
   readonly passed: boolean;
   readonly regressions: readonly RegressionMetricDetail[];
   readonly summary: string;
+  /**
+   * True when the gate SKIPPED the metric comparison because of a
+   * non-fatal precondition (machine-fingerprint mismatch). `passed` is
+   * also true in that case — a hardware variance must not fail CI (#1688
+   * item 2). Callers that want to treat a skip as informational can check
+   * this flag.
+   */
+  readonly skipped?: boolean;
+  /**
+   * Present when `skipped` is true due to a machine-fingerprint mismatch
+   * between the report and the baseline. Lists the fingerprint fields that
+   * differ so a human can decide whether the comparison is still meaningful.
+   */
+  readonly machineMismatch?: {
+    readonly report: MachineFingerprint;
+    readonly baseline: MachineFingerprint;
+    readonly differingFields: readonly string[];
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -261,4 +287,4 @@ export const MIN_ITERATIONS = 20;
 export const DEFAULT_TOLERANCE_PERCENT = 30;
 
 /** Report schema version — bump when the shape changes. */
-export const CODING_GRAPH_BENCH_SCHEMA_VERSION = 1;
+export const CODING_GRAPH_BENCH_SCHEMA_VERSION = 2;

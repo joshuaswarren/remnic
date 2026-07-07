@@ -16,6 +16,7 @@ import type {
   CodingGraphBaseline,
   RegressionGateResult,
   RegressionMetricDetail,
+  MachineFingerprint,
 } from "./types.js";
 import { DEFAULT_TOLERANCE_PERCENT } from "./types.js";
 
@@ -31,6 +32,8 @@ const METRIC_DIRECTION = {
   fullIndexLocsPerSecond: "higher-is-better" as const,
   incrementalUpdateP95Ms: "lower-is-better" as const,
   incrementalUpdateP50Ms: "lower-is-better" as const,
+  incrementalModifiedUpdateP95Ms: "lower-is-better" as const,
+  incrementalModifiedUpdateP50Ms: "lower-is-better" as const,
   tracePathP95Ms: "lower-is-better" as const,
   searchGraphP95Ms: "lower-is-better" as const,
   deadCodeMs: "lower-is-better" as const,
@@ -48,6 +51,8 @@ export function extractMetrics(report: CodingGraphBenchReport): Record<string, n
     fullIndexLocsPerSecond: report.fullIndexLocsPerSecond,
     incrementalUpdateP50Ms: report.incrementalUpdate.p50,
     incrementalUpdateP95Ms: report.incrementalUpdate.p95,
+    incrementalModifiedUpdateP50Ms: report.incrementalModifiedUpdate.p50,
+    incrementalModifiedUpdateP95Ms: report.incrementalModifiedUpdate.p95,
     tracePathP95Ms: report.tracePath.p95,
     searchGraphP95Ms: report.searchGraph.p95,
     deadCodeMs: report.deadCodeMs.ms,
@@ -55,6 +60,45 @@ export function extractMetrics(report: CodingGraphBenchReport): Record<string, n
   };
 }
 
+
+// ---------------------------------------------------------------------------
+// Machine-fingerprint comparison (#1688 item 2).
+//
+// Compares the load-bearing fields that drive timing variance. nodeVersion
+// is compared on its MAJOR version only (v22.20.0 vs v22.5.0 race identically
+// for our purposes; v22 vs v23 do not). cpuCores counts; totalMemoryMb does
+// not (a memory difference alone rarely moves sub-ms SQLite ops and would
+// over-trigger the skip).
+// ---------------------------------------------------------------------------
+
+const NODE_MAJOR_CACHE = new WeakMap<MachineFingerprint, string>();
+
+function nodeMajor(fp: MachineFingerprint): string {
+  const cached = NODE_MAJOR_CACHE.get(fp);
+  if (cached !== undefined) return cached;
+  // process.version shape: "v22.20.0" → major "22".
+  const major = fp.nodeVersion.replace(/^v/, "").split(".")[0] ?? fp.nodeVersion;
+  NODE_MAJOR_CACHE.set(fp, major);
+  return major;
+}
+
+/**
+ * Compare two machine fingerprints on the fields that matter for timing.
+ * Returns the list of fields that differ. An empty list means the
+ * fingerprints are comparable.
+ */
+export function compareMachineFingerprints(
+  report: MachineFingerprint,
+  baseline: MachineFingerprint,
+): { readonly differingFields: readonly string[] } {
+  const differing: string[] = [];
+  if (report.arch !== baseline.arch) differing.push("arch");
+  if (report.platform !== baseline.platform) differing.push("platform");
+  if (nodeMajor(report) !== nodeMajor(baseline)) differing.push("nodeVersion(major)");
+  if (report.cpuModel !== baseline.cpuModel) differing.push("cpuModel");
+  if (report.cpuCores !== baseline.cpuCores) differing.push("cpuCores");
+  return { differingFields: differing };
+}
 /**
  * Compare a report against a baseline. Returns a gate result that exits
  * non-zero when any metric regresses beyond the tolerance.
@@ -72,6 +116,33 @@ export function checkCodingGraphRegression(
   const measured = extractMetrics(report);
   const baselineMetrics = baseline.metrics;
   const regressions: RegressionMetricDetail[] = [];
+
+  // Guard (#1688 item 2): a timing comparison is only meaningful on the
+  // same machine class. A baseline carries a fingerprint (arch/platform/
+  // nodeVersion/cpuModel/cores); a report from a different machine class
+  // can fail the gate on legitimate hardware variance rather than a real
+  // regression. When the fingerprints differ on a load-bearing field, SKIP
+  // the comparison (passed: true + skipped: true) and surface the mismatch
+  // so a human decides whether cross-machine numbers are comparable.
+  const mismatch = compareMachineFingerprints(report.machine, baseline.machine);
+  if (mismatch.differingFields.length > 0) {
+    return {
+      passed: true,
+      skipped: true,
+      regressions: [],
+      summary:
+        "Machine-fingerprint mismatch — comparison skipped to avoid a " +
+        "false-positive hardware-variance failure. Differing fields: " +
+        mismatch.differingFields.join(", ") +
+        ". Regenerate the baseline on this machine for a real comparison " +
+        "(#1688).",
+      machineMismatch: {
+        report: report.machine,
+        baseline: baseline.machine,
+        differingFields: mismatch.differingFields,
+      },
+    };
+  }
 
   // Guard: a regression comparison is only meaningful when the report's
   // fixture matches the baseline's fixture on EVERY knob. A different seed

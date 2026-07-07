@@ -261,6 +261,49 @@ export async function runCodingGraphBenchmark(
       const kloc = Math.max(1, repo.approximateLoc / 1000);
       const dbBytesPerKloc = dbBytes / kloc;
 
+      // ── Metric 3b: incremental MODIFIED-content re-ingest p50/p95 ──
+      // Complementary to metric 3 (idempotent no-op): measures the
+      // change-heavy path — edge deletion/creation + symbol re-resolution —
+      // by re-ingesting a file whose symbol set has changed, then restoring
+      // the original so the graph returns to baseline (#1688 item 1). Runs
+      // AFTER the steady-state DB-size measurement: each churn upsert moves
+      // pages to the SQLite free-list without shrinking the file, so a
+      // pre-DB-size churn would inflate dbBytesPerKloc with churn residue
+      // rather than reflecting the indexed fixture's steady-state footprint.
+      const modifiedSamples: number[] = [];
+      for (let i = 0; i < iterations; i++) {
+        const fileIdx = i % storeFiles.length;
+        const original = storeFiles[fileIdx];
+        if (!original) continue;
+        // Modified variant: a single churn symbol with a fresh qualified
+        // name + bumped content hash forces the store to delete the file's
+        // prior symbols/edges and create new ones (the change-heavy path).
+        const modified: StoreFileIR = {
+          ...original,
+          contentHash: `${original.contentHash}-mod-${i}`,
+          symbols: [
+            {
+              qualifiedName: `mod.benchChurnSymbol${i}`,
+              name: `benchChurnSymbol${i}`,
+              kind: "function" as SymbolKind,
+              span: { startByte: 0, endByte: 0 },
+            },
+          ],
+          edges: [],
+        };
+        const modResult = await timeAsync(() =>
+          store.upsertFileBatch([modified]),
+        );
+        if (!modResult.result.ok) {
+          throw new Error(`modified update failed: ${modResult.result.code}`);
+        }
+        modifiedSamples.push(modResult.ms);
+        // Restore the original file so the graph state is stable across
+        // iterations.
+        await store.upsertFileBatch([original]);
+        sampleRss();
+      }
+
       // ── Metric 8: peak RSS (tracked across the run) ──
       sampleRss();
       const peakRssBytes = peakRss;
@@ -279,6 +322,9 @@ export async function runCodingGraphBenchmark(
         fullIndexMs: { ms: fullIndex.ms },
         fullIndexLocsPerSecond: Math.round(locsPerSecond),
         incrementalUpdate: computeMicroMetric(incrementalSamples),
+        incrementalModifiedUpdate: computeMicroMetric(
+          modifiedSamples.length > 0 ? modifiedSamples : [0],
+        ),
         tracePath: computeMicroMetric(traceSamples.length > 0 ? traceSamples : [0]),
         searchGraph: computeMicroMetric(searchSamples),
         deadCodeMs: { ms: deadCode.ms },

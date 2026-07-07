@@ -21,6 +21,7 @@ export {
   checkCodingGraphRegression,
   extractMetrics,
   buildBaselineFromReport,
+  compareMachineFingerprints,
 } from "./regression.js";
 export type { RegressionMetricKey } from "./regression.js";
 

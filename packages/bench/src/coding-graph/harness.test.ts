@@ -20,11 +20,13 @@ import {
   checkCodingGraphRegression,
   buildBaselineFromReport,
   extractMetrics,
+  compareMachineFingerprints,
   createSeededRng,
   DEFAULT_SMOKE_FIXTURE,
   CODING_GRAPH_BENCH_SCHEMA_VERSION,
   type CodingGraphBenchReport,
   type CodingGraphBaseline,
+  type MachineFingerprint,
 } from "./index.js";
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -138,6 +140,18 @@ test("harness smoke: small fixture produces complete report with all metric keys
     "p95 must be >= p50",
   );
   assert.equal(report.incrementalUpdate.samplesMs.length, 20);
+
+  // Incremental MODIFIED-content update distribution (#1688 item 1) — the
+  // change-heavy path. It does strictly more work than the idempotent no-op,
+  // so p50 should be >= the idempotent p50 (defensive lower bound; not a
+  // strict perf assertion since both are sub-ms and noisy).
+  assert.equal(report.incrementalModifiedUpdate.iterations, 20);
+  assert.ok(report.incrementalModifiedUpdate.p50 >= 0);
+  assert.ok(
+    report.incrementalModifiedUpdate.p95 >= report.incrementalModifiedUpdate.p50,
+    "modified p95 must be >= modified p50",
+  );
+  assert.equal(report.incrementalModifiedUpdate.samplesMs.length, 20);
 
   // Trace path.
   assert.equal(report.tracePath.iterations, 20);
@@ -275,6 +289,7 @@ test("regression gate: higherIsBetter metric regresses when throughput drops", (
     fullIndexMs: { ms: 100 },
     fullIndexLocsPerSecond: 10000, // baseline was 20000 — 50% drop
     incrementalUpdate: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    incrementalModifiedUpdate: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
     tracePath: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
     searchGraph: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
     deadCodeMs: { ms: 5 },
@@ -338,6 +353,7 @@ test("regression gate: fixture mismatch fails the gate", () => {
     fullIndexMs: { ms: 500 },
     fullIndexLocsPerSecond: 200000,
     incrementalUpdate: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    incrementalModifiedUpdate: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
     tracePath: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
     searchGraph: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
     deadCodeMs: { ms: 5 },
@@ -398,6 +414,7 @@ test("regression gate: seed-only fixture mismatch fails the gate", () => {
     fullIndexMs: { ms: 10 },
     fullIndexLocsPerSecond: 100000,
     incrementalUpdate: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    incrementalModifiedUpdate: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
     tracePath: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
     searchGraph: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
     deadCodeMs: { ms: 1 },
@@ -430,4 +447,150 @@ test("regression gate: seed-only fixture mismatch fails the gate", () => {
   const result = checkCodingGraphRegression(baseReport, baseline, 30);
   assert.equal(result.passed, false, "seed-only mismatch must fail the gate");
   assert.ok(result.summary.includes("seed"), "summary must name the mismatched knob (seed)");
+});
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// 7. Machine-fingerprint guard (#1688 item 2) — a baseline from a different
+//    machine class must SKIP the comparison (passed: true + skipped: true),
+//    not fail CI on legitimate hardware variance.
+// ──────────────────────────────────────────────────────────────────────────
+
+const SAME_MACHINE: MachineFingerprint = {
+  arch: "arm64",
+  platform: "darwin",
+  nodeVersion: "v22.20.0",
+  cpuModel: "Apple M2 Max",
+  cpuCores: 12,
+  totalMemoryMb: 98304,
+};
+
+function reportWithMachine(machine: MachineFingerprint): CodingGraphBenchReport {
+  return {
+    schemaVersion: CODING_GRAPH_BENCH_SCHEMA_VERSION,
+    timestamp: "2026-07-07T00:00:00.000Z",
+    machine,
+    fixture: {
+      config: DEFAULT_SMOKE_FIXTURE,
+      approximateLoc: 1000,
+      fileCount: 20,
+      symbolCount: 200,
+      edgeCount: 60,
+    },
+    fullIndexMs: { ms: 10 },
+    fullIndexLocsPerSecond: 100000,
+    incrementalUpdate: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    incrementalModifiedUpdate: { p50: 2, p95: 3, iterations: 20, samplesMs: [] },
+    tracePath: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    searchGraph: { p50: 1, p95: 2, iterations: 20, samplesMs: [] },
+    deadCodeMs: { ms: 1 },
+    dbBytesPerKloc: 280000,
+    peakRssBytes: 1000000,
+    dbBytes: 1000,
+    graphNodeCount: 200,
+    graphEdgeCount: 60,
+  };
+}
+
+function baselineWithMachine(machine: MachineFingerprint): CodingGraphBaseline {
+  return {
+    schemaVersion: CODING_GRAPH_BENCH_SCHEMA_VERSION,
+    machine,
+    fixtureConfig: DEFAULT_SMOKE_FIXTURE,
+    metrics: {
+      fullIndexMs: 10,
+      fullIndexLocsPerSecond: 100000,
+      incrementalUpdateP50Ms: 1,
+      incrementalUpdateP95Ms: 2,
+      incrementalModifiedUpdateP50Ms: 2,
+      incrementalModifiedUpdateP95Ms: 3,
+      tracePathP95Ms: 2,
+      searchGraphP95Ms: 2,
+      deadCodeMs: 1,
+      dbBytesPerKloc: 280000,
+    },
+    createdAt: "2026-07-07T00:00:00.000Z",
+    note: "machine-guard baseline",
+  };
+}
+
+test("machine guard: same fingerprint → normal comparison (no skip)", () => {
+  const report = reportWithMachine(SAME_MACHINE);
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.passed, true, "same machine + identical metrics pass");
+  assert.equal(result.skipped, undefined, "same machine must NOT skip");
+  assert.equal(result.machineMismatch, undefined, "no mismatch detail on same machine");
+});
+
+test("machine guard: different arch SKIPS comparison (not a CI failure)", () => {
+  const report = reportWithMachine({ ...SAME_MACHINE, arch: "x64" });
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.passed, true, "hardware variance must not fail CI");
+  assert.equal(result.skipped, true, "mismatched machine skips comparison");
+  assert.equal(result.regressions.length, 0, "no regressions computed on skip");
+  assert.ok(result.machineMismatch, "mismatch detail present");
+  assert.ok(
+    result.machineMismatch!.differingFields.includes("arch"),
+    "differingFields names arch",
+  );
+  assert.ok(
+    result.summary.includes("Machine-fingerprint mismatch"),
+    "summary explains the skip",
+  );
+});
+
+test("machine guard: different cpuModel SKIPS comparison", () => {
+  const report = reportWithMachine({ ...SAME_MACHINE, cpuModel: "Apple M3 Pro" });
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.skipped, true);
+  assert.ok(result.machineMismatch!.differingFields.includes("cpuModel"));
+});
+
+test("machine guard: different node MAJOR version SKIPS (minor does not)", () => {
+  // Major differs (v23 vs v22) → skip.
+  const majorDiff = reportWithMachine({ ...SAME_MACHINE, nodeVersion: "v23.0.0" });
+  const r1 = checkCodingGraphRegression(majorDiff, baselineWithMachine(SAME_MACHINE), 30);
+  assert.equal(r1.skipped, true, "different node major skips");
+  assert.ok(r1.machineMismatch!.differingFields.includes("nodeVersion(major)"));
+
+  // Minor differs only (v22.5.0 vs v22.20.0) → same major → comparable, no skip.
+  const minorDiff = reportWithMachine({ ...SAME_MACHINE, nodeVersion: "v22.5.0" });
+  const r2 = checkCodingGraphRegression(minorDiff, baselineWithMachine(SAME_MACHINE), 30);
+  assert.equal(r2.skipped, undefined, "same node major does not skip");
+  assert.equal(r2.machineMismatch, undefined);
+});
+
+test("machine guard: totalMemoryMb difference alone does NOT skip", () => {
+  // Memory alone rarely moves sub-ms SQLite ops; over-triggering the skip
+  // on memory would hide real regressions. Only memory differs here.
+  const report = reportWithMachine({ ...SAME_MACHINE, totalMemoryMb: 16384 });
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.skipped, undefined, "memory-only difference must not skip");
+  assert.equal(result.passed, true, "still comparable → normal comparison");
+});
+
+test("compareMachineFingerprints: empty diff for identical fingerprints", () => {
+  const diff = compareMachineFingerprints(SAME_MACHINE, SAME_MACHINE);
+  assert.deepEqual(diff.differingFields, []);
+});
+
+test("compareMachineFingerprints: lists every load-bearing differing field", () => {
+  const a: MachineFingerprint = { ...SAME_MACHINE };
+  const b: MachineFingerprint = {
+    ...SAME_MACHINE,
+    arch: "x64",
+    platform: "linux",
+    nodeVersion: "v23.0.0",
+    cpuModel: "Intel Xeon",
+    cpuCores: 32,
+  };
+  const diff = compareMachineFingerprints(a, b);
+  assert.deepEqual(
+    [...diff.differingFields].sort(),
+    ["arch", "cpuCores", "cpuModel", "nodeVersion(major)", "platform"],
+  );
 });
