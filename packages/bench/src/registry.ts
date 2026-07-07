@@ -139,6 +139,10 @@ import {
   memcorrectDefinition,
   runMemCorrectBenchmark,
 } from "./benchmarks/remnic/memcorrect/runner.js";
+import {
+  boundedMemoryContractsDefinition,
+  runBoundedMemoryContractsBenchmark,
+} from "./benchmarks/remnic/bounded-memory-contracts/runner.js";
 
 interface RegisteredBenchmark extends BenchmarkDefinition {
   run?: (options: ResolvedRunBenchmarkOptions) => Promise<BenchmarkResult>;
@@ -280,6 +284,10 @@ const REGISTERED_BENCHMARKS: RegisteredBenchmark[] = [
   {
     ...memcorrectDefinition,
     run: runMemCorrectBenchmark,
+  },
+  {
+    ...boundedMemoryContractsDefinition,
+    run: runBoundedMemoryContractsBenchmark,
   },
 ];
 
