@@ -254,6 +254,41 @@ test("#1707 thread 2: backfill does NOT clobber an already-extracted valid_at", 
     await cleanup();
   }
 });
+
+// Gate guard (review cursor PRRT_OvHk / codex PRRT_OvHxVH): resolveFactEventTime
+// sets a validFrom for EVERY fact (assumed = ingestion anchor). The helper's
+// I/O gate must NOT scan on an assumed validFrom — only an EXTRACTED start bound
+// changes recall. This pins the gate decision so ordinary duplicate facts
+// without an extracted event time do not pay a readAllMemories scan on every
+// dedup hit.
+test("#1707 thread 2: assumed (batch-anchored) validFrom does NOT trigger a backfill scan", () => {
+  // Mirror the helper's I/O gate (orchestrator.ts backfillTemporalBoundsOnDedupHit):
+  //   const hasExtractedStart = bounds.validFrom !== undefined && bounds.eventTimeSource === "extracted";
+  //   if (!bounds.invalidAt && !hasExtractedStart) return;
+  const gateWouldScan = (bounds: {
+    invalidAt?: string;
+    validFrom?: string;
+    eventTimeSource?: "extracted" | "assumed";
+  }) =>
+    Boolean(bounds.invalidAt) ||
+    (bounds.validFrom !== undefined && bounds.eventTimeSource === "extracted");
+
+  // Assumed validFrom alone (the common no-event-time case) → no scan.
+  assert.equal(
+    gateWouldScan({ validFrom: "2026-06-01T00:00:00.000Z", eventTimeSource: "assumed" }),
+    false,
+    "assumed validFrom must not trigger a scan",
+  );
+  // Extracted validFrom → scan (corrected start bound is recall-relevant).
+  assert.equal(
+    gateWouldScan({ validFrom: "2024-01-01T00:00:00.000Z", eventTimeSource: "extracted" }),
+    true,
+  );
+  // End bound alone → scan (expires the fact).
+  assert.equal(gateWouldScan({ invalidAt: "2025-06-01T00:00:00.000Z" }), true);
+  // No bounds at all → no scan.
+  assert.equal(gateWouldScan({}), false);
+});
 // Thread 1 — promoted-cascade backfill. When the source-namespace dedup
 // short-circuit fires, the helper must also patch promotion-target copies
 // (profile + shared namespaces) so cross-namespace recall does not surface an

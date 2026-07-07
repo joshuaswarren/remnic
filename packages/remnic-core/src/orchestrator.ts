@@ -2783,13 +2783,16 @@ export class Orchestrator {
   ): Promise<void> {
     // I/O gate: scan when there is a recall-relevant bound to backfill —
     // either an end bound (invalidAt, which expires the fact) or a corrected
-    // start bound (validFrom, which the as-of filter uses to exclude facts
-    // whose valid_at is after the as-of instant). observedAt and
-    // eventTimeSource alone do not change recall, so backfilling them without
-    // a bound would cause a full readAllMemories scan on every dedup hit
-    // under biTemporal for no recall benefit (#1707 thread 2 widened this
-    // from invalidAt-only to also accept validFrom).
-    if (!bounds.invalidAt && !bounds.validFrom) return;
+    // EXTRACTED start bound. A start bound only changes recall when it is
+    // extracted (the as-of filter excludes facts whose valid_at is after the
+    // as-of instant); an "assumed" validFrom is just the ingestion anchor
+    // (resolveFactEventTime sets one for every fact), so scanning on it would
+    // run a full readAllMemories on every bi-temporal dedup hit for no benefit
+    // (review cursor PRRT_OvHk / codex PRRT_OvHxVH). observedAt and
+    // eventTimeSource alone never change recall.
+    const hasExtractedStart =
+      bounds.validFrom !== undefined && bounds.eventTimeSource === "extracted";
+    if (!bounds.invalidAt && !hasExtractedStart) return;
     try {
       const incomingHash = ContentHashIndex.computeHash(dedupContent);
       const normalizedIncoming = ContentHashIndex.normalizeContent(dedupContent);
@@ -2864,6 +2867,17 @@ export class Orchestrator {
           fm.valid_at.length === 0)
       ) {
         patch.valid_at = bounds.validFrom;
+        // Mark the copy extracted-anchored in the SAME patch so its provenance
+        // reflects the correction (review cursor PRRT_OvHM / codex PRRT_OvHxVD).
+        // Without this, a copy upgraded from "assumed" would keep "assumed"
+        // provenance while carrying an extracted start — a later re-extraction
+        // would treat it as still batch-anchored and overwrite valid_at again,
+        // breaking the no-clobber protection for extracted anchors. (The
+        // earlier eventTimeSource block only fills an EMPTY source, so it does
+        // not fire for an existing "assumed" value.)
+        if (fm.eventTimeSource !== "extracted") {
+          patch.eventTimeSource = "extracted";
+        }
       }
       if (Object.keys(patch).length === 0) return;
       const ok = await targetStorage.writeMemoryFrontmatter(existing, patch);
@@ -14769,9 +14783,15 @@ export class Orchestrator {
         eventTimeSource?: "extracted" | "assumed";
       };
     }): Promise<void> => {
-      // The helper gates its own I/O on invalidAt || validFrom, so an early
-      // return here is just a cheap skip when there is nothing recall-relevant.
-      if (!args.bounds.invalidAt && !args.bounds.validFrom) return;
+      // Mirror the helper's I/O gate: only resolve promotion targets when
+      // there is an end bound OR an EXTRACTED start bound. An "assumed"
+      // validFrom is just the ingestion anchor (no recall effect), so
+      // skipping it avoids resolving target storages on every bi-temporal
+      // duplicate (review cursor PRRT_OvHk).
+      const hasExtractedStart =
+        args.bounds.validFrom !== undefined &&
+        args.bounds.eventTimeSource === "extracted";
+      if (!args.bounds.invalidAt && !hasExtractedStart) return;
       // Build the same dedupContent the promotion functions hash on so the
       // content-hash lookup in the helper matches what was stored.
       const rawContent =
