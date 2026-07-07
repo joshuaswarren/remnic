@@ -189,8 +189,11 @@ const PYTHON_EXTRACTOR: LanguageExtractor = {
 (import_from_statement module_name: (dotted_name) @import.module) @__import.stmt
 ; Python relative imports: from .models import User / from ..parent import X
 ; tree-sitter-python wraps the module inside a relative_import node, so the
-; module_name field is NOT set. Match the dotted_name inside relative_import.
-(import_from_statement (relative_import (dotted_name) @import.module)) @__import.stmt
+; module_name field is NOT set. Capture the relative_import node itself so
+; the prefix dots are preserved (..parent, not just parent) — different
+; relative levels must not collapse to the same module name
+; (chatgpt-codex-connector #1688 P2: 'Preserve dots in Python relative imports').
+(import_from_statement (relative_import) @import.module) @__import.stmt
 `.trim(),
   exportsQuery: ``,
   callSitesQuery: `

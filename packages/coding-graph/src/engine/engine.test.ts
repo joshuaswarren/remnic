@@ -1337,3 +1337,26 @@ test("1659-6: Python relative import from .models captures module", async () => 
   );
   await engine.dispose();
 });
+
+test("1688-import: Python relative imports preserve prefix dots (..parent not parent)", async () => {
+  // tree-sitter-python wraps the module inside a relative_import node.
+  // Capturing only the inner dotted_name drops the prefix dots, collapsing
+  // different relative levels (..parent vs .parent) to the same module name.
+  // Now the relative_import node is captured directly, preserving the dots
+  // (chatgpt-codex-connector #1688 P2: "Preserve dots in Python relative imports").
+  const engine = createCodingGraphEngine();
+  const code = [
+    "from .models import User",
+    "from ..parent import X",
+    "from ...grandparent import Y",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/app2.py", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const modules = result.ir.imports.map((i) => i.module);
+  assert.ok(modules.includes(".models"), "expected .models in " + JSON.stringify(modules));
+  assert.ok(modules.includes("..parent"), "expected ..parent in " + JSON.stringify(modules));
+  assert.ok(modules.includes("...grandparent"), "expected ...grandparent in " + JSON.stringify(modules));
+  await engine.dispose();
+});
+
