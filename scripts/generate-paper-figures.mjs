@@ -53,11 +53,18 @@ function loadJson(absPath) {
 }
 
 /**
- * Find the real (non-mock) artifact for a benchmark id + tier. Returns the
- * newest matching artifact, or null when none is committed. Mocks
+ * Find the real (non-mock) published artifact for a benchmark id + tier. Returns
+ * the newest matching artifact, or null when none is committed. Mocks
  * (*-mock000.json) are NEVER returned — they are placeholders, not results.
+ *
+ * `systemName` keys the artifact to the system that produced it (the published
+ * artifact's `system.name`). Defaults to "remnic" so a future competitor's
+ * local LoCoMo/LongMemEval artifact is never mis-plotted as the Remnic anchor
+ * (thread: Remnic bar picks any artifact). Third-party panels pass their own
+ * system name + a note/model fallback so the comparison auto-upgrades when the
+ * #1747 recall-adapter runs land.
  */
-function findArtifact({ benchmarkId, tier, model }) {
+function findArtifact({ benchmarkId, tier, model, systemName = "remnic" }) {
   if (!existsSync(RESULTS_DIR)) return null;
   const candidates = readdirSync(RESULTS_DIR)
     .filter((name) => name.endsWith(".json"))
@@ -74,19 +81,27 @@ function findArtifact({ benchmarkId, tier, model }) {
     .filter(({ doc }) => doc.benchmarkId === benchmarkId)
     .filter(({ doc }) => (tier ? doc.tier === tier : true))
     .filter(({ doc }) => (model ? doc.model === model : true))
+    .filter(({ doc }) => {
+      // Published artifacts always carry system.name (buildBenchmarkArtifact
+      // hardcodes it). Match the requested system exactly; a missing
+      // system.name only matches when no systemName was requested (defensive).
+      const sn = doc.system?.name;
+      if (systemName === undefined) return true;
+      return sn === systemName;
+    })
     .sort((a, b) => String(b.doc.finishedAt).localeCompare(String(a.doc.finishedAt)));
   return candidates[0] ?? null;
 }
 
 /**
- * Find any committed MemCorrect artifact (benchmark id `memcorrect-v1`).
- * Returns an array of { adapter, row } parsed to the MemCorrectLeaderboardRow
- * shape (packages/bench/src/leaderboard-export.ts), or [] when none committed.
- *
- * MemCorrect artifacts embed the 8-metric aggregate in
- * config.benchmarkOptions.aggregateMetrics; the leaderboard builder projects
- * that into the public row. We mirror that projection here so a landed
- * artifact renders identically to the leaderboard export.
+ * Find committed MemCorrect artifacts. MemCorrect is a "remnic"-tier custom
+ * benchmark, so its runner emits a nested `BenchmarkResult` (NOT the flat
+ * published `BenchmarkArtifact`): the id is at `meta.benchmark`, the 8-metric
+ * aggregate bundle is at `config.benchmarkOptions.aggregateMetrics`, and the
+ * adapter label is at `config.adapterMode` — exactly what
+ * `buildMemCorrectLeaderboardRow` reads. We mirror that projection so a landed
+ * artifact renders identically to the leaderboard export. The flat
+ * `benchmarkId`/`metrics` path is also accepted as a defensive fallback.
  */
 function findMemCorrectArtifacts() {
   if (!existsSync(RESULTS_DIR)) return [];
@@ -100,14 +115,17 @@ function findMemCorrectArtifacts() {
     } catch {
       continue;
     }
-    if (doc.benchmarkId !== "memcorrect-v1") continue;
-    const agg = doc?.config?.benchmarkOptions?.aggregateMetrics;
+    const isMemCorrect =
+      doc?.meta?.benchmark === "memcorrect-v1" || doc?.benchmarkId === "memcorrect-v1";
+    if (!isMemCorrect) continue;
+    const agg =
+      doc?.config?.benchmarkOptions?.aggregateMetrics ?? doc?.metrics;
     if (!agg) continue;
     const adapter =
       typeof doc?.config?.adapterMode === "string" ? doc.config.adapterMode : "unknown";
     out.push({
       adapter,
-      tier: doc.tier ?? "local",
+      tier: doc?.meta?.benchmarkTier ?? doc?.tier ?? "local",
       seed: doc?.meta?.seeds?.[0] ?? doc?.seed ?? 0,
       row: {
         uptake_at_next: num(agg.uptake_at_next),
