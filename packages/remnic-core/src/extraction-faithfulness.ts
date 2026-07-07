@@ -328,16 +328,22 @@ async function callFaithfulnessLlm(
       // Default (extractionFaithfulnessLocalParseFallback=false) returns the
       // content as-is -- a 200-with-garbage local response surfaces
       // malformed_output, alerting the operator to a misconfigured endpoint.
-      // When the operator opts into resilient fallback, an unparseable local
-      // response falls through to the configured chain instead of surfacing.
-      if (
-        !config.extractionFaithfulnessLocalParseFallback ||
-        parseFaithfulnessResponse(result.content, expectedCount)
-      ) {
+      // When the operator opts into resilient fallback, an unparseable OR
+      // PARTIAL local response falls through to the configured chain instead
+      // of surfacing. parseFaithfulnessResponse is truthy as soon as ONE entry
+      // is valid, so accept the local response only when the parsed verdict
+      // map covers every expected index -- otherwise the missing indexes would
+      // surface as malformed_output downstream, defeating the resilient
+      // fallback (codex P2 PRRT_kwDORJXyws6O6zwZ).
+      if (!config.extractionFaithfulnessLocalParseFallback) {
+        return { content: result.content, modelUsed: result.modelUsed };
+      }
+      const parsedLocal = parseFaithfulnessResponse(result.content, expectedCount);
+      if (parsedLocal && parsedLocal.size === expectedCount) {
         return { content: result.content, modelUsed: result.modelUsed };
       }
       log.debug(
-        "extraction-faithfulness: local endpoint returned unparseable output; falling back to configured chain",
+        "extraction-faithfulness: local endpoint returned incomplete/unparseable output; falling back to configured chain",
       );
     } else {
       log.debug(

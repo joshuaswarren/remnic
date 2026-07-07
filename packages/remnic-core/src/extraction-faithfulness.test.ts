@@ -1555,6 +1555,53 @@ test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback does NOT 
   }
 });
 
+test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls back when the local response is a PARTIAL verdict array (codex P2 PRRT_kwDORJXyws6O6zwZ)", async () => {
+  // Flag ON: a local endpoint that returns a valid-but-INCOMPLETE verdict
+  // array (1 of N entries) must fall through to the configured chain, NOT be
+  // accepted as-is. parseFaithfulnessResponse is truthy as soon as ONE entry
+  // is valid, so the previous guard accepted the partial response and the
+  // missing indexes surfaced as malformed_output downstream -- defeating the
+  // resilient fallback. Accept the local response only when it covers every
+  // expected index.
+  const inputs = [
+    { factText: "Fact A", quote: "Quote A" },
+    { factText: "Fact B", quote: "Quote B" },
+  ];
+  const config = parseConfig({
+    extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
+    extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
+    extractionFaithfulnessTimeoutMs: 5000,
+    extractionFaithfulnessLocalParseFallback: true,
+  });
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
+  // Local endpoint returns only index 0 -- index 1 is missing (partial).
+  const { fetch: partialFetch } = fakeFetchFor("http://localhost:11434/v1", () => ({
+    model: "remnic-faithfulness-gate-v1",
+    choices: [{ message: { content: JSON.stringify([{ index: 0, verdict: "contradicted" }]) } }],
+  }));
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    null,
+    stubFallbackLlm(
+      JSON.stringify([
+        { index: 0, verdict: "entailed" },
+        { index: 1, verdict: "unsupported" },
+      ]),
+      fallbackCalls,
+    ),
+    partialFetch,
+  );
+  assert.equal(
+    fallbackCalls.length,
+    1,
+    "a partial local verdict array must fall through to the configured chain",
+  );
+  // The chain's complete verdict array is used for both indexes.
+  assert.equal(result.results[0]?.ok && result.results[0].verdict, "entailed");
+  assert.equal(result.results[1]?.ok && result.results[1].verdict, "unsupported");
+});
+
 test('parseConfig: extractionFaithfulnessLocalParseFallback coerces CLI string "true" (#1700 review — coerceBool parity)', () => {
   // A CLI override reaches the parser as the string "true"; === true would
   // silently leave the flag disabled. coerceBool must turn it on (gotcha 36).

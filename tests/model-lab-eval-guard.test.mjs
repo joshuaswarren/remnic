@@ -89,16 +89,34 @@ test(
   { skip: skipReason },
   () => {
     const r = runEvalProbe(`
+# Stub the GPU gate so the test outcome does NOT depend on whether
+# torch/transformers happen to be installed on this host (codex P2
+# PRRT_kwDORJXyws6O6zwe). The stub records the call and raises
+# SystemExit(2) to mirror the real gate on a missing GPU stack.
+gate_calls = []
+_orig_gate = m.require_eval_deps
+def _stub_gate():
+    gate_calls.append(1)
+    raise SystemExit(2)
+m.require_eval_deps = _stub_gate
 try:
     rc = m.main(["--held-out", str(gold)])
     result["inference_rc"] = rc
 except SystemExit as e:
     result["inference_systemexit"] = e.code
+finally:
+    m.require_eval_deps = _orig_gate
+result["gate_called"] = len(gate_calls)
 `);
+    assert.equal(
+      r.gate_called,
+      1,
+      "the inference path (no --predictions) must call the GPU gate (require_eval_deps)",
+    );
     assert.equal(
       r.inference_systemexit,
       2,
-      "the inference path (no --predictions) must gate the GPU stack (SystemExit 2 when torch missing)",
+      "the GPU gate must fire on the inference path (SystemExit 2), independent of installed deps",
     );
   },
 );
