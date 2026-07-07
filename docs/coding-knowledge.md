@@ -119,14 +119,15 @@ an empty success.
 
 Subcommands: `list`, `get`, `record`, `supersede`.
 
-MCP tool call (option 1 — `record` a new decision):
+MCP tool call (option 1 — `record` a new decision). The handler ignores any
+caller-supplied `id` and generates its own canonical id; the response returns
+`{ memoryId, status }`, and that `memoryId` is what `get`/`supersede` use later:
 
 ```json
 {
   "tool": "engram.coding_decision",
   "subcommand": "record",
   "sessionKey": "string",
-  "id": "ADR-0007",
   "title": "Use web-tree-sitter, not native bindings",
   "status": "accepted",
   "context": "Native node-tree-sitter repeats the better-sqlite3 binding pain.",
@@ -136,19 +137,20 @@ MCP tool call (option 1 — `record` a new decision):
 }
 ```
 
-MCP tool call (option 2 — `supersede`):
+MCP tool call (option 2 — `supersede`). `id` (or its alias `supersedesId`)
+names the **existing** record being retired; the replacement is built from
+`title`/`decision`/`context`. The response returns
+`{ supersededMemoryId, replacementMemoryId }`:
 
 ```json
 {
   "tool": "engram.coding_decision",
   "subcommand": "supersede",
   "sessionKey": "string",
-  "id": "ADR-0008",
+  "id": "decision-a1b2c3",
   "title": "Use native bindings after all",
-  "status": "accepted",
   "context": "Benchmarks showed parsing was the bottleneck.",
-  "decision": "Switch to native node-tree-sitter.",
-  "supersedesId": "ADR-0007"
+  "decision": "Switch to native node-tree-sitter."
 }
 ```
 
