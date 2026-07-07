@@ -5,6 +5,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import { resolveMemoryLifecycleCapabilities } from "./capabilities.js";
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
@@ -8187,7 +8188,7 @@ export class EngramAccessService {
 
   get embeddingLookupFactoryRef(): (storage: import("./storage.js").StorageManager) => SemanticDedupLookup | undefined {
     return (storage) => {
-      if (!this.orchestrator.config.embeddingFallbackEnabled) return undefined;
+      if (!resolveMemoryLifecycleCapabilities(this.orchestrator.config).embeddingFallback) return undefined;
       return async (content: string, limit: number) => {
         try {
           return await this.orchestrator.semanticDedupLookup(content, limit, storage);
