@@ -61,12 +61,11 @@ issue owns one (`related-work.md`). Keeping the rest of the skeleton in a single
 5. **Label `claude -p` honestly.** A `claude -p` number is "Opus 4.8 via Claude
    Code," not a raw-API frontier number. Keep `tier: "frontier"`; carry the
    label in the artifact `note`/model metadata. Do not invent a new tier value.
-6. **Soften the known wrong claim.** `docs/benchmarks/memcorrect.md` currently
-   says LongMemEval's knowledge-update category is "near ceiling." That is
-   fact-checkably wrong and is the single most checkable claim in the doc. The
-   §4/§8 TODOs flag it; the eventual draft must read: *"KU only checks
-   instantaneous answer correctness, not correction durability/collateral/
-   scope."*
+6. **Keep the corrected KU framing.** `docs/benchmarks/memcorrect.md` already
+   reads *"the strongest systems score roughly 70–90%, not ceiling"* (the old
+   "near ceiling" wording was removed before this skeleton landed). The §4
+   draft must preserve this corrected framing; do not re-introduce the old
+   wording.
 
 ## TODO conventions
 

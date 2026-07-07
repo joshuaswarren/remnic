@@ -160,11 +160,11 @@ new ones.
 
 - `TODO(#1584)`: lift the metric table and the four correction-event shapes +
   anti-event taxonomy from `docs/benchmarks/memcorrect.md`.
-- `TODO(#1584)` **[known wrong claim — must soften]**: `docs/benchmarks/
-  memcorrect.md:8` says LongMemEval's knowledge-update category is "near
-  ceiling." Replace with: *"KU only checks instantaneous answer correctness,
-  not correction durability / collateral / scope."* Do not propagate the old
-  wording into the paper.
+- `TODO(#1584)` **[claim already corrected — keep guard]**: `docs/benchmarks/
+  memcorrect.md` no longer says LongMemEval KU is "near ceiling"; it now reads
+  *"the strongest systems score roughly 70–90%, not ceiling"* and frames KU as
+  answer-time-only. The §4 draft must preserve this corrected framing; do not
+  re-introduce the old wording.
 - `TODO(#1727)`: name the third-party adapters scored (Mem0 → Zep → Letta
   order) once implemented; until then §4 describes the *contract*, not a
   comparison.
