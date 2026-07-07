@@ -1200,7 +1200,7 @@ test("parseBenchArgs rejects unknown providers across all three flags with liste
         "--model",
         "m",
       ]),
-    /ERROR: --provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli"\./,
+    /ERROR: --provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./,
   );
   assert.throws(
     () =>
@@ -1212,7 +1212,7 @@ test("parseBenchArgs rejects unknown providers across all three flags with liste
         "--system-model",
         "m",
       ]),
-    /ERROR: --system-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli"\./,
+    /ERROR: --system-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./,
   );
   assert.throws(
     () =>
@@ -1224,7 +1224,7 @@ test("parseBenchArgs rejects unknown providers across all three flags with liste
         "--judge-model",
         "m",
       ]),
-    /ERROR: --judge-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli"\./,
+    /ERROR: --judge-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./,
   );
 });
 
