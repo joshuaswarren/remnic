@@ -51,13 +51,14 @@ test("mem0 oss: ingestTurn POSTs to /memories with user_id and auth", async () =
     mode: "oss",
     baseUrl: "http://localhost:8888",
     apiKey: "test-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   assert.equal(adapter.isConfigured(), true);
   await adapter.ingestTurn("session-1", "user", "I love oat-milk lattes.", "2026-07-07T00:00:00Z");
 
   ff.assertRequest("POST", "/memories", (req) => {
-    assert.equal(req.headers["Authorization"], "Bearer test-key");
+    assert.equal(req.headers["X-API-Key"], "test-key");
     assert.deepEqual(req.body, {
       messages: [{ role: "user", content: "I love oat-milk lattes." }],
       user_id: "memcorrect:session-1",
@@ -79,13 +80,14 @@ test("mem0 oss: recall POSTs to /search and returns memory strings", async () =>
     mode: "oss",
     baseUrl: "http://localhost:8888",
     apiKey: "test-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   const recalled = await adapter.recall("coffee preference", "s1");
   assert.deepEqual(recalled, ["User loves oat-milk lattes.", "User works at Acme Corp."]);
 
   ff.assertRequest("POST", "/search", (req) => {
-    assert.equal(req.headers["Authorization"], "Bearer test-key");
+    assert.equal(req.headers["X-API-Key"], "test-key");
     assert.deepEqual(req.body, {
       query: "coffee preference",
       filters: { user_id: "memcorrect:s1" },
@@ -105,6 +107,7 @@ test("mem0 oss: recall handles {results: [...]} wrapper", async () => {
     mode: "oss",
     baseUrl: "http://localhost:8888",
     apiKey: "test-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   const recalled = await adapter.recall("q", "s1");
@@ -119,6 +122,7 @@ test("mem0 oss: recall returns [] on empty results", async () => {
     mode: "oss",
     baseUrl: "http://localhost:8888",
     apiKey: "test-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   const recalled = await adapter.recall("q", "s1");
@@ -133,6 +137,7 @@ test("mem0 oss: correct() ingests a user turn", async () => {
     mode: "oss",
     baseUrl: "http://localhost:8888",
     apiKey: "test-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   await adapter.correct("Correction: coffee is now black coffee.", "s1");
@@ -154,6 +159,7 @@ test("mem0 oss: reset() DELETEs each ingested session's user_id", async () => {
     mode: "oss",
     baseUrl: "http://localhost:8888",
     apiKey: "test-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   // Ingest under two sessions so reset has something to clean.
@@ -183,6 +189,7 @@ test("mem0 oss: reset() with no prior ingest is a no-op", async () => {
     mode: "oss",
     baseUrl: "http://localhost:8888",
     apiKey: "test-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   await adapter.reset();
@@ -195,6 +202,7 @@ test("mem0 oss: runMaintenance is a no-op (no requests)", async () => {
     mode: "oss",
     baseUrl: "http://localhost:8888",
     apiKey: "test-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   await adapter.runMaintenance();
@@ -209,6 +217,7 @@ test("mem0 oss: non-2xx throws HttpError with body excerpt", async () => {
     mode: "oss",
     baseUrl: "http://localhost:8888",
     apiKey: "test-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   await assert.rejects(
@@ -238,6 +247,7 @@ test("mem0 hosted: uses Token auth and V3 paths", async () => {
   const adapter = new Mem0MemCorrectAdapter({
     mode: "hosted",
     apiKey: "hosted-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
     pollIntervalMs: 1, // fast poll for test
   });
@@ -265,6 +275,7 @@ test("mem0 hosted: search uses V3 endpoint with filters", async () => {
   const adapter = new Mem0MemCorrectAdapter({
     mode: "hosted",
     apiKey: "hosted-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   const recalled = await adapter.recall("query", "s1");
@@ -294,6 +305,7 @@ test("mem0 hosted: async add polls until SUCCEEDED", async () => {
   const adapter = new Mem0MemCorrectAdapter({
     mode: "hosted",
     apiKey: "hosted-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
     pollIntervalMs: 1,
   });
@@ -316,6 +328,7 @@ test("mem0 hosted: FAILED event throws", async () => {
   const adapter = new Mem0MemCorrectAdapter({
     mode: "hosted",
     apiKey: "hosted-key",
+    userIdPrefix: "memcorrect",
     fetch: ff.fetch,
     pollIntervalMs: 1,
   });
@@ -335,4 +348,93 @@ test("mem0: mode defaults to hosted without baseUrl, oss with custom baseUrl", (
   assert.equal(b.label, "mem0-oss");
   const c = new Mem0MemCorrectAdapter({ apiKey: "k", mode: "hosted", baseUrl: "http://x" });
   assert.equal(c.label, "mem0-hosted");
+});
+
+// ---------------------------------------------------------------------------
+// #1747 review-round-2 hardening: reset failure handling, X-API-Key, ns isolation
+// ---------------------------------------------------------------------------
+
+test("mem0 oss: reset() rethrows real delete failures and retains the session", async () => {
+  const ff = new FakeFetchBuilder()
+    .when("POST", "/memories", { status: 200, body: [] })
+    .when("DELETE", "/memories", { status: 500, body: { detail: "server error" } })
+    .build();
+  const adapter = new Mem0MemCorrectAdapter({
+    mode: "oss",
+    baseUrl: "http://localhost:8888",
+    apiKey: "test-key",
+    userIdPrefix: "memcorrect",
+    fetch: ff.fetch,
+  });
+  await adapter.ingestTurn("s1", "user", "fact one", "2026-07-07T00:00:00Z");
+  await assert.rejects(
+    () => adapter.reset(),
+    (err: unknown) => {
+      assert.match((err as Error).message, /Mem0 reset could not clean/);
+      return true;
+    },
+  );
+  // The failed session is retained in knownSessions — a second reset retries it
+  // (proving reset did not silently drop the id on a real failure).
+  await assert.rejects(() => adapter.reset(), /could not clean/);
+  assert.equal(ff.countRequests("DELETE", "/memories"), 2, "failed id retried");
+});
+
+test("mem0 oss: reset() swallows not-found (404) deletes without throwing", async () => {
+  const ff = new FakeFetchBuilder()
+    .when("POST", "/memories", { status: 200, body: [] })
+    .when("DELETE", "/memories", { status: 404, body: { detail: "not found" } })
+    .build();
+  const adapter = new Mem0MemCorrectAdapter({
+    mode: "oss",
+    baseUrl: "http://localhost:8888",
+    apiKey: "test-key",
+    userIdPrefix: "memcorrect",
+    fetch: ff.fetch,
+  });
+  await adapter.ingestTurn("s1", "user", "fact one", "2026-07-07T00:00:00Z");
+  // A not-found delete is a harmless no-op (session already absent).
+  await adapter.reset();
+  assert.equal(ff.countRequests("DELETE", "/memories"), 1);
+});
+
+test("mem0 oss: ossAuthMode 'bearer' sends Authorization: Bearer for JWT auth", async () => {
+  const ff = new FakeFetchBuilder()
+    .when("POST", "/memories", { status: 200, body: [] })
+    .build();
+  const adapter = new Mem0MemCorrectAdapter({
+    mode: "oss",
+    baseUrl: "http://localhost:8888",
+    apiKey: "jwt-token",
+    userIdPrefix: "memcorrect",
+    ossAuthMode: "bearer",
+    fetch: ff.fetch,
+  });
+  await adapter.ingestTurn("s1", "user", "hi", "2026-07-07T00:00:00Z");
+  ff.assertRequest("POST", "/memories", (req) => {
+    assert.equal(req.headers["Authorization"], "Bearer jwt-token");
+    assert.equal(req.headers["X-API-Key"], undefined);
+  });
+});
+
+test("mem0: default userIdPrefix is unique per instance (cross-process isolation)", async () => {
+  const buildAndCapture = async (): Promise<string> => {
+    const ff = new FakeFetchBuilder()
+      .when("POST", "/memories", { status: 200, body: [] })
+      .build();
+    const adapter = new Mem0MemCorrectAdapter({
+      mode: "oss",
+      baseUrl: "http://localhost:8888",
+      apiKey: "k",
+      fetch: ff.fetch,
+    });
+    await adapter.ingestTurn("s1", "user", "hi", "2026-07-07T00:00:00Z");
+    return (ff.requests[0].body as { user_id: string }).user_id;
+  };
+  const idA = await buildAndCapture();
+  const idB = await buildAndCapture();
+  // Default prefix is namespaced (not the bare "memcorrect" prior processes reused).
+  assert.ok(idA.startsWith("memcorrect-"), `namespaced prefix: ${idA}`);
+  assert.ok(idB.startsWith("memcorrect-"), `namespaced prefix: ${idB}`);
+  assert.notEqual(idA, idB, "two instances get distinct remote namespaces");
 });

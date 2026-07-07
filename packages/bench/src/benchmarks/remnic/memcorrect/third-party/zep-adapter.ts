@@ -27,8 +27,11 @@ import type { MemCorrectSystemAdapter } from "../types.js";
 import {
   delay,
   httpJson,
+  isNotFoundDelete,
   requireCredentials,
+  resetTrackedIds,
   resolveFetch,
+  uniqueRunSuffix,
   type FetchLike,
   type ThirdPartyAdapterConfig,
 } from "./shared.js";
@@ -37,10 +40,13 @@ export interface ZepAdapterConfig extends ThirdPartyAdapterConfig {
   /** Prefix prepended to sessionKeys to namespace Zep session IDs. */
   sessionPrefix?: string;
   /**
-   * Milliseconds to wait after ingest before a probe, so Zep's asynchronous
-   * graph processing has time to settle. Zep documentation notes ingestion
-   * "can take a few minutes"; for benchmark reproducibility this is a tunable
-   * settle delay. Default 0 (runMaintenance provides the settle point).
+   * Milliseconds to wait for Zep's asynchronous graph processing to extract
+   * facts after an ingest before a scored probe reads them. Applied at the
+   * ingest→probe boundary (the MemCorrect runner records the baseline recall
+   * right after establishing turns and the uptake recall right after correct(),
+   * both before runMaintenance), and again in runMaintenance. Zep docs note
+   * ingestion "can take a few minutes"; this tunable makes scored reads
+   * reproducible. Default 0 (best-effort; raise for real Zep runs).
    */
   settleMs?: number;
 }
@@ -69,12 +75,17 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
   private readonly timeoutMs: number | undefined;
   /** Sessions we have ensured exist, to avoid redundant POST /sessions calls. */
   private readonly knownSessions = new Set<string>();
+  /** True when turns have been ingested since the last settle, so recall() can
+   * wait for Zep's async graph pipeline before a scored read. */
+  private pendingIngest = false;
 
   constructor(config: ZepAdapterConfig = {}) {
     this.baseUrl =
       config.baseUrl?.replace(/\/+$/, "") ?? "https://api.getzep.com/api/v2";
     this.apiKey = config.apiKey;
-    this.sessionPrefix = config.sessionPrefix ?? "memcorrect";
+    // Default to a unique per-instance prefix so independent bench runs don't
+    // share a remote namespace (reset() only deletes ids tracked in-process).
+    this.sessionPrefix = config.sessionPrefix ?? `memcorrect-${uniqueRunSuffix()}`;
     this.settleMs = config.settleMs ?? 0;
     this.fetchImpl = resolveFetch(config.fetch);
     this.timeoutMs = config.timeoutMs;
@@ -103,7 +114,12 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
     // messages but NOT the user's knowledge graph (per Zep docs), and we now
     // search facts via the user's graph — so the user must be deleted too or
     // extracted facts survive reset and contaminate later scenarios.
-    for (const sessionId of this.knownSessions) {
+    //
+    // Only HTTP not-found (404/422) is swallowed. Real failures (auth, server
+    // error, timeout) retain the id for the next reset() retry and rethrow, so
+    // a broken clean-slate is surfaced rather than silently scoring against
+    // stale graph data.
+    await resetTrackedIds("Zep", this.knownSessions, async (sessionId) => {
       try {
         await httpJson(
           this.fetchImpl,
@@ -111,21 +127,20 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
           `${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}`,
           { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
         );
-      } catch {
-        // Session may not exist yet (first reset) — swallow.
+      } catch (err) {
+        // Session may not exist yet (first reset) — not-found is fine.
+        if (!isNotFoundDelete(err)) throw err;
       }
-      try {
-        await httpJson(
-          this.fetchImpl,
-          "DELETE",
-          `${this.baseUrl}/users/${encodeURIComponent(sessionId)}`,
-          { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
-        );
-      } catch {
-        // User may not exist — swallow.
-      }
-    }
-    this.knownSessions.clear();
+      // User delete removes the knowledge graph. not-found is fine (already
+      // gone); a real failure propagates so resetTrackedIds retains the id.
+      await httpJson(
+        this.fetchImpl,
+        "DELETE",
+        `${this.baseUrl}/users/${encodeURIComponent(sessionId)}`,
+        { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
+      );
+    });
+    this.pendingIngest = false;
   }
 
   /** Ensure the Zep session (and its user) exist before adding memory. */
@@ -181,10 +196,23 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
         timeoutMs: this.timeoutMs,
       },
     );
+    // Zep extracts graph facts asynchronously; mark that a scored recall must
+    // settle before reading.
+    this.pendingIngest = true;
   }
 
   async recall(query: string, sessionKey: string): Promise<string[]> {
     this.ensureReady();
+    // If turns were ingested since the last settle, wait for Zep's async graph
+    // pipeline to extract facts before reading. The MemCorrect runner records
+    // the baseline recall right after establishing turns and the uptake recall
+    // right after correct() — both before runMaintenance — so settling only in
+    // runMaintenance reads a stale/empty graph. Zep documents ingestion can
+    // take a few minutes (https://help.getzep.com/v2/memory/memory-api).
+    if (this.pendingIngest && this.settleMs > 0) {
+      await delay(this.settleMs);
+      this.pendingIngest = false;
+    }
     const sessionId = this.sessionIdFor(sessionKey);
     await this.ensureSession(sessionId);
     // Query-driven recall via Zep's graph search. The MemCorrect runner passes
@@ -236,8 +264,9 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
     // delay gives the pipeline time to extract facts before the next probe.
     // A no-op is allowed by the MemCorrect protocol; this delay is a
     // best-effort settle for reproducibility.
-    if (this.settleMs > 0) {
+    if (this.settleMs > 0 && this.pendingIngest) {
       await delay(this.settleMs);
+      this.pendingIngest = false;
     }
   }
 }

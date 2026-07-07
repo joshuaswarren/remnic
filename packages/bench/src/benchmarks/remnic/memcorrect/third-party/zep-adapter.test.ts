@@ -38,6 +38,7 @@ test("zep: ingestTurn creates session then adds memory", async () => {
   const adapter = new ZepMemCorrectAdapter({
     apiKey: "zep-key",
     baseUrl: "https://api.getzep.com/api/v2",
+    sessionPrefix: "memcorrect",
     fetch: ff.fetch,
   });
   await adapter.ingestTurn("s1", "user", "I prefer dark roast.", "2026-07-07T00:00:00Z");
@@ -94,7 +95,7 @@ test("zep: recall POSTs graph search with the probe query", async () => {
       },
     })
     .build();
-  const adapter = new ZepMemCorrectAdapter({ apiKey: "k", fetch: ff.fetch });
+  const adapter = new ZepMemCorrectAdapter({ apiKey: "k", sessionPrefix: "memcorrect", fetch: ff.fetch });
   const recalled = await adapter.recall("coffee", "s1");
   assert.deepEqual(recalled, [
     "User prefers dark roast coffee.",
@@ -191,4 +192,73 @@ test("zep: assistant role maps to assistant role_type", async () => {
   ff.assertRequest("POST", "/memory", (req) => {
     assert.equal(req.body.messages[0].role_type, "assistant");
   });
+});
+
+// ---------------------------------------------------------------------------
+// #1747 review-round-2 hardening: settle-before-recall, reset failure, ns isolation
+// ---------------------------------------------------------------------------
+
+test("zep: recall settles after ingest when settleMs > 0", async () => {
+  const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
+    .when("POST", "/sessions", { status: 200, body: {} })
+    .when("POST", "/memory", { status: 200, body: {} })
+    .when("POST", "/graph/search", { status: 200, body: { edges: [] } })
+    .build();
+  const adapter = new ZepMemCorrectAdapter({
+    apiKey: "k",
+    sessionPrefix: "memcorrect",
+    settleMs: 30,
+    fetch: ff.fetch,
+  });
+  await adapter.ingestTurn("s1", "user", "fact", "2026-07-07T00:00:00Z");
+  const t0 = Date.now();
+  await adapter.recall("q", "s1"); // must settle ~30ms after the ingest
+  assert.ok(Date.now() - t0 >= 25, `recall waited for settle (elapsed=${Date.now() - t0}ms)`);
+  // A second recall with no intervening ingest must NOT settle again.
+  const t1 = Date.now();
+  await adapter.recall("q2", "s1");
+  assert.ok(Date.now() - t1 < 20, `second recall did not re-settle (elapsed=${Date.now() - t1}ms)`);
+});
+
+test("zep: reset() rethrows when user delete fails (graph data may remain)", async () => {
+  const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
+    .when("POST", "/sessions", { status: 200, body: {} })
+    .when("POST", "/memory", { status: 200, body: {} })
+    .when("DELETE", "/sessions/", { status: 204 })
+    .when("DELETE", "/users/", { status: 500, body: { detail: "server error" } })
+    .build();
+  const adapter = new ZepMemCorrectAdapter({
+    apiKey: "k",
+    sessionPrefix: "memcorrect",
+    fetch: ff.fetch,
+  });
+  await adapter.ingestTurn("s1", "user", "fact", "2026-07-07T00:00:00Z");
+  // Session delete succeeds (204) but the user graph delete fails (500); the
+  // knowledge graph may remain, so reset must surface this rather than pretend.
+  await assert.rejects(() => adapter.reset(), /Zep reset could not clean/);
+  assert.equal(ff.countRequests("DELETE", "/users/"), 1);
+  // The session is retained for retry.
+  await assert.rejects(() => adapter.reset(), /Zep reset could not clean/);
+  assert.equal(ff.countRequests("DELETE", "/users/"), 2, "failed id retried");
+});
+
+test("zep: default sessionPrefix is unique per instance (cross-process isolation)", async () => {
+  const captureSessionId = async (): Promise<string> => {
+    const ff = new FakeFetchBuilder()
+      .when("POST", "/users", { status: 201, body: {} })
+      .when("POST", "/sessions", { status: 200, body: {} })
+      .when("POST", "/memory", { status: 200, body: {} })
+      .build();
+    const adapter = new ZepMemCorrectAdapter({ apiKey: "k", fetch: ff.fetch });
+    await adapter.ingestTurn("s1", "user", "hi", "2026-07-07T00:00:00Z");
+    return (ff.requests.find((r) => r.method === "POST" && r.url.includes("/sessions"))!
+      .body as { session_id: string }).session_id;
+  };
+  const idA = await captureSessionId();
+  const idB = await captureSessionId();
+  assert.ok(idA.startsWith("memcorrect-"), `namespaced prefix: ${idA}`);
+  assert.ok(idB.startsWith("memcorrect-"), `namespaced prefix: ${idB}`);
+  assert.notEqual(idA, idB, "two instances get distinct remote namespaces");
 });

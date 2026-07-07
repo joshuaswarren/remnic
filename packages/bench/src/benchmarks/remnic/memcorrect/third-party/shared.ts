@@ -187,5 +187,78 @@ export function delay(ms: number): Promise<void> {
   return promise;
 }
 
+/** Per-instance counter for unique run suffixes (cross-process isolation). */
+let runSuffixCounter = 0;
+
+/**
+ * Unique-per-instance suffix so independent benchmark runs — or two adapter
+ * instances in one process — do not share a remote namespace. A fresh process
+ * starts with no knowledge of prior sessions, so a fixed default prefix would
+ * reuse deterministic ids and read stale remote data on the first probe. The
+ * unique suffix isolates each run; pass an explicit `userIdPrefix` /
+ * `sessionPrefix` to pin ids for reproducibility or manual cleanup.
+ */
+export function uniqueRunSuffix(): string {
+  runSuffixCounter += 1;
+  const pid =
+    typeof process !== "undefined" && typeof process.pid === "number"
+      ? process.pid
+      : 0;
+  return `${pid.toString(36)}-${Date.now().toString(36)}-${runSuffixCounter.toString(36)}`;
+}
+
+/**
+ * Classify an error thrown during a reset() DELETE. Returns true only when the
+ * error indicates the remote resource was already absent (HTTP 404 / 422), so a
+ * not-found delete is a harmless no-op. Real failures (auth, server error,
+ * timeout) return false so the caller retains the id and can signal that the
+ * clean-slate contract was not met.
+ */
+export function isNotFoundDelete(err: unknown): boolean {
+  return (
+    err instanceof HttpError && (err.status === 404 || err.status === 422)
+  );
+}
+
+/**
+ * Run a best-effort reset over a tracked set of ids: call `deleteFn` for each,
+ * clear only ids whose delete succeeded or was not-found, and retain ids whose
+ * delete failed with a real error (auth / server / timeout) for the next
+ * reset() retry. If any id could not be cleaned, rethrow an aggregate error so
+ * the bench harness knows per-scenario isolation may be broken rather than
+ * silently producing corrupt scores.
+ *
+ * `system` labels the aggregate error; `ids` is the live tracked set, mutated
+ * in place. `deleteFn` should perform the remote delete and throw `HttpError`
+ * (or any Error) on non-2xx / network failure; a not-found `HttpError` is
+ * treated as success.
+ */
+export async function resetTrackedIds(
+  system: string,
+  ids: Set<string>,
+  deleteFn: (id: string) => Promise<void>,
+): Promise<void> {
+  const snapshot = [...ids];
+  const failed: string[] = [];
+  for (const id of snapshot) {
+    try {
+      await deleteFn(id);
+      ids.delete(id);
+    } catch (err) {
+      if (isNotFoundDelete(err)) {
+        ids.delete(id);
+      } else {
+        failed.push(id);
+      }
+    }
+  }
+  if (failed.length > 0) {
+    throw new Error(
+      `${system} reset could not clean ${failed.length} session(s): ${failed.join(", ")}. ` +
+        `Remote data may remain; the failed ids are retained for the next reset() retry.`,
+    );
+  }
+}
+
 /** Re-export the adapter contract for implementers in this directory. */
 export type { MemCorrectSystemAdapter };

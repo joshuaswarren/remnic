@@ -29,8 +29,11 @@ import type { MemCorrectSystemAdapter } from "../types.js";
 import {
   delay,
   httpJson,
+  isNotFoundDelete,
   requireCredentials,
+  resetTrackedIds,
   resolveFetch,
+  uniqueRunSuffix,
   type FetchLike,
   type ThirdPartyAdapterConfig,
 } from "./shared.js";
@@ -46,6 +49,15 @@ export interface Mem0AdapterConfig extends ThirdPartyAdapterConfig {
   mode?: "oss" | "hosted";
   /** Prefix prepended to sessionKeys to namespace Mem0 user_ids. */
   userIdPrefix?: string;
+  /**
+   * OSS authentication header mode.
+   * - "x-api-key" (default): send the API key as X-API-Key. Mem0's self-hosted
+   *   REST auth uses X-API-Key for per-user/API keys (m0sk_…, ADMIN_API_KEY);
+   *   Authorization: Bearer is reserved for dashboard JWTs
+   *   (https://docs.mem0.ai/open-source/features/rest-api#authentication).
+   * - "bearer": send Authorization: Bearer for operators who deploy JWT auth.
+   */
+  ossAuthMode?: "x-api-key" | "bearer";
   /** Hosted-mode: interval between event-status polls (ms). */
   pollIntervalMs?: number;
   /** Hosted-mode: maximum poll attempts before timing out. */
@@ -87,6 +99,7 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
   private readonly baseUrl: string;
   private readonly apiKey: string | undefined;
   private readonly userIdPrefix: string;
+  private readonly ossAuthMode: "x-api-key" | "bearer";
   private readonly pollIntervalMs: number;
   private readonly maxPolls: number;
   private readonly fetchImpl: FetchLike;
@@ -104,7 +117,11 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
       config.baseUrl?.replace(/\/+$/, "") ??
       (this.mode === "hosted" ? "https://api.mem0.ai" : "");
     this.apiKey = config.apiKey;
-    this.userIdPrefix = config.userIdPrefix ?? "memcorrect";
+    // Default to a unique per-instance prefix so independent bench runs don't
+    // share a remote namespace. reset() only deletes ids it tracked in-process;
+    // a fixed prefix reused by a fresh process would read stale remote data.
+    this.userIdPrefix = config.userIdPrefix ?? `memcorrect-${uniqueRunSuffix()}`;
+    this.ossAuthMode = config.ossAuthMode ?? "x-api-key";
     this.pollIntervalMs = config.pollIntervalMs ?? 500;
     this.maxPolls = config.maxPolls ?? 120;
     this.fetchImpl = resolveFetch(config.fetch);
@@ -132,12 +149,17 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
   }
 
   private authHeaders(): Record<string, string> {
-    // Hosted uses Token auth; OSS uses Bearer (JWT) or X-API-Key. Both accept
-    // Authorization: Bearer for per-user keys, and Token for hosted.
     if (this.mode === "hosted") {
+      // Hosted platform uses Token auth.
       return { Authorization: `Token ${this.apiKey}` };
     }
-    return { Authorization: `Bearer ${this.apiKey}` };
+    // OSS REST auth: X-API-Key for per-user/API keys (default). Bearer is
+    // reserved for dashboard JWTs — available via ossAuthMode: "bearer".
+    // https://docs.mem0.ai/open-source/features/rest-api#authentication
+    if (this.ossAuthMode === "bearer") {
+      return { Authorization: `Bearer ${this.apiKey}` };
+    }
+    return { "X-API-Key": this.apiKey as string };
   }
   async reset(): Promise<void> {
     this.ensureReady();
@@ -145,32 +167,33 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
     // matches exact user_id — the prefix alone does NOT match session-scoped
     // ids like "memcorrect:s1". Tracking known sessions ensures every prior
     // scenario's memories are cleared before the next scenario runs.
-    for (const sessionKey of this.knownSessions) {
+    //
+    // Only HTTP not-found (404/422) is swallowed: a session with no memories
+    // yet is a harmless no-op. Real failures (auth, server error, timeout) are
+    // retained for the next reset() retry and rethrown so the bench harness
+    // knows per-scenario isolation may be broken rather than silently scoring
+    // against stale remote data.
+    await resetTrackedIds("Mem0", this.knownSessions, async (sessionKey) => {
       const userId = this.userIdFor(sessionKey);
-      try {
-        if (this.mode === "oss") {
-          // OSS: DELETE /memories takes user_id as a query parameter, not body.
-          await httpJson(
-            this.fetchImpl,
-            "DELETE",
-            `${this.baseUrl}/memories?user_id=${encodeURIComponent(userId)}`,
-            { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
-          );
-        } else {
-          // Hosted: the platform delete API is DELETE /v1/memories/ with
-          // identifier filters as query parameters.
-          await httpJson(
-            this.fetchImpl,
-            "DELETE",
-            `${this.baseUrl}/v1/memories/?user_id=${encodeURIComponent(userId)}`,
-            { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
-          );
-        }
-      } catch {
-        // Session may have no memories yet — swallow.
+      if (this.mode === "oss") {
+        // OSS: DELETE /memories takes user_id as a query parameter, not body.
+        await httpJson(
+          this.fetchImpl,
+          "DELETE",
+          `${this.baseUrl}/memories?user_id=${encodeURIComponent(userId)}`,
+          { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
+        );
+      } else {
+        // Hosted: the platform delete API is DELETE /v1/memories/ with
+        // identifier filters as query parameters.
+        await httpJson(
+          this.fetchImpl,
+          "DELETE",
+          `${this.baseUrl}/v1/memories/?user_id=${encodeURIComponent(userId)}`,
+          { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
+        );
       }
-    }
-    this.knownSessions.clear();
+    });
   }
 
   async ingestTurn(

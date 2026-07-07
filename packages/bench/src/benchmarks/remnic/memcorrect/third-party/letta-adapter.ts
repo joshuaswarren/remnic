@@ -25,6 +25,7 @@ import type { MemCorrectSystemAdapter } from "../types.js";
 import {
   httpJson,
   requireCredentials,
+  resetTrackedIds,
   resolveFetch,
   type FetchLike,
   type ThirdPartyAdapterConfig,
@@ -110,18 +111,22 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
   async reset(): Promise<void> {
     this.ensureReady();
     // Destroy every agent created during this bench process for a clean slate.
-    for (const agentId of this.agentsBySession.values()) {
-      try {
+    // Only HTTP not-found (404/422) is swallowed — an already-deleted agent is
+    // harmless. Real failures (auth, server error, timeout) retain the agent id
+    // for the next reset() retry and rethrow, so a broken clean-slate surfaces
+    // rather than silently leaking stateful agents across scenarios.
+    await resetTrackedIds(
+      "Letta",
+      new Set(this.agentsBySession.values()),
+      async (agentId) => {
         await httpJson(
           this.fetchImpl,
           "DELETE",
           `${this.baseUrl}/v1/agents/${encodeURIComponent(agentId)}`,
           { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
         );
-      } catch {
-        // Agent may not exist — swallow.
-      }
-    }
+      },
+    );
     this.agentsBySession.clear();
   }
 
