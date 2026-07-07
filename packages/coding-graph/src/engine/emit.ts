@@ -369,7 +369,7 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
       if (argsNode) {
         handler = extractHandlerFromArgs(argsNode);
       }
-      if (verb && pathTemplate) {
+      if (verb && pathTemplate && handler) {
         routes.push({
           verb,
           pathTemplate,

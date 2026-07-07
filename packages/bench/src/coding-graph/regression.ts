@@ -157,6 +157,23 @@ export function checkCodingGraphRegression(
     };
   }
 
+  // Field-presence guard: a corrupt/partial v2 report may carry
+  // schemaVersion 2 yet lack a v2-only field (a hand-edited or truncated
+  // JSON). extractMetrics dereferences these fields; without this guard
+  // it throws an uncaught TypeError instead of a structured gate failure
+  // (cursor #1688 review: 'v2 report crashes regression gate').
+  if (report.incrementalModifiedUpdate == null || report.incrementalUpdate == null) {
+    return {
+      passed: false,
+      regressions: [],
+      summary:
+        "Report claims schemaVersion " + report.schemaVersion +
+        " but is missing a required metric field (incrementalUpdate or " +
+        "incrementalModifiedUpdate) — the report is incomplete or corrupt. " +
+        "Regenerate it (#1688).",
+    };
+  }
+
   // Guard (#1688 item 2): a timing comparison is only meaningful on the
   // same machine class. A baseline carries a fingerprint (arch/platform/
   // nodeVersion/cpuModel/cores); a report from a different machine class
@@ -181,23 +198,6 @@ export function checkCodingGraphRegression(
         baseline: baseline.machine,
         differingFields: mismatch.differingFields,
       },
-    };
-  }
-
-  // Field-presence guard: a corrupt/partial v2 report may carry
-  // schemaVersion 2 yet lack a v2-only field (a hand-edited or truncated
-  // JSON). extractMetrics dereferences these fields; without this guard
-  // it throws an uncaught TypeError instead of a structured gate failure
-  // (cursor #1688 review: 'v2 report crashes regression gate').
-  if (report.incrementalModifiedUpdate == null || report.incrementalUpdate == null) {
-    return {
-      passed: false,
-      regressions: [],
-      summary:
-        "Report claims schemaVersion " + report.schemaVersion +
-        " but is missing a required metric field (incrementalUpdate or " +
-        "incrementalModifiedUpdate) — the report is incomplete or corrupt. " +
-        "Regenerate it (#1688).",
     };
   }
 

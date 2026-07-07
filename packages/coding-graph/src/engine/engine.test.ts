@@ -1232,6 +1232,36 @@ test("1659-5b: route handler after a trailing comment is still captured (not 'an
   );
   await engine.dispose();
 });
+test("1688-route: cache.get('user') does NOT produce a route (empty-handler skip)", async () => {
+  // The unified route matcher captures any call_expression where the method
+  // name matches a verb (get/post/...) and the first arg is a string. Without
+  // the empty-handler skip, ordinary code like cache.get("user") matches and
+  // emits a route with handlerQualifiedName: "", which GraphStore rejects
+  // (chatgpt-codex-connector #1688 review: 'Require a handler before
+  // matching JS routes'). Routes without a real handler are now skipped.
+  const engine = createCodingGraphEngine();
+  const code = [
+    "const cache = new Map();",
+    'cache.get("user");',
+    'cache.delete("session");',
+    'cache.set("key", "value");',
+    "",
+    "function getUsers(req, res) { res.json([]); }",
+    'app.get("/users", getUsers);',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/app.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  // The real route must still be captured.
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should still capture the real /users route");
+  // Non-route calls must NOT produce routes.
+  const cacheRoutes = routes.filter((r) => r.pathTemplate === "user" || r.pathTemplate === "session" || r.pathTemplate === "key");
+  assert.equal(cacheRoutes.length, 0, "cache.get/delete/set must NOT produce routes");
+  await engine.dispose();
+});
+
 
 test("1659-6: Python relative import from .models captures module", async () => {
   const engine = createCodingGraphEngine();

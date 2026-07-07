@@ -832,3 +832,24 @@ test("guard ordering: corrupt v2 report missing a metric field fails instead of 
   assert.equal(result.skipped, undefined);
   assert.ok(result.summary.includes("missing"), "summary must explain the missing field");
 });
+test("guard ordering: corrupt v2 report on a DIFFERENT machine fails before the machine skip", () => {
+  // Before the field-presence-before-machine-fingerprint reorder, a corrupt
+  // v2 report (schema matches but incrementalModifiedUpdate is absent) on a
+  // different machine would hit the machine-fingerprint skip FIRST and
+  // return {passed:true, skipped:true} — silently passing a malformed
+  // artifact through cross-machine CI. The field-presence guard must run
+  // before the machine skip so corrupt reports always fail
+  // (chatgpt-codex-connector #1688 review: 'Validate corrupt reports
+  // before machine skips').
+  const corruptReport: CodingGraphBenchReport = {
+    ...reportWithMachine({ ...SAME_MACHINE, arch: "x64" }),
+    incrementalModifiedUpdate:
+      undefined as unknown as CodingGraphBenchReport["incrementalModifiedUpdate"],
+  };
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const result = checkCodingGraphRegression(corruptReport, baseline, 30);
+  assert.equal(result.passed, false, "corrupt report must fail even on a different machine");
+  assert.equal(result.skipped, undefined, "must NOT reach the machine skip — corrupt-report guard runs first");
+  assert.ok(result.summary.includes("missing"), "summary must explain the missing field, not the machine mismatch");
+});
+
