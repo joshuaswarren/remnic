@@ -451,6 +451,12 @@ export class EngramAccessHttpServer {
    * `cleanupExpiredChatSessions`.
    */
   private scheduleChatSessionTtlSweep(): void {
+    // Clear any prior handle so a second start() without an intervening
+    // stop() cannot leak a dangling setInterval (Kilo review thread).
+    if (this.chatTtlTimer) {
+      clearInterval(this.chatTtlTimer);
+      this.chatTtlTimer = null;
+    }
     const chat = this.service.configRef?.chat;
     if (!chat?.enabled) return;
     const ttlHours = typeof chat.sessionTtlHours === "number" && chat.sessionTtlHours > 0

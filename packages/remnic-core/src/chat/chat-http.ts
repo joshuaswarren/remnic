@@ -14,10 +14,13 @@
  *    (Thread 18) so session/engine/transcript construction is identical to
  *    the MCP surface, instead of re-implementing it.
  *  - Concurrent identical POSTs are coalesced by an in-flight dedup keyed on
- *    `chatSessionId + principal + message` so a double-submit processes
- *    exactly once (issue #1687 Thread 18 / #1685).
+ *    `memoryDir + chatSessionId + principal + message` so a double-submit
+ *    processes exactly once (issue #1687 Thread 18 / #1685). The memoryDir
+ *    scopes the key per store (AGENTS.md State Scoping).
  *  - The SSE stream subscribes to live transcript appends and pushes new
  *    entries to connected clients (issue #1685 item 2 / #1687 Thread 8).
+ *    Subscription is established before the transcript snapshot is read so no
+ *    concurrent append is missed (cursor Bugbot race fix).
  *
  * This module is imported by access-http.ts with thin route registration —
  * the god-file ratchet (#1520) tracks access-http.ts LOC.
@@ -27,8 +30,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
 
 import type { EngramAccessService } from "../access-service.js";
-import type { ChatConfig } from "./chat-types.js";
-import type { ChatTurnResult } from "./chat-types.js";
+import type { ChatConfig, ChatTranscriptEntry, ChatTurnResult } from "./chat-types.js";
 import { processChatMessage } from "./chat-factory.js";
 import {
   loadChatSession,
@@ -47,28 +49,31 @@ export interface ChatHttpHandlerOptions {
 // ---------------------------------------------------------------------------
 
 /**
- * Pending chat-message promises keyed by `chatSessionId:principal:messageHash`.
- * A concurrent identical POST joins the in-flight promise instead of
- * re-processing (no second LLM call, no second transcript append).  Entries
- * are always removed via `finally` so the map cannot leak across requests.
+ * Pending chat-message promises keyed by
+ * `memoryDir:chatSessionId:principal:messageHash`.  A concurrent identical
+ * POST joins the in-flight promise instead of re-processing (no second LLM
+ * call, no second transcript append).  Entries are always removed via
+ * `finally` so the map cannot leak across requests.
  *
- * Only requests targeting an existing `chatSessionId` are coalesced: when no
- * session id is supplied each request legitimately mints its own session, so
- * identical message bodies are genuinely distinct turns.
+ * The memoryDir is part of the key so two Remnic stores in one process
+ * cannot share a promise (AGENTS.md State Scoping).  Only requests targeting
+ * an existing `chatSessionId` are coalesced: when no session id is supplied
+ * each request legitimately mints its own session, so identical message
+ * bodies are genuinely distinct turns.
  */
 const chatInFlight = new Map<string, Promise<ChatTurnResult>>();
 
-function chatDedupFingerprint(chatSessionId: string, principal: string, message: string): string {
+function chatDedupFingerprint(memoryDir: string, chatSessionId: string, principal: string, message: string): string {
   // sha256 keeps the key bounded for long messages; the principal is part of
   // the key so two callers targeting the same session id can never share a
   // result (the wrong principal still independently hits access_denied).
   const messageHash = createHash("sha256").update(message, "utf8").digest("hex").slice(0, 32);
-  return `${chatSessionId}:${principal}:${messageHash}`;
+  return `${memoryDir}:${chatSessionId}:${principal}:${messageHash}`;
 }
 
 /**
  * Run `processChatMessage` with concurrent-identical-request coalescing.
- * Distinct messages (or distinct sessions / principals) never collide.
+ * Distinct messages (or distinct sessions / principals / stores) never collide.
  */
 function processChatMessageDedup(opts: {
   service: EngramAccessService;
@@ -83,7 +88,7 @@ function processChatMessageDedup(opts: {
     return processChatMessage(opts);
   }
   const principal = opts.principal ?? "_";
-  const fp = chatDedupFingerprint(opts.chatSessionId, principal, opts.message);
+  const fp = chatDedupFingerprint(opts.memoryDir, opts.chatSessionId, principal, opts.message);
   const existing = chatInFlight.get(fp);
   if (existing) return existing;
   const pending = processChatMessage(opts).finally(() => {
@@ -190,8 +195,14 @@ export async function handleChatMessage(
  * in `chat-session.ts`.  A heartbeat is emitted every 25 s so proxies do not
  * time out.  A `retry:` directive asks reconnecting clients to wait 5 s, and
  * because the initial burst always replays the full transcript (entries carry
- * a monotonic `seq`), clients dedupe on reconnect — the stream is
+ * a strictly-monotonic `seq`), clients dedupe on reconnect — the stream is
  * reconnect-safe.
+ *
+ * Race-free ordering (cursor Bugbot): the subscription is established BEFORE
+ * the transcript snapshot is read. Entries appended concurrently during the
+ * snapshot read are buffered, then drained after the burst (dropping any the
+ * burst already delivered, by `seq`), so no live append is ever missed and
+ * none is delivered twice.
  */
 export async function handleChatEventsSSE(
   req: IncomingMessage,
@@ -205,12 +216,32 @@ export async function handleChatEventsSSE(
     return;
   }
 
+  // Subscribe BEFORE reading the transcript so a concurrent append between
+  // the snapshot read and subscription is never missed (cursor Bugbot race).
+  // During the initial burst entries are buffered; after the burst the
+  // listener switches to writing straight to the response.
+  const pending: ChatTranscriptEntry[] = [];
+  let bursting = true;
+  const unsubscribe = subscribeChatTranscript(opts.memoryDir, chatSessionId, (entry) => {
+    if (bursting) {
+      pending.push(entry);
+      return;
+    }
+    try {
+      res.write(`data: ${JSON.stringify(entry)}\n\n`);
+    } catch {
+      // Connection closed — cleanup below.
+    }
+  });
+
   const session = await loadChatSession(opts.memoryDir, chatSessionId);
   if (!session) {
+    unsubscribe();
     respondJson(res, 404, { error: "chat_session_not_found", code: "chat_session_not_found" });
     return;
   }
   if (!sessionBelongsToPrincipal(session, principal)) {
+    unsubscribe();
     respondJson(res, 403, { error: "access_denied", code: "access_denied" });
     return;
   }
@@ -226,22 +257,24 @@ export async function handleChatEventsSSE(
   // the initial burst below replays the full transcript on rejoin).
   res.write("retry: 5000\n\n");
 
-  // Send the transcript as an initial burst.
+  // Send the transcript snapshot as the initial burst, recording delivered
+  // seqs so buffered concurrent appends are not double-delivered.
+  const deliveredSeqs = new Set<number>();
   for (const entry of session.transcript) {
     res.write(`data: ${JSON.stringify(entry)}\n\n`);
+    deliveredSeqs.add(entry.seq);
   }
 
-  // Push live entries: subscribe to the per-session pub/sub so any new
-  // user/assistant line (appended by the HTTP/MCP/CLI path) is delivered to
-  // this connection immediately.  Listener errors are swallowed inside
-  // appendTranscriptEntry, so a write failure here is also guarded.
-  const unsubscribe = subscribeChatTranscript(chatSessionId, (entry) => {
-    try {
+  // Drain concurrent appends captured during the burst that the snapshot
+  // did not already deliver.
+  for (const entry of pending) {
+    if (!deliveredSeqs.has(entry.seq)) {
       res.write(`data: ${JSON.stringify(entry)}\n\n`);
-    } catch {
-      // Connection closed — cleanup below.
     }
-  });
+  }
+
+  // Switch to live push — subsequent appends write straight to the response.
+  bursting = false;
 
   // Heartbeat. Unref'd so a lingering connection never blocks process
   // exit (rule 47 — no shared mutable objects keep the loop alive).

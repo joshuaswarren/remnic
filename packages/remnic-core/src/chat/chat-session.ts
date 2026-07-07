@@ -40,6 +40,26 @@ export function chatSessionFile(memoryDir: string, chatSessionId: string): strin
   return join(chatSessionDir(memoryDir), `${chatSessionId}.jsonl`);
 }
 
+// ---------------------------------------------------------------------------
+// Monotonic transcript seq (issue #1687 review — strictly increasing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Last emitted transcript `seq`. Seeded from `Date.now()` on first use and
+ * incremented when two appends land in the same millisecond, so `seq` is
+ * strictly increasing within a process (review thread: `Date.now()` alone is
+ * not monotonic — same-ms entries would share a seq and break the SSE
+ * reconnect dedup-by-seq contract). Across process restarts `Date.now()` is
+ * already forward-moving, so no collision occurs in practice.
+ */
+let lastTranscriptSeq = 0;
+
+function nextTranscriptSeq(): number {
+  const now = Date.now();
+  lastTranscriptSeq = now > lastTranscriptSeq ? now : lastTranscriptSeq + 1;
+  return lastTranscriptSeq;
+}
+
 /**
  * Create a new chat session.  The session binds the caller's principal and
  * sessionKey at creation (rule 42); every tool call flows through
@@ -182,7 +202,7 @@ export async function appendTranscriptEntry(
 ): Promise<ChatTranscriptEntry> {
   const full: ChatTranscriptEntry = {
     ...entry,
-    seq: Date.now(),
+    seq: nextTranscriptSeq(),
     ts: new Date().toISOString(),
   };
   await appendFile(
@@ -190,7 +210,7 @@ export async function appendTranscriptEntry(
     JSON.stringify(full) + "\n",
     "utf8",
   );
-  notifyTranscriptListeners(chatSessionId, full);
+  notifyTranscriptListeners(memoryDir, chatSessionId, full);
   return full;
 }
 
@@ -199,15 +219,22 @@ export async function appendTranscriptEntry(
 // ---------------------------------------------------------------------------
 
 /**
- * Per-session listener sets.  Kept module-level so appendTranscriptEntry can
- * fan out new entries to open SSE connections regardless of which caller
+ * Per-session listener sets, keyed by `memoryDir + chatSessionId` so two
+ * memory stores sharing a legacy/imported session id cannot leak transcript
+ * entries to each other (AGENTS.md State Scoping — module-level singletons
+ * are scoped per store).  Kept module-level so appendTranscriptEntry can fan
+ * out new entries to open SSE connections regardless of which caller
  * appended (HTTP, MCP, or CLI).  Empty sets are pruned so the map never
  * grows unbounded (rule 47 — no leak).
  */
 const transcriptListeners = new Map<string, Set<(entry: ChatTranscriptEntry) => void>>();
 
-function notifyTranscriptListeners(chatSessionId: string, entry: ChatTranscriptEntry): void {
-  const set = transcriptListeners.get(chatSessionId);
+function transcriptListenerKey(memoryDir: string, chatSessionId: string): string {
+  return `${memoryDir}\x00${chatSessionId}`;
+}
+
+function notifyTranscriptListeners(memoryDir: string, chatSessionId: string, entry: ChatTranscriptEntry): void {
+  const set = transcriptListeners.get(transcriptListenerKey(memoryDir, chatSessionId));
   if (!set) return;
   for (const fn of set) {
     try {
@@ -219,27 +246,33 @@ function notifyTranscriptListeners(chatSessionId: string, entry: ChatTranscriptE
 }
 
 /**
- * Subscribe to live transcript entries for a chat session.  Returns an
- * unsubscribe function that removes the listener and prunes the session's
- * set when it becomes empty.  Used by the SSE handler to push new
- * user/assistant entries to connected clients (issue #1687).
+ * Subscribe to live transcript entries for a chat session in a given memory
+ * store.  Returns an unsubscribe function that removes the listener and
+ * prunes the session's set when it becomes empty.  Used by the SSE handler
+ * to push new user/assistant entries to connected clients (issue #1687).
+ *
+ * The `memoryDir` scopes the subscription to its store so a process hosting
+ * two Remnic services cannot cross-deliver transcript entries (AGENTS.md
+ * State Scoping).
  */
 export function subscribeChatTranscript(
+  memoryDir: string,
   chatSessionId: string,
   listener: (entry: ChatTranscriptEntry) => void,
 ): () => void {
-  let set = transcriptListeners.get(chatSessionId);
+  const key = transcriptListenerKey(memoryDir, chatSessionId);
+  let set = transcriptListeners.get(key);
   if (!set) {
     set = new Set();
-    transcriptListeners.set(chatSessionId, set);
+    transcriptListeners.set(key, set);
   }
   set.add(listener);
   return () => {
-    const current = transcriptListeners.get(chatSessionId);
+    const current = transcriptListeners.get(key);
     if (!current) return;
     current.delete(listener);
     if (current.size === 0) {
-      transcriptListeners.delete(chatSessionId);
+      transcriptListeners.delete(key);
     }
   };
 }

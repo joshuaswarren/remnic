@@ -305,3 +305,21 @@ test("cleanupExpiredChatSessions honors TTL boundary [0, ttlHours) — age >= tt
   const expiredGone = await readFile(expiredFile, "utf8").then(() => false).catch(() => true);
   assert.ok(expiredGone, "session aged at/over the TTL must be swept");
 });
+
+
+test("appendTranscriptEntry emits strictly-increasing seqs even within the same millisecond (issue #1687 review)", async () => {
+  const dir = await makeTempDir();
+  const session = await createChatSession(dir, { principal: "seq" });
+  // Append several entries as fast as possible (same-ms collisions would have
+  // shared a Date.now()-based seq before the monotonic counter fix).
+  const entries: number[] = [];
+  for (let i = 0; i < 8; i++) {
+    const e = await appendTranscriptEntry(dir, session.id, { role: "user", content: `m${i}` });
+    entries.push(e.seq);
+  }
+  // Every seq must be distinct and strictly increasing.
+  for (let i = 1; i < entries.length; i++) {
+    assert.ok(entries[i]! > entries[i - 1]!, `seq ${entries[i]} must exceed ${entries[i - 1]}`);
+  }
+  assert.equal(new Set(entries).size, entries.length, "seqs must be unique");
+});
