@@ -375,6 +375,9 @@ shape.
 # 1. Promote the stored result into a publishable BenchmarkArtifact.
 #    --tier local requires the full hardware envelope (--gpu, --vram-gb,
 #    --quantization); the script exits non-zero if any is missing.
+#    --dataset-version is benchmark-specific: locomo-10 for LoCoMo,
+#    longmemeval-oracle for LongMemEval (see build-artifact-from-result.ts
+#    defaults).
 pnpm exec tsx scripts/bench/build-artifact-from-result.ts \
   ~/.remnic/bench/results/<your-result>.json \
   docs/benchmarks/results \
@@ -382,7 +385,7 @@ pnpm exec tsx scripts/bench/build-artifact-from-result.ts \
   --gpu "NVIDIA RTX 3090" \
   --vram-gb 24 \
   --quantization Q4_K_M \
-  --dataset-version locomo-10 \
+  --dataset-version <locomo-10|longmemeval-oracle> \
   --note "Tier L full run; responder+judge = <model> Q4_K_M (non-thinking)"
 
 # 2. Validate + re-hash the produced artifact; exits non-zero on mismatch:
@@ -392,6 +395,15 @@ pnpm exec tsx scripts/bench/verify-artifact.ts \
 # 3. Inspect the reproducibility lock for the last run set:
 jq . ~/.remnic/bench/results/MANIFEST.json
 ```
+
+> **Calibration ordering.** `judge-calibrate` (§A.3.6) persists κ *after* the
+> run, so the `BenchmarkResult` from §A.3.5 does not carry it yet. The κ is
+> attached on the **next** `remnic bench run` that uses the same judge pair.
+> To produce an artifact with `judgeCalibration` populated, calibrate first,
+> then re-run the benchmark, then promote that second result. The two Tier L
+> artifacts currently on `main` were produced before any frontier judge was
+> available, so they omit `judgeCalibration` — this is expected, not a gap,
+> until the Tier F run lands.
 
 The build script refuses to promote partial or quick-mode runs, runs with a
 `limit`/`trialLimit`, or unpublished benchmark ids — only complete full runs
