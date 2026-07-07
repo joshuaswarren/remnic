@@ -257,6 +257,24 @@ def main(argv: list[str] | None = None) -> int:
         set_seed,
     )
 
+    # The training recipe requires a CUDA GPU, mirroring eval.py's inline
+    # path (which hard-refuses CPU) and the manifest's hand-authored
+    # hardware block (RTX 3090). use_cpu=not torch.cuda.is_available()
+    # below would otherwise let a CPU-only run proceed, produce a checkpoint
+    # eval.py then refuses to score inline, and yield a manifest that
+    # misrepresents the run as GPU-trained — breaking the reproducibility
+    # contract. Refuse here for parity (kilo, thread #1745).
+    if not torch.cuda.is_available():
+        print(
+            "train.py: training requires a CUDA GPU (the manifest hardware block "
+            "is GPU-pinned and eval.py's inline path hard-refuses CPU). A "
+            "CPU-only run would set use_cpu=True, produce a checkpoint eval.py "
+            "refuses to score inline, and yield a manifest that misrepresents "
+            "the run. Aborting to preserve the reproducibility contract.",
+            file=sys.stderr,
+        )
+        return 2
+
     hyperparams = hyperparams_from_args(args)
     # Resolve the base-model revision: the pinned commit for the default
     # model (roberta-large-mnli), or None (latest) for custom bases unless
