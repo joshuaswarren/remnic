@@ -119,6 +119,23 @@ def main(argv: list[str] | None = None) -> int:
     rows = load_jsonl(held_out_path)
     gold = [row["label"] for row in rows]
 
+    if not rows:
+        # Harden the empty-held-out class at the load chokepoint (cursor +
+        # codex review, second instance of the class): an empty/whitespace-only
+        # gold JSONL is a misconfiguration, not a zero-score result. Reject it
+        # here -- before the expensive model load AND before summarize([])
+        # downstream (common.latency.summarize deliberately raises on an empty
+        # sample set: "empty samples are a bug, not a zero"). Rejecting here is
+        # the single point that keeps both the warmup rows[0] and the latency
+        # summarize call below safe, instead of point-patching each one.
+        raise SystemExit(
+            f"held-out gold file loaded 0 rows from {held_out_path} -- nothing "
+            "to score. Pass a non-empty --held-out JSONL (one {...} object per "
+            "line); train.py writes this file next to the checkpoint, so an "
+            "empty split usually means the train run wrote no held-out "
+            "examples or the path is wrong."
+        )
+
     # Load the tokenizer from the checkpoint train.py saved (it writes both
     # model + tokenizer to the version root) so eval always scores with the
     # vocab the model was trained on; --base-model is an explicit fallback.
@@ -149,15 +166,12 @@ def main(argv: list[str] | None = None) -> int:
     # Warm the accelerator (CUDA kernel compile / lazy init) on the first
     # example so one-time setup is not charged to the first timed prediction —
     # the latency distribution should describe steady-state serving, not a
-    # cold start. Guard on a non-empty split: an empty/whitespace-only held-out
-    # JSONL would otherwise IndexError here (rows[0]) before the scoring loop,
-    # which itself handles zero rows, can report an empty result (cursor review:
-    # empty held-out must not crash eval).
+    # cold start. (rows is guaranteed non-empty here -- an empty held-out split
+    # is rejected above before the model loads -- so rows[0] cannot IndexError.)
     with torch.no_grad():
-        if rows:
-            _forward(rows[0])
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+        _forward(rows[0])
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
     latencies_ms: list[float] = []
     with torch.no_grad():
