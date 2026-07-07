@@ -244,9 +244,17 @@ def main(argv: list[str] | None = None) -> int:
         DataCollatorWithPadding,
         Trainer,
         TrainingArguments,
+        set_seed,
     )
 
     hyperparams = hyperparams_from_args(args)
+    # Seed BEFORE model construction: from_pretrained(ignore_mismatched_sizes=True)
+    # reinitializes the 2-way head with random weights, and TrainingArguments'
+    # seed/data_seed only apply at trainer.train() time. Setting the seed here
+    # makes the head's starting weights deterministic so two runs from the same
+    # manifest seed reproduce bit-identical weights (the reproducibility contract).
+    set_seed(hyperparams.seed)
+
     data_path = args.data_dir / "train.jsonl"
     if not data_path.exists():
         raise SystemExit(

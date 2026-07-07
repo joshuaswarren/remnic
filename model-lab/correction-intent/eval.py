@@ -312,23 +312,23 @@ def _score_inline(args: argparse.Namespace, held_out_path: Path) -> int:
             latencies_ms.append((time.perf_counter() - started) * 1000.0)
             predictions.append(ID_TO_LABEL[predicted_id])
 
-    # v1 is detection-only: build pred_rows with the predicted label and an
-    # EMPTY corrections[] so the span-overlap metric is computed honestly
-    # (overlap is 0 for every gold-correction row because v1 emits no span).
-    pred_rows = [{"label": label, "corrections": []} for label in predictions]
-    block = correction_held_out_block(
-        gold,
-        predictions,
-        span_overlaps=_span_overlaps(rows, pred_rows),
-    )
+    # v1 is detection-only: it predicts {correction, none} and emits NO
+    # correctedAssertion span, so the span-overlap tiebreaker is not
+    # meaningful here — passing empty predictions into _span_overlaps would
+    # score empty-vs-empty (retract-polarity gold assertions) as a perfect
+    # 1.0, producing a misleading nonzero meanSpanOverlap for a model that
+    # extracted nothing. Omit the tiebreaker (correction_held_out_block drops
+    # meanSpanOverlap when span_overlaps is None) and declare span extraction
+    # not-applicable-v1 instead (codex P2). The v2 causal-LM path computes it.
+    block = correction_held_out_block(gold, predictions, span_overlaps=None)
     block["latencyMs"] = summarize(latencies_ms)
     block["spanExtraction"] = {
         "status": "not-applicable-v1",
         "$comment": (
             "v1 is a detection classifier (issue #1738); it predicts "
             "{correction, none} and emits NO correctedAssertion span, so "
-            "meanSpanOverlap is 0 by construction. Span extraction is the v2 "
-            "causal-LM follow-up (≤4B instruct LM emitting the corrections[] "
+            "meanSpanOverlap is omitted (not measured). Span extraction is the "
+            "v2 causal-LM follow-up (<=4B instruct LM emitting the corrections[] "
             "JSON block). Detection F1 is the eval gate."
         ),
     }
