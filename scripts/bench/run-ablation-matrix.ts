@@ -39,14 +39,17 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
  *   2 — usage error
  */
 import path from "node:path";
+import os from "node:os";
 import process from "node:process";
 
 import {
   type BenchmarkArtifactHardware,
   type BenchmarkArtifactTier,
   type BenchmarkResult,
+  type LocalLabPreflightResult,
   type PublishedBenchmarkId,
   type ResolvedBenchRuntimeProfile,
+  type WriteBenchmarkArtifactResult,
   SINGLE_FLAG_ABLATION_MATRIX,
   type SingleFlagAblationCell,
   type SingleFlagAblationId,
@@ -54,6 +57,7 @@ import {
   createRemnicAdapter,
   getAblationCell,
   loadBenchmarkArtifact,
+  preflightLocalLabRole,
   resolveBenchRuntimeProfile,
   runBenchmark,
   writeBenchmarkArtifact,
@@ -69,6 +73,7 @@ interface ParsedArgs {
   noJudgeCache: boolean;
   only?: SingleFlagAblationId;
   limit?: number;
+  trialLimit?: number;
   hardware: BenchmarkArtifactHardware;
 }
 
@@ -83,101 +88,118 @@ function parseArgs(argv: string[]): { ok: true; value: ParsedArgs } | { ok: fals
   let noJudgeCache = false;
   let only: SingleFlagAblationId | undefined;
   let limit: number | undefined;
+  let trialLimit: number | undefined;
   let gpu = "NVIDIA RTX 3090";
   let vramGb = 24;
   let quantization = "Q4_K_M";
 
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === undefined) continue;
-    switch (arg) {
-      case "--benchmark": {
-        benchmark = requireValue(argv, ++i, "--benchmark");
-        break;
+  try {
+    for (let i = 0; i < argv.length; i++) {
+      const arg = argv[i];
+      if (arg === undefined) continue;
+      switch (arg) {
+        case "--benchmark": {
+          benchmark = requireValue(argv, ++i, "--benchmark");
+          break;
+        }
+        case "--local-lab-manifest": {
+          localLabManifestPath = requireValue(argv, ++i, "--local-lab-manifest");
+          break;
+        }
+        case "--dataset-dir": {
+          datasetDir = requireValue(argv, ++i, "--dataset-dir");
+          break;
+        }
+        case "--seed": {
+          seed = parsePositiveInt(requireValue(argv, ++i, "--seed"), "--seed");
+          break;
+        }
+        case "--out-dir": {
+          outDir = requireValue(argv, ++i, "--out-dir");
+          break;
+        }
+        case "--judge-cache-dir": {
+          judgeCacheDir = requireValue(argv, ++i, "--judge-cache-dir");
+          break;
+        }
+        case "--no-judge-cache": {
+          noJudgeCache = true;
+          break;
+        }
+        case "--only": {
+          only = requireValue(argv, ++i, "--only") as SingleFlagAblationId;
+          // Fail fast on unknown cell ids — a typo would otherwise silently skip.
+          getAblationCell(only);
+          break;
+        }
+        case "--limit": {
+          limit = parsePositiveInt(requireValue(argv, ++i, "--limit"), "--limit");
+          break;
+        }
+        case "--trial-limit": {
+          trialLimit = parsePositiveInt(requireValue(argv, ++i, "--trial-limit"), "--trial-limit");
+          break;
+        }
+        case "--gpu": {
+          gpu = requireValue(argv, ++i, "--gpu");
+          break;
+        }
+        case "--vram-gb": {
+          vramGb = parsePositiveInt(requireValue(argv, ++i, "--vram-gb"), "--vram-gb");
+          break;
+        }
+        case "--quantization": {
+          quantization = requireValue(argv, ++i, "--quantization");
+          break;
+        }
+        case "-h":
+        case "--help": {
+          return { ok: false, message: "__help__" };
+        }
+        default:
+          positional.push(arg);
       }
-      case "--local-lab-manifest": {
-        localLabManifestPath = requireValue(argv, ++i, "--local-lab-manifest");
-        break;
-      }
-      case "--dataset-dir": {
-        datasetDir = requireValue(argv, ++i, "--dataset-dir");
-        break;
-      }
-      case "--seed": {
-        seed = parsePositiveInt(requireValue(argv, ++i, "--seed"), "--seed");
-        break;
-      }
-      case "--out-dir": {
-        outDir = requireValue(argv, ++i, "--out-dir");
-        break;
-      }
-      case "--judge-cache-dir": {
-        judgeCacheDir = requireValue(argv, ++i, "--judge-cache-dir");
-        break;
-      }
-      case "--no-judge-cache": {
-        noJudgeCache = true;
-        break;
-      }
-      case "--only": {
-        only = requireValue(argv, ++i, "--only") as SingleFlagAblationId;
-        // Fail fast on unknown cell ids — a typo would otherwise silently skip.
-        getAblationCell(only);
-        break;
-      }
-      case "--limit": {
-        limit = parsePositiveInt(requireValue(argv, ++i, "--limit"), "--limit");
-        break;
-      }
-      case "--gpu": {
-        gpu = requireValue(argv, ++i, "--gpu");
-        break;
-      }
-      case "--vram-gb": {
-        vramGb = parsePositiveInt(requireValue(argv, ++i, "--vram-gb"), "--vram-gb");
-        break;
-      }
-      case "--quantization": {
-        quantization = requireValue(argv, ++i, "--quantization");
-        break;
-      }
-      case "-h":
-      case "--help": {
-        return { ok: false, message: "__help__" };
-      }
-      default:
-        positional.push(arg);
     }
-  }
 
-  if (!localLabManifestPath) {
+    if (positional.length > 0) {
+      return {
+        ok: false,
+        message: `ERROR: unknown argument(s): ${positional.join(" ")}. Run with --help for usage.`,
+      };
+    }
+    if (!localLabManifestPath) {
+      return {
+        ok: false,
+        message: "ERROR: --local-lab-manifest <path> is required (Tier L ablation runs use the local-lab profile).",
+      };
+    }
+    if (!datasetDir) {
+      return { ok: false, message: "ERROR: --dataset-dir <path> is required." };
+    }
+    if (!outDir) {
+      return { ok: false, message: "ERROR: --out-dir <path> is required." };
+    }
+
+    const expand = (p: string | undefined): string | undefined => (p ? expandTilde(p) : p);
     return {
-      ok: false,
-      message: "ERROR: --local-lab-manifest <path> is required (Tier L ablation runs use the local-lab profile).",
+      ok: true,
+      value: {
+        benchmark,
+        localLabManifestPath: expand(localLabManifestPath),
+        datasetDir: expand(datasetDir),
+        seed,
+        outDir: expand(outDir),
+        judgeCacheDir: expand(judgeCacheDir),
+        noJudgeCache,
+        only,
+        limit,
+        trialLimit,
+        hardware: { gpu, vramGb, quantization },
+      },
     };
+  } catch (error) {
+    return { ok: false, message: error instanceof Error ? error.message : String(error) };
   }
-  if (!datasetDir) {
-    return { ok: false, message: "ERROR: --dataset-dir <path> is required." };
-  }
-  if (!outDir) {
-    return { ok: false, message: "ERROR: --out-dir <path> is required." };
-  }
-
-  return {
-    ok: true,
-    value: {
-      benchmark,
-      localLabManifestPath,
-      datasetDir,
-      seed,
-      outDir,
-      judgeCacheDir,
-      noJudgeCache,
-      only,
-      limit,
-      hardware: { gpu, vramGb, quantization },
-    },
-  };
 }
 
 function requireValue(argv: string[], index: number, flag: string): string {
@@ -196,9 +218,21 @@ function parsePositiveInt(raw: string, flag: string): number {
   return parsed;
 }
 
+/**
+ * Expand a leading `~` to the user's home dir. Node's fs does NOT expand tilde
+ * on its own, so a quoted `~/path` would be treated as a literal directory
+ * named `~`. (Unquoted `~/path` is usually expanded by the shell first, but we
+ * expand defensively so the runner is correct regardless of invocation.)
+ */
+function expandTilde(p: string): string {
+  if (p === "~") return os.homedir();
+  if (p.startsWith("~/")) return path.join(os.homedir(), p.slice(2));
+  return p;
+}
+
 const HELP = `usage: run-ablation-matrix.ts --benchmark <id> --local-lab-manifest <path> \\
   --dataset-dir <path> --out-dir <path> [--seed N] [--only <cell-id>] [--limit N] \\
-  [--judge-cache-dir <path>] [--no-judge-cache] [--gpu "..."] [--vram-gb N] [--quantization ...]
+  [--trial-limit N] [--judge-cache-dir <path>] [--no-judge-cache] [--gpu "..."] [--vram-gb N] [--quantization ...]
 
 Cells: ${SINGLE_FLAG_ABLATION_MATRIX.map((c) => c.id).join(", ")}
 `;
@@ -221,7 +255,7 @@ async function main(): Promise<number> {
 
   await writeStatus(
     statusPath,
-    `# Single-flag ablation matrix (issue #1730 / #1574)\n\n**Benchmark:** ${args.benchmark}  **Seed:** ${args.seed}  **Tier:** local\n**Cells:** ${cells.map((c) => c.id).join(", ")}\n${args.limit ? `**NOTE:** --limit ${args.limit} set — artifacts are NON-publishable (iteration only).\n` : ""}\n## Progress\n`
+    `# Single-flag ablation matrix (issue #1730 / #1574)\n\n**Benchmark:** ${args.benchmark}  **Seed:** ${args.seed}  **Tier:** local\n**Cells:** ${cells.map((c) => c.id).join(", ")}\n${args.limit ? `**NOTE:** --limit ${args.limit} set — artifacts are NON-publishable (iteration only).\n` : ""}${args.trialLimit ? `**NOTE:** --trial-limit ${args.trialLimit} set — QA trial count capped (NON-publishable).\n` : ""}\n## Progress\n`
   );
 
   const resolved = await resolveBenchRuntimeProfile({
@@ -229,6 +263,34 @@ async function main(): Promise<number> {
     localLabManifestPath: args.localLabManifestPath,
     judgeCacheDir: args.judgeCacheDir,
   });
+  // Preflight: verify each local-lab endpoint is live and serving the
+  // manifest-declared model before spending time on a cell. Addresses the
+  // "never invokes preflight" concern from PR #1751 review. The programmatic
+  // runBenchmark() API is used (not the CLI sequential-phase scheduler)
+  // because it is the only path that accepts per-cell configOverrides; the
+  // warm judge cache eliminates the responder/judge swap that sequential
+  // phases exist to schedule.
+  if (resolved.localLab) {
+    const roles: Array<[string, typeof resolved.localLab.responder]> = [
+      ["responder", resolved.localLab.responder],
+      ["judge", resolved.localLab.judge],
+    ];
+    for (const [roleName, role] of roles) {
+      const pf: LocalLabPreflightResult = await preflightLocalLabRole({
+        provider: role.provider,
+        baseUrl: role.baseUrl,
+        model: role.model,
+        ctx: role.ctx,
+      });
+      if (!pf.ok) {
+        const msg = `Preflight FAILED for ${roleName} (${role.baseUrl}): ${pf.reason}`;
+        process.stderr.write(`${msg}\n`);
+        await appendStatus(statusPath, `\n## Preflight FAILED\n- role: ${roleName}\n- endpoint: ${role.baseUrl}\n- expected model: ${role.model}\n- reason: ${pf.reason}\n`);
+        return 1;
+      }
+      process.stdout.write(`[preflight] ${roleName} OK — ${role.model} @ ${role.baseUrl}\n`);
+    }
+  }
 
   let failures = 0;
   for (const cell of cells) {
@@ -293,7 +355,7 @@ async function runOneCell(
   args: ParsedArgs,
   resolved: ResolvedBenchRuntimeProfile,
   cell: SingleFlagAblationCell
-): Promise<string> {
+): Promise<WriteBenchmarkArtifactResult> {
   // Merge the cell's configOverrides ON TOP of the resolved baseline config.
   // The resolved `adapterOptions.configOverrides` already contains the
   // local-lab baseline + provider hooks; the ablation flag rides on top so
@@ -318,47 +380,60 @@ async function runOneCell(
     ...(args.benchmark === "locomo" ? { replayExtractionMode: "skip" as const } : {}),
   });
 
-  const result = (await runBenchmark(args.benchmark, {
-    mode: "full",
-    datasetDir: args.datasetDir,
-    seed: args.seed,
-    limit: args.limit,
-    adapterMode: "direct",
-    runtimeProfile: resolved.profile,
-    systemProvider: resolved.systemProvider,
-    judgeProvider: resolved.judgeProvider,
-    internalProvider: resolved.internalProvider,
-    remnicConfig: mergedConfigOverrides,
-    drainTimeoutMs: resolved.adapterOptions.drainTimeoutMs,
-    ...(args.noJudgeCache ? { noJudgeCache: true } : {}),
-    ...(args.judgeCacheDir ? { judgeCacheDir: args.judgeCacheDir } : {}),
-    system: adapter,
-  })) as BenchmarkResult;
+  try {
+    const result = (await runBenchmark(args.benchmark, {
+      mode: "full",
+      datasetDir: args.datasetDir,
+      seed: args.seed,
+      limit: args.limit,
+      adapterMode: "direct",
+      runtimeProfile: resolved.profile,
+      systemProvider: resolved.systemProvider,
+      judgeProvider: resolved.judgeProvider,
+      internalProvider: resolved.internalProvider,
+      remnicConfig: mergedConfigOverrides,
+      ...(args.trialLimit ? { benchmarkOptions: { trialLimit: args.trialLimit } } : {}),
+      drainTimeoutMs: resolved.adapterOptions.drainTimeoutMs,
+      ...(args.noJudgeCache ? { noJudgeCache: true } : {}),
+      ...(args.judgeCacheDir ? { judgeCacheDir: args.judgeCacheDir } : {}),
+      system: adapter,
+    })) as BenchmarkResult;
 
-  // Stamp the effective config (post-merge) so the artifact reflects what
-  // actually ran, including the ablation override.
-  result.config.remnicConfig = mergedConfigOverrides;
+    // Stamp the effective config (post-merge) so the artifact reflects what
+    // actually ran, including the ablation override.
+    result.config.remnicConfig = mergedConfigOverrides;
 
-  // Build the artifact via the public promotion contract (same shape as
-  // build-artifact-from-result.ts): derive benchmarkId/model/seed/run-window
-  // from the live result so the artifact is self-describing + reproducible.
-  const benchmarkId = result.meta.benchmark as PublishedBenchmarkId;
-  const model = result.config.systemProvider?.model ?? "unknown";
-  const seed = result.meta.seeds[0] ?? 1;
-  const { startedAt, finishedAt } = deriveRunWindow(result.meta.timestamp, result.cost?.totalLatencyMs ?? 0);
-  const artifact = buildBenchmarkArtifact({
-    result,
-    benchmarkId,
-    datasetVersion: defaultDatasetVersion(benchmarkId),
-    model,
-    seed,
-    startedAt,
-    finishedAt,
-    tier: "local",
-    hardware: args.hardware,
-    note,
-  });
-  return writeBenchmarkArtifact(artifact, args.outDir);
+    // Build the artifact via the public promotion contract (same shape as
+    // build-artifact-from-result.ts): derive benchmarkId/model/seed/run-window
+    // from the live result so the artifact is self-describing + reproducible.
+    const benchmarkId = result.meta.benchmark as PublishedBenchmarkId;
+    const model = result.config.systemProvider?.model ?? "unknown";
+    const seed = result.meta.seeds[0] ?? 1;
+    const { startedAt, finishedAt } = deriveRunWindow(result.meta.timestamp, result.cost?.totalLatencyMs ?? 0);
+    const artifact = buildBenchmarkArtifact({
+      result,
+      benchmarkId,
+      datasetVersion: defaultDatasetVersion(benchmarkId),
+      model,
+      seed,
+      startedAt,
+      finishedAt,
+      tier: "local",
+      hardware: args.hardware,
+      note,
+    });
+
+    // Per-cell subdir: buildBenchmarkArtifactFilename derives the filename
+    // from startedAt+gitSha+model, so cells run on the same day with the same
+    // model would collide (overwrite) if written to the same out-dir. Each
+    // cell gets its own subdir so the matrix run preserves all 3 artifacts.
+    const cellOutDir = path.join(args.outDir, cell.id);
+    return await writeBenchmarkArtifact(artifact, cellOutDir);
+  } finally {
+    // createRemnicAdapter allocates a temp memory/QMD sandbox per cell;
+    // destroy() releases it so a 3-cell matrix run doesn't leak sandboxes.
+    await adapter.destroy();
+  }
 }
 
 async function writeStatus(statusPath: string, content: string): Promise<void> {

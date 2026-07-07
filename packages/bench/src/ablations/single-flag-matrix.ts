@@ -11,18 +11,23 @@
  *
  * The three axes come straight from #1574's "Ablations" section:
  *   1. Memory Worth recall multiplier (`recallMemoryWorthFilterEnabled`)
- *   2. Contradiction scan cron (`contradictionScan.enabled`)
- *   3. Graph / temporal recall (`graphRecallEnabled` + its full-mode assist)
+ *   2. Contradiction scan — implemented via the INLINE write-path gate
+ *      `contradictionDetectionEnabled` (NOT the `contradictionScan` cron,
+ *      which only registers a scheduled job that never fires during a bench
+ *      replay, so it would measure nothing).
+ *   3. Graph / temporal recall (`graphRecallEnabled` + `multiGraphMemoryEnabled`
+ *      — orchestrator.ts §1379 requires BOTH for graph_mode — + the full-mode
+ *      graph assist gate).
  *
  * Baseline state of each flag (the raw `config.ts` parse default, since the
  * bench baseline config does NOT override these):
  *   - `recallMemoryWorthFilterEnabled`: **true** (default; #1574 baseline ran
  *     with it ON, so the ablation cell turns it OFF to measure the cost of
  *     removing it).
- *   - `contradictionScan.enabled`: **false** (default; ablation cell turns it
- *     ON to measure the benefit of supersession landing before answering).
- *   - `graphRecallEnabled`: **false** (default; ablation cell turns it ON +
- *     enables the full-mode graph assist).
+ *   - `contradictionDetectionEnabled`: **false** (config.ts §2078; ablation
+ *     cell turns it ON so write-path supersessions land before answering).
+ *   - `graphRecallEnabled` / `multiGraphMemoryEnabled`: **false** (default;
+ *     ablation cell turns BOTH on + the full-mode graph assist).
  *
  * `trustScoreEnabled` is deliberately NOT an axis here: it is the unified
  * stage from #1577 and subsumes the Memory Worth multiplier when on (rule 39).
@@ -37,10 +42,7 @@
 import type { PublishedBenchmarkId } from "../published-artifact.js";
 
 /** Identifier for one ablation cell. Stable across runs; used in artifact notes + filenames. */
-export type SingleFlagAblationId =
-  | "memory-worth-off"
-  | "contradiction-scan-on"
-  | "graph-recall-on";
+export type SingleFlagAblationId = "memory-worth-off" | "contradiction-scan-on" | "graph-recall-on";
 
 /** The config-override payload merged into `adapterOptions.configOverrides`. */
 export type AblationConfigOverrides = Record<string, unknown>;
@@ -60,10 +62,7 @@ export interface SingleFlagAblationCell {
   /** The Remnic config overrides that define this cell (merged over the baseline). */
   configOverrides: AblationConfigOverrides;
   /** The single top-level flag key this cell toggles (for grep / ratchet checks). */
-  primaryFlag:
-    | "recallMemoryWorthFilterEnabled"
-    | "contradictionScan"
-    | "graphRecallEnabled";
+  primaryFlag: "recallMemoryWorthFilterEnabled" | "contradictionDetectionEnabled" | "graphRecallEnabled";
 }
 
 /**
@@ -82,8 +81,7 @@ export const SINGLE_FLAG_ABLATION_MATRIX: readonly SingleFlagAblationCell[] = [
     description:
       "Disables the Memory Worth recall multiplier (recallMemoryWorthFilterEnabled=false). " +
       "Baseline (#1574) ran with it ON via the config.ts default; this cell measures the cost of removing it.",
-    baselineState:
-      "recallMemoryWorthFilterEnabled defaults true in config.ts; baseline ran ON.",
+    baselineState: "recallMemoryWorthFilterEnabled defaults true in config.ts; baseline ran ON.",
     configOverrides: {
       recallMemoryWorthFilterEnabled: false,
     },
@@ -94,34 +92,31 @@ export const SINGLE_FLAG_ABLATION_MATRIX: readonly SingleFlagAblationCell[] = [
     label: "Contradiction scan ON",
     axis: "contradiction-scan",
     description:
-      "Enables the contradiction-scan cron (contradictionScan.enabled=true) so supersessions land " +
-      "between ingest and answering. Baseline (#1574) ran with it OFF; this cell measures the benefit.",
-    baselineState:
-      "contradictionScan.enabled defaults false; baseline ran OFF.",
+      "Enables inline contradiction detection on the write path (contradictionDetectionEnabled=true) so supersessions " +
+      "land at ingest time, before answering. The batch contradictionScan cron is a no-op during a bench replay (it " +
+      "only registers a scheduled job), so the measurable axis is the inline write-path gate (orchestrator §15667); " +
+      "contradictionAutoResolve defaults true so detected contradictions are applied. Baseline (#1574) ran with it OFF.",
+    baselineState: "contradictionDetectionEnabled defaults false (config.ts §2078); baseline ran OFF.",
     configOverrides: {
-      contradictionScan: {
-        enabled: true,
-        similarityFloor: 0.82,
-        topicOverlapFloor: 0.4,
-        maxPairsPerRun: 500,
-        cooldownDays: 14,
-        autoMergeDuplicates: false,
-      },
+      contradictionDetectionEnabled: true,
     },
-    primaryFlag: "contradictionScan",
+    primaryFlag: "contradictionDetectionEnabled",
   },
   {
     id: "graph-recall-on",
     label: "Graph / temporal recall ON",
     axis: "graph-recall",
     description:
-      "Enables graph recall + full-mode graph assist (graphRecallEnabled=true, graphAssistInFullModeEnabled=true). " +
-      "Baseline (#1574) ran with graph recall OFF; this cell measures the benefit of causal/timeline expansion.",
+      "Enables graph recall + full-mode graph assist (graphRecallEnabled=true, graphAssistInFullModeEnabled=true, " +
+      "multiGraphMemoryEnabled=true). orchestrator.ts §1379 skips graph_mode unless BOTH graphRecallEnabled AND " +
+      "multiGraphMemoryEnabled are set, so the cell carries both gates (plus the full-mode assist) or it measures " +
+      "nothing. Baseline (#1574) ran with graph recall OFF; this cell measures the benefit of causal/timeline expansion.",
     baselineState:
-      "graphRecallEnabled + graphAssistInFullModeEnabled default false; baseline ran OFF.",
+      "graphRecallEnabled, graphAssistInFullModeEnabled, multiGraphMemoryEnabled all default false; baseline ran OFF.",
     configOverrides: {
       graphRecallEnabled: true,
       graphAssistInFullModeEnabled: true,
+      multiGraphMemoryEnabled: true,
     },
     primaryFlag: "graphRecallEnabled",
   },
@@ -141,9 +136,8 @@ export function getAblationCell(id: SingleFlagAblationId): SingleFlagAblationCel
   const cell = SINGLE_FLAG_ABLATION_MATRIX.find((c) => c.id === id);
   if (!cell) {
     throw new Error(
-      `Unknown ablation cell id "${id}". Known ids: ${SINGLE_FLAG_ABLATION_MATRIX.map((c) => c.id).join(", ")}.`,
+      `Unknown ablation cell id "${id}". Known ids: ${SINGLE_FLAG_ABLATION_MATRIX.map((c) => c.id).join(", ")}.`
     );
   }
   return cell;
 }
-

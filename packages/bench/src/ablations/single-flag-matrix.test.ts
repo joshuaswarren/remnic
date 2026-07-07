@@ -50,22 +50,26 @@ test("each cell flips exactly one primary flag (the single-flag invariant)", () 
         1,
         `${cell.id}: memory-worth cell must touch only recallMemoryWorthFilterEnabled`
       );
-    } else if (cell.primaryFlag === "contradictionScan") {
-      const cs = overrides.contradictionScan;
-      // Narrow with `in` so the property access is type-checked, not an
-      // unchecked `as { enabled?: unknown }` cast (ts-no-inline-cast-access).
-      if (cs && typeof cs === "object" && "enabled" in cs) {
-        assert.equal(cs.enabled, true, `${cell.id}: expected contradictionScan.enabled=true`);
-      } else {
-        assert.fail(`${cell.id}: contradictionScan override must be { enabled, ... }`);
-      }
+    } else if (cell.primaryFlag === "contradictionDetectionEnabled") {
+      // The contradiction axis is the INLINE write-path gate, not the cron
+      // (the cron never fires during a bench replay — see matrix doc).
+      assert.equal(
+        overrides.contradictionDetectionEnabled,
+        true,
+        `${cell.id}: expected contradictionDetectionEnabled=true`
+      );
       assert.equal(
         Object.keys(overrides).length,
         1,
-        `${cell.id}: contradiction-scan cell must touch only contradictionScan`
+        `${cell.id}: contradiction-scan cell must touch only contradictionDetectionEnabled`
       );
     } else if (cell.primaryFlag === "graphRecallEnabled") {
       assert.equal(overrides.graphRecallEnabled, true, `${cell.id}: expected graphRecallEnabled=true`);
+      assert.equal(
+        overrides.multiGraphMemoryEnabled,
+        true,
+        `${cell.id}: multiGraphMemoryEnabled required too — orchestrator.ts §1379 skips graph_mode without it`
+      );
       assert.equal(
         overrides.graphAssistInFullModeEnabled,
         true,
@@ -73,8 +77,8 @@ test("each cell flips exactly one primary flag (the single-flag invariant)", () 
       );
       assert.deepEqual(
         Object.keys(overrides).sort(),
-        ["graphAssistInFullModeEnabled", "graphRecallEnabled"],
-        `${cell.id}: graph-recall cell must touch only the two graph gates`
+        ["graphAssistInFullModeEnabled", "graphRecallEnabled", "multiGraphMemoryEnabled"],
+        `${cell.id}: graph-recall cell must touch only the three graph gates`
       );
     } else {
       assert.fail(`unknown primaryFlag ${cell.primaryFlag} on cell ${cell.id}`);
@@ -100,24 +104,20 @@ test("getAblationCell throws on unknown id (fail fast at the runner boundary)", 
   assert.throws(() => getAblationCell("trust-score-on" as never), /Unknown ablation cell id "trust-score-on"/);
 });
 
-test("ablation primary flags are absent from the bench baseline — cells flip from config.ts defaults", () => {
-  // Grounds the matrix doc's claim: buildBenchBaselineRemnicConfig() does NOT
-  // set recallMemoryWorthFilterEnabled, contradictionScan, graphRecallEnabled,
-  // or graphAssistInFullModeEnabled. So each cell's delta is measured against
-  // the config.ts parse default, not a bench-overridden value. This is the
-  // keyless contract the runner relies on for config-override cells via
-  // adapterOptions.configOverrides.
+test("each cell's override actually changes the merged config vs the bench baseline (non-no-op)", () => {
+  // The real correctness guarantee: flipping the cell's flag must produce a
+  // DIFFERENT effective config than the baseline alone — otherwise the
+  // ablation measures nothing. The bench baseline omits most ablation keys
+  // (so the cell flips from the config.ts default) but explicitly pins
+  // contradictionDetectionEnabled=false; either way the cell's value must
+  // differ from the baseline value for the primary flag.
   const baseline = buildBenchBaselineRemnicConfig();
-  for (const key of [
-    "recallMemoryWorthFilterEnabled",
-    "contradictionScan",
-    "graphRecallEnabled",
-    "graphAssistInFullModeEnabled",
-  ]) {
-    assert.equal(
-      baseline[key],
-      undefined,
-      `bench baseline must not set ${key} (else the ablation delta is measured against the bench override, not the config.ts default)`
+  for (const cell of SINGLE_FLAG_ABLATION_MATRIX) {
+    const cellValue = cell.configOverrides[cell.primaryFlag];
+    assert.notEqual(
+      baseline[cell.primaryFlag],
+      cellValue,
+      `${cell.id}: baseline already has ${cell.primaryFlag}=${String(cellValue)} — the cell would be a no-op ablation`
     );
   }
 });
