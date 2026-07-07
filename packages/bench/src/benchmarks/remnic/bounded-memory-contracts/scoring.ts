@@ -200,7 +200,9 @@ export function aggregateCondition(
   const tp = injected.filter((e) => e.outcome === "helped").length;
   const fp = injected.filter((e) => e.outcome === "harmed").length;
   const notInjected = considered.filter((e) => !e.injected);
-  const fn = notInjected.filter((e) => e.outcome === "harmed").length;
+  // False negatives: any skill that should have helped but was never injected —
+  // INCLUDING ones the trigger classifier never considered (review 8t0-).
+  const fn = skillLog.filter((e) => !e.injected && e.outcome === "harmed").length;
   const tn = notInjected.filter((e) => e.outcome === "irrelevant").length;
 
   return {
