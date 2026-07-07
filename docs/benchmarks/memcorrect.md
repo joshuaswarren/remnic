@@ -12,9 +12,12 @@ FactConsolidation (correction-priority at answer time). None combines
 correction uptake, adversarial non-resurrection, collateral safety, scoped
 precision, write-path false-apply, and revocation in one system-agnostic
 protocol. The closest recall benchmark — LongMemEval's knowledge-update
-category — only tests whether the *newest* fact wins at answer time, and even
-there the strongest systems score roughly 70–90%, not ceiling. It does not
-measure:
+(KU) category — only checks *instantaneous answer correctness*: does the
+newest fact win at answer time? KU is not saturated. Our own in-repo Tier-L
+run (`docs/benchmarks/results/2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json`,
+full 500/500 LongMemEval-oracle, qwen2.5:7b-instruct Q4_K_M, tier `local`)
+records `judge_accuracy=0.186` — far from ceiling. The gap MemCorrect fills
+is not "KU is near ceiling"; it is that KU does not measure:
 
 - how **fast** a correction takes effect,
 - whether corrected facts **resurrect** after maintenance or re-ingest,
