@@ -41,6 +41,7 @@
       "peft": null,
       "datasets": null,
       "huggingface-hub": null,
+      "accelerate": null,
       "bitsandbytes": null
     },
     "pipFreezeSha256": null,
