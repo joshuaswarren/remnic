@@ -59,6 +59,7 @@ class TrainHyperparams:
     weight_decay: float
     max_length: int
     label_smoothing: float
+    mixed_precision: str
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -85,6 +86,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-length", type=int, default=256,
                         help="max tokens for (factText [SEP] quote [SEP] context)")
     parser.add_argument("--label-smoothing", type=float, default=0.0)
+    parser.add_argument("--mixed-precision", choices=("fp32", "bf16"), default="fp32",
+                        help="mixed precision: fp32 (default, stable for <=0.4B base) or "
+                             "bf16 (escape hatch — DeBERTa-v3-large NaNs in fp32 via its "
+                             "XPOS relative-position encoding; bf16's wider exponent absorbs it).")
     parser.add_argument("--version-tag", type=str, default="v1",
                         help="artifact version tag (names the runs subdir)")
     return parser
@@ -102,6 +107,7 @@ def hyperparams_from_args(args: argparse.Namespace) -> TrainHyperparams:
         weight_decay=args.weight_decay,
         max_length=args.max_length,
         label_smoothing=args.label_smoothing,
+        mixed_precision=args.mixed_precision,
     )
 
 
@@ -248,6 +254,13 @@ def main(argv: list[str] | None = None) -> int:
         metric_for_best_model="f1",
         seed=hyperparams.seed,
         data_seed=hyperparams.seed,
+        # Mixed precision is operator-controlled via --mixed-precision (recorded
+        # in the manifest). fp32 is the default: stable for the <=0.4B encoder
+        # base and avoids the bf16 gradient-underflow that stalls a freshly
+        # initialized 3-way head on small data. bf16 is the escape hatch for
+        # DeBERTa-v3-large, whose relative-position (XPOS) encoding overflows
+        # fp32 range in the backward pass and NaNs the loss.
+        bf16=hyperparams.mixed_precision == "bf16" and torch.cuda.is_available(),
         use_cpu=not torch.cuda.is_available(),
     )
     # Persist the held-out gold next to the checkpoint (version-scoped) so

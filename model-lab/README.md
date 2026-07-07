@@ -89,9 +89,13 @@ The determinism contract — *same seed → byte-identical dataset → identical
 bash model-lab/setup.sh
 source model-lab/.venv/bin/activate
 
-python model-lab/faithfulness-gate/generate-data.py --seed 1337 --yes   # → faithfulness-gate/data/
-python model-lab/faithfulness-gate/train.py   --version-tag v1          # → model-lab/runs/faithfulness-gate/v1/
-python model-lab/faithfulness-gate/eval.py    --version-tag v1          # → manifest eval block
+python model-lab/faithfulness-gate/generate-data.py --seed 1337 --yes   # → faithfulness-gate/data/ (sha256 in the manifest)
+python model-lab/faithfulness-gate/train.py --version-tag v1 \
+    --base-model roberta-large-mnli --mixed-precision fp32 --epochs 12 --learning-rate 1e-5   # → model-lab/runs/faithfulness-gate/v1/
+python model-lab/faithfulness-gate/eval.py --version-tag v1             # → manifest eval block (macro-F1 + p95 latency)
+#
+# Real v1 numbers (RTX 3090): held-out macro-F1 1.0, p95 9.93 ms. See
+# docs/model-lab.md (Results) + model-lab/faithfulness-gate/manifest.json.
 ```
 
 `train.py` / `eval.py` lazy-import the GPU stack so `--help` works on a bare machine. `train.py` exits with code 2 and an install hint if `torch`/`transformers` are missing. `eval.py`'s GPU gate is scoped to the inference path (no `--predictions`): offline scoring of pre-computed predictions is JSONL + stdlib only and runs CPU-only; the inline inference loop (which loads the checkpoint) gates the GPU stack. **They never run in CI.**

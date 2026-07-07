@@ -25,14 +25,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 _MODEL_LAB_ROOT = Path(__file__).resolve().parents[1]
 if str(_MODEL_LAB_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODEL_LAB_ROOT))
 
 from common.eval_runner import held_out_block  # noqa: E402
+from common.latency import summarize  # noqa: E402
 from common.jsonl_schema import LABELS  # noqa: E402
 
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parents[1] / "runs" / "faithfulness-gate"
@@ -125,20 +127,53 @@ def main(argv: list[str] | None = None) -> int:
     model = AutoModelForSequenceClassification.from_pretrained(str(checkpoint))
     model.eval()
 
+    # Place the model on the accelerator when present so the held-out latency
+    # (summarized below) reflects the GPU serving path the gate runs in
+    # production, not a CPU fallback. Inputs move to the same device.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+
     predictions: list[str] = []
     # Invert LABEL_TO_ID (label -> id) to (id -> label); matches the model's
     # trained id2label. enumerate(LABELS) gives the canonical id ordering.
     id_to_label = {label_id: label for label_id, label in enumerate(LABELS)}
+
+    def _forward(row: Mapping[str, Any]) -> int:
+        text = " [SEP] ".join([row["factText"], row["quote"], row.get("context", "")])
+        inputs = tokenizer(text, truncation=True, max_length=args.max_length,
+                           return_tensors="pt")
+        inputs = {key: value.to(device) for key, value in inputs.items()}
+        logits = model(**inputs).logits
+        return int(torch.argmax(logits, dim=-1).item())
+
+    # Warm the accelerator (CUDA kernel compile / lazy init) on the first
+    # example so one-time setup is not charged to the first timed prediction —
+    # the latency distribution should describe steady-state serving, not a
+ # cold start.
+    with torch.no_grad():
+        _forward(rows[0])
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    latencies_ms: list[float] = []
     with torch.no_grad():
         for row in rows:
-            text = " [SEP] ".join([row["factText"], row["quote"], row.get("context", "")])
-            inputs = tokenizer(text, truncation=True, max_length=args.max_length,
-                               return_tensors="pt")
-            logits = model(**inputs).logits
-            predicted_id = int(torch.argmax(logits, dim=-1).item())
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            started = time.perf_counter()
+            predicted_id = _forward(row)
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            latencies_ms.append((time.perf_counter() - started) * 1000.0)
             predictions.append(id_to_label[predicted_id])
 
     held_out = held_out_block(gold, predictions)
+    # Per-call wall-clock over the held-out set (issue #1585 eval contract:
+    # held-out p95 latency alongside accuracy). summarize() is the shared
+    # stdlib percentile math (common.latency), identical to the served-
+    # endpoint harness, so this number is directly comparable to a deployed
+    # gate run through measure_endpoint_latencies.
+    held_out["latencyMs"] = summarize(latencies_ms)
     print(json.dumps({
         "eval": {
             "heldOut": held_out,

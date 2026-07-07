@@ -24,13 +24,45 @@ This document describes the reproducible software shipped for #1585:
 | Train recipes (`train.py`, lazy-imported GPU stack) | ✅ landed (recipe + reproducibility contract) |
 | Eval harness (held-out p95 latency + F1) | ✅ landed (`common/latency.py`, `common/eval_runner.py`) |
 | Remnic config pointers | ✅ landed (`extractionFaithfulnessBaseUrl`, `correctionIntent*`) |
-| **Actual training runs + eval-number manifests** | ⏳ **GPU-gated** — #1585 follow-up when the lab frees |
-| **Downstream bench artifacts (gate quality vs prompted LLM; MemCorrect false_apply)** | ⏳ **GPU-gated** — #1585 follow-up |
+| **Actual training runs + eval-number manifests** | ✅ **faithfulness-gate trained** (v1, this PR — held-out macro-F1 1.0, p95 9.93 ms; see Results below); ⏳ correction-intent pending (train loop is a scaffold + its `trl`/`bitsandbytes` pins don't resolve on PyPI — follow-up issue filed) |
+| **Downstream bench artifacts (gate quality vs prompted LLM; MemCorrect false_apply)** | ⏳ **GPU-gated** — produced by the #1574 bench protocol, not the model-lab recipes; the manifest's `eval.downstream` points there |
+| **HF weight publish (`common/hf_push.py`)** | ⏳ **pending** — `hf_push.py` is a stub (`NotImplementedError`) and no HF credentials exist on the lab box; the trained weights are content-pinned locally via `manifest.artifact.localArtifactSha256` (see that block) |
 
 Per rule 55 (#1520): **no accuracy/latency number appears here without an
-artifact from a real run.** Every committed manifest is explicitly
-`pending-training` until the GPU-run follow-up fills `eval.heldOut`,
-`eval.downstream`, and `trainingStack` with real values.
+artifact from a real run.** The faithfulness-gate manifest is `trained` and
+carries real held-out numbers; correction-intent stays `pending-training`
+until its train loop lands. Every number below traces to a manifest `eval`
+block.
+
+## Results — faithfulness-gate v1 (real run, RTX 3090)
+
+Trained from the manifest at `model-lab/faithfulness-gate/manifest.json`
+(`status: trained`). All numbers are from that run; reproduce with the
+commands in the next section.
+
+| Metric | Value | Source |
+|---|---|---|
+| Held-out macro-F1 | **1.000** | `manifest.eval.heldOut.macroF1` (21 held-out examples, 10% split) |
+| Per-class F1 (entailed / contradicted / unsupported) | 1.00 / 1.00 / 1.00 | `manifest.eval.heldOut.perClass` |
+| Held-out p95 latency | **9.93 ms** | `manifest.eval.heldOut.latencyMs.p95` (single-example GPU forward, fp32) |
+| Base model | `roberta-large-mnli` (0.355 B) | `manifest.baseModel` — fallback encoder (see note) |
+| Dataset | 204 records, 1:1:1 balanced, sha256 `751aa45d…` | `manifest.dataRecipe` |
+
+**Held-out caveat:** the split is drawn from the same systematic perturbation
+generator as the train set, so macro-F1 1.0 reflects perfect separation of the
+(code-generated, label-trustworthy) perturbation patterns — it clears the
+#1585 held-out target (≥0.9) but is **not** a real-world robustness claim.
+The number that matters for production is the **downstream** one (gate quality
+vs the prompted-LLM baseline on real extraction), produced by the #1574 bench
+harness — deliberately out of scope for `eval.py` (rule 55).
+
+**Base-model note:** issue #1585 names DeBERTa-v3-large-MNLI as the first-choice
+encoder. On this box DeBERTa-v3 (base **and** large) is numerically unusable:
+it NaNs in fp32 (its XPOS relative-position encoding overflows fp32 range in
+the backward pass) and is unstable under bf16 on small data. `roberta-large-mnli`
+is the documented ≤4B fallback — fp32-stable and already NLI-pretrained — and
+converged cleanly (held-out macro-F1 climbed 0.22→0.48→0.65→0.96→1.0 over
+epochs 1–5). See `manifest.baseModel.$comment`.
 
 ## Hardware envelope (sets the model-size policy)
 
@@ -54,15 +86,17 @@ needs a written justification in the manifest's `policyCompliance` block.
 bash model-lab/setup.sh
 source model-lab/.venv/bin/activate
 
-# 2. Faithfulness-gate (encoder baseline):
-python model-lab/faithfulness-gate/generate-data.py --seed 1337 --yes   # → faithfulness-gate/data/
-python model-lab/faithfulness-gate/train.py   --version-tag v1          # → model-lab/runs/faithfulness-gate/v1/
-python model-lab/faithfulness-gate/eval.py    --version-tag v1 --held-out <gold.jsonl> --latency-samples <ms.txt>
+# 2. Faithfulness-gate (encoder baseline — roberta-large-mnli; see base-model note):
+python model-lab/faithfulness-gate/generate-data.py --seed 1337 --yes   # → faithfulness-gate/data/  (sha256 recorded in the manifest)
+python model-lab/faithfulness-gate/train.py --version-tag v1 \
+    --base-model roberta-large-mnli --mixed-precision fp32 --epochs 12 --learning-rate 1e-5
+python model-lab/faithfulness-gate/eval.py --version-tag v1            # → manifest eval.heldOut block (F1 + p95 latency)
 
-# 3. Correction-intent (≤4B instruct LM, LoRA):
+# 3. Correction-intent (≤4B instruct LM, LoRA) — PENDING:
+#    train.py is a scaffold (exits recipe-ready-not-run) and its trl/bitsandbytes
+#    pins don't resolve on PyPI yet; see the follow-up issue. generate-data is CPU-only
+#    and runnable; eval (offline scoring of pre-computed predictions) is too.
 python model-lab/correction-intent/generate-data.py --seed 1337 --yes   # → correction-intent/data/
-python model-lab/correction-intent/train.py   --version-tag v1
-python model-lab/correction-intent/eval.py    --held-out <gold.jsonl> --latency-samples <ms.txt>
 ```
 
 `train.py`/`eval.py` lazy-import the GPU stack so `--help` works on a bare
