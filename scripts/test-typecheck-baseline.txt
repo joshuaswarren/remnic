@@ -1,877 +1,584 @@
-packages/bench-ui/src/components/RunTable.test.ts(4,78): error TS6142: Module './RunTable' was resolved to '<repo>/packages/bench-ui/src/components/RunTable.tsx', but '--jsx' is not set.
-packages/bench-ui/src/pages/Compare.test.ts(5,68): error TS6142: Module './Compare' was resolved to '<repo>/packages/bench-ui/src/pages/Compare.tsx', but '--jsx' is not set.
-packages/bench-ui/src/pages/Compare.test.ts(68,19): error TS7006: Parameter 'run' implicitly has an 'any' type.
-packages/bench/src/benchmarks/published/beam/runner.test.ts(147,13): error TS2322: Type '() => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/beam/runner.test.ts(240,13): error TS2322: Type '() => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/beam/runner.test.ts(362,13): error TS2322: Type '() => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/beam/runner.test.ts(421,5): error TS18048: 'instructionTask.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/beam/runner.test.ts(475,13): error TS2322: Type '() => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/beam/runner.test.ts(548,13): error TS2322: Type '() => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/beam/runner.test.ts(812,13): error TS2322: Type '() => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/beam/runner.test.ts(880,13): error TS2322: Type '() => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/beam/runner.test.ts(962,5): error TS2322: Type '{ responder: { respond(): Promise<{ text: string; tokens: { input: number; output: number; }; latencyMs: number; model: string; }>; }; reset(): Promise<void>; store(): Promise<void>; ... 4 more ...; judge: { ...; }; }' is not assignable to type 'BenchMemoryAdapter'.
-  The types returned by 'search(...)' are incompatible between these types.
-    Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-      Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-        Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/beam/runner.test.ts(980,5): error TS2322: Type '{ responder: { respond(): Promise<{ text: string; tokens: { input: number; output: number; }; latencyMs: number; model: string; }>; }; reset(): Promise<void>; store(): Promise<void>; ... 4 more ...; judge: { ...; }; }' is not assignable to type 'BenchMemoryAdapter'.
-  The types returned by 'search(...)' are incompatible between these types.
-    Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-      Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-        Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/beam/runner.test.ts(1069,13): error TS2322: Type '() => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/beam/runner.test.ts(1126,13): error TS2322: Type '() => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/harness.test.ts(416,16): error TS2532: Object is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(110,7): error TS2532: Object is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(118,18): error TS2532: Object is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(214,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(216,14): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(367,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(456,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(457,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(459,7): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(560,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(561,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(650,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(739,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/locomo/runner.test.ts(827,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(61,15): error TS2322: Type '(_query: string, _limit: number) => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(182,15): error TS2322: Type '(_query: string, _limit: number) => Promise<{ id: string; text: string; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined, control?: BenchPhaseControl | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ id: string; text: string; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ id: string; text: string; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ id: string; text: string; }' is missing the following properties from type 'SearchResult': turnIndex, role, snippet, sessionId
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(344,18): error TS2532: Object is possibly 'undefined'.
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(444,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(445,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(527,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(528,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/membench/runner.test.ts(150,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/membench/runner.test.ts(226,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/membench/runner.test.ts(227,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/membench/runner.test.ts(228,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/membench/runner.test.ts(302,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/membench/runner.test.ts(303,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/membench/runner.test.ts(376,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/membench/runner.test.ts(377,18): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/memoryagentbench/runner.test.ts(65,16): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/memoryagentbench/runner.test.ts(683,16): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/memoryagentbench/runner.test.ts(684,16): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/personamem/runner.test.ts(63,16): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/personamem/runner.test.ts(121,16): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/personamem/runner.test.ts(175,16): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/published/personamem/runner.test.ts(236,23): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/remnic/assistant-morning-brief/fixture.test.ts(16,9): error TS18048: 'fact.tags' is possibly 'undefined'.
-packages/bench/src/benchmarks/remnic/coding-recall/runner.test.ts(133,20): error TS7006: Parameter 'task' implicitly has an 'any' type.
-packages/bench/src/benchmarks/remnic/coding-recall/runner.test.ts(133,26): error TS7006: Parameter 'completedCount' implicitly has an 'any' type.
-packages/bench/src/benchmarks/remnic/coding-recall/runner.test.ts(133,42): error TS7006: Parameter 'totalCount' implicitly has an 'any' type.
-packages/bench/src/benchmarks/remnic/enrichment-fidelity/runner.test.ts(29,62): error TS2322: Type 'number | undefined' is not assignable to type 'number'.
-  Type 'undefined' is not assignable to type 'number'.
-packages/bench/src/benchmarks/remnic/ingestion-schema-completeness/runner.test.ts(113,20): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/remnic/ingestion-schema-completeness/runner.test.ts(114,20): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/remnic/ingestion-schema-completeness/runner.test.ts(115,20): error TS18048: 'task.details' is possibly 'undefined'.
-packages/bench/src/benchmarks/remnic/retention-aged-dataset/runner.test.ts(107,68): error TS2322: Type 'number | undefined' is not assignable to type 'number'.
-  Type 'undefined' is not assignable to type 'number'.
-packages/bench/src/benchmarks/remnic/retrieval-direct-answer/runner.test.ts(10,58): error TS2352: Conversion of type '{ benchmark: BenchmarkDefinition; mode: "full"; runCount: number; adapterMode: string; }' to type 'ResolvedRunBenchmarkOptions' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Property 'system' is missing in type '{ benchmark: BenchmarkDefinition; mode: "full"; runCount: number; adapterMode: string; }' but required in type 'ResolvedRunBenchmarkOptions'.
-packages/bench/src/benchmarks/remnic/retrieval-direct-answer/runner.test.ts(30,58): error TS2352: Conversion of type '{ benchmark: BenchmarkDefinition; mode: "full"; runCount: number; adapterMode: string; }' to type 'ResolvedRunBenchmarkOptions' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Property 'system' is missing in type '{ benchmark: BenchmarkDefinition; mode: "full"; runCount: number; adapterMode: string; }' but required in type 'ResolvedRunBenchmarkOptions'.
-packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(104,60): error TS2352: Conversion of type '{ benchmark: BenchmarkDefinition; mode: "full"; runCount: number; adapterMode: string; }' to type 'ResolvedRunBenchmarkOptions' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Property 'system' is missing in type '{ benchmark: BenchmarkDefinition; mode: "full"; runCount: number; adapterMode: string; }' but required in type 'ResolvedRunBenchmarkOptions'.
-packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(159,60): error TS2352: Conversion of type '{ benchmark: BenchmarkDefinition; mode: "quick"; runCount: number; adapterMode: string; }' to type 'ResolvedRunBenchmarkOptions' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Property 'system' is missing in type '{ benchmark: BenchmarkDefinition; mode: "quick"; runCount: number; adapterMode: string; }' but required in type 'ResolvedRunBenchmarkOptions'.
-packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(181,60): error TS2352: Conversion of type '{ benchmark: BenchmarkDefinition; mode: "quick"; runCount: number; adapterMode: string; onTaskComplete(task: TaskResult, completedCount: number, totalCount: number | undefined): void; }' to type 'ResolvedRunBenchmarkOptions' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Property 'system' is missing in type '{ benchmark: BenchmarkDefinition; mode: "quick"; runCount: number; adapterMode: string; onTaskComplete(task: TaskResult, completedCount: number, totalCount: number | undefined): void; }' but required in type 'ResolvedRunBenchmarkOptions'.
-packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(187,60): error TS2322: Type 'number | undefined' is not assignable to type 'number'.
-  Type 'undefined' is not assignable to type 'number'.
-packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(206,60): error TS2352: Conversion of type '{ benchmark: BenchmarkDefinition; mode: "full"; runCount: number; adapterMode: string; }' to type 'ResolvedRunBenchmarkOptions' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Property 'system' is missing in type '{ benchmark: BenchmarkDefinition; mode: "full"; runCount: number; adapterMode: string; }' but required in type 'ResolvedRunBenchmarkOptions'.
-packages/bench/src/providers/local-llm.test.ts(155,50): error TS2304: Cannot find name 'HeadersInit'.
-packages/bench/src/providers/ollama.test.ts(10,50): error TS2304: Cannot find name 'HeadersInit'.
-packages/bench/src/responders.test.ts(368,5): error TS2322: Type '() => { chatCompletion(_messages: { role: "user" | "assistant" | "system"; content: string; }[], options: FallbackLlmOptions | undefined): Promise<void>; }' is not assignable to type '(gatewayConfig: GatewayConfig, runtimeContext: FallbackLlmRuntimeContext) => Pick<FallbackLlmClient, "chatCompletion">'.
-  Call signature return types '{ chatCompletion(_messages: { role: "user" | "assistant" | "system"; content: string; }[], options: FallbackLlmOptions | undefined): Promise<void>; }' and 'Pick<FallbackLlmClient, "chatCompletion">' are incompatible.
-    The types returned by 'chatCompletion(...)' are incompatible between these types.
-      Type 'Promise<void>' is not assignable to type 'Promise<FallbackLlmResponse | null>'.
-        Type 'void' is not assignable to type 'FallbackLlmResponse | null'.
-packages/bench/src/responders.test.ts(371,21): error TS18048: 'options' is possibly 'undefined'.
-packages/bench/src/responders.test.ts(373,13): error TS18048: 'options' is possibly 'undefined'.
-packages/bench/src/responders.test.ts(377,24): error TS18048: 'options' is possibly 'undefined'.
-packages/bench/src/results-store.test.ts(31,18): error TS2352: Conversion of type 'BenchmarkResult' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Index signature for type 'string' is missing in type 'BenchmarkResult'.
-packages/bench/src/runtime-profiles.test.ts(54,38): error TS2345: Argument of type '{ scenarioId: string; prompt: string; memoryView: string; }' is not assignable to parameter of type '{ scenarioId: string; prompt: string; memoryView: string; seed: number; runIndex: number; runCount: number; }'.
-  Type '{ scenarioId: string; prompt: string; memoryView: string; }' is missing the following properties from type '{ scenarioId: string; prompt: string; memoryView: string; seed: number; runIndex: number; runCount: number; }': seed, runIndex, runCount
-packages/bench/src/security/extraction-attack/baseline.test.ts(12,62): error TS2559: Type '() => Promise<void>' has no properties in common with type 'TestOptions'.
-packages/bench/src/security/extraction-attack/baseline.test.ts(22,63): error TS2559: Type '() => Promise<void>' has no properties in common with type 'TestOptions'.
-packages/bench/src/security/extraction-attack/baseline.test.ts(34,78): error TS2559: Type '() => Promise<void>' has no properties in common with type 'TestOptions'.
-packages/bench/src/security/extraction-attack/mitigated-target.test.ts(23,5): error TS2322: Type '{ id: string; content: string; category: string; tokens: string[]; namespace: string; }[]' is not assignable to type 'readonly SeededMemory[]'.
-  Type '{ id: string; content: string; category: string; tokens: string[]; namespace: string; }' is not assignable to type 'SeededMemory'.
-    Types of property 'category' are incompatible.
-      Type 'string' is not assignable to type '"preference" | "decision" | "fact" | "other" | "entity"'.
-packages/hermes-provider/src/index.test.ts(219,38): error TS2304: Cannot find name 'TimerHandler'.
-packages/import-mem0/src/adapter.test.ts(79,40): error TS2304: Cannot find name 'RequestInfo'.
-packages/import-mem0/src/adapter.test.ts(136,40): error TS2304: Cannot find name 'RequestInfo'.
-packages/import-mem0/src/client.test.ts(28,25): error TS2304: Cannot find name 'RequestInfo'.
-packages/import-mem0/src/client.test.ts(70,38): error TS2304: Cannot find name 'RequestInfo'.
-packages/import-mem0/src/client.test.ts(98,38): error TS2304: Cannot find name 'RequestInfo'.
-packages/import-mem0/src/client.test.ts(190,38): error TS2304: Cannot find name 'RequestInfo'.
-packages/import-mem0/src/client.test.ts(219,38): error TS2304: Cannot find name 'RequestInfo'.
-packages/import-mem0/src/client.test.ts(312,38): error TS2304: Cannot find name 'RequestInfo'.
-packages/import-mem0/src/client.test.ts(340,38): error TS2304: Cannot find name 'RequestInfo'.
-packages/import-mem0/src/client.test.ts(373,38): error TS2304: Cannot find name 'RequestInfo'.
-src/index.ts(2,40): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(3987,38): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4161,23): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4163,21): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4435,23): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4437,21): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4547,23): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4549,21): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4677,25): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4679,23): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4784,25): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4786,23): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4808,25): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4810,23): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4860,25): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4862,24): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4874,25): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4876,24): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4894,25): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4896,23): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4917,25): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4919,24): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4931,25): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-src/index.ts(4933,24): error TS2307: Cannot find module 'openclaw/plugin-sdk' or its corresponding type declarations.
-tests/access-http.test.ts(22,22): error TS7031: Binding element 'query' implicitly has an 'any' type.
-tests/access-http.test.ts(22,29): error TS7031: Binding element 'sessionKey' implicitly has an 'any' type.
-tests/access-http.test.ts(51,29): error TS7031: Binding element 'sessionKey' implicitly has an 'any' type.
-tests/access-http.test.ts(63,23): error TS7006: Parameter 'memoryId' implicitly has an 'any' type.
-tests/access-http.test.ts(83,28): error TS7006: Parameter 'memoryId' implicitly has an 'any' type.
-tests/access-http.test.ts(83,38): error TS7006: Parameter '_namespace' implicitly has an 'any' type.
-tests/access-http.test.ts(83,50): error TS7006: Parameter 'limit' implicitly has an 'any' type.
-tests/access-http.test.ts(129,23): error TS7006: Parameter 'name' implicitly has an 'any' type.
-tests/access-http.test.ts(289,32): error TS7031: Binding element 'recordId' implicitly has an 'any' type.
-tests/access-http.test.ts(289,42): error TS7031: Binding element 'targetZone' implicitly has an 'any' type.
-tests/access-http.test.ts(289,54): error TS7031: Binding element 'dryRun' implicitly has an 'any' type.
-tests/access-http.test.ts(332,33): error TS7031: Binding element 'dryRun' implicitly has an 'any' type.
-tests/access-http.test.ts(351,33): error TS7031: Binding element 'memoryId' implicitly has an 'any' type.
-tests/access-http.test.ts(351,43): error TS7031: Binding element 'status' implicitly has an 'any' type.
-tests/access-http.test.ts(397,29): error TS7031: Binding element 'name' implicitly has an 'any' type.
-tests/access-http.test.ts(427,29): error TS7031: Binding element 'archivePath' implicitly has an 'any' type.
-tests/access-http.test.ts(427,42): error TS7031: Binding element 'mode' implicitly has an 'any' type.
-tests/access-http.test.ts(2295,3): error TS2322: Type '({ query, namespace, sessionKey, authenticatedPrincipal }: EngramAccessRecallRequest) => Promise<{ query: string; sessionKey: string | undefined; namespace: string; context: string; count: number; memoryIds: never[]; ... 7 more ...; latencyMs: number; }>' is not assignable to type '(request: EngramAccessRecallRequest) => Promise<EngramAccessRecallResponse>'.
-  Type 'Promise<{ query: string; sessionKey: string | undefined; namespace: string; context: string; count: number; memoryIds: never[]; results: never[]; recordedAt: string; traceId: string; plannerMode: "full"; fallbackUsed: false; sourcesUsed: never[]; budgetsApplied: { ...; }; latencyMs: number; }>' is not assignable to type 'Promise<EngramAccessRecallResponse>'.
-    Property 'disclosure' is missing in type '{ query: string; sessionKey: string | undefined; namespace: string; context: string; count: number; memoryIds: never[]; results: never[]; recordedAt: string; traceId: string; plannerMode: "full"; fallbackUsed: false; sourcesUsed: never[]; budgetsApplied: { ...; }; latencyMs: number; }' but required in type 'EngramAccessRecallResponse'.
-tests/access-idempotency.test.ts(40,68): error TS2339: Property 'loadedMtimeMs' does not exist on type 'never'.
-  The intersection 'AccessIdempotencyStore & { loadedMtimeMs: number; }' was reduced to 'never' because property 'loadedMtimeMs' exists in multiple constituents and is private in some.
-tests/access-idempotency.test.ts(113,7): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/access-idempotency.test.ts(170,7): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/access-idempotency.test.ts(225,7): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/access-idempotency.test.ts(294,7): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/access-idempotency.test.ts(302,7): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/access-idempotency.test.ts(397,7): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/access-mcp.test.ts(9,22): error TS7031: Binding element 'query' implicitly has an 'any' type.
-tests/access-mcp.test.ts(31,26): error TS7031: Binding element 'query' implicitly has an 'any' type.
-tests/access-mcp.test.ts(44,23): error TS7006: Parameter 'memoryId' implicitly has an 'any' type.
-tests/access-mcp.test.ts(64,28): error TS7006: Parameter 'memoryId' implicitly has an 'any' type.
-tests/access-mcp.test.ts(78,27): error TS7031: Binding element 'dryRun' implicitly has an 'any' type.
-tests/access-mcp.test.ts(88,31): error TS7006: Parameter 'request' implicitly has an 'any' type.
-tests/access-mcp.test.ts(99,32): error TS7031: Binding element 'dryRun' implicitly has an 'any' type.
-tests/access-mcp.test.ts(109,23): error TS7006: Parameter 'name' implicitly has an 'any' type.
-tests/access-mcp.test.ts(123,29): error TS7031: Binding element 'mode' implicitly has an 'any' type.
-tests/access-mcp.test.ts(134,33): error TS7031: Binding element 'force' implicitly has an 'any' type.
-tests/access-mcp.test.ts(156,29): error TS7031: Binding element 'name' implicitly has an 'any' type.
-tests/access-mcp.test.ts(156,35): error TS7031: Binding element 'namespace' implicitly has an 'any' type.
-tests/access-mcp.test.ts(156,46): error TS7031: Binding element 'includeKinds' implicitly has an 'any' type.
-tests/access-mcp.test.ts(156,60): error TS7031: Binding element 'peerIds' implicitly has an 'any' type.
-tests/access-mcp.test.ts(156,69): error TS7031: Binding element 'includeTranscripts' implicitly has an 'any' type.
-tests/access-mcp.test.ts(156,89): error TS7031: Binding element 'encrypt' implicitly has an 'any' type.
-tests/access-mcp.test.ts(184,29): error TS7031: Binding element 'archivePath' implicitly has an 'any' type.
-tests/access-mcp.test.ts(184,42): error TS7031: Binding element 'mode' implicitly has an 'any' type.
-tests/access-service.test.ts(432,35): error TS2339: Property 'storage' does not exist on type 'never'.
-tests/access-service.test.ts(433,35): error TS2339: Property 'dryRun' does not exist on type 'never'.
-tests/access-service.test.ts(2061,5): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/amb-bridge.test.ts(20,8): error TS7016: Could not find a declaration file for module '../integrations/amb/remnic-bridge.mjs'. '<repo>/integrations/amb/remnic-bridge.mjs' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(477,9): error TS7034: Variable 'calls' implicitly has type 'any[]' in some locations where its type cannot be determined.
-tests/amb-bridge.test.ts(482,20): error TS7006: Parameter 'sessionId' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(482,31): error TS7006: Parameter 'query' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(482,38): error TS7006: Parameter 'budgetChars' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(482,51): error TS7006: Parameter 'options' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(512,16): error TS7005: Variable 'calls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(513,16): error TS7005: Variable 'calls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(514,20): error TS7005: Variable 'calls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(520,9): error TS7034: Variable 'storeCalls' implicitly has type 'any[]' in some locations where its type cannot be determined.
-tests/amb-bridge.test.ts(524,19): error TS7006: Parameter 'sessionId' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(524,30): error TS7006: Parameter 'messages' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(555,16): error TS7005: Variable 'storeCalls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(557,5): error TS7005: Variable 'storeCalls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(557,34): error TS7006: Parameter 'message' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(560,16): error TS7005: Variable 'storeCalls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(561,16): error TS7005: Variable 'storeCalls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(565,9): error TS7034: Variable 'storeCalls' implicitly has type 'any[]' in some locations where its type cannot be determined.
-tests/amb-bridge.test.ts(569,19): error TS7006: Parameter 'sessionId' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(569,30): error TS7006: Parameter 'messages' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(600,5): error TS7005: Variable 'storeCalls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(645,9): error TS7034: Variable 'storedSessions' implicitly has type 'any[]' in some locations where its type cannot be determined.
-tests/amb-bridge.test.ts(646,9): error TS7034: Variable 'recallCalls' implicitly has type 'any[]' in some locations where its type cannot be determined.
-tests/amb-bridge.test.ts(652,21): error TS7006: Parameter 'sessionId' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(683,22): error TS7005: Variable 'storedSessions' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(691,22): error TS7006: Parameter 'sessionId' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(691,33): error TS7006: Parameter 'query' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(714,7): error TS7005: Variable 'recallCalls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(727,9): error TS7034: Variable 'storedSessions' implicitly has type 'any[]' in some locations where its type cannot be determined.
-tests/amb-bridge.test.ts(733,21): error TS7006: Parameter 'sessionId' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(768,22): error TS7005: Variable 'storedSessions' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(781,9): error TS7034: Variable 'recallCalls' implicitly has type 'any[]' in some locations where its type cannot be determined.
-tests/amb-bridge.test.ts(791,20): error TS7006: Parameter 'sessionId' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(812,20): error TS7005: Variable 'recallCalls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(820,9): error TS7034: Variable 'recallCalls' implicitly has type 'any[]' in some locations where its type cannot be determined.
-tests/amb-bridge.test.ts(840,22): error TS7006: Parameter 'sessionId' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(862,22): error TS7005: Variable 'recallCalls' implicitly has an 'any[]' type.
-tests/amb-bridge.test.ts(943,9): error TS7034: Variable 'calls' implicitly has type 'any[]' in some locations where its type cannot be determined.
-tests/amb-bridge.test.ts(945,38): error TS7006: Parameter 'options' implicitly has an 'any' type.
-tests/amb-bridge.test.ts(981,20): error TS7005: Variable 'calls' implicitly has an 'any[]' type.
-tests/amb-compare.test.ts(14,8): error TS7016: Could not find a declaration file for module '../integrations/amb/compare-beam-result.mjs'. '<repo>/integrations/amb/compare-beam-result.mjs' implicitly has an 'any' type.
-tests/amb-integration.test.ts(721,25): error TS2339: Property 'REMNIC_REPO' does not exist on type '{ PYTHONPATH: string; }'.
-tests/amb-integration.test.ts(722,25): error TS2339: Property 'REMNIC_AMB_HELPER' does not exist on type '{ PYTHONPATH: string; }'.
-tests/bench-ama-bench-runner.test.ts(120,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-amemgym-runner.test.ts(610,28): error TS2339: Property 'route' does not exist on type '{ city: { type: string; }; }'.
-tests/bench-amemgym-runner.test.ts(611,33): error TS2339: Property 'route' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(612,35): error TS2339: Property 'route' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(613,55): error TS2339: Property 'route' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(644,28): error TS2339: Property 'duration' does not exist on type '{ city: { type: string; }; }'.
-tests/bench-amemgym-runner.test.ts(645,33): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(646,35): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(647,55): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(678,28): error TS2339: Property 'duration' does not exist on type '{ city: { type: string; }; }'.
-tests/bench-amemgym-runner.test.ts(679,33): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(680,35): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(681,55): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(711,28): error TS2339: Property 'duration' does not exist on type '{ city: { type: string; }; }'.
-tests/bench-amemgym-runner.test.ts(712,33): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(713,35): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(714,55): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(747,28): error TS2339: Property 'duration' does not exist on type '{ city: { type: string; }; }'.
-tests/bench-amemgym-runner.test.ts(748,33): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(749,35): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(750,55): error TS2339: Property 'duration' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(783,28): error TS2339: Property 'route' does not exist on type '{ city: { type: string; }; }'.
-tests/bench-amemgym-runner.test.ts(784,33): error TS2339: Property 'route' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(785,35): error TS2339: Property 'route' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(786,55): error TS2339: Property 'route' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(816,28): error TS2339: Property 'route' does not exist on type '{ city: { type: string; }; }'.
-tests/bench-amemgym-runner.test.ts(817,33): error TS2339: Property 'route' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(818,35): error TS2339: Property 'route' does not exist on type '{ city: string; }'.
-tests/bench-amemgym-runner.test.ts(819,55): error TS2339: Property 'route' does not exist on type '{ city: string; }'.
-tests/bench-assistant-runners.test.ts(147,13): error TS7022: 'ci' implicitly has type 'any' because it does not have a type annotation and is referenced directly or indirectly in its own initializer.
-tests/bench-beam-runner.test.ts(115,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(173,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(232,23): error TS18048: 'task.details' is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(281,20): error TS18048: 'task.details' is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(282,16): error TS18048: 'task.details' is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(291,23): error TS18048: 'task.details' is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(292,23): error TS18048: 'task.details' is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(335,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(381,23): error TS18048: 'task.details' is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(519,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(575,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(641,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-beam-runner.test.ts(708,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-custom-benchmark.test.ts(235,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-locomo-runner.test.ts(132,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-membench-runner.test.ts(418,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-membench-runner.test.ts(419,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-membench-runner.test.ts(441,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-membench-runner.test.ts(465,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-membench-runner.test.ts(554,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-membench-runner.test.ts(569,57): error TS2322: Type 'Promise<{ turnIndex: number; role: string; snippet: string; sessionId: string | undefined; score: number; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-  Type '{ turnIndex: number; role: string; snippet: string; sessionId: string | undefined; score: number; }[]' is not assignable to type 'SearchResult[]'.
-    Type '{ turnIndex: number; role: string; snippet: string; sessionId: string | undefined; score: number; }' is not assignable to type 'SearchResult'.
-      Types of property 'sessionId' are incompatible.
-        Type 'string | undefined' is not assignable to type 'string'.
-          Type 'undefined' is not assignable to type 'string'.
-tests/bench-membench-runner.test.ts(632,3): error TS2322: Type '(query: string, _limit: number, sessionId: string | undefined) => Promise<{ turnIndex: number; role: string; snippet: string; sessionId: string | undefined; score: number; }[]>' is not assignable to type '(query: string, limit: number, sessionId?: string | undefined) => Promise<SearchResult[]>'.
-  Type 'Promise<{ turnIndex: number; role: string; snippet: string; sessionId: string | undefined; score: number; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-    Type '{ turnIndex: number; role: string; snippet: string; sessionId: string | undefined; score: number; }[]' is not assignable to type 'SearchResult[]'.
-      Type '{ turnIndex: number; role: string; snippet: string; sessionId: string | undefined; score: number; }' is not assignable to type 'SearchResult'.
-        Types of property 'sessionId' are incompatible.
-          Type 'string | undefined' is not assignable to type 'string'.
-            Type 'undefined' is not assignable to type 'string'.
-tests/bench-membench-runner.test.ts(747,57): error TS2322: Type 'Promise<{ turnIndex: number; role: string; snippet: string; sessionId: string | undefined; score: number; }[]>' is not assignable to type 'Promise<SearchResult[]>'.
-  Type '{ turnIndex: number; role: string; snippet: string; sessionId: string | undefined; score: number; }[]' is not assignable to type 'SearchResult[]'.
-    Type '{ turnIndex: number; role: string; snippet: string; sessionId: string | undefined; score: number; }' is not assignable to type 'SearchResult'.
-      Types of property 'sessionId' are incompatible.
-        Type 'string | undefined' is not assignable to type 'string'.
-          Type 'undefined' is not assignable to type 'string'.
-tests/bench-memoryagentbench-runner.test.ts(109,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(110,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(167,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(169,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(204,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(264,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(266,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(318,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(414,16): error TS18048: 'task.details' is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(415,20): error TS18048: 'task.details' is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(667,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(711,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(754,5): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(799,5): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(843,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(926,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1052,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1103,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1164,12): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1167,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1218,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1327,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1381,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1437,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1491,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1544,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1595,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1646,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1701,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1756,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1808,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1862,20): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(1977,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(2035,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(2092,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(2134,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-memoryagentbench-runner.test.ts(2182,16): error TS2532: Object is possibly 'undefined'.
-tests/bench-openai-provider.test.ts(86,30): error TS2722: Cannot invoke an object which is possibly 'undefined'.
-tests/bench-openai-provider.test.ts(86,30): error TS18048: 'provider.discover' is possibly 'undefined'.
-tests/bench-public-matrix-verifier.test.ts(328,7): error TS2740: Type '{ id: string; timestamp: string; }' is missing the following properties from type '{ id: string; benchmark: string; benchmarkTier: BenchmarkTier; version: string; remnicVersion: string; gitSha: string; timestamp: string; mode: BenchmarkMode; ... 8 more ...; failureReason?: string | undefined; }': benchmark, benchmarkTier, version, remnicVersion, and 4 more.
-tests/bench-public-matrix-verifier.test.ts(332,7): error TS2739: Type '{ runtimeProfile: "baseline"; systemProvider: { provider: "openai"; model: string; }; }' is missing the following properties from type '{ runtimeProfile?: BenchRuntimeProfile | null | undefined; systemProvider: ProviderConfig | null; judgeProvider: ProviderConfig | null; internalProvider?: ProviderConfig | ... 1 more ... | undefined; adapterMode: string; remnicConfig: Record<...>; benchmarkOptions?: Record<...> | undefined; }': judgeProvider, adapterMode, remnicConfig
-tests/bench-public-matrix-verifier.test.ts(377,7): error TS2740: Type '{ id: string; }' is missing the following properties from type '{ id: string; benchmark: string; benchmarkTier: BenchmarkTier; version: string; remnicVersion: string; gitSha: string; timestamp: string; mode: BenchmarkMode; ... 8 more ...; failureReason?: string | undefined; }': benchmark, benchmarkTier, version, remnicVersion, and 5 more.
-tests/bench-public-matrix-verifier.test.ts(380,7): error TS2739: Type '{ runtimeProfile: "baseline"; }' is missing the following properties from type '{ runtimeProfile?: BenchRuntimeProfile | null | undefined; systemProvider: ProviderConfig | null; judgeProvider: ProviderConfig | null; internalProvider?: ProviderConfig | ... 1 more ... | undefined; adapterMode: string; remnicConfig: Record<...>; benchmarkOptions?: Record<...> | undefined; }': systemProvider, judgeProvider, adapterMode, remnicConfig
-tests/bench-public-matrix-verifier.test.ts(447,7): error TS2740: Type '{ id: string; }' is missing the following properties from type '{ id: string; benchmark: string; benchmarkTier: BenchmarkTier; version: string; remnicVersion: string; gitSha: string; timestamp: string; mode: BenchmarkMode; ... 8 more ...; failureReason?: string | undefined; }': benchmark, benchmarkTier, version, remnicVersion, and 5 more.
-tests/bench-public-matrix-verifier.test.ts(530,7): error TS2739: Type '{ runtimeProfile: "baseline"; systemProvider: { provider: "openai"; model: string; reasoningEffort: "high"; }; benchmarkOptions: { limit: number; }; }' is missing the following properties from type '{ runtimeProfile?: BenchRuntimeProfile | null | undefined; systemProvider: ProviderConfig | null; judgeProvider: ProviderConfig | null; internalProvider?: ProviderConfig | ... 1 more ... | undefined; adapterMode: string; remnicConfig: Record<...>; benchmarkOptions?: Record<...> | undefined; }': judgeProvider, adapterMode, remnicConfig
-tests/bench-remnic-deterministic-runners.test.ts(221,37): error TS2339: Property 'slice' does not exist on type '{}'.
-tests/bench-ui-assistant.test.ts(21,9): error TS2741: Property 'integrity' is missing in type '{ id: string; benchmark: string; benchmarkTier: string; timestamp: string; mode: string; totalLatencyMs: number; meanQueryLatencyMs: number; taskCount: number; metricHighlights: { name: string; mean: number; }[]; ... 16 more ...; filePath: string; }' but required in type 'BenchResultSummary'.
-tests/bench-ui-results.test.ts(20,8): error TS6142: Module '../packages/bench-ui/src/pages/BenchmarkDetail.js' was resolved to '<repo>/packages/bench-ui/src/pages/BenchmarkDetail.tsx', but '--jsx' is not set.
-tests/bench-ui-results.test.ts(21,68): error TS6142: Module '../packages/bench-ui/src/pages/Compare.js' was resolved to '<repo>/packages/bench-ui/src/pages/Compare.tsx', but '--jsx' is not set.
-tests/bench-ui-results.test.ts(472,26): error TS7006: Parameter 'row' implicitly has an 'any' type.
-tests/bench-ui-results.test.ts(474,45): error TS7006: Parameter 'row' implicitly has an 'any' type.
-tests/bench-ui-results.test.ts(671,66): error TS7006: Parameter 'summary' implicitly has an 'any' type.
-tests/binary-lifecycle.test.ts(719,13): error TS2352: Conversion of type 'BinaryAssetRecord' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Index signature for type 'string' is missing in type 'BinaryAssetRecord'.
-tests/capsule-manifest.test.ts(200,3): error TS2322: Type '"research-2025"' is not assignable to type 'null'.
-tests/cli-tier-status.test.ts(37,11): error TS2322: Type '() => Promise<{ updatedAt: string; lastCycle: { trigger: string; scanned: number; migrated: number; promoted: number; demoted: number; limit: number; dryRun: boolean; }; totals: { cycles: number; scanned: number; migrated: number; promoted: number; demoted: number; errors: number; }; }>' is not assignable to type '() => Promise<TierMigrationStatusSnapshot>'.
-  Type 'Promise<{ updatedAt: string; lastCycle: { trigger: string; scanned: number; migrated: number; promoted: number; demoted: number; limit: number; dryRun: boolean; }; totals: { cycles: number; scanned: number; migrated: number; promoted: number; demoted: number; errors: number; }; }>' is not assignable to type 'Promise<TierMigrationStatusSnapshot>'.
-    Type '{ updatedAt: string; lastCycle: { trigger: string; scanned: number; migrated: number; promoted: number; demoted: number; limit: number; dryRun: boolean; }; totals: { cycles: number; scanned: number; migrated: number; promoted: number; demoted: number; errors: number; }; }' is not assignable to type 'TierMigrationStatusSnapshot'.
-      The types of 'lastCycle.trigger' are incompatible between these types.
-        Type 'string' is not assignable to type '"manual" | "extraction" | "maintenance"'.
-tests/cli/capsule.test.ts(104,3): error TS2322: Type '((...args: unknown[]) => void | Promise<void>) | undefined' is not assignable to type '(...args: unknown[]) => void | Promise<void>'.
-  Type 'undefined' is not assignable to type '(...args: unknown[]) => void | Promise<void>'.
-tests/cli/patterns.test.ts(59,18): error TS2352: Conversion of type '{ created_at: string; updated_at: string; derived_via?: string | undefined; derived_from?: string[] | undefined; supersededAt?: string | undefined; supersededBy?: string | undefined; ... 4 more ...; status: string; }' to type 'MemoryFrontmatter' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Type '{ created_at: string; updated_at: string; derived_via?: string | undefined; derived_from?: string[] | undefined; supersededAt?: string | undefined; supersededBy?: string | undefined; ... 4 more ...; status: string; }' is missing the following properties from type 'MemoryFrontmatter': created, updated, source, confidence, and 2 more.
-tests/compat-fixtures/empty-package/src/index.ts(1,1): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/empty-package/src/index.ts(2,1): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/empty-package/src/index.ts(3,1): error TS2304: Cannot find name 'registerCli'.
-tests/compat-fixtures/empty-package/src/index.ts(3,13): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/empty-package/src/index.ts(3,31): error TS2304: Cannot find name 'Foo'.
-tests/compat-fixtures/empty-package/src/index.ts(3,36): error TS2304: Cannot find name 'orchestrator'.
-tests/compat-fixtures/empty-package/src/index.ts(4,1): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/healthy/src/index.ts(1,1): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/healthy/src/index.ts(2,1): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/healthy/src/index.ts(3,1): error TS2304: Cannot find name 'registerCli'.
-tests/compat-fixtures/healthy/src/index.ts(3,13): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/healthy/src/index.ts(3,31): error TS2304: Cannot find name 'Foo'.
-tests/compat-fixtures/healthy/src/index.ts(3,36): error TS2304: Cannot find name 'orchestrator'.
-tests/compat-fixtures/healthy/src/index.ts(4,1): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/missing-manifest/src/index.ts(1,1): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/missing-manifest/src/index.ts(2,1): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/missing-manifest/src/index.ts(3,1): error TS2304: Cannot find name 'registerCli'.
-tests/compat-fixtures/missing-manifest/src/index.ts(3,13): error TS2304: Cannot find name 'api'.
-tests/compat-fixtures/missing-manifest/src/index.ts(3,31): error TS2304: Cannot find name 'Foo'.
-tests/compat-fixtures/missing-manifest/src/index.ts(3,36): error TS2304: Cannot find name 'orchestrator'.
-tests/compat-fixtures/missing-manifest/src/index.ts(4,1): error TS2304: Cannot find name 'api'.
-tests/compounding.test.ts(16,3): error TS2740: Type '{ openaiApiKey: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; highSignalPatterns: never[]; ... 121 more ...; compoundingInjectEnabled: true; }' is missing the following properties from type 'PluginConfig': openaiBaseUrl, bufferSurpriseTriggerEnabled, bufferSurpriseThreshold, bufferSurpriseK, and 510 more.
-tests/consolidation-undo.test.ts(30,39): error TS2307: Cannot find module '../src/page-versioning.ts' or its corresponding type declarations.
-tests/consolidation-undo.test.ts(64,13): error TS2341: Property 'invalidateAllMemoriesCache' is private and only accessible within class 'StorageManager'.
-tests/consolidation-undo.test.ts(111,13): error TS2341: Property 'invalidateAllMemoriesCache' is private and only accessible within class 'StorageManager'.
-tests/consolidation-undo.test.ts(522,13): error TS2341: Property 'invalidateAllMemoriesCache' is private and only accessible within class 'StorageManager'.
-tests/consolidation-undo.test.ts(628,13): error TS2341: Property 'invalidateAllMemoriesCache' is private and only accessible within class 'StorageManager'.
-tests/continuity-audit.test.ts(15,3): error TS2740: Type '{ openaiApiKey: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; highSignalPatterns: never[]; ... 121 more ...; compoundingInjectEnabled: true; }' is missing the following properties from type 'PluginConfig': openaiBaseUrl, bufferSurpriseTriggerEnabled, bufferSurpriseThreshold, bufferSurpriseK, and 510 more.
-tests/conversation-index-faiss-adapter.test.ts(59,5): error TS2322: Type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...' is not assignable to type '((command: string, args: string[], options?: ProcessOptions | undefined) => CommandChildProcess) | undefined'.
-  Type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...' is not assignable to type '(command: string, args: string[], options?: ProcessOptions | undefined) => CommandChildProcess'.
-    Types of parameters 'options' and 'args' are incompatible.
-      Type 'string[]' has no properties in common with type 'SpawnOptionsWithoutStdio'.
-tests/conversation-index-faiss-adapter.test.ts(219,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(238,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(265,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(298,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(321,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(334,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(353,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(372,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(405,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(446,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(462,9): error TS2322: Type '(_bin: string, args: readonly string[] | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioPipe> | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioNull> | ... 8 more ... | undefined) => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(463,26): error TS7053: Element implicitly has an 'any' type because expression of type '1' can't be used to index type 'readonly string[] | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioPipe> | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioNull> | ... 7 more ... | SpawnOptionsWithoutStdio'.
-  Property '1' does not exist on type 'readonly string[] | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioPipe> | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioNull> | ... 7 more ... | SpawnOptionsWithoutStdio'.
-tests/conversation-index-faiss-adapter.test.ts(493,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(521,9): error TS2322: Type '(_bin: string, args: readonly string[] | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioPipe> | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioNull> | ... 8 more ... | undefined) => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(522,26): error TS7053: Element implicitly has an 'any' type because expression of type '1' can't be used to index type 'readonly string[] | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioPipe> | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioNull> | ... 7 more ... | SpawnOptionsWithoutStdio'.
-  Property '1' does not exist on type 'readonly string[] | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioPipe> | SpawnOptionsWithStdioTuple<StdioPipe, StdioPipe, StdioNull> | ... 7 more ... | SpawnOptionsWithoutStdio'.
-tests/conversation-index-faiss-adapter.test.ts(553,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(574,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(583,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(591,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-adapter.test.ts(617,9): error TS2322: Type '() => childProcess.ChildProcess' is not assignable to type '{ (command: string, options?: SpawnOptionsWithoutStdio | undefined): ChildProcessWithoutNullStreams; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWithStdioTuple<...>): ChildProcessByStdio<...>; (command: string, options: SpawnOptionsWit...'.
-  Call signature return types 'ChildProcess' and 'ChildProcessWithoutNullStreams' are incompatible.
-    The types of 'stdin' are incompatible between these types.
-      Type 'Writable | null' is not assignable to type 'Writable'.
-        Type 'null' is not assignable to type 'Writable'.
-tests/conversation-index-faiss-smoke.test.ts(182,43): error TS2339: Property 'normalizedModelId' does not exist on type '{}'.
-tests/conversation-index-faiss-smoke.test.ts(183,43): error TS2339: Property 'dimension' does not exist on type '{}'.
-tests/conversation-index-faiss-smoke.test.ts(184,43): error TS2339: Property 'chunkCount' does not exist on type '{}'.
-tests/conversation-index-faiss-smoke.test.ts(217,44): error TS2339: Property 'chunkCount' does not exist on type '{}'.
-tests/conversation-index-faiss-smoke.test.ts(218,44): error TS2339: Property 'hasIndex' does not exist on type '{}'.
-tests/conversation-index-faiss-smoke.test.ts(219,44): error TS2339: Property 'hasMetadata' does not exist on type '{}'.
-tests/conversation-index-faiss-smoke.test.ts(220,44): error TS2339: Property 'hasManifest' does not exist on type '{}'.
-tests/conversation-index-faiss-smoke.test.ts(221,44): error TS2339: Property 'chunkCount' does not exist on type '{}'.
-tests/dashboard-server.test.ts(283,47): error TS2339: Property 'port' does not exist on type 'string | AddressInfo'.
-  Property 'port' does not exist on type 'string'.
-tests/dashboard-server.test.ts(288,23): error TS2339: Property 'port' does not exist on type 'string | AddressInfo'.
-  Property 'port' does not exist on type 'string'.
-tests/entity-contamination.test.ts(606,4): error TS2352: Conversion of type 'MemoryFrontmatter' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Index signature for type 'string' is missing in type 'MemoryFrontmatter'.
-tests/entity-contamination.test.ts(627,4): error TS2352: Conversion of type 'MemoryFrontmatter' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Index signature for type 'string' is missing in type 'MemoryFrontmatter'.
-tests/entity-retrieval.test.ts(307,7): error TS2739: Type '{ role: "user"; content: string; }' is missing the following properties from type 'TranscriptEntry': timestamp, sessionKey, turnId
-tests/entity-retrieval.test.ts(308,7): error TS2739: Type '{ role: "assistant"; content: string; }' is missing the following properties from type 'TranscriptEntry': timestamp, sessionKey, turnId
-tests/explicit-capture.test.ts(113,38): error TS2345: Argument of type '{ sourceReason: "token=sourceReasonSecret12345"; content: string; } | { entityRef: "secret=entitySecret12345"; content: string; } | { ttl: "password=ttlSecret12345"; content: string; } | { ...; }' is not assignable to parameter of type 'ExplicitCaptureInput'.
-  Type '{ tags: readonly ["operator-review", string]; content: string; }' is not assignable to type 'ExplicitCaptureInput'.
-    Types of property 'tags' are incompatible.
-      The type 'readonly ["operator-review", string]' is 'readonly' and cannot be assigned to the mutable type 'string[]'.
-tests/extraction-proactive.test.ts(506,23): error TS7006: Parameter 'fact' implicitly has an 'any' type.
-tests/fallback-llm-builtin-provider.test.ts(43,7): error TS2322: Type '"oauth"' is not assignable to type 'ModelProviderAuthMode | undefined'.
-tests/fallback-llm-builtin-provider.test.ts(58,7): error TS2322: Type '"token"' is not assignable to type 'ModelProviderAuthMode | undefined'.
-tests/fallback-llm-builtin-provider.test.ts(85,7): error TS2322: Type '"oauth"' is not assignable to type 'ModelProviderAuthMode | undefined'.
-tests/fallback-llm-builtin-provider.test.ts(116,7): error TS2322: Type '"oauth"' is not assignable to type 'ModelProviderAuthMode | undefined'.
-tests/fallback-llm-builtin-provider.test.ts(122,7): error TS2322: Type '"token"' is not assignable to type 'ModelProviderAuthMode | undefined'.
-tests/fallback-llm-builtin-provider.test.ts(183,7): error TS2322: Type '"oauth"' is not assignable to type 'ModelProviderAuthMode | undefined'.
-tests/fallback-llm-builtin-provider.test.ts(208,7): error TS2322: Type '"oauth"' is not assignable to type 'ModelProviderAuthMode | undefined'.
-tests/fallback-llm-builtin-provider.test.ts(235,28): error TS2339: Property 'providerId' does not exist on type 'never'.
-tests/fallback-llm-builtin-provider.test.ts(236,28): error TS2339: Property 'modelId' does not exist on type 'never'.
-tests/fallback-llm-builtin-provider.test.ts(237,28): error TS2339: Property 'api' does not exist on type 'never'.
-tests/graph-snapshot.test.ts(19,15): error TS2300: Duplicate identifier 'EngramAccessService'.
-tests/graph-snapshot.test.ts(725,10): error TS2300: Duplicate identifier 'EngramAccessService'.
-tests/graph-snapshot.test.ts(774,18): error TS1361: 'EngramAccessService' cannot be used as a value because it was imported using 'import type'.
-tests/graph.test.ts(89,9): error TS2739: Type '{ multiGraphMemoryEnabled: true; entityGraphEnabled: true; timeGraphEnabled: true; causalGraphEnabled: true; maxGraphTraversalSteps: number; graphActivationDecay: number; maxEntityGraphEdgesPerMemory: number; }' is missing the following properties from type 'GraphConfig': graphLateralInhibitionEnabled, graphLateralInhibitionBeta, graphLateralInhibitionTopM, graphTraversalConfidenceFloor, graphTraversalPageRankIterations
-tests/graph.test.ts(177,9): error TS2739: Type '{ multiGraphMemoryEnabled: true; entityGraphEnabled: true; timeGraphEnabled: true; causalGraphEnabled: false; maxGraphTraversalSteps: number; graphActivationDecay: number; maxEntityGraphEdgesPerMemory: number; }' is missing the following properties from type 'GraphConfig': graphLateralInhibitionEnabled, graphLateralInhibitionBeta, graphLateralInhibitionTopM, graphTraversalConfidenceFloor, graphTraversalPageRankIterations
-tests/graph.test.ts(591,13): error TS2739: Type '{ multiGraphMemoryEnabled: false; entityGraphEnabled: true; timeGraphEnabled: true; causalGraphEnabled: true; maxGraphTraversalSteps: number; graphActivationDecay: number; maxEntityGraphEdgesPerMemory: number; }' is missing the following properties from type 'GraphConfig': graphLateralInhibitionEnabled, graphLateralInhibitionBeta, graphLateralInhibitionTopM, graphTraversalConfidenceFloor, graphTraversalPageRankIterations
-tests/graph.test.ts(643,13): error TS2739: Type '{ multiGraphMemoryEnabled: true; entityGraphEnabled: true; timeGraphEnabled: true; causalGraphEnabled: true; maxGraphTraversalSteps: number; graphActivationDecay: number; maxEntityGraphEdgesPerMemory: number; }' is missing the following properties from type 'GraphConfig': graphLateralInhibitionEnabled, graphLateralInhibitionBeta, graphLateralInhibitionTopM, graphTraversalConfidenceFloor, graphTraversalPageRankIterations
-tests/hourly-extended.test.ts(18,9): error TS2740: Type '{ openaiApiKey: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; highSignalPatterns: never[]; ... 122 more ...; compoundingInjectEnabled: false; }' is missing the following properties from type 'PluginConfig': openaiBaseUrl, bufferSurpriseTriggerEnabled, bufferSurpriseThreshold, bufferSurpriseK, and 509 more.
-tests/identity-namespaces.test.ts(15,10): error TS2352: Conversion of type '{ openaiApiKey: undefined; openaiBaseUrl: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; ... 181 more ...; slowLogThresholdMs: number; }' to type 'PluginConfig' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Type '{ openaiApiKey: undefined; openaiBaseUrl: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; ... 181 more ...; slowLogThresholdMs: number; }' is missing the following properties from type 'PluginConfig': bufferSurpriseTriggerEnabled, bufferSurpriseThreshold, bufferSurpriseK, bufferSurpriseRecentMemoryCount, and 462 more.
-tests/integration/bridge-mode.test.ts(254,7): error TS2353: Object literal may only specify known properties, and 'type' does not exist in type 'WorkerOptions'.
-tests/integration/bridge-mode.test.ts(297,7): error TS2353: Object literal may only specify known properties, and 'type' does not exist in type 'WorkerOptions'.
-tests/integration/bridge-mode.test.ts(336,7): error TS2353: Object literal may only specify known properties, and 'type' does not exist in type 'WorkerOptions'.
-tests/integration/bridge-mode.test.ts(381,7): error TS2353: Object literal may only specify known properties, and 'type' does not exist in type 'WorkerOptions'.
-tests/lcm.test.ts(423,71): error TS2345: Argument of type '{ leafBatchSize: number; rollupFanIn: number; maxDepth: number; deterministicMaxTokens: number; }' is not assignable to parameter of type 'LcmSummarizerConfig'.
-  Property 'telemetryPrefilterEnabled' is missing in type '{ leafBatchSize: number; rollupFanIn: number; maxDepth: number; deterministicMaxTokens: number; }' but required in type 'LcmSummarizerConfig'.
-tests/lcm.test.ts(461,71): error TS2345: Argument of type '{ leafBatchSize: number; rollupFanIn: number; maxDepth: number; deterministicMaxTokens: number; }' is not assignable to parameter of type 'LcmSummarizerConfig'.
-  Property 'telemetryPrefilterEnabled' is missing in type '{ leafBatchSize: number; rollupFanIn: number; maxDepth: number; deterministicMaxTokens: number; }' but required in type 'LcmSummarizerConfig'.
-tests/lcm.test.ts(498,71): error TS2345: Argument of type '{ leafBatchSize: number; rollupFanIn: number; maxDepth: number; deterministicMaxTokens: number; }' is not assignable to parameter of type 'LcmSummarizerConfig'.
-  Property 'telemetryPrefilterEnabled' is missing in type '{ leafBatchSize: number; rollupFanIn: number; maxDepth: number; deterministicMaxTokens: number; }' but required in type 'LcmSummarizerConfig'.
-tests/maintenance/purge.test.ts(69,7): error TS2353: Object literal may only specify known properties, and 'probe' does not exist in type 'StubQmd & { updateCollection: (c: string) => Promise<void>; updateCollectionStrict: (c: string, execution?: { signal?: AbortSignal | undefined; } | undefined) => Promise<...>; signals: (AbortSignal | undefined)[]; }'.
-tests/maintenance/purge.test.ts(88,7): error TS1117: An object literal cannot have multiple properties with the same name.
-tests/maintenance/purge.test.ts(89,7): error TS1117: An object literal cannot have multiple properties with the same name.
-tests/memory-action-policy.test.ts(275,20): error TS2352: Conversion of type 'MemoryActionEvent' to type 'Record<string, unknown>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Index signature for type 'string' is missing in type 'MemoryActionEvent'.
-tests/memory-governance.test.ts(680,89): error TS2304: Cannot find name 'MemoryFile'.
-tests/memory-governance.test.ts(682,40): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(684,13): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(684,50): error TS7006: Parameter 'filePaths' implicitly has an 'any' type.
-tests/memory-governance.test.ts(684,61): error TS7006: Parameter 'batchSize' implicitly has an 'any' type.
-tests/memory-governance.test.ts(689,34): error TS2339: Property 'readMemoriesWindow' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(698,43): error TS7006: Parameter 'memory' implicitly has an 'any' type.
-tests/memory-governance.test.ts(734,89): error TS2304: Cannot find name 'MemoryFile'.
-tests/memory-governance.test.ts(736,40): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(738,13): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(738,50): error TS7006: Parameter 'filePaths' implicitly has an 'any' type.
-tests/memory-governance.test.ts(738,61): error TS7006: Parameter 'batchSize' implicitly has an 'any' type.
-tests/memory-governance.test.ts(743,34): error TS2339: Property 'readMemoriesWindow' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(752,43): error TS7006: Parameter 'memory' implicitly has an 'any' type.
-tests/memory-governance.test.ts(793,89): error TS2304: Cannot find name 'MemoryFile'.
-tests/memory-governance.test.ts(795,40): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(797,13): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(797,50): error TS7006: Parameter 'filePaths' implicitly has an 'any' type.
-tests/memory-governance.test.ts(797,61): error TS7006: Parameter 'batchSize' implicitly has an 'any' type.
-tests/memory-governance.test.ts(802,34): error TS2339: Property 'readMemoriesWindow' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(808,43): error TS7006: Parameter 'memory' implicitly has an 'any' type.
-tests/memory-governance.test.ts(851,89): error TS2304: Cannot find name 'MemoryFile'.
-tests/memory-governance.test.ts(853,40): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(855,13): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(855,50): error TS7006: Parameter 'filePaths' implicitly has an 'any' type.
-tests/memory-governance.test.ts(855,61): error TS7006: Parameter 'batchSize' implicitly has an 'any' type.
-tests/memory-governance.test.ts(860,34): error TS2339: Property 'readMemoriesWindow' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(866,43): error TS7006: Parameter 'memory' implicitly has an 'any' type.
-tests/memory-governance.test.ts(906,89): error TS2304: Cannot find name 'MemoryFile'.
-tests/memory-governance.test.ts(908,40): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(910,13): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(910,50): error TS7006: Parameter 'filePaths' implicitly has an 'any' type.
-tests/memory-governance.test.ts(910,61): error TS7006: Parameter 'batchSize' implicitly has an 'any' type.
-tests/memory-governance.test.ts(915,34): error TS2339: Property 'readMemoriesWindow' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(926,43): error TS7006: Parameter 'memory' implicitly has an 'any' type.
-tests/memory-governance.test.ts(967,89): error TS2304: Cannot find name 'MemoryFile'.
-tests/memory-governance.test.ts(969,40): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(971,13): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(971,50): error TS7006: Parameter 'filePaths' implicitly has an 'any' type.
-tests/memory-governance.test.ts(971,61): error TS7006: Parameter 'batchSize' implicitly has an 'any' type.
-tests/memory-governance.test.ts(976,34): error TS2339: Property 'readMemoriesWindow' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(982,43): error TS7006: Parameter 'memory' implicitly has an 'any' type.
-tests/memory-governance.test.ts(1010,89): error TS2304: Cannot find name 'MemoryFile'.
-tests/memory-governance.test.ts(1012,40): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(1014,13): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(1014,50): error TS7006: Parameter 'filePaths' implicitly has an 'any' type.
-tests/memory-governance.test.ts(1014,61): error TS7006: Parameter 'batchSize' implicitly has an 'any' type.
-tests/memory-governance.test.ts(1019,34): error TS2339: Property 'readMemoriesWindow' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(1113,89): error TS2304: Cannot find name 'MemoryFile'.
-tests/memory-governance.test.ts(1115,40): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(1117,13): error TS2339: Property 'readParsedMemoriesFromPaths' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(1117,50): error TS7006: Parameter 'filePaths' implicitly has an 'any' type.
-tests/memory-governance.test.ts(1117,61): error TS7006: Parameter 'batchSize' implicitly has an 'any' type.
-tests/memory-governance.test.ts(1122,34): error TS2339: Property 'readMemoriesWindow' does not exist on type 'never'.
-  The intersection 'StorageManager & { readParsedMemoriesFromPaths: (filePaths: string[], batchSize?: number | undefined) => Promise<MemoryFile[]>; }' was reduced to 'never' because property 'readParsedMemoriesFromPaths' exists in multiple constituents and is private in some.
-tests/memory-governance.test.ts(1128,43): error TS7006: Parameter 'memory' implicitly has an 'any' type.
-tests/memory-observation-type-shape.test.ts(24,15): error TS2614: Module '"../src/index.js"' has no exported member 'MemoryObservation'. Did you mean to use 'import MemoryObservation from "../src/index.js"' instead?
-tests/memory-projection.test.ts(1618,18): error TS18048: 'projectedReviewQueue.reviewQueue' is possibly 'undefined'.
-tests/migrate-observations.test.ts(188,9): error TS2322: Type '(filePath: string, content: string | Uint8Array<ArrayBufferLike>) => Promise<void>' is not assignable to type '(outputPath: string, content: string | Uint8Array<ArrayBufferLike>, backupPath?: string | undefined) => Promise<string | undefined>'.
-  Type 'Promise<void>' is not assignable to type 'Promise<string | undefined>'.
-    Type 'void' is not assignable to type 'string | undefined'.
-tests/namespace-migrate.test.ts(22,3): error TS2740: Type '{ openaiApiKey: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; highSignalPatterns: never[]; ... 122 more ...; compoundingInjectEnabled: false; }' is missing the following properties from type 'PluginConfig': openaiBaseUrl, bufferSurpriseTriggerEnabled, bufferSurpriseThreshold, bufferSurpriseK, and 509 more.
-tests/namespace-migrate.test.ts(223,20): error TS2339: Property 'endsWith' does not exist on type 'PathLike'.
-  Property 'endsWith' does not exist on type 'Buffer<ArrayBufferLike>'.
-tests/namespace-search-router.test.ts(14,10): error TS2352: Conversion of type '{ openaiApiKey: undefined; openaiBaseUrl: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; ... 212 more ...; slowLogThresholdMs: number; }' to type 'PluginConfig' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Type '{ openaiApiKey: undefined; openaiBaseUrl: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; ... 212 more ...; slowLogThresholdMs: number; }' is missing the following properties from type 'PluginConfig': bufferSurpriseTriggerEnabled, bufferSurpriseThreshold, bufferSurpriseK, bufferSurpriseRecentMemoryCount, and 432 more.
-tests/namespace-search-router.test.ts(251,5): error TS2353: Object literal may only specify known properties, and 'isDaemonMode' does not exist in type 'FakeSearchBackend'.
-tests/namespaces-router.test.ts(14,3): error TS2740: Type '{ openaiApiKey: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; highSignalPatterns: never[]; ... 122 more ...; compoundingInjectEnabled: false; }' is missing the following properties from type 'PluginConfig': openaiBaseUrl, bufferSurpriseTriggerEnabled, bufferSurpriseThreshold, bufferSurpriseK, and 509 more.
-tests/native-knowledge-openclaw-workspace.test.ts(11,38): error TS2724: '"../src/types.js"' has no exported member named 'NativeKnowledgeChunk'. Did you mean 'NativeKnowledgeConfig'?
-tests/native-knowledge-recall.test.ts(175,5): error TS2322: Type 'NativeKnowledgeConfig | undefined' is not assignable to type 'NativeKnowledgeConfig'.
-  Type 'undefined' is not assignable to type 'NativeKnowledgeConfig'.
-tests/objective-state-writers.test.ts(690,67): error TS2345: Argument of type '{ recordedAt: string; sessionKey: "agent:main"; messages: readonly [{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable.txt"; readonly payload: { ...; }; ...' is not assignable to parameter of type '{ sessionKey: string; recordedAt: string; messages: readonly ObservedMessageWithParts[]; }'.
-  Types of property 'messages' are incompatible.
-    Type 'readonly [{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable.txt"; readonly payload: { ...; }; }]; }]' is not assignable to type 'readonly ObservedMessageWithParts[]'.
-      Type '{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable.txt"; readonly payload: { ...; }; }]; }' is not assignable to type 'ObservedMessageWithParts'.
-        Types of property 'parts' are incompatible.
-          The type 'readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable.txt"; readonly payload: { readonly content: "stable content"; }; }]' is 'readonly' and cannot be assigned to the mutable type 'LcmMessagePartInput[]'.
-tests/objective-state-writers.test.ts(694,68): error TS2345: Argument of type '{ recordedAt: string; sessionKey: "agent:main"; messages: readonly [{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable.txt"; readonly payload: { ...; }; ...' is not assignable to parameter of type '{ sessionKey: string; recordedAt: string; messages: readonly ObservedMessageWithParts[]; }'.
-  Types of property 'messages' are incompatible.
-    Type 'readonly [{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable.txt"; readonly payload: { ...; }; }]; }]' is not assignable to type 'readonly ObservedMessageWithParts[]'.
-      Type '{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable.txt"; readonly payload: { ...; }; }]; }' is not assignable to type 'ObservedMessageWithParts'.
-        Types of property 'parts' are incompatible.
-          The type 'readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable.txt"; readonly payload: { readonly content: "stable content"; }; }]' is 'readonly' and cannot be assigned to the mutable type 'LcmMessagePartInput[]'.
-tests/objective-state-writers.test.ts(726,67): error TS2345: Argument of type '{ recordedAt: string; sessionKey: "agent:main"; messages: readonly [{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable-time.txt"; readonly payload: { ......' is not assignable to parameter of type '{ sessionKey: string; recordedAt: string; messages: readonly ObservedMessageWithParts[]; }'.
-  Types of property 'messages' are incompatible.
-    Type 'readonly [{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable-time.txt"; readonly payload: { ...; }; }]; }]' is not assignable to type 'readonly ObservedMessageWithParts[]'.
-      Type '{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable-time.txt"; readonly payload: { ...; }; }]; }' is not assignable to type 'ObservedMessageWithParts'.
-        Types of property 'parts' are incompatible.
-          The type 'readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable-time.txt"; readonly payload: { readonly content: "stable content"; }; }]' is 'readonly' and cannot be assigned to the mutable type 'LcmMessagePartInput[]'.
-tests/objective-state-writers.test.ts(730,68): error TS2345: Argument of type '{ recordedAt: string; sessionKey: "agent:main"; messages: readonly [{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable-time.txt"; readonly payload: { ......' is not assignable to parameter of type '{ sessionKey: string; recordedAt: string; messages: readonly ObservedMessageWithParts[]; }'.
-  Types of property 'messages' are incompatible.
-    Type 'readonly [{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable-time.txt"; readonly payload: { ...; }; }]; }]' is not assignable to type 'readonly ObservedMessageWithParts[]'.
-      Type '{ readonly role: "assistant"; readonly content: "Updated a file."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable-time.txt"; readonly payload: { ...; }; }]; }' is not assignable to type 'ObservedMessageWithParts'.
-        Types of property 'parts' are incompatible.
-          The type 'readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/stable-time.txt"; readonly payload: { readonly content: "stable content"; }; }]' is 'readonly' and cannot be assigned to the mutable type 'LcmMessagePartInput[]'.
-tests/objective-state-writers.test.ts(1724,75): error TS2345: Argument of type '{ sessionKey: "agent:main"; recordedAt: "2026-03-07T12:02:30.000Z"; messages: readonly [{ readonly role: "assistant"; readonly content: "Created a note."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/observed.txt"; readon...' is not assignable to parameter of type '{ memoryDir: string; objectiveStateStoreDir?: string | undefined; objectiveStateMemoryEnabled: boolean; objectiveStateSnapshotWritesEnabled: boolean; sessionKey: string; recordedAt: string; messages: readonly ObservedMessageWithParts[]; }'.
-  Types of property 'messages' are incompatible.
-    Type 'readonly [{ readonly role: "assistant"; readonly content: "Created a note."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/observed.txt"; readonly payload: { ...; }; }]; }]' is not assignable to type 'readonly ObservedMessageWithParts[]'.
-      Type '{ readonly role: "assistant"; readonly content: "Created a note."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/observed.txt"; readonly payload: { ...; }; }]; }' is not assignable to type 'ObservedMessageWithParts'.
-        Types of property 'parts' are incompatible.
-          The type 'readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/observed.txt"; readonly payload: { readonly content: "observed"; }; }]' is 'readonly' and cannot be assigned to the mutable type 'LcmMessagePartInput[]'.
-tests/objective-state-writers.test.ts(1733,75): error TS2345: Argument of type '{ sessionKey: "agent:main"; recordedAt: "2026-03-07T12:02:30.000Z"; messages: readonly [{ readonly role: "assistant"; readonly content: "Created a note."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/observed.txt"; readon...' is not assignable to parameter of type '{ memoryDir: string; objectiveStateStoreDir?: string | undefined; objectiveStateMemoryEnabled: boolean; objectiveStateSnapshotWritesEnabled: boolean; sessionKey: string; recordedAt: string; messages: readonly ObservedMessageWithParts[]; }'.
-  Types of property 'messages' are incompatible.
-    Type 'readonly [{ readonly role: "assistant"; readonly content: "Created a note."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/observed.txt"; readonly payload: { ...; }; }]; }]' is not assignable to type 'readonly ObservedMessageWithParts[]'.
-      Type '{ readonly role: "assistant"; readonly content: "Created a note."; readonly parts: readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/observed.txt"; readonly payload: { ...; }; }]; }' is not assignable to type 'ObservedMessageWithParts'.
-        Types of property 'parts' are incompatible.
-          The type 'readonly [{ readonly ordinal: 0; readonly kind: "file_write"; readonly toolName: "write_file"; readonly filePath: "workspace/observed.txt"; readonly payload: { readonly content: "observed"; }; }]' is 'readonly' and cannot be assigned to the mutable type 'LcmMessagePartInput[]'.
-tests/openai-chat-compat.test.ts(104,30): error TS2339: Property 'model' does not exist on type 'never'.
-tests/openai-chat-compat.test.ts(148,30): error TS2339: Property 'model' does not exist on type 'never'.
-tests/openai-chat-compat.test.ts(195,31): error TS2339: Property 'model' does not exist on type 'never'.
-tests/openai-chat-compat.test.ts(196,31): error TS2339: Property 'max_completion_tokens' does not exist on type 'never'.
-tests/openai-chat-compat.test.ts(246,31): error TS2339: Property 'model' does not exist on type 'never'.
-tests/openai-chat-compat.test.ts(247,31): error TS2339: Property 'max_completion_tokens' does not exist on type 'never'.
-tests/openai-chat-compat.test.ts(296,31): error TS2339: Property 'model' does not exist on type 'never'.
-tests/openai-chat-compat.test.ts(297,31): error TS2339: Property 'max_tokens' does not exist on type 'never'.
-tests/openai-chat-compat.test.ts(299,31): error TS2339: Property 'temperature' does not exist on type 'never'.
-tests/operator-toolkit.test.ts(437,80): error TS2345: Argument of type 'NativeKnowledgeConfig | undefined' is not assignable to parameter of type 'NativeKnowledgeConfig'.
-  Type 'undefined' is not assignable to type 'NativeKnowledgeConfig'.
-tests/operator-toolkit.test.ts(438,83): error TS2345: Argument of type 'NativeKnowledgeConfig | undefined' is not assignable to parameter of type 'NativeKnowledgeConfig'.
-  Type 'undefined' is not assignable to type 'NativeKnowledgeConfig'.
-tests/operator-toolkit.test.ts(464,82): error TS2345: Argument of type 'NativeKnowledgeConfig | undefined' is not assignable to parameter of type 'NativeKnowledgeConfig'.
-  Type 'undefined' is not assignable to type 'NativeKnowledgeConfig'.
-tests/operator-toolkit.test.ts(533,82): error TS2345: Argument of type 'NativeKnowledgeConfig | undefined' is not assignable to parameter of type 'NativeKnowledgeConfig'.
-  Type 'undefined' is not assignable to type 'NativeKnowledgeConfig'.
-tests/operator-toolkit.test.ts(534,83): error TS2345: Argument of type 'NativeKnowledgeConfig | undefined' is not assignable to parameter of type 'NativeKnowledgeConfig'.
-  Type 'undefined' is not assignable to type 'NativeKnowledgeConfig'.
-tests/orchestrator-compression-guidelines.test.ts(322,18): error TS2540: Cannot assign to 'fastLlm' because it is a read-only property.
-tests/orchestrator-path-filter.test.ts(30,43): error TS2345: Argument of type '{ path: string; score: number; }[]' is not assignable to parameter of type 'QmdSearchResult[]'.
-  Type '{ path: string; score: number; }' is missing the following properties from type 'QmdSearchResult': docid, snippet
-tests/orchestrator-path-filter.test.ts(55,43): error TS2345: Argument of type '{ path: string; score: number; }[]' is not assignable to parameter of type 'QmdSearchResult[]'.
-  Type '{ path: string; score: number; }' is missing the following properties from type 'QmdSearchResult': docid, snippet
-tests/orchestrator-path-filter.test.ts(86,8): error TS2322: Type '{ path: string; content: string; frontmatter: { id: string; category: string; created: string; updated: string; source: string; confidence: number; confidenceTier: string; tags: never[]; }; }' is not assignable to type 'MemoryFile'.
-  The types of 'frontmatter.category' are incompatible between these types.
-    Type 'string' is not assignable to type 'MemoryCategory'.
-tests/orchestrator-path-filter.test.ts(86,27): error TS2322: Type '{ path: string; content: string; frontmatter: { id: string; category: string; created: string; updated: string; source: string; confidence: number; confidenceTier: string; tags: never[]; }; }' is not assignable to type 'MemoryFile'.
-  The types of 'frontmatter.category' are incompatible between these types.
-    Type 'string' is not assignable to type 'MemoryCategory'.
-tests/orchestrator-path-filter.test.ts(87,8): error TS2322: Type '{ path: string; content: string; frontmatter: { id: string; category: string; created: string; updated: string; source: string; confidence: number; confidenceTier: string; tags: never[]; }; }' is not assignable to type 'MemoryFile'.
-  The types of 'frontmatter.category' are incompatible between these types.
-    Type 'string' is not assignable to type 'MemoryCategory'.
-tests/orchestrator-path-filter.test.ts(87,27): error TS2322: Type '{ path: string; content: string; frontmatter: { id: string; category: string; created: string; updated: string; source: string; confidence: number; confidenceTier: string; tags: never[]; }; }' is not assignable to type 'MemoryFile'.
-  The types of 'frontmatter.category' are incompatible between these types.
-    Type 'string' is not assignable to type 'MemoryCategory'.
-tests/orchestrator-path-filter.test.ts(120,8): error TS2322: Type '{ path: string; content: string; frontmatter: { id: string; category: string; created: string; updated: string; source: string; confidence: number; confidenceTier: string; tags: never[]; }; }' is not assignable to type 'MemoryFile'.
-  The types of 'frontmatter.category' are incompatible between these types.
-    Type 'string' is not assignable to type 'MemoryCategory'.
-tests/orchestrator-path-filter.test.ts(121,8): error TS2322: Type '{ path: string; content: string; frontmatter: { id: string; category: string; created: string; updated: string; source: string; confidence: number; confidenceTier: string; tags: never[]; }; }' is not assignable to type 'MemoryFile'.
-  The types of 'frontmatter.category' are incompatible between these types.
-    Type 'string' is not assignable to type 'MemoryCategory'.
-tests/orchestrator-path-filter.test.ts(121,11): error TS2322: Type '{ path: string; content: string; frontmatter: { id: string; category: string; created: string; updated: string; source: string; confidence: number; confidenceTier: string; tags: never[]; }; }' is not assignable to type 'MemoryFile'.
-  The types of 'frontmatter.category' are incompatible between these types.
-    Type 'string' is not assignable to type 'MemoryCategory'.
-tests/orchestrator-path-filter.test.ts(121,14): error TS2322: Type '{ path: string; content: string; frontmatter: { id: string; category: string; created: string; updated: string; source: string; confidence: number; confidenceTier: string; tags: never[]; }; }' is not assignable to type 'MemoryFile'.
-  The types of 'frontmatter.category' are incompatible between these types.
-    Type 'string' is not assignable to type 'MemoryCategory'.
-tests/orchestrator-qmd-review.test.ts(94,26): error TS2339: Property 'hybridTopUpSkippedReason' does not exist on type 'never'.
-tests/orchestrator-qmd-review.test.ts(95,26): error TS2339: Property 'intentHint' does not exist on type 'never'.
-tests/orchestrator-qmd-review.test.ts(96,26): error TS2339: Property 'explainEnabled' does not exist on type 'never'.
-tests/orchestrator-qmd-review.test.ts(224,26): error TS2339: Property 'intentHint' does not exist on type 'never'.
-tests/orchestrator-qmd-review.test.ts(225,26): error TS2339: Property 'explainEnabled' does not exist on type 'never'.
-tests/orchestrator-qmd-review.test.ts(226,26): error TS2339: Property 'hybridTopUpSkippedReason' does not exist on type 'never'.
-tests/orchestrator-qmd-review.test.ts(304,26): error TS2339: Property 'intentHint' does not exist on type 'never'.
-tests/orchestrator-qmd-review.test.ts(305,26): error TS2339: Property 'explainEnabled' does not exist on type 'never'.
-tests/orchestrator-qmd-review.test.ts(306,26): error TS2339: Property 'hybridTopUpSkippedReason' does not exist on type 'never'.
-tests/orchestrator-recent-thread-paths.test.ts(16,5): error TS2741: Property 'confidenceTier' is missing in type '{ id: string; category: "fact"; confidence: number; created: string; updated: string; tags: never[]; source: string; status: "active"; }' but required in type 'MemoryFrontmatter'.
-tests/orchestrator-routing-rules.test.ts(134,5): error TS2353: Object literal may only specify known properties, and 'observations' does not exist in type 'ExtractionResult'.
-tests/orchestrator-routing-rules.test.ts(182,5): error TS2353: Object literal may only specify known properties, and 'observations' does not exist in type 'ExtractionResult'.
-tests/query-aware-prefilter.test.ts(163,40): error TS2339: Property 'path' does not exist on type '{}'.
-tests/query-aware-prefilter.test.ts(188,27): error TS7006: Parameter 'result' implicitly has an 'any' type.
-tests/query-aware-prefilter.test.ts(189,27): error TS7006: Parameter 'result' implicitly has an 'any' type.
-tests/query-aware-prefilter.test.ts(232,36): error TS2339: Property 'path' does not exist on type '{}'.
-tests/query-aware-prefilter.test.ts(256,27): error TS7006: Parameter 'result' implicitly has an 'any' type.
-tests/query-aware-prefilter.test.ts(257,27): error TS7006: Parameter 'result' implicitly has an 'any' type.
-tests/query-aware-prefilter.test.ts(294,38): error TS2339: Property 'path' does not exist on type '{}'.
-tests/query-aware-prefilter.test.ts(299,34): error TS2339: Property 'path' does not exist on type '{}'.
-tests/recall-hardening.test.ts(183,14): error TS2304: Cannot find name 'TimerHandler'.
-tests/recall-hardening.test.ts(253,14): error TS2304: Cannot find name 'TimerHandler'.
-tests/recall-hardening.test.ts(358,3): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/recall-hardening.test.ts(433,3): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/recall-hardening.test.ts(627,3): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/recall-hardening.test.ts(674,3): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/recall-hardening.test.ts(749,3): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/recall-hardening.test.ts(807,3): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/recall-hardening.test.ts(809,3): error TS2349: This expression is not callable.
-  Type 'never' has no call signatures.
-tests/recall-no-recall-short-circuit.test.ts(14,3): error TS2740: Type '{ openaiApiKey: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; highSignalPatterns: never[]; ... 130 more ...; verbatimArtifactsMaxRecall: number; }' is missing the following properties from type 'PluginConfig': openaiBaseUrl, bufferSurpriseTriggerEnabled, bufferSurpriseThreshold, bufferSurpriseK, and 501 more.
-tests/release-workflow-public-packages.test.ts(152,41): error TS7016: Could not find a declaration file for module '../packages/remnic-server/bin/server-bin.js'. '<repo>/packages/remnic-server/bin/server-bin.js' implicitly has an 'any' type.
-tests/remnic-cli-service-candidates.test.ts(17,82): error TS7006: Parameter 'candidate' implicitly has an 'any' type.
-tests/remnic-plugin-register-migration.test.ts(66,12): error TS2352: Conversion of type 'typeof globalThis' to type 'Record<string, Promise<unknown>>' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Property 'globalThis' is incompatible with index signature.
-    Type 'typeof globalThis' is missing the following properties from type 'Promise<unknown>': then, catch, finally, [Symbol.toStringTag]
-tests/remnic-server-cli.test.ts(9,30): error TS7016: Could not find a declaration file for module '../packages/remnic-server/bin/server-bin.js'. '<repo>/packages/remnic-server/bin/server-bin.js' implicitly has an 'any' type.
-tests/retrieval-agents.test.ts(624,79): error TS2345: Argument of type '{ docid: string; path: string; snippet: string; score: number; transport: string; }[]' is not assignable to parameter of type 'QmdSearchResult[]'.
-  Type '{ docid: string; path: string; snippet: string; score: number; transport: string; }' is not assignable to type 'QmdSearchResult'.
-    Types of property 'transport' are incompatible.
-      Type 'string' is not assignable to type '"hybrid" | "subprocess" | "daemon" | "scoped_prefilter" | undefined'.
-tests/retrieval-hot-cold-parity.test.ts(41,7): error TS2353: Object literal may only specify known properties, and 'source' does not exist in type '{ actor?: string | undefined; tags?: string[] | undefined; confidence?: number | undefined; artifactType?: "constraint" | "correction" | "decision" | "commitment" | "fact" | "todo" | "definition" | undefined; ... 4 more ...; intentEntityTypes?: string[] | undefined; }'.
-tests/routing-engine.test.ts(59,27): error TS2352: Conversion of type '{ patternType: "glob"; id: string; pattern: string; priority: number; target: RouteTarget; enabled?: boolean; }' to type 'RouteRule' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
-  Types of property 'patternType' are incompatible.
-    Type '"glob"' is not comparable to type 'RoutePatternType'.
-tests/secure-store/storage-wrap.test.ts(532,58): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(544,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(601,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(618,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(630,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(654,51): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(683,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(695,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(778,51): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(828,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(899,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(933,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(964,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(998,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(1021,51): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(1039,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(1084,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(1096,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(1119,51): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(1157,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(1203,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/secure-store/storage-wrap.test.ts(1246,45): error TS2345: Argument of type 'never[]' is not assignable to parameter of type 'Record<string, EntitySchemaDefinition>'.
-  Index signature for type 'string' is missing in type 'never[]'.
-tests/session-integrity.test.ts(210,5): error TS2741: Property 'memoryDir' is missing in type '{ generatedAt: string; dryRun: false; allowSessionFileRepair: false; actions: { kind: "remove_checkpoint"; targetPath: string; description: string; }[]; }' but required in type 'SessionRepairPlan'.
-tests/shared-context.test.ts(15,3): error TS2740: Type '{ openaiApiKey: undefined; model: string; reasoningEffort: "low"; triggerMode: "smart"; bufferMaxTurns: number; bufferMaxMinutes: number; consolidateEveryN: number; highSignalPatterns: never[]; ... 121 more ...; compoundingInjectEnabled: false; }' is missing the following properties from type 'PluginConfig': openaiBaseUrl, bufferSurpriseTriggerEnabled, bufferSurpriseThreshold, bufferSurpriseK, and 510 more.
-tests/storage-derived-write-paths.test.ts(22,39): error TS2307: Cannot find module '../src/page-versioning.ts' or its corresponding type declarations.
-tests/storage-frontmatter-escape-roundtrip.test.ts(43,9): error TS2322: Type '"elaborates"' is not assignable to type 'MemoryLinkType'.
-tests/tier-migration.test.ts(90,7): error TS2740: Type '{ updateCollection(collection: string): Promise<void>; embedCollection(collection: string): Promise<void>; }' is missing the following properties from type 'SearchBackend': probe, isAvailable, debugStatus, search, and 7 more.
-tests/tier-migration.test.ts(135,7): error TS2740: Type '{ updateCollection(collection: string): Promise<void>; embedCollection(collection: string): Promise<void>; }' is missing the following properties from type 'SearchBackend': probe, isAvailable, debugStatus, search, and 7 more.
-tests/tier-migration.test.ts(183,7): error TS2740: Type '{ updateCollection(collection: string): Promise<void>; embedCollection(collection: string): Promise<void>; }' is missing the following properties from type 'SearchBackend': probe, isAvailable, debugStatus, search, and 7 more.
-tests/tier-migration.test.ts(234,7): error TS2740: Type '{ updateCollection(collection: string): Promise<void>; embedCollection(collection: string): Promise<void>; }' is missing the following properties from type 'SearchBackend': probe, isAvailable, debugStatus, search, and 7 more.
-tests/tier-migration.test.ts(266,7): error TS2740: Type '{ updateCollection(collection: string): Promise<void>; embedCollection(collection: string): Promise<void>; }' is missing the following properties from type 'SearchBackend': probe, isAvailable, debugStatus, search, and 7 more.
-tests/trust-zones.test.ts(279,16): error TS18048: 'summary.latestRecord' is possibly 'undefined'.
-tests/trust-zones.test.ts(474,16): error TS18048: 'result.filePath' is possibly 'undefined'.
-tests/trust-zones.test.ts(476,48): error TS2345: Argument of type '{ memoryDir: string; enabled: true; promotionEnabled: true; }' is not assignable to parameter of type '{ memoryDir: string; trustZoneStoreDir?: string | undefined; enabled: boolean; promotionEnabled: boolean; poisoningDefenseEnabled: boolean; }'.
-  Property 'poisoningDefenseEnabled' is missing in type '{ memoryDir: string; enabled: true; promotionEnabled: true; }' but required in type '{ memoryDir: string; trustZoneStoreDir?: string | undefined; enabled: boolean; promotionEnabled: boolean; poisoningDefenseEnabled: boolean; }'.
-tests/trust-zones.test.ts(675,48): error TS2345: Argument of type '{ memoryDir: string; enabled: true; promotionEnabled: true; }' is not assignable to parameter of type '{ memoryDir: string; trustZoneStoreDir?: string | undefined; enabled: boolean; promotionEnabled: boolean; poisoningDefenseEnabled: boolean; }'.
-  Property 'poisoningDefenseEnabled' is missing in type '{ memoryDir: string; enabled: true; promotionEnabled: true; }' but required in type '{ memoryDir: string; trustZoneStoreDir?: string | undefined; enabled: boolean; promotionEnabled: boolean; poisoningDefenseEnabled: boolean; }'.
+packages/bench-ui/src/components/RunTable.test.ts(4,78): TS6142
+packages/bench-ui/src/pages/Compare.test.ts(5,68): TS6142
+packages/bench-ui/src/pages/Compare.test.ts(68,19): TS7006
+packages/bench/src/benchmarks/published/beam/runner.test.ts(147,13): TS2322
+packages/bench/src/benchmarks/published/beam/runner.test.ts(240,13): TS2322
+packages/bench/src/benchmarks/published/beam/runner.test.ts(362,13): TS2322
+packages/bench/src/benchmarks/published/beam/runner.test.ts(421,5): TS18048
+packages/bench/src/benchmarks/published/beam/runner.test.ts(475,13): TS2322
+packages/bench/src/benchmarks/published/beam/runner.test.ts(548,13): TS2322
+packages/bench/src/benchmarks/published/beam/runner.test.ts(812,13): TS2322
+packages/bench/src/benchmarks/published/beam/runner.test.ts(880,13): TS2322
+packages/bench/src/benchmarks/published/beam/runner.test.ts(962,5): TS2322
+packages/bench/src/benchmarks/published/beam/runner.test.ts(980,5): TS2322
+packages/bench/src/benchmarks/published/beam/runner.test.ts(1069,13): TS2322
+packages/bench/src/benchmarks/published/beam/runner.test.ts(1126,13): TS2322
+packages/bench/src/benchmarks/published/harness.test.ts(416,16): TS2532
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(110,7): TS2532
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(118,18): TS2532
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(214,18): TS18048
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(216,14): TS18048
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(367,18): TS18048
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(456,18): TS18048
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(457,18): TS18048
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(459,7): TS18048
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(560,18): TS18048
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(561,18): TS18048
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(650,18): TS18048
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(739,18): TS18048
+packages/bench/src/benchmarks/published/locomo/runner.test.ts(827,18): TS18048
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(61,15): TS2322
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(182,15): TS2322
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(344,18): TS2532
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(444,18): TS18048
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(445,18): TS18048
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(527,18): TS18048
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(528,18): TS18048
+packages/bench/src/benchmarks/published/membench/runner.test.ts(150,18): TS18048
+packages/bench/src/benchmarks/published/membench/runner.test.ts(226,18): TS18048
+packages/bench/src/benchmarks/published/membench/runner.test.ts(227,18): TS18048
+packages/bench/src/benchmarks/published/membench/runner.test.ts(228,18): TS18048
+packages/bench/src/benchmarks/published/membench/runner.test.ts(302,18): TS18048
+packages/bench/src/benchmarks/published/membench/runner.test.ts(303,18): TS18048
+packages/bench/src/benchmarks/published/membench/runner.test.ts(376,18): TS18048
+packages/bench/src/benchmarks/published/membench/runner.test.ts(377,18): TS18048
+packages/bench/src/benchmarks/published/memoryagentbench/runner.test.ts(65,16): TS18048
+packages/bench/src/benchmarks/published/memoryagentbench/runner.test.ts(683,16): TS18048
+packages/bench/src/benchmarks/published/memoryagentbench/runner.test.ts(684,16): TS18048
+packages/bench/src/benchmarks/published/personamem/runner.test.ts(63,16): TS18048
+packages/bench/src/benchmarks/published/personamem/runner.test.ts(121,16): TS18048
+packages/bench/src/benchmarks/published/personamem/runner.test.ts(175,16): TS18048
+packages/bench/src/benchmarks/published/personamem/runner.test.ts(236,23): TS18048
+packages/bench/src/benchmarks/remnic/assistant-morning-brief/fixture.test.ts(16,9): TS18048
+packages/bench/src/benchmarks/remnic/coding-recall/runner.test.ts(133,20): TS7006
+packages/bench/src/benchmarks/remnic/coding-recall/runner.test.ts(133,26): TS7006
+packages/bench/src/benchmarks/remnic/coding-recall/runner.test.ts(133,42): TS7006
+packages/bench/src/benchmarks/remnic/enrichment-fidelity/runner.test.ts(29,62): TS2322
+packages/bench/src/benchmarks/remnic/ingestion-schema-completeness/runner.test.ts(113,20): TS18048
+packages/bench/src/benchmarks/remnic/ingestion-schema-completeness/runner.test.ts(114,20): TS18048
+packages/bench/src/benchmarks/remnic/ingestion-schema-completeness/runner.test.ts(115,20): TS18048
+packages/bench/src/benchmarks/remnic/memcorrect/third-party/letta-adapter.test.ts(66,18): TS18046
+packages/bench/src/benchmarks/remnic/memcorrect/third-party/letta-adapter.test.ts(67,18): TS18046
+packages/bench/src/benchmarks/remnic/memcorrect/third-party/letta-adapter.test.ts(68,18): TS18046
+packages/bench/src/benchmarks/remnic/memcorrect/third-party/letta-adapter.test.ts(69,15): TS18046
+packages/bench/src/benchmarks/remnic/memcorrect/third-party/letta-adapter.test.ts(70,15): TS18046
+packages/bench/src/benchmarks/remnic/memcorrect/third-party/zep-adapter.test.ts(193,18): TS18046
+packages/bench/src/benchmarks/remnic/retention-aged-dataset/runner.test.ts(107,68): TS2322
+packages/bench/src/benchmarks/remnic/retrieval-direct-answer/runner.test.ts(10,58): TS2352
+packages/bench/src/benchmarks/remnic/retrieval-direct-answer/runner.test.ts(30,58): TS2352
+packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(104,60): TS2352
+packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(159,60): TS2352
+packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(181,60): TS2352
+packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(187,60): TS2322
+packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(206,60): TS2352
+packages/bench/src/providers/local-llm.test.ts(155,50): TS2304
+packages/bench/src/providers/ollama.test.ts(10,50): TS2304
+packages/bench/src/responders.test.ts(368,5): TS2322
+packages/bench/src/responders.test.ts(371,21): TS18048
+packages/bench/src/responders.test.ts(373,13): TS18048
+packages/bench/src/responders.test.ts(377,24): TS18048
+packages/bench/src/results-store.test.ts(31,18): TS2352
+packages/bench/src/runtime-profiles.test.ts(54,38): TS2345
+packages/bench/src/security/extraction-attack/baseline.test.ts(12,62): TS2559
+packages/bench/src/security/extraction-attack/baseline.test.ts(22,63): TS2559
+packages/bench/src/security/extraction-attack/baseline.test.ts(34,78): TS2559
+packages/bench/src/security/extraction-attack/mitigated-target.test.ts(23,5): TS2322
+packages/hermes-provider/src/index.test.ts(219,38): TS2304
+packages/import-mem0/src/adapter.test.ts(79,40): TS2304
+packages/import-mem0/src/adapter.test.ts(136,40): TS2304
+packages/import-mem0/src/client.test.ts(28,25): TS2304
+packages/import-mem0/src/client.test.ts(70,38): TS2304
+packages/import-mem0/src/client.test.ts(98,38): TS2304
+packages/import-mem0/src/client.test.ts(190,38): TS2304
+packages/import-mem0/src/client.test.ts(219,38): TS2304
+packages/import-mem0/src/client.test.ts(312,38): TS2304
+packages/import-mem0/src/client.test.ts(340,38): TS2304
+packages/import-mem0/src/client.test.ts(373,38): TS2304
+packages/remnic-cli/src/bench-args.ts(236,7): TS2322
+packages/remnic-cli/src/bench-args.ts(259,47): TS2367
+src/index.ts(2,40): TS2307
+src/index.ts(3987,38): TS2307
+src/index.ts(4161,23): TS2307
+src/index.ts(4163,21): TS2307
+src/index.ts(4435,23): TS2307
+src/index.ts(4437,21): TS2307
+src/index.ts(4547,23): TS2307
+src/index.ts(4549,21): TS2307
+src/index.ts(4677,25): TS2307
+src/index.ts(4679,23): TS2307
+src/index.ts(4784,25): TS2307
+src/index.ts(4786,23): TS2307
+src/index.ts(4808,25): TS2307
+src/index.ts(4810,23): TS2307
+src/index.ts(4860,25): TS2307
+src/index.ts(4862,24): TS2307
+src/index.ts(4874,25): TS2307
+src/index.ts(4876,24): TS2307
+src/index.ts(4894,25): TS2307
+src/index.ts(4896,23): TS2307
+src/index.ts(4917,25): TS2307
+src/index.ts(4919,24): TS2307
+src/index.ts(4931,25): TS2307
+src/index.ts(4933,24): TS2307
+tests/access-http.test.ts(22,22): TS7031
+tests/access-http.test.ts(22,29): TS7031
+tests/access-http.test.ts(51,29): TS7031
+tests/access-http.test.ts(63,23): TS7006
+tests/access-http.test.ts(83,28): TS7006
+tests/access-http.test.ts(83,38): TS7006
+tests/access-http.test.ts(83,50): TS7006
+tests/access-http.test.ts(129,23): TS7006
+tests/access-http.test.ts(289,32): TS7031
+tests/access-http.test.ts(289,42): TS7031
+tests/access-http.test.ts(289,54): TS7031
+tests/access-http.test.ts(332,33): TS7031
+tests/access-http.test.ts(351,33): TS7031
+tests/access-http.test.ts(351,43): TS7031
+tests/access-http.test.ts(397,29): TS7031
+tests/access-http.test.ts(427,29): TS7031
+tests/access-http.test.ts(427,42): TS7031
+tests/access-http.test.ts(2295,3): TS2322
+tests/access-idempotency.test.ts(40,68): TS2339
+tests/access-idempotency.test.ts(113,7): TS2349
+tests/access-idempotency.test.ts(170,7): TS2349
+tests/access-idempotency.test.ts(225,7): TS2349
+tests/access-idempotency.test.ts(294,7): TS2349
+tests/access-idempotency.test.ts(302,7): TS2349
+tests/access-idempotency.test.ts(397,7): TS2349
+tests/access-mcp.test.ts(9,22): TS7031
+tests/access-mcp.test.ts(31,26): TS7031
+tests/access-mcp.test.ts(44,23): TS7006
+tests/access-mcp.test.ts(64,28): TS7006
+tests/access-mcp.test.ts(78,27): TS7031
+tests/access-mcp.test.ts(88,31): TS7006
+tests/access-mcp.test.ts(99,32): TS7031
+tests/access-mcp.test.ts(109,23): TS7006
+tests/access-mcp.test.ts(123,29): TS7031
+tests/access-mcp.test.ts(134,33): TS7031
+tests/access-mcp.test.ts(156,29): TS7031
+tests/access-mcp.test.ts(156,35): TS7031
+tests/access-mcp.test.ts(156,46): TS7031
+tests/access-mcp.test.ts(156,60): TS7031
+tests/access-mcp.test.ts(156,69): TS7031
+tests/access-mcp.test.ts(156,89): TS7031
+tests/access-mcp.test.ts(184,29): TS7031
+tests/access-mcp.test.ts(184,42): TS7031
+tests/access-service.test.ts(432,35): TS2339
+tests/access-service.test.ts(433,35): TS2339
+tests/access-service.test.ts(2061,5): TS2349
+tests/amb-bridge.test.ts(20,8): TS7016
+tests/amb-bridge.test.ts(477,9): TS7034
+tests/amb-bridge.test.ts(482,20): TS7006
+tests/amb-bridge.test.ts(482,31): TS7006
+tests/amb-bridge.test.ts(482,38): TS7006
+tests/amb-bridge.test.ts(482,51): TS7006
+tests/amb-bridge.test.ts(512,16): TS7005
+tests/amb-bridge.test.ts(513,16): TS7005
+tests/amb-bridge.test.ts(514,20): TS7005
+tests/amb-bridge.test.ts(520,9): TS7034
+tests/amb-bridge.test.ts(524,19): TS7006
+tests/amb-bridge.test.ts(524,30): TS7006
+tests/amb-bridge.test.ts(555,16): TS7005
+tests/amb-bridge.test.ts(557,5): TS7005
+tests/amb-bridge.test.ts(557,34): TS7006
+tests/amb-bridge.test.ts(560,16): TS7005
+tests/amb-bridge.test.ts(561,16): TS7005
+tests/amb-bridge.test.ts(565,9): TS7034
+tests/amb-bridge.test.ts(569,19): TS7006
+tests/amb-bridge.test.ts(569,30): TS7006
+tests/amb-bridge.test.ts(600,5): TS7005
+tests/amb-bridge.test.ts(645,9): TS7034
+tests/amb-bridge.test.ts(646,9): TS7034
+tests/amb-bridge.test.ts(652,21): TS7006
+tests/amb-bridge.test.ts(683,22): TS7005
+tests/amb-bridge.test.ts(691,22): TS7006
+tests/amb-bridge.test.ts(691,33): TS7006
+tests/amb-bridge.test.ts(714,7): TS7005
+tests/amb-bridge.test.ts(727,9): TS7034
+tests/amb-bridge.test.ts(733,21): TS7006
+tests/amb-bridge.test.ts(768,22): TS7005
+tests/amb-bridge.test.ts(781,9): TS7034
+tests/amb-bridge.test.ts(791,20): TS7006
+tests/amb-bridge.test.ts(812,20): TS7005
+tests/amb-bridge.test.ts(820,9): TS7034
+tests/amb-bridge.test.ts(840,22): TS7006
+tests/amb-bridge.test.ts(862,22): TS7005
+tests/amb-bridge.test.ts(943,9): TS7034
+tests/amb-bridge.test.ts(945,38): TS7006
+tests/amb-bridge.test.ts(981,20): TS7005
+tests/amb-compare.test.ts(14,8): TS7016
+tests/amb-integration.test.ts(721,25): TS2339
+tests/amb-integration.test.ts(722,25): TS2339
+tests/bench-ama-bench-runner.test.ts(120,16): TS2532
+tests/bench-amemgym-runner.test.ts(610,28): TS2339
+tests/bench-amemgym-runner.test.ts(611,33): TS2339
+tests/bench-amemgym-runner.test.ts(612,35): TS2339
+tests/bench-amemgym-runner.test.ts(613,55): TS2339
+tests/bench-amemgym-runner.test.ts(644,28): TS2339
+tests/bench-amemgym-runner.test.ts(645,33): TS2339
+tests/bench-amemgym-runner.test.ts(646,35): TS2339
+tests/bench-amemgym-runner.test.ts(647,55): TS2339
+tests/bench-amemgym-runner.test.ts(678,28): TS2339
+tests/bench-amemgym-runner.test.ts(679,33): TS2339
+tests/bench-amemgym-runner.test.ts(680,35): TS2339
+tests/bench-amemgym-runner.test.ts(681,55): TS2339
+tests/bench-amemgym-runner.test.ts(711,28): TS2339
+tests/bench-amemgym-runner.test.ts(712,33): TS2339
+tests/bench-amemgym-runner.test.ts(713,35): TS2339
+tests/bench-amemgym-runner.test.ts(714,55): TS2339
+tests/bench-amemgym-runner.test.ts(747,28): TS2339
+tests/bench-amemgym-runner.test.ts(748,33): TS2339
+tests/bench-amemgym-runner.test.ts(749,35): TS2339
+tests/bench-amemgym-runner.test.ts(750,55): TS2339
+tests/bench-amemgym-runner.test.ts(783,28): TS2339
+tests/bench-amemgym-runner.test.ts(784,33): TS2339
+tests/bench-amemgym-runner.test.ts(785,35): TS2339
+tests/bench-amemgym-runner.test.ts(786,55): TS2339
+tests/bench-amemgym-runner.test.ts(816,28): TS2339
+tests/bench-amemgym-runner.test.ts(817,33): TS2339
+tests/bench-amemgym-runner.test.ts(818,35): TS2339
+tests/bench-amemgym-runner.test.ts(819,55): TS2339
+tests/bench-assistant-runners.test.ts(147,13): TS7022
+tests/bench-beam-runner.test.ts(115,16): TS2532
+tests/bench-beam-runner.test.ts(173,16): TS2532
+tests/bench-beam-runner.test.ts(232,23): TS18048
+tests/bench-beam-runner.test.ts(281,20): TS18048
+tests/bench-beam-runner.test.ts(282,16): TS18048
+tests/bench-beam-runner.test.ts(291,23): TS18048
+tests/bench-beam-runner.test.ts(292,23): TS18048
+tests/bench-beam-runner.test.ts(335,16): TS2532
+tests/bench-beam-runner.test.ts(381,23): TS18048
+tests/bench-beam-runner.test.ts(519,16): TS2532
+tests/bench-beam-runner.test.ts(575,16): TS2532
+tests/bench-beam-runner.test.ts(641,16): TS2532
+tests/bench-beam-runner.test.ts(708,16): TS2532
+tests/bench-custom-benchmark.test.ts(235,16): TS2532
+tests/bench-locomo-runner.test.ts(132,16): TS2532
+tests/bench-membench-runner.test.ts(418,16): TS2532
+tests/bench-membench-runner.test.ts(419,16): TS2532
+tests/bench-membench-runner.test.ts(441,16): TS2532
+tests/bench-membench-runner.test.ts(465,16): TS2532
+tests/bench-membench-runner.test.ts(554,16): TS2532
+tests/bench-membench-runner.test.ts(569,57): TS2322
+tests/bench-membench-runner.test.ts(632,3): TS2322
+tests/bench-membench-runner.test.ts(747,57): TS2322
+tests/bench-memoryagentbench-runner.test.ts(109,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(110,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(167,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(169,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(204,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(264,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(266,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(318,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(414,16): TS18048
+tests/bench-memoryagentbench-runner.test.ts(415,20): TS18048
+tests/bench-memoryagentbench-runner.test.ts(667,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(711,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(754,5): TS2532
+tests/bench-memoryagentbench-runner.test.ts(799,5): TS2532
+tests/bench-memoryagentbench-runner.test.ts(843,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(926,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1052,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1103,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1164,12): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1167,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1218,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1327,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1381,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1437,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1491,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1544,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1595,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1646,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1701,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1756,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1808,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1862,20): TS2532
+tests/bench-memoryagentbench-runner.test.ts(1977,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(2035,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(2092,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(2134,16): TS2532
+tests/bench-memoryagentbench-runner.test.ts(2182,16): TS2532
+tests/bench-openai-provider.test.ts(86,30): TS2722
+tests/bench-openai-provider.test.ts(86,30): TS18048
+tests/bench-public-matrix-verifier.test.ts(328,7): TS2740
+tests/bench-public-matrix-verifier.test.ts(332,7): TS2739
+tests/bench-public-matrix-verifier.test.ts(377,7): TS2740
+tests/bench-public-matrix-verifier.test.ts(380,7): TS2739
+tests/bench-public-matrix-verifier.test.ts(447,7): TS2740
+tests/bench-public-matrix-verifier.test.ts(530,7): TS2739
+tests/bench-remnic-deterministic-runners.test.ts(221,37): TS2339
+tests/bench-ui-assistant.test.ts(21,9): TS2741
+tests/bench-ui-results.test.ts(20,8): TS6142
+tests/bench-ui-results.test.ts(21,68): TS6142
+tests/bench-ui-results.test.ts(472,26): TS7006
+tests/bench-ui-results.test.ts(474,45): TS7006
+tests/bench-ui-results.test.ts(671,66): TS7006
+tests/binary-lifecycle.test.ts(719,13): TS2352
+tests/capsule-manifest.test.ts(200,3): TS2322
+tests/cli-tier-status.test.ts(37,11): TS2322
+tests/cli/capsule.test.ts(104,3): TS2322
+tests/cli/patterns.test.ts(59,18): TS2352
+tests/compat-fixtures/empty-package/src/index.ts(1,1): TS2304
+tests/compat-fixtures/empty-package/src/index.ts(2,1): TS2304
+tests/compat-fixtures/empty-package/src/index.ts(3,1): TS2304
+tests/compat-fixtures/empty-package/src/index.ts(3,13): TS2304
+tests/compat-fixtures/empty-package/src/index.ts(3,31): TS2304
+tests/compat-fixtures/empty-package/src/index.ts(3,36): TS2304
+tests/compat-fixtures/empty-package/src/index.ts(4,1): TS2304
+tests/compat-fixtures/healthy/src/index.ts(1,1): TS2304
+tests/compat-fixtures/healthy/src/index.ts(2,1): TS2304
+tests/compat-fixtures/healthy/src/index.ts(3,1): TS2304
+tests/compat-fixtures/healthy/src/index.ts(3,13): TS2304
+tests/compat-fixtures/healthy/src/index.ts(3,31): TS2304
+tests/compat-fixtures/healthy/src/index.ts(3,36): TS2304
+tests/compat-fixtures/healthy/src/index.ts(4,1): TS2304
+tests/compat-fixtures/missing-manifest/src/index.ts(1,1): TS2304
+tests/compat-fixtures/missing-manifest/src/index.ts(2,1): TS2304
+tests/compat-fixtures/missing-manifest/src/index.ts(3,1): TS2304
+tests/compat-fixtures/missing-manifest/src/index.ts(3,13): TS2304
+tests/compat-fixtures/missing-manifest/src/index.ts(3,31): TS2304
+tests/compat-fixtures/missing-manifest/src/index.ts(3,36): TS2304
+tests/compat-fixtures/missing-manifest/src/index.ts(4,1): TS2304
+tests/compounding.test.ts(16,3): TS2740
+tests/consolidation-undo.test.ts(30,39): TS2307
+tests/consolidation-undo.test.ts(64,13): TS2341
+tests/consolidation-undo.test.ts(111,13): TS2341
+tests/consolidation-undo.test.ts(522,13): TS2341
+tests/consolidation-undo.test.ts(628,13): TS2341
+tests/continuity-audit.test.ts(15,3): TS2740
+tests/conversation-index-faiss-adapter.test.ts(59,5): TS2322
+tests/conversation-index-faiss-adapter.test.ts(219,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(238,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(265,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(298,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(321,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(334,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(353,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(372,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(405,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(446,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(462,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(463,26): TS7053
+tests/conversation-index-faiss-adapter.test.ts(493,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(521,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(522,26): TS7053
+tests/conversation-index-faiss-adapter.test.ts(553,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(574,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(583,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(591,9): TS2322
+tests/conversation-index-faiss-adapter.test.ts(617,9): TS2322
+tests/conversation-index-faiss-smoke.test.ts(182,43): TS2339
+tests/conversation-index-faiss-smoke.test.ts(183,43): TS2339
+tests/conversation-index-faiss-smoke.test.ts(184,43): TS2339
+tests/conversation-index-faiss-smoke.test.ts(217,44): TS2339
+tests/conversation-index-faiss-smoke.test.ts(218,44): TS2339
+tests/conversation-index-faiss-smoke.test.ts(219,44): TS2339
+tests/conversation-index-faiss-smoke.test.ts(220,44): TS2339
+tests/conversation-index-faiss-smoke.test.ts(221,44): TS2339
+tests/dashboard-server.test.ts(283,47): TS2339
+tests/dashboard-server.test.ts(288,23): TS2339
+tests/entity-contamination.test.ts(606,4): TS2352
+tests/entity-contamination.test.ts(627,4): TS2352
+tests/entity-retrieval.test.ts(307,7): TS2739
+tests/entity-retrieval.test.ts(308,7): TS2739
+tests/explicit-capture.test.ts(113,38): TS2345
+tests/extraction-proactive.test.ts(506,23): TS7006
+tests/fallback-llm-builtin-provider.test.ts(43,7): TS2322
+tests/fallback-llm-builtin-provider.test.ts(58,7): TS2322
+tests/fallback-llm-builtin-provider.test.ts(85,7): TS2322
+tests/fallback-llm-builtin-provider.test.ts(116,7): TS2322
+tests/fallback-llm-builtin-provider.test.ts(122,7): TS2322
+tests/fallback-llm-builtin-provider.test.ts(183,7): TS2322
+tests/fallback-llm-builtin-provider.test.ts(208,7): TS2322
+tests/fallback-llm-builtin-provider.test.ts(235,28): TS2339
+tests/fallback-llm-builtin-provider.test.ts(236,28): TS2339
+tests/fallback-llm-builtin-provider.test.ts(237,28): TS2339
+tests/graph-snapshot.test.ts(19,15): TS2300
+tests/graph-snapshot.test.ts(725,10): TS2300
+tests/graph-snapshot.test.ts(774,18): TS1361
+tests/graph.test.ts(89,9): TS2739
+tests/graph.test.ts(177,9): TS2739
+tests/graph.test.ts(591,13): TS2739
+tests/graph.test.ts(643,13): TS2739
+tests/hourly-extended.test.ts(18,9): TS2740
+tests/identity-namespaces.test.ts(15,10): TS2352
+tests/integration/bridge-mode.test.ts(254,7): TS2353
+tests/integration/bridge-mode.test.ts(297,7): TS2353
+tests/integration/bridge-mode.test.ts(336,7): TS2353
+tests/integration/bridge-mode.test.ts(381,7): TS2353
+tests/lcm.test.ts(423,71): TS2345
+tests/lcm.test.ts(461,71): TS2345
+tests/lcm.test.ts(498,71): TS2345
+tests/maintenance/purge.test.ts(69,7): TS2353
+tests/maintenance/purge.test.ts(88,7): TS1117
+tests/maintenance/purge.test.ts(89,7): TS1117
+tests/memory-action-policy.test.ts(275,20): TS2352
+tests/memory-governance.test.ts(680,89): TS2304
+tests/memory-governance.test.ts(682,40): TS2339
+tests/memory-governance.test.ts(684,13): TS2339
+tests/memory-governance.test.ts(684,50): TS7006
+tests/memory-governance.test.ts(684,61): TS7006
+tests/memory-governance.test.ts(689,34): TS2339
+tests/memory-governance.test.ts(698,43): TS7006
+tests/memory-governance.test.ts(734,89): TS2304
+tests/memory-governance.test.ts(736,40): TS2339
+tests/memory-governance.test.ts(738,13): TS2339
+tests/memory-governance.test.ts(738,50): TS7006
+tests/memory-governance.test.ts(738,61): TS7006
+tests/memory-governance.test.ts(743,34): TS2339
+tests/memory-governance.test.ts(752,43): TS7006
+tests/memory-governance.test.ts(793,89): TS2304
+tests/memory-governance.test.ts(795,40): TS2339
+tests/memory-governance.test.ts(797,13): TS2339
+tests/memory-governance.test.ts(797,50): TS7006
+tests/memory-governance.test.ts(797,61): TS7006
+tests/memory-governance.test.ts(802,34): TS2339
+tests/memory-governance.test.ts(808,43): TS7006
+tests/memory-governance.test.ts(851,89): TS2304
+tests/memory-governance.test.ts(853,40): TS2339
+tests/memory-governance.test.ts(855,13): TS2339
+tests/memory-governance.test.ts(855,50): TS7006
+tests/memory-governance.test.ts(855,61): TS7006
+tests/memory-governance.test.ts(860,34): TS2339
+tests/memory-governance.test.ts(866,43): TS7006
+tests/memory-governance.test.ts(906,89): TS2304
+tests/memory-governance.test.ts(908,40): TS2339
+tests/memory-governance.test.ts(910,13): TS2339
+tests/memory-governance.test.ts(910,50): TS7006
+tests/memory-governance.test.ts(910,61): TS7006
+tests/memory-governance.test.ts(915,34): TS2339
+tests/memory-governance.test.ts(926,43): TS7006
+tests/memory-governance.test.ts(967,89): TS2304
+tests/memory-governance.test.ts(969,40): TS2339
+tests/memory-governance.test.ts(971,13): TS2339
+tests/memory-governance.test.ts(971,50): TS7006
+tests/memory-governance.test.ts(971,61): TS7006
+tests/memory-governance.test.ts(976,34): TS2339
+tests/memory-governance.test.ts(982,43): TS7006
+tests/memory-governance.test.ts(1010,89): TS2304
+tests/memory-governance.test.ts(1012,40): TS2339
+tests/memory-governance.test.ts(1014,13): TS2339
+tests/memory-governance.test.ts(1014,50): TS7006
+tests/memory-governance.test.ts(1014,61): TS7006
+tests/memory-governance.test.ts(1019,34): TS2339
+tests/memory-governance.test.ts(1113,89): TS2304
+tests/memory-governance.test.ts(1115,40): TS2339
+tests/memory-governance.test.ts(1117,13): TS2339
+tests/memory-governance.test.ts(1117,50): TS7006
+tests/memory-governance.test.ts(1117,61): TS7006
+tests/memory-governance.test.ts(1122,34): TS2339
+tests/memory-governance.test.ts(1128,43): TS7006
+tests/memory-observation-type-shape.test.ts(24,15): TS2614
+tests/memory-projection.test.ts(1618,18): TS18048
+tests/migrate-observations.test.ts(188,9): TS2322
+tests/namespace-migrate.test.ts(22,3): TS2740
+tests/namespace-migrate.test.ts(223,20): TS2339
+tests/namespace-search-router.test.ts(14,10): TS2352
+tests/namespace-search-router.test.ts(251,5): TS2353
+tests/namespaces-router.test.ts(14,3): TS2740
+tests/native-knowledge-openclaw-workspace.test.ts(11,38): TS2724
+tests/native-knowledge-recall.test.ts(175,5): TS2322
+tests/objective-state-writers.test.ts(690,67): TS2345
+tests/objective-state-writers.test.ts(694,68): TS2345
+tests/objective-state-writers.test.ts(726,67): TS2345
+tests/objective-state-writers.test.ts(730,68): TS2345
+tests/objective-state-writers.test.ts(1724,75): TS2345
+tests/objective-state-writers.test.ts(1733,75): TS2345
+tests/openai-chat-compat.test.ts(104,30): TS2339
+tests/openai-chat-compat.test.ts(148,30): TS2339
+tests/openai-chat-compat.test.ts(195,31): TS2339
+tests/openai-chat-compat.test.ts(196,31): TS2339
+tests/openai-chat-compat.test.ts(246,31): TS2339
+tests/openai-chat-compat.test.ts(247,31): TS2339
+tests/openai-chat-compat.test.ts(296,31): TS2339
+tests/openai-chat-compat.test.ts(297,31): TS2339
+tests/openai-chat-compat.test.ts(299,31): TS2339
+tests/operator-toolkit.test.ts(437,80): TS2345
+tests/operator-toolkit.test.ts(438,83): TS2345
+tests/operator-toolkit.test.ts(464,82): TS2345
+tests/operator-toolkit.test.ts(533,82): TS2345
+tests/operator-toolkit.test.ts(534,83): TS2345
+tests/orchestrator-compression-guidelines.test.ts(322,18): TS2540
+tests/orchestrator-path-filter.test.ts(30,43): TS2345
+tests/orchestrator-path-filter.test.ts(55,43): TS2345
+tests/orchestrator-path-filter.test.ts(86,8): TS2322
+tests/orchestrator-path-filter.test.ts(86,27): TS2322
+tests/orchestrator-path-filter.test.ts(87,8): TS2322
+tests/orchestrator-path-filter.test.ts(87,27): TS2322
+tests/orchestrator-path-filter.test.ts(120,8): TS2322
+tests/orchestrator-path-filter.test.ts(121,8): TS2322
+tests/orchestrator-path-filter.test.ts(121,11): TS2322
+tests/orchestrator-path-filter.test.ts(121,14): TS2322
+tests/orchestrator-qmd-review.test.ts(94,26): TS2339
+tests/orchestrator-qmd-review.test.ts(95,26): TS2339
+tests/orchestrator-qmd-review.test.ts(96,26): TS2339
+tests/orchestrator-qmd-review.test.ts(224,26): TS2339
+tests/orchestrator-qmd-review.test.ts(225,26): TS2339
+tests/orchestrator-qmd-review.test.ts(226,26): TS2339
+tests/orchestrator-qmd-review.test.ts(304,26): TS2339
+tests/orchestrator-qmd-review.test.ts(305,26): TS2339
+tests/orchestrator-qmd-review.test.ts(306,26): TS2339
+tests/orchestrator-recent-thread-paths.test.ts(16,5): TS2741
+tests/orchestrator-routing-rules.test.ts(134,5): TS2353
+tests/orchestrator-routing-rules.test.ts(182,5): TS2353
+tests/query-aware-prefilter.test.ts(163,40): TS2339
+tests/query-aware-prefilter.test.ts(188,27): TS7006
+tests/query-aware-prefilter.test.ts(189,27): TS7006
+tests/query-aware-prefilter.test.ts(232,36): TS2339
+tests/query-aware-prefilter.test.ts(256,27): TS7006
+tests/query-aware-prefilter.test.ts(257,27): TS7006
+tests/query-aware-prefilter.test.ts(294,38): TS2339
+tests/query-aware-prefilter.test.ts(299,34): TS2339
+tests/recall-hardening.test.ts(183,14): TS2304
+tests/recall-hardening.test.ts(253,14): TS2304
+tests/recall-hardening.test.ts(358,3): TS2349
+tests/recall-hardening.test.ts(433,3): TS2349
+tests/recall-hardening.test.ts(627,3): TS2349
+tests/recall-hardening.test.ts(674,3): TS2349
+tests/recall-hardening.test.ts(749,3): TS2349
+tests/recall-hardening.test.ts(807,3): TS2349
+tests/recall-hardening.test.ts(809,3): TS2349
+tests/recall-no-recall-short-circuit.test.ts(14,3): TS2740
+tests/release-workflow-public-packages.test.ts(152,41): TS7016
+tests/remnic-cli-service-candidates.test.ts(17,82): TS7006
+tests/remnic-plugin-register-migration.test.ts(66,12): TS2352
+tests/remnic-server-cli.test.ts(9,30): TS7016
+tests/retrieval-agents.test.ts(624,79): TS2345
+tests/retrieval-hot-cold-parity.test.ts(41,7): TS2353
+tests/routing-engine.test.ts(59,27): TS2352
+tests/secure-store/storage-wrap.test.ts(532,58): TS2345
+tests/secure-store/storage-wrap.test.ts(544,45): TS2345
+tests/secure-store/storage-wrap.test.ts(601,45): TS2345
+tests/secure-store/storage-wrap.test.ts(618,45): TS2345
+tests/secure-store/storage-wrap.test.ts(630,45): TS2345
+tests/secure-store/storage-wrap.test.ts(654,51): TS2345
+tests/secure-store/storage-wrap.test.ts(683,45): TS2345
+tests/secure-store/storage-wrap.test.ts(695,45): TS2345
+tests/secure-store/storage-wrap.test.ts(778,51): TS2345
+tests/secure-store/storage-wrap.test.ts(828,45): TS2345
+tests/secure-store/storage-wrap.test.ts(899,45): TS2345
+tests/secure-store/storage-wrap.test.ts(933,45): TS2345
+tests/secure-store/storage-wrap.test.ts(964,45): TS2345
+tests/secure-store/storage-wrap.test.ts(998,45): TS2345
+tests/secure-store/storage-wrap.test.ts(1021,51): TS2345
+tests/secure-store/storage-wrap.test.ts(1039,45): TS2345
+tests/secure-store/storage-wrap.test.ts(1084,45): TS2345
+tests/secure-store/storage-wrap.test.ts(1096,45): TS2345
+tests/secure-store/storage-wrap.test.ts(1119,51): TS2345
+tests/secure-store/storage-wrap.test.ts(1157,45): TS2345
+tests/secure-store/storage-wrap.test.ts(1203,45): TS2345
+tests/secure-store/storage-wrap.test.ts(1246,45): TS2345
+tests/session-integrity.test.ts(210,5): TS2741
+tests/shared-context.test.ts(15,3): TS2740
+tests/storage-derived-write-paths.test.ts(22,39): TS2307
+tests/storage-frontmatter-escape-roundtrip.test.ts(43,9): TS2322
+tests/tier-migration.test.ts(90,7): TS2740
+tests/tier-migration.test.ts(135,7): TS2740
+tests/tier-migration.test.ts(183,7): TS2740
+tests/tier-migration.test.ts(234,7): TS2740
+tests/tier-migration.test.ts(266,7): TS2740
+tests/trust-zones.test.ts(279,16): TS18048
+tests/trust-zones.test.ts(474,16): TS18048
+tests/trust-zones.test.ts(476,48): TS2345
+tests/trust-zones.test.ts(675,48): TS2345
