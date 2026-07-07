@@ -94,10 +94,12 @@ export async function runBoundedMemoryContractsBenchmark(
   const fixtureSource =
     options.mode === "quick" ? BOUNDED_MEMORY_SMOKE_FIXTURE : BOUNDED_MEMORY_FIXTURE;
 
-  // Honor options.limit like the other remnic runners.
+  // Honor options.limit like the other remnic runners: only a strictly-
+  // positive finite limit caps the task set (limit <= 0 means no cap), so a
+  // stray 0 never produces a silent empty run.
   const tasks: BoundedMemoryTask[] =
-    typeof options.limit === "number" && Number.isFinite(options.limit)
-      ? fixtureSource.slice(0, Math.max(0, Math.floor(options.limit)))
+    typeof options.limit === "number" && options.limit > 0 && Number.isFinite(options.limit)
+      ? fixtureSource.slice(0, Math.floor(options.limit))
       : fixtureSource;
 
   const seed = typeof options.seed === "number" ? options.seed : 0;
@@ -111,11 +113,19 @@ export async function runBoundedMemoryContractsBenchmark(
   for (const condition of BOUNDED_MEMORY_CONDITIONS) {
     const results: ConditionTaskResult[] = [];
     for (const task of tasks) {
-      const injectedSkills =
+      const resolvedSkills =
         condition === "typed-plus-skills" ? resolveInjectedSkills(task) : [];
       const started = performance.now();
-      const pack = assemblePack(task, condition, BOUNDED_MEMORY_CONTRACT, injectedSkills);
-      const decision = simulateAgent(task, pack, injectedSkills);
+      const pack = assemblePack(task, condition, BOUNDED_MEMORY_CONTRACT, resolvedSkills);
+      // The agent may only use skills that actually fit in the pack —
+      // assemblePack can drop a skill when the shared budget is full, so
+      // reconcile against the triggered_skills slot rather than handing the
+      // full resolved set to the simulator.
+      const packedSkillIds = new Set(
+        pack.slots.find((slot) => slot.id === "triggered_skills")?.items.map((it) => it.itemId) ?? [],
+      );
+      const effectiveSkills = resolvedSkills.filter((sk) => packedSkillIds.has(sk.id));
+      const decision = simulateAgent(task, pack, effectiveSkills);
       const latencyMs = Math.round(performance.now() - started);
       results.push({ task, pack, decision, latencyMs });
     }
