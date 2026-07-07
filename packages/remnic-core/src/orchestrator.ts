@@ -100,6 +100,7 @@ import {
 import { MaintenanceScheduler } from "./orchestration/maintenance.js";
 import { TierMigrationCoordinator } from "./orchestration/tier-migration-coordinator.js";
 import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
+import { CompressionGuidelineCoordinator } from "./orchestration/compression-guideline-coordinator.js";
 import {
   runLiveConnectorsOnce,
   type LiveConnectorsRunSummary,
@@ -224,10 +225,8 @@ import { parseMemoryActionEligibilityContext } from "./schemas.js";
 import { evaluateMemoryActionPolicy } from "./memory-action-policy.js";
 import {
   buildCompressionGuidelinesMarkdown as buildCompressionGuidelinesMarkdownV2,
-  computeCompressionGuidelineCandidate,
-  refineCompressionGuidelineCandidateSemantically,
-  renderCompressionGuidelinesMarkdown,
 } from "./compression-optimizer.js";
+export { formatCompressionGuidelinesForRecall } from "./orchestration/compression-guideline-coordinator.js";
 import { createRecallSectionMetricRecorder } from "./recall-qos.js";
 import { BoxBuilder, type BoxFrontmatter } from "./boxes.js";
 import { classifyMemoryKind } from "./himem.js";
@@ -270,9 +269,13 @@ import {
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
   resolveMemoryLifecycleCapabilities,
+  resolveIndexingCapabilities,
+  resolveCreationMemoryCapabilities,
   type CapabilitySet,
   type GraphConstructionCapabilitySet,
   type MemoryLifecycleCapabilitySet,
+  type IndexingCapabilitySet,
+  type CreationMemoryCapabilitySet,
 } from "./capabilities.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/index.js";
 import {
@@ -1202,30 +1205,6 @@ export function buildCompressionGuidelinesMarkdown(
   return buildCompressionGuidelinesMarkdownV2(events, generatedAtIso);
 }
 
-export function formatCompressionGuidelinesForRecall(
-  raw: string,
-  maxLines: number = 5,
-): string | null {
-  if (typeof raw !== "string" || raw.trim().length === 0) return null;
-  const sectionMatch = raw.match(
-    // End the section at `\n## ` or end-of-string. Plain $ (not \s*$): the
-    // \s* branch overlapped the lazy body and backtracked polynomially
-    // (CodeQL js/polynomial-redos). Captured lines are trimmed/filtered below,
-    // so trailing whitespace handling is unchanged.
-    /## Suggested Guidelines\s*\n([\s\S]*?)(?:\n##\s+|$)/i,
-  );
-  if (!sectionMatch) return null;
-
-  const lines = sectionMatch[1]
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("- "))
-    .slice(0, Math.max(1, Math.floor(maxLines)));
-  if (lines.length === 0) return null;
-
-  return lines.join("\n");
-}
-
 export function filterRecallCandidates(
   candidates: QmdSearchResult[],
   options: {
@@ -1916,6 +1895,7 @@ export class Orchestrator {
   readonly handleHistory: RecallHandleHistoryStore;
   readonly tierMigrationStatus: TierMigrationStatusStore;
   readonly tierMigrationCoordinator: TierMigrationCoordinator;
+  readonly compressionGuidelineCoordinator: CompressionGuidelineCoordinator;
   /**
    * In-memory X-ray snapshot from the most recent `recall()` call that
    * was invoked with `xrayCapture: true` (issue #570 PR 1).  Scope is
@@ -3033,6 +3013,12 @@ export class Orchestrator {
       getCompounding: () => this.compounding,
       createColdStorage: (parentDir) => new StorageManager(parentDir),
     });
+    this.compressionGuidelineCoordinator = new CompressionGuidelineCoordinator({
+      config,
+      getStorage: () => this.storage,
+      fastChatCompletion: (messages, options) =>
+        this.fastChatCompletion(messages, options),
+    });
     this.sessionObserver = new SessionObserverState({
       memoryDir: config.memoryDir,
       debounceMs: config.sessionObserverDebounceMs ?? 120_000,
@@ -3781,7 +3767,7 @@ export class Orchestrator {
     await Promise.all(cacheWarmups);
     if (signal.aborted) return;
 
-    if (this.config.conversationIndexEnabled && this.conversationIndexBackend) {
+    if (resolveIndexingCapabilities(this.config).conversationIndex && this.conversationIndexBackend) {
       try {
         const init = await this.conversationIndexBackend.initialize();
         if (!init.enabled) {
@@ -4640,7 +4626,7 @@ export class Orchestrator {
             try {
               await this.embeddingFallback.removeFromIndex(m.frontmatter.id);
               if (
-                this.config.queryAwareIndexingEnabled &&
+                resolveIndexingCapabilities(this.config).queryAwareIndexing &&
                 m.path &&
                 m.frontmatter?.created
               ) {
@@ -5679,7 +5665,7 @@ export class Orchestrator {
     const lastUpdateAt =
       lastUpdateAtMs > 0 ? new Date(lastUpdateAtMs).toISOString() : null;
 
-    if (!this.config.conversationIndexEnabled) {
+    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
       return {
         enabled: false,
         backend: this.config.conversationIndexBackend,
@@ -5719,7 +5705,7 @@ export class Orchestrator {
     const lastUpdateAt =
       lastUpdateAtMs > 0 ? new Date(lastUpdateAtMs).toISOString() : null;
 
-    if (!this.config.conversationIndexEnabled) {
+    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
       return {
         enabled: false,
         backend: this.config.conversationIndexBackend,
@@ -5781,7 +5767,7 @@ export class Orchestrator {
     retryAfterMs?: number;
     embedded?: boolean;
   }> {
-    if (!this.config.conversationIndexEnabled) {
+    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
       return { chunks: 0, skipped: true, reason: "disabled", embedded: false };
     }
     const enforceMinInterval = opts?.enforceMinInterval !== false;
@@ -5842,7 +5828,7 @@ export class Orchestrator {
     embedded?: boolean;
     rebuilt?: boolean;
   }> {
-    if (!this.config.conversationIndexEnabled) {
+    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
       return {
         chunks: 0,
         skipped: true,
@@ -6447,7 +6433,7 @@ export class Orchestrator {
     prompt: string,
     recallNamespaces: string[],
   ): Promise<QueryAwarePrefilter> {
-    if (!this.config.queryAwareIndexingEnabled || !prompt.trim()) {
+    if (!resolveIndexingCapabilities(this.config).queryAwareIndexing || !prompt.trim()) {
       return {
         candidatePaths: null,
         temporalFromDate: null,
@@ -9239,7 +9225,7 @@ export class Orchestrator {
     const workProductsPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.creationMemoryEnabled ||
+        !resolveCreationMemoryCapabilities(this.config).creationMemory ||
         !this.config.workProductRecallEnabled ||
         !this.isRecallSectionEnabled(
           "work-products",
@@ -9314,7 +9300,7 @@ export class Orchestrator {
     const queryAwarePrefilterPromise =
       (async (): Promise<QueryAwarePrefilter> => {
         const t0 = Date.now();
-        if (!this.config.queryAwareIndexingEnabled || !prompt.trim()) {
+        if (!resolveIndexingCapabilities(this.config).queryAwareIndexing || !prompt.trim()) {
           recordRecallSectionMetric({
             section: "queryAware",
             priority: "enrichment",
@@ -10060,7 +10046,7 @@ export class Orchestrator {
     const conversationRecallPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.conversationIndexEnabled ||
+        !resolveIndexingCapabilities(this.config).conversationIndex ||
         queryPolicy.skipConversationRecall ||
         !this.isRecallSectionEnabled("conversation-recall", true)
       ) {
@@ -16770,7 +16756,7 @@ export class Orchestrator {
     // Enabling only parallelRetrievalEnabled without queryAwareIndexingEnabled would silently
     // produce an empty temporal index, leaving the temporal agent with no data to work from.
     if (
-      !this.config.queryAwareIndexingEnabled &&
+      !resolveIndexingCapabilities(this.config).queryAwareIndexing &&
       !caps.parallelRetrieval
     )
       return;
@@ -16885,7 +16871,7 @@ export class Orchestrator {
 
     // Build a lookup map from the already-loaded corpus to avoid repeated
     // readAllMemories() scans inside getMemoryById for pre-action deindex reads.
-    const memoryLookup = this.config.queryAwareIndexingEnabled
+    const memoryLookup = resolveIndexingCapabilities(this.config).queryAwareIndexing
       ? new Map(allMemories.map((m) => [m.frontmatter.id, m]))
       : null;
 
@@ -16893,7 +16879,7 @@ export class Orchestrator {
       switch (item.action) {
         case "INVALIDATE": {
           // Capture path/frontmatter before invalidation for index cleanup
-          const toInvalidate = this.config.queryAwareIndexingEnabled
+          const toInvalidate = resolveIndexingCapabilities(this.config).queryAwareIndexing
             ? (memoryLookup?.get(item.existingId) ?? null)
             : null;
           if (await this.storage.invalidateMemory(item.existingId)) {
@@ -16941,7 +16927,7 @@ export class Orchestrator {
             // updateMemory() only changes content/updated/supersedes/lineage — path, created, and tags
             // are preserved, so the temporal/tag index entry for the survivor is already correct.
             // Capture before invalidation for index cleanup
-            const toMergeInvalidate = this.config.queryAwareIndexingEnabled
+            const toMergeInvalidate = resolveIndexingCapabilities(this.config).queryAwareIndexing
               ? (memoryLookup?.get(item.mergeWith) ?? null)
               : null;
             if (await this.storage.invalidateMemory(item.mergeWith)) {
@@ -17027,7 +17013,7 @@ export class Orchestrator {
     if (deletedCommitments.length > 0) {
       memoryItemMutated = true;
       log.info(`cleaned ${deletedCommitments.length} expired commitments`);
-      if (this.config.queryAwareIndexingEnabled) {
+      if (resolveIndexingCapabilities(this.config).queryAwareIndexing) {
         for (const m of deletedCommitments) {
           deindexMemory(
             this.config.memoryDir,
@@ -17040,9 +17026,9 @@ export class Orchestrator {
     }
 
     if (
-      this.config.creationMemoryEnabled &&
-      this.config.commitmentLedgerEnabled &&
-      this.config.commitmentLifecycleEnabled
+      resolveCreationMemoryCapabilities(this.config).creationMemory &&
+      resolveCreationMemoryCapabilities(this.config).commitmentLedger &&
+      resolveCreationMemoryCapabilities(this.config).commitmentLifecycle
     ) {
       try {
         const lifecycle = await applyCommitmentLedgerLifecycle({
@@ -17070,7 +17056,7 @@ export class Orchestrator {
     if (deletedTTL.length > 0) {
       memoryItemMutated = true;
       log.info(`cleaned ${deletedTTL.length} TTL-expired memories`);
-      if (this.config.queryAwareIndexingEnabled) {
+      if (resolveIndexingCapabilities(this.config).queryAwareIndexing) {
         for (const m of deletedTTL) {
           deindexMemory(
             this.config.memoryDir,
@@ -17348,347 +17334,26 @@ export class Orchestrator {
   async optimizeCompressionGuidelines(options?: {
     dryRun?: boolean;
     eventLimit?: number;
-  }): Promise<{
-    enabled: boolean;
-    dryRun: boolean;
-    eventCount: number;
-    previousGuidelineVersion: number | null;
-    nextGuidelineVersion: number;
-    changedRules: number;
-    semanticRefinementApplied: boolean;
-    persisted: boolean;
-    draftContentHash: string | null;
-  }> {
-    const dryRun = options?.dryRun === true;
-    const eventLimit =
-      typeof options?.eventLimit === "number"
-        ? Math.max(0, Math.floor(options.eventLimit))
-        : 500;
-
-    const [activeState, draftState] = await Promise.all([
-      this.storage.readCompressionGuidelineOptimizerState(),
-      this.storage.readCompressionGuidelineDraftState().catch(() => null),
-    ]);
-    const previousState =
-      draftState &&
-      ((activeState?.guidelineVersion ?? 0) < draftState.guidelineVersion ||
-        (activeState?.guidelineVersion ?? 0) === draftState.guidelineVersion)
-        ? draftState
-        : activeState;
-
-    if (!this.config.compressionGuidelineLearningEnabled) {
-      return {
-        enabled: false,
-        dryRun,
-        eventCount: 0,
-        previousGuidelineVersion: previousState?.guidelineVersion ?? null,
-        nextGuidelineVersion: previousState?.guidelineVersion ?? 0,
-        changedRules: 0,
-        semanticRefinementApplied: false,
-        persisted: false,
-        draftContentHash: null,
-      };
-    }
-
-    let events = await this.storage.readMemoryActionEvents(eventLimit);
-    if (eventLimit > 0) {
-      let effectiveEvents = events.filter((event) => event.dryRun !== true);
-      let fetchLimit = eventLimit;
-      while (
-        effectiveEvents.length < eventLimit &&
-        events.length === fetchLimit
-      ) {
-        fetchLimit = Math.min(fetchLimit * 2, fetchLimit + 1000);
-        if (fetchLimit <= events.length) break;
-        events = await this.storage.readMemoryActionEvents(fetchLimit);
-        effectiveEvents = events.filter((event) => event.dryRun !== true);
-      }
-      events = effectiveEvents.slice(-eventLimit);
-    }
-    const generatedAt = new Date().toISOString();
-    const candidate = computeCompressionGuidelineCandidate(events, {
-      generatedAtIso: generatedAt,
-      previousState,
-    });
-    if (candidate.eventCounts.total === 0) {
-      return {
-        enabled: true,
-        dryRun,
-        eventCount: 0,
-        previousGuidelineVersion: previousState?.guidelineVersion ?? null,
-        nextGuidelineVersion: previousState?.guidelineVersion ?? 0,
-        changedRules: 0,
-        semanticRefinementApplied: false,
-        persisted: false,
-        draftContentHash: null,
-      };
-    }
-    const refinedCandidate =
-      await refineCompressionGuidelineCandidateSemantically(candidate, {
-        enabled: this.config.compressionGuidelineSemanticRefinementEnabled,
-        timeoutMs: this.config.compressionGuidelineSemanticTimeoutMs,
-        runRefinement: async (baseline) => {
-          const prompt = [
-            "You refine compression policy suggestions conservatively.",
-            "Return JSON only in this shape:",
-            '{"updates":[{"action":"summarize_node","delta":0.02,"confidence":"medium","note":"..."}]}',
-            "Constraints:",
-            "- Keep updates sparse and conservative.",
-            "- delta must stay between -0.15 and 0.15.",
-            "- Only include actions present in the input.",
-            "Input candidate:",
-            JSON.stringify(baseline),
-          ].join("\n");
-
-          const response = await this.fastChatCompletion(
-            [
-              {
-                role: "system",
-                content: "Respond with strict JSON only. No markdown.",
-              },
-              { role: "user", content: prompt },
-            ],
-            {
-              temperature: 0.1,
-              maxTokens: 400,
-              operation: "compression_guideline_semantic_refinement",
-              priority: "background",
-            },
-          );
-
-          return this.parseCompressionSemanticRefinement(
-            response?.content ?? "",
-          );
-        },
-      });
-
-    const content = renderCompressionGuidelinesMarkdown(refinedCandidate);
-    const contentHash = createHash("sha256").update(content).digest("hex");
-    const semanticRefinementApplied =
-      JSON.stringify(refinedCandidate.ruleUpdates) !==
-      JSON.stringify(candidate.ruleUpdates);
-    const changedRules = refinedCandidate.ruleUpdates.filter(
-      (rule) => rule.delta !== 0,
-    ).length;
-
-    if (!dryRun) {
-      await this.storage.writeCompressionGuidelineDraft(content);
-      await this.storage.writeCompressionGuidelineDraftState({
-        version: refinedCandidate.optimizerVersion,
-        updatedAt: refinedCandidate.generatedAt,
-        sourceWindow: refinedCandidate.sourceWindow,
-        eventCounts: refinedCandidate.eventCounts,
-        guidelineVersion: refinedCandidate.guidelineVersion,
-        contentHash,
-        activationState: "draft",
-        actionSummaries: refinedCandidate.actionSummaries,
-        ruleUpdates: refinedCandidate.ruleUpdates,
-      });
-    }
-
-    return {
-      enabled: true,
-      dryRun,
-      eventCount: candidate.eventCounts.total,
-      previousGuidelineVersion: previousState?.guidelineVersion ?? null,
-      nextGuidelineVersion: refinedCandidate.guidelineVersion,
-      changedRules,
-      semanticRefinementApplied,
-      persisted: !dryRun,
-      draftContentHash: dryRun ? null : contentHash,
-    };
+  }) {
+    return this.compressionGuidelineCoordinator.optimizeCompressionGuidelines(options);
   }
 
   async activateCompressionGuidelineDraft(options?: {
     expectedContentHash?: string;
     expectedGuidelineVersion?: number;
-  }): Promise<{
-    enabled: boolean;
-    activated: boolean;
-    guidelineVersion: number | null;
-    reason?:
-      | "disabled"
-      | "missing_draft"
-      | "expected_revision_required"
-      | "content_hash_mismatch"
-      | "guideline_version_mismatch"
-      | "draft_changed";
-  }> {
-    if (!this.config.compressionGuidelineLearningEnabled) {
-      return {
-        enabled: false,
-        activated: false,
-        guidelineVersion: null,
-        reason: "disabled",
-      };
-    }
-
-    const draftState = await this.storage.readCompressionGuidelineDraftState();
-    if (!draftState) {
-      return {
-        enabled: true,
-        activated: false,
-        guidelineVersion: null,
-        reason: "missing_draft",
-      };
-    }
-
-    const expectedContentHash = options?.expectedContentHash?.trim();
-    const expectedGuidelineVersion = options?.expectedGuidelineVersion;
-
-    if (
-      (!expectedContentHash || expectedContentHash.length === 0) &&
-      typeof expectedGuidelineVersion !== "number"
-    ) {
-      return {
-        enabled: true,
-        activated: false,
-        guidelineVersion: null,
-        reason: "expected_revision_required",
-      };
-    }
-
-    if (expectedContentHash && draftState.contentHash !== expectedContentHash) {
-      return {
-        enabled: true,
-        activated: false,
-        guidelineVersion: null,
-        reason: "content_hash_mismatch",
-      };
-    }
-
-    if (
-      typeof expectedGuidelineVersion === "number" &&
-      draftState.guidelineVersion !== expectedGuidelineVersion
-    ) {
-      return {
-        enabled: true,
-        activated: false,
-        guidelineVersion: null,
-        reason: "guideline_version_mismatch",
-      };
-    }
-
-    const activated = await this.storage.activateCompressionGuidelineDraft({
-      ...(expectedContentHash ? { expectedContentHash } : {}),
-      ...(typeof expectedGuidelineVersion === "number"
-        ? { expectedGuidelineVersion }
-        : {}),
-    });
-    return {
-      enabled: true,
-      activated,
-      guidelineVersion: activated ? draftState.guidelineVersion : null,
-      ...(activated ? {} : { reason: "draft_changed" as const }),
-    };
+  }) {
+    return this.compressionGuidelineCoordinator.activateCompressionGuidelineDraft(options);
   }
 
+  // Issue #1526 (seam 4): compression-guideline learning moved to
+  // CompressionGuidelineCoordinator. Thin delegation keeps the
+  // consolidation-loop hook + recall-section hook call sites stable.
   private async runCompressionGuidelineLearningPass(): Promise<void> {
-    if (!this.config.compressionGuidelineLearningEnabled) return;
-    try {
-      const result = await this.optimizeCompressionGuidelines({
-        dryRun: false,
-        eventLimit: 500,
-      });
-      log.info(
-        `compression guideline learning updated (${result.eventCount} events)`,
-      );
-    } catch (err) {
-      log.warn(`compression guideline learning failed (ignored): ${err}`);
-    }
+    return this.compressionGuidelineCoordinator.runCompressionGuidelineLearningPass();
   }
 
-  private async buildCompressionGuidelineRecallSection(): Promise<
-    string | null
-  > {
-    if (!this.config.contextCompressionActionsEnabled) return null;
-    if (!this.config.compressionGuidelineLearningEnabled) return null;
-
-    const state = await this.storage
-      .readCompressionGuidelineOptimizerState()
-      .catch(() => null);
-    if (!state || state.guidelineVersion <= 0) return null;
-
-    const raw = await this.storage
-      .readCompressionGuidelines()
-      .catch(() => null);
-    const summary = raw ? formatCompressionGuidelinesForRecall(raw, 5) : null;
-    if (!summary) return null;
-
-    return [
-      "## Active Compression Guidelines",
-      "",
-      `Guideline version: ${state.guidelineVersion}`,
-      `Updated: ${state.updatedAt}`,
-      "",
-      summary,
-    ].join("\n");
-  }
-
-  private parseCompressionSemanticRefinement(raw: string): {
-    updates: Array<{
-      action: MemoryActionType;
-      delta?: number;
-      confidence?: "low" | "medium" | "high";
-      note?: string;
-    }>;
-  } | null {
-    if (typeof raw !== "string" || raw.trim().length === 0) return null;
-    const trimmed = raw.trim();
-    const start = trimmed.indexOf("{");
-    const end = trimmed.lastIndexOf("}");
-    if (start === -1 || end === -1 || end <= start) return null;
-
-    try {
-      const parsed = JSON.parse(trimmed.slice(start, end + 1)) as {
-        updates?: Array<{
-          action?: unknown;
-          delta?: unknown;
-          confidence?: unknown;
-          note?: unknown;
-        }>;
-      };
-      if (!Array.isArray(parsed?.updates)) return null;
-
-      const validActions = new Set<MemoryActionType>([
-        "store_episode",
-        "store_note",
-        "update_note",
-        "create_artifact",
-        "summarize_node",
-        "discard",
-        "link_graph",
-      ]);
-
-      const updates = parsed.updates
-        .filter(
-          (item) =>
-            item &&
-            typeof item.action === "string" &&
-            validActions.has(item.action as MemoryActionType),
-        )
-        .map((item) => {
-          const confidence: "low" | "medium" | "high" | undefined =
-            item.confidence === "low" ||
-            item.confidence === "medium" ||
-            item.confidence === "high"
-              ? item.confidence
-              : undefined;
-          return {
-            action: item.action as MemoryActionType,
-            delta:
-              typeof item.delta === "number" && Number.isFinite(item.delta)
-                ? item.delta
-                : undefined,
-            confidence,
-            note: typeof item.note === "string" ? item.note : undefined,
-          };
-        });
-
-      return { updates };
-    } catch {
-      return null;
-    }
+  private async buildCompressionGuidelineRecallSection(): Promise<string | null> {
+    return this.compressionGuidelineCoordinator.buildCompressionGuidelineRecallSection();
   }
 
   private actionOutcomePriorDelta(event: MemoryActionEvent): number {
@@ -17958,7 +17623,7 @@ export class Orchestrator {
         );
         await this.embeddingFallback.removeFromIndex(memory.frontmatter.id);
         if (
-          this.config.queryAwareIndexingEnabled &&
+          resolveIndexingCapabilities(this.config).queryAwareIndexing &&
           memory.path &&
           memory.frontmatter?.created
         ) {
@@ -20343,7 +20008,7 @@ export class Orchestrator {
     );
     let temporalFromDate: string | null = null;
     let promptTags: string[] = [];
-    if (this.config.queryAwareIndexingEnabled && prompt) {
+    if (resolveIndexingCapabilities(this.config).queryAwareIndexing && prompt) {
       if (isTemporalQuery(prompt)) {
         temporalFromDate = recencyWindowFromPrompt(prompt, now);
       }
@@ -20368,7 +20033,7 @@ export class Orchestrator {
     // Scope to result paths first so cross-namespace paths don't consume the cap.
     let temporalCandidates: Set<string> | null = null;
     let tagCandidates: Set<string> | null = null;
-    if (this.config.queryAwareIndexingEnabled && prompt) {
+    if (resolveIndexingCapabilities(this.config).queryAwareIndexing && prompt) {
       const maxCandidates = this.config.queryAwareIndexingMaxCandidates;
       const capSet = (s: Set<string> | null): Set<string> | null => {
         if (!s) return null;
@@ -20477,7 +20142,7 @@ export class Orchestrator {
 
         // v8.1: Temporal + Tag index boost
         // Results that match the detected temporal window or tag query get a small additive boost.
-        if (this.config.queryAwareIndexingEnabled && r.path) {
+        if (resolveIndexingCapabilities(this.config).queryAwareIndexing && r.path) {
           if (temporalCandidates?.has(r.path)) {
             score += applyUtilityRankingRuntimeDelta(
               0.08,
@@ -20791,7 +20456,7 @@ export class Orchestrator {
         contradiction.reason,
       );
       if (
-        this.config.queryAwareIndexingEnabled &&
+        resolveIndexingCapabilities(this.config).queryAwareIndexing &&
         contradiction.supersededPath
       ) {
         deindexMemory(

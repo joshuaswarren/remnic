@@ -294,3 +294,113 @@ export function resolveMemoryLifecycleCapabilities(
     embeddingFallback: config.embeddingFallbackEnabled,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Indexing capability set (issue #1523 batch 4).
+//
+// The flags below gate query-aware indexing (temporal/tag index build +
+// prefilter) and the conversation index (QMD/FAISS backend selection). They
+// are read on the recall path, the extraction/persist path, and the
+// maintenance/invalidation path — so they get their own projection resolved
+// ONCE at each operation entry that reads them.
+//
+// Every field projects from an already-resolved PluginConfig boolean (defaults
+// applied at the parse boundary), so the resolver is a pure projection.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of indexing feature gates (issue #1523 batch 4).
+ *
+ * Resolved once per recall / extraction / maintenance operation and threaded
+ * down. Composition lives ONLY in {@link resolveIndexingCapabilities}.
+ */
+export interface IndexingCapabilitySet {
+  /** `queryAwareIndexingEnabled` — build + use temporal/tag index for recall prefilter. */
+  readonly queryAwareIndexing: boolean;
+  /** `conversationIndexEnabled` — conversation-index backend (QMD / FAISS). */
+  readonly conversationIndex: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveIndexingCapabilities}.
+ */
+export type IndexingConfigProjection = Pick<
+  PluginConfig,
+  "queryAwareIndexingEnabled" | "conversationIndexEnabled"
+>;
+
+/**
+ * Resolve the {@link IndexingCapabilitySet} from parsed config.
+ *
+ * Call this ONCE per recall / extraction / maintenance operation entry and
+ * thread the result down — exactly the pattern {@link resolveCapabilities}
+ * established for recall.
+ */
+export function resolveIndexingCapabilities(
+  config: IndexingConfigProjection,
+): IndexingCapabilitySet {
+  return Object.freeze({
+    queryAwareIndexing: config.queryAwareIndexingEnabled,
+    conversationIndex: config.conversationIndexEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Creation-memory capability set (issue #1523 batch 4).
+//
+// The flags below gate the creation-memory subsystem: resume-bundle handoff,
+// commitment ledger, commitment lifecycle, and the master creation-memory
+// switch. They are read on the extraction/persist path, the recall
+// enrichment path, and the CLI command surface — so they get their own
+// projection resolved ONCE at each operation entry that reads them.
+//
+// Every field projects from an already-resolved PluginConfig boolean (defaults
+// applied at the parse boundary), so the resolver is a pure projection.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of creation-memory feature gates (issue #1523 batch 4).
+ *
+ * Resolved once per creation-memory operation (CLI command, extraction,
+ * recall enrichment) and threaded down. Composition lives ONLY in
+ * {@link resolveCreationMemoryCapabilities}.
+ */
+export interface CreationMemoryCapabilitySet {
+  /** `creationMemoryEnabled` — master switch for creation-memory subsystem. */
+  readonly creationMemory: boolean;
+  /** `commitmentLedgerEnabled` — commitment-ledger read/write. */
+  readonly commitmentLedger: boolean;
+  /** `resumeBundlesEnabled` — resume-bundle handoff bundles. */
+  readonly resumeBundles: boolean;
+  /** `commitmentLifecycleEnabled` — commitment lifecycle (promotion / decay). */
+  readonly commitmentLifecycle: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveCreationMemoryCapabilities}.
+ */
+export type CreationMemoryConfigProjection = Pick<
+  PluginConfig,
+  | "creationMemoryEnabled"
+  | "commitmentLedgerEnabled"
+  | "resumeBundlesEnabled"
+  | "commitmentLifecycleEnabled"
+>;
+
+/**
+ * Resolve the {@link CreationMemoryCapabilitySet} from parsed config.
+ *
+ * Call this ONCE per creation-memory operation entry and thread the result
+ * down — exactly the pattern {@link resolveCapabilities} established for
+ * recall.
+ */
+export function resolveCreationMemoryCapabilities(
+  config: CreationMemoryConfigProjection,
+): CreationMemoryCapabilitySet {
+  return Object.freeze({
+    creationMemory: config.creationMemoryEnabled,
+    commitmentLedger: config.commitmentLedgerEnabled,
+    resumeBundles: config.resumeBundlesEnabled,
+    commitmentLifecycle: config.commitmentLifecycleEnabled,
+  });
+}
