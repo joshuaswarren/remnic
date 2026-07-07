@@ -4,6 +4,7 @@ import type {
   ProviderFactoryConfig,
 } from "./types.js";
 import { createAnthropicProvider } from "./anthropic.js";
+import { createClaudeCliProvider } from "./claude-cli.js";
 import { createCodexCliProvider } from "./codex-cli.js";
 import { createLiteLlmProvider } from "./litellm.js";
 import { createLocalLlmProvider } from "./local-llm.js";
@@ -12,6 +13,8 @@ import { createOpenAiCompatibleProvider } from "./openai-compatible.js";
 
 export interface DiscoverAllProvidersOptions {
   includeCodexCli?: boolean;
+  /** When true (default), probe for a locally installed Claude Code CLI. */
+  includeClaudeCli?: boolean;
 }
 
 export function createProvider(config: ProviderFactoryConfig): LlmProvider {
@@ -28,6 +31,8 @@ export function createProvider(config: ProviderFactoryConfig): LlmProvider {
       return createLocalLlmProvider(config);
     case "codex-cli":
       return createCodexCliProvider(config);
+    case "claude-cli":
+      return createClaudeCliProvider(config);
     default: {
       const exhaustive: never = config;
       throw new Error(`Unknown provider: ${JSON.stringify(exhaustive)}`);
@@ -72,6 +77,18 @@ export async function discoverAllProviders(
         createCodexCliProvider({
           provider: "codex-cli",
           model: "gpt-5.5",
+          reasoningEffort: "xhigh",
+        }),
+    });
+  }
+
+  if (options.includeClaudeCli ?? true) {
+    discoveryTargets.push({
+      provider: "claude-cli" as const,
+      create: () =>
+        createClaudeCliProvider({
+          provider: "claude-cli",
+          model: "opus",
           reasoningEffort: "xhigh",
         }),
     });

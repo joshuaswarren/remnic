@@ -475,9 +475,13 @@ function resolveProviderConfig(
         "(e.g. http://localhost:8080/v1 for llama.cpp).",
     );
   }
-  if (reasoningEffort !== undefined && provider !== "codex-cli") {
+  if (
+    reasoningEffort !== undefined &&
+    provider !== "codex-cli" &&
+    provider !== "claude-cli"
+  ) {
     throw new Error(
-      `${kind} Codex reasoning effort requires provider "codex-cli"`,
+      `${kind} reasoning effort requires provider "codex-cli" or "claude-cli"`,
     );
   }
 
@@ -493,7 +497,9 @@ function resolveProviderConfig(
         } }
       : {}),
     ...(disableThinking ? { disableThinking: true } : {}),
-    ...(provider === "codex-cli" ? { reasoningEffort: reasoningEffort ?? "xhigh" } : {}),
+    ...((provider === "codex-cli" || provider === "claude-cli")
+      ? { reasoningEffort: reasoningEffort ?? "xhigh" }
+      : {}),
     ...(responderContextBudgetChars !== undefined
       ? { responderContextBudgetChars }
       : {}),
@@ -631,6 +637,9 @@ function gatewayProviderApi(provider: BuiltInProvider): string {
   if (provider === "codex-cli") {
     return "codex-cli";
   }
+  if (provider === "claude-cli") {
+    return "claude-cli";
+  }
   if (provider === "ollama") {
     return "ollama-chat";
   }
@@ -652,6 +661,8 @@ function defaultInternalBaseUrl(provider: BuiltInProvider): string | undefined {
       return "http://localhost:11434/api";
     case "codex-cli":
       return "codex-cli://local";
+    case "claude-cli":
+      return "claude-cli://local";
     case "local-llm":
       return undefined;
     default: {

@@ -166,6 +166,7 @@ export type {
   WriteBenchmarkArtifactResult,
 } from "./published-artifact.js";
 export { createAnthropicProvider } from "./providers/anthropic.js";
+export { createClaudeCliProvider } from "./providers/claude-cli.js";
 export { createCodexCliProvider } from "./providers/codex-cli.js";
 export { getRemnicVersion } from "./reporter.js";
 export {

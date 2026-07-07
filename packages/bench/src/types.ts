@@ -22,8 +22,15 @@ export type AmaBenchJudgeProtocol = "default" | "recommended";
  * `codex-cli` shells out to `codex exec` as an isolated benchmark-only
  * responder/judge target. It is intentionally not routed through Remnic
  * memory or OpenClaw gateway state.
+ *
+ * `claude-cli` shells out to Claude Code headless (`claude -p`) in an
+ * isolated empty workspace with tools disabled (issue #1728). It exists for
+ * the judge role and cheap internal iteration under Claude Max session
+ * limits — NOT for the published `tier: "frontier"` headline number, which
+ * must be API-sourced via the `anthropic` provider so a reviewer can
+ * reproduce it. A claude-cli-sourced number is "Opus via Claude Code".
  */
-export type BuiltInProvider = "openai" | "anthropic" | "ollama" | "litellm" | "local-llm" | "codex-cli";
+export type BuiltInProvider = "openai" | "anthropic" | "ollama" | "litellm" | "local-llm" | "codex-cli" | "claude-cli";
 
 export type BenchReasoningEffort = "low" | "medium" | "high" | "xhigh";
 

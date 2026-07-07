@@ -113,12 +113,35 @@ export interface CodexCliProviderConfig extends ProviderBaseConfig {
   diagnosticsMode?: "metadata" | "full";
 }
 
+export interface ClaudeCliProviderConfig extends ProviderBaseConfig {
+  provider?: "claude-cli";
+  /**
+   * Claude Code reasoning effort (forwarded as `claude -p --effort`). Bench
+   * CLI defaults this to xhigh. Mirrors the codex-cli reasoning-effort knob.
+   */
+  reasoningEffort?: BenchReasoningEffort;
+  /** Optional executable override for tests or non-standard Claude Code installs. */
+  executable?: string;
+  /**
+   * Optional diagnostics artifact directory. When set, the provider writes
+   * per-call metadata that helps debug slow benchmark completions without
+   * depending on transient temp workspaces.
+   */
+  diagnosticsDir?: string;
+  /**
+   * `metadata` stores hashes/counts only. `full` additionally stores the full
+   * benchmark prompt and should only be used for isolated benchmark datasets.
+   */
+  diagnosticsMode?: "metadata" | "full";
+}
+
 export type ProviderFactoryConfig =
   | (OpenAiCompatibleProviderConfig & { provider: "openai" | "litellm" })
   | (AnthropicProviderConfig & { provider: "anthropic" })
   | (OllamaProviderConfig & { provider: "ollama" })
   | (LocalLlmProviderConfig & { provider: "local-llm" })
-  | (CodexCliProviderConfig & { provider: "codex-cli" });
+  | (CodexCliProviderConfig & { provider: "codex-cli" })
+  | (ClaudeCliProviderConfig & { provider: "claude-cli" });
 
 export interface ProviderDiscoveryResult {
   provider: BuiltInProvider;
