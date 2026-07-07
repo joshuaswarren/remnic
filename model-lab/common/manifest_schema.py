@@ -65,10 +65,13 @@ KNOWN_TASKS: tuple[str, ...] = ("faithfulness-gate", "correction-intent")
 #: its eval numbers. ``bitsandbytes`` is intentionally NOT required for
 #: correction-intent (it is the optional <=8B QLoRA escape hatch; a <=4B LoRA run
 #: does not import it). ``datasets`` + ``huggingface-hub`` are universal
-#: (data loading + weight publish) so they appear in both rows.
+#: (data loading + weight publish) so they appear in both rows. ``accelerate``
+#: is also required for BOTH tasks: transformers Trainer / TrainingArguments
+#: import it for device management, and the correction-intent TRL SFTTrainer
+#: depends on it transitively at runtime (codex P2 PRRT_kwDORJXyws6O7kTC).
 TASK_REQUIRED_LIBS: Mapping[str, tuple[str, ...]] = {
     "faithfulness-gate": ("datasets", "huggingface-hub", "accelerate", "sentencepiece"),
-    "correction-intent": ("trl", "peft", "datasets", "huggingface-hub"),
+    "correction-intent": ("trl", "peft", "datasets", "huggingface-hub", "accelerate"),
 }
 
 

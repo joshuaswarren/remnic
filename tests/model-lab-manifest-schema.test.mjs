@@ -174,7 +174,8 @@ function makeValidTrainedManifest() {
       python: "3.12.3",
       libs: {
         torch: "2.12.1", transformers: "5.3.0", trl: "0.11.1", peft: "0.10.0",
-        datasets: "2.18.0", "huggingface-hub": "0.25.0", bitsandbytes: "0.43.1",
+        datasets: "2.18.0", "huggingface-hub": "0.25.0", accelerate: "1.14.0",
+        bitsandbytes: "0.43.1",
       },
       pipFreezeSha256: "freezehash",
       capturedAt: "2026-07-06",
@@ -341,8 +342,9 @@ test(
       fs.unlinkSync(tmp);
     }
 
-    // Same for datasets (named explicitly in #1700) and peft.
-    for (const lib of ["datasets", "peft"]) {
+    // Same for datasets (named explicitly in #1700), peft, and accelerate
+    // (Trainer/TRL runtime dep — required for both tasks, codex P2 PRRT_kwDORJXyws6O7kTC).
+    for (const lib of ["datasets", "peft", "accelerate"]) {
       const m2 = makeValidTrainedManifest();
       delete m2.trainingStack.libs[lib];
       const t = path.join(os.tmpdir(), `remnic-ci-tasklibs-${lib}-${process.pid}.json`);
