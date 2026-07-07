@@ -41,8 +41,8 @@ test("runConsolidationProvenanceCheck returns an empty report on a clean store",
     const storage = await seedStorage(dir);
     // Write a canonical memory whose derived_from entries match snapshots
     // captured before writing — mirrors PR 2's happy path.
-    const srcAId = await storage.writeMemory("fact", "alpha", { source: "extraction" });
-    const srcBId = await storage.writeMemory("fact", "bravo", { source: "extraction" });
+    const { id: srcAId } = await storage.writeMemory("fact", "alpha", { source: "extraction" });
+    const { id: srcBId } = await storage.writeMemory("fact", "bravo", { source: "extraction" });
     const all = await storage.readAllMemories();
     const srcA = all.find((m) => m.frontmatter.id === srcAId);
     const srcB = all.find((m) => m.frontmatter.id === srcBId);
@@ -313,7 +313,7 @@ test("summarizeConsolidationProvenance honors versioningSidecarDir from config",
     });
     await storage.ensureDirectories();
 
-    const srcId = await storage.writeMemory("fact", "source body", { source: "extraction" });
+    const { id: srcId } = await storage.writeMemory("fact", "source body", { source: "extraction" });
     const all = await storage.readAllMemories();
     const src = all.find((m) => m.frontmatter.id === srcId)!;
     const entry = await storage.snapshotForProvenance(src.path);

@@ -401,7 +401,7 @@ async function writeReplacementMemory(
   // writeMemory is the single storage chokepoint — catalog/dedup/reindex fire
   // here (rule 43). Tombstone blocking also fires here (#1579), so a
   // resurrected fact lands as pending_review rather than silently overwriting.
-  const id = await storage.writeMemory(
+  const { id, tombstoneBlocked } = await storage.writeMemory(
     (draft.category ?? "fact") as Parameters<typeof storage.writeMemory>[0],
     draft.content,
     {
@@ -415,6 +415,16 @@ async function writeReplacementMemory(
       ...(draft.supersedes ? { supersedes: draft.supersedes } : {}),
     },
   );
+  if (tombstoneBlocked) {
+    // #1645 (review thread): the replacement content matched a tombstone, so it
+    // landed pending_review (non-active). Returning the id would let the
+    // executor record the supersede as applied and Phase 2 retire the loser
+    // with `supersededBy` pointing at a non-active replacement — stranding
+    // the fact behind a tombstone. Fail the correction cleanly instead.
+    throw new CorrectionContractError(
+      `correction replacement was tombstone-blocked (pending_review ${id}) — cannot supersede with a non-active replacement`,
+    );
+  }
   return id;
 }
 
@@ -505,7 +515,7 @@ async function rescopeMemoryFn(
   const destContent = fm.structuredAttributes
     ? stripAttributesSuffix(memory.content)
     : memory.content;
-  const destId = await destStorage.writeMemory(fm.category, destContent, {
+  const { id: destId, tombstoneBlocked: destBlocked } = await destStorage.writeMemory(fm.category, destContent, {
     source: `correction:rescope:${namespace}`,
     ...(typeof fm.confidence === "number" ? { confidence: fm.confidence } : {}),
     ...(Array.isArray(fm.tags) ? { tags: fm.tags } : {}),
@@ -517,6 +527,14 @@ async function rescopeMemoryFn(
     ...(Array.isArray(fm.links) ? { links: fm.links } : {}),
     ...(fm.intentGoal ? { intentGoal: fm.intentGoal } : {}),
   });
+  if (destBlocked) {
+    // #1645: destination tombstone-blocked the rescope (pending_review). Don't
+    // archive the source — that deletes the only active copy while the
+    // replacement sits behind review. Fail the rescope; source stays active.
+    throw new CorrectionContractError(
+      `rescope of ${memoryId} into "${toNamespace}" was tombstone-blocked (pending_review ${destId}) — keeping source active`,
+    );
+  }
   // Unlink the source by archiving (non-destructive — rule 25). If the archive
   // fails AFTER the destination write succeeded, compensate by archiving the
   // destination too so no duplicate ACTIVE fact remains, then re-throw so the
@@ -650,7 +668,7 @@ async function appendAuditRecordFn(
   // Corrections are themselves memories, searchable and namespaced (issue
   // #1580 design §4). Write a correction-category memory capturing the
   // plan + outcome as the audit trail.
-  const id = await storage.writeMemory("correction", buildAuditBody(record), {
+  const { id: id } = await storage.writeMemory("correction", buildAuditBody(record), {
     source: "correction-contract",
     confidence: 1.0,
     tags: ["correction-audit", `plan:${record.planId}`, `classification:${record.classification}`],

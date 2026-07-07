@@ -54,7 +54,7 @@ describe("reasoning_trace category", () => {
         "Outcome: route-b won and we pinned it.",
       ].join("\n");
 
-      const id = await storage.writeMemory("reasoning_trace", body, {
+      const { id: id } = await storage.writeMemory("reasoning_trace", body, {
         source: "test",
         tags: ["reasoning", "routing-decision"],
         confidence: 0.9,

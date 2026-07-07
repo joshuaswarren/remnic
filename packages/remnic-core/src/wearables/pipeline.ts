@@ -324,6 +324,7 @@ export async function syncWearableSource(
     memoriesPromoted: 0,
     memoriesDemoted: 0,
     memoriesSkipped: 0,
+    memoriesBlocked: 0,
     nativeMemoriesImported: 0,
     warnings: [],
   };
@@ -475,6 +476,7 @@ export async function syncWearableSource(
           summary.memoriesPromoted += generated.promoted;
           summary.memoriesDemoted += generated.demoted;
           summary.memoriesSkipped += generated.skipped;
+          summary.memoriesBlocked += generated.tombstoneBlocked;
           summary.warnings.push(...generated.warnings);
           // Degraded-but-complete passes (e.g. judge unavailable) still
           // record completion — only an aborted extraction should force
@@ -558,6 +560,7 @@ export async function syncWearableSource(
         );
         summary.warnings.push(...imported.warnings);
         summary.nativeMemoriesImported += imported.imported;
+        summary.memoriesBlocked += imported.tombstoneBlocked;
         importedNativeIds.push(...imported.importedIds);
         for (const id of imported.importedIds) alreadyImported.add(id);
         if (!result.nextCursor) break;
@@ -583,6 +586,7 @@ export async function syncWearableSource(
     summary.memoriesCreated > 0 ||
     summary.memoriesPromoted > 0 ||
     summary.memoriesDemoted > 0 ||
+    summary.memoriesBlocked > 0 ||
     summary.nativeMemoriesImported > 0;
   if (wroteAnything && deps.afterWrites) {
     try {

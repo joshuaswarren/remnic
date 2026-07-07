@@ -131,7 +131,7 @@ function makeResolutionStorage(options: {
       memory.frontmatter.derived_from = writeOptions.derivedFrom;
       memory.frontmatter.derived_via = writeOptions.derivedVia as MemoryFrontmatter["derived_via"];
       memories.set(id, memory);
-      return id;
+      return { id: id, tombstoneBlocked: false };
     },
     async supersedeMemory(oldId: string, newId: string, reason: string) {
       supersedeCalls.push({ oldId, newId, reason });

@@ -117,7 +117,7 @@ function makeStubStorage(initialMemories: MemoryFile[] = []): StubStorage {
         frontmatter: makeFrontmatter({ id, ...(options as Partial<MemoryFrontmatter>) }),
         content,
       });
-      return id;
+      return { id: id, tombstoneBlocked: false };
     },
     async updateMemory(id, newContent) {
       updated.push({ id, content: newContent });
@@ -391,6 +391,30 @@ test("refresh: truncated card carries 'truncated' tag in write options", async (
   assert.deepEqual(storage.written[0]!.options.tags, [ARCHITECTURE_CARD_TAG, "truncated"]);
   const written = storage.memories[storage.memories.length - 1];
   assert.ok(written?.frontmatter.tags?.includes("truncated"), "truncated tag present");
+});
+
+test("refresh: tombstone-blocked write surfaces refreshed:false + blocked reason (#1645)", async () => {
+  // findArchitectureCardMemory filters non-active cards, so a blocked prior
+  // card resolves to null and the refresh takes the first-card writeMemory
+  // path. When that write is tombstone-blocked (#1579), the response must
+  // report refreshed:false with a blocked reason — NOT refreshed:true, which
+  // would hide the block from callers/UI.
+  const base = makeStubStorage();
+  const storage: StubStorage = {
+    ...base,
+    async writeMemory(category, content, options) {
+      const result = await base.writeMemory(category, content, options);
+      return { ...result, tombstoneBlocked: true, blockedBy: "tomb-arch-1" };
+    },
+  };
+  const ctx = makeContext({ resolveStorage: async () => storage });
+  const result = await handleCodingArchitecture({ subcommand: "refresh", sessionKey: "s1" }, ctx);
+  assert.equal(result.subcommand, "refresh");
+  if (result.subcommand !== "refresh") return;
+  assert.equal(result.refreshed, false, "a tombstone-blocked write is not refreshed");
+  assert.equal(result.blockedReason, "tombstone-blocked", "blocked reason surfaced");
+  assert.equal(result.blockedBy, "tomb-arch-1", "blocking tombstone id surfaced");
+  assert.ok(result.memoryId, "pending_review memory still persisted with an id");
 });
 
 // ──────────────────────────────────────────────────────────────────────────

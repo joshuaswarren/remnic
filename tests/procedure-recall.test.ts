@@ -18,7 +18,7 @@ test("buildProcedureRecallSection returns ranked procedures on task-initiation p
       { order: 1, intent: "Run deploy checks for production gateway" },
       { order: 2, intent: "Push the release tag" },
     ]);
-    const id = await storage.writeMemory(
+    const { id: id } = await storage.writeMemory(
       "procedure",
       `When you deploy the gateway\n\n${body}`,
       { source: "test", tags: ["deploy", "gateway"] },
@@ -101,7 +101,7 @@ test("scope profile procedure recall merges procedures from later readable layer
       { order: 1, intent: "Run deploy checks for production gateway" },
       { order: 2, intent: "Push the release tag" },
     ]);
-    const id = await sharedStorage.writeMemory(
+    const { id: id } = await sharedStorage.writeMemory(
       "procedure",
       `When you deploy the gateway\n\n${body}`,
       { source: "test", tags: ["deploy", "gateway"] },

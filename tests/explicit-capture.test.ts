@@ -167,7 +167,7 @@ test("persistExplicitCapture writes lifecycle events and dedupes active duplicat
         frontmatter: { id, category, status: "active" },
         content,
       });
-      return id;
+      return { id: id, tombstoneBlocked: false };
     },
     appendMemoryLifecycleEvents: async (events: Array<{ eventType: string; actor: string; memoryId: string }>) => {
       lifecycleEvents.push(...events);
@@ -224,7 +224,7 @@ test("persistExplicitCapture records a catalog write for the DEFAULT namespace",
     readAllMemories: async () => [],
     writeMemory: async () => {
       storage.onCatalogWrite?.();
-      return "fact-default";
+      return { id: "fact-default", tombstoneBlocked: false };
     },
     appendMemoryLifecycleEvents: async () => 1,
   };
@@ -268,7 +268,7 @@ test("queueExplicitCaptureForReview records a catalog write for the DEFAULT name
       const id = `fact-${memories.length + 1}`;
       memories.push({ frontmatter: { id, status: "active" }, content, path: `/tmp/${id}.md` });
       storage.onCatalogWrite?.();
-      return id;
+      return { id: id, tombstoneBlocked: false };
     },
     getMemoryById: async (id: string) => memories.find((m) => m.frontmatter.id === id) ?? null,
     writeMemoryFrontmatter: async (memory: { frontmatter: { status?: string } }, patch: { status: string }) => {
@@ -317,7 +317,7 @@ test("queueExplicitCaptureForReview records a catalog write when a post-write fr
       const id = `fact-${memories.length + 1}`;
       memories.push({ frontmatter: { id, status: "active" }, content, path: `/tmp/${id}.md` });
       storage.onCatalogWrite?.();
-      return id;
+      return { id: id, tombstoneBlocked: false };
     },
     getMemoryById: async (id: string) => memories.find((m) => m.frontmatter.id === id) ?? null,
     // The pending_review frontmatter update fails after writeMemory has already
@@ -370,7 +370,7 @@ test("persistExplicitCapture rejects namespaces outside the configured policy", 
     hasFactContentHash: async () => false,
     isFactContentHashAuthoritative: async () => true,
     readAllMemories: async () => [],
-    writeMemory: async () => "fact-1",
+    writeMemory: async () => ({ id: "fact-1", tombstoneBlocked: false }),
     appendMemoryLifecycleEvents: async () => 1,
   };
 
@@ -413,7 +413,7 @@ test("queueExplicitCaptureForReview stores a pending-review memory and lifecycle
         content,
         path: `/tmp/${id}.md`,
       });
-      return id;
+      return { id: id, tombstoneBlocked: false };
     },
     getMemoryById: async (id: string) => memories.find((memory) => memory.frontmatter.id === id) ?? null,
     writeMemoryFrontmatter: async (
@@ -490,7 +490,7 @@ test("queueExplicitCaptureForReview redacts credential-like review metadata", as
         content,
         path: "/tmp/fact-1.md",
       });
-      return "fact-1";
+      return { id: "fact-1", tombstoneBlocked: false };
     },
     getMemoryById: async (id: string) => memories.find((memory) => memory.frontmatter.id === id) ?? null,
     writeMemoryFrontmatter: async (
@@ -566,7 +566,7 @@ test("queueExplicitCaptureForReview preserves requested namespace isolation when
   const requestedNamespaces: string[] = [];
   const storage = {
     readAllMemories: async () => [],
-    writeMemory: async () => "fact-1",
+    writeMemory: async () => ({ id: "fact-1", tombstoneBlocked: false }),
     getMemoryById: async () => ({
       frontmatter: { id: "fact-1", status: "active" },
       content: "queued review item",
@@ -616,7 +616,7 @@ test("persistExplicitCapture attributes lifecycle actors to the correct tool sou
     readAllMemories: async () => [],
     writeMemory: async (_category: string, _content: string, options: { source?: string }) => {
       sources.push(options.source ?? "");
-      return `fact-${nextId++}`;
+      return { id: `fact-${nextId++}`, tombstoneBlocked: false };
     },
     appendMemoryLifecycleEvents: async (events: Array<{ actor: string; memoryId: string }>) => {
       lifecycleEvents.push(...events);
@@ -653,7 +653,7 @@ test("queueExplicitCaptureForReview attributes queued suggestion submissions to 
   const frontmatterActors: string[] = [];
   const storage = {
     readAllMemories: async () => [],
-    writeMemory: async () => "fact-1",
+    writeMemory: async () => ({ id: "fact-1", tombstoneBlocked: false }),
     getMemoryById: async () => ({
       frontmatter: { id: "fact-1", status: "active" },
       content: "queued review item",
@@ -707,7 +707,7 @@ test("fact duplicate checks short-circuit without a full corpus scan when author
     hasFactContentHash: async () => false,
     isFactContentHashAuthoritative: async () => true,
     readAllMemories: async () => [],
-    writeMemory: async () => "fact-1",
+    writeMemory: async () => ({ id: "fact-1", tombstoneBlocked: false }),
     appendMemoryLifecycleEvents: async () => 1,
   };
 
@@ -738,7 +738,7 @@ test("fact duplicate checks fall back to the full corpus scan when hash index co
         },
       ];
     },
-    writeMemory: async () => "fact-should-not-write",
+    writeMemory: async () => ({ id: "fact-should-not-write", tombstoneBlocked: false }),
     appendMemoryLifecycleEvents: async () => 1,
   };
 
@@ -771,7 +771,7 @@ test("fact duplicate checks fail open to the full corpus scan when hash index ac
         },
       ];
     },
-    writeMemory: async () => "fact-should-not-write",
+    writeMemory: async () => ({ id: "fact-should-not-write", tombstoneBlocked: false }),
     appendMemoryLifecycleEvents: async () => 1,
   };
 
@@ -807,7 +807,7 @@ test("explicit capture duplicate checks preserve punctuation that changes techni
         content: "User prefers C++",
       },
     ],
-    writeMemory: async () => "fact-c",
+    writeMemory: async () => ({ id: "fact-c", tombstoneBlocked: false }),
     appendMemoryLifecycleEvents: async () => 1,
   };
 
@@ -877,7 +877,7 @@ test("memory_store and memory_capture share explicit validation and duplicate ha
             status: "active",
           },
         });
-        return id;
+        return { id: id, tombstoneBlocked: false };
       },
       getMemoryById: async (id: string) => memories.find((memory) => memory.frontmatter.id === id) ?? null,
       writeMemoryFrontmatter: async (

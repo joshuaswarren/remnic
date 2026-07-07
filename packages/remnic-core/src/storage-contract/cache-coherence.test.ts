@@ -24,7 +24,7 @@ test("cache-coherence: write via instance A, read via fresh instance B → B see
     const smA = new StorageManager(dir);
     await smA.ensureDirectories();
 
-    const id = await smA.writeMemory("fact", "written by A");
+    const { id: id } = await smA.writeMemory("fact", "written by A");
 
     // Fresh instance over the same dir
     const smB = new StorageManager(dir);
@@ -47,7 +47,7 @@ test("cache-coherence: delete via instance A is reflected in fresh instance B", 
     resetStaticCaches();
     const smA = new StorageManager(dir);
     await smA.ensureDirectories();
-    const id = await smA.writeMemory("fact", "to be deleted");
+    const { id: id } = await smA.writeMemory("fact", "to be deleted");
 
     // Confirm B sees it
     const smB = new StorageManager(dir);

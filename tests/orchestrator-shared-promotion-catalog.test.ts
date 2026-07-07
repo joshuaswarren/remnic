@@ -343,7 +343,7 @@ test("shared promotion records catalog write after shared temporal supersession"
     await sharedStorage.ensureDirectories();
 
     const entity = "user-shared-promotion-order";
-    const oldId = await sharedStorage.writeMemory("fact", "Lives in NYC.", {
+    const { id: oldId } = await sharedStorage.writeMemory("fact", "Lives in NYC.", {
       entityRef: entity,
       structuredAttributes: { city: "NYC" },
       source: "seed",

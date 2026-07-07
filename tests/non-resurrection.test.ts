@@ -82,7 +82,7 @@ test("#1579 matrix (a): re-extraction of a superseded fact is blocked", async ()
       rawContent: content,
     });
 
-    const id = await storage.writeMemory("fact", content, { source: "extraction" });
+    const { id: id } = await storage.writeMemory("fact", content, { source: "extraction" });
     const memory = await readBack(storage, id);
     assertBlocked(memory, "exact");
   } finally {
@@ -101,7 +101,7 @@ test("#1579 matrix (b): capsule / import payload containing the retracted fact i
       rawContent: content,
     });
 
-    const id = await storage.writeMemory("fact", content, { source: "import" });
+    const { id: id } = await storage.writeMemory("fact", content, { source: "import" });
     const memory = await readBack(storage, id);
     assertBlocked(memory, "exact");
   } finally {
@@ -120,7 +120,7 @@ test("#1579 matrix (c): consolidation merge output matching a tombstone is block
       rawContent: content,
     });
 
-    const id = await storage.writeMemory("fact", content, {
+    const { id: id } = await storage.writeMemory("fact", content, {
       source: "consolidation",
       derivedFrom: ["fact-db-old-a", "fact-db-old-b"],
       derivedVia: "merge",
@@ -143,7 +143,7 @@ test("#1579 matrix (d): dreams REM re-derivation of a retired fact is blocked", 
       rawContent: content,
     });
 
-    const id = await storage.writeMemory("fact", content, { source: "dreams" });
+    const { id: id } = await storage.writeMemory("fact", content, { source: "dreams" });
     const memory = await readBack(storage, id);
     assertBlocked(memory, "exact");
   } finally {
@@ -162,7 +162,7 @@ test("#1579 matrix (e): pattern-reinforcement promotion of a superseded duplicat
       rawContent: content,
     });
 
-    const id = await storage.writeMemory("fact", content, { source: "pattern-reinforcement" });
+    const { id: id } = await storage.writeMemory("fact", content, { source: "pattern-reinforcement" });
     const memory = await readBack(storage, id);
     assertBlocked(memory, "exact");
   } finally {
@@ -188,7 +188,7 @@ test("#1579 case/punctuation variants are caught (normalization happens pre-hash
     // This is the STRONGER invariant: the normalized tier is a defensive
     // fallback for tombstones emitted through a divergent hash path; it is
     // exercised directly by the tombstones.test.ts unit suite.
-    const id = await storage.writeMemory("fact", "the server ip is 10.0.0.1", { source: "extraction" });
+    const { id: id } = await storage.writeMemory("fact", "the server ip is 10.0.0.1", { source: "extraction" });
     const memory = await readBack(storage, id);
     assertBlocked(memory, "exact");
   } finally {
@@ -219,7 +219,7 @@ test("#1579 keyed tier: same entityRef + supersessionKey is blocked", async () =
     // DIFFERENT surface text still matches on the keyed tier — the exact and
     // normalized tiers miss because the content differs, so only the keyed
     // tier can catch this resurrection vector.
-    const id = await storage.writeMemory(
+    const { id: id } = await storage.writeMemory(
       "fact",
       "Alice's title is Staff Engineer (promoted)",
       {
@@ -277,13 +277,13 @@ test("#1579 namespace isolation (rule 42): tombstone in namespace A does not blo
     });
 
     // Same content in namespace B must NOT be blocked.
-    const idB = await storageB.writeMemory("fact", content, { source: "extraction" });
+    const { id: idB } = await storageB.writeMemory("fact", content, { source: "extraction" });
     const memoryB = await readBack(storageB, idB);
     assert.notEqual(memoryB.frontmatter.status, "pending_review");
     assert.equal(memoryB.frontmatter.blockedBy, undefined);
 
     // But namespace A is still blocked.
-    const idA = await storageA.writeMemory("fact", content, { source: "extraction" });
+    const { id: idA } = await storageA.writeMemory("fact", content, { source: "extraction" });
     const memoryA = await readBack(storageA, idA);
     assertBlocked(memoryA, "exact");
   } finally {
@@ -308,7 +308,7 @@ test("#1579 revocation round-trip: a revoked tombstone re-allows the content", a
     assert.ok(tombstoneId, "tombstone append must succeed when enabled");
 
     // First re-observation is blocked.
-    const id1 = await storage.writeMemory("fact", content, { source: "extraction" });
+    const { id: id1 } = await storage.writeMemory("fact", content, { source: "extraction" });
     const m1 = await readBack(storage, id1);
     assertBlocked(m1, "exact");
 
@@ -317,7 +317,7 @@ test("#1579 revocation round-trip: a revoked tombstone re-allows the content", a
     await storage.revokeTombstone(tombstoneId, "user_correction");
 
     // After revocation, the same content is admitted as active.
-    const id2 = await storage.writeMemory("fact", content, { source: "extraction" });
+    const { id: id2 } = await storage.writeMemory("fact", content, { source: "extraction" });
     const m2 = await readBack(storage, id2);
     assert.notEqual(m2.frontmatter.status, "pending_review");
     assert.equal(m2.frontmatter.blockedBy, undefined);
@@ -347,7 +347,7 @@ test("#1579 disabled gate (rule 30): tombstonesEnabled=false restores pre-featur
       rawContent: "Retired content that should resurrect when disabled",
     });
 
-    const id = await storage.writeMemory("fact", "Retired content that should resurrect when disabled", {
+    const { id: id } = await storage.writeMemory("fact", "Retired content that should resurrect when disabled", {
       source: "extraction",
     });
     const memory = await readBack(storage, id);
@@ -368,7 +368,7 @@ test("#1579 unrelated fact is not blocked (no false positives on disjoint conten
       rawContent: "A very specific retired fact about graviton decay rates",
     });
 
-    const id = await storage.writeMemory("fact", "A completely different fact about the weather tomorrow", {
+    const { id: id } = await storage.writeMemory("fact", "A completely different fact about the weather tomorrow", {
       source: "extraction",
     });
     const memory = await readBack(storage, id);
@@ -427,7 +427,7 @@ test("#1579 thread Ociag/Oci-W: keyed tier checks EVERY supersession key, not ju
       supersessionKey: cityKey,
     });
 
-    const id = await storage.writeMemory(
+    const { id: id } = await storage.writeMemory(
       "fact",
       "Alice is based in Paris these days (reworded)",
       {
@@ -452,7 +452,7 @@ test("#1579 thread Oci-Y: contradiction supersedeMemory emits keyed tombstones (
     // tier — pre-fix supersedeMemory emitted an entityRef-only tombstone
     // with no supersession key, so the keyed tier missed and the fact
     // resurrected until a manual rebuild.
-    const oldId = await storage.writeMemory(
+    const { id: oldId } = await storage.writeMemory(
       "fact",
       "Acme's HQ is in London.",
       {
@@ -464,7 +464,7 @@ test("#1579 thread Oci-Y: contradiction supersedeMemory emits keyed tombstones (
     const superseded = await storage.supersedeMemory(oldId, "new-fact-1", "contradiction");
     assert.equal(superseded, true);
 
-    const id = await storage.writeMemory(
+    const { id: id } = await storage.writeMemory(
       "fact",
       "Acme nowadays has its headquarters out of London (rephrased)",
       {
@@ -524,7 +524,7 @@ test("#1579 thread Oci-T: rebuild preserves per-key tombstone ids (revocation su
     assert.ok(stats);
 
     // A write keyed on TITLE must still be blocked (revocation was on city only).
-    const titleWriteId = await storage.writeMemory(
+    const { id: titleWriteId } = await storage.writeMemory(
       "fact",
       "Bob got promoted to Staff (paraphrase)",
       {
@@ -537,7 +537,7 @@ test("#1579 thread Oci-T: rebuild preserves per-key tombstone ids (revocation su
     assertBlocked(titleMemory, "keyed");
 
     // A write keyed on CITY must NOT be blocked (its tombstone was revoked).
-    const cityWriteId = await storage.writeMemory(
+    const { id: cityWriteId } = await storage.writeMemory(
       "fact",
       "Bob moved his residence to Munich (paraphrase)",
       {
@@ -595,12 +595,12 @@ test("#1579 thread Ocs-O: shared backing file — each namespace's tombstone sur
     // Pre-fix: B's tombstone (appended later to the shared file) overwrote
     // A's map entry; A's lookup found B's id, rejected on namespace mismatch,
     // and missed A's tombstone — the fact resurrected as active.
-    const idA = await storageA.writeMemory("fact", content, { source: "extraction" });
+    const { id: idA } = await storageA.writeMemory("fact", content, { source: "extraction" });
     const memoryA = await readBack(storageA, idA);
     assertBlocked(memoryA, "exact");
 
     // Namespace B's write must also be blocked by B's tombstone.
-    const idB = await storageB.writeMemory("fact", content, { source: "extraction" });
+    const { id: idB } = await storageB.writeMemory("fact", content, { source: "extraction" });
     const memoryB = await readBack(storageB, idB);
     assertBlocked(memoryB, "exact");
   } finally {
@@ -626,7 +626,7 @@ test("#1579 threads OcuDx/Ocu1l: promoteWearableMemory refuses tombstone-blocked
     });
 
     // The write chokepoint blocks the fact: pending_review + blockedBy.
-    const id = await storage.writeMemory("fact", content, {
+    const { id: id } = await storage.writeMemory("fact", content, {
       source: "wearable:smart",
     });
     const memory = await readBack(storage, id);
@@ -654,7 +654,7 @@ test("#1579 threads OcuDx/Ocu1l: promoteWearableMemory refuses tombstone-blocked
     // still be promoted — the guard is on blockedBy, not on the
     // pending_review status itself.
     const cleanContent = "A clean wearable fact with no tombstone match";
-    const cleanId = await storage.writeMemory("fact", cleanContent, {
+    const { id: cleanId } = await storage.writeMemory("fact", cleanContent, {
       source: "wearable:smart",
       status: "pending_review",
     });
@@ -695,9 +695,166 @@ test("#1579 thread Oc2MJ: rebuild preserves other namespaces' tombstones in a sh
     await storageA.rebuildTombstonesFromFiles();
 
     // Namespace B's tombstone must still block a re-extraction.
-    const idB = await storageB.writeMemory("fact", contentB, { source: "extraction" });
+    const { id: idB } = await storageB.writeMemory("fact", contentB, { source: "extraction" });
     const memoryB = await readBack(storageB, idB);
     assertBlocked(memoryB, "exact");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ── Issue #1645: surface tombstone-blocked status to post-write callers ─────
+// writeMemory now returns a distinct result shape ({ id, tombstoneBlocked,
+// blockedBy? }) so post-write callers (extraction persist, correction apply)
+// can observe a tombstone block and gate active side-effects — NEVER a silent
+// no-op or a thrown-away boolean (rule 34). The orchestrator computes
+// postWriteGuard = faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked
+// and skips chunks / temporal supersession / shared-namespace promotion /
+// graph+artifact writes (mirroring the existing #1576 faithfulness gate).
+
+test("#1645: writeMemory surfaces tombstoneBlocked distinctly (not a silent no-op)", async () => {
+  const { storage, dir } = await makeStorage();
+  try {
+    const blockedContent = "The deploy endpoint is https://legacy.example.invalid/v2";
+    const activeContent = "A brand-new fact with no tombstone anywhere";
+
+    await storage.appendTombstone({
+      reason: "supersession",
+      createdBy: "supersession",
+      sourceMemoryId: "fact-deploy-old",
+      rawContent: blockedContent,
+    });
+
+    // Blocked write — distinct, observable result shape (rule 34: VISIBLE).
+    const blocked = await storage.writeMemory("fact", blockedContent, { source: "extraction" });
+    assert.equal(typeof blocked.id, "string", "result carries the persisted id");
+    assert.equal(blocked.tombstoneBlocked, true, "tombstoneBlocked is surfaced distinctly");
+    assert.ok(
+      typeof blocked.blockedBy === "string" && blocked.blockedBy.length > 0,
+      "blockedBy carries the tombstone id",
+    );
+    const blockedMemory = await readBack(storage, blocked.id);
+    assertBlocked(blockedMemory, "exact");
+
+    // Active write — tombstoneBlocked is explicitly false, blockedBy absent.
+    const active = await storage.writeMemory("fact", activeContent, { source: "extraction" });
+    assert.equal(typeof active.id, "string");
+    assert.equal(active.tombstoneBlocked, false, "an unblocked write surfaces tombstoneBlocked: false");
+    assert.equal(active.blockedBy, undefined);
+    const activeMemory = await readBack(storage, active.id);
+    assert.notEqual(activeMemory.frontmatter.status, "pending_review");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1645 (OchiE): writeChunk inherits pending_review + blockedBy from a blocked parent", async () => {
+  // The chunk loop bypasses the tombstone chokepoint, so the orchestrator
+  // reads `tombstoneBlocked` from the parent writeMemory result and passes
+  // status: pending_review + blockedBy to EACH chunk — zero active chunks.
+  const { storage, dir } = await makeStorage();
+  try {
+    const content = "A long superseded fact that the orchestrator would chunk into pieces";
+    await storage.appendTombstone({
+      reason: "supersession",
+      createdBy: "supersession",
+      sourceMemoryId: "fact-chunked-old",
+      rawContent: content,
+    });
+
+    const parent = await storage.writeMemory("fact", content, { source: "extraction" });
+    assert.equal(parent.tombstoneBlocked, true, "parent write is blocked");
+
+    await storage.writeChunk(
+      parent.id,
+      0,
+      2,
+      "fact",
+      "chunk body zero",
+      { source: "chunking", status: "pending_review", blockedBy: parent.blockedBy },
+    );
+    await storage.writeChunk(
+      parent.id,
+      1,
+      2,
+      "fact",
+      "chunk body one",
+      { source: "chunking", status: "pending_review", blockedBy: parent.blockedBy },
+    );
+
+    const chunks = (await storage.readAllMemories()).filter((m) => m.frontmatter.parentId === parent.id);
+    assert.equal(chunks.length, 2, "both chunks persisted");
+    for (const chunk of chunks) {
+      assert.equal(chunk.frontmatter.status, "pending_review", "chunk must NOT be active (OchiE)");
+      assert.equal(
+        chunk.frontmatter.blockedBy,
+        parent.blockedBy,
+        "chunk inherits the parent's blockedBy tombstone",
+      );
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1645 (OcoPp): blocked result is the signal callers gate shared-namespace promotion on", async () => {
+  // A tombstone-blocked fact in namespace A must not create an active shared
+  // copy in namespace B. The orchestrator's postWriteGuard reads
+  // `tombstoneBlocked` from writeMemory's result and skips
+  // promoteMemoryToShared — this test pins the storage CONTRACT that the gate
+  // depends on: the block is observable in the return, distinct from the
+  // blocked fact's own pending_review frontmatter.
+  const { storage, dir } = await makeStorage();
+  try {
+    const content = "We migrated billing to Stripe";
+    await storage.appendTombstone({
+      reason: "correction",
+      createdBy: "user_correction",
+      sourceMemoryId: "fact-billing-old",
+      rawContent: content,
+    });
+
+    const result = await storage.writeMemory("fact", content, { source: "extraction" });
+    // Mirrors orchestrator.ts: postWriteGuard = pending_review || tombstoneBlocked.
+    const postWriteGuard = result.tombstoneBlocked;
+    assert.equal(result.tombstoneBlocked, true, "caller observes the block distinctly");
+    assert.equal(postWriteGuard, true, "postWriteGuard skips active shared-namespace promotion (OcoPp)");
+    // The in-source fact itself is also pending_review (no active copy at all).
+    const memory = await readBack(storage, result.id);
+    assertBlocked(memory, "exact");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("#1645 (rule 44): a tombstone-blocked fact's content is NOT registered in the dedup index", async () => {
+  // writeMemory skips the fact-hash index for a blocked fact (rule 44), and the
+  // orchestrator's addContentHashDedup now also skips it (#1645 thread: dedup
+  // defeat). If the content WERE registered, the next extraction would dedup-skip
+  // the tombstone chokepoint and silently ban the retired fact (no pending_review
+  // row) — a rule-34 violation.
+  const { storage, dir } = await makeStorage();
+  try {
+    const content = "The legacy auth token is sk-banned-12345";
+    await storage.appendTombstone({
+      reason: "retraction",
+      createdBy: "user_correction",
+      sourceMemoryId: "fact-auth-old",
+      rawContent: content,
+    });
+
+    const result = await storage.writeMemory("fact", content, { source: "extraction" });
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(
+      await storage.hasFactContentHash(content),
+      false,
+      "blocked content must NOT enter the dedup index (rule 44 + #1645 orchestrator-side guard)",
+    );
+
+    // Control: an active fact with different content IS registered.
+    const active = await storage.writeMemory("fact", "a totally novel active fact", { source: "extraction" });
+    assert.equal(active.tombstoneBlocked, false);
+    assert.equal(await storage.hasFactContentHash("a totally novel active fact"), true);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

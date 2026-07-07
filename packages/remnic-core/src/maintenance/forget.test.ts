@@ -184,7 +184,7 @@ test("forgetMemory: forgotten metadata survives storage round-trip", async () =>
   try {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
-    const id = await storage.writeMemory("fact", "Synthetic fact to forget.", {
+    const { id: id } = await storage.writeMemory("fact", "Synthetic fact to forget.", {
       source: "test",
       tags: ["roundtrip"],
     });

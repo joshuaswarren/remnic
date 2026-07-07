@@ -28,7 +28,7 @@ test("StorageManager.writeMemory writes procedure memories under procedures/<dat
   try {
     const storage = new StorageManager(dir);
     const body = buildProcedureMarkdownBody([{ order: 1, intent: "Ship the fix" }]);
-    const id = await storage.writeMemory("procedure", body, {
+    const { id: id } = await storage.writeMemory("procedure", body, {
       source: "test",
       status: "pending_review",
     });

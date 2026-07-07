@@ -38,7 +38,7 @@ const ROUND_TRIP_CATEGORIES = ALL_CATEGORY_KEYS.filter(
 test("round-trip: writeMemory returns a stable id and persists to the category dir", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
-    const id = await storage.writeMemory("fact", "The sky is blue", {
+    const { id: id } = await storage.writeMemory("fact", "The sky is blue", {
       tags: ["contract"],
     });
     assert.equal(typeof id, "string");
@@ -58,7 +58,7 @@ test("round-trip: readAllMemories returns written memories from every category d
   try {
     const written: string[] = [];
     for (const category of ROUND_TRIP_CATEGORIES) {
-      const id = await storage.writeMemory(
+      const { id: id } = await storage.writeMemory(
         category,
         `content for ${category}`,
         { confidence: 0.9 },
@@ -81,7 +81,7 @@ for (const category of ROUND_TRIP_CATEGORIES) {
     const { storage, cleanup } = await makeStorage();
     try {
       const content = `fact body for category ${category}`;
-      const id = await storage.writeMemory(category, content, {
+      const { id: id } = await storage.writeMemory(category, content, {
         tags: ["round-trip"],
       });
 

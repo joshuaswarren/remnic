@@ -103,6 +103,7 @@ export {
   StorageManager,
   parseEntityFile,
   serializeEntityFile,
+  type MemoryWriteResult,
 } from "./storage.js";
 export {
   getHostEmbeddingProvider,

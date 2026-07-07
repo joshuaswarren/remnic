@@ -338,7 +338,7 @@ function makeAttachOrchestrator() {
       getStorageCalls.push(ns);
       return {
         readAllMemories: async () => [],
-        writeMemory: async () => "mem-1",
+        writeMemory: async () => ({ id: "mem-1", tombstoneBlocked: false }),
         appendMemoryLifecycleEvents: async () => {},
       };
     },
@@ -433,7 +433,7 @@ function makePersistOrchestrator() {
       getStorageCalls.push(ns);
       return {
         readAllMemories: async () => [],
-        writeMemory: async () => "mem-1",
+        writeMemory: async () => ({ id: "mem-1", tombstoneBlocked: false }),
         appendMemoryLifecycleEvents: async () => {},
       };
     },

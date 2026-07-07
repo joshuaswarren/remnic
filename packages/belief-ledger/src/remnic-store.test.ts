@@ -8,6 +8,9 @@ import { StorageManager } from "@remnic/core";
 import { createVersion, listVersions } from "@remnic/core/page-versioning";
 
 import { RemnicLedgerStore } from "./remnic-store.js";
+// Imported from the package barrel (./index.js) — proves the error is re-exported
+// for published consumers that catch it via instanceof (#1645 review).
+import { RemnicLedgerTombstoneBlockedError } from "./index.js";
 import { normalizeClaimDraft } from "./schema.js";
 
 async function withStore<T>(fn: (store: RemnicLedgerStore, storage: StorageManager) => Promise<T>): Promise<T> {
@@ -493,4 +496,113 @@ describe("RemnicLedgerStore", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+
+  it("#1645: createClaim throws a distinct tombstone_blocked error (not readback failure)", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-belief-ledger-"));
+    try {
+      const storage = new StorageManager(dir);
+      await storage.ensureDirectories();
+      // Wire the tombstone invariant exactly as the orchestrator does — without
+      // this, appendTombstone is a no-op and writeMemory never checks tombstones.
+      storage.setTombstonesConfig({
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        namespace: "default",
+      });
+      const store = new RemnicLedgerStore(storage, {
+        now: () => new Date("2026-06-03T12:00:00Z"),
+      });
+      const input = normalizeClaimDraft(
+        {
+          statement: "The legacy deploy endpoint is https://legacy.example.invalid/v2",
+          stance: "for",
+          confidence: 0.9,
+          scope: { entities: ["Deploy"] },
+        },
+        { now: "2026-06-03T12:00:00Z" },
+      );
+      // Tombstone the exact body writeMemory receives — a blocked claim lands
+      // pending_review, which getClaim hides (HIDDEN_REMNIC_STATUSES). Without
+      // the pre-readback guard, createClaim throws a misleading "could not be
+      // read back" error that looks transient → callers retry → duplicate rows.
+      // writeMemory enriches the content with a structured-attributes suffix
+      // before hashing for the tombstone chokepoint (storage.ts:3728-3749), so
+      // the tombstone rawContent must match the ENRICHED body, not the raw body.
+      const { serializeClaimBody, claimToStructuredAttributes } = await import("./schema.js");
+      const { normalizeAttributePairs } = await import("@remnic/core/storage");
+      const pendingClaim = { ...input, id: "pending", memoryId: "pending" };
+      const enrichedBody = `${serializeClaimBody(pendingClaim)}
+[Attributes: ${normalizeAttributePairs(claimToStructuredAttributes(pendingClaim))}]`;
+      await storage.appendTombstone({
+        reason: "retraction",
+        createdBy: "user_correction",
+        sourceMemoryId: "claim-old",
+        rawContent: enrichedBody,
+      });
+
+      await assert.rejects(
+        () => store.createClaim(input),
+        (err: Error & { code?: string }) =>
+          err.code === "tombstone_blocked" &&
+          err.message.includes("tombstone-blocked"),
+        "createClaim must throw a distinct tombstone_blocked error before the readback",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("#1645: the tombstone_blocked error is instanceof-catchable from the package root (review)", async () => {
+    // Published consumers import from @remnic/belief-ledger (the package barrel);
+    // the error class must be re-exported so they can catch it via instanceof.
+    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-belief-ledger-"));
+    try {
+      const storage = new StorageManager(dir);
+      await storage.ensureDirectories();
+      storage.setTombstonesConfig({
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        namespace: "default",
+      });
+      const store = new RemnicLedgerStore(storage, {
+        now: () => new Date("2026-06-03T12:00:00Z"),
+      });
+      const input = normalizeClaimDraft(
+        {
+          statement: "The legacy deploy endpoint is https://legacy.example.invalid/v2",
+          stance: "for",
+          confidence: 0.9,
+          scope: { entities: ["Deploy"] },
+        },
+        { now: "2026-06-03T12:00:00Z" },
+      );
+      const { serializeClaimBody, claimToStructuredAttributes } = await import("./schema.js");
+      const { normalizeAttributePairs } = await import("@remnic/core/storage");
+      const pendingClaim = { ...input, id: "pending", memoryId: "pending" };
+      const enrichedBody = `${serializeClaimBody(pendingClaim)}
+[Attributes: ${normalizeAttributePairs(claimToStructuredAttributes(pendingClaim))}]`;
+      await storage.appendTombstone({
+        reason: "retraction",
+        createdBy: "user_correction",
+        sourceMemoryId: "claim-old",
+        rawContent: enrichedBody,
+      });
+
+      let caught: unknown;
+      try {
+        await store.createClaim(input);
+      } catch (err) {
+        caught = err;
+      }
+      assert.ok(caught instanceof RemnicLedgerTombstoneBlockedError,
+        "a tombstone-blocked createClaim must be instanceof the package-root RemnicLedgerTombstoneBlockedError");
+      assert.equal((caught as RemnicLedgerTombstoneBlockedError).code, "tombstone_blocked");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
 });

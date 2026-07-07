@@ -4566,7 +4566,7 @@ export class Orchestrator {
         }
 
         // Write the canonical memory
-        const canonicalId = await targetStorage.writeMemory(
+        const { id: canonicalId, tombstoneBlocked: canonicalBlocked } = await targetStorage.writeMemory(
           newest.frontmatter.category,
           canonicalContent,
           {
@@ -4583,6 +4583,12 @@ export class Orchestrator {
             derivedVia: operator,
           },
         );
+        if (canonicalBlocked) {
+          // #1645: canonical matched a tombstone (pending_review). Don't archive
+          // the sources — consolidation must never delete the only active copy.
+          log.info(`[semantic-consolidation] cluster in "${cluster.category}" tombstone-blocked — keeping ${cluster.memories.length} source(s) active (pending_review ${canonicalId})`);
+          continue;
+        }
         canonicalWriteCompleted = true;
 
         result.memoriesConsolidated++;
@@ -14305,7 +14311,7 @@ export class Orchestrator {
             }
             continue;
           }
-          const promotedId = await targetStorage.writeMemory(
+          const targetPromotion = await targetStorage.writeMemory(
             options.category as any,
             citedContent,
             {
@@ -14331,7 +14337,11 @@ export class Orchestrator {
               ...(options.provenance ? { provenance: options.provenance } : {}),
             },
           );
+          const promotedId = targetPromotion.id;
+          // #1645: if the TARGET namespace's own tombstone blocked this promotion,
+          // the row lands pending_review — do NOT supersede active target memories.
           if (
+            !targetPromotion.tombstoneBlocked &&
             lifecycleCaps.temporalSupersession &&
             options.category === "fact" &&
             options.entityRef &&
@@ -14353,19 +14363,23 @@ export class Orchestrator {
               );
             }
           }
-          trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false });
-          await this.indexPersistedMemory(targetStorage, promotedId);
-          trackBehaviorSignals(
-            targetStorage,
-            buildBehaviorSignalsForMemory({
-              memoryId: promotedId,
-              category: options.category as any,
-              content: options.content,
-              namespace: target.namespace,
-              confidence: options.confidence,
-              source: "extraction",
-            }),
-          );
+          // #1645 TV6: a tombstone-blocked promotion is pending_review (no
+          // active copy) — skip catalog/index/behavior like postWriteGuard.
+          if (!targetPromotion.tombstoneBlocked) {
+            trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false });
+            await this.indexPersistedMemory(targetStorage, promotedId);
+            trackBehaviorSignals(
+              targetStorage,
+              buildBehaviorSignalsForMemory({
+                memoryId: promotedId,
+                category: options.category as any,
+                content: options.content,
+                namespace: target.namespace,
+                confidence: options.confidence,
+                source: "extraction",
+              }),
+            );
+          }
         } catch (err) {
           log.warn(
             `persistExtraction: ${target.target} promotion failed open for ${options.sourceMemoryId}: ${err}`,
@@ -14624,7 +14638,7 @@ export class Orchestrator {
             return;
           }
         }
-        const promotedId = await sharedStorage.writeMemory(
+        const sharedPromotion = await sharedStorage.writeMemory(
           options.category as any,
           citedContent,
           {
@@ -14651,6 +14665,9 @@ export class Orchestrator {
             ...(options.provenance ? { provenance: options.provenance } : {}),
           },
         );
+        const promotedId = sharedPromotion.id;
+        // #1645: if the shared namespace's own tombstone blocked this promotion,
+        // leave the row pending_review but do NOT supersede active shared memories.
         // PR #402 Finding 3 fix: run temporal supersession against the shared
         // namespace after the promoted write lands so stale shared-namespace
         // copies of the same entity attribute are retired.  Without this,
@@ -14658,6 +14675,7 @@ export class Orchestrator {
         // shared recall continues returning the stale state.  Reuses the same
         // applyTemporalSupersession helper — no logic duplication.
         if (
+          !sharedPromotion.tombstoneBlocked &&
           lifecycleCaps.temporalSupersession &&
           options.entityRef &&
           options.structuredAttributes &&
@@ -14687,21 +14705,24 @@ export class Orchestrator {
         // the same promotion pass. The hot-path source-namespace touch uses a
         // different storage dir, so this does not double-count the source.
         // Best-effort and failure-tolerant — it must never crash the promotion.
-        trackPersistedId(sharedStorage, promotedId, {
-          includeReturnedIds: false,
-        });
-        await this.indexPersistedMemory(sharedStorage, promotedId);
-        trackBehaviorSignals(
-          sharedStorage,
-          buildBehaviorSignalsForMemory({
-            memoryId: promotedId,
-            category: options.category as any,
-            content: options.content,
-            namespace: this.config.sharedNamespace,
-            confidence: options.confidence,
-            source: "extraction",
-          }),
-        );
+        // #1645 TV6: same guard as the profile-target promotion above.
+        if (!sharedPromotion.tombstoneBlocked) {
+          trackPersistedId(sharedStorage, promotedId, {
+            includeReturnedIds: false,
+          });
+          await this.indexPersistedMemory(sharedStorage, promotedId);
+          trackBehaviorSignals(
+            sharedStorage,
+            buildBehaviorSignalsForMemory({
+              memoryId: promotedId,
+              category: options.category as any,
+              content: options.content,
+              namespace: this.config.sharedNamespace,
+              confidence: options.confidence,
+              source: "extraction",
+            }),
+          );
+        }
       } catch (err) {
         log.warn(
           `persistExtraction: shared promotion failed open for ${options.sourceMemoryId}: ${err}`,
@@ -15603,6 +15624,16 @@ export class Orchestrator {
       // `supersedes` is intentionally left unset to avoid retiring the old
       // memory without user confirmation).
       let contradictionDetected = false;
+      // #1645: hoist the contradiction result so the deferred auto-resolve
+      // (post-write, gated on tombstone status) can read its fields.
+      let contradiction: {
+        supersededId: string;
+        confidence: number;
+        reason: string;
+        supersededPath: string;
+        supersededCreated: string;
+        supersededTags: string[];
+      } | null | undefined;
 
       // Faithfulness gate (#1576, chatgpt P2): skip contradiction detection
       // for a pending_review fact — an unfaithful extraction in the review queue
@@ -15613,7 +15644,7 @@ export class Orchestrator {
         faithfulnessEnforceStatus !== "pending_review"
       ) {
         const targetNamespace = this.storageDirNamespace(targetStorage.dir);
-        const contradiction = await this.checkForContradiction(
+        contradiction = await this.checkForContradiction(
           fact.content,
           writeCategory,
           targetNamespace,
@@ -15635,22 +15666,10 @@ export class Orchestrator {
             strength: contradiction.confidence,
             reason: contradiction.reason,
           });
-          // Deindex the superseded memory so stale paths don't remain in
-          // index_time.json / index_tags.json after the incremental update.
-          // Only applicable when auto-resolve is on and the old memory is
-          // actually being retired; skip when manual review is required.
-          if (
-            this.config.contradictionAutoResolve &&
-            this.config.queryAwareIndexingEnabled &&
-            contradiction.supersededPath
-          ) {
-            deindexMemory(
-              this.config.memoryDir,
-              contradiction.supersededPath,
-              contradiction.supersededCreated,
-              contradiction.supersededTags,
-            );
-          }
+          // #1645: deindex + supersede are deferred to after writeMemory so the
+          // caller can gate them on the new write's tombstone status. A
+          // tombstone-blocked write (pending_review) must not deindex or retire
+          // the existing active memory — see the post-write guard below.
         }
       }
 
@@ -15765,7 +15784,7 @@ export class Orchestrator {
               ? stripCitationForTemplate(fact.content, citationTemplate)
               : fact.content;
           const citedChunkedContent = applyInlineCitation(rawChunkedContent);
-          const parentId = await targetStorage.writeMemory(
+          const parentWrite = await targetStorage.writeMemory(
             writeCategory,
             citedChunkedContent,
             {
@@ -15791,6 +15810,20 @@ export class Orchestrator {
               ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
               ...(fact.provenance ? { provenance: fact.provenance } : {}),
             },
+          );
+          const parentId = parentWrite.id;
+          // #1645: surface the tombstone block and gate active post-write paths
+          // (chunks, supersession, shared promotion, graph/artifact) like #1576.
+          const tombstoneBlocked = parentWrite.tombstoneBlocked;
+          const postWriteGuard =
+            faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
+          // #1645: defer contradiction auto-resolve until tombstone status is
+          // known (see applyDeferredContradictionResolve).
+          await this.applyDeferredContradictionResolve(
+            contradiction,
+            targetStorage,
+            parentId,
+            postWriteGuard,
           );
           try {
             // Write individual chunks with parent reference
@@ -15839,7 +15872,13 @@ export class Orchestrator {
                   // fact's verdict + enforce status so a pending_review fact
                   // is not indexed as active through its chunks (chatgpt P2).
                   ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
-                  ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
+                  // #1645 (OchiE): inherit pending_review + blockedBy so no chunk lands active.
+                  ...(postWriteGuard
+                    ? { status: "pending_review" as const }
+                    : (faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {})),
+                  ...(tombstoneBlocked && parentWrite.blockedBy
+                    ? { blockedBy: parentWrite.blockedBy }
+                    : {}),
                   // Claim-level provenance (issue #1575 PR 2): mirror the
                   // parent's spans onto each chunk so a chunk surfaced
                   // independently (memory_get/x-ray on a chunk ID) preserves
@@ -15866,24 +15905,28 @@ export class Orchestrator {
             `chunked memory ${parentId} into ${chunkResult.chunks.length} chunks`,
           );
           trackPersistedId(targetStorage, parentId, {
-            pendingReview: faithfulnessEnforceStatus === "pending_review",
+            pendingReview: postWriteGuard,
           });
           // #1576 (cursor Medium): keep pending_review ids out of threadEpisodeIdsForGraph — else later active facts build thread-predecessor edges to an unfaithful memory.
           if (
-            faithfulnessEnforceStatus !== "pending_review" &&
+            !postWriteGuard &&
             threadEpisodeIdsForGraph &&
             !threadEpisodeIdsForGraph.includes(parentId)
           ) {
             threadEpisodeIdsForGraph.push(parentId);
           }
-          await this.indexPersistedMemory(targetStorage, parentId);
+          // #1645: same gate as the non-chunked path — a blocked chunked parent
+          // must not enter the embedding-fallback index (resurrection).
+          if (!postWriteGuard) {
+            await this.indexPersistedMemory(targetStorage, parentId);
+          }
           // PR #402 Thread 1 fix: run source-namespace temporal supersession for
           // chunked writes, matching the non-chunked path.  Without this the
           // source namespace retains stale facts that should have been superseded.
           // Faithfulness gate (#1576, cursor High): skip supersession for a
           // pending_review fact — an unfaithful extraction in the review queue
           // must NOT retire older active memories.
-          if (faithfulnessEnforceStatus !== "pending_review") {
+          if (!postWriteGuard) {
             try {
               const supersessionEntityRef =
                 typeof (fact as any).entityRef === "string"
@@ -15908,7 +15951,7 @@ export class Orchestrator {
           // Faithfulness gate (#1576, chatgpt P2): do not promote a
           // pending_review fact to shared/profile — it must enter the review
           // queue without active copies that bypass the gate.
-          if (faithfulnessEnforceStatus !== "pending_review") await promoteMemoryToShared({
+          if (!postWriteGuard) await promoteMemoryToShared({
             sourceStorage: targetStorage,
             category: writeCategory,
             content: fact.content,
@@ -15943,7 +15986,13 @@ export class Orchestrator {
               hasCitationForTemplate(fact.content, citationTemplate)
                 ? stripCitationForTemplate(fact.content, citationTemplate)
                 : fact.content;
-            await this.addContentHashDedup(targetStorage, canonicalChunkedContent);
+            // #1645: do NOT register a tombstone-blocked fact's content in the
+            // dedup index — writeMemory already skipped it (rule 44). Re-adding
+            // would let the next extraction dedup-skip the tombstone chokepoint
+            // and silently ban the retired content (no pending_review row).
+            if (!tombstoneBlocked) {
+              await this.addContentHashDedup(targetStorage, canonicalChunkedContent);
+            }
           } catch (err) {
             log.warn(
               `content-hash dedup registration failed for chunked memory ${parentId}: ${err}`,
@@ -15956,14 +16005,18 @@ export class Orchestrator {
             // into boxBuilder.onExtraction() or threading.processTurn(), which
             // only expect canonical parent memory IDs.  Call indexPersistedMemory
             // directly for embedding-fallback sync of each chunk document.
-            await this.indexPersistedMemory(targetStorage, chunkId);
+            // #1645: chunks inherit pending_review under postWriteGuard — don't
+            // index them into the embedding fallback (resurrection).
+            if (!postWriteGuard) {
+              await this.indexPersistedMemory(targetStorage, chunkId);
+            }
           }
           try {
             if (
               this.config.verbatimArtifactsEnabled &&
               this.config.verbatimArtifactCategories.includes(writeCategory) &&
               fact.confidence >= this.config.verbatimArtifactsMinConfidence &&
-              faithfulnessEnforceStatus !== "pending_review"
+              !postWriteGuard
             ) {
               // Reuse citedChunkedContent so the artifact carries the same citation
               // timestamp as the parent memory write above (Fix #3 — duplicate-citation).
@@ -15978,7 +16031,7 @@ export class Orchestrator {
               });
             }
             // v8.2: graph edge building for chunked memories. #1576: skip pending_review.
-            if (graphCaps.multiGraphMemory && faithfulnessEnforceStatus !== "pending_review") {
+            if (graphCaps.multiGraphMemory && !postWriteGuard) {
               try {
                 const graphContext = await ensureGraphContext(targetStorage);
                 const entityRef =
@@ -16080,7 +16133,7 @@ export class Orchestrator {
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : fact.content;
       const citedFactContent = applyInlineCitation(rawPersistBody);
-      const memoryId = await targetStorage.writeMemory(
+      const factWrite = await targetStorage.writeMemory(
         writeCategory,
         citedFactContent,
         {
@@ -16112,6 +16165,20 @@ export class Orchestrator {
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
         },
       );
+      const memoryId = factWrite.id;
+      // #1645: surface the tombstone block; gate active post-write paths like #1576
+      // so a blocked fact creates no active shared copy / supersession / graph entry.
+      const tombstoneBlocked = factWrite.tombstoneBlocked;
+      const postWriteGuard =
+        faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
+      // #1645: defer contradiction auto-resolve until tombstone status is
+      // known (see applyDeferredContradictionResolve).
+      await this.applyDeferredContradictionResolve(
+        contradiction,
+        targetStorage,
+        memoryId,
+        postWriteGuard,
+      );
       if (routedRuleId) {
         log.debug(
           `routing applied for memory ${memoryId}: rule=${routedRuleId} category=${writeCategory} storage=${targetStorage.dir}`,
@@ -16122,7 +16189,7 @@ export class Orchestrator {
       // key that has a conflicting value. Faithfulness gate (#1576, cursor
       // High): skip for a pending_review fact — an unfaithful extraction in
       // the review queue must NOT retire older active memories.
-      if (faithfulnessEnforceStatus !== "pending_review") {
+      if (!postWriteGuard) {
         try {
           const supersessionEntityRef =
             typeof (fact as any).entityRef === "string"
@@ -16154,19 +16221,25 @@ export class Orchestrator {
           }),
         );
         trackPersistedId(targetStorage, memoryId, {
-          pendingReview: faithfulnessEnforceStatus === "pending_review",
+          pendingReview: postWriteGuard,
         });
         if (
-          faithfulnessEnforceStatus !== "pending_review" &&
+          !postWriteGuard &&
           threadEpisodeIdsForGraph &&
           !threadEpisodeIdsForGraph.includes(memoryId)
         ) {
           threadEpisodeIdsForGraph.push(memoryId);
         }
-        await this.indexPersistedMemory(targetStorage, memoryId);
+        // #1645: a tombstone-blocked / pending_review fact must NOT enter the
+        // embedding-fallback index — otherwise embedding recall surfaces the
+        // pending_review row (resurrection). Gate on postWriteGuard like the
+        // surrounding supersession / promotion / graph paths.
+        if (!postWriteGuard) {
+          await this.indexPersistedMemory(targetStorage, memoryId);
+        }
         // Faithfulness gate (#1576, chatgpt P2): skip promotion for a
         // pending_review fact so no active shared/profile copy bypasses the gate.
-        if (faithfulnessEnforceStatus !== "pending_review") await promoteMemoryToShared({
+        if (!postWriteGuard) await promoteMemoryToShared({
           sourceStorage: targetStorage,
           category: writeCategory,
           content: fact.content,
@@ -16196,7 +16269,7 @@ export class Orchestrator {
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
         });
         // v8.2: graph edge building (fail-open). #1576: skip pending_review facts.
-        if (graphCaps.multiGraphMemory && faithfulnessEnforceStatus !== "pending_review") {
+        if (graphCaps.multiGraphMemory && !postWriteGuard) {
           try {
             const graphContext = await ensureGraphContext(targetStorage);
             const entityRef =
@@ -16240,7 +16313,7 @@ export class Orchestrator {
           this.config.verbatimArtifactsEnabled &&
           this.config.verbatimArtifactCategories.includes(writeCategory) &&
           fact.confidence >= this.config.verbatimArtifactsMinConfidence &&
-          faithfulnessEnforceStatus !== "pending_review"
+          !postWriteGuard
         ) {
           // Reuse citedFactContent so the artifact carries the same citation
           // timestamp as the memory write above (Fix #3 — duplicate-citation).
@@ -16267,7 +16340,11 @@ export class Orchestrator {
             writeCategory === "procedure"
               ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
               : canonicalFactContent;
-          await this.addContentHashDedup(targetStorage, hashRegisterKey);
+          // #1645: do NOT register a tombstone-blocked fact's content in the dedup
+          // index (rule 44 defeat) — see chunked path comment.
+          if (!tombstoneBlocked) {
+            await this.addContentHashDedup(targetStorage, hashRegisterKey);
+          }
         } catch (err) {
           log.warn(
             `content-hash dedup registration failed for memory ${memoryId}: ${err}`,
@@ -20561,15 +20638,13 @@ export class Orchestrator {
         }
 
         // The new fact is newer than the existing one. When auto-resolve is
-        // enabled, immediately retire the old memory. When disabled, leave the
-        // old memory active for manual review.
-        if (this.config.contradictionAutoResolve) {
-          await resultStorage.supersedeMemory(
-            existingMemory.frontmatter.id,
-            "pending-new", // Will be updated after the new memory is written
-            verification.reasoning,
-          );
-        }
+        // enabled, the caller retires the old memory AFTER the new write lands
+        // and its tombstone status is known (#1645: defer auto-resolve until
+        // tombstone status is known — a tombstone-blocked new write must not
+        // retire the only active copy, leaving neither memory active). When
+        // disabled, the old memory stays active for manual review. The
+        // contradiction info is returned in both cases so the caller can apply
+        // the deferred retire post-write.
 
         // Return the contradiction info regardless of auto-resolve setting.
         // The caller uses this to set `contradictionDetected=true` which
@@ -20590,6 +20665,71 @@ export class Orchestrator {
     }
 
     return null;
+  }
+
+  /**
+   * #1645: Complete the deferred contradiction auto-resolve after writeMemory
+   * returns and the new write's tombstone status is known. Retires the old
+   * memory + deindexes it ONLY when the new write is genuinely active (not
+   * tombstone-blocked / pending_review). A blocked write must not retire the
+   * only active copy — deferring here closes the "contradictionAutoResolve
+   * supersedes before tombstone status is known" defect class.
+   */
+  private async applyDeferredContradictionResolve(
+    contradiction: {
+      supersededId: string;
+      reason: string;
+      supersededPath: string;
+      supersededCreated: string;
+      supersededTags: string[];
+    } | null | undefined,
+    storage: StorageManager,
+    newMemoryId: string,
+    postWriteGuard: boolean,
+  ): Promise<void> {
+    // #1645 yG2: clear the pre-write `supersedes` link from a blocked row so
+    // it doesn't claim to supersede a still-active memory (best-effort).
+    if (postWriteGuard && contradiction && this.config.contradictionAutoResolve) {
+      try {
+        const blockedRow = await storage.getMemoryById(newMemoryId);
+        if (blockedRow?.frontmatter?.supersedes) {
+          await storage.writeMemoryFrontmatter(blockedRow, { supersedes: undefined });
+        }
+      } catch (err) {
+        log.warn(
+          `contradiction auto-resolve supersedes clear failed for blocked ${newMemoryId}: ${err}`,
+        );
+      }
+    }
+    if (
+      !contradiction ||
+      !this.config.contradictionAutoResolve ||
+      postWriteGuard
+    ) {
+      return;
+    }
+    try {
+      await storage.supersedeMemory(
+        contradiction.supersededId,
+        newMemoryId,
+        contradiction.reason,
+      );
+      if (
+        this.config.queryAwareIndexingEnabled &&
+        contradiction.supersededPath
+      ) {
+        deindexMemory(
+          this.config.memoryDir,
+          contradiction.supersededPath,
+          contradiction.supersededCreated,
+          contradiction.supersededTags,
+        );
+      }
+    } catch (err) {
+      log.warn(
+        `contradiction auto-resolve supersede failed for ${contradiction.supersededId}: ${err}`,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------

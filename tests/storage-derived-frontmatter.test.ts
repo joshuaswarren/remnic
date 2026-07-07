@@ -86,7 +86,7 @@ test("StorageManager round-trips derived_from entries whose paths contain commas
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "payload", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "payload", { source: "test" });
     const all = await storage.readAllMemories();
     const memory = all.find((m) => m.frontmatter.id === id);
     assert.ok(memory);
@@ -267,7 +267,7 @@ test("StorageManager reads legacy memories without derived_from or derived_via",
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "legacy payload", {
+    const { id: id } = await storage.writeMemory("fact", "legacy payload", {
       source: "test",
     });
     const all = await storage.readAllMemories();
@@ -332,7 +332,7 @@ test("StorageManager rejects malformed derived_from on write", async () => {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "seed payload", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "seed payload", { source: "test" });
     const all = await storage.readAllMemories();
     const memory = all.find((m) => m.frontmatter.id === id);
     assert.ok(memory);
@@ -384,7 +384,7 @@ test("StorageManager rejects unknown derived_via on write", async () => {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "seed payload", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "seed payload", { source: "test" });
     const all = await storage.readAllMemories();
     const memory = all.find((m) => m.frontmatter.id === id);
     assert.ok(memory);

@@ -52,6 +52,7 @@ function stubService(overrides: Partial<Record<keyof WearablesService, unknown>>
         transcriptsWritten: ["2026-06-11"],
         memoriesCreated: 2,
         memoriesSkipped: 4,
+        memoriesBlocked: 0,
         nativeMemoriesImported: 0,
         warnings: ["something minor"],
       },
@@ -112,6 +113,35 @@ test("status renders sources and respects --json", async () => {
   assert.equal(await runWearablesCliCommand(stubService(), ["status", "--json"], jsonIo.io), 0);
   const parsed = JSON.parse(jsonIo.out.join(""));
   assert.equal(parsed.enabled, true);
+});
+
+test("sync renders a memories blocked line when writes are tombstone-blocked (#1645)", async () => {
+  const { io, out } = makeIo();
+  const service = stubService({
+    sync: async () => [
+      {
+        source: "limitless",
+        days: ["2026-06-11"],
+        conversations: 1,
+        segmentsKept: 4,
+        segmentsDropped: 0,
+        redactions: 0,
+        correctionsApplied: 0,
+        transcriptsWritten: ["2026-06-11"],
+        memoriesCreated: 0,
+        memoriesPromoted: 0,
+        memoriesDemoted: 0,
+        memoriesSkipped: 0,
+        memoriesBlocked: 2,
+        nativeMemoriesImported: 0,
+        warnings: [],
+      },
+    ],
+  });
+  assert.equal(await runWearablesCliCommand(service, ["sync"], io), 0);
+  const text = out.join("");
+  assert.match(text, /memories blocked:\s+2/);
+  assert.doesNotMatch(text, /memories created:\s+[1-9]/, "no blocked write counted as created");
 });
 
 test("sync renders the summary including warnings", async () => {

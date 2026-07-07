@@ -545,7 +545,7 @@ test("StorageManager — writeMemory encrypts and readAllMemories decrypts", asy
     storage.setSecureStoreKey(key, true);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "encrypted memory content");
+    const { id: id } = await storage.writeMemory("fact", "encrypted memory content");
     // The on-disk file should be encrypted
     const factsDir = path.join(dir, "facts");
     const entries = await (async () => {

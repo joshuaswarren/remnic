@@ -69,7 +69,7 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
       return storage.memories;
     },
     async writeMemory() {
-      return "mem-1";
+      return { id: "mem-1", tombstoneBlocked: false };
     },
     async hasFactContentHash() {
       return false;
@@ -375,7 +375,7 @@ test("support corpus includes pending_review rows and excludes terminal statuses
       options: Record<string, unknown>,
     ) => {
       writes.push({ options });
-      return `mem-${writes.length}`;
+      return { id: `mem-${writes.length}`, tombstoneBlocked: false };
     }) as WearableStorageIo["writeMemory"];
     try {
       registerWearableConnector({

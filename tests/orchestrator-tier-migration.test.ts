@@ -198,7 +198,7 @@ test("tier migration extraction scan prioritizes oldest hot memories for demotio
 
     const ids: string[] = [];
     for (let i = 0; i < 60; i += 1) {
-      ids.push(await storage.writeMemory("fact", `memory-${i}`, { source: "test" }));
+      ids.push((await storage.writeMemory("fact", `memory-${i}`, { source: "test" })).id);
     }
 
     const oldIds = ids.slice(0, 12);
@@ -231,7 +231,7 @@ test("consolidation refreshes corpus after maintenance migration before archival
     (config as any).entitySummaryEnabled = false;
     const orchestrator = new Orchestrator(config) as any;
     const storage = orchestrator.storage;
-    const movedId = await storage.writeMemory("fact", "migrate-before-archival", { source: "test" });
+    const { id: movedId } = await storage.writeMemory("fact", "migrate-before-archival", { source: "test" });
     for (let i = 0; i < 4; i += 1) {
       await storage.writeMemory("fact", `filler-${i}`, { source: "test" });
     }

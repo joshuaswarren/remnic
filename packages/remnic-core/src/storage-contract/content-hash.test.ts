@@ -87,7 +87,7 @@ test("content-hash: the frontmatter contentHash matches computeHash of the raw c
   const { storage, cleanup } = await makeStorage();
   try {
     const rawFact = "deterministic hash check";
-    const id = await storage.writeMemory("fact", rawFact);
+    const { id: id } = await storage.writeMemory("fact", rawFact);
     const memory = await storage.getMemoryById(id);
     assert.ok(memory);
     assert.ok(memory!.frontmatter.contentHash, "frontmatter must carry a contentHash for facts");

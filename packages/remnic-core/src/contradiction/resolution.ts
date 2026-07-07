@@ -386,7 +386,7 @@ async function prepareMergeReplacement(
   const category = options.mergedCategory ?? mergedMemoryCategory(sourceA, sourceB);
   let mergedId: string;
   try {
-    mergedId = await storage.writeMemory(category, mergedContent, {
+    const mergeResult = await storage.writeMemory(category, mergedContent, {
       actor: "contradiction-resolution",
       confidence: Math.min(sourceA.frontmatter.confidence ?? 0.8, sourceB.frontmatter.confidence ?? 0.8),
       tags: ["contradiction-resolution", "merge"],
@@ -394,6 +394,14 @@ async function prepareMergeReplacement(
       lineage: [idA, idB],
       derivedVia: "merge",
     });
+    mergedId = mergeResult.id;
+    if (mergeResult.tombstoneBlocked) {
+      // #1645: merged content matched a tombstone (pending_review). Don't
+      // supersede both sources to a non-active replacement — that retires
+      // the only active copies. Clean up the pending merge and abort the pair.
+      await cleanupMemoryId(storage, mergedId);
+      return { ok: false, message: `Merged memory for ${pairId} was tombstone-blocked (pending_review); not resolving — sources kept active` };
+    }
   } catch (err) {
     log.warn(
       "[contradiction-resolution] merged memory creation failed for %s: %s",

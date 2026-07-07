@@ -70,11 +70,11 @@ test("recallInternal writes graph recall snapshot in graph_mode", async (t) => {
   });
   const orchestrator = new Orchestrator(cfg);
 
-  const seedId = await orchestrator.storage.writeMemory("fact", "seed memory");
+  const { id: seedId } = await orchestrator.storage.writeMemory("fact", "seed memory");
   const seedMemory = await orchestrator.storage.getMemoryById(seedId);
   assert.ok(seedMemory);
 
-  const expandedId = await orchestrator.storage.writeMemory("fact", "expanded memory");
+  const { id: expandedId } = await orchestrator.storage.writeMemory("fact", "expanded memory");
   const expandedMemory = await orchestrator.storage.getMemoryById(expandedId);
   assert.ok(expandedMemory);
 
@@ -146,7 +146,7 @@ test("recallInternal labels absolute entity graph results as reconstructed entit
   });
   const orchestrator = new Orchestrator(cfg);
 
-  const seedId = await orchestrator.storage.writeMemory("fact", "seed memory");
+  const { id: seedId } = await orchestrator.storage.writeMemory("fact", "seed memory");
   const seedMemory = await orchestrator.storage.getMemoryById(seedId);
   assert.ok(seedMemory);
 
@@ -223,11 +223,11 @@ test("recallInternal runs bounded graph assist in full mode when enabled", async
   });
   const orchestrator = new Orchestrator(cfg);
 
-  const seedId = await orchestrator.storage.writeMemory("fact", "seed memory for full mode assist");
+  const { id: seedId } = await orchestrator.storage.writeMemory("fact", "seed memory for full mode assist");
   const seedMemory = await orchestrator.storage.getMemoryById(seedId);
   assert.ok(seedMemory);
 
-  const expandedId = await orchestrator.storage.writeMemory("fact", "expanded memory for full mode assist");
+  const { id: expandedId } = await orchestrator.storage.writeMemory("fact", "expanded memory for full mode assist");
   const expandedMemory = await orchestrator.storage.getMemoryById(expandedId);
   assert.ok(expandedMemory);
 

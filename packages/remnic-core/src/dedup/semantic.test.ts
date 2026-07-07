@@ -901,7 +901,7 @@ test("round 6: chunked parent writeMemory carries supersedes in frontmatter", as
     const storage = new StorageManager(memDir);
     const OLD_ID = "fact-old-abc-123";
 
-    const newId = await storage.writeMemory("fact", "the user prefers dark mode", {
+    const { id: newId } = await storage.writeMemory("fact", "the user prefers dark mode", {
       confidence: 0.9,
       tags: ["chunked", "preference"],
       supersedes: OLD_ID,

@@ -449,7 +449,7 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
     name: `writeMemory(${category})`,
     kind: "memory",
     write: async (storage) => {
-      const id = await storage.writeMemory(category, `contract-surface-${category}-body`, {
+      const { id: id } = await storage.writeMemory(category, `contract-surface-${category}-body`, {
         confidence: 0.85,
         tags: ["contract-surface"],
       });
@@ -472,11 +472,11 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
       // to updateMemoryFrontmatter alone, never to the setup writeMemory. The
       // `write` callback receives the parent id as setupContext.
       setup: async (storage) => {
-        return storage.writeMemory(
+        return (await storage.writeMemory(
           "fact",
           "contract-surface frontmatter parent",
           { tags: ["contract-surface"] },
-        );
+        )).id;
       },
       write: async (storage, setupContext) => {
         const id = setupContext as string;
@@ -503,11 +503,11 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
       // the surface jumped from writeMemory to updateMemoryFrontmatter and never
       // measured this method even though production callers invoke it directly.
       setup: async (storage) => {
-        return storage.writeMemory(
+        return (await storage.writeMemory(
           "fact",
           "contract-surface updateMemory original body",
           { tags: ["contract-surface"] },
-        );
+        )).id;
       },
       write: async (storage, setupContext) => {
         const id = setupContext as string;
@@ -535,11 +535,11 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
       // Without this entry an impl that touches the catalog in the ID-based
       // wrapper but not this direct method would bypass #1522's fitness test.
       setup: async (storage) => {
-        return storage.writeMemory(
+        return (await storage.writeMemory(
           "fact",
           "contract-surface writeMemoryFrontmatter parent",
           { tags: ["contract-surface"] },
-        );
+        )).id;
       },
       write: async (storage, setupContext) => {
         const id = setupContext as string;
@@ -653,11 +653,11 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
       // window so #1522's catalog-touch consumer attributes lastWriteAt movement
       // to writeChunk alone, never to the setup writeMemory.
       setup: async (storage) => {
-        return storage.writeMemory(
+        return (await storage.writeMemory(
           "fact",
           "contract-surface chunk parent",
           { tags: ["contract-surface"] },
-        );
+        )).id;
       },
       write: async (storage, setupContext) => {
         const parentId = setupContext as string;

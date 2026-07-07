@@ -12,7 +12,7 @@ test("StorageManager preserves escaped link reasons with backslashes/quotes/newl
     await storage.ensureDirectories();
 
     const reason = String.raw`Path C:\Users\dev\notes says "keep it"` + "\nnext line";
-    const id = await storage.writeMemory("fact", "payload", {
+    const { id: id } = await storage.writeMemory("fact", "payload", {
       source: "test",
       links: [
         {

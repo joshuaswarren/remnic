@@ -124,7 +124,7 @@ async function withStorage(
 test("repro #1535: editing a memory invalidates a warmed QMD recall cache entry within its TTL", async () => {
   await withStorage(async (storage, dir) => {
     // 1. Store a memory.
-    const id = await storage.writeMemory("fact", "the deploy target is staging", {
+    const { id: id } = await storage.writeMemory("fact", "the deploy target is staging", {
       source: "test",
     });
 
@@ -172,7 +172,7 @@ test("mutation matrix: writeMemory clears every cache layer", async () => {
 
 test("mutation matrix: updateMemory clears every cache layer", async () => {
   await withStorage(async (storage, dir) => {
-    const id = await storage.writeMemory("fact", "original content", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "original content", { source: "test" });
     seedAllLayers(dir);
     assert.equal(await storage.updateMemory(id, "edited content"), true);
     assertAllLayersEmpty(dir, "updateMemory");
@@ -181,7 +181,7 @@ test("mutation matrix: updateMemory clears every cache layer", async () => {
 
 test("mutation matrix: writeMemoryFrontmatter clears every cache layer", async () => {
   await withStorage(async (storage, dir) => {
-    const id = await storage.writeMemory("fact", "frontmatter target", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "frontmatter target", { source: "test" });
     const memory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
     assert.ok(memory);
     seedAllLayers(dir);
@@ -192,7 +192,7 @@ test("mutation matrix: writeMemoryFrontmatter clears every cache layer", async (
 
 test("mutation matrix: archiveMemory clears every cache layer", async () => {
   await withStorage(async (storage, dir) => {
-    const id = await storage.writeMemory("fact", "archive target", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "archive target", { source: "test" });
     const memory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
     assert.ok(memory);
     seedAllLayers(dir);
@@ -203,7 +203,7 @@ test("mutation matrix: archiveMemory clears every cache layer", async () => {
 
 test("mutation matrix: invalidateMemory clears every cache layer", async () => {
   await withStorage(async (storage, dir) => {
-    const id = await storage.writeMemory("fact", "invalidate target", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "invalidate target", { source: "test" });
     seedAllLayers(dir);
     assert.equal(await storage.invalidateMemory(id), true);
     assertAllLayersEmpty(dir, "invalidateMemory");
@@ -212,8 +212,8 @@ test("mutation matrix: invalidateMemory clears every cache layer", async () => {
 
 test("mutation matrix: supersedeMemory clears every cache layer", async () => {
   await withStorage(async (storage, dir) => {
-    const oldId = await storage.writeMemory("fact", "old fact", { source: "test" });
-    const newId = await storage.writeMemory("fact", "new fact", { source: "test" });
+    const { id: oldId } = await storage.writeMemory("fact", "old fact", { source: "test" });
+    const { id: newId } = await storage.writeMemory("fact", "new fact", { source: "test" });
     seedAllLayers(dir);
     assert.equal(await storage.supersedeMemory(oldId, newId, "newer replaces older"), true);
     assertAllLayersEmpty(dir, "supersedeMemory");

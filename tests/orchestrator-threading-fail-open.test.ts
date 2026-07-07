@@ -68,13 +68,13 @@ test("in-memory thread episode context updates for chunked and non-chunked write
   );
   assert.match(
     source,
-    /if \(\s*faithfulnessEnforceStatus !== "pending_review"\s*&&\s*threadEpisodeIdsForGraph\s*&&\s*!threadEpisodeIdsForGraph\.includes\(memoryId\)\s*\) \{\s*threadEpisodeIdsForGraph\.push\(memoryId\);\s*\}/m,
-    "memoryId is appended to thread context only when not pending_review (faithfulness graph guard, #1576)",
+    /if \(\s*!postWriteGuard\s*&&\s*threadEpisodeIdsForGraph\s*&&\s*!threadEpisodeIdsForGraph\.includes\(memoryId\)\s*\) \{\s*threadEpisodeIdsForGraph\.push\(memoryId\);\s*\}/m,
+    "memoryId is appended to thread context only when not pending_review and not tombstone-blocked (faithfulness + #1645 tombstone guard)",
   );
   assert.match(
     source,
-    /if \(\s*faithfulnessEnforceStatus !== "pending_review"\s*&&\s*threadEpisodeIdsForGraph\s*&&\s*!threadEpisodeIdsForGraph\.includes\(parentId\)\s*\) \{\s*threadEpisodeIdsForGraph\.push\(parentId\);\s*\}/m,
-    "parentId is appended to thread context only when not pending_review (faithfulness graph guard, #1576)",
+    /if \(\s*!postWriteGuard\s*&&\s*threadEpisodeIdsForGraph\s*&&\s*!threadEpisodeIdsForGraph\.includes\(parentId\)\s*\) \{\s*threadEpisodeIdsForGraph\.push\(parentId\);\s*\}/m,
+    "parentId is appended to thread context only when not pending_review and not tombstone-blocked (faithfulness + #1645 tombstone guard)",
   );
 });
 

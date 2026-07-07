@@ -414,7 +414,7 @@ test("frontmatter round-trip preserves reinforcement_count + last_reinforced_at 
   try {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
-    const written = await storage.writeMemory(
+    const { id: written } = await storage.writeMemory(
       "fact",
       "Pattern-reinforcement round-trip body",
       { confidence: 0.9, tags: ["test"] },
@@ -456,7 +456,7 @@ test("storage rejects non-positive or non-integer reinforcement_count on write",
   try {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
-    const id = await storage.writeMemory("fact", "Body for validation test.", {
+    const { id: id } = await storage.writeMemory("fact", "Body for validation test.", {
       confidence: 0.9,
       tags: [],
     });

@@ -48,7 +48,7 @@ for (const category of WRITE_CATEGORIES) {
   test(`round-trip ${category}: write → read-by-path → read-by-id → list → delete`, async () => {
     await withScratchStorage(`roundtrip-${category}`, async (storage, dir) => {
       const content = `contract body for ${category}`;
-      const id = await storage.writeMemory(category, content, {
+      const { id: id } = await storage.writeMemory(category, content, {
         confidence: 0.9,
         tags: ["contract", category],
         source: "contract-test",
@@ -100,7 +100,7 @@ test("round-trip entity (writeMemory category): routes to the facts/ fallback an
     // still routes + reads + lists through the facts/ fallback, so a
     // regression on that path is caught independently of the writeEntity
     // surface (which is why entity is excluded from WRITE_CATEGORIES above).
-    const id = await storage.writeMemory("entity", "entity-as-memory body", {
+    const { id: id } = await storage.writeMemory("entity", "entity-as-memory body", {
       confidence: 0.9,
       tags: ["contract", "entity"],
       source: "contract-test",
@@ -136,7 +136,7 @@ test("round-trip: non-existent id returns null/false everywhere (no silent synth
 
 test("round-trip: corrections dir is flat (no <date> subdir) — pin the historical layout", async () => {
   await withScratchStorage("roundtrip-corrections-flat", async (storage) => {
-    const id = await storage.writeMemory("correction", "flat layout correction", {
+    const { id: id } = await storage.writeMemory("correction", "flat layout correction", {
       confidence: 0.95,
     });
     const mem = await storage.getMemoryById(id);
@@ -152,7 +152,7 @@ test("round-trip: corrections dir is flat (no <date> subdir) — pin the histori
 
 test("round-trip: updateMemory rewrites content in place (path stable, content changes)", async () => {
   await withScratchStorage("roundtrip-update", async (storage) => {
-    const id = await storage.writeMemory("decision", "original decision body");
+    const { id: id } = await storage.writeMemory("decision", "original decision body");
     const before = await storage.getMemoryById(id);
     assert.ok(before);
 

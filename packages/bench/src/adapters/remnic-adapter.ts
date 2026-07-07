@@ -1130,7 +1130,7 @@ async function withBenchCoreMemorySource(
 
   storage.writeMemory = async (
     ...args: Parameters<BenchWriteMemory>
-  ): Promise<string> => {
+  ): ReturnType<BenchWriteMemory> => {
     const [category, content, options] = args;
     const requestedSource = options?.source;
     return writeMemory(category, content, {

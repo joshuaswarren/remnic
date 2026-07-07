@@ -77,7 +77,7 @@ test("failure semantics: SecureStoreLockedError is NEVER swallowed by readMemory
   await withScratchStorage("fail-locked-rethrow", async (storage) => {
     const key = randomBytes(32);
     storage.setSecureStoreKey(key, true);
-    const id = await storage.writeMemory(
+    const { id: id } = await storage.writeMemory(
       "fact",
       "encrypted body — must not silently vanish",
       { confidence: 0.9 },

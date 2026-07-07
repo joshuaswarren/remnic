@@ -318,7 +318,7 @@ test("cold-tier recall forwards explain traces even when intent hints are disabl
     qmdIntentHintsEnabled: false,
   });
   const orchestrator = new Orchestrator(cfg) as any;
-  const memoryId = await orchestrator.storage.writeMemory(
+  const { id: memoryId } = await orchestrator.storage.writeMemory(
     "fact",
     "cold explain trace memory",
   );
@@ -371,7 +371,7 @@ test("cold-tier recall reads encrypted cold collection paths through primary sto
   });
   const orchestrator = new Orchestrator(cfg) as any;
   orchestrator.storage.setSecureStoreKey(Buffer.alloc(32, 9), true);
-  const memoryId = await orchestrator.storage.writeMemory(
+  const { id: memoryId } = await orchestrator.storage.writeMemory(
     "fact",
     "encrypted cold collection memory",
   );
@@ -418,7 +418,7 @@ test("cold-tier recall resolves the default cold collection when config omits it
   });
   const orchestrator = new Orchestrator(cfg) as any;
   orchestrator.config.qmdColdCollection = undefined;
-  const memoryId = await orchestrator.storage.writeMemory(
+  const { id: memoryId } = await orchestrator.storage.writeMemory(
     "fact",
     "default cold collection memory",
   );
@@ -466,7 +466,7 @@ test("cold-tier recall resolves collection-prefixed paths from active recall nam
   });
   const orchestrator = new Orchestrator(cfg) as any;
   const namespaceStorage = await orchestrator.getStorage("project-cold");
-  const memoryId = await namespaceStorage.writeMemory(
+  const { id: memoryId } = await namespaceStorage.writeMemory(
     "fact",
     "project cold namespace memory",
   );
@@ -515,7 +515,7 @@ test("cold-tier recall drops collection-prefixed paths outside active recall nam
   });
   const orchestrator = new Orchestrator(cfg) as any;
   const otherStorage = await orchestrator.getStorage("other-cold");
-  const memoryId = await otherStorage.writeMemory(
+  const { id: memoryId } = await otherStorage.writeMemory(
     "fact",
     "other namespace cold memory",
   );
@@ -566,7 +566,7 @@ test("cold-tier recall resolves absolute cold paths from runtime recall namespac
     dir: string,
   ) => typeof orchestrator.storage;
   const runtimeStorage = new StorageManagerCtor(runtimeDir);
-  const memoryId = await runtimeStorage.writeMemory(
+  const { id: memoryId } = await runtimeStorage.writeMemory(
     "fact",
     "runtime cold namespace absolute memory",
   );
@@ -622,7 +622,7 @@ test("cold fallback keeps absolute fallback hits under active runtime recall roo
     dir: string,
   ) => typeof orchestrator.storage;
   const runtimeStorage = new StorageManagerCtor(runtimeDir);
-  const memoryId = await runtimeStorage.writeMemory(
+  const { id: memoryId } = await runtimeStorage.writeMemory(
     "fact",
     "runtime archive fallback absolute memory",
   );
@@ -678,7 +678,7 @@ test("graph expansion resolves cold collection seeds from active recall namespac
     dir: string,
   ) => typeof orchestrator.storage;
   const runtimeStorage = new StorageManagerCtor(runtimeDir);
-  const memoryId = await runtimeStorage.writeMemory(
+  const { id: memoryId } = await runtimeStorage.writeMemory(
     "fact",
     "runtime cold graph seed memory",
   );
@@ -748,7 +748,7 @@ test("recall safety resolves absolute QMD paths from runtime recall namespaces",
     dir: string,
   ) => typeof orchestrator.storage;
   const runtimeStorage = new StorageManagerCtor(runtimeDir);
-  const memoryId = await runtimeStorage.writeMemory(
+  const { id: memoryId } = await runtimeStorage.writeMemory(
     "fact",
     "runtime namespace absolute QMD memory",
   );

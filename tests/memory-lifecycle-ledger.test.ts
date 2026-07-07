@@ -79,7 +79,7 @@ test("StorageManager emits created updated and archived lifecycle events for mem
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-memory-lifecycle-mutations-"));
   try {
     const storage = new StorageManager(dir);
-    const id = await storage.writeMemory("fact", "Initial memory content", {
+    const { id: id } = await storage.writeMemory("fact", "Initial memory content", {
       source: "test",
       tags: ["lifecycle"],
     });
@@ -106,7 +106,7 @@ test("StorageManager writeMemory preserves explicit lifecycle actor overrides", 
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-memory-lifecycle-actor-"));
   try {
     const storage = new StorageManager(dir);
-    const id = await storage.writeMemory("fact", "Tool-authored memory content", {
+    const { id: id } = await storage.writeMemory("fact", "Tool-authored memory content", {
       source: "test",
       actor: "tool.memory_action_apply",
     });
@@ -124,7 +124,7 @@ test("StorageManager updateMemory preserves explicit lifecycle actor overrides",
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-memory-lifecycle-update-actor-"));
   try {
     const storage = new StorageManager(dir);
-    const id = await storage.writeMemory("fact", "Tool-authored memory content", {
+    const { id: id } = await storage.writeMemory("fact", "Tool-authored memory content", {
       source: "test",
     });
 
@@ -166,7 +166,7 @@ test("archiveMemory fails open when lifecycle ledger append throws after archive
   const dir = await mkdtemp(path.join(os.tmpdir(), "openclaw-engram-memory-lifecycle-archive-fail-open-"));
   try {
     const storage = new StorageManager(dir);
-    const id = await storage.writeMemory("fact", "Archive me", {
+    const { id: id } = await storage.writeMemory("fact", "Archive me", {
       source: "test",
       tags: ["archive"],
     });
@@ -205,7 +205,7 @@ test("memory write paths fail open when lifecycle ledger append throws", async (
       }
     };
 
-    const memoryId = await storage.writeMemory("fact", "Write path memory", { source: "test" });
+    const { id: memoryId } = await storage.writeMemory("fact", "Write path memory", { source: "test" });
     assert.match(memoryId, /^fact-/);
 
     const memories = await storage.readAllMemories();

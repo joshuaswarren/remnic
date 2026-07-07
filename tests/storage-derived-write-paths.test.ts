@@ -31,7 +31,7 @@ test("writeMemory persists derivedFrom + derivedVia through to frontmatter", asy
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "consolidated payload", {
+    const { id: id } = await storage.writeMemory("fact", "consolidated payload", {
       source: "semantic-consolidation",
       derivedFrom: ["facts/a.md:2", "facts/b.md:5"],
       derivedVia: "merge",
@@ -59,7 +59,7 @@ test("writeMemory omits derived_from when the array is empty", async () => {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "payload without sources", {
+    const { id: id } = await storage.writeMemory("fact", "payload without sources", {
       source: "extraction",
       derivedFrom: [],
     });
@@ -85,7 +85,7 @@ test("writeMemory emits derived_via alone when page-versioning is unavailable", 
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "orphan consolidation output", {
+    const { id: id } = await storage.writeMemory("fact", "orphan consolidation output", {
       source: "semantic-consolidation",
       derivedVia: "merge",
       // deliberately omit derivedFrom to simulate versioning-disabled case
@@ -110,7 +110,7 @@ test("writeMemory accepts all three ConsolidationOperator values via derivedVia"
     const operators: Array<"split" | "merge" | "update"> = ["split", "merge", "update"];
     const writtenIds: Record<string, string> = {};
     for (const op of operators) {
-      const id = await storage.writeMemory("fact", `${op} payload`, {
+      const { id: id } = await storage.writeMemory("fact", `${op} payload`, {
         source: "semantic-consolidation",
         derivedFrom: [`facts/source-${op}.md:1`],
         derivedVia: op,
@@ -140,7 +140,7 @@ test("snapshotForProvenance captures a version and returns a valid derived_from 
     // Write a source memory.  The first write snapshots any existing
     // content (none yet) so the file itself starts un-versioned; the
     // snapshot below creates version 1.
-    const sourceId = await storage.writeMemory("fact", "source body", {
+    const { id: sourceId } = await storage.writeMemory("fact", "source body", {
       source: "extraction",
     });
     const all = await storage.readAllMemories();
@@ -175,7 +175,7 @@ test("snapshotForProvenance returns null when versioning is disabled", async () 
     // Intentionally skip setVersioningConfig — versioning stays disabled.
     await storage.ensureDirectories();
 
-    const sourceId = await storage.writeMemory("fact", "source body", {
+    const { id: sourceId } = await storage.writeMemory("fact", "source body", {
       source: "extraction",
     });
     const all = await storage.readAllMemories();
@@ -215,10 +215,10 @@ test("round-trip: writeMemory with snapshotForProvenance entries survives read",
     storage.setVersioningConfig(versioningConfig());
     await storage.ensureDirectories();
 
-    const srcAId = await storage.writeMemory("fact", "alpha source body", {
+    const { id: srcAId } = await storage.writeMemory("fact", "alpha source body", {
       source: "extraction",
     });
-    const srcBId = await storage.writeMemory("fact", "bravo source body", {
+    const { id: srcBId } = await storage.writeMemory("fact", "bravo source body", {
       source: "extraction",
     });
 
@@ -233,7 +233,7 @@ test("round-trip: writeMemory with snapshotForProvenance entries survives read",
     assert.ok(entryA);
     assert.ok(entryB);
 
-    const canonicalId = await storage.writeMemory("fact", "canonical merged body", {
+    const { id: canonicalId } = await storage.writeMemory("fact", "canonical merged body", {
       source: "semantic-consolidation",
       derivedFrom: [entryA, entryB],
       derivedVia: "merge",

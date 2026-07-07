@@ -81,7 +81,7 @@ test("writeMemoryFrontmatter fail-opens when fact hash index sync fails after re
   const originalSave = ContentHashIndex.prototype.save;
   try {
     const storage = new StorageManager(dir);
-    const id = await storage.writeMemory("fact", "Fact hash rewrite failure should not abort persistence.", {
+    const { id: id } = await storage.writeMemory("fact", "Fact hash rewrite failure should not abort persistence.", {
       source: "test",
     });
     const memory = await storage.getMemoryById(id);
@@ -263,8 +263,8 @@ test("removeFactContentHashesForMemories preserves a hash still owned by another
     const storage = new StorageManager(dir);
     const rawBody = "Duplicate fact that should remain deduped.";
 
-    const firstId = await storage.writeMemory("fact", rawBody, { source: "test" });
-    const secondId = await storage.writeMemory("fact", rawBody, { source: "test" });
+    const { id: firstId } = await storage.writeMemory("fact", rawBody, { source: "test" });
+    const { id: secondId } = await storage.writeMemory("fact", rawBody, { source: "test" });
     const first = await storage.getMemoryById(firstId);
     const second = await storage.getMemoryById(secondId);
     assert.ok(first, "expected first fact to exist");

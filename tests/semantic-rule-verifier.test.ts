@@ -23,7 +23,7 @@ async function createSemanticRuleHarness() {
 }
 
 async function seedPromotedRule(memoryDir: string, storage: StorageManager) {
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF Cursor Bugbot is still pending THEN wait for the terminal result before merging.",
     {
@@ -66,7 +66,7 @@ test("searchVerifiedSemanticRules returns promoted rules whose source episode st
 
 test("concurrent semantic rule promotions are idempotent for one source memory", async () => {
   const { memoryDir, storage } = await createSemanticRuleHarness();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF the reviewer check is still pending THEN wait for the current-head verdict before merging.",
     {
@@ -107,7 +107,7 @@ test("concurrent semantic rule promotions are idempotent for one source memory",
 
 test("semantic rule promotion refreshes duplicate scan after acquiring the lock", async () => {
   const { memoryDir, storage } = await createSemanticRuleHarness();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF the duplicate scan was already in flight THEN refresh it after acquiring the lock.",
     {
@@ -119,7 +119,7 @@ test("semantic rule promotion refreshes duplicate scan after acquiring the lock"
   );
   const sourceMemory = await storage.getMemoryById(sourceMemoryId);
   assert.ok(sourceMemory);
-  const existingRuleId = await storage.writeMemory(
+  const { id: existingRuleId } = await storage.writeMemory(
     "rule",
     "IF the duplicate scan was already in flight THEN refresh it after acquiring the lock.",
     {
@@ -147,7 +147,7 @@ test("semantic rule promotion refreshes duplicate scan after acquiring the lock"
 
 test("semantic rule promotion recovers stale lock directories", async () => {
   const { memoryDir, storage } = await createSemanticRuleHarness();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF a promotion lock is stale THEN recover it before writing the rule.",
     {
@@ -182,7 +182,7 @@ test("semantic rule promotion recovers stale lock directories", async () => {
 
 test("semantic rule promotion recovers stale locks even when the recorded pid is live", async () => {
   const { memoryDir, storage } = await createSemanticRuleHarness();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF a promotion lock owner pid was reused THEN recover the stale heartbeat before writing the rule.",
     {
@@ -218,7 +218,7 @@ test("semantic rule promotion recovers stale locks even when the recorded pid is
 
 test("semantic rule promotion recovers ownerless lock directories after a short creation grace", async () => {
   const { memoryDir, storage } = await createSemanticRuleHarness();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF a promotion lock has no owner file THEN recover it after the creation grace.",
     {
@@ -247,7 +247,7 @@ test("semantic rule promotion recovers ownerless lock directories after a short 
 
 test("semantic rule promotion retries when a delayed owner write loses the lock", { concurrency: false }, async () => {
   const { memoryDir, storage } = await createSemanticRuleHarness();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF a delayed promotion owner loses the lock THEN retry before checking duplicates.",
     {
@@ -313,7 +313,7 @@ test("semantic rule promotion retries when a delayed owner write loses the lock"
 
 test("semantic rule promotion does not write after losing the promotion lock", { concurrency: false }, async () => {
   const { memoryDir, storage } = await createSemanticRuleHarness();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF a promotion lock is reaped before the write THEN do not write a duplicate rule.",
     {
@@ -366,7 +366,7 @@ test("semantic rule promotion does not write after losing the promotion lock", {
 
 test("semantic rule promotion does not treat a reap guard as proof of ownership", { concurrency: false }, async () => {
   const { memoryDir, storage } = await createSemanticRuleHarness();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF a promotion lock owner token changes during reap THEN do not write the rule.",
     {
@@ -420,7 +420,7 @@ test(
   async () => {
     const { memoryDir } = await createSemanticRuleHarness();
     const storage = new StorageManager(memoryDir);
-    const sourceMemoryId = await storage.writeMemory(
+    const { id: sourceMemoryId } = await storage.writeMemory(
       "fact",
       "IF lock release stalls after promotion THEN report the already written rule.",
       {
@@ -459,7 +459,7 @@ test(
 
 test("semantic rule promotion recovers abandoned release guards", async () => {
   const { memoryDir, storage } = await createSemanticRuleHarness();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF a promotion release guard is stale THEN recover it before writing the rule.",
     {

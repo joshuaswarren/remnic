@@ -2244,6 +2244,19 @@ function isValidBufferSurpriseEvent(value: unknown): value is BufferSurpriseEven
   return true;
 }
 
+/** Result of {@link StorageManager.writeMemory} (issue #1645). Carries the
+ * persisted id PLUS the non-resurrection tombstone-block outcome (#1579) so
+ * post-write callers can observe it — NEVER a silent no-op (rule 34). */
+export interface MemoryWriteResult {
+  /** The persisted memory id. */
+  id: string;
+  /** True when the #1579 tombstone chokepoint downgraded this write to
+   * `pending_review` + `blockedBy`. Callers gate active post-write work on this. */
+  tombstoneBlocked: boolean;
+  /** The tombstone id that blocked the write, when `tombstoneBlocked`. */
+  blockedBy?: string;
+}
+
 export class StorageManager {
   private knowledgeIndexCache: { result: string; builtAt: number } | null = null;
   private static readonly KNOWLEDGE_INDEX_CACHE_TTL_MS = 600_000; // 10 minutes (entity mutations invalidate)
@@ -3625,7 +3638,7 @@ export class StorageManager {
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
     } = {},
-  ): Promise<string> {
+  ): Promise<MemoryWriteResult> {
     await this.ensureDirectories();
     const now = new Date();
     const today = now.toISOString().slice(0, 10);
@@ -3835,7 +3848,7 @@ export class StorageManager {
       }
     }
     log.debug(`wrote memory ${id} to ${filePath}`);
-    return id;
+    return { id, tombstoneBlocked, ...(fm.blockedBy ? { blockedBy: fm.blockedBy } : {}) };
   }
 
   async hasFactContentHash(content: string): Promise<boolean> {
@@ -7359,6 +7372,13 @@ export class StorageManager {
       validAt?: string;
       /** Lifecycle status (issue #1576): pending_review chunks stay out of active recall. */
       status?: import("./types.js").MemoryStatus;
+      /**
+       * Tombstone block provenance (issue #1645): when the parent fact was
+       * tombstone-blocked, propagate the tombstone id onto each chunk so an
+       * independently-surfaced chunk (memory_get/x-ray/doctor) reveals the block
+       * and the chunk stays pending_review, never an active resurrection.
+       */
+      blockedBy?: string;
       /** Faithfulness gate verdict (issue #1576), propagated from the parent fact. */
       faithfulness?: import("./types.js").FaithfulnessFrontmatter;
       /** Claim-level provenance spans (issue #1575 PR 2), propagated from the parent fact so a chunk surfaced independently (memory_get/x-ray) preserves them (chatgpt-codex-connector thread Ocvmo). */
@@ -7406,6 +7426,7 @@ export class StorageManager {
       observedAt: chunkObservedAt,
       eventTimeSource: options.eventTimeSource,
       ...(options.status ? { status: options.status } : {}),
+      ...(options.blockedBy ? { blockedBy: options.blockedBy } : {}),
       ...(options.faithfulness ? { faithfulness: options.faithfulness } : {}),
       ...(options.sources ? { sources: options.sources } : {}),
       ...(options.provenance ? { provenance: options.provenance } : {}),

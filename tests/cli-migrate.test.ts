@@ -44,7 +44,7 @@ test("migrate rescore-importance writes recalculated scores", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-migrate-importance-"));
   try {
     const storage = new StorageManager(dir);
-    const id = await storage.writeMemory("fact", "hello", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "hello", { source: "test" });
     const before = await storage.getMemoryById(id);
     assert.equal(before?.frontmatter.importance, undefined);
 
@@ -67,7 +67,7 @@ test("migrate rechunk writes chunk files for long parent content", async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-migrate-rechunk-"));
   try {
     const storage = new StorageManager(dir);
-    const parentId = await storage.writeMemory("fact", longChunkCandidate(), { source: "test" });
+    const { id: parentId } = await storage.writeMemory("fact", longChunkCandidate(), { source: "test" });
 
     const report = await runMigrateRechunkCliCommand(buildMigrateOrchestrator(storage), {
       write: true,
@@ -88,7 +88,7 @@ test("migrate rechunk skips archived parents to avoid orphan active chunks", asy
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-migrate-rechunk-archived-"));
   try {
     const storage = new StorageManager(dir);
-    const parentId = await storage.writeMemory("fact", longChunkCandidate(), { source: "test" });
+    const { id: parentId } = await storage.writeMemory("fact", longChunkCandidate(), { source: "test" });
     const parent = await storage.getMemoryById(parentId);
     assert.ok(parent);
     await storage.archiveMemory(parent!);
@@ -143,7 +143,7 @@ test("migrate reextract applies limit after filtering out chunk memories", async
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-migrate-reextract-limit-"));
   try {
     const storage = new StorageManager(dir);
-    const parentId = await storage.writeMemory("fact", longChunkCandidate(), { source: "test" });
+    const { id: parentId } = await storage.writeMemory("fact", longChunkCandidate(), { source: "test" });
     await runMigrateRechunkCliCommand(buildMigrateOrchestrator(storage), { write: true, limit: 10 });
 
     const report = await runMigrateReextractCliCommand(buildMigrateOrchestrator(storage), {
@@ -252,7 +252,7 @@ test("migrate rechunk removes orphan chunks when parent no longer needs chunking
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-migrate-rechunk-orphan-"));
   try {
     const storage = new StorageManager(dir);
-    const parentId = await storage.writeMemory("fact", "short content", { source: "test" });
+    const { id: parentId } = await storage.writeMemory("fact", "short content", { source: "test" });
     await storage.writeChunk(parentId, 0, 1, "fact", "stale chunk", { source: "test" });
     assert.equal((await storage.getChunksForParent(parentId)).length, 1);
 
@@ -271,7 +271,7 @@ test("migrate rechunk updates existing chunk content instead of restoring stale 
   const dir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-migrate-rechunk-content-"));
   try {
     const storage = new StorageManager(dir);
-    const parentId = await storage.writeMemory("fact", longChunkCandidate(), { source: "test" });
+    const { id: parentId } = await storage.writeMemory("fact", longChunkCandidate(), { source: "test" });
     await storage.writeChunk(parentId, 0, 1, "fact", "stale chunk content", { source: "test" });
 
     await runMigrateRechunkCliCommand(buildMigrateOrchestrator(storage), {

@@ -106,7 +106,7 @@ function makeDeps(memoryDir: string): {
   const writer: WearableMemoryWriter = {
     async writeMemory(category, content, options) {
       memoryWrites.push({ category, content, options: options as Record<string, unknown> });
-      return `mem-${memoryWrites.length}`;
+      return { id: `mem-${memoryWrites.length}`, tombstoneBlocked: false };
     },
     async hasFactContentHash() {
       return false;
@@ -298,6 +298,45 @@ test("unchanged days skip rewrite, reindex, and re-extraction; forceMemories re-
     );
     assert.equal(third.memoriesCreated, 1, "forceMemories re-runs extraction");
     assert.equal(memoryWrites.length, 2);
+  } finally {
+    rmSync(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("#1645: a tombstone-blocked wearable write propagates to summary.memoriesBlocked, not created", async () => {
+  const memoryDir = mkdtempSync(path.join(tmpdir(), "remnic-pipeline-"));
+  try {
+    const byDate = {
+      "2026-06-11": [
+        makeConversation("c1", "2026-06-11", [
+          { speaker: "user", isWearer: true, text: "The warehouse relocated to Newark this quarter." },
+          { speaker: "Speaker 2", text: "Newark makes sense for the logistics team." },
+        ]),
+      ],
+    };
+    const { deps, reindexes } = makeDeps(memoryDir);
+    assert.ok(deps.memoryGen, "memory-gen deps wired");
+    // Force every extraction write to be tombstone-blocked (#1579): the
+    // write lands pending_review with no active copy.
+    deps.memoryGen.writer.writeMemory = async () => ({
+      id: "blocked-mem-1",
+      tombstoneBlocked: true,
+      blockedBy: "tomb-1",
+    });
+    const summary = await syncWearableSource(
+      fakeConnector(byDate),
+      settings(),
+      config(),
+      { days: 1 },
+      deps,
+    );
+    assert.equal(summary.memoriesCreated, 0, "blocked write is not counted as created");
+    assert.equal(summary.memoriesBlocked, 1, "blocked write propagates to the summary");
+    assert.equal(
+      reindexes.count,
+      1,
+      "blocked write still flushes the index (a pending_review row landed on disk)",
+    );
   } finally {
     rmSync(memoryDir, { recursive: true, force: true });
   }

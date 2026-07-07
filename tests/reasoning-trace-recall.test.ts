@@ -247,7 +247,7 @@ describe("StorageManager reasoning_trace routing", () => {
         "route-b won and was pinned.",
       ].join("\n");
 
-      const id = await storage.writeMemory("reasoning_trace", body, {
+      const { id: id } = await storage.writeMemory("reasoning_trace", body, {
         source: "test",
         tags: ["reasoning"],
         confidence: 0.9,
@@ -301,7 +301,7 @@ describe("StorageManager reasoning_trace routing", () => {
         "",
         "route-b pinned.",
       ].join("\n");
-      const id = await storage.writeMemory("reasoning_trace", body, {
+      const { id: id } = await storage.writeMemory("reasoning_trace", body, {
         source: "test",
       });
       const memories = await storage.readAllMemories();
@@ -338,7 +338,7 @@ describe("StorageManager reasoning_trace routing", () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-decision-tier-"));
     try {
       const storage = new StorageManager(dir);
-      const id = await storage.writeMemory("decision", "We chose blue-green deploys.", {
+      const { id: id } = await storage.writeMemory("decision", "We chose blue-green deploys.", {
         source: "test",
       });
       const memories = await storage.readAllMemories();

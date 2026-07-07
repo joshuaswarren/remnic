@@ -464,10 +464,10 @@ test("recallXray with real storage fixture: per-result tags populated from front
   const { StorageManager } = await import("../src/storage.js");
   const storage = new StorageManager(memoryDir);
 
-  const idA = await storage.writeMemory("fact", "Eve is a cryptographer.", {
+  const { id: idA } = await storage.writeMemory("fact", "Eve is a cryptographer.", {
     tags: ["eve", "cryptography"],
   });
-  const idB = await storage.writeMemory("fact", "Frank is a botanist.", {
+  const { id: idB } = await storage.writeMemory("fact", "Frank is a botanist.", {
     tags: ["frank", "botany"],
   });
 

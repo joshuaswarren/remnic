@@ -14,7 +14,7 @@ test("StorageManager round-trips escaped backslashes and quotes for importance r
     const reasonWithEscapes = String.raw`Path C:\work\"quoted"`;
     const linkReasonWithEscapes = String.raw`See C:\docs\"policy" for context`;
 
-    const id = await storage.writeMemory("fact", "payload", {
+    const { id: id } = await storage.writeMemory("fact", "payload", {
       source: "test",
       importance: {
         score: 0.9,

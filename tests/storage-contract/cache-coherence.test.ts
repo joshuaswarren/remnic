@@ -18,7 +18,7 @@ test("cache coherence: instance B (fresh, same dir) sees a memory written via in
   await withScratchDir("cache-cross-instance", async (dir) => {
     const a = new StorageManager(dir);
     await a.ensureDirectories();
-    const id = await a.writeMemory("fact", "shared fact body", { confidence: 0.9 });
+    const { id: id } = await a.writeMemory("fact", "shared fact body", { confidence: 0.9 });
 
     // Construct a SECOND StorageManager over the same dir AFTER the write — it
     // has its own in-process cache, but the on-disk state is authoritative and
@@ -42,7 +42,7 @@ test("cache coherence: readAllMemories does not serve a stale list — a second 
   await withScratchDir("cache-no-stale-list", async (dir) => {
     const a = new StorageManager(dir);
     await a.ensureDirectories();
-    const id1 = await a.writeMemory("fact", "first fact", { confidence: 0.9 });
+    const { id: id1 } = await a.writeMemory("fact", "first fact", { confidence: 0.9 });
 
     const b = new StorageManager(dir);
     await b.ensureDirectories();
@@ -52,7 +52,7 @@ test("cache coherence: readAllMemories does not serve a stale list — a second 
     // A writes a SECOND memory between B's reads. Because readAllMemories
     // rescans disk (never serves a previously-materialized list), B's second
     // call must include it.
-    const id2 = await a.writeMemory("fact", "second fact", { confidence: 0.9 });
+    const { id: id2 } = await a.writeMemory("fact", "second fact", { confidence: 0.9 });
     const second = await b.readAllMemories();
     assert.equal(second.length, 2, "readAllMemories must rescan disk — not serve a stale list");
     assert.ok(
@@ -66,7 +66,7 @@ test("cache coherence: invalidateMemory on A is reflected on a fresh B", async (
   await withScratchDir("cache-cross-invalidate", async (dir) => {
     const a = new StorageManager(dir);
     await a.ensureDirectories();
-    const id = await a.writeMemory("fact", "ephemeral", { confidence: 0.9 });
+    const { id: id } = await a.writeMemory("fact", "ephemeral", { confidence: 0.9 });
     const removed = await a.invalidateMemory(id);
     assert.equal(removed, true);
 
@@ -104,7 +104,7 @@ test("cache coherence: two instances over DIFFERENT dirs do not cross-contaminat
     const b = new StorageManager(dirB);
     await b.ensureDirectories();
 
-    const id = await a.writeMemory("fact", "only in A", { confidence: 0.9 });
+    const { id: id } = await a.writeMemory("fact", "only in A", { confidence: 0.9 });
     const seenB = await b.getMemoryById(id);
     assert.equal(seenB, null, "instance over dir B must NOT see a memory written to dir A");
   } finally {

@@ -22,6 +22,7 @@ import {
   type DecisionStatus,
 } from "./decision-records.js";
 import { log } from "../logger.js";
+import type { MemoryWriteResult } from "../storage.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Subcommands
@@ -184,7 +185,7 @@ export interface DecisionSurfaceStorage {
        *  body so the list/get projection has one authoritative source. */
       structuredAttributes?: Record<string, string>;
     },
-  ): Promise<string>;
+  ): Promise<MemoryWriteResult>;
   writeMemoryFrontmatter(
     memory: MemoryFile,
     patch: Partial<MemoryFrontmatter>,
@@ -342,7 +343,7 @@ async function decisionRecord(
   const content = serializeDecisionRecord(record);
   const storage = await ctx.resolveStorage(request);
   const isActive = ACTIVE_DECISION_STATUSES.has(status);
-  const memoryId = await storage.writeMemory("decision", content, {
+  const { id: memoryId } = await storage.writeMemory("decision", content, {
     confidence: 1.0,
     tags: ["decision-record"],
     source: "coding-decision",
@@ -407,7 +408,7 @@ async function decisionSupersede(
     supersedes: targetId,
   };
   const replacementContent = serializeDecisionRecord(replacement);
-  const replacementId = await storage.writeMemory(
+  const { id: replacementId, tombstoneBlocked: replacementBlocked } = await storage.writeMemory(
     "decision",
     replacementContent,
     {
@@ -420,6 +421,14 @@ async function decisionSupersede(
       structuredAttributes: { decisionStatus: "accepted" },
     },
   );
+  if (replacementBlocked) {
+    // #1645: the replacement decision matched a tombstone (pending_review).
+    // Don't archive the old record — superseding with a non-active
+    // replacement retires the only active decision. Abort; old stays active.
+    ctx.throwInputError(
+      `replacement decision was tombstone-blocked (pending_review ${replacementId}) — keeping decision ${targetId} active`,
+    );
+  }
   // Mark the old record superseded: set BOTH frontmatter.status (so
   // recall/search/maintenance exclude it from the active corpus — review P2)
   // AND structuredAttributes.decisionStatus (the decision-specific lifecycle

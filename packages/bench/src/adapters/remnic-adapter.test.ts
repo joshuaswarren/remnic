@@ -1150,12 +1150,12 @@ test("direct adapter session reset clears caller-owned verbatim artifacts", asyn
 
   try {
     const storage = new StorageManager(memoryDir);
-    const resetMemoryId = await storage.writeMemory(
+    const { id: resetMemoryId } = await storage.writeMemory(
       "fact",
       "Remember the stale artifact reset code is hibiscus-57.",
       { source: benchReplaySourceForTest(resetSession) },
     );
-    const otherMemoryId = await storage.writeMemory(
+    const { id: otherMemoryId } = await storage.writeMemory(
       "fact",
       "Remember the other artifact code is juniper-68.",
       { source: benchReplaySourceForTest(otherSession) },
@@ -1833,12 +1833,12 @@ test("direct adapter session reset clears caller-owned cold replay state", async
 
   try {
     const coldStorage = new StorageManager(path.join(memoryDir, "cold"));
-    const resetColdId = await coldStorage.writeMemory(
+    const { id: resetColdId } = await coldStorage.writeMemory(
       "fact",
       "Remember the stale cold reset code is frost-77.",
       { source: benchReplaySourceForTest("owned-cold-reset-session") },
     );
-    const otherColdId = await coldStorage.writeMemory(
+    const { id: otherColdId } = await coldStorage.writeMemory(
       "fact",
       "Remember the other cold reset code is ember-88.",
       { source: benchReplaySourceForTest("owned-cold-other-session") },
@@ -1876,7 +1876,7 @@ test("direct adapter session reset tracks replay-created cold memories", async (
   ): Promise<void> {
     const content = turns.map((turn) => turn.content).join("\n");
     const code = content.includes("glacier-31") ? "glacier-31" : "lantern-46";
-    const memoryId = await this.storage.writeMemory(
+    const { id: memoryId } = await this.storage.writeMemory(
       "fact",
       `Remember the replay-created cold reset code is ${code}.`,
     );
@@ -1938,7 +1938,7 @@ test("direct adapter full reset clears caller-owned core state when replay is sk
   });
 
   try {
-    const staleId = await new StorageManager(memoryDir).writeMemory(
+    const { id: staleId } = await new StorageManager(memoryDir).writeMemory(
       "fact",
       "Remember the stale skip full reset code is saffron-18.",
       { source: benchReplaySourceForTest("skip-full-reset-session") },
@@ -1970,12 +1970,12 @@ test("direct adapter scoped reset clears caller-owned core state when replay is 
 
   try {
     const storage = new StorageManager(memoryDir);
-    const resetId = await storage.writeMemory(
+    const { id: resetId } = await storage.writeMemory(
       "fact",
       "Remember the stale skip session reset code is topaz-74.",
       { source: benchReplaySourceForTest("skip-reset-session") },
     );
-    const otherId = await storage.writeMemory(
+    const { id: otherId } = await storage.writeMemory(
       "fact",
       "Remember the other skip session code is opal-36.",
       { source: benchReplaySourceForTest("skip-other-session") },

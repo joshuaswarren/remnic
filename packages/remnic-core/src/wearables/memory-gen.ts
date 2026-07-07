@@ -28,6 +28,7 @@
  */
 
 import { scoreImportance } from "../importance.js";
+import type { MemoryWriteResult } from "../storage.js";
 import type { JudgeBatchResult, JudgeCandidate } from "../extraction-judge.js";
 import { getVerdictKind } from "../extraction-judge.js";
 import { describeErrorForOperator } from "./errors.js";
@@ -82,7 +83,7 @@ export interface WearableMemoryWriter {
       status?: MemoryStatus;
       memoryKind?: "episode" | "note" | "box" | "dream" | "procedural";
     },
-  ): Promise<string>;
+  ): Promise<MemoryWriteResult>;
   hasFactContentHash(content: string): Promise<boolean>;
   /**
    * Locate an earlier wearable write of the same content (any status).
@@ -131,6 +132,12 @@ export interface WearableMemoryGenDeps {
 
 export interface WearableMemoryGenResult {
   created: number;
+  /**
+   * Writes the #1579 tombstone chokepoint downgraded to pending_review (no
+   * active copy). Surfaced distinctly from `created` so sync summaries and
+   * callers don't count blocked content as successfully created (#1645).
+   */
+  tombstoneBlocked: number;
   /** Earlier borderline writes promoted to active by new evidence. */
   promoted: number;
   /** Earlier pending writes retired by a fresh judge-reject verdict. */
@@ -309,6 +316,7 @@ export async function generateWearableMemories(
 ): Promise<WearableMemoryGenResult> {
   const result: WearableMemoryGenResult = {
     created: 0,
+    tombstoneBlocked: 0,
     promoted: 0,
     demoted: 0,
     skipped: 0,
@@ -565,7 +573,7 @@ export async function generateWearableMemories(
         wearableDayTag(date),
       ]),
     ];
-    await deps.writer.writeMemory(candidate.fact.category, candidate.fact.content, {
+    const writeResult = await deps.writer.writeMemory(candidate.fact.category, candidate.fact.content, {
       confidence:
         settings.memoryMode === "smart"
           ? trustById.get(index)?.trust
@@ -584,7 +592,14 @@ export async function generateWearableMemories(
       contentHashSource: candidate.fact.content,
       status,
     });
-    result.created += 1;
+    // #1645: a tombstone-blocked wearable write lands pending_review (no active
+    // copy) — count it as blocked, NOT created, so the sync summary and callers
+    // don't report blocked content as successfully created active memories.
+    if (writeResult.tombstoneBlocked) {
+      result.tombstoneBlocked += 1;
+    } else {
+      result.created += 1;
+    }
   }
   return result;
 }
@@ -654,8 +669,9 @@ export async function importNativeMemories(
   alreadyImportedIds: ReadonlySet<string>,
   settings: WearableSourceSettings,
   deps: WearableMemoryGenDeps,
-): Promise<{ imported: number; importedIds: string[]; warnings: string[] }> {
+): Promise<{ imported: number; tombstoneBlocked: number; importedIds: string[]; warnings: string[] }> {
   let imported = 0;
+  let tombstoneBlocked = 0;
   const importedIds: string[] = [];
   const warnings: string[] = [];
   const seenContent = new Set<string>();
@@ -743,7 +759,7 @@ export async function importNativeMemories(
           : {}),
       };
     }
-    await deps.writer.writeMemory("fact", content, {
+    const nativeWriteResult = await deps.writer.writeMemory("fact", content, {
       confidence,
       tags: [
         ...new Set([
@@ -764,8 +780,16 @@ export async function importNativeMemories(
       contentHashSource: content,
       status,
     });
-    imported += 1;
+    // #1645: a tombstone-blocked native import lands pending_review (no active
+    // copy) — count it as blocked, NOT imported. Still record the provider id in
+    // importedIds so the next sync doesn't re-import and duplicate the pending
+    // row; the block is permanent for this content.
+    if (nativeWriteResult.tombstoneBlocked) {
+      tombstoneBlocked += 1;
+    } else {
+      imported += 1;
+    }
     importedIds.push(memory.id);
   }
-  return { imported, importedIds, warnings };
+  return { imported, tombstoneBlocked, importedIds, warnings };
 }

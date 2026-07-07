@@ -129,12 +129,12 @@ test("fetchQmdMemoryResultsWithArtifactTopUp merges advisory query-aware seeds w
   const orchestrator = await makeOrchestrator("engram-query-aware-hot-");
   const storage = (orchestrator as any).storage;
 
-  const infraId = await storage.writeMemory(
+  const { id: infraId } = await storage.writeMemory(
     "fact",
     "We stabilized the api gateway during the infra ops incident this morning.",
     { tags: ["infra/ops"], confidence: 0.9 },
   );
-  const marketingId = await storage.writeMemory(
+  const { id: marketingId } = await storage.writeMemory(
     "fact",
     "We rewrote the homepage headline for the launch page.",
     { tags: ["marketing/content"], confidence: 0.9 },
@@ -193,12 +193,12 @@ test("temporal query-aware seeds survive alongside backend results", async () =>
   const orchestrator = await makeOrchestrator("engram-query-aware-time-");
   const storage = (orchestrator as any).storage;
 
-  const recentId = await storage.writeMemory(
+  const { id: recentId } = await storage.writeMemory(
     "fact",
     "Today we mitigated the paging incident and stabilized the service.",
     { tags: ["infra/incident"], confidence: 0.9 },
   );
-  const olderId = await storage.writeMemory(
+  const { id: olderId } = await storage.writeMemory(
     "fact",
     "Last month we updated the billing FAQ and help center copy.",
     {
@@ -264,12 +264,12 @@ test("recallInternal applies query-aware prefilter parity to embedding fallback 
   });
   const storage = (orchestrator as any).storage;
 
-  const infraId = await storage.writeMemory(
+  const { id: infraId } = await storage.writeMemory(
     "fact",
     "The infra ops team mitigated the gateway outage and documented the incident.",
     { tags: ["infra/ops"], confidence: 0.9 },
   );
-  const marketingId = await storage.writeMemory(
+  const { id: marketingId } = await storage.writeMemory(
     "fact",
     "The marketing team updated homepage messaging for the spring launch.",
     { tags: ["marketing/content"], confidence: 0.9 },
@@ -369,12 +369,12 @@ test("explicit tag misses preserve an empty prefilter through QMD retrieval", as
   const orchestrator = await makeOrchestrator("engram-query-aware-tag-miss-");
   const storage = (orchestrator as any).storage;
 
-  const unrelatedId = await storage.writeMemory(
+  const { id: unrelatedId } = await storage.writeMemory(
     "fact",
     "The marketing team updated homepage messaging for the spring launch.",
     { tags: ["marketing/content"], confidence: 0.9 },
   );
-  const alphaId = await storage.writeMemory(
+  const { id: alphaId } = await storage.writeMemory(
     "fact",
     "Alpha-tagged infrastructure note that should not match beta.",
     { tags: ["alpha"], confidence: 0.9 },
@@ -449,7 +449,7 @@ test("explicit tag misses dominate temporal matches and skip non-QMD fallbacks",
   });
   const storage = (orchestrator as any).storage;
 
-  const alphaId = await storage.writeMemory(
+  const { id: alphaId } = await storage.writeMemory(
     "fact",
     "Alpha-tagged incident note from today that should not match beta.",
     { tags: ["alpha"], confidence: 0.9 },
@@ -501,7 +501,7 @@ test("explicit tag misses suppress fresh QMD cache hits", async () => {
   const orchestrator = await makeOrchestrator("engram-query-aware-tag-cache-miss-");
   const storage = (orchestrator as any).storage;
 
-  const alphaId = await storage.writeMemory(
+  const { id: alphaId } = await storage.writeMemory(
     "fact",
     "Alpha-tagged cached QMD result that should not match beta.",
     { tags: ["alpha"], confidence: 0.9 },
@@ -816,7 +816,7 @@ test("qmd-unavailable recall sends archived-only query-aware matches to cold fal
     tags: ["marketing/content"],
     confidence: 0.9,
   });
-  const archivedId = await storage.writeMemory("fact", "infra ops archived incident summary", {
+  const { id: archivedId } = await storage.writeMemory("fact", "infra ops archived incident summary", {
     tags: ["infra/ops"],
     confidence: 0.9,
   });
@@ -864,7 +864,7 @@ test("archive-scan cold fallback fills budget after excluding artifact paths", a
     confidence: 0.9,
     artifactType: "fact",
   });
-  const archivedMemoryId = await storage.writeMemory("fact", "archived infra ops memory result", {
+  const { id: archivedMemoryId } = await storage.writeMemory("fact", "archived infra ops memory result", {
     tags: ["infra/ops"],
     confidence: 0.9,
   });

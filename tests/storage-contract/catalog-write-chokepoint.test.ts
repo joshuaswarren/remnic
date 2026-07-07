@@ -73,7 +73,7 @@ test("chokepoint: writeChunk advances the catalog lastWriteAt", async () => {
   });
   try {
     const storage = await fixture.storageFor(TARGET_NS);
-    const parentId = await storage.writeMemory("fact", "parent memory for chunking", {
+    const { id: parentId } = await storage.writeMemory("fact", "parent memory for chunking", {
       confidence: 0.9,
     });
     // Reset — the parent write already touched; now test the chunk write.

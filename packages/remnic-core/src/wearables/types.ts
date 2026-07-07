@@ -293,6 +293,13 @@ export interface WearableSyncSummary {
   /** Earlier pending writes retired by a fresh judge-reject verdict. */
   memoriesDemoted: number;
   memoriesSkipped: number;
+  /**
+   * Writes the #1579 tombstone chokepoint downgraded to pending_review
+   * (no active copy) — both wearable extraction and native imports.
+   * Surfaced distinctly so sync summaries/CLI don't count blocked content
+   * as successfully created (#1645).
+   */
+  memoriesBlocked: number;
   nativeMemoriesImported: number;
   /** Non-fatal warnings surfaced to the operator. */
   warnings: string[];

@@ -57,7 +57,7 @@ function buildHarness(options?: {
       if (options?.writeMemory) {
         return await options.writeMemory(category, content, writeOptions);
       }
-      return "fact-stored";
+      return { id: "fact-stored", tombstoneBlocked: false };
     },
     writeArtifact: async (content: string, writeOptions?: Record<string, unknown>) => {
       capturedArtifactWrites.push({ content, options: writeOptions });
