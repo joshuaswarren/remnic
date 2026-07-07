@@ -80,7 +80,7 @@ test("shadow recall recording stays off when eval shadow mode is disabled", asyn
   });
   const orchestrator = new Orchestrator(cfg);
 
-  const memoryId = await orchestrator.storage.writeMemory("fact", "shadow-disabled memory");
+  const { id: memoryId } = await orchestrator.storage.writeMemory("fact", "shadow-disabled memory");
   const memory = await orchestrator.storage.getMemoryById(memoryId);
   assert.ok(memory);
 
@@ -132,7 +132,7 @@ test("shadow recall recording writes live recall decisions without changing inje
   });
   const orchestrator = new Orchestrator(cfg);
 
-  const memoryId = await orchestrator.storage.writeMemory("fact", "shadow-recorded memory");
+  const { id: memoryId } = await orchestrator.storage.writeMemory("fact", "shadow-recorded memory");
   const memory = await orchestrator.storage.getMemoryById(memoryId);
   assert.ok(memory);
 

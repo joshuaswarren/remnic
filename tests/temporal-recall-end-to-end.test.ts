@@ -66,7 +66,7 @@ test("temporal recall: asOf=T1 returns original fact before supersession", async
   const T2 = new Date().toISOString(); // now
 
   // Write the original fact with valid_at = T1.
-  const originalId = await storage.writeMemory(
+  const { id: originalId } = await storage.writeMemory(
     "fact",
     "Alice lives in Boston.",
     { tags: ["alice", "location"] },
@@ -84,7 +84,7 @@ test("temporal recall: asOf=T1 returns original fact before supersession", async
   // Write the superseding fact with valid_at = T2; mark the original as
   // superseded with invalid_at = T2 to simulate the write path that issue
   // #680 PR 2/4 adds to temporal-supersession.ts.
-  const supersederId = await storage.writeMemory(
+  const { id: supersederId } = await storage.writeMemory(
     "fact",
     "Alice lives in San Francisco.",
     { tags: ["alice", "location"] },
@@ -141,7 +141,7 @@ test("temporal recall: no asOf returns superseder, not the superseded original",
   const T2 = new Date().toISOString();
 
   // Write original + superseder (same setup as above).
-  const originalId = await storage.writeMemory(
+  const { id: originalId } = await storage.writeMemory(
     "fact",
     "Bob works at Initech.",
     { tags: ["bob", "employer"] },
@@ -153,7 +153,7 @@ test("temporal recall: no asOf returns superseder, not the superseded original",
   assert.ok(originalMem);
   await storage.writeMemoryFrontmatter(originalMem, { valid_at: T1 });
 
-  const supersederId = await storage.writeMemory(
+  const { id: supersederId } = await storage.writeMemory(
     "fact",
     "Bob works at Initrode.",
     { tags: ["bob", "employer"] },
@@ -200,7 +200,7 @@ test("temporal recall: fact with no invalid_at is valid at any asOf after valid_
   const T1 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(); // 1 week ago
   const queryTs = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(); // 3 days ago
 
-  const memId = await storage.writeMemory("fact", "Carol prefers dark mode.", {
+  const { id: memId } = await storage.writeMemory("fact", "Carol prefers dark mode.", {
     tags: ["carol", "preference"],
   });
   const allMems = await storage.readAllMemories();

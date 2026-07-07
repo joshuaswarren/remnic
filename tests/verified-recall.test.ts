@@ -12,12 +12,12 @@ import { searchVerifiedEpisodes } from "../src/verified-recall.js";
 
 async function seedVerifiedRecallStore(memoryDir: string) {
   const storage = new StorageManager(memoryDir);
-  const episodeId = await storage.writeMemory("fact", "Merged the PR after Cursor turned green.", {
+  const { id: episodeId } = await storage.writeMemory("fact", "Merged the PR after Cursor turned green.", {
     source: "test",
     tags: ["pr-loop", "cursor"],
     memoryKind: "episode",
   });
-  const noteId = await storage.writeMemory("decision", "Always wait for terminal review state before merge.", {
+  const { id: noteId } = await storage.writeMemory("decision", "Always wait for terminal review state before merge.", {
     source: "test",
     tags: ["policy"],
     memoryKind: "note",
@@ -93,7 +93,7 @@ test("searchVerifiedEpisodes returns only boxes with verified episodic support",
 test("searchVerifiedEpisodes skips boxes whose cited memories are not verified episodes", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-verified-filter-"));
   const storage = new StorageManager(memoryDir);
-  const noteId = await storage.writeMemory("decision", "Wait for Cursor before merge.", {
+  const { id: noteId } = await storage.writeMemory("decision", "Wait for Cursor before merge.", {
     source: "test",
     memoryKind: "note",
   });

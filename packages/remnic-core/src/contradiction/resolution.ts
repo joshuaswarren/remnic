@@ -386,14 +386,14 @@ async function prepareMergeReplacement(
   const category = options.mergedCategory ?? mergedMemoryCategory(sourceA, sourceB);
   let mergedId: string;
   try {
-    mergedId = await storage.writeMemory(category, mergedContent, {
+    ({ id: mergedId } = await storage.writeMemory(category, mergedContent, {
       actor: "contradiction-resolution",
       confidence: Math.min(sourceA.frontmatter.confidence ?? 0.8, sourceB.frontmatter.confidence ?? 0.8),
       tags: ["contradiction-resolution", "merge"],
       source: "contradiction-resolution",
       lineage: [idA, idB],
       derivedVia: "merge",
-    });
+    }));
   } catch (err) {
     log.warn(
       "[contradiction-resolution] merged memory creation failed for %s: %s",

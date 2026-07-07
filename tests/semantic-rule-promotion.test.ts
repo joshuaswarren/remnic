@@ -29,7 +29,7 @@ function promotedRule(report: SemanticRulePromotionReport) {
 
 test("promoteSemanticRuleFromMemory dry-run extracts normalized rule from verified episode", async () => {
   const { memoryDir, storage } = await createStore();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF Cursor Bugbot is still pending THEN wait for the terminal result before merging.",
     {
@@ -59,7 +59,7 @@ test("promoteSemanticRuleFromMemory dry-run extracts normalized rule from verifi
 
 test("promoteSemanticRuleFromMemory writes a rule memory with lineage and support link", async () => {
   const { memoryDir, storage } = await createStore();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "If the default namespace storage diverges, then verified recall must still use the configured memory root.",
     {
@@ -90,7 +90,7 @@ test("promoteSemanticRuleFromMemory writes a rule memory with lineage and suppor
 
 test("promoteSemanticRuleFromMemory skips non-episodic memories and duplicate promoted rules", async () => {
   const { memoryDir, storage } = await createStore();
-  const noteMemoryId = await storage.writeMemory(
+  const { id: noteMemoryId } = await storage.writeMemory(
     "decision",
     "IF the rollout is risky THEN keep it behind a feature flag.",
     {
@@ -109,7 +109,7 @@ test("promoteSemanticRuleFromMemory skips non-episodic memories and duplicate pr
   assert.equal(skipped.promoted.length, 0);
   assert.equal(skipped.skipped[0]?.reason, "source-memory-not-episode");
 
-  const sourceEpisodeId = await storage.writeMemory(
+  const { id: sourceEpisodeId } = await storage.writeMemory(
     "fact",
     "IF the rollout is risky THEN keep it behind a feature flag.",
     {
@@ -138,7 +138,7 @@ test("promoteSemanticRuleFromMemory skips non-episodic memories and duplicate pr
 
 test("promoteSemanticRuleFromMemory reports forgotten episode sources distinctly", async () => {
   const { memoryDir, storage } = await createStore();
-  const sourceEpisodeId = await storage.writeMemory(
+  const { id: sourceEpisodeId } = await storage.writeMemory(
     "fact",
     "IF a memory has been forgotten THEN keep it out of promoted rules.",
     {
@@ -167,7 +167,7 @@ test("promoteSemanticRuleFromMemory reports forgotten episode sources distinctly
 
 test("promoteSemanticRuleFromMemory strips trailing punctuation from THEN outcomes before duplicate checks", async () => {
   const { memoryDir, storage } = await createStore();
-  const firstEpisodeId = await storage.writeMemory(
+  const { id: firstEpisodeId } = await storage.writeMemory(
     "fact",
     "IF deployment drift is detected THEN rollback immediately,",
     {
@@ -186,7 +186,7 @@ test("promoteSemanticRuleFromMemory strips trailing punctuation from THEN outcom
   assert.equal(first.promoted.length, 1);
   assert.equal(first.promoted[0]?.content, "IF deployment drift is detected THEN rollback immediately.");
 
-  const secondEpisodeId = await storage.writeMemory(
+  const { id: secondEpisodeId } = await storage.writeMemory(
     "fact",
     "IF deployment drift is detected THEN rollback immediately.",
     {
@@ -208,7 +208,7 @@ test("promoteSemanticRuleFromMemory strips trailing punctuation from THEN outcom
 
 test("promoteSemanticRuleFromMemory dedupes against existing rule memories with different case and punctuation", async () => {
   const { memoryDir, storage } = await createStore();
-  const existingRuleId = await storage.writeMemory(
+  const { id: existingRuleId } = await storage.writeMemory(
     "rule",
     "If the build fails, then revert.",
     {
@@ -222,7 +222,7 @@ test("promoteSemanticRuleFromMemory dedupes against existing rule memories with 
   assert.ok(existingRule);
   await storage.writeMemoryFrontmatter(existingRule, { status: "superseded" });
 
-  const sourceEpisodeId = await storage.writeMemory(
+  const { id: sourceEpisodeId } = await storage.writeMemory(
     "fact",
     "IF the build fails THEN revert",
     {
@@ -246,7 +246,7 @@ test("promoteSemanticRuleFromMemory dedupes against existing rule memories with 
 
 test("promoteSemanticRuleFromMemory dedupes against existing rule memories with different body-text casing", async () => {
   const { memoryDir, storage } = await createStore();
-  const existingRuleId = await storage.writeMemory(
+  const { id: existingRuleId } = await storage.writeMemory(
     "rule",
     "IF The Build Fails THEN Revert.",
     {
@@ -257,7 +257,7 @@ test("promoteSemanticRuleFromMemory dedupes against existing rule memories with 
     },
   );
 
-  const sourceEpisodeId = await storage.writeMemory(
+  const { id: sourceEpisodeId } = await storage.writeMemory(
     "fact",
     "if the build fails then revert",
     {
@@ -281,7 +281,7 @@ test("promoteSemanticRuleFromMemory dedupes against existing rule memories with 
 
 test("semantic-rule-promote CLI command honors the feature flag", async () => {
   const { memoryDir, storage } = await createStore();
-  const sourceMemoryId = await storage.writeMemory(
+  const { id: sourceMemoryId } = await storage.writeMemory(
     "fact",
     "IF a review thread is unresolved THEN rerun the stale thread check before merging.",
     {

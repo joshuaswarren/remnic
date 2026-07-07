@@ -35,7 +35,7 @@ async function listMemoryFiles(root: string, id: string): Promise<string[]> {
 }
 
 async function createHotFactWithParityFields(storage: StorageManager): Promise<MemoryFile> {
-  const id = await storage.writeMemory(
+  const { id: id } = await storage.writeMemory(
     "fact",
     "Tier migration parity body",
     {

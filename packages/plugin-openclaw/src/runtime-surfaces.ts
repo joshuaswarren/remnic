@@ -2,6 +2,7 @@ import type {
   ConsolidationObservation,
   MemoryFile,
   MemoryFrontmatter,
+  MemoryWriteResult,
   PluginConfig,
 } from "@remnic/core";
 import type { DreamEntry } from "@remnic/core/surfaces/dreams";
@@ -25,7 +26,7 @@ export interface RuntimeSurfaceStorage {
     category: MemoryFrontmatter["category"],
     content: string,
     options?: StorageWriteOptions,
-  ): Promise<string>;
+  ): Promise<MemoryWriteResult>;
   updateMemory(id: string, newContent: string): Promise<boolean>;
   writeMemoryFrontmatter(
     memory: MemoryFile,
@@ -372,7 +373,7 @@ export async function syncDreamSurfaceEntries(params: {
     };
     const existing = findSurfaceMemoryByAttribute(memories, DREAM_ENTRY_ID_KEY, entry.id);
     if (!existing) {
-      const memoryId = await storage.writeMemory("moment", content, {
+      const { id: memoryId } = await storage.writeMemory("moment", content, {
         confidence: 0.85,
         tags,
         source: "dreams.md",
@@ -444,7 +445,7 @@ export async function syncHeartbeatSurfaceEntries(params: {
       findUniqueSurfaceMemoryBySlug(memories, HEARTBEAT_SURFACE_TYPE, entry.slug);
 
     if (!existing) {
-      const memoryId = await storage.writeMemory("principle", content, {
+      const { id: memoryId } = await storage.writeMemory("principle", content, {
         confidence: 0.95,
         tags,
         source: "heartbeat.md",

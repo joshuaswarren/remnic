@@ -45,7 +45,7 @@ test("#1579 review: a tombstone-blocked high-confidence fact is a review candida
     });
     // writeMemory defaults confidence to 0.8 — above the review module's 0.7
     // threshold. Without the tombstone_blocked inclusion it would be invisible.
-    const id = await storage.writeMemory("fact", content, { source: "extraction" });
+    const { id: id } = await storage.writeMemory("fact", content, { source: "extraction" });
     const items = listReviewItems({ memoryDir: dir });
     const match = items.items.find((i) => i.id === id);
     assert.ok(match, "tombstone-blocked fact must appear in the review queue");
@@ -67,7 +67,7 @@ test("#1579 review: approving a blocked fact revokes the tombstone and restores 
     });
     assert.ok(tombstoneId, "tombstone append must succeed when enabled");
 
-    const id = await storage.writeMemory("fact", content, { source: "extraction" });
+    const { id: id } = await storage.writeMemory("fact", content, { source: "extraction" });
     // It landed blocked.
     let all = await storage.readAllMemories();
     let blocked = all.find((m) => m.frontmatter.id === id)!;
@@ -96,7 +96,7 @@ test("#1579 review: approving a blocked fact revokes the tombstone and restores 
     await storage.restoreFactHashAfterApproval(id);
 
     // The tombstone is revoked: a fresh write of the same content is NOT blocked.
-    const id2 = await storage.writeMemory("fact", content, { source: "extraction" });
+    const { id: id2 } = await storage.writeMemory("fact", content, { source: "extraction" });
     all = await storage.readAllMemories();
     const fresh = all.find((m) => m.frontmatter.id === id2)!;
     assert.equal(

@@ -98,7 +98,7 @@ test("memory_store queues orchestrator-maintained QMD sync after write", async (
       readAllMemories: async () => [],
       writeMemory: async (category: string, content: string) => {
         writeCalls.push({ category, content });
-        return "fact-test-1";
+        return { id: "fact-test-1", tombstoneBlocked: false };
       },
       appendMemoryLifecycleEvents: async (events: unknown[]) => {
         lifecycleEvents += events.length;

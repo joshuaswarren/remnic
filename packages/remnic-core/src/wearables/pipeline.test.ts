@@ -106,7 +106,7 @@ function makeDeps(memoryDir: string): {
   const writer: WearableMemoryWriter = {
     async writeMemory(category, content, options) {
       memoryWrites.push({ category, content, options: options as Record<string, unknown> });
-      return `mem-${memoryWrites.length}`;
+      return { id: `mem-${memoryWrites.length}`, tombstoneBlocked: false };
     },
     async hasFactContentHash() {
       return false;

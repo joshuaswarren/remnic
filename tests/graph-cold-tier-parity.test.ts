@@ -50,8 +50,8 @@ test("cold fallback applies graph expansion parity when enabled", async () => {
     const orchestrator = new Orchestrator(config) as any;
 
     const coldStorage = new StorageManager(path.join(memoryDir, "cold"));
-    const seedId = await coldStorage.writeMemory("fact", "cold graph seed memory", { source: "test" });
-    const expandedId = await coldStorage.writeMemory("fact", "cold graph expanded memory", { source: "test" });
+    const { id: seedId } = await coldStorage.writeMemory("fact", "cold graph seed memory", { source: "test" });
+    const { id: expandedId } = await coldStorage.writeMemory("fact", "cold graph expanded memory", { source: "test" });
     const seed = await coldStorage.getMemoryById(seedId);
     const expanded = await coldStorage.getMemoryById(expandedId);
     assert.ok(seed);

@@ -43,7 +43,7 @@ export class RemnicLedgerStore implements LedgerStore {
       id: "pending",
       memoryId: "pending",
     };
-    const memoryId = await this.storage.writeMemory("fact", serializeClaimBody(pending), {
+    const { id: memoryId } = await this.storage.writeMemory("fact", serializeClaimBody(pending), {
       actor: this.source,
       confidence: pending.confidence,
       tags: claimTags(pending),

@@ -29,7 +29,7 @@ test("cold fallback excludes artifact paths from generic relevant memory recall"
     const orchestrator = new Orchestrator(config) as any;
 
     const coldStorage = new StorageManager(path.join(memoryDir, "cold"));
-    const factId = await coldStorage.writeMemory("fact", "cold tier fact should remain visible", {
+    const { id: factId } = await coldStorage.writeMemory("fact", "cold tier fact should remain visible", {
       source: "test",
     });
     const fact = await coldStorage.getMemoryById(factId);

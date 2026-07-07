@@ -104,7 +104,7 @@ test("graph expansion resolves namespace QMD collection paths before seeding", a
   });
   const orchestrator = new Orchestrator(cfg);
   const storage = await (orchestrator as any).storageRouter.storageFor(namespace);
-  const memoryId = await storage.writeMemory(
+  const { id: memoryId } = await storage.writeMemory(
     "fact",
     "Graph seed memory for namespace collection paths.",
   );
@@ -153,8 +153,8 @@ test("graph expansion stops expanded memory reads after assembly deadline", asyn
   });
   const orchestrator = new Orchestrator(cfg);
   const storage = await (orchestrator as any).storageRouter.storageFor("default");
-  const seedId = await storage.writeMemory("fact", "Graph seed memory.");
-  const expandedId = await storage.writeMemory("fact", "Expanded graph memory.");
+  const { id: seedId } = await storage.writeMemory("fact", "Graph seed memory.");
+  const { id: expandedId } = await storage.writeMemory("fact", "Expanded graph memory.");
   const seed = await storage.getMemoryById(seedId);
   const expanded = await storage.getMemoryById(expandedId);
   assert.ok(seed);

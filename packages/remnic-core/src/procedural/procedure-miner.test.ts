@@ -62,7 +62,7 @@ test("procedure mining deduplicates by full cluster hash instead of truncated cl
       written.push({
         structuredAttributes: options.structuredAttributes ?? {},
       });
-      return `procedure-${written.length}`;
+      return { id: `procedure-${written.length}`, tombstoneBlocked: false };
     },
   } as unknown as StorageManager;
 
@@ -123,7 +123,7 @@ test("procedure mining serializes concurrent writes for the same cluster", async
       written.push({
         structuredAttributes: options.structuredAttributes ?? {},
       });
-      return `procedure-${written.length}`;
+      return { id: `procedure-${written.length}`, tombstoneBlocked: false };
     },
   } as unknown as StorageManager;
 

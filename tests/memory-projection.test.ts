@@ -1420,7 +1420,7 @@ test("StorageManager projection helpers fail open to markdown and lifecycle ledg
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-storage-projection-fallback-"));
   try {
     const storage = new StorageManager(memoryDir);
-    const memoryId = await storage.writeMemory("fact", "fallback memory", {
+    const { id: memoryId } = await storage.writeMemory("fact", "fallback memory", {
       source: "test",
       tags: ["fallback"],
     });
@@ -1448,7 +1448,7 @@ test("StorageManager projection helpers fail open to markdown and lifecycle ledg
       ["created", "updated"],
     );
 
-    const secondId = await storage.writeMemory("fact", "written after projection rebuild", {
+    const { id: secondId } = await storage.writeMemory("fact", "written after projection rebuild", {
       source: "test",
     });
     await storage.updateMemory(secondId, "written after projection rebuild updated");
@@ -1467,7 +1467,7 @@ test("StorageManager falls back when projection database exists but has no timel
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-storage-projection-empty-row-"));
   try {
     const storage = new StorageManager(memoryDir);
-    const memoryId = await storage.writeMemory("fact", "fallback memory", {
+    const { id: memoryId } = await storage.writeMemory("fact", "fallback memory", {
       source: "test",
       tags: ["fallback"],
     });

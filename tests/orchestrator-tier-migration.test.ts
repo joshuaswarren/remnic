@@ -231,7 +231,7 @@ test("consolidation refreshes corpus after maintenance migration before archival
     (config as any).entitySummaryEnabled = false;
     const orchestrator = new Orchestrator(config) as any;
     const storage = orchestrator.storage;
-    const movedId = await storage.writeMemory("fact", "migrate-before-archival", { source: "test" });
+    const { id: movedId } = await storage.writeMemory("fact", "migrate-before-archival", { source: "test" });
     for (let i = 0; i < 4; i += 1) {
       await storage.writeMemory("fact", `filler-${i}`, { source: "test" });
     }

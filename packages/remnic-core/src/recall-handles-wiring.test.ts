@@ -355,7 +355,7 @@ test("memoryGet resolves a handle to the underlying memory via sessionKey", asyn
     // cite its handle. writeMemory returns the persisted id directly.
     const defaultNs = orchestrator.config.defaultNamespace;
     const storage = await orchestrator.getStorage(defaultNs);
-    const writtenId = await storage.writeMemory(
+    const { id: writtenId } = await storage.writeMemory(
       "fact",
       "The API rate limit is 1000 rpm.",
       { confidence: 0.9, source: "test" },

@@ -69,7 +69,7 @@ test("namespace-routing: writes in one namespace are invisible to another (isola
   const { router, cleanup } = await makeNamespaceRouter();
   try {
     const sm1 = await router.storageFor("team-alpha");
-    const id = await sm1.writeMemory("fact", "alpha-only fact");
+    const { id: id } = await sm1.writeMemory("fact", "alpha-only fact");
 
     const sm2 = await router.storageFor("team-beta");
     const found = await sm2.getMemoryById(id);

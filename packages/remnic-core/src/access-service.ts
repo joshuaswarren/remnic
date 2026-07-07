@@ -8957,7 +8957,7 @@ export class EngramAccessService {
       },
       writePromotedMemory: async (namespace, memory) => {
         const resolved = await this.orchestrator.getStorage(namespace);
-        return resolved.writeMemory(memory.category, memory.content, {
+        const { id } = await resolved.writeMemory(memory.category, memory.content, {
           confidence: memory.confidence,
           tags: memory.tags,
           entityRef: memory.entityRef,
@@ -8967,6 +8967,7 @@ export class EngramAccessService {
           actor: memory.actor,
           validAt: memory.validAt,
         });
+        return id;
       },
     };
     try {

@@ -14,8 +14,8 @@ test("StorageManager bumps memory status version on status-changing operations",
     const v0 = storage.getMemoryStatusVersion();
     assert.equal(v0, 0);
 
-    const id1 = await storage.writeMemory("fact", "first memory", { source: "test" });
-    const id2 = await storage.writeMemory("fact", "second memory", { source: "test" });
+    const { id: id1 } = await storage.writeMemory("fact", "first memory", { source: "test" });
+    const { id: id2 } = await storage.writeMemory("fact", "second memory", { source: "test" });
 
     const beforeSupersede = storage.getMemoryStatusVersion();
     const superseded = await storage.supersedeMemory(id1, id2, "newer replaces older");
@@ -31,7 +31,7 @@ test("StorageManager bumps memory status version on status-changing operations",
     assert.equal(typeof archivedPath, "string");
     assert.equal(storage.getMemoryStatusVersion() > beforeArchive, true);
 
-    const id3 = await storage.writeMemory("fact", "third memory", { source: "test" });
+    const { id: id3 } = await storage.writeMemory("fact", "third memory", { source: "test" });
     const beforeInvalidate = storage.getMemoryStatusVersion();
     const invalidated = await storage.invalidateMemory(id3);
     assert.equal(invalidated, true);
@@ -51,8 +51,8 @@ test("StorageManager status version is shared across instances for same memoryDi
     assert.equal(writer.getMemoryStatusVersion(), 0);
     assert.equal(reader.getMemoryStatusVersion(), 0);
 
-    const id1 = await writer.writeMemory("fact", "shared one", { source: "test" });
-    const id2 = await writer.writeMemory("fact", "shared two", { source: "test" });
+    const { id: id1 } = await writer.writeMemory("fact", "shared one", { source: "test" });
+    const { id: id2 } = await writer.writeMemory("fact", "shared two", { source: "test" });
     await writer.supersedeMemory(id1, id2, "shared status update");
 
     assert.equal(writer.getMemoryStatusVersion() > 0, true);
@@ -68,7 +68,7 @@ test("StorageManager bumps memory status version on tier migration moves", async
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "migrate me", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "migrate me", { source: "test" });
     const memory = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
     assert.ok(memory);
 

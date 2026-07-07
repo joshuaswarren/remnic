@@ -1387,7 +1387,7 @@ test("gateway_start heartbeat sync does not clear prior heartbeat links when the
   const root = await mkdtemp(path.join(os.tmpdir(), "remnic-heartbeat-startup-missing-"));
   const { StorageManager } = await import("../packages/remnic-core/src/storage.ts");
   const storage = new StorageManager(root);
-  const memoryId = await storage.writeMemory(
+  const { id: memoryId } = await storage.writeMemory(
     "fact",
     "Last run found two new failures in the flaky integration suite.",
     {

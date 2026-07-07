@@ -153,7 +153,7 @@ test("storage: invalid_at round-trips through writeMemoryFrontmatter → readAll
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "Old stack was Node 18.", {
+    const { id: id } = await storage.writeMemory("fact", "Old stack was Node 18.", {
       validAt: "2025-01-01T00:00:00.000Z",
       observedAt: "2025-06-01T00:00:00.000Z",
       eventTimeSource: "extracted",
@@ -188,7 +188,7 @@ test("storage: writeMemory accepts invalidAt directly (end-bound at extraction w
   try {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
-    const id = await storage.writeMemory("fact", "We used MongoDB until June 2025.", {
+    const { id: id } = await storage.writeMemory("fact", "We used MongoDB until June 2025.", {
       validAt: "2024-01-01T00:00:00.000Z",
       invalidAt: "2025-06-01T00:00:00.000Z",
       observedAt: "2025-06-20T00:00:00.000Z",
@@ -222,7 +222,7 @@ test("storage: writeChunk propagates invalidAt/observedAt/eventTimeSource from t
   try {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
-    const parentId = await storage.writeMemory("fact", "We used MongoDB until June 2025.", {
+    const { id: parentId } = await storage.writeMemory("fact", "We used MongoDB until June 2025.", {
       validAt: "2024-01-01T00:00:00.000Z",
       invalidAt: "2025-06-01T00:00:00.000Z",
       observedAt: "2025-06-20T00:00:00.000Z",

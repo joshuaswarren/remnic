@@ -26,11 +26,11 @@ test("full-mode graph shadow eval keeps injected recall baseline-identical", asy
   });
   const orchestrator = new Orchestrator(cfg);
 
-  const seedId = await orchestrator.storage.writeMemory("fact", "seed baseline memory");
+  const { id: seedId } = await orchestrator.storage.writeMemory("fact", "seed baseline memory");
   const seedMemory = await orchestrator.storage.getMemoryById(seedId);
   assert.ok(seedMemory);
 
-  const expandedId = await orchestrator.storage.writeMemory("fact", "shadow-only memory");
+  const { id: expandedId } = await orchestrator.storage.writeMemory("fact", "shadow-only memory");
   const expandedMemory = await orchestrator.storage.getMemoryById(expandedId);
   assert.ok(expandedMemory);
 
@@ -110,7 +110,7 @@ test("full-mode graph shadow eval emits overlap telemetry in recall timings", as
   });
   const orchestrator = new Orchestrator(cfg);
 
-  const seedId = await orchestrator.storage.writeMemory("fact", "seed baseline memory");
+  const { id: seedId } = await orchestrator.storage.writeMemory("fact", "seed baseline memory");
   const seedMemory = await orchestrator.storage.getMemoryById(seedId);
   assert.ok(seedMemory);
 

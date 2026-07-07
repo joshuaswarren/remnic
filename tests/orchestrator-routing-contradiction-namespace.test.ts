@@ -25,7 +25,7 @@ test("checkForContradiction resolves candidate memory in routed namespace storag
   const sharedStorage = await orchestrator.getStorage("shared");
   await sharedStorage.ensureDirectories();
 
-  const sharedId = await sharedStorage.writeMemory("fact", "legacy shared fact");
+  const { id: sharedId } = await sharedStorage.writeMemory("fact", "legacy shared fact");
   const sharedMemory = await sharedStorage.getMemoryById(sharedId);
   assert.ok(sharedMemory);
 
@@ -74,7 +74,7 @@ test("checkForContradiction ignores candidates outside target write namespace", 
   const sharedStorage = await orchestrator.getStorage("shared");
   await sharedStorage.ensureDirectories();
 
-  const sharedId = await sharedStorage.writeMemory("fact", "shared tenant memory");
+  const { id: sharedId } = await sharedStorage.writeMemory("fact", "shared tenant memory");
   const sharedMemory = await sharedStorage.getMemoryById(sharedId);
   assert.ok(sharedMemory);
 
@@ -121,7 +121,7 @@ test("suggestLinksForMemory still uses namespace router when default qmd backend
   const sharedStorage = await orchestrator.getStorage("shared");
   await sharedStorage.ensureDirectories();
 
-  const sharedId = await sharedStorage.writeMemory("fact", "shared tenant memory");
+  const { id: sharedId } = await sharedStorage.writeMemory("fact", "shared tenant memory");
   const sharedMemory = await sharedStorage.getMemoryById(sharedId);
   assert.ok(sharedMemory);
 

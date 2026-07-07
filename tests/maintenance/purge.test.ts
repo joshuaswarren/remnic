@@ -205,7 +205,7 @@ test("purgeMemories: dryRun=false (hard-delete) removes files and updates QMD", 
 
     // Write a real memory
     const rawFact = "Synthetic fact to purge.";
-    const id = await storage.writeMemory("fact", rawFact, {
+    const { id: id } = await storage.writeMemory("fact", rawFact, {
       source: "test",
     });
     assert.equal(await storage.hasFactContentHash(rawFact), true, "fact hash should exist before purge");
@@ -314,7 +314,7 @@ test("purgeMemories: audit ledger failure is reported without blocking hard-dele
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "Do not delete without audit.", {
+    const { id: id } = await storage.writeMemory("fact", "Do not delete without audit.", {
       source: "test",
     });
     const [memory] = await storage.readAllMemories();

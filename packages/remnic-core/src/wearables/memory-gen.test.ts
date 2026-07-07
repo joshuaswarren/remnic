@@ -79,7 +79,7 @@ function makeWriter(existingHashes: string[] = []): {
     writer: {
       async writeMemory(category, content, options) {
         writes.push({ category, content, options: options as Record<string, unknown> });
-        return `id-${writes.length}`;
+        return { id: `id-${writes.length}`, tombstoneBlocked: false };
       },
       async hasFactContentHash(content) {
         return existing.has(content);

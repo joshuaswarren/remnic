@@ -87,7 +87,7 @@ test("versioning: revertToVersion restores the prior content on the live page", 
 test("versioning: disabled by default — writeMemory does NOT snapshot when no config is set", async () => {
   await withScratchStorage("versioning-disabled", async (storage, dir) => {
     // No setVersioningConfig call — versioning stays disabled (the default).
-    const id = await storage.writeMemory("fact", "first", { confidence: 0.9 });
+    const { id: id } = await storage.writeMemory("fact", "first", { confidence: 0.9 });
     const mem = await storage.getMemoryById(id);
     assert.ok(mem);
     const history = await listVersions(mem!.path, enabledConfig(dir), dir);
@@ -135,7 +135,7 @@ test("versioning: setVersioningConfig on a fresh StorageManager is a no-op-safe 
     // Calling twice with the same config must not throw or double-register.
     storage.setVersioningConfig(cfg);
     storage.setVersioningConfig(cfg);
-    const id = await storage.writeMemory("fact", "body", { confidence: 0.9 });
+    const { id: id } = await storage.writeMemory("fact", "body", { confidence: 0.9 });
     assert.ok(typeof id === "string");
   });
 });

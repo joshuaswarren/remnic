@@ -28,6 +28,7 @@
  */
 
 import { scoreImportance } from "../importance.js";
+import type { MemoryWriteResult } from "../storage.js";
 import type { JudgeBatchResult, JudgeCandidate } from "../extraction-judge.js";
 import { getVerdictKind } from "../extraction-judge.js";
 import { describeErrorForOperator } from "./errors.js";
@@ -82,7 +83,7 @@ export interface WearableMemoryWriter {
       status?: MemoryStatus;
       memoryKind?: "episode" | "note" | "box" | "dream" | "procedural";
     },
-  ): Promise<string>;
+  ): Promise<MemoryWriteResult>;
   hasFactContentHash(content: string): Promise<boolean>;
   /**
    * Locate an earlier wearable write of the same content (any status).

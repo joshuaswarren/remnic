@@ -34,7 +34,7 @@ test("round-trip: observedAt + eventTimeSource + valid_at survive write → read
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "We moved offices in March.", {
+    const { id: id } = await storage.writeMemory("fact", "We moved offices in March.", {
       observedAt: OBSERVED,
       eventTimeSource: "extracted",
       validAt: VALID_FROM,
@@ -67,7 +67,7 @@ test("round-trip: invalid_at + forgottenAt coexist with observedAt/eventTimeSour
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "Old stack was Node 18.", {
+    const { id: id } = await storage.writeMemory("fact", "Old stack was Node 18.", {
       observedAt: OBSERVED,
       eventTimeSource: "assumed",
       validAt: VALID_FROM,
@@ -108,7 +108,7 @@ test("legacy memory without bi-temporal fields reads cleanly — observedAt/even
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "Legacy fact pre-dating #1578.");
+    const { id: id } = await storage.writeMemory("fact", "Legacy fact pre-dating #1578.");
 
     const memories = await storage.readAllMemories();
     const written = memories.find((m) => m.frontmatter.id === id);

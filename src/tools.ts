@@ -1706,7 +1706,7 @@ Best for:
 
         switch (action) {
           case "store_episode": {
-            const createdId = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
+            const { id: createdId } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
               actor: "tool.memory_action_apply",
               source: "memory_action_apply",
               memoryKind: "episode",
@@ -1716,7 +1716,7 @@ Best for:
             break;
           }
           case "store_note": {
-            const createdId = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
+            const { id: createdId } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
               actor: "tool.memory_action_apply",
               source: "memory_action_apply",
             });
@@ -1765,7 +1765,7 @@ Best for:
             break;
           }
           case "summarize_node": {
-            const createdId = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
+            const { id: createdId } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
               actor: "tool.memory_action_apply",
               source: "memory_action_apply",
               sourceMemoryId: memoryIdValue,
@@ -2169,7 +2169,7 @@ Best for:
         }
 
         const dst = await orchestrator.getStorage(dstNs);
-        const newId = await dst.writeMemory(mem.frontmatter.category, mem.content, {
+        const { id: newId } = await dst.writeMemory(mem.frontmatter.category, mem.content, {
           confidence: mem.frontmatter.confidence,
           tags: Array.from(new Set([...(mem.frontmatter.tags ?? []), "promoted", `promotedFrom:${srcNs}:${memoryId}`, ...(note ? [`note:${note}`] : [])])),
           entityRef: mem.frontmatter.entityRef,

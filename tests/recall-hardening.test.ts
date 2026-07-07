@@ -924,7 +924,7 @@ test("cold fallback resolves QMD cold collection-prefixed result paths", async (
     qmdColdCollection: "openclaw-engram-cold",
   });
   const storage = (orchestrator as any).storage;
-  const memoryId = await storage.writeMemory(
+  const { id: memoryId } = await storage.writeMemory(
     "fact",
     "cold collection-prefixed memory",
   );

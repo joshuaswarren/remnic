@@ -111,7 +111,7 @@ test("StorageManager keeps legacy memories compatible when lifecycle fields are 
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "legacy payload", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "legacy payload", { source: "test" });
     const all = await storage.readAllMemories();
     const memory = all.find((m) => m.frontmatter.id === id);
 

@@ -66,7 +66,7 @@ test("storage: valid_at / invalid_at round-trip exactly when set", async () => {
   try {
     const validAt = "2025-01-01T00:00:00.000Z";
     const invalidAt = "2026-01-01T00:00:00.000Z";
-    const id = await storage.writeMemory("fact", "project X is based in Austin", {
+    const { id: id } = await storage.writeMemory("fact", "project X is based in Austin", {
       entityRef: TEST_ENTITY,
       structuredAttributes: { city: "Austin" },
       source: "test",
@@ -95,7 +95,7 @@ test("storage: valid_at / invalid_at round-trip exactly when set", async () => {
 test("storage: writeMemory persists explicit validAt as valid_at", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
-    const id = await storage.writeMemory(
+    const { id: id } = await storage.writeMemory(
       "fact",
       "project X launched from the source transcript",
       {
@@ -135,7 +135,7 @@ test("storage: writeMemory rejects invalid validAt values", async () => {
 test("storage: legacy memories without valid_at parse as undefined (no backfill)", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
-    const id = await storage.writeMemory("fact", "legacy memory", {
+    const { id: id } = await storage.writeMemory("fact", "legacy memory", {
       entityRef: TEST_ENTITY,
       source: "test",
       confidence: 0.9,
@@ -176,7 +176,7 @@ test("effectiveValidAt: whitespace-only valid_at falls back to created", () => {
 test("supersession: new fact propagates valid_at to old fact's invalid_at", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
-    const oldId = await storage.writeMemory(
+    const { id: oldId } = await storage.writeMemory(
       "fact",
       "project X is based in Austin",
       {
@@ -188,7 +188,7 @@ test("supersession: new fact propagates valid_at to old fact's invalid_at", asyn
       },
     );
     await new Promise((r) => setTimeout(r, 5));
-    const newId = await storage.writeMemory(
+    const { id: newId } = await storage.writeMemory(
       "fact",
       "project X relocated to NYC",
       {
@@ -242,7 +242,7 @@ test("supersession: older source-valid replay fact does not supersede newer sour
     const newerValidAt = "2025-01-02T00:00:00.000Z";
     const olderValidAt = "2025-01-01T00:00:00.000Z";
 
-    const newerId = await storage.writeMemory(
+    const { id: newerId } = await storage.writeMemory(
       "fact",
       "project X moved to NYC",
       {
@@ -255,7 +255,7 @@ test("supersession: older source-valid replay fact does not supersede newer sour
       },
     );
     await new Promise((r) => setTimeout(r, 5));
-    const olderId = await storage.writeMemory(
+    const { id: olderId } = await storage.writeMemory(
       "fact",
       "project X was previously based in Austin",
       {
@@ -292,7 +292,7 @@ test("supersession: older source-valid replay fact does not supersede newer sour
 test("supersession: when superseder has no valid_at, falls back to persisted created", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
-    const oldId = await storage.writeMemory(
+    const { id: oldId } = await storage.writeMemory(
       "fact",
       "project X is based in Austin",
       {
@@ -304,7 +304,7 @@ test("supersession: when superseder has no valid_at, falls back to persisted cre
       },
     );
     await new Promise((r) => setTimeout(r, 5));
-    const newId = await storage.writeMemory(
+    const { id: newId } = await storage.writeMemory(
       "fact",
       "project X relocated to NYC",
       {
@@ -341,7 +341,7 @@ test("supersession: when superseder has no valid_at, falls back to persisted cre
 test("supersession: existing invalid_at is preserved (idempotent)", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
-    const oldId = await storage.writeMemory("fact", "old fact", {
+    const { id: oldId } = await storage.writeMemory("fact", "old fact", {
       entityRef: TEST_ENTITY,
       structuredAttributes: { city: "Austin" },
       source: "test",
@@ -359,7 +359,7 @@ test("supersession: existing invalid_at is preserved (idempotent)", async () => 
     });
 
     await new Promise((r) => setTimeout(r, 5));
-    const newId = await storage.writeMemory("fact", "new fact", {
+    const { id: newId } = await storage.writeMemory("fact", "new fact", {
       entityRef: TEST_ENTITY,
       structuredAttributes: { city: "NYC" },
       source: "test",

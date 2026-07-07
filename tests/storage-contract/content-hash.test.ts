@@ -15,7 +15,7 @@ import { computeFactContentHash, withScratchStorage } from "./helpers.js";
 test("content-hash (rule 23): fact write records ContentHashIndex.computeHash(rawBody) on frontmatter", async () => {
   await withScratchStorage("hash-raw-body", async (storage) => {
     const rawBody = "The user's timezone is Australia/Sydney";
-    const id = await storage.writeMemory("fact", rawBody, { confidence: 0.9 });
+    const { id: id } = await storage.writeMemory("fact", rawBody, { confidence: 0.9 });
 
     const mem = await storage.getMemoryById(id);
     assert.ok(mem, "fact not found after write");
@@ -65,7 +65,7 @@ test("content-hash (rule 23): contentHashSource override indexes the raw fact, n
 
 test("content-hash (rule 23): non-fact categories do not record a contentHash (scope of the index)", async () => {
   await withScratchStorage("hash-non-fact-scope", async (storage) => {
-    const id = await storage.writeMemory("preference", "prefers dark mode", {
+    const { id: id } = await storage.writeMemory("preference", "prefers dark mode", {
       confidence: 0.9,
     });
     const mem = await storage.getMemoryById(id);

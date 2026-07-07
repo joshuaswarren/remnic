@@ -37,7 +37,7 @@ test("runConsolidation applies lifecycle policy metadata and writes metrics", as
 
     const ids: string[] = [];
     for (let i = 0; i < 5; i++) {
-      const id = await storage.writeMemory("fact", `memory-${i}`, { source: "test" });
+      const { id: id } = await storage.writeMemory("fact", `memory-${i}`, { source: "test" });
       ids.push(id);
     }
 

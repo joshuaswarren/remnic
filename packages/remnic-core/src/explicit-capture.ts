@@ -428,7 +428,7 @@ export async function persistExplicitCapture(
   }
 
   const storage = await orchestrator.getStorage(resolvedNamespace);
-  const id = await storage.writeMemory(candidate.category, candidate.content, {
+  const { id: id } = await storage.writeMemory(candidate.category, candidate.content, {
     confidence: candidate.confidence,
     tags: candidate.tags,
     entityRef: candidate.entityRef,
@@ -527,7 +527,7 @@ export async function queueExplicitCaptureForReview(
     : "fact";
   const requestedTags = sanitizeReviewTags(input.tags);
   const storage = await orchestrator.getStorage(queueNamespace);
-  const id = await storage.writeMemory(reviewCategory, content, {
+  const { id: id } = await storage.writeMemory(reviewCategory, content, {
     confidence: 0.2,
     tags: Array.from(new Set([...EXPLICIT_CAPTURE_REVIEW_TAGS, ...requestedTags])),
     entityRef: sanitizeReviewMetadata(input.entityRef),

@@ -47,8 +47,8 @@ test("runConsolidationUndo restores sources and archives the target on the happy
   try {
     const storage = await makeStorage(dir);
 
-    const srcAId = await storage.writeMemory("fact", "alpha body", { source: "extraction" });
-    const srcBId = await storage.writeMemory("fact", "bravo body", { source: "extraction" });
+    const { id: srcAId } = await storage.writeMemory("fact", "alpha body", { source: "extraction" });
+    const { id: srcBId } = await storage.writeMemory("fact", "bravo body", { source: "extraction" });
     const all = await storage.readAllMemories();
     const srcA = all.find((m) => m.frontmatter.id === srcAId)!;
     const srcB = all.find((m) => m.frontmatter.id === srcBId)!;
@@ -64,7 +64,7 @@ test("runConsolidationUndo restores sources and archives the target on the happy
     storage.invalidateAllMemoriesCache();
 
     // Write the canonical memory with provenance fields.
-    const canonicalId = await storage.writeMemory("fact", "canonical body", {
+    const { id: canonicalId } = await storage.writeMemory("fact", "canonical body", {
       source: "semantic-consolidation",
       derivedFrom: [entryA, entryB],
       derivedVia: "merge",
@@ -102,7 +102,7 @@ test("runConsolidationUndo dry-run produces a plan without writing", async () =>
   try {
     const storage = await makeStorage(dir);
 
-    const srcId = await storage.writeMemory("fact", "source body", { source: "extraction" });
+    const { id: srcId } = await storage.writeMemory("fact", "source body", { source: "extraction" });
     const all = await storage.readAllMemories();
     const src = all.find((m) => m.frontmatter.id === srcId)!;
     const entry = await storage.snapshotForProvenance(src.path);
@@ -110,7 +110,7 @@ test("runConsolidationUndo dry-run produces a plan without writing", async () =>
     await unlink(src.path);
     storage.invalidateAllMemoriesCache();
 
-    const canonicalId = await storage.writeMemory("fact", "canonical", {
+    const { id: canonicalId } = await storage.writeMemory("fact", "canonical", {
       source: "semantic-consolidation",
       derivedFrom: [entry],
       derivedVia: "merge",
@@ -142,13 +142,13 @@ test("runConsolidationUndo refuses to overwrite existing source files", async ()
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-undo-collision-"));
   try {
     const storage = await makeStorage(dir);
-    const srcId = await storage.writeMemory("fact", "source body", { source: "extraction" });
+    const { id: srcId } = await storage.writeMemory("fact", "source body", { source: "extraction" });
     const all = await storage.readAllMemories();
     const src = all.find((m) => m.frontmatter.id === srcId)!;
     const entry = await storage.snapshotForProvenance(src.path);
     assert.ok(entry);
     // Deliberately leave src.path in place — the undo must not overwrite.
-    const canonicalId = await storage.writeMemory("fact", "canonical", {
+    const { id: canonicalId } = await storage.writeMemory("fact", "canonical", {
       source: "semantic-consolidation",
       derivedFrom: [entry],
       derivedVia: "merge",
@@ -174,14 +174,14 @@ test("runConsolidationUndo skips sources whose snapshot file has been pruned", a
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-undo-pruned-"));
   try {
     const storage = await makeStorage(dir);
-    const srcId = await storage.writeMemory("fact", "source body", { source: "extraction" });
+    const { id: srcId } = await storage.writeMemory("fact", "source body", { source: "extraction" });
     const all = await storage.readAllMemories();
     const src = all.find((m) => m.frontmatter.id === srcId)!;
     const entry = await storage.snapshotForProvenance(src.path);
     assert.ok(entry);
     await unlink(src.path);
 
-    const canonicalId = await storage.writeMemory("fact", "canonical", {
+    const { id: canonicalId } = await storage.writeMemory("fact", "canonical", {
       source: "semantic-consolidation",
       derivedFrom: [entry],
       derivedVia: "merge",
@@ -217,7 +217,7 @@ test("runConsolidationUndo surfaces an error when the target has no derived_from
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-undo-no-provenance-"));
   try {
     const storage = await makeStorage(dir);
-    const id = await storage.writeMemory("fact", "plain fact", { source: "extraction" });
+    const { id: id } = await storage.writeMemory("fact", "plain fact", { source: "extraction" });
     const all = await storage.readAllMemories();
     const target = all.find((m) => m.frontmatter.id === id)!;
 
@@ -513,7 +513,7 @@ test("runConsolidationUndo does NOT archive the target when no sources could be 
     });
     await storage.ensureDirectories();
 
-    const srcId = await storage.writeMemory("fact", "source body", { source: "extraction" });
+    const { id: srcId } = await storage.writeMemory("fact", "source body", { source: "extraction" });
     const all = await storage.readAllMemories();
     const src = all.find((m) => m.frontmatter.id === srcId)!;
     const entry = await storage.snapshotForProvenance(src.path);
@@ -521,7 +521,7 @@ test("runConsolidationUndo does NOT archive the target when no sources could be 
     await unlink(src.path);
     storage.invalidateAllMemoriesCache();
 
-    const canonicalId = await storage.writeMemory("fact", "canonical", {
+    const { id: canonicalId } = await storage.writeMemory("fact", "canonical", {
       source: "semantic-consolidation",
       derivedFrom: [entry],
       derivedVia: "merge",
@@ -615,8 +615,8 @@ test("runConsolidationUndo does NOT archive the target on partial recovery (all-
     });
     await storage.ensureDirectories();
 
-    const srcAId = await storage.writeMemory("fact", "alpha body", { source: "extraction" });
-    const srcBId = await storage.writeMemory("fact", "bravo body", { source: "extraction" });
+    const { id: srcAId } = await storage.writeMemory("fact", "alpha body", { source: "extraction" });
+    const { id: srcBId } = await storage.writeMemory("fact", "bravo body", { source: "extraction" });
     const all = await storage.readAllMemories();
     const srcA = all.find((m) => m.frontmatter.id === srcAId)!;
     const srcB = all.find((m) => m.frontmatter.id === srcBId)!;
@@ -627,7 +627,7 @@ test("runConsolidationUndo does NOT archive the target on partial recovery (all-
     await unlink(srcB.path);
     storage.invalidateAllMemoriesCache();
 
-    const canonicalId = await storage.writeMemory("fact", "canonical", {
+    const { id: canonicalId } = await storage.writeMemory("fact", "canonical", {
       source: "semantic-consolidation",
       derivedFrom: [entryA, entryB],
       derivedVia: "merge",

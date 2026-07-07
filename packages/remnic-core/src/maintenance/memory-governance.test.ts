@@ -11,7 +11,7 @@ test("governance restore manifest pre-marks actions applied before mutation", as
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-governance-restore-"));
   try {
     const storage = new StorageManager(memoryDir);
-    const memoryId = await storage.writeMemory("fact", "This memory is disputed.", {
+    const { id: memoryId } = await storage.writeMemory("fact", "This memory is disputed.", {
       source: "test",
       confidence: 0.9,
     });

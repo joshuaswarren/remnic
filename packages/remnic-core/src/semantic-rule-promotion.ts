@@ -630,7 +630,7 @@ export async function promoteSemanticRuleFromMemory(options: {
     }
 
     await lock.beforePromotedRuleWrite();
-    const id = await storage.writeMemory("rule", content, {
+    const { id: id } = await storage.writeMemory("rule", content, {
       confidence,
       tags: candidateBase.tags,
       source: "semantic-rule-promotion",

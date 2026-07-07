@@ -224,7 +224,7 @@ test("end-to-end: fact with verified sources survives write → readAllMemories"
       },
     ];
 
-    const memoryId = await storage.writeMemory("fact", "Production DB uses pgBouncer.", {
+    const { id: memoryId } = await storage.writeMemory("fact", "Production DB uses pgBouncer.", {
       confidence: 0.9,
       tags: ["infra"],
       sources,
@@ -254,7 +254,7 @@ test("end-to-end: fact without provenance fields is legacy-compatible (undefined
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const memoryId = await storage.writeMemory("fact", "A fact with no provenance.", {
+    const { id: memoryId } = await storage.writeMemory("fact", "A fact with no provenance.", {
       confidence: 0.9,
       tags: [],
     });
@@ -278,7 +278,7 @@ test("end-to-end: verified tag without sources downgrades to none on read", asyn
     // Write a fact with provenance="verified" but NO sources. The serialize
     // invariant (PR1) must downgrade to "none" so downstream surfaces never
     // see an ungrounded "verified" tag.
-    const memoryId = await storage.writeMemory("fact", "A tagged fact with no evidence.", {
+    const { id: memoryId } = await storage.writeMemory("fact", "A tagged fact with no evidence.", {
       confidence: 0.9,
       tags: [],
       provenance: "verified",
@@ -363,7 +363,7 @@ test("end-to-end: verified source with non-ISO turn timestamp survives write →
     );
     assert.equal(built.provenance, "verified");
 
-    const memoryId = await storage.writeMemory("fact", "Production DB uses pgBouncer.", {
+    const { id: memoryId } = await storage.writeMemory("fact", "Production DB uses pgBouncer.", {
       confidence: 0.9,
       tags: ["infra"],
       sources: built.sources,

@@ -46,13 +46,14 @@ async function writeFact(
   entityRef: string,
   attrs: Record<string, string>,
 ): Promise<string> {
-  return storage.writeMemory("fact", content, {
+  const { id } = await storage.writeMemory("fact", content, {
     entityRef,
     structuredAttributes: attrs,
     source: "test",
     confidence: 0.9,
     tags: [],
   });
+  return id;
 }
 
 async function readFrontmatterById(
@@ -328,7 +329,7 @@ test("applyTemporalSupersession: retires child chunks with superseded parent", a
   try {
     const oldValidAt = "2026-01-01T00:00:00.000Z";
     const newValidAt = "2026-02-01T00:00:00.000Z";
-    const oldParent = await storage.writeMemory(
+    const { id: oldParent } = await storage.writeMemory(
       "fact",
       "project X is based in Austin. ".repeat(40),
       {
@@ -355,7 +356,7 @@ test("applyTemporalSupersession: retires child chunks with superseded parent", a
       },
     );
 
-    const newParent = await storage.writeMemory(
+    const { id: newParent } = await storage.writeMemory(
       "fact",
       "project X relocated to NYC",
       {
@@ -396,7 +397,7 @@ test("applyTemporalSupersession: retires child chunks with superseded parent", a
 test("applyTemporalSupersession: no structured attributes is a no-op", async () => {
   const { storage, cleanup } = await makeStorage();
   try {
-    const oldFact = await storage.writeMemory(
+    const { id: oldFact } = await storage.writeMemory(
       "fact",
       "project X is based in Austin",
       {
@@ -407,7 +408,7 @@ test("applyTemporalSupersession: no structured attributes is a no-op", async () 
       },
     );
     await new Promise((resolve) => setTimeout(resolve, 5));
-    const newFact = await storage.writeMemory(
+    const { id: newFact } = await storage.writeMemory(
       "fact",
       "project X uses vim",
       {
@@ -2419,7 +2420,7 @@ test("StorageManager: writing same enriched content twice does not create duplic
     const attrs = { city: "Denver" };
 
     // First write.
-    const id1 = await storage.writeMemory("fact", rawContent, {
+    const { id: id1 } = await storage.writeMemory("fact", rawContent, {
       entityRef: TEST_ENTITY,
       structuredAttributes: attrs,
       source: "test",
@@ -2491,7 +2492,7 @@ test("StorageManager: hash-dedup catch fall-through — write proceeds when look
 
     // Simulate the fall-through path: when lookup fails the orchestrator falls
     // through to writeMemory.  Write the fact directly as the orchestrator would.
-    const id = await storage.writeMemory("fact", rawContent, {
+    const { id: id } = await storage.writeMemory("fact", rawContent, {
       entityRef: TEST_ENTITY,
       structuredAttributes: attrs,
       source: "test",
@@ -2546,14 +2547,14 @@ test("StorageManager: enriched-hash matching selects correct candidate when two 
     const enrichedB = `${rawContent}\n[Attributes: ${Object.entries(attrsB).map(([k, v]) => `${k}: ${v}`).join("; ")}]`;
 
     // Write both facts.
-    const idA = await storage.writeMemory("fact", rawContent, {
+    const { id: idA } = await storage.writeMemory("fact", rawContent, {
       entityRef: TEST_ENTITY,
       structuredAttributes: attrsA,
       source: "test",
       confidence: 0.9,
       tags: [],
     });
-    const idB = await storage.writeMemory("fact", rawContent, {
+    const { id: idB } = await storage.writeMemory("fact", rawContent, {
       entityRef: TEST_ENTITY,
       structuredAttributes: attrsB,
       source: "test",
@@ -2663,7 +2664,7 @@ test("normalizeAttributePairs: writeMemory hash-dedup stable across key orders",
     const attrsFwd = { city: "Seattle", country: "USA" };
     const attrsRev = { country: "USA", city: "Seattle" }; // reversed
 
-    const id1 = await storage.writeMemory("fact", content, {
+    const { id: id1 } = await storage.writeMemory("fact", content, {
       entityRef: TEST_ENTITY,
       structuredAttributes: attrsFwd,
       source: "test",
@@ -2728,7 +2729,7 @@ test("normalizeAttributePairs + sanitizeMemoryContent: normalizedIncoming uses s
     const cleanContent = "Alice lives in Seattle";
     const attrs = { city: "Seattle", state: "WA" };
 
-    const id1 = await storage.writeMemory("fact", cleanContent, {
+    const { id: id1 } = await storage.writeMemory("fact", cleanContent, {
       entityRef: TEST_ENTITY,
       structuredAttributes: attrs,
       source: "test",

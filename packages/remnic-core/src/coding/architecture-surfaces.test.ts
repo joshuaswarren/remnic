@@ -117,7 +117,7 @@ function makeStubStorage(initialMemories: MemoryFile[] = []): StubStorage {
         frontmatter: makeFrontmatter({ id, ...(options as Partial<MemoryFrontmatter>) }),
         content,
       });
-      return id;
+      return { id: id, tombstoneBlocked: false };
     },
     async updateMemory(id, newContent) {
       updated.push({ id, content: newContent });

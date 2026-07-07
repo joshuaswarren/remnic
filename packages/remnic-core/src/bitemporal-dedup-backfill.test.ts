@@ -41,7 +41,7 @@ test("#1671: writeMemoryFrontmatter patches invalid_at onto an existing fact tha
   const { storage, cleanup } = await makeStorage("bitemporal-backfill-patch-");
   try {
     // Write a fact WITHOUT bi-temporal bounds (simulates a pre-#1578 copy).
-    const id = await storage.writeMemory("fact", "We use PostgreSQL for the main db.", {
+    const { id: id } = await storage.writeMemory("fact", "We use PostgreSQL for the main db.", {
       confidence: 0.9,
     });
     const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
@@ -95,7 +95,7 @@ test("#1671: backfill does NOT clobber an existing invalid_at on the copy", asyn
   const { storage, cleanup } = await makeStorage("bitemporal-backfill-noclobber-");
   try {
     // The existing copy already has an explicit invalid_at.
-    const id = await storage.writeMemory("fact", "We use MySQL until December.", {
+    const { id: id } = await storage.writeMemory("fact", "We use MySQL until December.", {
       confidence: 0.9,
       invalidAt: "2025-12-01T00:00:00.000Z",
       observedAt: "2025-06-01T00:00:00.000Z",
@@ -126,7 +126,7 @@ test("#1671: re-extraction with resolved invalidAt backfills an old promoted cop
   try {
     // Step 1: write a fact WITHOUT bounds (old promoted copy).
     const content = "The API rate limit is 100 req/min.";
-    const id = await storage.writeMemory("fact", content, {
+    const { id: id } = await storage.writeMemory("fact", content, {
       confidence: 0.9,
     });
 

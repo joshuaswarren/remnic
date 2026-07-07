@@ -33,8 +33,8 @@ test("memory-action priors influence lifecycle scores without circular amplifica
       consolidate: async () => ({ items: [], profileUpdates: [], entityUpdates: [] }),
     };
 
-    const penalizedId = await storage.writeMemory("fact", "penalized", { source: "test" });
-    const boostedId = await storage.writeMemory("fact", "boosted", { source: "test" });
+    const { id: penalizedId } = await storage.writeMemory("fact", "penalized", { source: "test" });
+    const { id: boostedId } = await storage.writeMemory("fact", "boosted", { source: "test" });
     const baselineTs = "2026-01-01T00:00:00.000Z";
     await storage.updateMemoryFrontmatter(penalizedId, {
       updated: baselineTs,
@@ -118,7 +118,7 @@ test("lifecycle action prior cap keeps newest per-memory events", async () => {
 
     const orchestrator = new Orchestrator(config) as any;
     const storage = orchestrator.storage;
-    const memoryId = await storage.writeMemory("fact", "prior-cap-memory", { source: "test" });
+    const { id: memoryId } = await storage.writeMemory("fact", "prior-cap-memory", { source: "test" });
 
     const base = Date.now() - 5 * 24 * 60 * 60 * 1000;
     const events = Array.from({ length: 10 }, (_, idx) => {

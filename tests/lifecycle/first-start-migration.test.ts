@@ -265,7 +265,7 @@ test("first-start migration: journals demotions and updates cold QMD collection"
       qmdColdCollection: "cold-test",
     });
 
-    const id = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
@@ -305,7 +305,7 @@ test("first-start migration: retries QMD refresh after a successful move throws"
       qmdColdCollection: "cold-test",
     });
 
-    const id = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
@@ -352,7 +352,7 @@ test("first-start migration: counts completed disk demotion when no QMD exists",
       qmdTierDemotionValueThreshold: 0.99,
     });
 
-    const id = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
@@ -388,7 +388,7 @@ test("first-start migration: late QMD retry success writes marker", async () => 
       qmdColdCollection: "cold-test",
     });
 
-    const id = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
@@ -429,7 +429,7 @@ test("first-start migration: pending QMD retry uses strict refresh when availabl
       qmdColdCollection: "cold-test",
     });
 
-    const id = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
@@ -519,7 +519,7 @@ test("first-start migration: cold orphan does not mask failed demotion while sou
       qmdTierDemotionValueThreshold: 0.99,
     });
 
-    const id = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
@@ -559,7 +559,7 @@ test("first-start migration: retries QMD refresh in-run when pending marker writ
       qmdColdCollection: "cold-test",
     });
 
-    const id = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "Old low-value fact.", { source: "test" });
     const memory = await storage.getMemoryById(id);
     assert.ok(memory, "expected memory to exist");
     await storage.writeMemoryFrontmatter(memory, {
@@ -606,7 +606,7 @@ test("first-start migration: abort signal stops demotions before writing marker"
     });
 
     for (let i = 0; i < 2; i++) {
-      const id = await storage.writeMemory("fact", `Old low-value fact ${i}.`, { source: "test" });
+      const { id: id } = await storage.writeMemory("fact", `Old low-value fact ${i}.`, { source: "test" });
       const memory = await storage.getMemoryById(id);
       assert.ok(memory, "expected memory to exist");
       await storage.writeMemoryFrontmatter(memory, {

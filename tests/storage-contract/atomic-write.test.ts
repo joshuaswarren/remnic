@@ -73,7 +73,7 @@ test("atomic-write (rule 54): successful replace leaves no temp file behind", as
 
 test("atomic-write (rule 54): StorageManager.updateMemory against a locked parent dir leaves the original file intact", { skip: SKIP_ATOMIC }, async () => {
   await withScratchStorage("atomic-update-memory", async (storage, dir) => {
-    const id = await storage.writeMemory("fact", "original fact body", { confidence: 0.9 });
+    const { id: id } = await storage.writeMemory("fact", "original fact body", { confidence: 0.9 });
     const mem = await storage.getMemoryById(id);
     assert.ok(mem);
     const target = mem!.path;

@@ -449,7 +449,7 @@ export function enumeratePublicWriteSurface(): PublicWriteSurfaceEntry[] {
     name: `writeMemory(${category})`,
     kind: "memory",
     write: async (storage) => {
-      const id = await storage.writeMemory(category, `contract-surface-${category}-body`, {
+      const { id: id } = await storage.writeMemory(category, `contract-surface-${category}-body`, {
         confidence: 0.85,
         tags: ["contract-surface"],
       });

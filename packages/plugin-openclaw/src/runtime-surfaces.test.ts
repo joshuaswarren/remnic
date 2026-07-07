@@ -101,7 +101,7 @@ function makeStorage(initial: MemoryFile[] = []) {
           structuredAttributes: options.structuredAttributes,
         }),
       );
-      return id;
+      return { id: id, tombstoneBlocked: false };
     },
     async updateMemory(id: string, newContent: string) {
       const memory = memories.find((entry) => entry.frontmatter.id === id);

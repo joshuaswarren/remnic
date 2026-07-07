@@ -82,7 +82,7 @@ test("atomicity: StorageManager.updateMemory preserves the original on overwrite
   const { makeStorage } = await import("./harness.js");
   const { storage, cleanup } = await makeStorage();
   try {
-    const id = await storage.writeMemory("fact", "version one");
+    const { id: id } = await storage.writeMemory("fact", "version one");
     const before = await storage.getMemoryById(id);
     assert.ok(before);
     assert.equal(before!.content, "version one");

@@ -30,6 +30,7 @@ import type {
   MemoryStatus,
 } from "../types.js";
 import type { VersionTrigger, VersioningConfig } from "../page-versioning.js";
+import type { MemoryWriteResult } from "../storage.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
 import { ARCHITECTURE_CARD_TRUNCATION_MARKER, type ArchitectureCardBuildResult } from "./architecture-card.js";
 import { log } from "../logger.js";
@@ -150,7 +151,7 @@ export interface ArchitectureSurfaceStorage {
       status?: MemoryStatus;
       structuredAttributes?: Record<string, string>;
     },
-  ): Promise<string>;
+  ): Promise<MemoryWriteResult>;
   updateMemory(
     id: string,
     newContent: string,
@@ -307,7 +308,7 @@ async function architectureRefresh(
       log.warn(
         `coding_architecture/refresh: updateMemory returned false for id=${existing.frontmatter.id} — falling back to writeMemory`,
       );
-      const memoryId = await storage.writeMemory("fact", cardContent, {
+      const { id: memoryId } = await storage.writeMemory("fact", cardContent, {
         confidence: 1.0,
         tags,
         source: "coding-architecture",
@@ -337,7 +338,7 @@ async function architectureRefresh(
   }
 
   // First card for this namespace — write a new memory.
-  const memoryId = await storage.writeMemory("fact", cardContent, {
+  const { id: memoryId } = await storage.writeMemory("fact", cardContent, {
     confidence: 1.0,
     tags,
     source: "coding-architecture",

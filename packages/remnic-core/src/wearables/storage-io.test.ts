@@ -93,7 +93,7 @@ test("transcript files never surface from readAllMemories", async () => {
 test("promoteWearableMemory flips status, merges evidence, and updates confidence", async () => {
   const { storage, dir } = makeStorage();
   try {
-    const id = await storage.writeMemory("fact", "Launch moved to September twelfth.", {
+    const { id: id } = await storage.writeMemory("fact", "Launch moved to September twelfth.", {
       confidence: 0.6,
       source: "wearable:limitless",
       status: "pending_review",
@@ -133,7 +133,7 @@ test("promoteWearableMemory flips status, merges evidence, and updates confidenc
 test("demoteWearableMemory rejects only pending rows and merges evidence", async () => {
   const { storage, dir } = makeStorage();
   try {
-    const id = await storage.writeMemory("fact", "Vendor call moved the launch again.", {
+    const { id: id } = await storage.writeMemory("fact", "Vendor call moved the launch again.", {
       confidence: 0.5,
       source: "wearable:limitless",
       status: "pending_review",
@@ -160,7 +160,7 @@ test("demoteWearableMemory rejects only pending rows and merges evidence", async
     assert.equal(await storage.demoteWearableMemory("missing-id", {}), false);
 
     // Active rows are never auto-demoted.
-    const activeId = await storage.writeMemory("fact", "Approved active row.", {
+    const { id: activeId } = await storage.writeMemory("fact", "Approved active row.", {
       confidence: 0.9,
       source: "wearable:limitless",
       status: "active",

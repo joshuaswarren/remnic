@@ -41,7 +41,7 @@ test("round-trip: citation-enriched fact content survives writeMemory → readAl
 
     assert.ok(hasCitation(enriched), "attachCitation must emit a marker");
 
-    const id = await storage.writeMemory("fact", enriched, {
+    const { id: id } = await storage.writeMemory("fact", enriched, {
       confidence: 0.8,
       tags: ["test"],
     });
@@ -76,7 +76,7 @@ test("legacy fact memories without a citation marker still read cleanly", async 
     await storage.ensureDirectories();
 
     const legacyBody = "Legacy fact without inline provenance.";
-    const id = await storage.writeMemory("fact", legacyBody, {
+    const { id: id } = await storage.writeMemory("fact", legacyBody, {
       confidence: 0.8,
       tags: ["legacy"],
     });

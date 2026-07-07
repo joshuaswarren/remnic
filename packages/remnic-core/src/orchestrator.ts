@@ -4566,7 +4566,7 @@ export class Orchestrator {
         }
 
         // Write the canonical memory
-        const canonicalId = await targetStorage.writeMemory(
+        const { id: canonicalId } = await targetStorage.writeMemory(
           newest.frontmatter.category,
           canonicalContent,
           {
@@ -14305,7 +14305,7 @@ export class Orchestrator {
             }
             continue;
           }
-          const promotedId = await targetStorage.writeMemory(
+          const { id: promotedId } = await targetStorage.writeMemory(
             options.category as any,
             citedContent,
             {
@@ -14624,7 +14624,7 @@ export class Orchestrator {
             return;
           }
         }
-        const promotedId = await sharedStorage.writeMemory(
+        const { id: promotedId } = await sharedStorage.writeMemory(
           options.category as any,
           citedContent,
           {
@@ -15765,7 +15765,7 @@ export class Orchestrator {
               ? stripCitationForTemplate(fact.content, citationTemplate)
               : fact.content;
           const citedChunkedContent = applyInlineCitation(rawChunkedContent);
-          const parentId = await targetStorage.writeMemory(
+          const parentWrite = await targetStorage.writeMemory(
             writeCategory,
             citedChunkedContent,
             {
@@ -15792,6 +15792,12 @@ export class Orchestrator {
               ...(fact.provenance ? { provenance: fact.provenance } : {}),
             },
           );
+          const parentId = parentWrite.id;
+          // #1645: surface the tombstone block and gate active post-write paths
+          // (chunks, supersession, shared promotion, graph/artifact) like #1576.
+          const tombstoneBlocked = parentWrite.tombstoneBlocked;
+          const postWriteGuard =
+            faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
           try {
             // Write individual chunks with parent reference
             for (const chunk of chunkResult.chunks) {
@@ -15839,7 +15845,13 @@ export class Orchestrator {
                   // fact's verdict + enforce status so a pending_review fact
                   // is not indexed as active through its chunks (chatgpt P2).
                   ...(faithfulnessFm ? { faithfulness: faithfulnessFm } : {}),
-                  ...(faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {}),
+                  // #1645 (OchiE): inherit pending_review + blockedBy so no chunk lands active.
+                  ...(postWriteGuard
+                    ? { status: "pending_review" as const }
+                    : (faithfulnessEnforceStatus ? { status: faithfulnessEnforceStatus } : {})),
+                  ...(tombstoneBlocked && parentWrite.blockedBy
+                    ? { blockedBy: parentWrite.blockedBy }
+                    : {}),
                   // Claim-level provenance (issue #1575 PR 2): mirror the
                   // parent's spans onto each chunk so a chunk surfaced
                   // independently (memory_get/x-ray on a chunk ID) preserves
@@ -15866,11 +15878,11 @@ export class Orchestrator {
             `chunked memory ${parentId} into ${chunkResult.chunks.length} chunks`,
           );
           trackPersistedId(targetStorage, parentId, {
-            pendingReview: faithfulnessEnforceStatus === "pending_review",
+            pendingReview: postWriteGuard,
           });
           // #1576 (cursor Medium): keep pending_review ids out of threadEpisodeIdsForGraph — else later active facts build thread-predecessor edges to an unfaithful memory.
           if (
-            faithfulnessEnforceStatus !== "pending_review" &&
+            !postWriteGuard &&
             threadEpisodeIdsForGraph &&
             !threadEpisodeIdsForGraph.includes(parentId)
           ) {
@@ -15883,7 +15895,7 @@ export class Orchestrator {
           // Faithfulness gate (#1576, cursor High): skip supersession for a
           // pending_review fact — an unfaithful extraction in the review queue
           // must NOT retire older active memories.
-          if (faithfulnessEnforceStatus !== "pending_review") {
+          if (!postWriteGuard) {
             try {
               const supersessionEntityRef =
                 typeof (fact as any).entityRef === "string"
@@ -15908,7 +15920,7 @@ export class Orchestrator {
           // Faithfulness gate (#1576, chatgpt P2): do not promote a
           // pending_review fact to shared/profile — it must enter the review
           // queue without active copies that bypass the gate.
-          if (faithfulnessEnforceStatus !== "pending_review") await promoteMemoryToShared({
+          if (!postWriteGuard) await promoteMemoryToShared({
             sourceStorage: targetStorage,
             category: writeCategory,
             content: fact.content,
@@ -15963,7 +15975,7 @@ export class Orchestrator {
               this.config.verbatimArtifactsEnabled &&
               this.config.verbatimArtifactCategories.includes(writeCategory) &&
               fact.confidence >= this.config.verbatimArtifactsMinConfidence &&
-              faithfulnessEnforceStatus !== "pending_review"
+              !postWriteGuard
             ) {
               // Reuse citedChunkedContent so the artifact carries the same citation
               // timestamp as the parent memory write above (Fix #3 — duplicate-citation).
@@ -15978,7 +15990,7 @@ export class Orchestrator {
               });
             }
             // v8.2: graph edge building for chunked memories. #1576: skip pending_review.
-            if (graphCaps.multiGraphMemory && faithfulnessEnforceStatus !== "pending_review") {
+            if (graphCaps.multiGraphMemory && !postWriteGuard) {
               try {
                 const graphContext = await ensureGraphContext(targetStorage);
                 const entityRef =
@@ -16080,7 +16092,7 @@ export class Orchestrator {
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : fact.content;
       const citedFactContent = applyInlineCitation(rawPersistBody);
-      const memoryId = await targetStorage.writeMemory(
+      const factWrite = await targetStorage.writeMemory(
         writeCategory,
         citedFactContent,
         {
@@ -16112,6 +16124,12 @@ export class Orchestrator {
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
         },
       );
+      const memoryId = factWrite.id;
+      // #1645: surface the tombstone block; gate active post-write paths like #1576
+      // so a blocked fact creates no active shared copy / supersession / graph entry.
+      const tombstoneBlocked = factWrite.tombstoneBlocked;
+      const postWriteGuard =
+        faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
       if (routedRuleId) {
         log.debug(
           `routing applied for memory ${memoryId}: rule=${routedRuleId} category=${writeCategory} storage=${targetStorage.dir}`,
@@ -16122,7 +16140,7 @@ export class Orchestrator {
       // key that has a conflicting value. Faithfulness gate (#1576, cursor
       // High): skip for a pending_review fact — an unfaithful extraction in
       // the review queue must NOT retire older active memories.
-      if (faithfulnessEnforceStatus !== "pending_review") {
+      if (!postWriteGuard) {
         try {
           const supersessionEntityRef =
             typeof (fact as any).entityRef === "string"
@@ -16154,10 +16172,10 @@ export class Orchestrator {
           }),
         );
         trackPersistedId(targetStorage, memoryId, {
-          pendingReview: faithfulnessEnforceStatus === "pending_review",
+          pendingReview: postWriteGuard,
         });
         if (
-          faithfulnessEnforceStatus !== "pending_review" &&
+          !postWriteGuard &&
           threadEpisodeIdsForGraph &&
           !threadEpisodeIdsForGraph.includes(memoryId)
         ) {
@@ -16166,7 +16184,7 @@ export class Orchestrator {
         await this.indexPersistedMemory(targetStorage, memoryId);
         // Faithfulness gate (#1576, chatgpt P2): skip promotion for a
         // pending_review fact so no active shared/profile copy bypasses the gate.
-        if (faithfulnessEnforceStatus !== "pending_review") await promoteMemoryToShared({
+        if (!postWriteGuard) await promoteMemoryToShared({
           sourceStorage: targetStorage,
           category: writeCategory,
           content: fact.content,
@@ -16196,7 +16214,7 @@ export class Orchestrator {
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
         });
         // v8.2: graph edge building (fail-open). #1576: skip pending_review facts.
-        if (graphCaps.multiGraphMemory && faithfulnessEnforceStatus !== "pending_review") {
+        if (graphCaps.multiGraphMemory && !postWriteGuard) {
           try {
             const graphContext = await ensureGraphContext(targetStorage);
             const entityRef =
@@ -16240,7 +16258,7 @@ export class Orchestrator {
           this.config.verbatimArtifactsEnabled &&
           this.config.verbatimArtifactCategories.includes(writeCategory) &&
           fact.confidence >= this.config.verbatimArtifactsMinConfidence &&
-          faithfulnessEnforceStatus !== "pending_review"
+          !postWriteGuard
         ) {
           // Reuse citedFactContent so the artifact carries the same citation
           // timestamp as the memory write above (Fix #3 — duplicate-citation).

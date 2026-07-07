@@ -695,7 +695,7 @@ export class CompoundingEngine {
       return report;
     }
 
-    const id = await storage.writeMemory(candidate.category, persistedContent, {
+    const { id: id } = await storage.writeMemory(candidate.category, persistedContent, {
       source: "compounding-promotion",
       tags: uniqueTags,
       confidence,

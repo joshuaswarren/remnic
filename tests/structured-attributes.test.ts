@@ -11,7 +11,7 @@ test("writeMemory stores structured attributes in frontmatter", async () => {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "Sony WH-1000XM5 headphones cost $349.99", {
+    const { id: id } = await storage.writeMemory("fact", "Sony WH-1000XM5 headphones cost $349.99", {
       confidence: 0.95,
       tags: ["product"],
       structuredAttributes: {
@@ -50,7 +50,7 @@ test("writeMemory without structured attributes does not add suffix", async () =
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "The sky is blue", {
+    const { id: id } = await storage.writeMemory("fact", "The sky is blue", {
       confidence: 0.9,
       tags: [],
     });
@@ -70,7 +70,7 @@ test("writeMemory handles empty structured attributes", async () => {
     const storage = new StorageManager(dir);
     await storage.ensureDirectories();
 
-    const id = await storage.writeMemory("fact", "Simple fact", {
+    const { id: id } = await storage.writeMemory("fact", "Simple fact", {
       confidence: 0.9,
       tags: [],
       structuredAttributes: {},

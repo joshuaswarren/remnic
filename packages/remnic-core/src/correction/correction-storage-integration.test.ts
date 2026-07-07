@@ -86,7 +86,7 @@ test("#1672 item 3: applyEditMemory recomputes contentHash from the patched body
   const { storage, cleanup } = await makeStorage();
   try {
     const wiring = { orchestrator: { getStorage: async () => storage } } as any;
-    const id = await storage.writeMemory("fact", "the database is MySQL", { source: "test" });
+    const { id: id } = await storage.writeMemory("fact", "the database is MySQL", { source: "test" });
     const before = await storage.getMemoryById(id);
     assert.ok(before?.frontmatter.contentHash, "writeMemory must set an initial contentHash");
     const oldHash = before!.frontmatter.contentHash!;
@@ -110,7 +110,7 @@ test("#1672 item 3: applyEditMemory leaves non-fact contentHash untouched (only 
   const { storage, cleanup } = await makeStorage();
   try {
     const wiring = { orchestrator: { getStorage: async () => storage } } as any;
-    const id = await storage.writeMemory("preference", "likes dark mode", { source: "test" });
+    const { id: id } = await storage.writeMemory("preference", "likes dark mode", { source: "test" });
     await applyEditMemory(wiring, "default", id, "likes light mode");
     const after = await storage.getMemoryById(id);
     assert.equal(after!.content, "likes light mode");

@@ -401,7 +401,7 @@ async function writeReplacementMemory(
   // writeMemory is the single storage chokepoint — catalog/dedup/reindex fire
   // here (rule 43). Tombstone blocking also fires here (#1579), so a
   // resurrected fact lands as pending_review rather than silently overwriting.
-  const id = await storage.writeMemory(
+  const { id: id } = await storage.writeMemory(
     (draft.category ?? "fact") as Parameters<typeof storage.writeMemory>[0],
     draft.content,
     {
@@ -505,7 +505,7 @@ async function rescopeMemoryFn(
   const destContent = fm.structuredAttributes
     ? stripAttributesSuffix(memory.content)
     : memory.content;
-  const destId = await destStorage.writeMemory(fm.category, destContent, {
+  const { id: destId } = await destStorage.writeMemory(fm.category, destContent, {
     source: `correction:rescope:${namespace}`,
     ...(typeof fm.confidence === "number" ? { confidence: fm.confidence } : {}),
     ...(Array.isArray(fm.tags) ? { tags: fm.tags } : {}),
@@ -650,7 +650,7 @@ async function appendAuditRecordFn(
   // Corrections are themselves memories, searchable and namespaced (issue
   // #1580 design §4). Write a correction-category memory capturing the
   // plan + outcome as the audit trail.
-  const id = await storage.writeMemory("correction", buildAuditBody(record), {
+  const { id: id } = await storage.writeMemory("correction", buildAuditBody(record), {
     source: "correction-contract",
     confidence: 1.0,
     tags: ["correction-audit", `plan:${record.planId}`, `classification:${record.classification}`],
