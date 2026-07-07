@@ -133,9 +133,12 @@ why the manifest is safe to commit alongside a public result.
 1. Checking out the pinned `git.commit`.
 2. Placing the dataset files so their hashes match `datasets[].files[].sha256`.
 3. Re-issuing `command.argv` (substituting their own endpoint URLs / keys).
-4. Re-running and confirming the new `results[].sha256` matches (for
-   deterministic judges at temperature 0) or falls within the reported
-   variance band.
+4. Re-running and comparing metrics + per-task scores. **Do not expect
+   byte-identical `results[].sha256`** — that hash covers the entire stored
+   `BenchmarkResult` file, including run-local metadata (`meta.timestamp`,
+   latency totals), so it differs even at temperature 0. Instead, verify the
+   dataset/config pins match (`datasets[].sha256`, `git.commit`) and the
+   reproduced metrics fall within the expected variance band.
 
 ### A.1.2 Benchmark result artifact
 
@@ -298,11 +301,20 @@ The manifest shape (from `LocalLabManifest` in
   "embedding": { /* optional; same shape */ },
   "phases": "sequential",                 // PR2 ships "sequential" only
   "notes": {
-    "responderToJudgeHandoff": "...",     // printed between phases if endpoints differ
+    "responderToJudgeHandoff": "...",     // informational; single-endpoint required today (see below)
     "hardware": { "gpu": "NVIDIA RTX 3090", "vramGb": 24, "ramGb": 256, "ampereBf16Ok": true }
   }
 }
 ```
+
+> **Single-endpoint requirement.** The benchmark runner executes
+> recall→answer→judge per trial, which requires responder and judge to be
+> co-resident on the **same endpoint** (`responder.baseUrl === judge.baseUrl`).
+> Multi-endpoint manifests (separate responder/judge URLs) are rejected at
+> preflight — full sequential phase execution (answer-all-then-judge-all with
+> an operator swap) is tracked for the PR3 calibration scope. On a single
+> 3090, run one `ollama serve` instance and hot-swap models between phases
+> (per `packages/bench/profiles/README.md`).
 
 `temperature` must be `0` and `seed` is required — these are validated at
 parse time (rule 51: any violation is rejected with the valid kinds listed,
