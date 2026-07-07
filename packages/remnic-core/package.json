@@ -1695,6 +1695,16 @@
       "remnic-source": "./src/orchestration/maintenance.ts",
       "import": "./dist/orchestration/maintenance.js"
     },
+    "./orchestration/compression-guideline-coordinator": {
+      "types": "./dist/orchestration/compression-guideline-coordinator.d.ts",
+      "remnic-source": "./src/orchestration/compression-guideline-coordinator.ts",
+      "import": "./dist/orchestration/compression-guideline-coordinator.js"
+    },
+    "./orchestration/compression-guideline-coordinator.js": {
+      "types": "./dist/orchestration/compression-guideline-coordinator.d.ts",
+      "remnic-source": "./src/orchestration/compression-guideline-coordinator.ts",
+      "import": "./dist/orchestration/compression-guideline-coordinator.js"
+    },
     "./page-versioning": {
       "types": "./dist/page-versioning.d.ts",
       "remnic-source": "./src/page-versioning.ts",

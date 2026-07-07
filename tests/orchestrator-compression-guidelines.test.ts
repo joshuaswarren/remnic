@@ -5,7 +5,18 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { buildCompressionGuidelinesMarkdown, Orchestrator } from "../src/orchestrator.ts";
+import { CompressionGuidelineCoordinator } from "../src/orchestration/compression-guideline-coordinator.js";
 import type { MemoryActionEvent } from "../src/types.ts";
+/** Build a CompressionGuidelineCoordinator from a fake ctx (config + storage),
+ *  mirroring the old Orchestrator.prototype-based unit tests. The logic now
+ *  lives on the coordinator (#1526 seam 4). */
+function makeCoordinator(ctx: any): CompressionGuidelineCoordinator {
+  return new CompressionGuidelineCoordinator({
+    config: ctx.config,
+    getStorage: () => ctx.storage,
+    fastChatCompletion: async () => null,
+  });
+}
 
 test("buildCompressionGuidelinesMarkdown emits conservative guidance with no telemetry", () => {
   const doc = buildCompressionGuidelinesMarkdown([], "2026-02-23T00:00:00.000Z");
@@ -43,25 +54,28 @@ test("buildCompressionGuidelinesMarkdown includes stable guidance when outcomes 
 test("runCompressionGuidelineLearningPass delegates to optimizeCompressionGuidelines when enabled", async () => {
   let called = 0;
   let received: { dryRun?: boolean; eventLimit?: number } | null = null;
-  const ctx: any = {
-    config: { compressionGuidelineLearningEnabled: true },
-    optimizeCompressionGuidelines: async (options: { dryRun?: boolean; eventLimit?: number }) => {
-      called += 1;
-      received = options;
-      return {
-        enabled: true,
-        dryRun: false,
-        eventCount: 1,
-        previousGuidelineVersion: null,
-        nextGuidelineVersion: 1,
-        changedRules: 0,
-        semanticRefinementApplied: false,
-        persisted: true,
-      };
-    },
+  const coordinator = new CompressionGuidelineCoordinator({
+    config: { compressionGuidelineLearningEnabled: true } as any,
+    getStorage: () => ({}) as any,
+    fastChatCompletion: async () => null,
+  });
+  coordinator.optimizeCompressionGuidelines = async (options: { dryRun?: boolean; eventLimit?: number }) => {
+    called += 1;
+    received = options;
+    return {
+      enabled: true,
+      dryRun: false,
+      eventCount: 1,
+      previousGuidelineVersion: null,
+      nextGuidelineVersion: 1,
+      changedRules: 0,
+      semanticRefinementApplied: false,
+      persisted: true,
+      draftContentHash: null,
+    };
   };
 
-  await (Orchestrator.prototype as any).runCompressionGuidelineLearningPass.call(ctx);
+  await coordinator.runCompressionGuidelineLearningPass();
   assert.equal(called, 1);
   assert.deepEqual(received, { dryRun: false, eventLimit: 500 });
 });
@@ -82,7 +96,7 @@ test("runCompressionGuidelineLearningPass is a no-op when disabled", async () =>
     },
   };
 
-  await (Orchestrator.prototype as any).runCompressionGuidelineLearningPass.call(ctx);
+  await makeCoordinator(ctx).runCompressionGuidelineLearningPass();
   assert.equal(readCalled, 0);
   assert.equal(writeCalled, 0);
 });
@@ -118,7 +132,7 @@ test("optimizeCompressionGuidelines does not publish new state for dry-run-only 
     },
   };
 
-  const result = await (Orchestrator.prototype as any).optimizeCompressionGuidelines.call(ctx, {
+  const result = await makeCoordinator(ctx).optimizeCompressionGuidelines({
     dryRun: false,
     eventLimit: 500,
   });
@@ -168,7 +182,7 @@ test("optimizeCompressionGuidelines over-fetches until it collects enough non-dr
     },
   };
 
-  const result = await (Orchestrator.prototype as any).optimizeCompressionGuidelines.call(ctx, {
+  const result = await makeCoordinator(ctx).optimizeCompressionGuidelines({
     dryRun: false,
     eventLimit: 2,
   });

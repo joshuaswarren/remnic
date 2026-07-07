@@ -1,6 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatCompressionGuidelinesForRecall, Orchestrator } from "../src/orchestrator.ts";
+import { formatCompressionGuidelinesForRecall } from "../src/orchestrator.ts";
+import { CompressionGuidelineCoordinator } from "../src/orchestration/compression-guideline-coordinator.js";
+/** Build a CompressionGuidelineCoordinator from a fake ctx (config + storage),
+ *  mirroring the old Orchestrator.prototype-based unit tests. The logic now
+ *  lives on the coordinator (#1526 seam 4). */
+function makeCoordinator(ctx: any): CompressionGuidelineCoordinator {
+  return new CompressionGuidelineCoordinator({
+    config: ctx.config,
+    getStorage: () => ctx.storage,
+    fastChatCompletion: async () => null,
+  });
+}
 
 test("formatCompressionGuidelinesForRecall extracts suggested guideline bullets", () => {
   const raw = [
@@ -47,7 +58,7 @@ test("buildCompressionGuidelineRecallSection keeps zero-change path when optimiz
     },
   };
 
-  const section = await (Orchestrator.prototype as any).buildCompressionGuidelineRecallSection.call(ctx);
+  const section = await makeCoordinator(ctx).buildCompressionGuidelineRecallSection();
   assert.equal(section, null);
   assert.equal(stateReads, 0);
   assert.equal(guidelineReads, 0);
@@ -82,7 +93,7 @@ test("buildCompressionGuidelineRecallSection emits active guideline section when
     },
   };
 
-  const section = await (Orchestrator.prototype as any).buildCompressionGuidelineRecallSection.call(ctx);
+  const section = await makeCoordinator(ctx).buildCompressionGuidelineRecallSection();
   assert.ok(section);
   assert.match(section ?? "", /## Active Compression Guidelines/);
   assert.match(section ?? "", /Guideline version: 3/);
@@ -130,7 +141,7 @@ test("buildCompressionGuidelineRecallSection keeps the active guideline visible 
     },
   };
 
-  const section = await (Orchestrator.prototype as any).buildCompressionGuidelineRecallSection.call(ctx);
+  const section = await makeCoordinator(ctx).buildCompressionGuidelineRecallSection();
   assert.ok(section);
   assert.match(section ?? "", /Guideline version: 3/);
   assert.doesNotMatch(section ?? "", /Guideline version: 4/);
@@ -148,6 +159,6 @@ test("buildCompressionGuidelineRecallSection fail-opens on malformed guideline s
     },
   };
 
-  const section = await (Orchestrator.prototype as any).buildCompressionGuidelineRecallSection.call(ctx);
+  const section = await makeCoordinator(ctx).buildCompressionGuidelineRecallSection();
   assert.equal(section, null);
 });
