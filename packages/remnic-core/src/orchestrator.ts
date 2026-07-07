@@ -15915,7 +15915,11 @@ export class Orchestrator {
           ) {
             threadEpisodeIdsForGraph.push(parentId);
           }
-          await this.indexPersistedMemory(targetStorage, parentId);
+          // #1645: same gate as the non-chunked path — a blocked chunked parent
+          // must not enter the embedding-fallback index (resurrection).
+          if (!postWriteGuard) {
+            await this.indexPersistedMemory(targetStorage, parentId);
+          }
           // PR #402 Thread 1 fix: run source-namespace temporal supersession for
           // chunked writes, matching the non-chunked path.  Without this the
           // source namespace retains stale facts that should have been superseded.
@@ -16001,7 +16005,11 @@ export class Orchestrator {
             // into boxBuilder.onExtraction() or threading.processTurn(), which
             // only expect canonical parent memory IDs.  Call indexPersistedMemory
             // directly for embedding-fallback sync of each chunk document.
-            await this.indexPersistedMemory(targetStorage, chunkId);
+            // #1645: chunks inherit pending_review under postWriteGuard — don't
+            // index them into the embedding fallback (resurrection).
+            if (!postWriteGuard) {
+              await this.indexPersistedMemory(targetStorage, chunkId);
+            }
           }
           try {
             if (
@@ -16222,7 +16230,13 @@ export class Orchestrator {
         ) {
           threadEpisodeIdsForGraph.push(memoryId);
         }
-        await this.indexPersistedMemory(targetStorage, memoryId);
+        // #1645: a tombstone-blocked / pending_review fact must NOT enter the
+        // embedding-fallback index — otherwise embedding recall surfaces the
+        // pending_review row (resurrection). Gate on postWriteGuard like the
+        // surrounding supersession / promotion / graph paths.
+        if (!postWriteGuard) {
+          await this.indexPersistedMemory(targetStorage, memoryId);
+        }
         // Faithfulness gate (#1576, chatgpt P2): skip promotion for a
         // pending_review fact so no active shared/profile copy bypasses the gate.
         if (!postWriteGuard) await promoteMemoryToShared({

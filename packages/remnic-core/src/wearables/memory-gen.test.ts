@@ -755,3 +755,37 @@ test("native memories always import as pending_review and respect prior imports"
   assert.equal(writes[0].options.source, "wearable:bee:native");
   assert.deepEqual(result.importedIds.sort(), ["n1", "n2", "n3"]);
 });
+
+
+test("#1645: a tombstone-blocked wearable write counts as blocked, not created", async () => {
+  // The writer returns tombstoneBlocked: true — the #1579 chokepoint downgraded
+  // the write to pending_review (no active copy). The day-write loop must count
+  // it as blocked, NOT created, so the sync summary and callers don't report
+  // blocked content as successfully created active memories.
+  const writes: Array<{ category: string; content: string; options: Record<string, unknown> }> = [];
+  const writer: WearableMemoryWriter = {
+    async writeMemory(category, content, options) {
+      writes.push({ category, content, options: options as Record<string, unknown> });
+      return { id: `id-${writes.length}`, tombstoneBlocked: true, blockedBy: "tomb-1" };
+    },
+    async hasFactContentHash() {
+      return false;
+    },
+  };
+  const result = await generateWearableMemories(
+    "limitless",
+    "2026-06-10",
+    [LONG_CONVERSATION],
+    settings(),
+    REGISTRY,
+    {
+      extract: extractionReturning([
+        { category: "decision", content: "Launch moved to September 12.", confidence: 0.9, tags: ["launch"] },
+      ]),
+      writer,
+    },
+  );
+  assert.equal(writes.length, 1, "the write still happens (pending_review row)");
+  assert.equal(result.created, 0, "blocked write must NOT count as created");
+  assert.equal(result.tombstoneBlocked, 1, "blocked write counted separately");
+});

@@ -18,6 +18,18 @@ function serializeClaimMemoryContent(claim: LedgerClaim): string {
   return `${serializeClaimBody(claim)}\n[Attributes: ${attributes}]`;
 }
 
+export class RemnicLedgerTombstoneBlockedError extends Error {
+  readonly code = "tombstone_blocked" as const;
+  readonly memoryId: string;
+  constructor(memoryId: string) {
+    super(
+      `claim write was tombstone-blocked (pending_review ${memoryId}) — content is queued for review, not actively stored`,
+    );
+    this.name = "RemnicLedgerTombstoneBlockedError";
+    this.memoryId = memoryId;
+  }
+}
+
 export interface RemnicLedgerStoreOptions {
   now?: () => Date;
   source?: string;
@@ -43,7 +55,7 @@ export class RemnicLedgerStore implements LedgerStore {
       id: "pending",
       memoryId: "pending",
     };
-    const { id: memoryId } = await this.storage.writeMemory("fact", serializeClaimBody(pending), {
+    const { id: memoryId, tombstoneBlocked } = await this.storage.writeMemory("fact", serializeClaimBody(pending), {
       actor: this.source,
       confidence: pending.confidence,
       tags: claimTags(pending),
@@ -56,6 +68,16 @@ export class RemnicLedgerStore implements LedgerStore {
       structuredAttributes: claimToStructuredAttributes(pending),
       status: remnicMemoryStatusForClaim(pending),
     });
+
+    // #1645: a tombstone-blocked claim write lands pending_review (no active
+    // copy). getClaim hides pending_review (HIDDEN_REMNIC_STATUSES), so the
+    // readback below would throw a misleading "could not be read back" error
+    // that looks transient — callers retry and multiply pending_review rows.
+    // Check the block BEFORE readback and throw a distinct, honest error so the
+    // caller knows this content is permanently blocked, not transiently failed.
+    if (tombstoneBlocked) {
+      throw new RemnicLedgerTombstoneBlockedError(memoryId);
+    }
 
     const claim = await this.getClaim(memoryId);
     if (!claim) {

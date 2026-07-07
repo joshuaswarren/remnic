@@ -132,6 +132,12 @@ export interface WearableMemoryGenDeps {
 
 export interface WearableMemoryGenResult {
   created: number;
+  /**
+   * Writes the #1579 tombstone chokepoint downgraded to pending_review (no
+   * active copy). Surfaced distinctly from `created` so sync summaries and
+   * callers don't count blocked content as successfully created (#1645).
+   */
+  tombstoneBlocked: number;
   /** Earlier borderline writes promoted to active by new evidence. */
   promoted: number;
   /** Earlier pending writes retired by a fresh judge-reject verdict. */
@@ -310,6 +316,7 @@ export async function generateWearableMemories(
 ): Promise<WearableMemoryGenResult> {
   const result: WearableMemoryGenResult = {
     created: 0,
+    tombstoneBlocked: 0,
     promoted: 0,
     demoted: 0,
     skipped: 0,
@@ -566,7 +573,7 @@ export async function generateWearableMemories(
         wearableDayTag(date),
       ]),
     ];
-    await deps.writer.writeMemory(candidate.fact.category, candidate.fact.content, {
+    const writeResult = await deps.writer.writeMemory(candidate.fact.category, candidate.fact.content, {
       confidence:
         settings.memoryMode === "smart"
           ? trustById.get(index)?.trust
@@ -585,7 +592,14 @@ export async function generateWearableMemories(
       contentHashSource: candidate.fact.content,
       status,
     });
-    result.created += 1;
+    // #1645: a tombstone-blocked wearable write lands pending_review (no active
+    // copy) — count it as blocked, NOT created, so the sync summary and callers
+    // don't report blocked content as successfully created active memories.
+    if (writeResult.tombstoneBlocked) {
+      result.tombstoneBlocked += 1;
+    } else {
+      result.created += 1;
+    }
   }
   return result;
 }

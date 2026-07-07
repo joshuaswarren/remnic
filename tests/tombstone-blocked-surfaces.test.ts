@@ -270,3 +270,36 @@ test("#1645 yG-: persistExplicitCapture surfaces tombstoneBlocked in its result"
   assert.equal(result.tombstoneBlocked, true, "persistExplicitCapture must surface tombstoneBlocked");
   assert.equal(result.id, "fact-blocked-persist");
 });
+
+// ── Thread P-J: orchestrator extraction path gates embedding-fallback index ─
+// persistExtraction's non-chunked and chunked write branches both call
+// indexPersistedMemory AFTER computing postWriteGuard. A tombstone-blocked /
+// pending_review fact that enters the embedding-fallback index resurfaces in
+// embedding recall (resurrection). Both branches — and the chunk-id catch loop
+// — must gate indexPersistedMemory behind !postWriteGuard, exactly like the
+// surrounding supersession / promotion / graph / artifact paths. This mirrors
+// the structural-assertion technique used by the TV6 tests above.
+
+test("#1645 P-J: non-chunked extraction gates indexPersistedMemory on postWriteGuard", () => {
+  assert.match(
+    orchestratorSource,
+    /if \(!postWriteGuard\) \{\s*await this\.indexPersistedMemory\(targetStorage, memoryId\);\s*\}/m,
+    "non-chunked extraction must gate indexPersistedMemory(targetStorage, memoryId) behind !postWriteGuard so a blocked fact never enters the embedding-fallback index",
+  );
+});
+
+test("#1645 P-J: chunked extraction gates indexPersistedMemory on postWriteGuard", () => {
+  assert.match(
+    orchestratorSource,
+    /if \(!postWriteGuard\) \{\s*await this\.indexPersistedMemory\(targetStorage, parentId\);\s*\}/m,
+    "chunked extraction must gate indexPersistedMemory(targetStorage, parentId) behind !postWriteGuard",
+  );
+});
+
+test("#1645 P-J: chunk-id embedding sync is gated on postWriteGuard", () => {
+  assert.match(
+    orchestratorSource,
+    /if \(!postWriteGuard\) \{\s*await this\.indexPersistedMemory\(targetStorage, chunkId\);\s*\}/m,
+    "chunk-id embedding-fallback sync must be gated behind !postWriteGuard (chunks inherit pending_review)",
+  );
+});

@@ -154,6 +154,17 @@ export interface CompoundingPromotionReport {
     reason: "disabled" | "weekly-artifact-missing" | "candidate-not-found" | "duplicate-guidance";
     existingMemoryId?: string;
   }>;
+  /**
+   * Promotions the #1579 tombstone chokepoint downgraded to pending_review (no
+   * active copy). Reported distinctly so callers never treat a blocked write as
+   * a successfully promoted active memory (#1645).
+   */
+  tombstoneBlocked: Array<{
+    id: string;
+    candidateId: string;
+    category: "principle" | "rule" | "preference";
+    content: string;
+  }>;
 }
 
 type WeeklyActionEvent = {
@@ -634,6 +645,7 @@ export class CompoundingEngine {
       weekId: opts.weekId,
       promoted: [],
       skipped: [],
+      tombstoneBlocked: [],
     };
     if (!report.enabled) {
       report.skipped.push({ weekId: opts.weekId, candidateId: opts.candidateId, reason: "disabled" });
@@ -695,13 +707,25 @@ export class CompoundingEngine {
       return report;
     }
 
-    const { id: id } = await storage.writeMemory(candidate.category, persistedContent, {
+    const { id, tombstoneBlocked } = await storage.writeMemory(candidate.category, persistedContent, {
       source: "compounding-promotion",
       tags: uniqueTags,
       confidence,
       lineage,
       memoryKind: "note",
     });
+    // #1645: a tombstone-blocked promotion lands pending_review (no active
+    // copy) — divert it to the tombstoneBlocked list so the report never
+    // claims a blocked write as a successfully promoted active memory.
+    if (tombstoneBlocked) {
+      report.tombstoneBlocked.push({
+        id,
+        candidateId: opts.candidateId,
+        category: candidate.category,
+        content: persistedContent,
+      });
+      return report;
+    }
     report.promoted.push({
       id,
       candidateId: opts.candidateId,

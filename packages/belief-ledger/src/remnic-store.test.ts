@@ -493,4 +493,62 @@ describe("RemnicLedgerStore", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+
+  it("#1645: createClaim throws a distinct tombstone_blocked error (not readback failure)", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-belief-ledger-"));
+    try {
+      const storage = new StorageManager(dir);
+      await storage.ensureDirectories();
+      // Wire the tombstone invariant exactly as the orchestrator does — without
+      // this, appendTombstone is a no-op and writeMemory never checks tombstones.
+      storage.setTombstonesConfig({
+        enabled: true,
+        semanticMatch: false,
+        semanticThreshold: 0.9,
+        namespace: "default",
+      });
+      const store = new RemnicLedgerStore(storage, {
+        now: () => new Date("2026-06-03T12:00:00Z"),
+      });
+      const input = normalizeClaimDraft(
+        {
+          statement: "The legacy deploy endpoint is https://legacy.example.invalid/v2",
+          stance: "for",
+          confidence: 0.9,
+          scope: { entities: ["Deploy"] },
+        },
+        { now: "2026-06-03T12:00:00Z" },
+      );
+      // Tombstone the exact body writeMemory receives — a blocked claim lands
+      // pending_review, which getClaim hides (HIDDEN_REMNIC_STATUSES). Without
+      // the pre-readback guard, createClaim throws a misleading "could not be
+      // read back" error that looks transient → callers retry → duplicate rows.
+      // writeMemory enriches the content with a structured-attributes suffix
+      // before hashing for the tombstone chokepoint (storage.ts:3728-3749), so
+      // the tombstone rawContent must match the ENRICHED body, not the raw body.
+      const { serializeClaimBody, claimToStructuredAttributes } = await import("./schema.js");
+      const { normalizeAttributePairs } = await import("@remnic/core/storage");
+      const pendingClaim = { ...input, id: "pending", memoryId: "pending" };
+      const enrichedBody = `${serializeClaimBody(pendingClaim)}
+[Attributes: ${normalizeAttributePairs(claimToStructuredAttributes(pendingClaim))}]`;
+      await storage.appendTombstone({
+        reason: "retraction",
+        createdBy: "user_correction",
+        sourceMemoryId: "claim-old",
+        rawContent: enrichedBody,
+      });
+
+      await assert.rejects(
+        () => store.createClaim(input),
+        (err: Error & { code?: string }) =>
+          err.code === "tombstone_blocked" &&
+          err.message.includes("tombstone-blocked"),
+        "createClaim must throw a distinct tombstone_blocked error before the readback",
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
 });
