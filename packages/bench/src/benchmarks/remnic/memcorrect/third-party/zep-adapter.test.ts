@@ -31,6 +31,7 @@ test("zep: keyless adapter throws MissingCredentialError", async () => {
 
 test("zep: ingestTurn creates session then adds memory", async () => {
   const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
     .when("POST", "/sessions", { status: 200, body: { id: "x" } })
     .when("POST", "/memory", { status: 200, body: {} })
     .build();
@@ -41,10 +42,17 @@ test("zep: ingestTurn creates session then adds memory", async () => {
   });
   await adapter.ingestTurn("s1", "user", "I prefer dark roast.", "2026-07-07T00:00:00Z");
 
-  // Session creation.
+  // User creation (one user per session for namespace isolation).
+  ff.assertRequest("POST", "/users", (req) => {
+    assert.deepEqual(req.body, { user_id: "memcorrect:s1" });
+  });
+  // Session creation — Zep v2 requires session_id + user_id.
   ff.assertRequest("POST", "/sessions", (req) => {
     assert.equal(req.headers["Authorization"], "Api-Key zep-key");
-    assert.deepEqual(req.body, { id: "memcorrect:s1" });
+    assert.deepEqual(req.body, {
+      session_id: "memcorrect:s1",
+      user_id: "memcorrect:s1",
+    });
   });
   // Memory add.
   ff.assertRequest("POST", "/memory", (req) => {
@@ -56,6 +64,7 @@ test("zep: ingestTurn creates session then adds memory", async () => {
 
 test("zep: second ingestTurn does not re-create session", async () => {
   const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
     .when("POST", "/sessions", { status: 200, body: { id: "x" } })
     .when("POST", "/memory", { status: 200, body: {} })
     .build();
@@ -69,18 +78,19 @@ test("zep: second ingestTurn does not re-create session", async () => {
   assert.equal(ff.countRequests("POST", "/memory"), 2);
 });
 
-test("zep: recall returns context paragraphs + relevant facts", async () => {
+test("zep: recall POSTs graph search with the probe query", async () => {
   const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
     .when("POST", "/sessions", { status: 200, body: {} })
-    .when("GET", "/memory", {
+    .when("POST", "/graph/search", {
       status: 200,
       body: {
-        context: "User prefers dark roast coffee.\n\nWorks at Acme Corp.",
-        relevant_facts: [
-          { fact: "Lives in Austin", content: "Lives in Austin" },
-          { fact: "Old fact", content: "" }, // empty content filtered
+        edges: [
+          { fact: "User prefers dark roast coffee." },
+          { fact: "Works at Acme Corp." },
+          { fact: "Lives in Austin" },
+          { fact: "  " }, // whitespace-only fact filtered out
         ],
-        messages: [],
       },
     })
     .build();
@@ -91,33 +101,43 @@ test("zep: recall returns context paragraphs + relevant facts", async () => {
     "Works at Acme Corp.",
     "Lives in Austin",
   ]);
+
+  // The probe query must drive retrieval — not be discarded.
+  ff.assertRequest("POST", "/graph/search", (req) => {
+    assert.deepEqual(req.body, {
+      user_id: "memcorrect:s1",
+      query: "coffee",
+      scope: "edges",
+      limit: 10,
+    });
+  });
 });
 
-test("zep: recall returns [] on empty memory", async () => {
+test("zep: recall returns [] on empty graph search", async () => {
   const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
     .when("POST", "/sessions", { status: 200, body: {} })
-    .when("GET", "/memory", { status: 200, body: {} })
+    .when("POST", "/graph/search", { status: 200, body: { edges: [] } })
     .build();
   const adapter = new ZepMemCorrectAdapter({ apiKey: "k", fetch: ff.fetch });
   const recalled = await adapter.recall("q", "s1");
   assert.deepEqual(recalled, []);
 });
 
-test("zep: recall falls back to deprecated facts array", async () => {
+test("zep: recall returns [] on null graph search response", async () => {
   const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
     .when("POST", "/sessions", { status: 200, body: {} })
-    .when("GET", "/memory", {
-      status: 200,
-      body: { facts: ["Fact one", "Fact two"] },
-    })
+    .when("POST", "/graph/search", { status: 200, body: null })
     .build();
   const adapter = new ZepMemCorrectAdapter({ apiKey: "k", fetch: ff.fetch });
   const recalled = await adapter.recall("q", "s1");
-  assert.deepEqual(recalled, ["Fact one", "Fact two"]);
+  assert.deepEqual(recalled, []);
 });
 
 test("zep: correct() ingests a user turn", async () => {
   const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
     .when("POST", "/sessions", { status: 200, body: {} })
     .when("POST", "/memory", { status: 200, body: {} })
     .build();
@@ -132,6 +152,7 @@ test("zep: correct() ingests a user turn", async () => {
 
 test("zep: reset() deletes known sessions", async () => {
   const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
     .when("POST", "/sessions", { status: 200, body: {} })
     .when("POST", "/memory", { status: 200, body: {} })
     .when("DELETE", "/sessions/", { status: 204 })
@@ -158,6 +179,7 @@ test("zep: runMaintenance is a no-op with settleMs=0", async () => {
 
 test("zep: assistant role maps to assistant role_type", async () => {
   const ff = new FakeFetchBuilder()
+    .when("POST", "/users", { status: 201, body: {} })
     .when("POST", "/sessions", { status: 200, body: {} })
     .when("POST", "/memory", { status: 200, body: {} })
     .build();

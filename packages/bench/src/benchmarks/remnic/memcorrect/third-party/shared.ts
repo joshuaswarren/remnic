@@ -111,6 +111,10 @@ export async function httpJson(
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: controller.signal,
   });
+  // Swallow the eventual AbortError rejection after timeout so it does not
+  // surface as an unhandled promise rejection. The timeout path throws a
+  // clean Error instead.
+  fetchPromise.catch(() => {});
 
   let response: Response;
   try {

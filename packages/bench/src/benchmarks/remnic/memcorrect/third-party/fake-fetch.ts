@@ -130,7 +130,7 @@ export class FakeFetchBuilder {
       }
       // Default: 404 so unmatched requests are loud in tests.
       return new FakeResponseImpl({ status: 404, body: { error: "no mock" } });
-    }) as FetchLike;
+    }) as unknown as FetchLike;
 
     return {
       fetch: fetchFn,

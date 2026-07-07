@@ -14,7 +14,7 @@
  * REST endpoints used (base: operator-provided Letta server URL):
  *   - `POST   /v1/agents/`                    — create a stateful agent
  *   - `POST   /v1/agents/{id}/messages`       — send a user message (ingest + correct)
- *   - `GET    /v1/agents/{id}/memory`         — read memory blocks (recall)
+ *   - `GET    /v1/agents/{id}/core-memory/blocks` — read memory blocks (recall)
  *   - `DELETE /v1/agents/{id}`                — destroy agent (reset)
  *
  * The adapter accepts an injectable `fetch` so the deterministic fixture
@@ -192,12 +192,17 @@ export class LettaMemCorrectAdapter implements MemCorrectSystemAdapter {
     const response = (await httpJson(
       this.fetchImpl,
       "GET",
-      `${this.baseUrl}/v1/agents/${encodeURIComponent(agentId)}/memory`,
+      `${this.baseUrl}/v1/agents/${encodeURIComponent(agentId)}/core-memory/blocks`,
       { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
-    )) as LettaMemoryResponse | null;
+    )) as LettaMemoryResponse | LettaBlock[] | null;
 
     if (!response) return [];
-    const blocks = response.memory ?? response.blocks ?? [];
+    // The documented endpoint returns a bare array of blocks. Older Letta
+    // servers and some fixtures wrap them in `{memory: [...]}` or
+    // `{blocks: [...]}` — accept all three for robustness.
+    const blocks = Array.isArray(response)
+      ? response
+      : response.memory ?? response.blocks ?? [];
     const strings: string[] = [];
     for (const block of blocks) {
       // Skip the persona block — it's agent behavior config, not user facts.

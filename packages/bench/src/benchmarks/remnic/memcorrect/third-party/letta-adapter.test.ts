@@ -100,14 +100,12 @@ test("letta: second ingest reuses existing agent (no re-create)", async () => {
 test("letta: recall reads memory blocks and skips persona", async () => {
   const ff = new FakeFetchBuilder()
     .when("POST", "/v1/agents/", { status: 200, body: { id: "agent-1" } })
-    .when("GET", "/memory", {
+    .when("GET", "/core-memory/blocks", {
       status: 200,
-      body: {
-        memory: [
-          { label: "human", value: "Works at Acme Corp.\nLives in Austin.\nLikes hiking." },
-          { label: "persona", value: "You are a test agent." },
-        ],
-      },
+      body: [
+        { label: "human", value: "Works at Acme Corp.\nLives in Austin.\nLikes hiking." },
+        { label: "persona", value: "You are a test agent." },
+      ],
     })
     .build();
   const adapter = new LettaMemCorrectAdapter({
@@ -123,7 +121,7 @@ test("letta: recall reads memory blocks and skips persona", async () => {
 test("letta: recall handles {blocks: [...]} response shape", async () => {
   const ff = new FakeFetchBuilder()
     .when("POST", "/v1/agents/", { status: 200, body: { id: "agent-1" } })
-    .when("GET", "/memory", {
+    .when("GET", "/core-memory/blocks", {
       status: 200,
       body: {
         blocks: [{ label: "human", text: "Single fact" }],
@@ -143,7 +141,7 @@ test("letta: recall handles {blocks: [...]} response shape", async () => {
 test("letta: recall returns [] on empty blocks", async () => {
   const ff = new FakeFetchBuilder()
     .when("POST", "/v1/agents/", { status: 200, body: { id: "agent-1" } })
-    .when("GET", "/memory", { status: 200, body: { memory: [] } })
+    .when("GET", "/core-memory/blocks", { status: 200, body: [] })
     .build();
   const adapter = new LettaMemCorrectAdapter({
     apiKey: "k",

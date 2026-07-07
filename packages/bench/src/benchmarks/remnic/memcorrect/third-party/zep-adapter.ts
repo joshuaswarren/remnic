@@ -14,7 +14,7 @@
  * REST endpoints used (base: `https://api.getzep.com/api/v2`):
  *   - `POST   /sessions/{sessionId}`            — ensure session exists
  *   - `POST   /sessions/{sessionId}/memory`     — add messages (ingest + correct)
- *   - `GET    /sessions/{sessionId}/memory`     — retrieve context (recall)
+ *   - `POST   /graph/search`                    — query-driven fact recall
  *   - `DELETE /sessions/{sessionId}`            — full clean slate (reset)
  *
  * The adapter accepts an injectable `fetch` so the deterministic fixture smoke
@@ -45,12 +45,11 @@ export interface ZepAdapterConfig extends ThirdPartyAdapterConfig {
   settleMs?: number;
 }
 
-/** Zep memory.get response shape (subset of fields we consume). */
-interface ZepMemory {
-  context?: string;
-  facts?: string[];
-  relevant_facts?: Array<{ fact?: string; content?: string }>;
-  messages?: Array<{ content?: string; role_type?: string }>;
+/** Zep graph search result (subset of fields we consume). */
+interface ZepGraphSearchResults {
+  edges?: Array<{ fact?: string }>;
+  nodes?: Array<{ summary?: string }>;
+  episodes?: Array<{ content?: string }>;
 }
 
 /** Zep role_type enum. */
@@ -118,9 +117,20 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
     this.knownSessions.clear();
   }
 
-  /** Ensure the Zep session exists before adding memory to it. */
+  /** Ensure the Zep session (and its user) exist before adding memory. */
   private async ensureSession(sessionId: string): Promise<void> {
     if (this.knownSessions.has(sessionId)) return;
+    // Zep v2 requires a user to exist before a session references it. Each
+    // MemCorrect session gets its own user for namespace isolation.
+    try {
+      await httpJson(this.fetchImpl, "POST", `${this.baseUrl}/users`, {
+        headers: this.authHeaders(),
+        body: { user_id: sessionId },
+        timeoutMs: this.timeoutMs,
+      });
+    } catch {
+      // User may already exist from a prior run — safe to continue.
+    }
     try {
       await httpJson(
         this.fetchImpl,
@@ -128,12 +138,12 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
         `${this.baseUrl}/sessions`,
         {
           headers: this.authHeaders(),
-          body: { id: sessionId },
+          body: { session_id: sessionId, user_id: sessionId },
           timeoutMs: this.timeoutMs,
         },
       );
     } catch {
-      // Session likely already exists (409) — safe to continue.
+      // Session may already exist (409) — safe to continue.
     }
     this.knownSessions.add(sessionId);
   }
@@ -166,37 +176,33 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
     this.ensureReady();
     const sessionId = this.sessionIdFor(sessionKey);
     await this.ensureSession(sessionId);
-    void query; // Zep's memory.get infers relevance from session context,
-    // not an explicit query param — this is the documented one-liner path.
-    const memory = (await httpJson(
+    // Query-driven recall via Zep's graph search. The MemCorrect runner passes
+    // the scored probe only as recall(query, …) — it is never added to the
+    // session — so memory.get (which ranks by the *last ingested message*)
+    // would retrieve the wrong context. Graph search ranks facts by the probe
+    // text itself, which is what MemCorrect scores. Each MemCorrect session
+    // gets its own user (see ensureSession), so we scope the search to that
+    // user's graph. Edges carry atomic `fact` strings — the exact unit
+    // MemCorrect's token-containment metric checks against.
+    const results = (await httpJson(
       this.fetchImpl,
-      "GET",
-      `${this.baseUrl}/sessions/${encodeURIComponent(sessionId)}/memory?lastn=20`,
-      { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
-    )) as ZepMemory | null;
+      "POST",
+      `${this.baseUrl}/graph/search`,
+      {
+        headers: this.authHeaders(),
+        body: { user_id: sessionId, query, scope: "edges", limit: 10 },
+        timeoutMs: this.timeoutMs,
+      },
+    )) as ZepGraphSearchResults | null;
 
-    if (!memory) return [];
+    if (!results || !results.edges) return [];
 
     const strings: string[] = [];
-    // Prefer the relevance-ranked context string (Zep's recommended prompt
-    // injection). Split on blank-line boundaries to preserve fact structure.
-    if (memory.context && memory.context.trim().length > 0) {
-      for (const para of memory.context.split(/\n\s*\n/)) {
-        const trimmed = para.trim();
-        if (trimmed) strings.push(trimmed);
+    for (const edge of results.edges) {
+      const fact = edge.fact;
+      if (fact && fact.trim().length > 0) {
+        strings.push(fact.trim());
       }
-    }
-    // Also surface individual relevant facts — they carry the atomic content
-    // MemCorrect's token-containment metric checks against.
-    if (memory.relevant_facts) {
-      for (const fact of memory.relevant_facts) {
-        const text = fact.content ?? fact.fact;
-        if (text) strings.push(text);
-      }
-    }
-    // Deprecated `facts` array as a last resort.
-    if (strings.length === 0 && memory.facts) {
-      strings.push(...memory.facts.filter((f) => f && f.length > 0));
     }
     return strings;
   }

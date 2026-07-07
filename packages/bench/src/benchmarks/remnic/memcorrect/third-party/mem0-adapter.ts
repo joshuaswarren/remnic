@@ -149,21 +149,21 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
       const userId = this.userIdFor(sessionKey);
       try {
         if (this.mode === "oss") {
-          await httpJson(this.fetchImpl, "DELETE", `${this.baseUrl}/memories`, {
-            headers: this.authHeaders(),
-            body: { user_id: userId },
-            timeoutMs: this.timeoutMs,
-          });
-        } else {
+          // OSS: DELETE /memories takes user_id as a query parameter, not body.
           await httpJson(
             this.fetchImpl,
             "DELETE",
-            `${this.baseUrl}/v3/memories/`,
-            {
-              headers: this.authHeaders(),
-              body: { filters: { user_id: userId } },
-              timeoutMs: this.timeoutMs,
-            },
+            `${this.baseUrl}/memories?user_id=${encodeURIComponent(userId)}`,
+            { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
+          );
+        } else {
+          // Hosted: the platform delete API is DELETE /v1/memories/ with
+          // identifier filters as query parameters.
+          await httpJson(
+            this.fetchImpl,
+            "DELETE",
+            `${this.baseUrl}/v1/memories/?user_id=${encodeURIComponent(userId)}`,
+            { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
           );
         }
       } catch {
@@ -207,6 +207,11 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
         },
       )) as Mem0EventStatus | null;
 
+      if (addResponse?.status === "FAILED") {
+        throw new Error(
+          `Mem0 hosted add failed immediately: ${addResponse.error ?? addResponse.status}`,
+        );
+      }
       const eventId = addResponse?.event_id;
       if (eventId) {
         await this.pollEvent(eventId);
@@ -228,7 +233,10 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
         `${this.baseUrl}/search`,
         {
           headers: this.authHeaders(),
-          body: { query, user_id: userId, limit: 10 },
+          // Mem0 OSS v3 aligns search with the platform API: entity IDs go
+          // inside `filters` and the count parameter is `top_k`, not
+          // top-level `user_id`/`limit` (oss-v2-to-v3 migration).
+          body: { query, filters: { user_id: userId }, top_k: 10 },
           timeoutMs: this.timeoutMs,
         },
       )) as Mem0SearchResult[] | { results?: Mem0SearchResult[] } | null;
