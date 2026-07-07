@@ -132,7 +132,9 @@ why the manifest is safe to commit alongside a public result.
 **How to read it.** An independent operator reproduces a run by:
 1. Checking out the pinned `git.commit`.
 2. Placing the dataset files so their hashes match `datasets[].files[].sha256`.
-3. Re-issuing `command.argv` (substituting their own endpoint URLs / keys).
+3. Re-issuing the CLI binary plus `command.argv` — e.g.
+   `remnic <command.argv>` (the manifest records `process.argv.slice(2)`, so the
+   `remnic` binary itself is omitted), substituting their own endpoint URLs / keys.
 4. Re-running and comparing metrics + per-task scores. **Do not expect
    byte-identical `results[].sha256`** — that hash covers the entire stored
    `BenchmarkResult` file, including run-local metadata (`meta.timestamp`,
@@ -530,7 +532,7 @@ bash model-lab/setup.sh
 source model-lab/.venv/bin/activate
 
 python model-lab/faithfulness-gate/generate-data.py --seed 1337 --yes   # → faithfulness-gate/data/
-python model-lab/faithfulness-gate/train.py   --version-tag v1          # → model-lab/runs/faithfulness-gate/v1/
+python model-lab/faithfulness-gate/train.py   --version-tag v1 --base-model roberta-large-mnli  # → model-lab/runs/faithfulness-gate/v1/
 python model-lab/faithfulness-gate/eval.py    --version-tag v1          # → manifest eval block
 ```
 
