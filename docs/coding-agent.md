@@ -22,6 +22,11 @@ This document covers the surfaces that ship today:
 6. Per-connector behavior (Claude Code, Codex CLI, Cursor / MCP).
 7. How to opt out.
 
+Beyond namespace scoping, two companion features build on coding mode:
+[coding knowledge](coding-knowledge.md) (Track A — decision records,
+architecture card, session delta) and the [coding graph](coding-graph.md)
+engine (Track B — `@remnic/coding-graph`, structural queries, blast radius).
+
 ## Overview
 
 Session-scoped overlay. When a session attaches a `CodingContext`
@@ -417,6 +422,8 @@ Two paths:
 
 ## Related reading
 
+- [Coding knowledge (Track A)](coding-knowledge.md) — decision records, architecture card, session delta, structural provider.
+- [Coding graph (Track B)](coding-graph.md) — the `@remnic/coding-graph` engine: install, config, the 14 parity tools, Cypher subset, performance.
 - [`docs/namespaces.md`](./namespaces.md) — the underlying namespace
   system coding mode overlays on top of.
 - [`packages/remnic-core/src/coding/git-context.ts`](../packages/remnic-core/src/coding/git-context.ts) — `resolveGitContext` and origin URL normalization.
