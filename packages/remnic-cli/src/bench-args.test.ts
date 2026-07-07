@@ -728,6 +728,39 @@ test("parseBenchArgs accepts internal Remnic LLM provider flags", () => {
   assert.equal(parsed.internalCodexReasoningEffort, "xhigh");
 });
 
+test("parseBenchArgs rejects --internal-provider claude-cli (no @remnic/core gateway wiring, PR #1735 review)", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--internal-provider",
+        "claude-cli",
+        "--internal-model",
+        "opus",
+      ]),
+    /--internal-provider does not support "claude-cli"/,
+  );
+});
+
+test("parseBenchArgs still accepts claude-cli for --judge-provider and --system-provider (responder/judge path only)", () => {
+  const parsed = parseBenchArgs([
+    "run",
+    "ama-bench",
+    "--system-provider",
+    "claude-cli",
+    "--system-model",
+    "opus",
+    "--judge-provider",
+    "claude-cli",
+    "--judge-model",
+    "opus",
+  ]);
+
+  assert.equal(parsed.systemProvider, "claude-cli");
+  assert.equal(parsed.judgeProvider, "claude-cli");
+});
+
 test("parseBenchArgs rejects internal Codex reasoning effort for non-Codex providers", () => {
   assert.throws(
     () =>
@@ -845,7 +878,7 @@ test("parseBenchArgs rejects unknown --provider", () => {
         "--provider",
         "not-a-provider",
       ]),
-    /--provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli"/,
+    /--provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"/,
   );
 });
 

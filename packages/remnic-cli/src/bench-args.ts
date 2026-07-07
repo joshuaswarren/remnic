@@ -230,8 +230,8 @@ function parseBenchRuntimeProfile(
  * `--judge-provider`. Keeping these in lockstep is a CLAUDE.md rule 52
  * concern: if one flag accepts "local-llm" but another rejects it,
  * behavior becomes path-dependent. Issue #566 slice 5 added
- * "local-llm"; Codex CLI provider wiring added "codex-cli". The
- * single source of truth is here.
+ * "local-llm"; Codex CLI provider wiring added "codex-cli"; Claude CLI
+ * provider wiring added "claude-cli". The single source of truth is here.
  */
 const BENCH_PROVIDER_ALLOWED: readonly BuiltInProvider[] = Object.freeze([
   "openai",
@@ -240,14 +240,50 @@ const BENCH_PROVIDER_ALLOWED: readonly BuiltInProvider[] = Object.freeze([
   "litellm",
   "local-llm",
   "codex-cli",
+  "claude-cli",
 ]);
+
+/**
+ * `--internal-provider` allow-list. Deliberately narrower than
+ * `BENCH_PROVIDER_ALLOWED`: it excludes "claude-cli". The internal
+ * provider feeds Remnic's own gateway (`@remnic/core`), which only
+ * special-cases `api === "codex-cli"` and `api === "anthropic-messages"` —
+ * there is no `claude-cli` gateway integration, so selecting it here would
+ * silently fall through to the generic/OpenAI-compatible gateway path
+ * instead of actually invoking `claude -p`. `claude-cli` is only wired for
+ * the bench responder/judge factory path (`--provider` / `--system-
+ * provider` / `--judge-provider`), see providers/factory.ts. (PR #1735
+ * review)
+ */
+const BENCH_INTERNAL_PROVIDER_ALLOWED: readonly BuiltInProvider[] = Object.freeze(
+  BENCH_PROVIDER_ALLOWED.filter((provider) => provider !== "claude-cli"),
+);
 
 function isBuiltInProvider(value: string): value is BuiltInProvider {
   return (BENCH_PROVIDER_ALLOWED as readonly string[]).includes(value);
 }
 
+function isBuiltInInternalProvider(value: string): value is BuiltInProvider {
+  return (BENCH_INTERNAL_PROVIDER_ALLOWED as readonly string[]).includes(value);
+}
+
 function parseBenchProvider(raw: string, flag: string): BuiltInProvider {
   if (!isBuiltInProvider(raw)) {
+    throw new Error(
+      `ERROR: ${flag} must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli".`,
+    );
+  }
+  return raw;
+}
+
+function parseBenchInternalProvider(raw: string, flag: string): BuiltInProvider {
+  if (!isBuiltInInternalProvider(raw)) {
+    if (raw === "claude-cli") {
+      throw new Error(
+        `ERROR: ${flag} does not support "claude-cli" (no @remnic/core gateway wiring); ` +
+          "use --provider, --system-provider, or --judge-provider instead.",
+      );
+    }
     throw new Error(
       `ERROR: ${flag} must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli".`,
     );
@@ -815,7 +851,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
 
   let internalProvider: BuiltInProvider | undefined;
   if (internalProviderRaw !== undefined) {
-    internalProvider = parseBenchProvider(internalProviderRaw, "--internal-provider");
+    internalProvider = parseBenchInternalProvider(internalProviderRaw, "--internal-provider");
   }
 
   const internalCodexReasoningEffort = internalCodexReasoningEffortRaw === undefined

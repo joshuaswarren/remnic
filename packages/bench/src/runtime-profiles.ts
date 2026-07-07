@@ -475,6 +475,21 @@ function resolveProviderConfig(
         "(e.g. http://localhost:8080/v1 for llama.cpp).",
     );
   }
+  // PR #1735 review: defense in depth for programmatic callers that bypass
+  // the CLI's `--internal-provider` allow-list (see bench-args.ts). Unlike
+  // "codex-cli" / "anthropic", `@remnic/core`'s gateway has no `claude-cli`
+  // api wiring — routing the internal Remnic-runtime LLM through it would
+  // silently fall through to the generic/OpenAI-compatible gateway path
+  // instead of actually invoking `claude -p`. `claude-cli` is only wired
+  // for the bench responder/judge factory path (--provider / --system-
+  // provider / --judge-provider), not this internal-LLM path.
+  if (kind === "internal" && provider === "claude-cli") {
+    throw new Error(
+      `${kind} provider "claude-cli" is not supported: it has no @remnic/core ` +
+        "gateway wiring and is only available via --provider, --system-provider, " +
+        "or --judge-provider.",
+    );
+  }
   if (reasoningEffort !== undefined && provider !== "codex-cli") {
     throw new Error(
       `${kind} Codex reasoning effort requires provider "codex-cli"`,
@@ -631,6 +646,19 @@ function gatewayProviderApi(provider: BuiltInProvider): string {
   if (provider === "codex-cli") {
     return "codex-cli";
   }
+  if (provider === "claude-cli") {
+    // PR #1735 review: `@remnic/core` only special-cases `api ===
+    // "codex-cli"` and `api === "anthropic-messages"` — there is no
+    // `claude-cli` gateway integration, so this must never be reached.
+    // `resolveProviderConfig` (kind === "internal") already rejects
+    // `claude-cli` before a config gets here; this is a second guard so a
+    // future caller of this function directly can't silently regress to
+    // the old "falls through to openai-completions" behavior.
+    throw new Error(
+      "claude-cli has no @remnic/core gateway api mapping; it is only supported as a " +
+        "--provider / --system-provider / --judge-provider, not an internal provider.",
+    );
+  }
   if (provider === "ollama") {
     return "ollama-chat";
   }
@@ -652,6 +680,13 @@ function defaultInternalBaseUrl(provider: BuiltInProvider): string | undefined {
       return "http://localhost:11434/api";
     case "codex-cli":
       return "codex-cli://local";
+    case "claude-cli":
+      // PR #1735 review: no internal gateway wiring for claude-cli (see
+      // gatewayProviderApi above) — never hand back a fake base URL for it.
+      throw new Error(
+        "claude-cli has no internal-provider base URL; it is only supported as a " +
+          "--provider / --system-provider / --judge-provider, not an internal provider.",
+      );
     case "local-llm":
       return undefined;
     default: {

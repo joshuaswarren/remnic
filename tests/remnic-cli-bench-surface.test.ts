@@ -213,9 +213,9 @@ test("bench CLI exposes runtime profile and provider-backed run surfaces", async
   assert.match(source, /--model-source <plugin\|gateway>/);
   assert.match(source, /--gateway-agent-id <id>/);
   assert.match(source, /--fast-gateway-agent-id <id>/);
-  assert.match(source, /--system-provider <openai\|anthropic\|ollama\|litellm\|local-llm\|codex-cli>/);
+  assert.match(source, /--system-provider <openai\|anthropic\|ollama\|litellm\|local-llm\|codex-cli\|claude-cli>/);
   assert.match(source, /--system-model <model>/);
-  assert.match(source, /--judge-provider <openai\|anthropic\|ollama\|litellm\|local-llm\|codex-cli>/);
+  assert.match(source, /--judge-provider <openai\|anthropic\|ollama\|litellm\|local-llm\|codex-cli\|claude-cli>/);
   assert.match(source, /--judge-model <model>/);
   assert.match(source, /remnic bench run --quick longmemeval --runtime-profile baseline/);
   assert.match(source, /remnic bench run longmemeval --runtime-profile real --remnic-config/);
@@ -1200,7 +1200,7 @@ test("parseBenchArgs rejects unknown providers across all three flags with liste
         "--model",
         "m",
       ]),
-    /ERROR: --provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli"\./,
+    /ERROR: --provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./,
   );
   assert.throws(
     () =>
@@ -1212,7 +1212,7 @@ test("parseBenchArgs rejects unknown providers across all three flags with liste
         "--system-model",
         "m",
       ]),
-    /ERROR: --system-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli"\./,
+    /ERROR: --system-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./,
   );
   assert.throws(
     () =>
@@ -1224,7 +1224,7 @@ test("parseBenchArgs rejects unknown providers across all three flags with liste
         "--judge-model",
         "m",
       ]),
-    /ERROR: --judge-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli"\./,
+    /ERROR: --judge-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./,
   );
 });
 

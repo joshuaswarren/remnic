@@ -22,8 +22,21 @@ export type AmaBenchJudgeProtocol = "default" | "recommended";
  * `codex-cli` shells out to `codex exec` as an isolated benchmark-only
  * responder/judge target. It is intentionally not routed through Remnic
  * memory or OpenClaw gateway state.
+ *
+ * `claude-cli` shells out to `claude -p` (Claude Code headless) as an
+ * isolated benchmark-only responder/judge target, running against the
+ * operator's Claude subscription rather than a metered API key. Like
+ * `codex-cli`, it is intentionally not routed through Remnic memory or
+ * OpenClaw gateway state.
  */
-export type BuiltInProvider = "openai" | "anthropic" | "ollama" | "litellm" | "local-llm" | "codex-cli";
+export type BuiltInProvider =
+  | "openai"
+  | "anthropic"
+  | "ollama"
+  | "litellm"
+  | "local-llm"
+  | "codex-cli"
+  | "claude-cli";
 
 export type BenchReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
