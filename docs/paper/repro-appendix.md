@@ -19,8 +19,11 @@
 
 ## A.1 The two pinning artifacts
 
-A reproducible Remnic benchmark run is locked by **two** committed artifacts.
-They are distinct and serve distinct roles:
+A reproducible Remnic benchmark run is locked by **two** artifacts.
+They are distinct and serve distinct roles: the repro-manifest is generated
+automatically beside every run (not committed to git — it accompanies the
+operator's result store), while the result artifact is the one promoted
+into `docs/benchmarks/results/` per release.
 
 | Artifact | Format | Lives at | Pins |
 | --- | --- | --- | --- |
@@ -69,7 +72,7 @@ definition):
   },
   "command": {
     "cwd": "/path/to/remnic",
-    "argv": [ "remnic", "bench", "run", "locomo", "--runtime-profile", "local-lab", "..." ],
+    "argv": [ "bench", "run", "locomo", "--runtime-profile", "local-lab", "..." ],
     "envKeys": [ "PATH", "HOME", "NODE_OPTIONS" ]   // names only; never values
   },
   "environment": {
@@ -277,6 +280,7 @@ operator-hosted models. Copy the committed profile and edit the model ids +
 base URLs:
 
 ```bash
+mkdir -p ~/bench
 cp packages/bench/profiles/local-lab-3090.json ~/bench/local-lab.json
 # Edit ~/bench/local-lab.json:
 #   - responder.model / judge.model → your pulled model ids
