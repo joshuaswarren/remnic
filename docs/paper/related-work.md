@@ -1,7 +1,7 @@
 # §2 Related Work
 
-> Owner: issue [#1729](https://github.com/joshuawarren/remnic/issues/1729). Part of
-> the evidence-sprint epic [#1725](https://github.com/joshuawarren/remnic/issues/1725).
+> Owner: issue [#1729](https://github.com/joshuaswarren/remnic/issues/1729). Part of
+> the evidence-sprint epic [#1725](https://github.com/joshuaswarren/remnic/issues/1725).
 > This is the standalone Related Work section referenced by the paper skeleton
 > (`docs/paper/main.md` §2). It is self-contained and mergeable independently of
 > the skeleton.
@@ -99,7 +99,7 @@ frontier models.
 > relative discussed here; we mention it only to prevent citation confusion.
 
 **STALE** (Chao et al., arXiv:[2605.06527](https://arxiv.org/abs/2605.06527),
-May 2026) is the **closest peer-reviewed** framing of the problem. It defines
+May 2026) is, in scope, the **closest** framing of the problem among the staleness benchmarks (arXiv preprint; no peer-reviewed venue as of this writing). It defines
 three probing dimensions — **State Resolution** (detect a prior belief is
 outdated), **Premise Resistance** (reject queries that falsely presuppose a stale
 state), and **Implicit Policy Adaptation** (apply the updated state downstream) —
@@ -113,8 +113,8 @@ catch the system acting on a cue it should not), but STALE measures it at
 **write-path** mutation occurred after an anti-event (quoting-others /
 hypothetical / third-party-correction). Its prototype CUPMem strengthens
 write-time revision — independently supporting the design direction Remnic's
-Correction Contract ([#1580](https://github.com/joshuawarren/remnic/issues/1580))
-and tombstones ([#1579](https://github.com/joshuawarren/remnic/issues/1579)) take.
+Correction Contract ([#1580](https://github.com/joshuaswarren/remnic/issues/1580))
+and tombstones ([#1579](https://github.com/joshuaswarren/remnic/issues/1579)) take.
 
 **MemSyco-Bench** (Xiang et al., arXiv:[2607.01071](https://arxiv.org/abs/2607.01071),
 July 2026) sits at the **opposite end of the pipeline**: it benchmarks
@@ -137,7 +137,7 @@ RAG on static knowledge and reaches 0.95–1.00 accuracy on evolving knowledge w
 RAG reaches 0.20–0.47; its central result is driving the **stale-fact-error rate**
 from RAG's 15–40% down to ~0%. This is strong evidence the *property* is achievable
 and is a conceptual ally of Remnic's own bi-temporal work
-([#1578](https://github.com/joshuawarren/remnic/issues/1578)). The differentiator:
+([#1578](https://github.com/joshuaswarren/remnic/issues/1578)). The differentiator:
 MemStrata is **self-evaluated against generic RAG only**, exposes **no adapter
 contract** for scoring third-party memory systems, and does not measure collateral
 damage, scope precision, or write-path false-apply. It is a system, not a
@@ -192,7 +192,7 @@ context management. We position MemCorrect on the axes they do not address:
   (not LLM-generated queries) write the graph. Zep reports 94.8% on the DMR benchmark
   (vs MemGPT's 93.4%) and up to 18.5-point improvements on LongMemEval with ~90%
   latency reduction. Its "invalidate but do not discard" is precisely the property
-  `non_resurrection` and Remnic tombstones ([#1579](https://github.com/joshuawarren/remnic/issues/1579))
+  `non_resurrection` and Remnic tombstones ([#1579](https://github.com/joshuaswarren/remnic/issues/1579))
   operationalize — but Zep does not publish a correction-stress benchmark or an
   adapter contract, and its eval is recall-accuracy-oriented, not
   resurrection-under-reingest-oriented.
@@ -215,15 +215,15 @@ graph traversal, MemoryOS-style promotion/stale/archive lifecycle policy, and
 ACON-style bounded compression-guideline learning. These position Remnic's
 *substrate* in the literature; they are not correction-specific and are listed for
 completeness. The correction-specific Remnic surfaces MemCorrect measures are the
-glass-box epic ([#1572](https://github.com/joshuawarren/remnic/issues/1572)):
-provenance ([#1575](https://github.com/joshuawarren/remnic/issues/1575),
-`provenance.ts`), the extraction faithfulness gate ([#1576](https://github.com/joshuawarren/remnic/issues/1576),
-`extraction-faithfulness.ts`), bi-temporal valid-time tracking ([#1578](https://github.com/joshuawarren/remnic/issues/1578)),
-tombstones ([#1579](https://github.com/joshuawarren/remnic/issues/1579),
-`lifecycle/`), the Correction Contract ([#1580](https://github.com/joshuawarren/remnic/issues/1580),
-`correction/`), passive corrections ([#1581](https://github.com/joshuawarren/remnic/issues/1581)),
-recall handles ([#1582](https://github.com/joshuawarren/remnic/issues/1582),
-`recall-handles.ts`), and the chat correction surface ([#1583](https://github.com/joshuawarren/remnic/issues/1583),
+glass-box epic ([#1572](https://github.com/joshuaswarren/remnic/issues/1572)):
+provenance ([#1575](https://github.com/joshuaswarren/remnic/issues/1575),
+`provenance.ts`), the extraction faithfulness gate ([#1576](https://github.com/joshuaswarren/remnic/issues/1576),
+`extraction-faithfulness.ts`), bi-temporal valid-time tracking ([#1578](https://github.com/joshuaswarren/remnic/issues/1578)),
+tombstones ([#1579](https://github.com/joshuaswarren/remnic/issues/1579),
+`lifecycle/`), the Correction Contract ([#1580](https://github.com/joshuaswarren/remnic/issues/1580),
+`correction/`), passive corrections ([#1581](https://github.com/joshuaswarren/remnic/issues/1581)),
+recall handles ([#1582](https://github.com/joshuaswarren/remnic/issues/1582),
+`recall-handles.ts`), and the chat correction surface ([#1583](https://github.com/joshuaswarren/remnic/issues/1583),
 `chat/`).
 
 ## 2.5 What is genuinely new, and what is borrowed
@@ -242,9 +242,9 @@ substrate (retrieval/consolidation, with a re-ingest adversary) is new for all r
 | `non_resurrection` | ↑ | StateBench **SFRR** (Superseded Fact Resurrection Rate); MemStrata stale-fact-error rate | **Borrowed** — StateBench [README](https://github.com/Parslee-ai/statebench); [arXiv:2606.26511](https://arxiv.org/abs/2606.26511) | Prior versions check "did the stale value get served?". `non_resurrection` adds the **re-ingest of the original establishing transcript** *and* K maintenance cycles as a combined adversary — a failure mode with no weight-editing analogue. |
 | `collateral_delta` | →0 | RippleEdits **Preservation (PV)** | **Borrowed** — [arXiv:2307.12976](https://arxiv.org/abs/2307.12976) | PV is a likelihood-based edit-safety check on weights; `collateral_delta` is behavioral recall over an explicitly seeded unrelated-fact probe set, target-zero (signed after−before), deliberately excluded from directional verdicts (`runner.ts` `MEMCORRECT_LOWER_IS_BETTER`). |
 | `scope_precision` | ↑ | RippleEdits **Relation Specificity (RS)** (conceptually); StateBench "Scope Leak" failure class | **Partly new** — specificity concept [arXiv:2307.12976](https://arxiv.org/abs/2307.12976); StateBench scope-leak testing [Parslee](https://github.com/Parslee-ai/statebench) | The **namespace-twin** design (seed an identical fact in namespace B, verify a namespace-A correction leaves B intact) is new; it turns a weight-editing specificity idea into a multi-tenant recall probe. Grounded in Remnic's scoped write path (`access-service.ts` `resolveWritableNamespace`). |
-| `false_apply` | ↓ | STALE **Premise Resistance** (adjacent); MemSyco-Bench scope-respect task | **Partly new** — [arXiv:2605.06527](https://arxiv.org/abs/2605.06527), [arXiv:2607.01071](https://arxiv.org/abs/2607.01071) | Those measure *reasoning* over fixed memory at answer time. `false_apply` measures whether a **write-path mutation** occurred after an anti-event (quoting-others / hypothetical / third-party-correction), detected behaviorally via a `shouldNotAppear` token. Taxonomy mirrors [#1581](https://github.com/joshuawarren/remnic/issues/1581). |
+| `false_apply` | ↓ | STALE **Premise Resistance** (adjacent); MemSyco-Bench scope-respect task | **Partly new** — [arXiv:2605.06527](https://arxiv.org/abs/2605.06527), [arXiv:2607.01071](https://arxiv.org/abs/2607.01071) | Those measure *reasoning* over fixed memory at answer time. `false_apply` measures whether a **write-path mutation** occurred after an anti-event (quoting-others / hypothetical / third-party-correction), detected behaviorally via a `shouldNotAppear` token. Taxonomy mirrors [#1581](https://github.com/joshuaswarren/remnic/issues/1581). |
 | `reassertion` | ↑ | *None found* — no prior benchmark scores the revocation path (user re-asserts an earlier value after a correction) | **New** | First metric for the "actually, we went back to X" path: after a correction and a re-assertion event, is the original value recallable again? Without it, a system could trivially maximize `non_resurrection` by never un-retiring. |
-| `provenance_fidelity` | ↑ | *None found as a correction metric* — provenance is discussed (Zep/Graphiti edges carry validity intervals) but not scored as "corrected state *cites the correction event*" | **New** (n/a for systems without provenance) | First metric tying correction to citation: corrected state must surface the correction event as its provenance source. Returns `null` for adapters that expose no provenance (`metrics.ts`). Backed by Remnic provenance [#1575](https://github.com/joshuawarren/remnic/issues/1575). |
+| `provenance_fidelity` | ↑ | *None found as a correction metric* — provenance is discussed (Zep/Graphiti edges carry validity intervals) but not scored as "corrected state *cites the correction event*" | **New** (n/a for systems without provenance) | First metric tying correction to citation: corrected state must surface the correction event as its provenance source. Returns `null` for adapters that expose no provenance (`metrics.ts`). Backed by Remnic provenance [#1575](https://github.com/joshuaswarren/remnic/issues/1575). |
 
 Source for metric definitions and directionality:
 `docs/benchmarks/memcorrect.md` (Table under "Metrics") and the implementation in
@@ -257,13 +257,13 @@ behavior (some may surface it incidentally as a failure class without scoring it
 
 | Benchmark | Correction uptake timed? | Non-resurrection under **re-ingest**? | Collateral safety? | Scope precision (multi-tenant twin)? | Write-path false-apply? | Revocation / re-assertion? | Provenance of correction? | System-agnostic adapter contract? | Deterministic synthetic corpus? | Peer-reviewed? |
 |---|---|---|---|---|---|---|---|---|---|---|
-| **MemCorrect** (this work, [#1584](https://github.com/joshuawarren/remnic/issues/1584)) | ✅ `uptake_latency` | ✅ `non_resurrection` | ✅ `collateral_delta` | ✅ `scope_precision` | ✅ `false_apply` | ✅ `reassertion` | ✅ `provenance_fidelity` | ✅ `MemCorrectSystemAdapter` | ✅ seeded, hash-stable | — (artifact, not paper) |
+| **MemCorrect** (this work, [#1584](https://github.com/joshuaswarren/remnic/issues/1584)) | ✅ `uptake_latency` | ✅ `non_resurrection` | ✅ `collateral_delta` | ✅ `scope_precision` | ✅ `false_apply` | ✅ `reassertion` | ✅ `provenance_fidelity` | ✅ `MemCorrectSystemAdapter` | ✅ seeded, hash-stable | — (artifact, not paper) |
 | StateBench (Parslee) | — (snapshot accuracy) | ◐ SFRR (no re-ingest adversary) | — | ◐ "Scope Leak" class, no twin | — | — | — | — (own baselines + frontier models) | ✅ generated | ✗ vendor white paper |
-| STALE [2605.06527](https://arxiv.org/abs/2605.06527) | — | ◐ State Resolution (no re-ingest) | — | — | ◐ Premise Resistance (read-time) | — | — | — | ✅ expert-validated | ✅ (preprint, May 2026) |
-| MemSyco-Bench [2607.01071](https://arxiv.org/abs/2607.01071) | — | — | — | ◐ scope-respect task (read-time) | ◐ read-time only | — | — | — | ✅ | ✅ (preprint, Jul 2026) |
-| MemStrata [2606.26511](https://arxiv.org/abs/2606.26511) | — | ◐ stale-fact-error vs RAG (no re-ingest) | — | — | — | — | ◐ bi-temporal ledger (not scored as correction-cite) | — (self-eval vs RAG) | ✅ calibrated | ✅ (preprint, Jun 2026) |
+| STALE [2605.06527](https://arxiv.org/abs/2605.06527) | — | ◐ State Resolution (no re-ingest) | — | — | ◐ Premise Resistance (read-time) | — | — | — | ✅ expert-validated | ✗ (preprint, May 2026) |
+| MemSyco-Bench [2607.01071](https://arxiv.org/abs/2607.01071) | — | — | — | ◐ scope-respect task (read-time) | ◐ read-time only | — | — | — | ✅ | ✗ (preprint, Jul 2026) |
+| MemStrata [2606.26511](https://arxiv.org/abs/2606.26511) | — | ◐ stale-fact-error vs RAG (no re-ingest) | — | — | — | — | ◐ bi-temporal ledger (not scored as correction-cite) | — (self-eval vs RAG) | ✅ calibrated | ✗ (preprint, Jun 2026) |
 | MemoryAgentBench [2507.05257](https://arxiv.org/abs/2507.05257) | ◐ selective-forgetting snapshot | — | — | — | — | — | — | — | ✅ | ✅ (ICLR 2026) |
-| LongMemEval [2410.10813](https://arxiv.org/abs/2410.10813) | ◐ knowledge-update category (answer-time) | — | — | — | — | — | — | — | ✅ curated chats | ✅ |
+| LongMemEval [2410.10813](https://arxiv.org/abs/2410.10813) | ◐ knowledge-update category (answer-time) | — | — | — | — | — | — | — | ✅ curated chats | ✅ (ICLR 2025) |
 | RippleEdits [2307.12976](https://arxiv.org/abs/2307.12976) | ◐ edit applied (weight surgery) | — | ✅ PV | ◐ RS (relation-level, not tenant) | — | — | — | — (weight editors) | ✅ 5K edits | ✅ (TACL 2024) |
 
 Legend: ✅ = explicitly defined and scored; ◐ = conceptually present / adjacent but
@@ -301,7 +301,7 @@ claim.
 5. Packer, Wooders, Lin, "MemGPT: Towards LLMs as Operating Systems," 2023.
    arXiv:[2310.08560](https://arxiv.org/abs/2310.08560).
 6. Wu et al., "LongMemEval: Benchmarking Chat Assistants on Long-Term Interactive
-   Memory," 2024. arXiv:[2410.10813](https://arxiv.org/abs/2410.10813).
+   Memory," ICLR 2025. arXiv:[2410.10813](https://arxiv.org/abs/2410.10813).
 7. Chhikara et al., "Mem0: Building Production-Ready AI Agents with Scalable
    Long-Term Memory," 2025. arXiv:[2504.19413](https://arxiv.org/abs/2504.19413).
    Docs: [docs.mem0.ai](https://docs.mem0.ai/).
@@ -331,7 +331,7 @@ claim.
 ### In-repo sources cited
 
 - `docs/benchmarks/memcorrect.md` — MemCorrect benchmark definition, metric table,
-  adapter contract, sanity contract. Issue [#1584](https://github.com/joshuawarren/remnic/issues/1584).
+  adapter contract, sanity contract. Issue [#1584](https://github.com/joshuaswarren/remnic/issues/1584).
 - `packages/bench/src/benchmarks/remnic/memcorrect/metrics.ts` — metric function
   definitions (`uptakeLatency`, `nonResurrection`, `collateralDelta`,
   `scopePrecision`, `falseApply`, `reassertion`, `provenanceFidelity`).
@@ -342,13 +342,13 @@ claim.
   re-assertion scenario generation (grounds `scope_precision`, `reassertion`).
 - `packages/bench/src/leaderboard-export.ts` — `MemCorrectLeaderboardRow`.
 - `docs/research/paper-mapping.md` — Remnic feature-to-concept-influence mapping.
-- Glass-box epic [#1572](https://github.com/joshuawarren/remnic/issues/1572):
-  provenance [#1575](https://github.com/joshuawarren/remnic/issues/1575)
-  (`provenance.ts`), faithfulness [#1576](https://github.com/joshuawarren/remnic/issues/1576)
-  (`extraction-faithfulness.ts`), bi-temporal [#1578](https://github.com/joshuawarren/remnic/issues/1578),
-  tombstones [#1579](https://github.com/joshuawarren/remnic/issues/1579)
-  (`lifecycle/`), Correction Contract [#1580](https://github.com/joshuawarren/remnic/issues/1580)
-  (`correction/`), passive corrections [#1581](https://github.com/joshuawarren/remnic/issues/1581),
-  recall handles [#1582](https://github.com/joshuawarren/remnic/issues/1582)
-  (`recall-handles.ts`), chat [#1583](https://github.com/joshuawarren/remnic/issues/1583)
+- Glass-box epic [#1572](https://github.com/joshuaswarren/remnic/issues/1572):
+  provenance [#1575](https://github.com/joshuaswarren/remnic/issues/1575)
+  (`provenance.ts`), faithfulness [#1576](https://github.com/joshuaswarren/remnic/issues/1576)
+  (`extraction-faithfulness.ts`), bi-temporal [#1578](https://github.com/joshuaswarren/remnic/issues/1578),
+  tombstones [#1579](https://github.com/joshuaswarren/remnic/issues/1579)
+  (`lifecycle/`), Correction Contract [#1580](https://github.com/joshuaswarren/remnic/issues/1580)
+  (`correction/`), passive corrections [#1581](https://github.com/joshuaswarren/remnic/issues/1581),
+  recall handles [#1582](https://github.com/joshuaswarren/remnic/issues/1582)
+  (`recall-handles.ts`), chat [#1583](https://github.com/joshuaswarren/remnic/issues/1583)
   (`chat/`).
