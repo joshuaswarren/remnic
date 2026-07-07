@@ -3,6 +3,7 @@
 # Codex, CodeQL) repeatedly flagged across PRs #343-#408 (700+ review comments).
 # Run this before pushing. Zero exit = clean.
 # Updated: 2026-04-12 (added checks 7-10 from iteration 2, 11-14 from iteration 3, 15-17 from iteration 4, 18-21 from iteration 5, 22-23 from iteration 7, 24-26 from iteration 8, 27-29 from iteration 10, 30-34 from iteration 12).
+# 2026-07-07: graduated rules 17 (→check #7), 18 (→check #9), 32 (→check #16), 35 (→check #18), 38 (→check #20), 41 (→check #23), 45 (→check #25), 50 (→check #29), 51 (→#1525 boundary + check #30), 52 (→check #31). CLAUDE.md 45→35 rules.
 # 2026-07-07: graduated rules 39 (→capabilities.test.ts), 42 (→scope-plan.test.ts), 47 (→check #27), 48 (→check #28), 54 (→check #33), 55 (→check-docs-parity.mjs + check #34). CLAUDE.md 51→45 rules.
 # 2026-07-06: added check 37 (rule 53 ad-hoc status exclusion, WARN). Graduated rules 36 (→check #19), 46 (→check #26), 53 (→check #37).
 # 2026-07-05: check 15 graduated to BLOCKING + added codex-* prefix + maxdepth-1 scope (rule 31, PR #TBD).
