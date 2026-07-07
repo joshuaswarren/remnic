@@ -158,16 +158,21 @@ local and frontier judges over a fixed calibration slice, plus the sample
 size, threshold, and a `warning` flag set when κ falls below threshold. It
 lands on local artifacts after `remnic bench judge-calibrate` (§A.3.5).
 
-**What is committed today.** As of this writing, `docs/benchmarks/results/`
-on `main` contains only the two clearly-marked mock placeholders
+**What is committed today.** `docs/benchmarks/results/` on `main` carries
+four artifacts. Two are clearly-marked mock placeholders
 (`2026-04-20-locomo-gpt-4o-mini-mock000.json`,
-`2026-04-20-longmemeval-gpt-4o-mini-mock000.json`), which carry
-`datasetVersion: "mock-fixture"` and zeroed metrics with a "Do NOT cite
-publicly" note. Real Tier L artifacts exist in the branch history (commit
-`8387e7510`, model `qwen2.5-7b-32k:latest`) but are **not merged to `main`**;
-they are referenced by the paper skeleton as the intended reproducibility
-anchor pending their promotion. This appendix documents the *path* to
-produce them; it does not cite numbers from un-merged artifacts.
+`2026-04-20-longmemeval-gpt-4o-mini-mock000.json`) with
+`datasetVersion: "mock-fixture"` and zeroed metrics — **do not cite**. Two are
+**real Tier L artifacts** (`2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json`
+for LoCoMo and `2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json` for
+LongMemEval), both `tier: "local"`, model `qwen2.5-7b-32k:latest` (Q4_K_M,
+non-thinking), seed 1, full dataset (1986/1986 LoCoMo QA across all 10
+conversations; 500/500 LongMemEval-oracle). They are the reproducibility
+anchor the paper skeleton cites — quote their metric values from §6 Results,
+not here. Neither carries `judgeCalibration` yet (the local judge has no
+frontier pair to calibrate against until the Tier F run lands). The Tier F
+frontier artifacts and the trained faithfulness-gate manifest are **not yet
+committed** — see §A.4.3 and §A.5 for their pending state.
 
 ---
 
@@ -352,15 +357,41 @@ The κ lands on the next `remnic bench run` artifact for that benchmark
 (only when the run's judge matches the calibrated pair). Absent calibration
 is the common case — the result is written unchanged.
 
-### A.3.7 Verify and promote the artifact
+### A.3.7 Build, verify, and promote the artifact
+
+`remnic bench run` (§A.3.5) writes a stored `BenchmarkResult` (full
+meta/config/cost/per-task) under the results store
+(`~/.remnic/bench/results/`). The publishable `BenchmarkArtifact` (flat
+metrics + per-task scores + reproducibility envelope) is produced from it by
+the bridge script `scripts/bench/build-artifact-from-result.ts`. This
+two-step split keeps the heavy stored run separate from the lean published
+shape.
 
 ```bash
-# Validate + re-hash every artifact shape; exits non-zero on mismatch:
-pnpm exec tsx scripts/bench/verify-artifact.ts docs/benchmarks/results/*.json
+# 1. Promote the stored result into a publishable BenchmarkArtifact.
+#    --tier local requires the full hardware envelope (--gpu, --vram-gb,
+#    --quantization); the script exits non-zero if any is missing.
+pnpm exec tsx scripts/bench/build-artifact-from-result.ts \
+  ~/.remnic/bench/results/<your-result>.json \
+  docs/benchmarks/results \
+  --tier local \
+  --gpu "NVIDIA RTX 3090" \
+  --vram-gb 24 \
+  --quantization Q4_K_M \
+  --dataset-version locomo-10 \
+  --note "Tier L full run; responder+judge = <model> Q4_K_M (non-thinking)"
 
-# Inspect the reproducibility lock for the last run set:
+# 2. Validate + re-hash the produced artifact; exits non-zero on mismatch:
+pnpm exec tsx scripts/bench/verify-artifact.ts \
+  docs/benchmarks/results/<your-artifact>.json
+
+# 3. Inspect the reproducibility lock for the last run set:
 jq . ~/.remnic/bench/results/MANIFEST.json
 ```
+
+The build script refuses to promote partial or quick-mode runs, runs with a
+`limit`/`trialLimit`, or unpublished benchmark ids — only complete full runs
+may be published (issue #1712 publish-safety guards).
 
 To promote a specific artifact to the public results directory (which is
 gitignored by default), use `git add -f` on exactly the file(s) you intend
@@ -560,8 +591,10 @@ Every command and schema in this appendix traces to a committed source:
 | Preflight + sequential phases | `packages/bench/src/local-lab/{preflight,sequential-phases}.ts` |
 | CLI surface (`--runtime-profile local-lab`, `--local-lab-manifest`, `judge-calibrate`) | `packages/remnic-cli/src/bench-args.ts`, `packages/remnic-cli/src/index.ts` |
 | Benchmark runbook (setup, run, verify, publish) | `docs/benchmarks/runbook.md` |
+| Result→artifact promotion bridge | `scripts/bench/build-artifact-from-result.ts` |
+| Artifact verification | `scripts/bench/verify-artifact.ts` |
 | Published-benchmark readiness + leakage guards | `docs/benchmarks/sota-readiness.md` |
 | Hardware envelope + model-size policy | `model-lab/README.md` |
 | Faithfulness-gate manifest (schema example) | `model-lab/faithfulness-gate/manifest.json` |
 | Faithfulness-record contract | `model-lab/common/jsonl_schema.py` |
-| Mock artifacts (do-not-cite) | `docs/benchmarks/results/2026-04-20-*-mock000.json` |
+| Committed artifacts (mock placeholders + real Tier L) | `docs/benchmarks/results/2026-{04-20-mock000,07-07-qwen2.5-7b}*.json` |
