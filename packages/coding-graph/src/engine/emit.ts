@@ -365,7 +365,21 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
           const memberExpr = cap.node.parent;
           const objectNode = memberExpr?.childForFieldName("object");
           if (objectNode) {
-            routeObject = objectNode.text;
+            // Normalize nested receivers to their tail property so a call
+            // like this.client.get("/api", opts, cb) is caught by the HTTP-
+            // client exclusion. objectNode.text for `this.client` is
+            // "this.client", which misses the ^client$ pattern; descend to
+            // the rightmost property (chatgpt-codex-connector #1688 P2:
+            // 'Normalize receiver names before client-route filtering').
+            let receiver = objectNode;
+            for (
+              let prop = receiver.childForFieldName("property");
+              prop;
+              prop = receiver.childForFieldName("property")
+            ) {
+              receiver = prop;
+            }
+            routeObject = receiver.text;
           }
         } else if (cap.name === "route.path") {
           pathTemplate = cleanModuleSpecifier(cap.node.text);

@@ -1345,6 +1345,36 @@ test("1688-route-4: HTTP client objects (http/client/axios) do NOT produce route
   await engine.dispose();
 });
 
+test("1688-route-5: nested HTTP client receivers (this.client) do NOT produce routes", async () => {
+  // A nested receiver keeps its full expression in objectNode.text
+  // ("this.client"), which missed the ^client$ pattern and let
+  // this.client.get("/api", opts, cb) emit a spurious route (marking cb as
+  // a route handler). The receiver is now normalized to its tail property
+  // (chatgpt-codex-connector #1688 P2: 'Normalize receiver names').
+  const engine = createCodingGraphEngine();
+  const code = [
+    'this.client.get("/api/users", { headers: {} }, cb);',
+    'svc.httpClient.post("/api/data", { id: 1 }, handler);',
+    'foo.bar.client.put("/api/item", 42);',
+    "",
+    "function getUsers(req, res) { res.json([]); }",
+    'app.get("/users", getUsers);',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/client-nested.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should still capture the real app.get /users route");
+  const clientRoutes = routes.filter((r) => r.pathTemplate.startsWith("/api"));
+  assert.equal(
+    clientRoutes.length,
+    0,
+    "nested-receiver client calls (this.client / svc.httpClient / foo.bar.client) must NOT produce routes",
+  );
+  await engine.dispose();
+});
+
 
 
 
