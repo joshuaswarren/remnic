@@ -216,11 +216,34 @@ def _score_offline(args: argparse.Namespace) -> int:
 
     gold_rows = load_jsonl(args.held_out)
     pred_rows = load_jsonl(args.predictions)
+    # Detection-only check: when every predicted row has an empty corrections[]
+    # (v1 detection model), span overlap is not meaningful — empty-vs-empty
+    # gold assertions (retract-polarity corrections) would score a misleading
+    # 1.0, disagreeing with the inline path which omits it. Skip it and declare
+    # spanExtraction not-applicable-v1 (codex P2, cursor PAzpC). The v2
+    # causal-LM path carries corrections[] and span scoring is meaningful.
+    all_detection_only = all(
+        not (pred.get("corrections") or [])
+        for pred in pred_rows
+    )
+    if all_detection_only:
+        span_overlaps: list[float] | None = None
+    else:
+        span_overlaps = _span_overlaps(gold_rows, pred_rows)
     block = correction_held_out_block(
         _gold_labels(gold_rows),
         _gold_labels(pred_rows),
-        span_overlaps=_span_overlaps(gold_rows, pred_rows),
+        span_overlaps=span_overlaps,
     )
+    if all_detection_only:
+        block["spanExtraction"] = {
+            "status": "not-applicable-v1",
+            "$comment": (
+                "Detection-only predictions (empty corrections[]); "
+                "span overlap omitted to match the inline path. "
+                "Span extraction is the v2 causal-LM follow-up."
+            ),
+        }
     out: dict[str, Any] = {"heldOut": block}
     # Offline path: an operator who ran inference separately (e.g. a served
     # model over the held-out) attaches the per-call latency samples here so
