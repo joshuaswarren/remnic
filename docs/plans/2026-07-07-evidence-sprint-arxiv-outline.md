@@ -12,7 +12,7 @@
 
 **Thesis / what's new (the paper must not overclaim raw accuracy — it leads with these three):**
 1. **MemCorrect** — a system-agnostic benchmark for *memory correction and steerability*. **Novelty is a composition/protocol claim, NOT "first to measure correction"** — StateBench, STALE, MemSyco-Bench, MemStrata, and MemoryAgentBench's FactConsolidation each already test a slice, several published in the last ~60 days (see the Novelty findings section at the bottom). Headline it honestly as *the first benchmark to evaluate agent-memory correction as an end-to-end, system-agnostic protocol* combining adversarial non-resurrection + collateral safety + namespace-scoped precision + write-path false-apply + revocation in one deterministic, adapter-scoreable corpus.
-2. **Reproducible on consumer hardware** — a two-tier (local RTX 3090 / frontier) protocol with committed repro manifests, so results are independently reproducible on one GPU. Nobody else publishes this.
+2. **Reproducible on consumer hardware** — a two-tier (local RTX 3090 / frontier) protocol with committed repro manifests, so results are independently reproducible on one GPU — a reproducibility posture few if any competitors match (StateBench ships a deterministic corpus, but as a vendor white paper, not an independently-rerunnable consumer-hardware leaderboard).
 3. **Glass-box trust** — provenance spans, a faithfulness gate, TrustScore, and bi-temporal validity make recalls explainable and auditable, positioned against documented time-sensitive-memory failures in closed systems.
 
 **Section-by-section outline:**
