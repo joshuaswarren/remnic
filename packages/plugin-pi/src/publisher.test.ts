@@ -53,6 +53,26 @@ class ReplacedRootFailingPiPublisher extends PiMemoryExtensionPublisher {
   }
 }
 
+class SymlinkSwapFailingPiPublisher extends PiMemoryExtensionPublisher {
+  constructor(
+    private readonly configPath: string,
+    private readonly symlinkTarget: string,
+  ) {
+    super();
+  }
+
+  // Runs after config/wrapper are written (renderInstructions feeds the readme
+  // write). Replace the just-written config with a symlink to an external file,
+  // simulating an adversary swapping the file between snapshot and restore, then
+  // fail so the rollback path runs.
+  async renderInstructions(ctx: PublishContext): Promise<string> {
+    await super.renderInstructions(ctx);
+    fs.rmSync(this.configPath, { force: true });
+    fs.symlinkSync(this.symlinkTarget, this.configPath, "file");
+    throw new Error("readme write failed");
+  }
+}
+
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) {
     Reflect.deleteProperty(process.env, name);
@@ -1725,4 +1745,289 @@ test("resolveBunBinary fallback skips a stale non-executable ~/.bun/bin/bun", (t
   if (resolved !== null) {
     fs.accessSync(resolved, fs.constants.X_OK);
   }
+});
+
+// ── Regression (#1662): a first-time `remnic connectors install omp` without
+// Bun must be fully retryable. The OmpPreBundleError catch restores every
+// extension file/dir snapshot (so the root is wiped clean) while SKIPPING only
+// the token rollback (the CLI already committed the token; the loader
+// self-heals dist-bundle on first load). After the user installs Bun, a second
+// `connectors install omp` must succeed as if the first never happened — no
+// half-written files, no leftover temp artefacts, no stale dirs.
+test("omp first-time publish without bun is fully retryable after installing bun", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-omp-retry-"));
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  const extensionRoot = path.join(home, ".omp", "agent", "extensions", "remnic");
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+  const previousOmpProfile = process.env.OMP_PROFILE;
+  const previousPiProfile = process.env.PI_PROFILE;
+  const previousBunBin = process.env.REMNIC_OMP_BUN_BIN;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  delete process.env.PI_CODING_AGENT_DIR;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_PROFILE;
+  // No bun available → resolveBunBinary returns null → pre-bundle fails.
+  process.env.REMNIC_OMP_BUN_BIN = path.join(root, "does-not-exist");
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_CODING_AGENT_DIR", previousCodingAgentDir);
+    restoreEnv("OMP_PROFILE", previousOmpProfile);
+    restoreEnv("PI_PROFILE", previousPiProfile);
+    restoreEnv("REMNIC_OMP_BUN_BIN", previousBunBin);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "omp", token: "omp-token", createdAt: "2026-07-06T00:00:00.000Z" }],
+  });
+
+  const log = { info: () => undefined, warn: () => undefined, error: () => undefined };
+  const publishCtx = {
+    config: { memoryDir: path.join(root, "memory") },
+    skillsRoot: path.join(root, "memory", "skills"),
+    log,
+  };
+
+  // ── First attempt: no Bun → OmpPreBundleError.
+  await assert.rejects(
+    () => new OmpMemoryExtensionPublisher().publish(publishCtx),
+    /requires `bun`.*omp/i,
+  );
+
+  // The extension root was newly created on this first attempt, so rollback
+  // must wipe it entirely — no half-written config/wrapper/readme/loader left
+  // behind to confuse the retry.
+  assert.equal(fs.existsSync(extensionRoot), false, "extension root must be wiped after first-time pre-bundle failure");
+  // The connector token must survive (OmpPreBundleError skips token rollback)
+  // so a non-`--force` retry is not blocked.
+  const tokenAfterFailure = loadTokenStore().tokens.find((entry) => entry.connector === "omp");
+  assert.equal(tokenAfterFailure?.token, "omp-token", "omp token must be preserved for retry");
+
+  // ── Retry: install Bun (fake), re-run the same install.
+  process.env.REMNIC_OMP_BUN_BIN = createFakeBun(root);
+
+  const result = await new OmpMemoryExtensionPublisher().publish(publishCtx);
+  assert.equal(result.hostId, "omp");
+  assert.equal(result.extensionRoot, extensionRoot);
+
+  // Every owned file must be present and complete — the retry wrote them as if
+  // the failed first attempt never happened.
+  const expectedFiles = [
+    "remnic.config.json",
+    "index.ts",
+    "README.md",
+    "loader.js",
+    "package.json",
+    "postinstall-bundle.cjs",
+  ];
+  for (const fileName of expectedFiles) {
+    const filePath = path.join(extensionRoot, fileName);
+    assert.ok(fs.existsSync(filePath), `retry must write ${fileName}`);
+    assert.ok(fs.statSync(filePath).size > 0, `retry must write non-empty ${fileName}`);
+  }
+  // dist-bundle must exist (the retry pre-bundled successfully).
+  assert.ok(
+    fs.existsSync(path.join(extensionRoot, "dist-bundle", "index.js")),
+    "retry must produce dist-bundle/index.js",
+  );
+  // No leftover temp/backup artefacts from either attempt.
+  for (const entry of fs.readdirSync(extensionRoot)) {
+    assert.ok(
+      !/\.tmp-\d+-\d+$/.test(entry) && !entry.startsWith(".dist-bundle."),
+      `retry must not leave temp/backup artefacts: ${entry}`,
+    );
+  }
+});
+
+// ── Regression (#1662): restoring a pre-existing file must use
+// "write-new-before-delete-old" (rules 42/54). The prior content is written to
+// a temp path and renamed into place, so the live file is never truncated. If
+// the restore write itself fails (disk full, EACCES, …), the file keeps its
+// current on-disk content intact rather than being left half-written. We force
+// the restore temp-write to fail and assert the publish-written content
+// survives uncorrupted. (Forward writes pass string data + encoding; restore
+// passes Buffer data — the mock distinguishes the two so only the restore
+// fails.)
+test("restore uses write-new-before-delete-old: a failed restore leaves the file intact", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-restore-atomic-"));
+  const home = path.join(root, "home");
+  const piAgentHome = path.join(root, "pi-agent");
+  const extensionRoot = path.join(piAgentHome, "extensions", "remnic");
+  const configPath = path.join(extensionRoot, "remnic.config.json");
+  fs.mkdirSync(extensionRoot, { recursive: true });
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  // Pre-existing prior config — what the snapshot will capture and would
+  // restore if the restore succeeded. Publish merges prior fields, so the
+  // raw prior content is captured for a byte-for-byte "not restored" check.
+  const priorRaw = `${JSON.stringify({ priorConfig: true }, null, 2)}\n`;
+  fs.writeFileSync(configPath, priorRaw);
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousPiAgentHome = process.env.PI_AGENT_HOME;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  process.env.PI_AGENT_HOME = piAgentHome;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_AGENT_HOME", previousPiAgentHome);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "pi", token: "pi-token", createdAt: "2026-07-06T00:00:00.000Z" }],
+  });
+
+  // Sabotage only the restore temp-write: Buffer data written to a `.tmp-`
+  // path. Forward atomicWriteFile passes a string (with encoding), so publish
+  // writes succeed; only the rollback restore (Buffer snapshot content) fails.
+  const realWriteFileSync = fs.writeFileSync;
+  let restoreAttempted = false;
+  fs.writeFileSync = function sabotagedWriteFileSync(
+    file: fs.PathOrFileDescriptor,
+    data: string | NodeJS.ArrayBufferView,
+    options?: fs.WriteFileOptions,
+  ): void {
+    if (
+      typeof file === "string" &&
+      Buffer.isBuffer(data) &&
+      /\.tmp-\d+-\d+$/u.test(file)
+    ) {
+      restoreAttempted = true;
+      const err = Object.assign(new Error("simulated restore write failure (ENOSPC)"), { code: "ENOSPC" });
+      throw err;
+    }
+    return realWriteFileSync.call(fs, file, data, options);
+  } as typeof fs.writeFileSync;
+  t.after(() => {
+    fs.writeFileSync = realWriteFileSync;
+  });
+
+  const warnings: string[] = [];
+  await assert.rejects(
+    () =>
+      new FailingPiPublisher().publish({
+        config: { memoryDir: path.join(root, "memory") },
+        skillsRoot: path.join(root, "memory", "skills"),
+        rollbackTokenEntry: {
+          connector: "pi",
+          token: "pi-token",
+          createdAt: "2026-07-06T00:00:00.000Z",
+        },
+        log: {
+          info: () => undefined,
+          warn: (message: string) => warnings.push(message),
+          error: () => undefined,
+        },
+      }),
+    /readme write failed/,
+  );
+
+  assert.ok(restoreAttempted, "the restore must have attempted a temp write");
+  // The restore failure must surface as a rollback warning.
+  assert.match(warnings.join("\n"), /rollback failed/i);
+  // CRITICAL — write-new-before-delete-old: the config file is NOT truncated
+  // or half-written. It still holds the complete content publish wrote
+  // (merge of defaults + prior fields + the auth token), because the restore
+  // temp-write failed BEFORE the live file was touched. The surviving file is
+  // the publish-written version (has authToken + recallMode), NOT the raw
+  // prior content (which had neither) — proving the restore did not land.
+  const survivingRaw = fs.readFileSync(configPath, "utf8");
+  assert.notEqual(survivingRaw, priorRaw, "config must NOT be the raw prior content (restore did not run)");
+  assert.ok(survivingRaw.length > priorRaw.length, "config must be the larger publish-written content, not the truncated/raw prior");
+  const survivingConfig = JSON.parse(survivingRaw) as Record<string, unknown>;
+  assert.equal(
+    survivingConfig.authToken,
+    "pi-token",
+    "config must retain publish-written auth token after a failed restore (write-new-before-delete-old)",
+  );
+  assert.equal(
+    survivingConfig.recallMode,
+    "auto",
+    "config must retain publish-written recallMode after a failed restore",
+  );
+  // No lingering temp artefact.
+  for (const entry of fs.readdirSync(extensionRoot)) {
+    assert.ok(!/\.tmp-\d+-\d+$/u.test(entry), `leftover restore temp file: ${entry}`);
+  }
+});
+
+// ── Regression (#1662): rollback-symlink TOCTOU defense-in-depth. If a file
+// is swapped for a symlink AFTER the snapshot but BEFORE the restore, the
+// restore must NOT write the prior content through the symlink to an arbitrary
+// target. The atomic temp+rename restore detects the symlink and aborts (the
+// final rename replaces a symlink rather than following it, and we re-check
+// immediately before the rename to surface tampering). The pre-symlink
+// behaviour was `fs.writeFileSync(path, snapshot)` which writes THROUGH a
+// symlink — corrupting the symlink's target.
+test("restore does not write through a symlink swapped in after the snapshot (TOCTOU defense)", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "remnic-restore-symlink-toctou-"));
+  const home = path.join(root, "home");
+  const piAgentHome = path.join(root, "pi-agent");
+  const extensionRoot = path.join(piAgentHome, "extensions", "remnic");
+  const configPath = path.join(extensionRoot, "remnic.config.json");
+  // External file the adversary swaps the config symlink to point at.
+  const externalTarget = path.join(root, "external-target.json");
+  const externalOriginal = `${JSON.stringify({ externalOriginal: true }, null, 2)}\n`;
+  fs.mkdirSync(extensionRoot, { recursive: true });
+  fs.mkdirSync(path.join(home, ".remnic"), { recursive: true });
+  // Pre-existing prior config — what the snapshot captures and would restore.
+  fs.writeFileSync(configPath, `${JSON.stringify({ priorConfig: true }, null, 2)}\n`);
+  fs.writeFileSync(externalTarget, externalOriginal);
+
+  const previousHome = process.env.HOME;
+  const previousUserProfile = process.env.USERPROFILE;
+  const previousPiAgentHome = process.env.PI_AGENT_HOME;
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  process.env.PI_AGENT_HOME = piAgentHome;
+  t.after(() => {
+    restoreEnv("HOME", previousHome);
+    restoreEnv("USERPROFILE", previousUserProfile);
+    restoreEnv("PI_AGENT_HOME", previousPiAgentHome);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  saveTokenStore({
+    tokens: [{ connector: "pi", token: "pi-token", createdAt: "2026-07-06T00:00:00.000Z" }],
+  });
+
+  const warnings: string[] = [];
+  await assert.rejects(
+    () =>
+      new SymlinkSwapFailingPiPublisher(configPath, externalTarget).publish({
+        config: { memoryDir: path.join(root, "memory") },
+        skillsRoot: path.join(root, "memory", "skills"),
+        rollbackTokenEntry: {
+          connector: "pi",
+          token: "pi-token",
+          createdAt: "2026-07-06T00:00:00.000Z",
+        },
+        log: {
+          info: () => undefined,
+          warn: (message: string) => warnings.push(message),
+          error: () => undefined,
+        },
+      }),
+    /readme write failed/,
+  );
+
+  // The restore must have refused the symlink (logged as a rollback warning).
+  assert.match(warnings.join("\n"), /must not be a symlink/);
+  // CRITICAL — the symlink's target is untouched: the prior config content was
+  // never written through the symlink. Under the old `fs.writeFileSync(path,
+  // snapshot)` restore, this file would have been overwritten with the prior
+  // config content.
+  assert.equal(
+    fs.readFileSync(externalTarget, "utf8"),
+    externalOriginal,
+    "symlink target must not be written through during restore (TOCTOU defense)",
+  );
 });
