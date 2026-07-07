@@ -1084,3 +1084,40 @@ test("claude-cli provider fails fast when opts.signal is already aborted (no cla
   await assert.rejects(provider.complete("hello", { signal: controller.signal }));
   assert.equal(spawned, 0, "must not spawn claude -p for an already-aborted call");
 });
+
+test("claude-cli usage-limit retries do NOT consume the transient maxAttempts budget", async () => {
+  // maxAttempts=2 means at most ONE transient retry. But several usage-limit
+  // backoffs must NOT eat that budget: after N usage-limit cycles, a later
+  // transient failure should still get its one transient retry.
+  let call = 0;
+  const originalSetTimeout = global.setTimeout;
+  // @ts-expect-error -- test-only: short-circuit the backoff sleep.
+  global.setTimeout = ((fn) => originalSetTimeout(fn, 0));
+  try {
+    const provider = createClaudeCliProvider(
+      { provider: "claude-cli", model: "opus", retryOptions: { maxAttempts: 2, baseBackoffMs: 1, max429WaitMs: 10 * 60_000 } },
+      {
+        async runClaudeCli() {
+          call += 1;
+          if (call <= 2) {
+            // two usage-limit failures first (budget-bounded, must not count against maxAttempts)
+            return { status: 1, signal: null, stdout: "", stderr: "Claude AI usage limit reached, resets at 5pm" };
+          }
+          if (call === 3) {
+            // now a transient signal failure — the ONE allowed transient retry must still be available
+            return { status: null, signal: "SIGTERM", stdout: "", stderr: "killed" };
+          }
+          return { status: 0, signal: null, stdout: JSON.stringify({ is_error: false, result: "recovered" }), stderr: "" };
+        },
+      },
+    );
+    const result = await provider.complete("hello");
+    assert.equal(result.text, "recovered");
+    // 2 usage-limit + 1 transient-fail + 1 transient-retry-success = 4 calls.
+    // If the counters were shared, the transient retry at call 3 would have been
+    // denied (attempt already >= maxAttempts) and it would have thrown.
+    assert.equal(call, 4);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+});

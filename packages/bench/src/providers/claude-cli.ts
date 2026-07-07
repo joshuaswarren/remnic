@@ -303,7 +303,14 @@ class ClaudeCliProvider implements LlmProvider {
     const usageLimitBudgetMs = normalizeUsageLimitMaxWaitMs(this.config.retryOptions?.max429WaitMs);
     const loopStartedAt = performance.now();
 
-    for (let attempt = 1; ; attempt += 1) {
+    // These two retry mechanisms are INDEPENDENT and must not share a counter:
+    // usage-limit backoff is budget-bounded (deliberately bypasses maxAttempts),
+    // while transient-failure retries are count-bounded by maxAttempts. A single
+    // shared counter let usage-limit cycles prematurely exhaust the transient
+    // budget (and inflated each mechanism's backoff exponent). (#1735 review)
+    let transientAttempt = 1;
+    let usageLimitAttempt = 1;
+    while (true) {
       const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-claude-cli-"));
 
       try {
@@ -317,26 +324,28 @@ class ClaudeCliProvider implements LlmProvider {
           // or "429" must never trigger backoff.
           if (isClaudeUsageLimitSignal(`${result.stderr}\n${result.stdout}`)) {
             await sleepBeforeUsageLimitRetry({
-              attempt,
+              attempt: usageLimitAttempt,
               loopStartedAt,
               budgetMs: usageLimitBudgetMs,
               failureSummary: summarizeProcessOutput(result.stderr, result.stdout),
               signal: opts.signal,
             });
+            usageLimitAttempt += 1;
             continue;
           }
           const exitLabel = result.signal ? `signal ${result.signal}` : `exit ${result.status ?? "unknown"}`;
           const error = new Error(
             `Claude CLI completion failed (${exitLabel}): ${summarizeProcessOutput(result.stderr, result.stdout)}`,
           );
-          if (attempt < maxAttempts && isRetryableClaudeCliResult(result)) {
+          if (transientAttempt < maxAttempts && isRetryableClaudeCliResult(result)) {
             await sleepBeforeClaudeCliRetry({
-              attempt,
+              attempt: transientAttempt,
               baseBackoffMs: this.config.retryOptions?.baseBackoffMs,
               maxStepMs: 30_000,
               capMs: Number.POSITIVE_INFINITY,
               signal: opts.signal,
             });
+            transientAttempt += 1;
             continue;
           }
           throw error;
@@ -352,12 +361,13 @@ class ClaudeCliProvider implements LlmProvider {
             )
           ) {
             await sleepBeforeUsageLimitRetry({
-              attempt,
+              attempt: usageLimitAttempt,
               loopStartedAt,
               budgetMs: usageLimitBudgetMs,
               failureSummary: summarizeProcessOutput(result.stderr, result.stdout),
               signal: opts.signal,
             });
+            usageLimitAttempt += 1;
             continue;
           }
           throw new Error(
@@ -379,12 +389,13 @@ class ClaudeCliProvider implements LlmProvider {
           // failure shapes instead of throwing a terminal "no result text".
           if (isClaudeUsageLimitSignal(`${result.stderr}\n${payload.error ?? ""}`)) {
             await sleepBeforeUsageLimitRetry({
-              attempt,
+              attempt: usageLimitAttempt,
               loopStartedAt,
               budgetMs: usageLimitBudgetMs,
               failureSummary: summarizeProcessOutput(result.stderr, result.stdout),
               signal: opts.signal,
             });
+            usageLimitAttempt += 1;
             continue;
           }
           throw new Error(
