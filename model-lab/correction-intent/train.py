@@ -329,6 +329,22 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = args.runs_dir / args.version_tag
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Persist the held-out gold BEFORE training (mirrors faithfulness-gate
+    # train.py): write the deterministic seeded split to out_dir before
+    # trainer.train() so a crash after save_model can never leave an outdated
+    # gold file paired with a newer checkpoint — inline eval always scores the
+    # split the model trained on (cursor, thread #1745). Version-scoped so a
+    # second --version-tag run never overwrites an older split.
+    heldout_path = out_dir / "correction-heldout.jsonl"
+    with heldout_path.open("w", encoding="utf-8") as handle:
+        for example in split["test"]:
+            handle.write(json.dumps({
+                "turns": example["turns"],
+                "label": example["label"],
+                "corrections": example.get("corrections", []),
+                "morphology": example.get("morphology", ""),
+                "sourceId": example.get("sourceId", ""),
+            }, sort_keys=True, ensure_ascii=False) + "\n")
     # bf16 is the operator-controlled escape hatch (--mixed-precision). It must
     # drive the Trainer's ``bf16`` flag (NOT ``fp16``): setting fp16=True would
     # run FP16 mixed precision, a different numerical mode than the documented
@@ -380,23 +396,6 @@ def main(argv: list[str] | None = None) -> int:
     # writes epoch checkpoints under <output_dir>/checkpoint-*, not the root).
     trainer.save_model(str(out_dir))
     tokenizer.save_pretrained(str(out_dir))
-
-    # Persist the held-out gold next to the checkpoint (version-scoped) so
-    # eval.py defaults to <checkpoint>/correction-heldout.jsonl and an older
-    # checkpoint is never scored against a newer run's split. The full record
-    # (turns + corrections[]) is kept so eval.py can compute the span-overlap
-    # tiebreaker against gold correctedAssertions.
-    heldout_path = out_dir / "correction-heldout.jsonl"
-    with heldout_path.open("w", encoding="utf-8") as handle:
-        for example in split["test"]:
-            handle.write(json.dumps({
-                "turns": example["turns"],
-                "label": example["label"],
-                "corrections": example.get("corrections", []),
-                "morphology": example.get("morphology", ""),
-                "sourceId": example.get("sourceId", ""),
-            }, sort_keys=True, ensure_ascii=False) + "\n")
-
 
     print(json.dumps({
         "status": "trained",

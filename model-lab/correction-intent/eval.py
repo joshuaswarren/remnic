@@ -308,6 +308,18 @@ def _score_inline(args: argparse.Namespace, held_out_path: Path) -> int:
         return 2
 
     rows = load_jsonl(held_out_path)
+    # Guard against an empty/whitespace-only held-out file (mirrors
+    # faithfulness-gate/eval.py): an empty split would IndexError on the
+    # warmup call (rows[0]) and surface a cryptic failure inside summarize().
+    # Exit with a clear message instead (cursor, thread #1745).
+    if not rows:
+        print(
+            f"eval.py: held-out file {held_out_path} is empty — no examples to "
+            f"score. Re-run train.py (--version-tag {args.version_tag}) so it "
+            "writes correction-heldout.jsonl before training.",
+            file=sys.stderr,
+        )
+        return 2
     gold = _gold_labels(rows)
 
     # Load the tokenizer from the checkpoint train.py saved (it writes both
