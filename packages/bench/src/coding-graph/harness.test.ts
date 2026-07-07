@@ -870,5 +870,22 @@ test("guard ordering: corrupt v2 report with truncated nested metric field fails
   assert.equal(result.skipped, undefined);
   assert.ok(result.summary.includes("incrementalModifiedUpdate.p95"), "summary must name the missing nested field");
 });
+test("guard ordering: corrupt v2 report missing p50 (but has p95) fails the gate", () => {
+  // The deepened guard must check BOTH p50 and p95, not just p95.
+  // extractMetrics reads both percentiles; a report with p95 present
+  // but p50 missing previously passed the guard and the comparison loop
+  // silently skipped the undefined p50 metric (cursor Bugbot: 'Regression
+  // gate skips missing p50').
+  const report = reportWithMachine(SAME_MACHINE);
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const missingP50Report: CodingGraphBenchReport = {
+    ...report,
+    incrementalModifiedUpdate: { p50: undefined as unknown as number, p95: 3, iterations: 20, samplesMs: [] },
+  };
+  const result = checkCodingGraphRegression(missingP50Report, baseline, 30);
+  assert.equal(result.passed, false, "missing p50 must fail the gate");
+  assert.ok(result.summary.includes("incrementalModifiedUpdate.p50"), "summary must name the missing p50 field");
+});
+
 
 

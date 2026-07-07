@@ -158,11 +158,6 @@ export function checkCodingGraphRegression(
   }
 
   // Field-presence guard: a corrupt/partial v2 report may carry
-  // schemaVersion 2 yet lack a v2-only field (a hand-edited or truncated
-  // JSON). extractMetrics dereferences these fields; without this guard
-  // it throws an uncaught TypeError instead of a structured gate failure
-  // (cursor #1688 review: 'v2 report crashes regression gate').
-  // Field-presence guard: a corrupt/partial v2 report may carry
   // schemaVersion 2 yet lack a required metric field OR a nested sub-field
   // (a hand-edited or truncated JSON). extractMetrics dereferences both the
   // top-level field and its nested p50/p95; without this guard a missing
@@ -172,7 +167,9 @@ export function checkCodingGraphRegression(
   const missingFields: string[] = [];
   if (report.incrementalUpdate == null) missingFields.push("incrementalUpdate");
   if (report.incrementalModifiedUpdate == null) missingFields.push("incrementalModifiedUpdate");
+  if (report.incrementalUpdate?.p50 == null) missingFields.push("incrementalUpdate.p50");
   if (report.incrementalUpdate?.p95 == null) missingFields.push("incrementalUpdate.p95");
+  if (report.incrementalModifiedUpdate?.p50 == null) missingFields.push("incrementalModifiedUpdate.p50");
   if (report.incrementalModifiedUpdate?.p95 == null) missingFields.push("incrementalModifiedUpdate.p95");
   if (report.tracePath?.p95 == null) missingFields.push("tracePath.p95");
   if (report.searchGraph?.p95 == null) missingFields.push("searchGraph.p95");
