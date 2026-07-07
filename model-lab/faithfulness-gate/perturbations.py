@@ -281,6 +281,393 @@ SEED_TRIPLES: tuple[SeedTriple, ...] = (
         quantity_phrase="five thousand",
         quantity_shifted="two hundred",
     ),
+    # ----------------------------------------------------------------------
+    # GPU-run volume expansion (issue #1585 GPU-run follow-up).
+    #
+    # PR1 shipped the six fixtures above as the CI-testable seed bank (the
+    # generator's determinism + perturbation selfcheck run on those six
+    # alone). They produce 30 records — enough to prove the pipeline but far
+    # too few for a held-out split with meaningful per-class F1 (a 10% holdout
+    # of 30 is 3 examples). Issue #1585 names the fixture bank itself as the
+    # "volume driver" and the line above ("extending it ... scales the dataset
+    # without touching perturbation logic") as the documented extension
+    # point. These fixtures follow the same construction rules as the original
+    # six — fact == quote (identity baseline), a meaning-preserving paraphrase,
+    # a grammatical negation, and ONE mutually-exclusive substitution target
+    # (entity / date / quantity, rotated for label coverage). Labels remain
+    # trustworthy by construction: every record is still a pure perturbation
+    # of a hand-verified fixture, so no model is in the loop.
+    #
+    # The original six fixtures are NOT modified, so the CI selftest cases
+    # (which reference them by source_id) still resolve unchanged.
+    # ----------------------------------------------------------------------
+    # --- Entity swaps (canonical → mutually-exclusive value ⇒ contradicted) ---
+    SeedTriple(
+        source_id="lang-python",
+        fact_text="The service is written in Python.",
+        quote="The service is written in Python.",
+        context="A new hire asked which language the codebase uses.",
+        entities={"Python": "Ruby"},
+        paraphrase="Python is the implementation language for the service.",
+        negated_text="The service is not written in Python.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="region-useast",
+        fact_text="The primary deployment region is us-east-1.",
+        quote="The primary deployment region is us-east-1.",
+        context="Ops shared the failover topology during the incident review.",
+        entities={"us-east-1": "eu-west-1"},
+        paraphrase="us-east-1 is where the primary deployment lives.",
+        negated_text="The primary deployment region is not us-east-1.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="db-postgres",
+        fact_text="The analytics database is Postgres.",
+        quote="The analytics database is Postgres.",
+        context="Data engineering confirmed the warehouse engine.",
+        entities={"Postgres": "MongoDB"},
+        paraphrase="Postgres backs the analytics database.",
+        negated_text="The analytics database is not Postgres.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="framework-react",
+        fact_text="The frontend uses React.",
+        quote="The frontend uses React.",
+        context="The web lead stated the UI stack in the architecture review.",
+        entities={"React": "Vue"},
+        paraphrase="React is the frontend framework in use.",
+        negated_text="The frontend does not use React.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="currency-usd",
+        fact_text="Prices are listed in USD.",
+        quote="Prices are listed in USD.",
+        context="Finance clarified the catalog currency.",
+        entities={"USD": "EUR"},
+        paraphrase="USD is the currency prices are listed in.",
+        negated_text="Prices are not listed in USD.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="day-monday",
+        fact_text="The standup is on Monday.",
+        quote="The standup is on Monday.",
+        context="The scrum master posted the meeting cadence.",
+        entities={"Monday": "Thursday"},
+        paraphrase="Monday is when the standup happens.",
+        negated_text="The standup is not on Monday.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="country-germany",
+        fact_text="The office is in Germany.",
+        quote="The office is in Germany.",
+        context="HR listed the registered office location.",
+        entities={"Germany": "France"},
+        paraphrase="Germany is where the office is located.",
+        negated_text="The office is not in Germany.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="proto-https",
+        fact_text="The API requires HTTPS.",
+        quote="The API requires HTTPS.",
+        context="Security noted the transport requirement.",
+        entities={"HTTPS": "HTTP"},
+        paraphrase="HTTPS is required by the API.",
+        negated_text="The API does not require HTTPS.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="cache-redis",
+        fact_text="The cache layer uses Redis.",
+        quote="The cache layer uses Redis.",
+        context="Platform documented the caching backend.",
+        entities={"Redis": "Memcached"},
+        paraphrase="Redis powers the cache layer.",
+        negated_text="The cache layer does not use Redis.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="os-linux",
+        fact_text="The servers run Linux.",
+        quote="The servers run Linux.",
+        context="Infra confirmed the host operating system.",
+        entities={"Linux": "Windows"},
+        paraphrase="Linux is the operating system on the servers.",
+        negated_text="The servers do not run Linux.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    # --- Date shifts (date token → different date ⇒ contradicted) ---
+    SeedTriple(
+        source_id="founded-2019",
+        fact_text="The company was founded in 2019.",
+        quote="The company was founded in 2019.",
+        context="The about page lists the founding year.",
+        entities=None,
+        paraphrase="Founded in 2019, the company is a few years old.",
+        negated_text="The company was not founded in 2019.",
+        date_phrase="2019",
+        date_shifted="2021",
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="launched-apr2024",
+        fact_text="The product launched in April 2024.",
+        quote="The product launched in April 2024.",
+        context="Marketing announced the general-availability date.",
+        entities=None,
+        paraphrase="April 2024 was the product launch month.",
+        negated_text="The product did not launch in April 2024.",
+        date_phrase="April 2024",
+        date_shifted="April 2025",
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="hired-jun2023",
+        fact_text="She joined the team in June 2023.",
+        quote="She joined the team in June 2023.",
+        context="Her start date was shared in the team channel.",
+        entities=None,
+        paraphrase="June 2023 is when she joined the team.",
+        negated_text="She did not join the team in June 2023.",
+        date_phrase="June 2023",
+        date_shifted="June 2022",
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="migrated-oct2022",
+        fact_text="The data was migrated in October 2022.",
+        quote="The data was migrated in October 2022.",
+        context="The migration runbook recorded the cutover month.",
+        entities=None,
+        paraphrase="October 2022 was the data migration month.",
+        negated_text="The data was not migrated in October 2022.",
+        date_phrase="October 2022",
+        date_shifted="October 2024",
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="certified-2020",
+        fact_text="The process was certified in 2020.",
+        quote="The process was certified in 2020.",
+        context="Compliance published the certification year.",
+        entities=None,
+        paraphrase="Certification for the process was achieved in 2020.",
+        negated_text="The process was not certified in 2020.",
+        date_phrase="2020",
+        date_shifted="2023",
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="renamed-feb2024",
+        fact_text="The product was renamed in February 2024.",
+        quote="The product was renamed in February 2024.",
+        context="The changelog noted the rename.",
+        entities=None,
+        paraphrase="February 2024 was when the product was renamed.",
+        negated_text="The product was not renamed in February 2024.",
+        date_phrase="February 2024",
+        date_shifted="February 2025",
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="deprecated-2021",
+        fact_text="The legacy API was deprecated in 2021.",
+        quote="The legacy API was deprecated in 2021.",
+        context="The deprecation notice carried the year.",
+        entities=None,
+        paraphrase="2021 is when the legacy API got deprecated.",
+        negated_text="The legacy API was not deprecated in 2021.",
+        date_phrase="2021",
+        date_shifted="2024",
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="audit-q3",
+        fact_text="The security audit is scheduled for Q3.",
+        quote="The security audit is scheduled for Q3.",
+        context="The security team posted the audit calendar.",
+        entities=None,
+        paraphrase="Q3 is the scheduled quarter for the security audit.",
+        negated_text="The security audit is not scheduled for Q3.",
+        date_phrase="Q3",
+        date_shifted="Q1",
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    SeedTriple(
+        source_id="patent-2018",
+        fact_text="The patent was filed in 2018.",
+        quote="The patent was filed in 2018.",
+        context="Legal recorded the filing year.",
+        entities=None,
+        paraphrase="2018 was the patent filing year.",
+        negated_text="The patent was not filed in 2018.",
+        date_phrase="2018",
+        date_shifted="2015",
+        quantity_phrase=None,
+        quantity_shifted=None,
+    ),
+    # --- Quantity changes (quantity token → different quantity ⇒ contradicted) ---
+    SeedTriple(
+        source_id="users-500",
+        fact_text="The system supports five hundred concurrent users.",
+        quote="The system supports five hundred concurrent users.",
+        context="Capacity planning recorded the concurrency ceiling.",
+        entities=None,
+        paraphrase="Five hundred concurrent users are supported by the system.",
+        negated_text="The system does not support five hundred concurrent users.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase="five hundred",
+        quantity_shifted="fifty",
+    ),
+    SeedTriple(
+        source_id="cost-twenty",
+        fact_text="The plan costs twenty dollars per month.",
+        quote="The plan costs twenty dollars per month.",
+        context="The pricing page lists the monthly fee.",
+        entities=None,
+        paraphrase="Twenty dollars a month is the plan cost.",
+        negated_text="The plan does not cost twenty dollars per month.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase="twenty",
+        quantity_shifted="two",
+    ),
+    SeedTriple(
+        source_id="nodes-four",
+        fact_text="The cluster runs on four nodes.",
+        quote="The cluster runs on four nodes.",
+        context="SRE documented the cluster topology.",
+        entities=None,
+        paraphrase="Four nodes make up the cluster.",
+        negated_text="The cluster does not run on four nodes.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase="four",
+        quantity_shifted="twelve",
+    ),
+    SeedTriple(
+        source_id="timeout-thirty",
+        fact_text="The request timeout is thirty seconds.",
+        quote="The request timeout is thirty seconds.",
+        context="The config file carries the timeout value.",
+        entities=None,
+        paraphrase="Thirty seconds is the request timeout.",
+        negated_text="The request timeout is not thirty seconds.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase="thirty",
+        quantity_shifted="three hundred",
+    ),
+    SeedTriple(
+        source_id="retention-ninety",
+        fact_text="Logs are retained for ninety days.",
+        quote="Logs are retained for ninety days.",
+        context="The data-retention policy states the window.",
+        entities=None,
+        paraphrase="The log retention period is ninety days.",
+        negated_text="Logs are not retained for ninety days.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase="ninety",
+        quantity_shifted="seven",
+    ),
+    SeedTriple(
+        source_id="countries-ten",
+        fact_text="The service ships to ten countries.",
+        quote="The service ships to ten countries.",
+        context="The launch plan lists the supported markets.",
+        entities=None,
+        paraphrase="Ten countries receive the service.",
+        negated_text="The service does not ship to ten countries.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase="ten",
+        quantity_shifted="two",
+    ),
+    SeedTriple(
+        source_id="requests-200",
+        fact_text="The worker handles two hundred requests per batch.",
+        quote="The worker handles two hundred requests per batch.",
+        context="The throughput spec records the batch size.",
+        entities=None,
+        paraphrase="Two hundred requests per batch are handled by the worker.",
+        negated_text="The worker does not handle two hundred requests per batch.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase="two hundred",
+        quantity_shifted="ten thousand",
+    ),
+    SeedTriple(
+        source_id="storage-one",
+        fact_text="The archive stores one petabyte of data.",
+        quote="The archive stores one petabyte of data.",
+        context="Storage capacity was reported in the capacity review.",
+        entities=None,
+        paraphrase="One petabyte of data is stored in the archive.",
+        negated_text="The archive does not store one petabyte of data.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase="one",
+        quantity_shifted="nine",
+    ),
+    SeedTriple(
+        source_id="team-fifty",
+        fact_text="The engineering org has fifty people.",
+        quote="The engineering org has fifty people.",
+        context="Headcount was shared in the all-hands.",
+        entities=None,
+        paraphrase="Fifty people make up the engineering org.",
+        negated_text="The engineering org does not have fifty people.",
+        date_phrase=None,
+        date_shifted=None,
+        quantity_phrase="fifty",
+        quantity_shifted="five",
+    ),
 )
 
 
@@ -392,6 +779,13 @@ def run_selftest() -> dict[str, object]:
     }
 
 
+#: How many topically-unrelated quotes each fact is paired with (the
+#: ``unsupported`` stream). Pairs are drawn deterministically from the seeded
+#: RNG. 2 keeps the dataset ≈1:1:1 across the three labels and enlarges the
+#: held-out split so per-class F1 is meaningful (issue #1585 GPU-run).
+UNRELATED_PAIRINGS: int = 2
+
+
 def generate_dataset(seed: int) -> list[FaithfulnessRecord]:
     """Apply every applicable perturbation to every seed triple.
 
@@ -408,11 +802,16 @@ def generate_dataset(seed: int) -> list[FaithfulnessRecord]:
             record = func(triple)
             if record is not None:
                 records.append(record)
-        # Unrelated-quote stream: pair this fact with a quote from a
-        # different fixture (deterministic pick from the seeded RNG).
+        # Unrelated-quote stream (the ``unsupported`` volume driver, issue
+        # #1585): pair this fact with UNRELATED_PAIRINGS quotes from OTHER
+        # fixtures, drawn deterministically from the seeded RNG. Pairing a
+        # fact with a topically-unrelated quote is ``unsupported`` by
+        # construction, so this is a label-trustworthy multiplier (no model
+        # in the loop). The seed chooses WHICH quotes, so two seeds still
+        # produce different bytes → different sha256.
         other_quotes = [t.quote for t in SEED_TRIPLES if t.source_id != triple.source_id]
-        if other_quotes:
-            pick = other_quotes[rng.randrange(len(other_quotes))]
+        n_pairings = min(UNRELATED_PAIRINGS, len(other_quotes))
+        for pick in rng.sample(other_quotes, n_pairings):
             record = unrelated_quote(triple, pick)
             if record is not None:
                 records.append(record)

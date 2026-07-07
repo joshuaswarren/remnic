@@ -2,16 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$comment": [
     "Faithfulness-gate reproducibility manifest (issue #1585).",
-    "PR1 ships this file as the SCHEMA EXAMPLE only: every eval/weight field",
-    "is null/pending because no model has been trained yet. PR2 fills the real",
-    "values when the encoder baseline is trained and published. Rule 55",
-    "(#1520): no fabricated numbers — the eval block is explicitly empty until",
-    "a real run produces it. The committed manifest is the ONLY artifact that",
-    "lives in git; datasets, weights, and LLM traces are gitignored."
+    "This manifest carries the REAL held-out eval numbers from a trained v1 model",
+    "produced on the lab GPU box (RTX 3090). Rule 55 (#1520): no fabricated numbers —",
+    "every field below is concrete because a real train+eval run produced it. The",
+    "committed manifest is the ONLY artifact that lives in git; datasets, weights, and",
+    "LLM traces are gitignored (git carries recipes + hashes, never blobs)."
   ],
   "task": "faithfulness-gate",
   "schemaVersion": 1,
-  "status": "pending-training",
+  "status": "trained",
   "contract": {
     "inputFields": [
       "factText",
@@ -25,55 +24,118 @@
     ],
     "source": "FaithfulnessCheckInput (issue #1576)"
   },
-  "baseModel": null,
+  "baseModel": {
+    "hfId": "roberta-large-mnli",
+    "revision": "2a8f12d27941090092df78e4ba6f0928eb5eac98",
+    "$comment": "Issue #1585 names the DeBERTa-v3-large-MNLI-class encoder as first choice and a <=4B fallback if it plateaus. DeBERTa-v3 (both base and large) NaNs in fp32 on CUDA (its XPOS relative-position encoding overflows fp32 range) and is numerically unstable under bf16 on small data; the whole family was therefore unusable for a reproducible run on this box. roberta-large-mnli is the documented fallback: fp32-stable (no XPOS), already NLI-pretrained (understands entailment), 0.355B (well within the <=4B policy). It converged cleanly: held-out macro-F1 reached 1.0 by epoch 5."
+  },
   "dataRecipe": {
     "generatorPath": "model-lab/faithfulness-gate/generate-data.py",
-    "generatorGitSha": null,
+    "generatorGitSha": "ed2e40628a9d1179aba5e9188566ac8e762f081b",
     "seed": 1337,
     "sources": [
       "synthetic-perturbation"
     ],
     "counts": {
-      "entailed": null,
-      "contradicted": null,
-      "unsupported": null,
-      "total": null
+      "entailed": 68,
+      "contradicted": 68,
+      "unsupported": 68,
+      "total": 204
     },
-    "datasetSha256": null,
-    "$comment": "Counts/hash are filled by PR2 from a real generate-data run; PR1 leaves them null because no canonical training dataset is committed (data is gitignored)."
+    "datasetSha256": "751aa45ddcbfd0ef85b41fe32aeb20980c72f416518957ac5e6cf303000a4be0",
+    "$comment": "Deterministic synthetic stream from the seeded fixture bank (perturbations.py). The PR1 six-fixture bank (30 records) is the CI seed; the GPU-run follow-up expanded the bank to 34 fixtures and pairs each fact with 2 unrelated quotes (the documented volume driver), yielding a 1:1:1-balanced 204-record set with a meaningful held-out split. Same seed -> identical bytes -> identical sha256 (asserted by tests/model-lab-faithfulness-data.test.mjs). Labels are trustworthy by construction: every record is a pure perturbation of a hand-verified fixture, so no model is in the loop. The harvest stream (teacher labels from #1576 shadow mode) is not in this dataset — it is opt-in and waits for #1576 shadow mode. generatorGitSha reachability: ed2e40628 is the feature-branch commit that introduced the expanded 34-fixture bank (branch model-lab/1585-v1-training-runs, PR #1737); under this repo’s squash-merge workflow no feature-branch SHA is reachable from main’s squashed commit, so the AUTHORITATIVE reproducibility guarantee is datasetSha256 (re-run generate-data.py --seed 1337 and compare the printed DATASET_SHA256), not git reachability of generatorGitSha. Post-merge the generator code ships in-tree at generatorPath, and the pre-squash object stays fetchable via refs/pull/1737/head."
   },
-  "hyperparams": null,
-  "trainedAt": null,
-  "hardware": null,
+  "trainingStack": {
+    "python": "3.12.3",
+    "libs": {
+      "torch": "2.12.1+cu126",
+      "transformers": "5.3.0",
+      "datasets": "3.6.0",
+      "huggingface-hub": "1.3.0",
+      "accelerate": "1.14.0",
+      "sentencepiece": "0.2.1"
+    },
+    "pipFreezeSha256": "112d66220c3db90288be58ec7f251a080400f961c33bf51ba1df832e3d00bb0a",
+    "capturedAt": "2026-07-07T16:46:00Z",
+    "$comment": "Exact interpreter + lib versions of the venv that produced these weights, captured by common.training_stack.capture_training_stack() at train time. pipFreezeSha256 is the sha256 of the full `pip freeze` so a reviewer can detect any environment drift beyond the named libs. The pin source is model-lab/requirements.txt (torch cu126 wheel for the 550-580 driver stack)."
+  },
+  "hyperparams": {
+    "base_model": "roberta-large-mnli",
+    "seed": 1337,
+    "epochs": 12,
+    "train_batch_size": 16,
+    "eval_batch_size": 32,
+    "learning_rate": 1e-05,
+    "warmup_ratio": 0.1,
+    "weight_decay": 0.01,
+    "max_length": 256,
+    "label_smoothing": 0.0,
+    "mixed_precision": "fp32",
+    "$comment": "fp32 (RoBERTa is fp32-stable; bf16 is the opt-in escape hatch for DeBERTa-v3). lr=1e-5 converged steadily: held-out macro-F1 climbed 0.22 -> 0.48 -> 0.65 -> 0.96 -> 1.0 over epochs 1-5 and held. load_best_model_at_end (metric_for_best_model='f1') saved the epoch-5 checkpoint."
+  },
+  "trainedAt": "2026-07-07T16:46:00Z",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "vramMib": 24576,
+    "driver": "580.159.03",
+    "computeCap": "8.6",
+    "ramGib": 188,
+    "arch": "x86_64",
+    "$comment": "Lab box 'jarvis-ml'. Ampere (bf16-capable), CUDA 12.6 wheel (cu126) matched to the 580 driver."
+  },
   "eval": {
-    "heldOut": null,
-    "downstream": null,
-    "$comment": "NOT YET RUN. PR2 trains the encoder baseline and fills heldOut (macro/per-class F1); the downstream number comes from the #1574 LoCoMo adversarial-category ablation. Rule 55 forbids fabricating either."
+    "heldOut": {
+      "macroF1": 1.0,
+      "perClass": {
+        "entailed": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 7.0
+        },
+        "contradicted": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 8.0
+        },
+        "unsupported": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 6.0
+        }
+      },
+      "examples": 21,
+      "latencyMs": {
+        "count": 21.0,
+        "min": 9.179,
+        "mean": 9.511,
+        "p50": 9.477,
+        "p95": 9.934,
+        "p99": 10.216,
+        "max": 10.287
+      },
+      "$comment": "Held-out 10% split (21 examples) of the 204-record synthetic set, scored by model-lab/faithfulness-gate/eval.py with the trained checkpoint. macroF1=1.0 meets the #1585 held-out target (>=0.9). p95 latency is per-call GPU inference (single-example forward, fp32, 3 warmup calls excluded) measured with common.latency.summarize. Caveat: the held-out is drawn from the SAME systematic generator as the train split, so 1.0 reflects perfect separation of the perturbation patterns, not real-world robustness — the number that matters for production is the downstream one."
+    },
+    "downstream": {
+      "status": "external",
+      "source": "bench harness (#1574 LoCoMo adversarial-category ablation)",
+      "$comment": "NOT YET RUN. The downstream number (gate quality vs prompted-LLM baseline on real extraction) is produced by the #1574 bench protocol, not eval.py. eval.py only computes the held-out block to avoid implying a value it does not measure (rule 55)."
+    }
   },
   "artifact": {
-    "hfRepo": null,
+    "hfRepo": "joshuawarren/remnic-faithfulness-gate-v1",
     "revision": null,
     "quantizations": null,
-    "$comment": "Weights publish to the operator's HF account in PR2 (common/hf_push.py); git carries recipes and hashes, never blobs."
+    "publishStatus": "pending-hf-upload",
+    "localArtifactSha256": "9d1ffb5609b72cca751510ffbd9eb4fb666da8fa318cd18b86d3db8c2e1b7c47",
+    "$comment": "The trained weights (model.safetensors + tokenizer + held-out gold under model-lab/runs/faithfulness-gate/v1/) are gitignored and were NOT published to the HF Hub: no HF credentials exist on the lab box and common/hf_push.py is a stub (NotImplementedError). For reproducibility the exact trained weights are content-pinned by localArtifactSha256 (sha256 over the sorted artifact-dir file set); this is NOT recorded as artifact.revision because nothing has been published — revision stays null until the HF upload lands (per its contract it pins the PUBLISHED weights commit). localArtifactSha256 is a verifiable integrity pin of what was trained on the lab box, not a fetchable ref. As a result validate_manifest(..., allow_pending=False) REJECTS this manifest (publishStatus pending-hf-upload, revision null) — an unpublished-weights run must not pass the complete/reproducible-from-manifest gate. HF upload to hfRepo is the pending follow-up (tracked in the correction-intent/publish-gap issue filed with this run). Re-running the recipe from this manifest reproduces a bit-identical artifact because the data generator + hyperparams + pinned stack are all deterministic."
   },
   "policyCompliance": {
     "targetMaxParamsB": 4,
-    "actualParamsB": null,
+    "actualParamsB": 0.355,
     "escapeHatchUsed": false,
-    "$comment": "Issue #1585 policy: target models <=4B for this classification task. 8B LoRA is an escape hatch requiring written justification here."
-  },
-  "trainingStack": {
-    "python": null,
-    "libs": {
-      "torch": null,
-      "transformers": null,
-      "datasets": null,
-      "huggingface-hub": null,
-      "accelerate": null,
-      "sentencepiece": null
-    },
-    "pipFreezeSha256": null,
-    "capturedAt": null,
-    "$comment": "SCHEMA EXAMPLE. Exact interpreter + lib versions a real run used; captured by common.training_stack.capture_training_stack() at train time. Pin source: model-lab/requirements.txt (encoder baseline stack). Filled in the #1585 GPU-run follow-up (rule 55)."
+    "$comment": "roberta-large is 0.355B — well within the <=4B target for this classification task (issue #1585). No 8B escape hatch needed."
   }
 }
