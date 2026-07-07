@@ -47,6 +47,19 @@ export type {
   MemCorrectGeneratorOptions,
 } from "./benchmarks/remnic/memcorrect/types.js";
 
+export {
+  Mem0MemCorrectAdapter,
+  ZepMemCorrectAdapter,
+  LettaMemCorrectAdapter,
+  MissingCredentialError,
+} from "./benchmarks/remnic/memcorrect/third-party/index.js";
+export type {
+  Mem0AdapterConfig,
+  ZepAdapterConfig,
+  LettaAdapterConfig,
+  ThirdPartyAdapterConfig,
+} from "./benchmarks/remnic/memcorrect/third-party/index.js";
+
 export type {
   Message,
   SearchResult,
