@@ -252,14 +252,46 @@ function extractExports(root: TSNode, language: Language, lang: CodingGraphLangu
   const query = new Query(language, extractor.exportsQuery);
   try {
     const captures = query.captures(root);
+    // Dedup a CommonJS pair overlap (#1659 review): a pair
+    // `{ key: value }` whose value is an identifier is matched by BOTH
+    // the value-identifier pattern (captures the real symbol) AND the
+    // non-identifier fallback (captures the key). The fallback's
+    // #not-match? regex is ASCII-only, so a Unicode identifier value
+    // (e.g. Universität) defeats it and both patterns fire on the same
+    // pair, duplicating the export. web-tree-sitter's query regex
+    // engine does not support \p{L}, so dedup here: if a pair already
+    // exported its value identifier, drop the spurious key capture.
+    const valueExportedPairs = new Set<number>();
+    const pairOf = (node: TSNode): TSNode | null => {
+      let cur: TSNode | null = node;
+      for (let i = 0; i < 5 && cur; i++) {
+        if (cur.type === "pair") return cur;
+        cur = cur.parent;
+      }
+      return null;
+    };
+    for (const cap of captures) {
+      if (cap.name !== "export.name") continue;
+      const pair = pairOf(cap.node);
+      if (pair && cap.node.type === "identifier") {
+        valueExportedPairs.add(pair.id);
+      }
+    }
     const exports: ExportIR[] = [];
     for (const cap of captures) {
-      if (cap.name === "export.name") {
-        exports.push({
-          name: cap.node.text,
-          span: { startByte: cap.node.startIndex, endByte: cap.node.endIndex },
-        });
+      if (cap.name !== "export.name") continue;
+      const pair = pairOf(cap.node);
+      if (
+        pair &&
+        cap.node.type === "property_identifier" &&
+        valueExportedPairs.has(pair.id)
+      ) {
+        continue; // value identifier is the real export; drop the alias key
       }
+      exports.push({
+        name: cap.node.text,
+        span: { startByte: cap.node.startIndex, endByte: cap.node.endIndex },
+      });
     }
     return exports.sort(
       (a, b) => a.span.startByte - b.span.startByte || a.name.localeCompare(b.name),
@@ -360,10 +392,20 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
  * handler=getUsers (the last arg), not requireAuth (issue #1659 #5).
  */
 function extractHandlerFromArgs(argsNode: TSNode): string {
-  const count = argsNode.namedChildCount;
-  if (count < 2) return "";
-  const lastArg = argsNode.namedChild(count - 1);
-  if (!lastArg) return "";
+  // Collect the real (non-comment) named args, skipping trailing inline/
+  // block comments. tree-sitter treats comments as named children, so
+  // `app.get("/users", getUsers /* auth */)` would otherwise select the
+  // comment as the last arg, miss the real handler, and leave it
+  // un-protected by the route-handler exclusion (a false dead-code hit).
+  // (chatgpt-codex-connector #1659 review: 'Skip comments when selecting
+  // route handler'.)
+  const realArgs: TSNode[] = [];
+  for (let i = 0; i < argsNode.namedChildCount; i++) {
+    const child = argsNode.namedChild(i);
+    if (child && child.type !== "comment") realArgs.push(child);
+  }
+  if (realArgs.length < 2) return "";
+  const lastArg = realArgs[realArgs.length - 1]!;
   if (lastArg.type === "identifier") {
     return lastArg.text;
   }

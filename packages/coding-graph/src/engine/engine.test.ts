@@ -1101,6 +1101,33 @@ test("1659-2: CJS alias target captures value identifier, not key", async () => 
   await engine.dispose();
 });
 
+
+test("1659-2b: CJS pair with a Unicode identifier value exports the value once (no alias-key duplicate)", async () => {
+  // The non-identifier fallback's #not-match? regex is ASCII-only, so a
+  // Unicode identifier value (Universität) defeats it and BOTH the
+  // value-identifier pattern and the fallback fire on the same pair.
+  // extractExports dedups by pair so only the real value symbol is kept
+  // (cursor #1659 review: 'CJS export fallback duplicates Unicode').
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function Universität() { return 1; }",
+    "module.exports = { alias: Universität };",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/u.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const exportNames = result.ir.exports.map((e) => e.name);
+  assert.ok(
+    exportNames.includes("Universität"),
+    `CJS Unicode value should export Universität, got: ${exportNames.join(", ")}`,
+  );
+  assert.ok(
+    !exportNames.includes("alias"),
+    `CJS Unicode value must NOT also export the alias key, got: ${exportNames.join(", ")}`,
+  );
+  await engine.dispose();
+});
+
 test("1659-3: UTF-16 offsets produce correct byte spans for multibyte content", async () => {
   const engine = createCodingGraphEngine();
   // Leading comment with multibyte chars so UTF-16 and byte offsets diverge.
@@ -1161,6 +1188,31 @@ test("1659-5: Express middleware route captures handler, not middleware", async 
   assert.equal(
     usersRoute.handlerQualifiedName, "getUsers",
     `middleware route handler should be 'getUsers' (the handler), not 'requireAuth' (the middleware), got: ${usersRoute.handlerQualifiedName}`,
+  );
+  await engine.dispose();
+});
+
+
+test("1659-5b: route handler after a trailing comment is still captured (not 'anonymous')", async () => {
+  // tree-sitter treats the inline comment as a named child of the
+  // arguments node; without skipping it the comment becomes the "last
+  // arg" and the real handler is missed (chatgpt-codex-connector #1659
+  // review: 'Skip comments when selecting route handler').
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function getUsers(req, res) { res.json([]); }",
+    'app.get("/users", getUsers /* auth middleware */);',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/server.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes;
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should have a /users route");
+  if (!usersRoute) return;
+  assert.equal(
+    usersRoute.handlerQualifiedName, "getUsers",
+    `route with trailing comment should still capture 'getUsers', got: ${usersRoute.handlerQualifiedName}`,
   );
   await engine.dispose();
 });
