@@ -413,7 +413,7 @@ class ClaudeCliProvider implements LlmProvider {
       workspacePath,
       timeoutMs: this.config.retryOptions?.timeoutMs,
       signal: opts.signal,
-      env: buildIsolatedClaudeEnv(),
+      env: buildIsolatedClaudeEnv(this.config.apiKey, this.config.baseUrl),
     };
   }
 }
@@ -662,6 +662,7 @@ function runClaudeCliCommand(request: ClaudeCliRunRequest): Promise<ClaudeCliRun
   });
   child.on("close", (status, signal) => {
     clearTimeout(timeout);
+    clearKillTimeout();
     if (child.pid) {
       unregisterActiveClaudeCliChild(child.pid);
     }
@@ -998,12 +999,27 @@ function buildClaudeCompletionPrompt(
   ].join("\n");
 }
 
-function buildIsolatedClaudeEnv(): NodeJS.ProcessEnv {
+function buildIsolatedClaudeEnv(
+  apiKey?: string,
+  baseUrl?: string,
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && isAllowedClaudeRuntimeEnvKey(key)) {
       env[key] = value;
     }
+  }
+
+  // Config apiKey/baseUrl take precedence over the inherited env, mirroring
+  // codex-cli (buildIsolatedCodexEnv). This is how --system-api-key etc.
+  // reach Claude Code headless as ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL.
+  const resolvedApiKey = (apiKey ?? process.env.ANTHROPIC_API_KEY ?? "").trim();
+  if (resolvedApiKey.length > 0) {
+    env.ANTHROPIC_API_KEY = resolvedApiKey;
+  }
+  const resolvedBaseUrl = (baseUrl ?? process.env.ANTHROPIC_BASE_URL ?? "").trim();
+  if (resolvedBaseUrl.length > 0) {
+    env.ANTHROPIC_BASE_URL = resolvedBaseUrl;
   }
   return env;
 }

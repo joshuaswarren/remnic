@@ -168,6 +168,72 @@ test("claude-cli provider preserves networking env required by the child", () =>
   }
 });
 
+test("claude-cli provider forwards config apiKey/baseUrl into the child env", async () => {
+  let capturedEnv: NodeJS.ProcessEnv | undefined;
+  const provider = createClaudeCliProvider(
+    {
+      provider: "claude-cli",
+      model: "opus",
+      apiKey: "config-secret-key",
+      baseUrl: "https://config-gateway.example",
+    },
+    {
+      async runClaudeCli(request) {
+        capturedEnv = request.env;
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({
+            type: "result",
+            is_error: false,
+            result: "ok",
+            usage: { input_tokens: 1, output_tokens: 1 },
+          }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await provider.complete("hello");
+
+  // Config apiKey/baseUrl MUST reach Claude Code headless as the env vars it
+  // reads in --bare mode (mirrors codex-cli forwarding OPENAI_API_KEY). Before
+  // the fix, buildIsolatedClaudeEnv() ignored config and these were undefined.
+  assert.equal(capturedEnv?.ANTHROPIC_API_KEY, "config-secret-key");
+  assert.equal(capturedEnv?.ANTHROPIC_BASE_URL, "https://config-gateway.example");
+});
+
+test("buildIsolatedClaudeEnv lets config apiKey/baseUrl override the inherited env", () => {
+  const seededEnv = {
+    ANTHROPIC_API_KEY: "env-secret",
+    ANTHROPIC_BASE_URL: "https://env-gateway.example",
+  };
+  const previousEnv = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(seededEnv)) {
+    previousEnv.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+
+  try {
+    const env = __claudeCliProviderTestHooks.buildIsolatedClaudeEnv(
+      "config-secret-key",
+      "https://config-gateway.example",
+    );
+    assert.equal(env.ANTHROPIC_API_KEY, "config-secret-key");
+    assert.equal(env.ANTHROPIC_BASE_URL, "https://config-gateway.example");
+  } finally {
+    for (const key of Object.keys(seededEnv)) {
+      const previous = previousEnv.get(key);
+      if (previous === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous;
+      }
+    }
+  }
+});
+
 test("claude-cli provider defaults reasoning effort to xhigh", async () => {
   let args: string[] = [];
   const provider = createClaudeCliProvider(
