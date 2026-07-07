@@ -20,6 +20,11 @@
  * surface is what PRs 5/6/7 will call).
  */
 
+import type {
+  StructuralContextDegradation,
+  StructuralContextProvider,
+} from "./structural-context.js";
+
 // ──────────────────────────────────────────────────────────────────────────
 // Public types
 // ──────────────────────────────────────────────────────────────────────────
@@ -61,6 +66,15 @@ export interface ReviewContext {
    * boost is recorded on each entry as `boost` for observability.
    */
   rankedRecall: Array<ReviewCandidate & { boost: number }>;
+  /**
+   * Structural-context provider degradation observed while expanding the
+   * diff to touched symbols (issue #1548 Track A PR 5, #1536 pattern).
+   * Present only when a provider was consulted AND it failed — a silent
+   * provider failure must never look like "no structural matches"
+   * (CLAUDE.md rule 34). Undefined when no provider was consulted (the
+   * pure {@link packReviewContext} path) or when the provider succeeded.
+   */
+  structuralDegradation?: StructuralContextDegradation;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -422,4 +436,69 @@ export function packReviewContext(input: PackReviewContextInput): ReviewContext 
   const touchedFiles = parseTouchedFiles(input.diff);
   const rankedRecall = rankReviewCandidates(input.candidates, touchedFiles);
   return { touchedFiles, rankedRecall };
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Structural-context enhancement (issue #1548 Track A PR 5)
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Input for the structural-context-aware review-context packer. The pure
+ * {@link packReviewContext} stays unchanged (gate-off parity); this async
+ * variant consults a {@link StructuralContextProvider} to expand the diff's
+ * touched FILE paths into touched SYMBOL names, widening the match set so
+ * memories that mention a changed symbol — not just the file path — float
+ * up. The gate (`structuralProvider !== "none"`) is checked ONCE by the
+ * caller, never inside this function (rule 39).
+ */
+export interface PackReviewContextStructuralInput extends PackReviewContextInput {
+  /** A probed structural-context provider. Never undefined here. */
+  provider: StructuralContextProvider;
+  /** Cancellation forwarded to the provider subprocess (rule 40). */
+  signal?: AbortSignal;
+}
+
+/**
+ * Structural-context-aware packer.
+ *
+ * Contract (issue #1548 Track A PR 5, prove-fail-before characterization):
+ *   - Provider returns symbols (`ok: true`) → symbol names are ADDED to the
+ *     match set alongside touched files; memories mentioning a symbol get the
+ *     same bounded additive boost as a file-path match.
+ *   - Provider fails (`ok: false`, any code) → ranking falls back to
+ *     FILE-PATH-ONLY boosting, BYTE-IDENTICAL to {@link packReviewContext}
+ *     (the match set is exactly the touched files), AND `structuralDegradation`
+ *     is populated so xray/doctor can surface the failure (rule 34).
+ *
+ * The underlying ranker ({@link rankReviewCandidates}) is reused unchanged,
+ * so the deterministic ordering, boost cap, and tie-break are identical to
+ * the pure path.
+ */
+export async function packReviewContextStructural(
+  input: PackReviewContextStructuralInput,
+): Promise<ReviewContext> {
+  const touchedFiles = parseTouchedFiles(input.diff);
+  const diffString = typeof input.diff === "string" ? input.diff : "";
+  const result = await input.provider.symbolsForDiff(diffString, {
+    signal: input.signal,
+  });
+
+  let matchTerms: string[] = touchedFiles;
+  let structuralDegradation: StructuralContextDegradation | undefined;
+
+  if (result.ok) {
+    const symbolNames = result.symbols.map((sym) => sym.symbol);
+    matchTerms = symbolNames.length > 0 ? [...touchedFiles, ...symbolNames] : touchedFiles;
+  } else {
+    // Fallback: file-path-only ranking, identical to the pure packer. The
+    // degradation is surfaced so the failure is never silent (rule 34).
+    structuralDegradation = {
+      backend: "structural-context",
+      code: result.code,
+      detail: result.detail,
+    };
+  }
+
+  const rankedRecall = rankReviewCandidates(input.candidates, matchTerms);
+  return { touchedFiles, rankedRecall, structuralDegradation };
 }

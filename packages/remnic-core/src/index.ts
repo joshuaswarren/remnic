@@ -453,9 +453,37 @@ export {
   parseTouchedFiles,
   rankReviewCandidates,
   packReviewContext,
+  packReviewContextStructural,
   type ReviewContext,
   type ReviewCandidate,
+  type PackReviewContextStructuralInput,
 } from "./coding/review-context.js";
+
+export {
+  structuralProviderActive,
+  describeStructuralProviderStatus,
+  renderStructuralProviderStatusLine,
+  registerStructuralContextProvider,
+  getStructuralContextProvider,
+  clearStructuralContextProvidersForTest,
+  toStructuralContextDegradation,
+  type StructuralContextProvider,
+  type StructuralContextDegradation,
+  type StructuralContextErrorCode,
+  type StructuralSymbol,
+  type SymbolsForDiffResult,
+  type SymbolsForDiffOk,
+  type SymbolsForDiffErr,
+  type ArchitectureHintsResult,
+  type StructuralProviderStatus,
+} from "./coding/structural-context.js";
+
+export {
+  createSubprocessStructuralProvider,
+  probeStructuralProviderForDoctor,
+  type SubprocessProviderOptions,
+  type StructuralSpawnFn,
+} from "./coding/structural-subprocess-provider.js";
 
 export {
   validateRequest,
