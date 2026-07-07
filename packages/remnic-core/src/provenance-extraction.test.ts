@@ -994,3 +994,74 @@ test("toStrictIsoTimestamp path: complete year-first textual-month date is prese
     "complete textual-month date must round-trip to Jan 15, not a fabricated date",
   );
 });
+
+test("toStrictIsoTimestamp path: partial textual year-month is rejected (issue #1657, codex r5)", () => {
+  // "2026-Jan" is Date.parse-able (-> Jan 1) — a partial year-led TEXTUAL
+  // month that must be rejected just like the numeric "2026-05", not
+  // fabricated. The unified year-led guard covers textual months too.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-Jan" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "partial textual year-month must fall back to epoch, not a fabricated Jan 1",
+  );
+});
+
+test("toStrictIsoTimestamp path: partial textual year-month with time is rejected (issue #1657, codex r5)", () => {
+  // "2026-Jan 10:00" — the hour must not be captured as the day across the
+  // date/time boundary (textual analogue of "2026-05 10:00").
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-Jan 10:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "partial textual year-month with time must fall back to epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: textual-month calendar overflow is rejected (issue #1657, codex r5)", () => {
+  // "2026-Feb-30" is a COMPLETE textual date but Feb 30 overflows — Date.parse
+  // shifts it to March 2. The unified guard validates the textual month's
+  // calendar day too, so this is rejected rather than fabricated (textual
+  // analogue of the numeric dANc overflow).
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-Feb-30" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    "2026-03-02T00:00:00.000Z",
+    "textual-month overflow must not be silently shifted to March 2",
+  );
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "textual-month overflow falls back to epoch",
+  );
+});
