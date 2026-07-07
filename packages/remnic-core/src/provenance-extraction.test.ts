@@ -971,11 +971,11 @@ test("toStrictIsoTimestamp path: leading-whitespace partial timestamp is rejecte
 
 test("toStrictIsoTimestamp path: complete year-first textual-month date is preserved (issue #1657, codex r4)", () => {
   // A complete year-first TEXTUAL-month date ("2026-Jan-15") is normalized by
-  // Date.parse and must stay verified — the partial-date guard is scoped to
-  // NUMERIC year-led forms, so it must not reject a complete textual month.
-  // (Pre-narrowing the guard matched any 4-digit year + non-digit and wrongly
-  // dropped this source.) The exact time is timezone-dependent; assert the
-  // calendar date round-trips (Jan 15, not a fabricated Jan 1).
+  // Date.parse and must stay verified — the unified guard must not reject a
+  // complete textual month. Date.parse parses this non-ISO form in the LOCAL
+  // timezone, so assert the source is preserved (verified, not the epoch
+  // fallback) and normalized to strict ISO — without assuming the UTC day,
+  // which shifts across timezones (codex r7).
   const turns = [
     makeTurn("We migrated the production database to pgBouncer.", {
       timestamp: "2026-Jan-15" as unknown as string,
@@ -988,10 +988,16 @@ test("toStrictIsoTimestamp path: complete year-first textual-month date is prese
   );
   assert.equal(result.provenance, "verified", "complete textual-month date must stay verified");
   assert.ok(result.sources);
+  const observedAt = result.sources![0]!.observedAt;
   assert.match(
-    result.sources![0]!.observedAt,
-    /^2026-01-15T/,
-    "complete textual-month date must round-trip to Jan 15, not a fabricated date",
+    observedAt,
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+    "textual-month observedAt must normalize to strict ISO",
+  );
+  assert.notEqual(
+    observedAt,
+    new Date(0).toISOString(),
+    "complete textual-month date must not fall back to the epoch (it was accepted, not rejected)",
   );
 });
 
@@ -1070,6 +1076,8 @@ test("toStrictIsoTimestamp path: full month name is preserved (issue #1657, code
   // Date.parse accepts full month names ("2026-January-15"), so the textual
   // month map must include both abbreviations and full names — otherwise a
   // complete, valid full-name date is dropped to an unverified epoch source.
+  // Date.parse parses this non-ISO form in the LOCAL timezone, so assert the
+  // source is preserved (verified, not epoch) without a UTC-day assumption.
   const turns = [
     makeTurn("We migrated the production database to pgBouncer.", {
       timestamp: "2026-January-15" as unknown as string,
@@ -1082,9 +1090,15 @@ test("toStrictIsoTimestamp path: full month name is preserved (issue #1657, code
   );
   assert.equal(result.provenance, "verified", "full-name textual month must stay verified");
   assert.ok(result.sources);
+  const observedAt = result.sources![0]!.observedAt;
   assert.match(
-    result.sources![0]!.observedAt,
-    /^2026-01-15T/,
-    "full-name textual month must round-trip to Jan 15",
+    observedAt,
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+    "full-name textual month observedAt must normalize to strict ISO",
+  );
+  assert.notEqual(
+    observedAt,
+    new Date(0).toISOString(),
+    "full-name textual month must not fall back to the epoch (it was accepted, not rejected)",
   );
 });
