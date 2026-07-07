@@ -513,13 +513,13 @@ export class CorrectionExecutor {
  */
 export const CORRECTION_ERROR_MAX = 500;
 export function sanitizeErrorMessage(raw: string): string {
-  // Collapse any absolute POSIX path (/Users/foo/..., /home/..., /tmp/...) and
+  // Collapse any absolute POSIX path (/Users/foo/..., /.config/..., /tmp/a@b/...) and
   // Windows path (C:\Users\...) to a neutral <path> placeholder.
   // Capture the leading delimiter (start/space/quote) in group 1 so the path
   // itself is consumed and replaced — the prior non-capturing prefix bound $1
   // to the path, which survived and had <path> appended AFTER it.
   const stripped = raw
-    .replace(/(^|[\s:'"(])\/[A-Za-z][\w.-]*(?:\/[\w.\-]+)+/g, "$1<path>")
+    .replace(/(^|[\s:'"(])\/(?:[^\s'">)\\]+\/)+[^\s'">)\\]*/g, "$1<path>")
     .replace(/(^|[\s:'"(])[A-Za-z]:\\[^\s'">)\\]+(?:\\[^\s'">) ]*)*/g, "$1<path>");
   const trimmed = stripped.trim();
   return trimmed.length > CORRECTION_ERROR_MAX

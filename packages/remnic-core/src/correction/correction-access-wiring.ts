@@ -21,6 +21,7 @@
  */
 
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { Orchestrator } from "../orchestrator.js";
 import type { MemoryFile, MemoryStatus, PluginConfig } from "../types.js";
@@ -620,9 +621,14 @@ async function registerRedactionRuleFn(
   const storage = await wiring.orchestrator.getStorage(namespace);
   const dir = path.join(storage.dir, "state", "corrections", "redaction-rules");
   await mkdir(dir, { recursive: true });
-  // Idempotent: filename is a slug of the pattern so re-registering the same
-  // pattern overwrites rather than duplicates.
-  const slug = pattern.replace(/[^a-zA-Z0-9]+/g, "-").slice(0, 64) || "rule";
+  // Idempotent: filename is a slug + short hash of the full pattern so
+  // re-registering the same pattern overwrites rather than duplicates, while
+  // distinct patterns that slug identically (e.g. "abc+def" vs "abc.def" →
+  // "abc-def") no longer collide and silently remove each other's enforcement
+  // (review thread P1).
+  const slugBase = pattern.replace(/[^a-zA-Z0-9]+/g, "-").slice(0, 48) || "rule";
+  const patternHash = createHash("sha256").update(pattern).digest("hex").slice(0, 16);
+  const slug = `${slugBase}-${patternHash}`;
   await writeFile(
     path.join(dir, `${slug}.json`),
     `${JSON.stringify({ pattern, namespace, createdAt: new Date().toISOString() })}\n`,

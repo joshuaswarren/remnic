@@ -838,4 +838,15 @@ test("#1678: sanitizeErrorMessage strips absolute paths and caps length", () => 
   assert.ok(long.endsWith("…"), "capped message must end with an ellipsis");
   // A clean message passes through unchanged.
   assert.equal(sanitizeErrorMessage("memory not found: mem-42"), "memory not found: mem-42");
+  // Paths starting with a dot component (/.config/remnic/token) — previously
+  // leaked because the regex required the first path char to be [A-Za-z].
+  const dotPath = sanitizeErrorMessage("ENOENT: /.config/remnic/token not found");
+  assert.ok(!dotPath.includes("/.config"), "dot-leading path must be stripped: " + dotPath);
+  assert.ok(!dotPath.includes("token"), "path suffix must be consumed: " + dotPath);
+  assert.ok(dotPath.includes("<path>"), "must leave <path> placeholder: " + dotPath);
+  // Paths containing special chars like @ in component names.
+  const atPath = sanitizeErrorMessage("cannot stat /tmp/foo@bar/secret.txt");
+  assert.ok(!atPath.includes("/tmp/foo@bar"), "@-path must be stripped: " + atPath);
+  assert.ok(!atPath.includes("secret.txt"), "path suffix must be consumed: " + atPath);
+  assert.ok(atPath.includes("<path>"), "must leave <path> placeholder: " + atPath);
 });
