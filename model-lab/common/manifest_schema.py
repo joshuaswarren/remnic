@@ -161,8 +161,13 @@ def validate_manifest(
             # #1700 nit #3). A status:"trained" manifest with revision:null is
             # half-recorded -- hf_push.py published to hfRepo but never recorded
             # which commit, so the eval can't be reproduced from the manifest.
-            if _is_pending(artifact_block.get("revision")):
-                errors.append("artifact.revision is pending — a real run must pin the published weights revision")
+            # A blank/whitespace string is just as useless as a pending
+            # placeholder for a reproducibility pin, so reject both (codex P2
+            # PRRT_kwDORJXyws6O7cKg: previously only null/"pending-*" was
+            # rejected, letting an empty revision slip through the gate).
+            revision = artifact_block.get("revision")
+            if _is_pending(revision) or not (isinstance(revision, str) and revision.strip()):
+                errors.append("artifact.revision is pending or blank — a real run must pin the published weights revision")
         # dataRecipe provenance (codex P2 PRRT_kwDORJXyws6Otp-E): a published run
         # must carry the dataset hash + generator git-sha so the eval split is
         # reproducible. The committed scaffold leaves them null (no canonical

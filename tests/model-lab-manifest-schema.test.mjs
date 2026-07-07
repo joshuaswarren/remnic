@@ -300,6 +300,28 @@ test(
 );
 
 test(
+  "manifest schema: strict mode REJECTS a 'trained' manifest with a BLANK artifact.revision (codex P2 PRRT_kwDORJXyws6O7cKg)",
+  { skip: skipReason },
+  () => {
+    // A whitespace-only revision is a useless reproducibility pin; the gate
+    // used to reject only null/"pending-*" and let "  " through.
+    const m = makeValidTrainedManifest();
+    m.artifact.revision = "   ";
+    const tmp = path.join(os.tmpdir(), `remnic-ci-revision-blank-${process.pid}.json`);
+    fs.writeFileSync(tmp, JSON.stringify(m));
+    try {
+      const { errors } = validateManifest(tmp, false);
+      assert.ok(
+        errors.some((e) => e.includes("artifact.revision")),
+        `strict mode must reject a blank artifact.revision, got: ${JSON.stringify(errors)}`,
+      );
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  },
+);
+
+test(
   "manifest schema: strict mode REJECTS a correction-intent manifest that OMITS a task-required lib (#1700 nit #2)",
   { skip: skipReason },
   () => {
