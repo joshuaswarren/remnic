@@ -10,10 +10,10 @@
 > reproducible on one GPU).
 >
 > **Honesty boundary.** Every command and schema below traces to code or docs
-> committed on `main` at the time of writing. Where a result is *not yet*
-> committed (the trained faithfulness-gate v1 weights, the real Tier L benchmark
-> artifacts, the Tier F frontier run), this appendix says so explicitly and
-> marks the state — it never describes an un-run experiment as if it were done.
+> committed (the trained faithfulness-gate v1 weights, the Tier F frontier
+> run), this appendix says so explicitly and marks the state — it never
+> describes an un-run experiment as if it were done. The two real Tier L
+> artifacts already on `main` (§A.1.2) are cited as committed evidence.
 
 ---
 
@@ -256,9 +256,13 @@ ollama pull <judge>         # same model or a different one
 
 > **Gotcha (documented).** Some local models (e.g. qwen3) truncate long
 > contexts silently, and Ollama's context-length default is conservative.
-> The manifest's `ctx` field declares the serving context; preflight verifies
-> the live endpoint reports at least that much. Pin `ctx` to what your model
-> actually supports (the committed profile uses 16384).
+> The manifest's `ctx` field declares the serving context. Preflight verifies
+> the model id is served, but for Ollama it does **not** verify the reported
+> context length (Ollama's `/api/tags` discovery returns only model ids, not
+> context sizes), so an operator must confirm the context manually — e.g.
+> `OLLAMA_CONTEXT_LENGTH` env var or `ollama show <model> --modelfile` —
+> before relying on a large-window run. Pin `ctx` to what your model actually
+> supports (the committed profile uses 16384).
 
 ### A.3.4 Build the local-lab manifest and preflight
 
