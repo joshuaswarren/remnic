@@ -109,6 +109,6 @@ Net: responder = Opus via `claude -p` (chunked across windows, resumable, isolat
 
 ### Confirmed decisions (Joshua, 2026-07-07)
 - **Lead with MemCorrect** — with the honest composition framing above.
-- **Tier-F on Opus 4.8 via `claude -p`** (no API budget) — labeled as its own tier, not an API frontier number; local 3090 as judge to fit Claude Max x20 session limits; checkpoint/resume + sampled-first.
+- **Tier-F on Opus 4.8 via `claude -p`** (no API budget) — labeled via the artifact `note`/model metadata while keeping the supported `tier: "frontier"` (no invented tier value), never presented as a raw-API number; local 3090 as judge to fit Claude Max x20 session limits; checkpoint/resume + sampled-first.
 - **Adapter order: Mem0 → Zep → Letta.**
 - **Infra:** jarvis becomes the primary Remnic host (full Linux parity verified; a GPU upgrade); macstudio failover. See `homelab-infra/docs/fleet-macstudio-spof-and-failover.md`.
