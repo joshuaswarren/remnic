@@ -93,12 +93,12 @@
       "examples": 25,
       "latencyMs": {
         "count": 25.0,
-        "min": 9.949,
-        "mean": 10.614,
-        "p50": 10.456,
-        "p95": 11.309,
-        "p99": 12.113,
-        "max": 12.354
+        "min": 10.94,
+        "mean": 11.291,
+        "p50": 11.231,
+        "p95": 11.754,
+        "p99": 12.406,
+        "max": 12.598
       },
       "spanExtraction": {
         "status": "not-applicable-v1",
@@ -114,11 +114,11 @@
   },
   "artifact": {
     "hfRepo": "joshuawarren/remnic-correction-intent-v1",
-    "revision": "3fc6bd74124d4b8c9d98496f6f847dfcfded62d5c19d9fdaf5dfa51a1b0638b1",
+    "revision": "da57c6f3ed5a1a17530c668d7a11739a4c09fc64363330a39d188a31b060866e",
     "quantizations": null,
     "publishStatus": "pending-hf-upload",
-    "localArtifactSha256": "3fc6bd74124d4b8c9d98496f6f847dfcfded62d5c19d9fdaf5dfa51a1b0638b1",
-    "$comment": "The trained weights (model.safetensors + tokenizer + config + held-out gold under model-lab/runs/correction-intent/v1/) are gitignored and were NOT published to the HF Hub: no HF credentials exist on the lab box and common/hf_push.py is a stub (NotImplementedError). For reproducibility the exact trained weights are content-pinned by localArtifactSha256 (sha256 of concatenated per-file sha256 hexdigests for the sorted artifact-dir file set: config.json, correction-heldout.jsonl, model.safetensors, tokenizer.json, tokenizer_config.json, training_args.bin), recorded as revision. This is a verifiable integrity pin of what was trained; HF upload to hfRepo is the pending follow-up (shared with the faithfulness-gate gap, tracked in #1738). Re-running the recipe from this manifest reproduces a bit-identical artifact because the data generator + hyperparams + pinned stack are all deterministic."
+    "localArtifactSha256": "da57c6f3ed5a1a17530c668d7a11739a4c09fc64363330a39d188a31b060866e",
+    "$comment": "The trained weights (model.safetensors + tokenizer + config + held-out gold under model-lab/runs/correction-intent/v1/) are gitignored and were NOT published to the HF Hub: no HF credentials exist on the lab box and common/hf_push.py is a stub (NotImplementedError). For reproducibility the exact trained weights are content-pinned by localArtifactSha256 (sha256 of concatenated per-file sha256 hexdigests for the sorted LOAD-BEARING artifact-dir file set: config.json, correction-heldout.jsonl, model.safetensors, tokenizer.json, tokenizer_config.json), recorded as revision. training_args.bin is deliberately EXCLUDED from the hash: the Trainer serializes TrainingArguments including run-local fields (output_dir / logging metadata derived from the absolute checkout path), so a valid rerun from a different checkout yields a different training_args.bin and a non-matching hash even with bit-identical weights (codex P2, thread #1745). This is a verifiable integrity pin of what was trained; HF upload to hfRepo is the pending follow-up (shared with the faithfulness-gate gap, tracked in #1738). Re-running the recipe from this manifest reproduces a bit-identical load-bearing artifact because the data generator + hyperparams + pinned stack are all deterministic."
   },
   "policyCompliance": {
     "targetMaxParamsB": 4,

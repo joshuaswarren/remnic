@@ -292,6 +292,21 @@ def _score_inline(args: argparse.Namespace, held_out_path: Path) -> int:
         )
         return 2
 
+    # Inline latency is only meaningful on the lab GPU: a CPU-only host with
+    # torch installed silently falls back to CPU and still emits latencyMs,
+    # whose timings are incomparable with the manifest's GPU inline-inference
+    # contract (codex P2, thread #1745). Refuse here and point CPU-only
+    # operators at --predictions (the offline path scores F1 without latency).
+    if not torch.cuda.is_available():
+        print(
+            "eval.py: inline scoring requires CUDA (latencyMs represents the lab "
+            "GPU inference path). On a CPU-only host, generate a predictions file "
+            "and score it with --predictions (offline path omits latencyMs). "
+            "Aborting to avoid emitting incomparable CPU timings.",
+            file=sys.stderr,
+        )
+        return 2
+
     rows = load_jsonl(held_out_path)
     gold = _gold_labels(rows)
 

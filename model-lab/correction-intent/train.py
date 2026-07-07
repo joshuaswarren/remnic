@@ -302,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
     # unchanged). transformers 5.x raises on a mismatch unless this is set.
     model = AutoModelForSequenceClassification.from_pretrained(
         hyperparams.base_model,
-        revision=args.base_model_revision,
+        revision=base_model_revision,
         num_labels=len(morphology.LABELS),
         id2label=ID_TO_LABEL,
         label2id=LABEL_TO_ID,
