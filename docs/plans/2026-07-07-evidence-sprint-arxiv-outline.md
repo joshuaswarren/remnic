@@ -41,7 +41,7 @@
 
 ## Part 3 — Eval Rubrics
 
-**Metrics in play (already implemented):** LoCoMo/LongMemEval standard suite (`contains_answer`, `f1`, `llm_judge`, `rouge_l`, `leak`, `judge_accuracy`, `search_hits`); the 8 MemCorrect metrics; TrustScore (8-factor).
+**Metrics in play:** the benchmark-reportable metrics that exist today are the LoCoMo/LongMemEval standard suite (`contains_answer`, `f1`, `llm_judge`, `rouge_l`, `leak`, `judge_accuracy`, `search_hits`) and the 8 MemCorrect metrics. **TrustScore (#1577) is a shipped *recall-stage feature* (`trust-zones.ts`/`provenance.ts`), not yet a benchmark metric** — surfacing it as a scored, reportable number is additional work, so treat it as a system capability to *describe* in §3, not a metric already produced by the harness.
 
 **"A result is publishable" acceptance rubric (the gate every artifact must pass before it enters the paper or a public post):**
 1. **Non-mock.** Real artifact in `docs/benchmarks/results/`, not a `*-mock000.json` placeholder.
@@ -100,7 +100,7 @@ There is no budget for a raw-API frontier run, so the Tier-F responder **is** Op
 ### Fitting Claude Max x20 session limits (the real constraint)
 A full run (~1986 LoCoMo + 500 LongMemEval ≈ 2486 responder calls, ×2 if the judge is also Opus) will blow the 5-hour/weekly caps. To fit:
 1. **Judge on the local 3090, not Opus** — the single biggest lever; keeps Opus for the responder only (halves the `claude -p` load). Calibrate the local judge against a small Opus-judged sample (Cohen's kappa) so it stays defensible.
-2. **Checkpoint + resume** — persist per-item results (`results-store.ts`/`repro-manifest.ts`) and skip completed items, so a run spans multiple 5-hour windows / days.
+2. **Checkpoint + resume (BUILD THIS FIRST — it does not fully exist yet).** The Claude Max path spanning multiple 5-hour windows *depends on* real per-task checkpointing: persist each completed item's result and skip it on restart. `results-store.ts`/`repro-manifest.ts` are the building blocks, but a resumable per-item runner is a prerequisite to implement before relying on multi-window resume — do not assume the harness already resumes mid-run.
 3. **Low concurrency + usage-limit backoff** — concurrency 1; detect the usage-limit message, sleep until the window resets, resume (built into the `claude-cli` adapter).
 4. **Sample first** — a stratified 200–300-item pass is a **pilot** (method posts + pipeline validation), NOT a publishable leaderboard number: the publishability rubric (Part 3) requires full, non-mock datasets. Scale to the full set before any number is published.
 5. **Judge cache** (already in the harness) — never re-judge an identical answer.
