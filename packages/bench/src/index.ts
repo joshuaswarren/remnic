@@ -504,6 +504,18 @@ export type {
   RunProceduralAblationOptions,
 } from "./benchmarks/remnic/procedural-recall/ablation.js";
 
+// Single-flag ablation matrix for published benchmarks (issues #1574 §"Ablations" + #1730).
+export {
+  SINGLE_FLAG_ABLATION_MATRIX,
+  DEFAULT_ABLATION_BENCHMARK,
+  getAblationCell,
+} from "./ablations/single-flag-matrix.js";
+export type {
+  SingleFlagAblationId,
+  SingleFlagAblationCell,
+  AblationConfigOverrides,
+} from "./ablations/single-flag-matrix.js";
+
 // Real-fixture procedural-recall scenarios + baseline (issue #567 PR 2/5).
 export {
   PROCEDURAL_REAL_SCENARIOS,
