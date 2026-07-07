@@ -351,7 +351,12 @@ export async function handleChatEventsSSE(
 
   // Heartbeat. Unref'd so a lingering connection never blocks process
   // exit (rule 47 — no shared mutable objects keep the loop alive). Cleared
-  // by the close handler above when the client disconnects.
+  // by the close handler above when the client disconnects. Guard against
+  // arming after a disconnect during the burst/drain: the close handler
+  // already ran doCleanup (clearing any prior handle and unregistering the
+  // server callback), so an interval armed here would be untracked and never
+  // cleared — bail out instead (codex P2).
+  if (closed) return;
   heartbeat = setInterval(() => {
     writeSse(`data: ${JSON.stringify({ type: "heartbeat" })}\n\n`);
   }, 25_000);
