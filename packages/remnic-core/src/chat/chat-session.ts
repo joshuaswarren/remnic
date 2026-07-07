@@ -217,8 +217,14 @@ export async function appendTranscriptEntry(
   let fh;
   try {
     fh = await open(filePath, fsConstants.O_APPEND | fsConstants.O_WRONLY);
-  } catch {
-    throw new Error("chat_session_expired");
+  } catch (err) {
+    // Only ENOENT (session unlinked by a concurrent TTL sweep) maps to
+    // chat_session_expired; real fs errors (EACCES, EMFILE, EISDIR, ...)
+    // are rethrown so the caller surfaces the actual failure (codex P2).
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("chat_session_expired");
+    }
+    throw err;
   }
   try {
     await fh.appendFile(JSON.stringify(full) + "\n", "utf8");
@@ -233,8 +239,13 @@ export async function appendTranscriptEntry(
   // session is a legitimate TTL action, not a silent loss.
   try {
     await stat(filePath);
-  } catch {
-    throw new Error("chat_session_expired");
+  } catch (err) {
+    // Only ENOENT (concurrent TTL unlink) is session expiry; other fs
+    // errors (EACCES, EMFILE, ENOTDIR, ...) are rethrown (codex/kilo P2).
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("chat_session_expired");
+    }
+    throw err;
   }
   notifyTranscriptListeners(memoryDir, chatSessionId, full);
   return full;
@@ -386,6 +397,16 @@ export async function cleanupExpiredChatSessions(
       // boundary is inclusive; sub-millisecond APFS mtime skew is negligible
       // against an hour-scale threshold (rule 54 — deterministic cleanup).
       if (ttlHours <= 0 || ageHours >= ttlHours) {
+        // Re-check mtime immediately before unlinking so a turn appended
+        // mid-sweep (which refreshes mtime) is not deleted by the stale age
+        // decision captured above (codex P2). ttlHours <= 0 (expire-all)
+        // skips the re-check. The residual microsecond window is a
+        // legitimate sweep of an over-TTL file.
+        if (ttlHours > 0) {
+          const fresh = await stat(filePath);
+          const freshAge = (Date.now() - fresh.mtimeMs) / (1000 * 60 * 60);
+          if (freshAge < ttlHours) continue;
+        }
         await unlink(filePath);
         removed++;
       }
