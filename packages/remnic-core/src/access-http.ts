@@ -2128,7 +2128,20 @@ export class EngramAccessHttpServer {
       void getOperation("chat_events"); // boundary dispatch (issue #1525)
       await handleChatEventsSSE(
         req, res, chatEventsMatch[1] ?? "",
-        { service: this.service, config: this.service.configRef?.chat, memoryDir: this.service.memoryDir },
+        {
+          service: this.service,
+          config: this.service.configRef?.chat,
+          memoryDir: this.service.memoryDir,
+          // Register the chat-SSE disconnect cleanup with this server's
+          // stop() set so an HTTP shutdown forcibly releases the heartbeat
+          // and transcript subscription even when a lingering client never
+          // emits 'close' (cursor Medium review; mirrors handleGraphEventsSSE
+          // which registers in sseCleanupFns at access-http.ts:2604).
+          registerSseCleanup: (cleanup) => {
+            this.sseCleanupFns.add(cleanup);
+            return () => { this.sseCleanupFns.delete(cleanup); };
+          },
+        },
         this.resolveRequestPrincipal(req),
       );
       return;

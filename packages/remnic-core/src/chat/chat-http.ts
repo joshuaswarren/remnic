@@ -47,6 +47,13 @@ export interface ChatHttpHandlerOptions {
   service: EngramAccessService;
   config: ChatConfig | undefined;
   memoryDir: string;
+  /**
+   * Optional hook the host server supplies so the SSE handler can register
+   * its disconnect cleanup with the server's stop() set (cursor Medium
+   * review). Returns an unregister function the handler calls on normal
+   * client disconnect. When omitted, cleanup runs only on req 'close'.
+   */
+  registerSseCleanup?: (cleanup: () => void) => () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -276,11 +283,19 @@ export async function handleChatEventsSSE(
   // gates every later write so the handler never touches an ended response
   // (kilo review thread) and never sets up a heartbeat for a dead socket
   // (cursor review thread).
-  req.on("close", () => {
+  const doCleanup = (): void => {
     closed = true;
     clearInterval(heartbeat);
     unsubscribe();
     try { res.end(); } catch { /* already ended */ }
+  };
+  // Register with the host server's stop() cleanup set (cursor Medium) so an
+  // HTTP shutdown forcibly releases the subscription + heartbeat even when a
+  // lingering client never emits 'close'. Unregistered again on normal close.
+  const unregisterServerCleanup = opts.registerSseCleanup?.(doCleanup) ?? ((): void => {});
+  req.on("close", () => {
+    doCleanup();
+    unregisterServerCleanup();
   });
 
   const session = await loadChatSession(opts.memoryDir, chatSessionId);
