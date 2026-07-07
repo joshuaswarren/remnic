@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { Orchestrator } from "./orchestrator.js";
+import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
 import { initLogger, type LoggerBackend } from "./logger.js";
 import { abortError } from "./abort-error.js";
 
@@ -31,17 +31,8 @@ function installCapturingLogger(): { entries: LogEntry[] } {
   return { entries };
 }
 
-type QueueOrchestrator = {
-  extractionQueue: Array<() => Promise<void>>;
-  queueProcessing: boolean;
-  processQueue: () => Promise<void>;
-};
-
-function createQueueOrchestrator(): QueueOrchestrator {
-  const orch = Object.create(Orchestrator.prototype) as QueueOrchestrator;
-  orch.extractionQueue = [];
-  orch.queueProcessing = true;
-  return orch;
+function createCoordinator(): ExtractionQueueCoordinator {
+  return new ExtractionQueueCoordinator();
 }
 
 // ── Issue #549 ─────────────────────────────────────────────────────────────
@@ -53,11 +44,11 @@ test("processQueue logs an AbortError task at debug, not error (#549)", async ()
   // That is intentional deduplication, not a failure.  The queue
   // processor must log it at debug.
   const { entries } = installCapturingLogger();
-  const orch = createQueueOrchestrator();
-  orch.extractionQueue.push(async () => {
+  const coordinator = createCoordinator();
+  coordinator.pushRaw(async () => {
     throw abortError("extraction aborted (before_extract)");
   });
-  await orch.processQueue();
+  await coordinator.processQueue();
 
   const errorEntries = entries.filter((e) => e.level === "error");
   const debugEntries = entries.filter(
@@ -80,11 +71,11 @@ test("processQueue still logs real task failures at error", async () => {
   // Guard the other half: non-abort errors (network, parse, I/O) must
   // continue to log at error level.
   const { entries } = installCapturingLogger();
-  const orch = createQueueOrchestrator();
-  orch.extractionQueue.push(async () => {
+  const coordinator = createCoordinator();
+  coordinator.pushRaw(async () => {
     throw new Error("upstream LLM 500");
   });
-  await orch.processQueue();
+  await coordinator.processQueue();
 
   const errorEntries = entries.filter((e) => e.level === "error");
   assert.equal(errorEntries.length, 1);
@@ -96,14 +87,14 @@ test("processQueue still logs real task failures at error", async () => {
 
 test("processQueue handles a mixed run — abort goes to debug, failure to error", async () => {
   const { entries } = installCapturingLogger();
-  const orch = createQueueOrchestrator();
-  orch.extractionQueue.push(async () => {
+  const coordinator = createCoordinator();
+  coordinator.pushRaw(async () => {
     throw abortError("extraction aborted (before_clear_buffer)");
   });
-  orch.extractionQueue.push(async () => {
+  coordinator.pushRaw(async () => {
     throw new Error("I/O failure");
   });
-  await orch.processQueue();
+  await coordinator.processQueue();
 
   const errorCount = entries.filter((e) => e.level === "error").length;
   const abortDebugCount = entries.filter(
@@ -121,30 +112,27 @@ test("processQueue handles a mixed run — abort goes to debug, failure to error
 
 test("processQueue clears queueProcessing on exit regardless of task outcomes", async () => {
   installCapturingLogger();
-  const orch = createQueueOrchestrator();
-  orch.extractionQueue.push(async () => {
+  const coordinator = createCoordinator();
+  coordinator.setProcessingForTest(true);
+  coordinator.pushRaw(async () => {
     throw abortError("extraction aborted");
   });
-  await orch.processQueue();
-  assert.equal(orch.queueProcessing, false);
+  await coordinator.processQueue();
+  assert.equal(coordinator.isProcessing, false);
 });
 
 // ── Outer processQueue().catch() branch (Codex follow-up on #549) ──────────
 
-type QueueProcessorOrchestrator = QueueOrchestrator & {
-  logExtractionQueueFailure: (err: unknown, source: "task" | "processor") => void;
-};
-
 test("logExtractionQueueFailure(processor) classifies AbortError as debug (#549)", async () => {
   // Covers the outer `processQueue().catch(...)` path in
-  // `queueBufferedExtraction`.  A processor-level AbortError can
+  // `enqueue`.  A processor-level AbortError can
   // bubble from e.g. a processQueue rewrite that awaits an external
   // signal, so the handler must fail open to debug — otherwise a
   // session-transition-triggered processor abort would get logged
   // at error next to the successful extraction it just produced.
   const { entries } = installCapturingLogger();
-  const orch = createQueueOrchestrator() as QueueProcessorOrchestrator;
-  orch.logExtractionQueueFailure(
+  const coordinator = createCoordinator();
+  coordinator.logExtractionQueueFailure(
     abortError("queue processor aborted"),
     "processor",
   );
@@ -160,8 +148,8 @@ test("logExtractionQueueFailure(processor) classifies AbortError as debug (#549)
 
 test("logExtractionQueueFailure(processor) preserves error-level for real failures", async () => {
   const { entries } = installCapturingLogger();
-  const orch = createQueueOrchestrator() as QueueProcessorOrchestrator;
-  orch.logExtractionQueueFailure(
+  const coordinator = createCoordinator();
+  coordinator.logExtractionQueueFailure(
     new Error("unexpected processor crash"),
     "processor",
   );
@@ -180,9 +168,9 @@ test("logExtractionQueueFailure names the right layer (task vs processor)", asyn
   // tells them whether a specific extraction aborted or the queue
   // processor itself did.
   const { entries } = installCapturingLogger();
-  const orch = createQueueOrchestrator() as QueueProcessorOrchestrator;
-  orch.logExtractionQueueFailure(abortError("a"), "task");
-  orch.logExtractionQueueFailure(abortError("b"), "processor");
+  const coordinator = createCoordinator();
+  coordinator.logExtractionQueueFailure(abortError("a"), "task");
+  coordinator.logExtractionQueueFailure(abortError("b"), "processor");
   const debugMessages = entries
     .filter((e) => e.level === "debug")
     .map((e) => e.message);
