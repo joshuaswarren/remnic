@@ -21,9 +21,11 @@
  *  - The SSE stream subscribes to live transcript appends and pushes new
  *    entries to connected clients (issue #1685 item 2 / #1687 Thread 8).
  *    Subscription is established before the transcript snapshot is read so no
- *    concurrent append is missed (cursor Bugbot race fix). The disconnect
- *    cleanup is registered immediately and guarded by a `closed` flag so an
- *    early close cannot leak the heartbeat or write to an ended response.
+ *    concurrent append is missed (cursor Bugbot race fix); the burst drains
+ *    the buffer only after switching to live mode so no buffered entry is
+ *    dropped. The disconnect cleanup is registered immediately and guarded
+ *    by a `closed` flag so an early close cannot leak the heartbeat or write
+ *    to an ended response.
  *
  * This module is imported by access-http.ts with thin route registration —
  * the god-file ratchet (#1520) tracks access-http.ts LOC.
@@ -169,12 +171,16 @@ export async function handleChatMessage(
   } catch (err) {
     // processChatMessage throws tagged errors for the session/LLM/engine
     // paths; map each back to its HTTP status.  Dedup coalescing means a
-    // concurrent duplicate shares the same rejection.
+    // concurrent duplicate shares the same rejection.  A 'chat_session_expired'
+    // means the session was swept by the TTL cleanup mid-turn (codex P2) —
+    // tell the client to start a fresh session (410 Gone).
     const code = err instanceof Error ? err.message : String(err);
     if (code === "chat_session_not_found") {
       respondJson(res, 404, { error: "chat_session_not_found", code: "chat_session_not_found" });
     } else if (code === "access_denied") {
       respondJson(res, 403, { error: "access_denied", code: "access_denied" });
+    } else if (code === "chat_session_expired") {
+      respondJson(res, 410, { error: "chat_session_expired", code: "chat_session_expired" });
     } else if (code === "chat_disabled") {
       respondJson(res, 404, { error: "chat_disabled", code: "chat_disabled" });
     } else if (code === "no_llm_available" || code === "engine_unavailable") {
@@ -213,14 +219,13 @@ export async function handleChatMessage(
  * reconnect-safe.
  *
  * Race-free ordering (cursor Bugbot): the subscription is established BEFORE
- * the transcript snapshot is read. Entries appended concurrently during the
- * snapshot read are buffered, then drained after the burst (dropping any the
- * burst already delivered, by `seq`), so no live append is ever missed and
- * none is delivered twice. The disconnect cleanup is registered immediately
- * after the subscription and guarded by a `closed` flag: if the client goes
- * away during the load or burst the flag flips, the handler bails out before
- * writing anything else, and the heartbeat is never created — so no interval
- * leaks and no write hits an ended response (cursor/kilo review threads).
+ * the transcript snapshot is read; entries appended concurrently during the
+ * snapshot read are buffered, then the buffer is drained AFTER switching to
+ * live mode (so an append landing between the drain and the mode switch is
+ * never dropped — cursor review). Every write goes through a `closed`-guarded
+ * helper so a disconnect during the burst cannot write to an ended response
+ * (cursor/kilo review). The disconnect cleanup is registered immediately and
+ * guarded by `closed` so an early close cannot leak the heartbeat.
  */
 export async function handleChatEventsSSE(
   req: IncomingMessage,
@@ -238,6 +243,17 @@ export async function handleChatEventsSSE(
   // cleanup is idempotent (guarded by `closed`) so a repeat close is harmless.
   let heartbeat: NodeJS.Timeout | undefined;
   let closed = false;
+  // Every SSE write goes through this helper so a closed connection is never
+  // written to (cursor Low review). Returns false when the write was skipped.
+  const writeSse = (chunk: string): boolean => {
+    if (closed) return false;
+    try {
+      res.write(chunk);
+      return true;
+    } catch {
+      return false;
+    }
+  };
 
   // Subscribe BEFORE reading the transcript so a concurrent append between
   // the snapshot read and subscription is never missed (cursor Bugbot race).
@@ -252,11 +268,7 @@ export async function handleChatEventsSSE(
       pending.push(entry);
       return;
     }
-    try {
-      res.write(`data: ${JSON.stringify(entry)}\n\n`);
-    } catch {
-      // Connection closed — cleanup below.
-    }
+    writeSse(`data: ${JSON.stringify(entry)}\n\n`);
   });
 
   // Register disconnect cleanup IMMEDIATELY so a close during loadChatSession
@@ -295,37 +307,33 @@ export async function handleChatEventsSSE(
 
   // Ask reconnecting clients to wait 5 s before retrying (reconnect-safe:
   // the initial burst below replays the full transcript on rejoin).
-  res.write("retry: 5000\n\n");
+  writeSse("retry: 5000\n\n");
 
   // Send the transcript snapshot as the initial burst, recording delivered
   // seqs so buffered concurrent appends are not double-delivered.
   const deliveredSeqs = new Set<number>();
   for (const entry of session.transcript) {
-    res.write(`data: ${JSON.stringify(entry)}\n\n`);
+    writeSse(`data: ${JSON.stringify(entry)}\n\n`);
     deliveredSeqs.add(entry.seq);
   }
 
-  // Drain concurrent appends captured during the burst that the snapshot
-  // did not already deliver.
+  // Switch to live push FIRST, THEN drain buffered appends. Ordering matters:
+  // if an append lands between the drain and the mode switch it would be
+  // buffered (bursting still true) and never re-drained (cursor Medium). With
+  // live mode on, appends during the drain write straight through and the
+  // buffer is emptied once.
+  bursting = false;
   for (const entry of pending) {
     if (!deliveredSeqs.has(entry.seq)) {
-      res.write(`data: ${JSON.stringify(entry)}\n\n`);
+      writeSse(`data: ${JSON.stringify(entry)}\n\n`);
     }
   }
-
-  // Switch to live push — subsequent appends write straight to the response.
-  bursting = false;
 
   // Heartbeat. Unref'd so a lingering connection never blocks process
   // exit (rule 47 — no shared mutable objects keep the loop alive). Cleared
   // by the close handler above when the client disconnects.
   heartbeat = setInterval(() => {
-    if (closed) return;
-    try {
-      res.write(`data: ${JSON.stringify({ type: "heartbeat" })}\n\n`);
-    } catch {
-      // Connection closed — clearInterval via the close handler.
-    }
+    writeSse(`data: ${JSON.stringify({ type: "heartbeat" })}\n\n`);
   }, 25_000);
   heartbeat.unref?.();
 }

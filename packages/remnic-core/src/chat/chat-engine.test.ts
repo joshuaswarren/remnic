@@ -7,7 +7,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdir, rm, readFile, utimes } from "node:fs/promises";
+import { mkdir, rm, readFile, utimes, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -322,4 +322,16 @@ test("appendTranscriptEntry emits strictly-increasing seqs even within the same 
     assert.ok(entries[i]! > entries[i - 1]!, `seq ${entries[i]} must exceed ${entries[i - 1]}`);
   }
   assert.equal(new Set(entries).size, entries.length, "seqs must be unique");
+});
+
+test("appendTranscriptEntry refuses to recreate a swept session (chat_session_expired) — codex P2 #1687", async () => {
+  const dir = await makeTempDir();
+  const session = await createChatSession(dir, { principal: "alice" });
+  // Simulate the TTL sweep unlinking the file mid-turn (resurrection race).
+  await unlink(chatSessionFile(dir, session.id));
+  // Must throw instead of silently recreating a headerless (public) file.
+  await assert.rejects(
+    appendTranscriptEntry(dir, session.id, { role: "user", content: "x" }),
+    /chat_session_expired/,
+  );
 });

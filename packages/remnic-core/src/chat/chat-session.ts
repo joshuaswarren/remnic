@@ -200,16 +200,25 @@ export async function appendTranscriptEntry(
   chatSessionId: string,
   entry: Omit<ChatTranscriptEntry, "seq" | "ts">,
 ): Promise<ChatTranscriptEntry> {
+  const filePath = chatSessionFile(memoryDir, chatSessionId);
+  // Guard against TTL-sweep resurrection (codex P2): if a concurrent sweep
+  // unlinked this session, refuse to append rather than silently recreate a
+  // headerless file — a recreated file would load with no principal binding
+  // and be treated as public by sessionBelongsToPrincipal. The owning turn
+  // fails with a clear 'chat_session_expired' error so the client starts a
+  // fresh session. (The microsecond stat->append TOCTOU is acceptable for an
+  // hourly-sweep edge; the common case — no sweep — is fully closed.)
+  try {
+    await stat(filePath);
+  } catch {
+    throw new Error("chat_session_expired");
+  }
   const full: ChatTranscriptEntry = {
     ...entry,
     seq: nextTranscriptSeq(),
     ts: new Date().toISOString(),
   };
-  await appendFile(
-    chatSessionFile(memoryDir, chatSessionId),
-    JSON.stringify(full) + "\n",
-    "utf8",
-  );
+  await appendFile(filePath, JSON.stringify(full) + "\n", "utf8");
   notifyTranscriptListeners(memoryDir, chatSessionId, full);
   return full;
 }
