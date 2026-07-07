@@ -8,21 +8,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import {
-  DEFAULT_ABLATION_BENCHMARK,
-  SINGLE_FLAG_ABLATION_MATRIX,
-  getAblationCell,
-} from "./single-flag-matrix.ts";
 import { buildBenchBaselineRemnicConfig } from "../adapters/remnic-adapter.ts";
+import { DEFAULT_ABLATION_BENCHMARK, SINGLE_FLAG_ABLATION_MATRIX, getAblationCell } from "./single-flag-matrix.ts";
 
 test("SINGLE_FLAG_ABLATION_MATRIX has exactly the 3 #1574 axes in stable order", () => {
   assert.deepEqual(
     SINGLE_FLAG_ABLATION_MATRIX.map((c) => c.axis),
-    ["memory-worth", "contradiction-scan", "graph-recall"],
+    ["memory-worth", "contradiction-scan", "graph-recall"]
   );
   assert.deepEqual(
     SINGLE_FLAG_ABLATION_MATRIX.map((c) => c.id),
-    ["memory-worth-off", "contradiction-scan-on", "graph-recall-on"],
+    ["memory-worth-off", "contradiction-scan-on", "graph-recall-on"]
   );
 });
 
@@ -32,10 +28,7 @@ test("every cell carries the required metadata for an artifact note + STATUS log
     assert.ok(cell.label.length > 0, `${cell.id}: missing label`);
     assert.ok(cell.description.length > 0, `${cell.id}: missing description`);
     assert.ok(cell.baselineState.length > 0, `${cell.id}: missing baselineState`);
-    assert.ok(
-      Object.keys(cell.configOverrides).length > 0,
-      `${cell.id}: empty configOverrides`,
-    );
+    assert.ok(Object.keys(cell.configOverrides).length > 0, `${cell.id}: empty configOverrides`);
     assert.ok(cell.primaryFlag.length > 0, `${cell.id}: missing primaryFlag`);
   }
 });
@@ -50,46 +43,38 @@ test("each cell flips exactly one primary flag (the single-flag invariant)", () 
       assert.equal(
         overrides.recallMemoryWorthFilterEnabled,
         false,
-        `${cell.id}: expected recallMemoryWorthFilterEnabled=false`,
+        `${cell.id}: expected recallMemoryWorthFilterEnabled=false`
       );
       assert.equal(
         Object.keys(overrides).length,
         1,
-        `${cell.id}: memory-worth cell must touch only recallMemoryWorthFilterEnabled`,
+        `${cell.id}: memory-worth cell must touch only recallMemoryWorthFilterEnabled`
       );
     } else if (cell.primaryFlag === "contradictionScan") {
       const cs = overrides.contradictionScan;
       // Narrow with `in` so the property access is type-checked, not an
       // unchecked `as { enabled?: unknown }` cast (ts-no-inline-cast-access).
       if (cs && typeof cs === "object" && "enabled" in cs) {
-        assert.equal(
-          cs.enabled,
-          true,
-          `${cell.id}: expected contradictionScan.enabled=true`,
-        );
+        assert.equal(cs.enabled, true, `${cell.id}: expected contradictionScan.enabled=true`);
       } else {
         assert.fail(`${cell.id}: contradictionScan override must be { enabled, ... }`);
       }
       assert.equal(
         Object.keys(overrides).length,
         1,
-        `${cell.id}: contradiction-scan cell must touch only contradictionScan`,
+        `${cell.id}: contradiction-scan cell must touch only contradictionScan`
       );
     } else if (cell.primaryFlag === "graphRecallEnabled") {
-      assert.equal(
-        overrides.graphRecallEnabled,
-        true,
-        `${cell.id}: expected graphRecallEnabled=true`,
-      );
+      assert.equal(overrides.graphRecallEnabled, true, `${cell.id}: expected graphRecallEnabled=true`);
       assert.equal(
         overrides.graphAssistInFullModeEnabled,
         true,
-        `${cell.id}: graph assist must be on so the flag actually engages in full mode`,
+        `${cell.id}: graph assist must be on so the flag actually engages in full mode`
       );
       assert.deepEqual(
         Object.keys(overrides).sort(),
         ["graphAssistInFullModeEnabled", "graphRecallEnabled"],
-        `${cell.id}: graph-recall cell must touch only the two graph gates`,
+        `${cell.id}: graph-recall cell must touch only the two graph gates`
       );
     } else {
       assert.fail(`unknown primaryFlag ${cell.primaryFlag} on cell ${cell.id}`);
@@ -112,10 +97,7 @@ test("getAblationCell returns the cell for a known id", () => {
 });
 
 test("getAblationCell throws on unknown id (fail fast at the runner boundary)", () => {
-  assert.throws(
-    () => getAblationCell("trust-score-on" as never),
-    /Unknown ablation cell id "trust-score-on"/,
-  );
+  assert.throws(() => getAblationCell("trust-score-on" as never), /Unknown ablation cell id "trust-score-on"/);
 });
 
 test("ablation primary flags are absent from the bench baseline — cells flip from config.ts defaults", () => {
@@ -135,7 +117,7 @@ test("ablation primary flags are absent from the bench baseline — cells flip f
     assert.equal(
       baseline[key],
       undefined,
-      `bench baseline must not set ${key} (else the ablation delta is measured against the bench override, not the config.ts default)`,
+      `bench baseline must not set ${key} (else the ablation delta is measured against the bench override, not the config.ts default)`
     );
   }
 });
@@ -151,7 +133,7 @@ test("each cell's configOverrides win over the baseline when merged (override se
     assert.equal(
       merged[cell.primaryFlag],
       cell.configOverrides[cell.primaryFlag],
-      `${cell.id}: merged config must carry the cell's primary-flag override`,
+      `${cell.id}: merged config must carry the cell's primary-flag override`
     );
   }
 });

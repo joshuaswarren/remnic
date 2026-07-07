@@ -1,4 +1,5 @@
 #!/usr/bin/env -S npx tsx
+import { appendFile, mkdir, writeFile } from "node:fs/promises";
 /**
  * run-ablation-matrix.ts — Execute the single-flag ablation matrix
  * (issues #1574 §"Ablations" + #1730) against a published benchmark under a
@@ -39,23 +40,22 @@
  */
 import path from "node:path";
 import process from "node:process";
-import { mkdir, writeFile, appendFile } from "node:fs/promises";
 
 import {
-  resolveBenchRuntimeProfile,
-  runBenchmark,
-  createRemnicAdapter,
-  buildBenchmarkArtifact,
-  writeBenchmarkArtifact,
-  loadBenchmarkArtifact,
-  SINGLE_FLAG_ABLATION_MATRIX,
-  getAblationCell,
-  type SingleFlagAblationCell,
-  type SingleFlagAblationId,
-  type BenchmarkResult,
   type BenchmarkArtifactHardware,
   type BenchmarkArtifactTier,
+  type BenchmarkResult,
   type ResolvedBenchRuntimeProfile,
+  SINGLE_FLAG_ABLATION_MATRIX,
+  type SingleFlagAblationCell,
+  type SingleFlagAblationId,
+  buildBenchmarkArtifact,
+  createRemnicAdapter,
+  getAblationCell,
+  loadBenchmarkArtifact,
+  resolveBenchRuntimeProfile,
+  runBenchmark,
+  writeBenchmarkArtifact,
 } from "@remnic/bench";
 
 interface ParsedArgs {
@@ -150,7 +150,10 @@ function parseArgs(argv: string[]): { ok: true; value: ParsedArgs } | { ok: fals
   }
 
   if (!localLabManifestPath) {
-    return { ok: false, message: "ERROR: --local-lab-manifest <path> is required (Tier L ablation runs use the local-lab profile)." };
+    return {
+      ok: false,
+      message: "ERROR: --local-lab-manifest <path> is required (Tier L ablation runs use the local-lab profile).",
+    };
   }
   if (!datasetDir) {
     return { ok: false, message: "ERROR: --dataset-dir <path> is required." };
@@ -206,7 +209,7 @@ async function main(): Promise<number> {
       process.stdout.write(HELP);
       return 0;
     }
-    process.stderr.write(parsed.message + "\n" + HELP);
+    process.stderr.write(`${parsed.message}\n${HELP}`);
     return 2;
   }
   const args = parsed.value;
@@ -217,11 +220,7 @@ async function main(): Promise<number> {
 
   await writeStatus(
     statusPath,
-    `# Single-flag ablation matrix (issue #1730 / #1574)\n\n` +
-      `**Benchmark:** ${args.benchmark}  **Seed:** ${args.seed}  **Tier:** local\n` +
-      `**Cells:** ${cells.map((c) => c.id).join(", ")}\n` +
-      (args.limit ? `**NOTE:** --limit ${args.limit} set — artifacts are NON-publishable (iteration only).\n` : "") +
-      `\n## Progress\n`,
+    `# Single-flag ablation matrix (issue #1730 / #1574)\n\n**Benchmark:** ${args.benchmark}  **Seed:** ${args.seed}  **Tier:** local\n**Cells:** ${cells.map((c) => c.id).join(", ")}\n${args.limit ? `**NOTE:** --limit ${args.limit} set — artifacts are NON-publishable (iteration only).\n` : ""}\n## Progress\n`
   );
 
   const resolved = await resolveBenchRuntimeProfile({
@@ -234,7 +233,10 @@ async function main(): Promise<number> {
   for (const cell of cells) {
     const label = `[ablation:${cell.id}]`;
     process.stdout.write(`${label} starting — ${cell.label}\n`);
-    await appendStatus(statusPath, `\n### ${cell.id} — ${cell.label}\n- status: RUNNING\n- axis: ${cell.axis}\n- baseline: ${cell.baselineState}\n`);
+    await appendStatus(
+      statusPath,
+      `\n### ${cell.id} — ${cell.label}\n- status: RUNNING\n- axis: ${cell.axis}\n- baseline: ${cell.baselineState}\n`
+    );
     try {
       const artifactPath = await runOneCell(args, resolved, cell);
       const { artifact, sha256 } = await loadBenchmarkArtifact(artifactPath);
@@ -242,14 +244,16 @@ async function main(): Promise<number> {
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(4) : v}`)
         .join(", ");
-      process.stdout.write(`${label} DONE → ${path.basename(artifactPath)} (${metrics}) sha256=${sha256.slice(0, 12)}\n`);
+      process.stdout.write(
+        `${label} DONE → ${path.basename(artifactPath)} (${metrics}) sha256=${sha256.slice(0, 12)}\n`
+      );
       await appendStatus(
         statusPath,
-        `- status: DONE\n  - artifact: \`${path.basename(artifactPath)}\`\n  - metrics: ${metrics}\n  - sha256: ${sha256}\n`,
+        `- status: DONE\n  - artifact: \`${path.basename(artifactPath)}\`\n  - metrics: ${metrics}\n  - sha256: ${sha256}\n`
       );
     } catch (error) {
       failures += 1;
-      const message = error instanceof Error ? error.stack ?? error.message : String(error);
+      const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
       process.stderr.write(`${label} FAILED: ${message}\n`);
       await appendStatus(statusPath, `- status: FAILED\n  - error: ${message.split("\n")[0]}\n`);
     }
@@ -257,7 +261,7 @@ async function main(): Promise<number> {
 
   await appendStatus(
     statusPath,
-    `\n## Summary\n- cells attempted: ${cells.length}\n- failures: ${failures}\n- finished: ${new Date().toISOString()}\n`,
+    `\n## Summary\n- cells attempted: ${cells.length}\n- failures: ${failures}\n- finished: ${new Date().toISOString()}\n`
   );
   return failures === 0 ? 0 : 1;
 }
@@ -265,7 +269,7 @@ async function main(): Promise<number> {
 async function runOneCell(
   args: ParsedArgs,
   resolved: ResolvedBenchRuntimeProfile,
-  cell: SingleFlagAblationCell,
+  cell: SingleFlagAblationCell
 ): Promise<string> {
   // Merge the cell's configOverrides ON TOP of the resolved baseline config.
   // The resolved `adapterOptions.configOverrides` already contains the
@@ -280,20 +284,14 @@ async function runOneCell(
   const limitNote = args.limit
     ? ` ITERATION-ONLY slice (--limit ${args.limit}); NOT a publishable full-run number.`
     : "";
-  const note =
-    `Single-flag ablation "${cell.id}" (${cell.label}). ` +
-    cell.description +
-    ` Baseline: ${cell.baselineState}` +
-    limitNote;
+  const note = `Single-flag ablation "${cell.id}" (${cell.label}). ${cell.description} Baseline: ${cell.baselineState}${limitNote}`;
 
   const adapter = await createRemnicAdapter({
     configOverrides: mergedConfigOverrides,
     responder: resolved.adapterOptions.responder,
     judge: resolved.adapterOptions.judge,
     preserveRuntimeDefaults: resolved.adapterOptions.preserveRuntimeDefaults,
-    ...(resolved.adapterOptions.drainTimeoutMs
-      ? { drainTimeoutMs: resolved.adapterOptions.drainTimeoutMs }
-      : {}),
+    ...(resolved.adapterOptions.drainTimeoutMs ? { drainTimeoutMs: resolved.adapterOptions.drainTimeoutMs } : {}),
     ...(args.benchmark === "locomo" ? { replayExtractionMode: "skip" as const } : {}),
   });
 
@@ -341,7 +339,7 @@ main()
   })
   .catch((error) => {
     process.stderr.write(
-      `run-ablation-matrix.ts crashed: ${error instanceof Error ? error.stack ?? error.message : String(error)}\n`,
+      `run-ablation-matrix.ts crashed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`
     );
     process.exitCode = 1;
   });
