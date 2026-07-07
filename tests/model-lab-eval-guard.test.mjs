@@ -125,3 +125,26 @@ result["distinct_not_detected"] = m._held_out_is_predictions(gold, preds)
     );
   },
 );
+
+test(
+  "eval.py: a supplied-but-missing --predictions path reports a bad-path error, NOT a GPU-gate error (#1700 review PRRT_kwDORJXyws6O6gBM)",
+  { skip: skipReason },
+  () => {
+    const r = runEvalProbe(`
+missing = d / "does-not-exist.jsonl"
+try:
+    rc = m.main(["--held-out", str(gold), "--predictions", str(missing)])
+    result["badpath_rc"] = rc
+except SystemExit as e:
+    result["badpath_systemexit"] = e.code
+`);
+    // A typoed predictions path must NOT trigger the GPU gate (no SystemExit);
+    // it must return 2 with a clear bad-path message on a CPU-only host.
+    assert.equal(
+      r.badpath_systemexit,
+      undefined,
+      "a missing predictions path must not gate the GPU stack (no SystemExit)",
+    );
+    assert.equal(r.badpath_rc, 2, "a missing predictions path must return 2");
+  },
+);

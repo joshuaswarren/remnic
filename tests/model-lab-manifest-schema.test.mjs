@@ -370,3 +370,27 @@ test(
     }
   },
 );
+
+test(
+  "manifest schema: strict mode does not crash on an unhashable task value (#1700 review PRRT_kwDORJXyws6O6gBM)",
+  { skip: skipReason },
+  () => {
+    // A manifest whose 'task' is an array/object must not TypeError out of
+    // strict validation (the validator returns human-readable errors). Reuse a
+    // valid trained shape but set task to an unhashable array.
+    const m = makeValidTrainedManifest();
+    m.task = ["not", "a", "string"];
+    const tmp = path.join(os.tmpdir(), `remnic-ci-unhashable-${process.pid}.json`);
+    fs.writeFileSync(tmp, JSON.stringify(m));
+    try {
+      const { errors } = validateManifest(tmp, false);
+      // Must return errors (bad task) WITHOUT throwing.
+      assert.ok(
+        Array.isArray(errors) && errors.length > 0,
+        `strict mode must return errors (not crash) for an unhashable task, got: ${JSON.stringify(errors)}`,
+      );
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  },
+);

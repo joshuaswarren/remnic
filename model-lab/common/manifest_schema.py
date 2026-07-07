@@ -243,7 +243,12 @@ def _validate_training_stack(
         # task-required lib passed strict validation (kilo WARNING
         # PRRT_kwDORJXyws6OtyS- for the null-declared case; this closes the
         # omitted-key case). dict.fromkeys dedupes the three sources.
-        task_libs = TASK_REQUIRED_LIBS.get(task, ()) if task else ()
+        # Guard against an unhashable 'task' (array/object): the validator is
+        # documented to RETURN human-readable errors, not raise. A bad task is
+        # already reported via the KNOWN_TASKS check above; here we just skip the
+        # per-task matrix so a malformed manifest cannot TypeError out of strict
+        # validation (codex P2 PRRT_kwDORJXyws6O6gBM).
+        task_libs = TASK_REQUIRED_LIBS.get(task, ()) if isinstance(task, str) else ()
         check_libs = dict.fromkeys(("torch", "transformers", *task_libs, *libs.keys()))
         for lib in check_libs:
             ver = libs.get(lib)

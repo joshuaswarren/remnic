@@ -209,7 +209,20 @@ def main(argv: list[str] | None = None) -> int:
     # NOT called here. The inference path below is the one that loads the
     # trained checkpoint and runs forward passes, which is what actually needs
     # torch/transformers; the gate is scoped to that path.
-    if args.predictions and args.predictions.is_file():
+    if args.predictions is not None:
+        # predictions was SUPPLIED. The offline-scoring path does not need the
+        # GPU stack, so a missing/not-a-file path must surface as a bad-path
+        # error -- not a missing-torch error on a CPU-only host (codex P2
+        # PRRT_kwDORJXyws6O6gBM: a typoed --predictions path used to fall through
+        # to the inference branch and gate the GPU stack first).
+        if not args.predictions.is_file():
+            print(
+                "eval.py: --predictions <model-output.jsonl> is not a readable file.\n"
+                f"  supplied path: {args.predictions}\n"
+                "  Check the path and re-run; offline scoring needs pre-computed predictions.",
+                file=sys.stderr,
+            )
+            return 2
         return _score_offline(args)
 
     # Inference path (no --predictions): generate predictions by running the
