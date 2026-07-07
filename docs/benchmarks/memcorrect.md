@@ -4,9 +4,16 @@ Issue #1584. Part of the glass-box epic (#1572). Benchmark id: `memcorrect-v1`.
 
 ## Why this benchmark exists
 
-No public memory benchmark measures whether a memory system can be
-**corrected**. LongMemEval's knowledge-update category is near ceiling and
-only tests whether the *newest* fact wins at answer time. It does not
+Prior benchmarks test only *slices* of memory correction — StateBench
+(superseded-fact resurrection), STALE (arXiv:2605.06527, stale-belief
+resolution), MemSyco-Bench (arXiv:2607.01071, read-time trust in memory),
+MemStrata (arXiv:2606.26511, temporal supersession), and MemoryAgentBench's
+FactConsolidation (correction-priority at answer time). None combines
+correction uptake, adversarial non-resurrection, collateral safety, scoped
+precision, write-path false-apply, and revocation in one system-agnostic
+protocol. The closest recall benchmark — LongMemEval's knowledge-update
+category — only tests whether the *newest* fact wins at answer time, and even
+there the strongest systems score roughly 70–90%, not ceiling. It does not
 measure:
 
 - how **fast** a correction takes effect,
