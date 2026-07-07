@@ -21,7 +21,7 @@ The features, all gated by the `codingKnowledge` config block:
    these files."
 4. [Structural provider (reserved)](#structural-provider-reserved) — the
    config knob for symbol-anchored review-intent recall; the provider modules
-   ship in a follow-up PR.
+   ship in [#1754](https://github.com/joshuaswarren/remnic/pull/1754) (in progress).
 
 ## Gate contract
 
@@ -290,7 +290,7 @@ are both providers of the same port.
 
 The config field is parsed and validated today; the provider modules
 themselves (the port interface, the subprocess provider, the native adapter)
-ship in a follow-up PR. **Until then, review-intent recall is file-path-only
+ship in [#1754 (in progress)](https://github.com/joshuaswarren/remnic/pull/1754). **Until then, review-intent recall is file-path-only
 regardless of this setting** — setting `structuralProvider` to `"subprocess"`
 or `"native"` is accepted by the parser but has no effect on recall. This is
 documented honestly rather than implied.
