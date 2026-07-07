@@ -826,3 +826,36 @@ test("#1645 (OcoPp): blocked result is the signal callers gate shared-namespace 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("#1645 (rule 44): a tombstone-blocked fact's content is NOT registered in the dedup index", async () => {
+  // writeMemory skips the fact-hash index for a blocked fact (rule 44), and the
+  // orchestrator's addContentHashDedup now also skips it (#1645 thread: dedup
+  // defeat). If the content WERE registered, the next extraction would dedup-skip
+  // the tombstone chokepoint and silently ban the retired fact (no pending_review
+  // row) — a rule-34 violation.
+  const { storage, dir } = await makeStorage();
+  try {
+    const content = "The legacy auth token is sk-banned-12345";
+    await storage.appendTombstone({
+      reason: "retraction",
+      createdBy: "user_correction",
+      sourceMemoryId: "fact-auth-old",
+      rawContent: content,
+    });
+
+    const result = await storage.writeMemory("fact", content, { source: "extraction" });
+    assert.equal(result.tombstoneBlocked, true);
+    assert.equal(
+      await storage.hasFactContentHash(content),
+      false,
+      "blocked content must NOT enter the dedup index (rule 44 + #1645 orchestrator-side guard)",
+    );
+
+    // Control: an active fact with different content IS registered.
+    const active = await storage.writeMemory("fact", "a totally novel active fact", { source: "extraction" });
+    assert.equal(active.tombstoneBlocked, false);
+    assert.equal(await storage.hasFactContentHash("a totally novel active fact"), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

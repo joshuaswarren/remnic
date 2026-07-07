@@ -14305,7 +14305,7 @@ export class Orchestrator {
             }
             continue;
           }
-          const { id: promotedId } = await targetStorage.writeMemory(
+          const targetPromotion = await targetStorage.writeMemory(
             options.category as any,
             citedContent,
             {
@@ -14331,7 +14331,11 @@ export class Orchestrator {
               ...(options.provenance ? { provenance: options.provenance } : {}),
             },
           );
+          const promotedId = targetPromotion.id;
+          // #1645: if the TARGET namespace's own tombstone blocked this promotion,
+          // the row lands pending_review — do NOT supersede active target memories.
           if (
+            !targetPromotion.tombstoneBlocked &&
             lifecycleCaps.temporalSupersession &&
             options.category === "fact" &&
             options.entityRef &&
@@ -14624,7 +14628,7 @@ export class Orchestrator {
             return;
           }
         }
-        const { id: promotedId } = await sharedStorage.writeMemory(
+        const sharedPromotion = await sharedStorage.writeMemory(
           options.category as any,
           citedContent,
           {
@@ -14651,6 +14655,9 @@ export class Orchestrator {
             ...(options.provenance ? { provenance: options.provenance } : {}),
           },
         );
+        const promotedId = sharedPromotion.id;
+        // #1645: if the shared namespace's own tombstone blocked this promotion,
+        // leave the row pending_review but do NOT supersede active shared memories.
         // PR #402 Finding 3 fix: run temporal supersession against the shared
         // namespace after the promoted write lands so stale shared-namespace
         // copies of the same entity attribute are retired.  Without this,
@@ -14658,6 +14665,7 @@ export class Orchestrator {
         // shared recall continues returning the stale state.  Reuses the same
         // applyTemporalSupersession helper — no logic duplication.
         if (
+          !sharedPromotion.tombstoneBlocked &&
           lifecycleCaps.temporalSupersession &&
           options.entityRef &&
           options.structuredAttributes &&
@@ -15955,7 +15963,13 @@ export class Orchestrator {
               hasCitationForTemplate(fact.content, citationTemplate)
                 ? stripCitationForTemplate(fact.content, citationTemplate)
                 : fact.content;
-            await this.addContentHashDedup(targetStorage, canonicalChunkedContent);
+            // #1645: do NOT register a tombstone-blocked fact's content in the
+            // dedup index — writeMemory already skipped it (rule 44). Re-adding
+            // would let the next extraction dedup-skip the tombstone chokepoint
+            // and silently ban the retired content (no pending_review row).
+            if (!tombstoneBlocked) {
+              await this.addContentHashDedup(targetStorage, canonicalChunkedContent);
+            }
           } catch (err) {
             log.warn(
               `content-hash dedup registration failed for chunked memory ${parentId}: ${err}`,
@@ -16285,7 +16299,11 @@ export class Orchestrator {
             writeCategory === "procedure"
               ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
               : canonicalFactContent;
-          await this.addContentHashDedup(targetStorage, hashRegisterKey);
+          // #1645: do NOT register a tombstone-blocked fact's content in the dedup
+          // index (rule 44 defeat) — see chunked path comment.
+          if (!tombstoneBlocked) {
+            await this.addContentHashDedup(targetStorage, hashRegisterKey);
+          }
         } catch (err) {
           log.warn(
             `content-hash dedup registration failed for memory ${memoryId}: ${err}`,
