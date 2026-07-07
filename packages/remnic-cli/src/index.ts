@@ -5872,6 +5872,47 @@ async function cmdDoctor(): Promise<void> {
     // Never fail doctor for detection errors.
   }
 
+  // ── Structural-context provider (issue #1548 Track A PR 5) ────────────────
+  // Renders the configured provider mode plus a live probe so operators see
+  // "configured / probed / last error code" — a degraded/absent provider is
+  // never silent (rule 34). Pure config read when no config file is present.
+  try {
+    const core = (await import("@remnic/core")) as unknown as {
+      probeStructuralProviderForDoctor?: (config: unknown) => Promise<{
+        active: boolean;
+        mode: string;
+        command?: string;
+        providerId?: string;
+        probed?: { available: boolean; detail?: string };
+      }>;
+      renderStructuralProviderStatusLine?: (status: unknown) => string;
+    };
+    if (typeof core.probeStructuralProviderForDoctor === "function") {
+      const status = standaloneConfig
+        ? await core.probeStructuralProviderForDoctor(standaloneConfig)
+        : { active: false, mode: "none" };
+      const fullLine = typeof core.renderStructuralProviderStatusLine === "function"
+        ? core.renderStructuralProviderStatusLine(status)
+        : `structural-context provider: ${status.mode}`;
+      // Strip the redundant "structural-context provider: " prefix — the check
+      // name already carries it.
+      const detail = fullLine.replace(/^structural-context provider: /, "");
+      const probeUnavailable = status.active === true &&
+        status.probed !== undefined && status.probed.available === false;
+      checks.push({
+        name: "Structural-context provider",
+        ok: true,
+        warn: probeUnavailable ? true : undefined,
+        detail,
+        remediation: probeUnavailable
+          ? "review-context falls back to file-path-only boosting; check the configured binary path or provider install"
+          : undefined,
+      });
+    }
+  } catch {
+    // Never fail doctor for provider detection errors.
+  }
+
   for (const check of checks) {
     const icon = check.ok
       ? check.warn ? "⚠" : "✓"
