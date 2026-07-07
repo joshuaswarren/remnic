@@ -56,6 +56,21 @@ VALID_STATUSES: tuple[str, ...] = ("pending-training", "trained", "stale")
 #: mislabeled manifest fails.
 KNOWN_TASKS: tuple[str, ...] = ("faithfulness-gate", "correction-intent")
 
+#: Per-task minimum lib set a reproducible run MUST pin, beyond the universal
+#: ``torch`` + ``transformers`` (issue #1700 nit #2). Source of truth: each
+#: task's ``train.py`` required-imports + ``model-lab/requirements.txt``. A
+#: manifest that OMITS a task-required lib (not merely one left null) now fails
+#: strict validation -- a correction-intent run without ``trl``/``peft``, or a
+#: faithfulness-gate run without its encoder Trainer stack, cannot reproduce
+#: its eval numbers. ``bitsandbytes`` is intentionally NOT required for
+#: correction-intent (it is the optional <=8B QLoRA escape hatch; a <=4B LoRA run
+#: does not import it). ``datasets`` + ``huggingface-hub`` are universal
+#: (data loading + weight publish) so they appear in both rows.
+TASK_REQUIRED_LIBS: Mapping[str, tuple[str, ...]] = {
+    "faithfulness-gate": ("datasets", "huggingface-hub", "accelerate", "sentencepiece"),
+    "correction-intent": ("trl", "peft", "datasets", "huggingface-hub"),
+}
+
 
 def _is_pending(value: Any) -> bool:
     """True when a value is the PR-scaffold placeholder for 'not yet run'."""
@@ -113,7 +128,9 @@ def validate_manifest(
     elif not isinstance(stack, Mapping):
         errors.append("trainingStack must be an object (or null when pending)")
     else:
-        stack_errs = _validate_training_stack(stack, allow_pending=allow_pending)
+        stack_errs = _validate_training_stack(
+            stack, allow_pending=allow_pending, task=manifest.get("task")
+        )
         errors.extend(stack_errs)
 
     # eval + artifact + dataRecipe blocks: structural presence only.
@@ -137,8 +154,15 @@ def validate_manifest(
         if isinstance(eval_block, Mapping) and _is_pending(eval_block.get("heldOut")):
             errors.append("eval.heldOut is pending — a real run must record held-out metrics")
         artifact_block = manifest.get("artifact")
-        if isinstance(artifact_block, Mapping) and _is_pending(artifact_block.get("hfRepo")):
-            errors.append("artifact.hfRepo is pending — a real run must publish weights")
+        if isinstance(artifact_block, Mapping):
+            if _is_pending(artifact_block.get("hfRepo")):
+                errors.append("artifact.hfRepo is pending — a real run must publish weights")
+            # artifact.revision pins the exact published weights commit (issue
+            # #1700 nit #3). A status:"trained" manifest with revision:null is
+            # half-recorded -- hf_push.py published to hfRepo but never recorded
+            # which commit, so the eval can't be reproduced from the manifest.
+            if _is_pending(artifact_block.get("revision")):
+                errors.append("artifact.revision is pending — a real run must pin the published weights revision")
         # dataRecipe provenance (codex P2 PRRT_kwDORJXyws6Otp-E): a published run
         # must carry the dataset hash + generator git-sha so the eval split is
         # reproducible. The committed scaffold leaves them null (no canonical
@@ -180,8 +204,21 @@ def validate_manifest(
     return errors
 
 
-def _validate_training_stack(stack: Mapping[str, Any], *, allow_pending: bool) -> list[str]:
-    """Validate the pinned training-stack block (exact lib versions)."""
+def _validate_training_stack(
+    stack: Mapping[str, Any],
+    *,
+    allow_pending: bool,
+    task: str | None = None,
+) -> list[str]:
+    """Validate the pinned training-stack block (exact lib versions).
+
+    "task" enables the per-task required-lib matrix (issue #1700 nit #2): a
+    real run must pin not only the universal torch/transformers and the libs it
+    DECLARES, but also the libs its task's recipe imports -- otherwise a
+    manifest that silently OMITS trl/peft (correction-intent) or the encoder
+    Trainer stack (faithfulness-gate) passes strict validation despite being
+    unable to reproduce its eval numbers.
+    """
     errors: list[str] = []
     required = ("python", "libs")
     for key in required:
@@ -197,14 +234,17 @@ def _validate_training_stack(stack: Mapping[str, Any], *, allow_pending: bool) -
     if not isinstance(libs, Mapping):
         errors.append("trainingStack.libs must be an object mapping lib → exact version")
     elif not allow_pending:
-        # A real run must pin an exact version for torch + transformers
-        # (universal across both tasks) AND for every other lib the manifest
-        # DECLARES. The previous check only covered torch/transformers, so a
-        # correction-intent manifest with trl/peft/bitsandbytes left null passed
-        # strict validation and undermined the no-half-recorded-run gate (kilo
-        # WARNING PRRT_kwDORJXyws6OtyS-). Iterating over declared libs also
-        # respects that the two tasks pin different stacks (encoder vs causal-LM).
-        check_libs = dict.fromkeys(("torch", "transformers", *libs.keys()))
+        # A real run must pin an exact version for the UNIVERSAL minimum
+        # (torch + transformers) PLUS the task-specific minimum (issue #1700
+        # nit #2 -- a correction-intent run must pin trl/peft/datasets; a
+        # faithfulness-gate run must pin its encoder Trainer stack) PLUS every
+        # other lib the manifest DECLARES. The previous check only covered
+        # torch/transformers + declared keys, so a manifest that OMITTED a
+        # task-required lib passed strict validation (kilo WARNING
+        # PRRT_kwDORJXyws6OtyS- for the null-declared case; this closes the
+        # omitted-key case). dict.fromkeys dedupes the three sources.
+        task_libs = TASK_REQUIRED_LIBS.get(task, ()) if task else ()
+        check_libs = dict.fromkeys(("torch", "transformers", *task_libs, *libs.keys()))
         for lib in check_libs:
             ver = libs.get(lib)
             if _is_pending(ver) or not isinstance(ver, str):

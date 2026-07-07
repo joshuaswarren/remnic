@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -121,51 +122,41 @@ def _held_out_is_predictions(held_out: Path, predictions: Path) -> bool:
     """True when --predictions resolves to the same file as --held-out.
 
     Pure (no torch) so the guard is unit-testable; ``main`` calls this before
-    loading rows. Uses resolve() so a symlink or a rel/abs alias can't bypass the
-    guard (codex P1 — scoring gold against itself fabricates a perfect eval that
-    could be copied into the manifest, rule 55).
+    loading rows. ``resolve()`` catches same-path and symlink circular eval;
+    a HARD LINK (different path, same inode) is caught via ``os.path.samefile``
+    which compares ``(st_dev, st_ino)`` (issue #1700 nit #4). Without it a hard
+    link to the held-out file scores gold against itself and fabricates a
+    perfect eval that could be copied into the manifest (codex P1, rule 55).
     """
     try:
-        return held_out.resolve() == predictions.resolve()
+        if held_out.resolve() == predictions.resolve():
+            return True
     except OSError:
-        # A broken symlink shouldn't crash eval; the is_file() checks above
+        # A broken symlink should not crash eval; the is_file() checks above
         # already rejected a missing predictions file.
         return False
+    # Hard link: different path, same inode. resolve() misses it because the
+    # two paths differ; os.path.samefile stats both and compares the inode
+    # pair so it bites. (samefile follows symlinks, so a symlinked pair is
+    # already handled by the resolve() check above.)
+    try:
+        if os.path.samefile(held_out, predictions):
+            return True
+    except OSError:
+        pass
+    return False
 
+def _score_offline(args: argparse.Namespace) -> int:
+    """Offline scoring: --predictions are pre-computed model-inference JSONL.
 
-def main(argv: list[str] | None = None) -> int:
-    parser = build_arg_parser()
-    args = parser.parse_args(argv)
-
-    require_eval_deps()
-
-    if not args.held_out or not args.held_out.is_file():
-        print(
-            "eval.py: --held-out <gold.jsonl> is required to score the model.\n"
-            "  No manifest eval block is written without a real run (rule 55).",
-            file=sys.stderr,
-        )
-        return 2
-
-    # Predictions MUST come from model inference. Scoring gold against itself
-    # (pred == gold) would emit perfect detection/span metrics with no trained
-    # checkpoint loaded — a fabrication that could be copied into the manifest
-    # (codex P1). Refuse it; the model-inference loop lands in the #1585 GPU-run
-    # follow-up, or an operator supplies --predictions from a served model.
-    if not args.predictions or not args.predictions.is_file():
-        print(
-            "eval.py: --predictions <model-output.jsonl> is required to score the model.\n"
-            "  Run the trained checkpoint's inference over the held-out split first;\n"
-            "  scoring gold labels against themselves is refused (no fabricated evals, rule 55).",
-            file=sys.stderr,
-        )
-        return 2
-
+    Pure JSONL + stdlib metrics — no GPU stack needed (issue #1700 nit #1). The
+    inference path (no --predictions) is gated separately in ``main``.
+    """
     # Refuse the held-out file (or a symlink/hardlink to it) as --predictions:
     # scoring gold against itself emits perfect detection/span metrics with no
     # inference — a fabrication that could be copied into the manifest (codex
-    # P1). _held_out_is_predictions compares RESOLVED paths so a symlink or a
-    # relative/absolute alias can't bypass the guard.
+    # P1). _held_out_is_predictions compares RESOLVED paths AND inode equality
+    # so a symlink, a relative/absolute alias, or a hard link cannot bypass it.
     if _held_out_is_predictions(args.held_out, args.predictions):
         print(
             "eval.py: --predictions resolves to the same file as --held-out.\n"
@@ -199,6 +190,44 @@ def main(argv: list[str] | None = None) -> int:
     )
     return 0
 
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+
+    if not args.held_out or not args.held_out.is_file():
+        print(
+            "eval.py: --held-out <gold.jsonl> is required to score the model.\n"
+            "  No manifest eval block is written without a real run (rule 55).",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Offline-scoring path (issue #1700 nit #1): pre-computed model-inference
+    # predictions are supplied. The scoring math is JSONL + stdlib only, so it
+    # runs on a CPU-only host WITHOUT the GPU stack — require_eval_deps() is
+    # NOT called here. The inference path below is the one that loads the
+    # trained checkpoint and runs forward passes, which is what actually needs
+    # torch/transformers; the gate is scoped to that path.
+    if args.predictions and args.predictions.is_file():
+        return _score_offline(args)
+
+    # Inference path (no --predictions): generate predictions by running the
+    # trained checkpoint over the held-out split. This is the GPU-gated path —
+    # require_eval_deps() fires here so the stack is checked before any model
+    # load. The inline inference loop lands in the #1585 GPU-run follow-up;
+    # until then, refuse with a clear pointer so a half-wired inference cannot
+    # be scored as a real eval (rule 55). An operator with a served model passes
+    # its JSONL output via --predictions (the offline path above).
+    require_eval_deps()
+    print(
+        "eval.py: --predictions <model-output.jsonl> is required to score.\n"
+        "  Offline scoring needs pre-computed predictions; the inline inference\n"
+        "  loop (trained checkpoint -> held-out predictions) lands in the #1585\n"
+        "  GPU-run follow-up. Run inference first and pass its JSONL here.",
+        file=sys.stderr,
+    )
+    return 2
 
 if __name__ == "__main__":
     sys.exit(main())
