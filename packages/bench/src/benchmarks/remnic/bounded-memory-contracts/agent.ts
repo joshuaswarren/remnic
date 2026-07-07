@@ -173,6 +173,13 @@ export function assemblePack(
 
   const alreadyPicked = new Set<string>();
   let budget = contract.maxTotalTokens;
+  // The boundary item is lifted to boundaryNote (rendered once at the top of
+  // the prompt); pre-claim it so it does not ALSO occupy the boundaries slot
+  // or get double-counted in totalTokens.
+  if (boundaryItem) {
+    alreadyPicked.add(boundaryItem.id);
+    budget -= boundaryItem.tokens;
+  }
   const slots = contract.slots.map((slot) => {
     const items: MemoryPackItem[] = [];
     for (const m of rankedCandidates) {

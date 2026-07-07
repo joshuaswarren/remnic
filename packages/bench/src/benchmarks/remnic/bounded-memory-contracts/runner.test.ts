@@ -110,7 +110,7 @@ test("fixture: smoke subset spans all 7 families; full fixture has 12-20 tasks",
 
 test("fixture: stable fixtureHash is deterministic", () => {
   assert.equal(fixtureHash(), fixtureHash(), "fixtureHash must be stable across calls");
-  assert.match(fixtureHash(), /^[0-9a-f]{8}$/, "fixtureHash is an 8-hex FNV-1a digest");
+  assert.match(fixtureHash(), /^[0-9a-f]{64}$/, "fixtureHash is a 64-hex SHA-256 digest");
 });
 
 // ---------------------------------------------------------------------------

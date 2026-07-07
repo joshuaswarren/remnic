@@ -21,6 +21,7 @@
  *    reason: without scope metadata C1 cannot tell them apart.
  */
 
+import { createHash } from "node:crypto";
 import type { BoundedMemoryTask, FixtureMemoryItem, FixtureSkill } from "./types.js";
 
 const SCOPE_ACME = "project:acme";
@@ -599,10 +600,5 @@ export function fixtureHash(tasks?: readonly BoundedMemoryTask[]): string {
       t.skills.map((s) => s.id).join(","),
     ].join("|"),
   ).join("\n");
-  let h = 0x811c9dc5;
-  for (let i = 0; i < payload.length; i += 1) {
-    h ^= payload.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(16).padStart(8, "0");
+  return createHash("sha256").update(payload, "utf8").digest("hex");
 }

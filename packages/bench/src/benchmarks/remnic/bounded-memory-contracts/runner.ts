@@ -88,6 +88,30 @@ function resolveInjectedSkills(task: BoundedMemoryTask): FixtureSkill[] {
   return injected;
 }
 
+/**
+ * Resolve the outcome of a (task, skill) pair given whether the skill was
+ * ACTUALLY injected (i.e. landed in the pack). Expected-but-missed skills on
+ * skill-positive tasks count as "harmed" (false negatives), and unexpected
+ * injections count as "harmed" (false positives) — so precision/recall reflect
+ * the packed reality, not just the classifier.
+ */
+function skillOutcome(
+  task: BoundedMemoryTask,
+  skill: FixtureSkill,
+  injected: boolean,
+): SkillTriggerLogEntry["outcome"] {
+  if (task.family === "skill-positive") {
+    const expected = task.shouldUseSkillId === skill.id;
+    if (injected && expected) return "helped";
+    if (injected !== expected) return "harmed";
+    return "irrelevant";
+  }
+  if (task.family === "skill-negative") {
+    return injected ? "harmed" : "irrelevant";
+  }
+  return "irrelevant";
+}
+
 export async function runBoundedMemoryContractsBenchmark(
   options: ResolvedRunBenchmarkOptions,
 ): Promise<BenchmarkResult> {
@@ -136,6 +160,7 @@ export async function runBoundedMemoryContractsBenchmark(
   const taskResults: TaskResult[] = [];
   const conditionAggregates: Record<string, BoundedMemoryConditionAggregate> = {};
   const scoredByCondition: Record<string, Array<{ task: BoundedMemoryTask; scores: BoundedMemoryTaskScores }>> = {};
+  let c3SkillLog: SkillTriggerLogEntry[] = [];
 
   for (const condition of BOUNDED_MEMORY_CONDITIONS) {
     const results = byCondition.get(condition)!;
@@ -145,11 +170,33 @@ export async function runBoundedMemoryContractsBenchmark(
     });
     scoredByCondition[condition] = scoredPairs.map(({ task, scores }) => ({ task, scores }));
 
-    // Skill trigger log is global across tasks for the condition; only C3
-    // actually classifies, but we compute it for every condition so the
-    // aggregate's skill metrics are well-defined (zero for C0/C1/C2).
-    const skillLog: SkillTriggerLogEntry[] =
-      condition === "typed-plus-skills" ? buildSkillTriggerLog(tasks) : [];
+    // Build the skill-trigger log from PACKED reality: a skill is "injected"
+    // only if it landed in this condition's triggered_skills slot (C3 only;
+    // C0/C1/C2 pack no skills). This keeps the log, precision/recall, and
+    // helped/harmed counts consistent with the prompt pack + retrieval artifact
+    // even when the budget drops a classifier-approved skill.
+    let skillLog: SkillTriggerLogEntry[] = [];
+    if (condition === "typed-plus-skills") {
+      skillLog = scoredPairs.flatMap(({ task, pack }) => {
+        const packedSkillIds = new Set(
+          pack.slots.find((slot) => slot.id === "triggered_skills")?.items.map((it) => it.itemId) ?? [],
+        );
+        return task.skills.map((skill) => {
+          const verdict = classifySkillTrigger(skill, task);
+          const injected = packedSkillIds.has(skill.id);
+          return {
+            taskId: task.id,
+            skillId: skill.id,
+            considered: verdict.considered,
+            injected,
+            triggerReason: verdict.reason,
+            confidence: skill.confidence,
+            outcome: skillOutcome(task, skill, injected),
+          } satisfies SkillTriggerLogEntry;
+        });
+      });
+      c3SkillLog = skillLog;
+    }
     conditionAggregates[condition] = aggregateCondition(condition, scoredByCondition[condition]!, skillLog);
 
     for (const { task, pack, decision, scores } of scoredPairs) {
@@ -191,7 +238,7 @@ export async function runBoundedMemoryContractsBenchmark(
     artifactReport = await writeArtifacts(options.outputDir, byCondition, conditionAggregates, tasks);
   }
 
-  const skillTriggerLog = buildSkillTriggerLog(tasks);
+  const skillTriggerLog = c3SkillLog;
 
   return {
     meta: {
