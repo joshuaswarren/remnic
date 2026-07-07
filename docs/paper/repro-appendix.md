@@ -330,8 +330,15 @@ remnic bench run locomo \
   --runtime-profile local-lab \
   --local-lab-manifest ~/bench/local-lab.json \
   --dataset-dir ./bench-datasets/locomo \
-  --seed 1573
+  --seed 1
 ```
+
+> **Seed consistency.** The committed Tier L artifacts (§A.1.2) used
+> `seed: 1`; use `--seed 1` to reproduce them. The committed profile
+> placeholder (`local-lab-3090.json`) carries `seed: 1573` — the CLI
+> `--seed` flag overrides the manifest's seed for the run, so match the
+> seed of the artifact you are reproducing. Keep the seed fixed across all
+> benchmarks in a comparable suite.
 
 This will: load the full dataset; reset the Remnic orchestrator per item;
 ingest the benchmark's memory sessions into the isolated benchmark adapter;
@@ -349,7 +356,7 @@ for bench in ama-bench memory-arena amemgym longmemeval locomo beam \
     --runtime-profile local-lab \
     --local-lab-manifest ~/bench/local-lab.json \
     --dataset-dir "./bench-datasets/$bench" \
-    --seed 1573
+    --seed 1
 done
 ```
 
