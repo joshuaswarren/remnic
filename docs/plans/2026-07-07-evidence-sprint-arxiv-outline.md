@@ -41,7 +41,7 @@
 
 ## Part 3 — Eval Rubrics
 
-**Metrics in play:** the benchmark-reportable metrics that exist today are the LoCoMo/LongMemEval standard suite (`contains_answer`, `f1`, `llm_judge`, `rouge_l`, `leak`, `judge_accuracy`, `search_hits`) and the 8 MemCorrect metrics. **TrustScore (#1577) is a shipped *recall-stage feature* (`trust-zones.ts`/`provenance.ts`), not yet a benchmark metric** — surfacing it as a scored, reportable number is additional work, so treat it as a system capability to *describe* in §3, not a metric already produced by the harness.
+**Metrics in play (use the real emitted keys, not generic labels):** the shared scoring union the harness actually produces is `contains_answer`, `f1`, `rouge_l`, `llm_judge`, `judge_accuracy` (`packages/bench/src/benchmarks/published/harness.ts`). Dataset-specific additions: LoCoMo emits **`locomo_hidden_evidence_id_leak`** (the leakage metric — not a generic `leak`), and LongMemEval adds **`search_hits`**. Plus the 8 MemCorrect metrics. Wire figures/artifact checks to these exact keys. **TrustScore (#1577) is a shipped *recall-stage feature* (`trust-zones.ts`/`provenance.ts`), not yet a benchmark metric** — surfacing it as a scored, reportable number is additional work, so treat it as a system capability to *describe* in §3, not a metric already produced by the harness.
 
 **"A result is publishable" acceptance rubric (the gate every artifact must pass before it enters the paper or a public post):**
 1. **Non-mock.** Real artifact in `docs/benchmarks/results/`, not a `*-mock000.json` placeholder.
