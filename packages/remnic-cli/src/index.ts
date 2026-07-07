@@ -952,7 +952,7 @@ Options:
   --gateway-agent-id <id>  OpenClaw agent persona id for gateway model routing
   --fast-gateway-agent-id <id>
                            OpenClaw fast-tier agent persona id for gateway model routing
-  --system-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli>
+  --system-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli|claude-cli>
                            Use a direct provider-backed answering path
   --system-model <model>   Model name for the direct answering provider
   --system-base-url <url>  Base URL for the direct answering provider
@@ -962,13 +962,13 @@ Options:
                            Compact recalled memory context before sending it to the direct answerer
   --system-responder-prompt-budget-chars <n>
                            Compact repeated benchmark prompt instructions before sending them to the direct answerer
-  --judge-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli>
+  --judge-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli|claude-cli>
                            Use a direct provider-backed judge
   --judge-model <model>    Model name for the judge provider
   --judge-base-url <url>   Base URL for the judge provider
   --judge-codex-reasoning-effort <low|medium|high|xhigh>
                            Codex CLI reasoning effort for the judge
-  --internal-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli>
+  --internal-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli|claude-cli>
                            Provider for Remnic's internal extraction/summarization LLM
   --internal-model <model> Model name for Remnic's internal LLM provider
   --internal-base-url <url>

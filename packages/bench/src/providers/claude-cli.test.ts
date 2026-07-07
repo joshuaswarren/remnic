@@ -1,0 +1,691 @@
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+
+import { __claudeCliProviderTestHooks, createClaudeCliProvider } from "./claude-cli.ts";
+
+test("claude-cli provider invokes claude -p in an isolated benchmark mode", async () => {
+  const captured: {
+    args?: string[];
+    input?: string;
+    env?: NodeJS.ProcessEnv;
+    cwd?: string;
+  } = {};
+  const provider = createClaudeCliProvider(
+    {
+      provider: "claude-cli",
+      model: "opus",
+      retryOptions: { timeoutMs: 1234 },
+    },
+    {
+      async runClaudeCli(request) {
+        captured.args = request.args;
+        captured.input = request.input;
+        captured.env = request.env;
+        captured.cwd = request.cwd;
+        assert.equal(request.executable, "claude");
+        assert.equal(request.timeoutMs, 1234);
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({
+            is_error: false,
+            result: "final answer",
+            usage: { input_tokens: 10, output_tokens: 4 },
+          }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  const result = await provider.complete("What is remembered?", {
+    systemPrompt: "Answer using only benchmark context.",
+    temperature: 0,
+  });
+
+  assert.equal(result.text, "final answer");
+  assert.equal(result.model, "opus");
+  assert.deepEqual(result.tokens, { input: 10, output: 4 });
+  assert.deepEqual(provider.getUsage(), {
+    inputTokens: 10,
+    outputTokens: 4,
+    totalTokens: 14,
+  });
+  assert.deepEqual(captured.args, [
+    "--print",
+    "--model",
+    "opus",
+    "--output-format",
+    "json",
+    "--input-format",
+    "text",
+    "--safe-mode",
+    "--strict-mcp-config",
+    "--allowedTools",
+    "",
+  ]);
+  assert.ok(captured.input?.includes("BENCHMARK_REQUEST_JSON:"));
+  assert.ok(captured.input?.includes('"systemPrompt": "Answer using only benchmark context."'));
+  assert.ok(captured.input?.includes('"userPrompt": "What is remembered?"'));
+  assert.match(captured.input ?? "", /Do not use tools, do not read or write files, do not browse/);
+  assert.match(captured.cwd ?? "", /remnic-claude-cli-/);
+  assert.notEqual(captured.cwd, process.cwd());
+});
+
+test("claude-cli provider runs from a freshly created empty temp directory", async () => {
+  const seenCwds: string[] = [];
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli(request) {
+        seenCwds.push(request.cwd);
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({ is_error: false, result: "ok" }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await provider.complete("hello");
+  await provider.complete("hello again");
+
+  assert.equal(seenCwds.length, 2);
+  for (const cwd of seenCwds) {
+    assert.match(cwd, new RegExp(`^${escapeRegExp(os.tmpdir())}`));
+    assert.match(path.basename(cwd), /^remnic-claude-cli-/);
+  }
+  // Each call gets its own fresh directory, not a shared/reused one.
+  assert.notEqual(seenCwds[0], seenCwds[1]);
+});
+
+test("claude-cli provider does not forward an ambient ANTHROPIC_API_KEY by default", async () => {
+  const seededEnv = {
+    ANTHROPIC_API_KEY: "ambient-secret-should-not-leak",
+    OPENAI_API_KEY: "unrelated-secret",
+    AWS_SECRET_ACCESS_KEY: "aws-secret",
+    GITHUB_TOKEN: "github-secret",
+  };
+  const previousEnv = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(seededEnv)) {
+    previousEnv.set(key, process.env[key]);
+    process.env[key] = value;
+  }
+
+  let capturedEnv: NodeJS.ProcessEnv | undefined;
+  try {
+    const provider = createClaudeCliProvider(
+      { provider: "claude-cli", model: "opus" },
+      {
+        async runClaudeCli(request) {
+          capturedEnv = request.env;
+          return {
+            status: 0,
+            signal: null,
+            stdout: JSON.stringify({ is_error: false, result: "ok" }),
+            stderr: "",
+          };
+        },
+      },
+    );
+
+    await provider.complete("hello");
+
+    assert.equal(capturedEnv?.ANTHROPIC_API_KEY, undefined);
+    assert.equal(capturedEnv?.OPENAI_API_KEY, undefined);
+    assert.equal(capturedEnv?.AWS_SECRET_ACCESS_KEY, undefined);
+    assert.equal(capturedEnv?.GITHUB_TOKEN, undefined);
+    assert.equal(capturedEnv?.HOME, os.homedir());
+  } finally {
+    for (const key of Object.keys(seededEnv)) {
+      const previous = previousEnv.get(key);
+      if (previous === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = previous;
+      }
+    }
+  }
+});
+
+test("claude-cli provider forwards an explicitly configured apiKey/baseUrl (opt-in only)", () => {
+  const env = __claudeCliProviderTestHooks.buildIsolatedClaudeEnv({
+    provider: "claude-cli",
+    model: "opus",
+    apiKey: "explicit-key",
+    baseUrl: "https://gateway.example/v1",
+  });
+
+  assert.equal(env.ANTHROPIC_API_KEY, "explicit-key");
+  assert.equal(env.ANTHROPIC_BASE_URL, "https://gateway.example/v1");
+});
+
+test("claude-cli provider is_error JSON response throws with a useful message", async () => {
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({
+            is_error: true,
+            result: "invalid model requested",
+          }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(
+    provider.complete("hello"),
+    /Claude CLI reported is_error: invalid model requested/,
+  );
+});
+
+test("claude-cli provider surfaces non-zero CLI exits", async () => {
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        return {
+          status: 2,
+          signal: null,
+          stdout: "",
+          stderr: "invalid model",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(
+    provider.complete("hello"),
+    /Claude CLI completion failed \(exit 2\): invalid model/,
+  );
+});
+
+test("claude-cli provider throws when stdout is not valid JSON", async () => {
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        return {
+          status: 0,
+          signal: null,
+          stdout: "not json at all",
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(provider.complete("hello"), /Claude CLI reported is_error/);
+});
+
+test("claude-cli provider throws when the JSON result has empty text", async () => {
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({ is_error: false, result: "   " }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(provider.complete("hello"), /Claude CLI completion returned no result text/);
+});
+
+test("claude-cli provider retries transient subprocess signals", async () => {
+  let attempts = 0;
+  const provider = createClaudeCliProvider(
+    {
+      provider: "claude-cli",
+      model: "opus",
+      retryOptions: { maxAttempts: 2, baseBackoffMs: 1 },
+    },
+    {
+      async runClaudeCli() {
+        attempts += 1;
+        if (attempts === 1) {
+          return {
+            status: null,
+            signal: "SIGTERM",
+            stdout: "",
+            stderr: "parent process interrupted child",
+          };
+        }
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({
+            is_error: false,
+            result: "recovered answer",
+            usage: { input_tokens: 3, output_tokens: 5 },
+          }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  const result = await provider.complete("hello");
+
+  assert.equal(attempts, 2);
+  assert.equal(result.text, "recovered answer");
+  assert.deepEqual(result.tokens, { input: 3, output: 5 });
+});
+
+test("claude-cli provider does not retry benchmark timeouts", async () => {
+  let attempts = 0;
+  const provider = createClaudeCliProvider(
+    {
+      provider: "claude-cli",
+      model: "opus",
+      retryOptions: { maxAttempts: 2, baseBackoffMs: 1 },
+    },
+    {
+      async runClaudeCli() {
+        attempts += 1;
+        return {
+          status: 124,
+          signal: "SIGTERM",
+          stdout: "",
+          stderr: "Claude CLI timed out after 1000ms.",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(
+    provider.complete("hello"),
+    /Claude CLI completion failed \(signal SIGTERM\): Claude CLI timed out after 1000ms\./,
+  );
+  assert.equal(attempts, 1);
+});
+
+test("claude-cli provider stops retry backoff when the completion is aborted", async () => {
+  const controller = new AbortController();
+  let attempts = 0;
+  const provider = createClaudeCliProvider(
+    {
+      provider: "claude-cli",
+      model: "opus",
+      retryOptions: { maxAttempts: 2, baseBackoffMs: 10_000 },
+    },
+    {
+      async runClaudeCli() {
+        attempts += 1;
+        setTimeout(() => {
+          controller.abort(new Error("benchmark cancelled"));
+        }, 10);
+        return {
+          status: null,
+          signal: "SIGTERM",
+          stdout: "",
+          stderr: "parent process interrupted child",
+        };
+      },
+    },
+  );
+
+  const startedAt = performance.now();
+  await assert.rejects(
+    provider.complete("hello", { signal: controller.signal }),
+    /benchmark cancelled/,
+  );
+
+  assert.equal(attempts, 1);
+  assert.ok(performance.now() - startedAt < 1_000);
+});
+
+test("claude-cli usage-limit signal detector recognizes common phrasing", () => {
+  const { isClaudeUsageLimitSignal } = __claudeCliProviderTestHooks;
+  assert.equal(isClaudeUsageLimitSignal("Error: usage limit reached, resets in 3 hours"), true);
+  assert.equal(isClaudeUsageLimitSignal("You are being rate limited, please try again later"), true);
+  assert.equal(isClaudeUsageLimitSignal("HTTP 429 Too Many Requests"), true);
+  assert.equal(isClaudeUsageLimitSignal("invalid model requested"), false);
+  assert.equal(isClaudeUsageLimitSignal(""), false);
+});
+
+test("claude-cli provider backs off much longer on a detected usage-limit than a normal retry", async () => {
+  let attempts = 0;
+  const sleepCalls: number[] = [];
+  const originalSetTimeout = global.setTimeout;
+  // Short-circuit real waiting: record the requested delay and resolve
+  // immediately, so the backoff *decision* is exercised without the test
+  // actually sleeping for minutes.
+  // @ts-expect-error -- test-only monkeypatch of the timer used by the
+  // provider's abort-aware sleep helper.
+  global.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number) => {
+    sleepCalls.push(ms ?? 0);
+    return originalSetTimeout(fn, 0);
+  }) as typeof setTimeout;
+
+  try {
+    const provider = createClaudeCliProvider(
+      {
+        provider: "claude-cli",
+        model: "opus",
+        retryOptions: { maxAttempts: 1, max429WaitMs: 5 * 60_000 },
+      },
+      {
+        async runClaudeCli() {
+          attempts += 1;
+          if (attempts === 1) {
+            return {
+              status: 0,
+              signal: null,
+              stdout: "",
+              stderr: "Claude AI usage limit reached, resets at 5pm",
+            };
+          }
+          return {
+            status: 0,
+            signal: null,
+            stdout: JSON.stringify({ is_error: false, result: "recovered after usage limit" }),
+            stderr: "",
+          };
+        },
+      },
+    );
+
+    const result = await provider.complete("hello");
+    assert.equal(result.text, "recovered after usage limit");
+    assert.equal(attempts, 2);
+    assert.equal(sleepCalls.length, 1);
+    // The usage-limit backoff step must be seconds-to-minutes, not the
+    // millisecond-scale backoff used for ordinary transient failures.
+    assert.ok(sleepCalls[0] >= 60_000, `expected a >=60s usage-limit backoff, got ${sleepCalls[0]}ms`);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+});
+
+test("claude-cli provider gives up once the usage-limit backoff budget is exhausted", async () => {
+  let attempts = 0;
+  const originalSetTimeout = global.setTimeout;
+  // @ts-expect-error -- test-only monkeypatch, see above.
+  global.setTimeout = ((fn: (...args: unknown[]) => void) => originalSetTimeout(fn, 0)) as typeof setTimeout;
+
+  try {
+    const provider = createClaudeCliProvider(
+      {
+        provider: "claude-cli",
+        model: "opus",
+        // A budget smaller than the usage-limit base backoff step (60s)
+        // forces the very first detection to exhaust the budget.
+        retryOptions: { maxAttempts: 5, max429WaitMs: 10 },
+      },
+      {
+        async runClaudeCli() {
+          attempts += 1;
+          return {
+            status: 0,
+            signal: null,
+            stdout: "",
+            stderr: "usage limit exceeded",
+          };
+        },
+      },
+    );
+
+    await assert.rejects(provider.complete("hello"), /usage-limit backoff budget \(10ms\) exhausted/);
+    assert.equal(attempts, 1);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+});
+
+test("claude-cli provider defaults concurrency to 1 and serializes calls", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const order: string[] = [];
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        order.push("start");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        order.push("end");
+        active -= 1;
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({ is_error: false, result: "ok" }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await Promise.all([provider.complete("one"), provider.complete("two"), provider.complete("three")]);
+
+  assert.equal(maxActive, 1);
+  assert.deepEqual(order, ["start", "end", "start", "end", "start", "end"]);
+});
+
+test("claude-cli provider concurrency can be raised explicitly above the default of 1", async () => {
+  let active = 0;
+  let maxActive = 0;
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus", concurrency: 2 },
+    {
+      async runClaudeCli() {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({ is_error: false, result: "ok" }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await Promise.all([provider.complete("one"), provider.complete("two"), provider.complete("three")]);
+
+  assert.equal(maxActive, 2);
+});
+
+test("claude-cli provider can use a benchmark-scoped executable env override", async () => {
+  const previous = process.env.REMNIC_BENCH_CLAUDE_CLI_EXECUTABLE;
+  process.env.REMNIC_BENCH_CLAUDE_CLI_EXECUTABLE = "/tmp/claude-app-binary";
+  let executable = "";
+
+  try {
+    const provider = createClaudeCliProvider(
+      { provider: "claude-cli", model: "opus" },
+      {
+        async runClaudeCli(request) {
+          executable = request.executable;
+          return {
+            status: 0,
+            signal: null,
+            stdout: JSON.stringify({ is_error: false, result: "ok" }),
+            stderr: "",
+          };
+        },
+      },
+    );
+
+    await provider.complete("hello");
+
+    assert.equal(executable, "/tmp/claude-app-binary");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.REMNIC_BENCH_CLAUDE_CLI_EXECUTABLE;
+    } else {
+      process.env.REMNIC_BENCH_CLAUDE_CLI_EXECUTABLE = previous;
+    }
+  }
+});
+
+test("claude-cli provider executable config overrides the env override", async () => {
+  const previous = process.env.REMNIC_BENCH_CLAUDE_CLI_EXECUTABLE;
+  process.env.REMNIC_BENCH_CLAUDE_CLI_EXECUTABLE = "/tmp/claude-app-binary";
+  let executable = "";
+
+  try {
+    const provider = createClaudeCliProvider(
+      { provider: "claude-cli", model: "opus", executable: "/tmp/explicit-claude" },
+      {
+        async runClaudeCli(request) {
+          executable = request.executable;
+          return {
+            status: 0,
+            signal: null,
+            stdout: JSON.stringify({ is_error: false, result: "ok" }),
+            stderr: "",
+          };
+        },
+      },
+    );
+
+    await provider.complete("hello");
+
+    assert.equal(executable, "/tmp/explicit-claude");
+  } finally {
+    if (previous === undefined) {
+      delete process.env.REMNIC_BENCH_CLAUDE_CLI_EXECUTABLE;
+    } else {
+      process.env.REMNIC_BENCH_CLAUDE_CLI_EXECUTABLE = previous;
+    }
+  }
+});
+
+test("claude-cli provider expands home-relative executable paths", () => {
+  assert.equal(
+    __claudeCliProviderTestHooks.resolveClaudeCliExecutable({
+      provider: "claude-cli",
+      model: "opus",
+      executable: "~/bin/claude",
+    }),
+    path.join(os.homedir(), "bin", "claude"),
+  );
+});
+
+test("claude-cli provider discovery reports the configured model", async () => {
+  let versionChecked = false;
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeVersion() {
+        versionChecked = true;
+        return { status: 0, stderr: "" };
+      },
+    },
+  );
+
+  const models = await provider.discover?.();
+
+  assert.equal(versionChecked, true);
+  assert.deepEqual(models, [
+    {
+      id: "opus",
+      name: "opus (Claude CLI)",
+      contextLength: 0,
+      capabilities: ["completion"],
+    },
+  ]);
+});
+
+test("claude-cli provider discovery fails loudly when the CLI is missing", async () => {
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeVersion() {
+        return { status: 127, stderr: "command not found" };
+      },
+    },
+  );
+
+  await assert.rejects(provider.discover?.() as Promise<unknown>, /Claude CLI discovery failed/);
+});
+
+test("claude-cli command terminates subprocess when aborted", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-claude-cli-test-"));
+  const controller = new AbortController();
+
+  try {
+    const run = __claudeCliProviderTestHooks.runClaudeCliCommand({
+      executable: process.execPath,
+      args: ["-e", "process.stdin.resume(); setInterval(() => {}, 1000);"],
+      input: "hello",
+      cwd: tempDir,
+      timeoutMs: 60_000,
+      signal: controller.signal,
+      env: process.env,
+    });
+
+    setTimeout(() => controller.abort(), 20);
+    const result = await run;
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Claude CLI aborted by benchmark timeout/);
+    assert.equal(__claudeCliProviderTestHooks.getActiveClaudeCliChildCount(), 0);
+  } finally {
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("claude-cli parent cleanup terminates active subprocesses", async () => {
+  const { mkdtemp, rm } = await import("node:fs/promises");
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-claude-cli-test-"));
+
+  try {
+    const run = __claudeCliProviderTestHooks.runClaudeCliCommand({
+      executable: process.execPath,
+      args: ["-e", "process.stdin.resume(); setInterval(() => {}, 1000);"],
+      input: "hello",
+      cwd: tempDir,
+      timeoutMs: 60_000,
+      env: process.env,
+    });
+
+    assert.equal(__claudeCliProviderTestHooks.getActiveClaudeCliChildCount(), 1);
+    __claudeCliProviderTestHooks.terminateActiveClaudeCliChildren("SIGTERM");
+
+    const result = await run;
+
+    assert.equal(result.status, null);
+    assert.equal(result.signal, "SIGTERM");
+    assert.equal(__claudeCliProviderTestHooks.getActiveClaudeCliChildCount(), 0);
+  } finally {
+    __claudeCliProviderTestHooks.terminateActiveClaudeCliChildren("SIGKILL");
+    await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("claude-cli benchmark prompt keeps system and user input in separate JSON fields", () => {
+  const prompt = __claudeCliProviderTestHooks.buildClaudeCompletionPrompt(
+    "USER_CONTEXT: answer this",
+    "SYSTEM_CONTEXT: judge this",
+  );
+
+  const json = prompt.slice(prompt.indexOf("{"));
+  const parsed = JSON.parse(json);
+  assert.deepEqual(parsed, {
+    systemPrompt: "SYSTEM_CONTEXT: judge this",
+    userPrompt: "USER_CONTEXT: answer this",
+  });
+});
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

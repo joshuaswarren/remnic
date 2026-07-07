@@ -113,12 +113,27 @@ export interface CodexCliProviderConfig extends ProviderBaseConfig {
   diagnosticsMode?: "metadata" | "full";
 }
 
+export interface ClaudeCliProviderConfig extends ProviderBaseConfig {
+  provider?: "claude-cli";
+  /** Optional executable override for tests or non-standard Claude Code installs. */
+  executable?: string;
+  /**
+   * Max concurrent `claude -p` invocations. Defaults to 1 (fully
+   * serialized) — the operator's Claude Max plan enforces shared 5-hour
+   * and weekly usage caps, so the bench harness must not fire concurrent
+   * CLI invocations against it even when the harness's own trial
+   * concurrency setting is higher.
+   */
+  concurrency?: number;
+}
+
 export type ProviderFactoryConfig =
   | (OpenAiCompatibleProviderConfig & { provider: "openai" | "litellm" })
   | (AnthropicProviderConfig & { provider: "anthropic" })
   | (OllamaProviderConfig & { provider: "ollama" })
   | (LocalLlmProviderConfig & { provider: "local-llm" })
-  | (CodexCliProviderConfig & { provider: "codex-cli" });
+  | (CodexCliProviderConfig & { provider: "codex-cli" })
+  | (ClaudeCliProviderConfig & { provider: "claude-cli" });
 
 export interface ProviderDiscoveryResult {
   provider: BuiltInProvider;

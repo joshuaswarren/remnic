@@ -631,6 +631,9 @@ function gatewayProviderApi(provider: BuiltInProvider): string {
   if (provider === "codex-cli") {
     return "codex-cli";
   }
+  if (provider === "claude-cli") {
+    return "claude-cli";
+  }
   if (provider === "ollama") {
     return "ollama-chat";
   }
@@ -652,6 +655,8 @@ function defaultInternalBaseUrl(provider: BuiltInProvider): string | undefined {
       return "http://localhost:11434/api";
     case "codex-cli":
       return "codex-cli://local";
+    case "claude-cli":
+      return "claude-cli://local";
     case "local-llm":
       return undefined;
     default: {

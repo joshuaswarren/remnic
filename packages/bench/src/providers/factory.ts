@@ -4,6 +4,7 @@ import type {
   ProviderFactoryConfig,
 } from "./types.js";
 import { createAnthropicProvider } from "./anthropic.js";
+import { createClaudeCliProvider } from "./claude-cli.js";
 import { createCodexCliProvider } from "./codex-cli.js";
 import { createLiteLlmProvider } from "./litellm.js";
 import { createLocalLlmProvider } from "./local-llm.js";
@@ -28,6 +29,8 @@ export function createProvider(config: ProviderFactoryConfig): LlmProvider {
       return createLocalLlmProvider(config);
     case "codex-cli":
       return createCodexCliProvider(config);
+    case "claude-cli":
+      return createClaudeCliProvider(config);
     default: {
       const exhaustive: never = config;
       throw new Error(`Unknown provider: ${JSON.stringify(exhaustive)}`);

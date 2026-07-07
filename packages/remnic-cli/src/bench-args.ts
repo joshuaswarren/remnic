@@ -230,8 +230,8 @@ function parseBenchRuntimeProfile(
  * `--judge-provider`. Keeping these in lockstep is a CLAUDE.md rule 52
  * concern: if one flag accepts "local-llm" but another rejects it,
  * behavior becomes path-dependent. Issue #566 slice 5 added
- * "local-llm"; Codex CLI provider wiring added "codex-cli". The
- * single source of truth is here.
+ * "local-llm"; Codex CLI provider wiring added "codex-cli"; Claude CLI
+ * provider wiring added "claude-cli". The single source of truth is here.
  */
 const BENCH_PROVIDER_ALLOWED: readonly BuiltInProvider[] = Object.freeze([
   "openai",
@@ -240,6 +240,7 @@ const BENCH_PROVIDER_ALLOWED: readonly BuiltInProvider[] = Object.freeze([
   "litellm",
   "local-llm",
   "codex-cli",
+  "claude-cli",
 ]);
 
 function isBuiltInProvider(value: string): value is BuiltInProvider {
@@ -249,7 +250,7 @@ function isBuiltInProvider(value: string): value is BuiltInProvider {
 function parseBenchProvider(raw: string, flag: string): BuiltInProvider {
   if (!isBuiltInProvider(raw)) {
     throw new Error(
-      `ERROR: ${flag} must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli".`,
+      `ERROR: ${flag} must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli".`,
     );
   }
   return raw;
