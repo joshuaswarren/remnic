@@ -111,12 +111,17 @@ const indexResult = await indexSymbolVectors({ store, provider, repoRoot, config
 // SIMILAR_TO: MinHash/LSH candidates → cosine confirmation.
 // repoRoot (or prebuilt bodies) is required so the pipeline hashes real
 // symbol bodies, not qualified names.
-// Clear existing SIMILAR_TO edges first so the recompute is replace-not-
-// append (upsertEdges does not delete absent rows — without clearing, two
-// symbols that stop being similar would leave a stale edge).
-await store.clearSemanticSimilarToEdges();
+// Compute-first-then-swap: computeSimilarTo is pure (it reads nodes +
+// vectors but never mutates edges), so compute the candidate set BEFORE
+// touching the table. Only on success do we clear + upsert — this
+// preserves the existing SIMILAR_TO edges if the recompute fails (e.g. a
+// closed store or a missing repoRoot), instead of leaving the graph with
+// zero semantic edges. The clear is still required because upsertEdges
+// does not delete absent rows — without it, two symbols that stop being
+// similar would keep a stale edge (replace-not-append).
 const similar = computeSimilarTo({ store, provider, repoRoot, config });
 if (similar.ok) {
+  await store.clearSemanticSimilarToEdges();
   await store.upsertEdges(similarEdgesToEdgeIR(similar.edges));
 }
 

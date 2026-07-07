@@ -1270,21 +1270,24 @@ test("SIMILAR_TO recompute: clearSemanticSimilarToEdges makes recompute replace-
       assert.ok(beforeClear.hits.some((h) => h.qualifiedName === "mod.b"), "mod.b reachable via SIMILAR_TO before clear");
     }
 
-    // README step 1: clear before recompute (replace-not-append).
+    // README flow: compute-first-then-swap. computeSimilarTo is pure (no
+    // edge mutation), so compute candidates BEFORE clearing — if the
+    // recompute fails, existing SIMILAR_TO edges are preserved instead of
+    // leaving the graph empty (chatgpt-codex-connector P2: "Preserve
+    // existing edges until recompute succeeds").
+    const r2 = computeSimilarTo({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+    assert.equal(r2.ok, true);
+    if (!r2.ok) throw new Error("expected ok");
+
+    // Compute succeeded → safe to swap. Clear makes it replace-not-append
+    // (upsertEdges does not delete absent rows); without it, a stale edge
+    // recompute would NOT re-emit would survive.
     await store.clearSemanticSimilarToEdges();
     const afterClear = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
     assert.ok(afterClear.ok, "traverse ok after clear");
     if (afterClear.ok) {
       assert.ok(!afterClear.hits.some((h) => h.qualifiedName === "mod.b"), "SIMILAR_TO edge to mod.b gone after clear");
     }
-
-    // README step 2: recompute + upsert. A stale edge that recompute would
-    // NOT re-emit would have survived without the clear; here recompute
-    // re-emits the still-similar pair, so the final set equals the
-    // recomputed set — not doubled.
-    const r2 = computeSimilarTo({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
-    assert.equal(r2.ok, true);
-    if (!r2.ok) throw new Error("expected ok");
     if (r2.edges.length >= 1) {
       await store.upsertEdges(similarEdgesToEdgeIR(r2.edges));
     }
@@ -1294,6 +1297,17 @@ test("SIMILAR_TO recompute: clearSemanticSimilarToEdges makes recompute replace-
       // After clear + recompute + upsert, mod.b is reachable again — the
       // still-similar pair has its edge (clean replace, not a stale append).
       assert.ok(final.hits.some((h) => h.qualifiedName === "mod.b"), "mod.b reachable again after recompute (replace worked)");
+    }
+
+    // Preserve-on-failure: a recompute that returns { ok: false } must NOT
+    // clear — the existing edge survives. semantic_disabled short-circuits
+    // before any table work, so no clear runs and mod.b stays reachable.
+    const failing = computeSimilarTo({ store, provider, repoRoot: dir, config: DISABLED_CONFIG });
+    assert.equal(failing.ok, false);
+    const preserved = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
+    assert.ok(preserved.ok, "traverse ok");
+    if (preserved.ok) {
+      assert.ok(preserved.hits.some((h) => h.qualifiedName === "mod.b"), "existing SIMILAR_TO edge preserved when recompute fails");
     }
   } finally {
     await cleanup();
