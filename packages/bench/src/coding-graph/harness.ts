@@ -298,9 +298,21 @@ export async function runCodingGraphBenchmark(
           throw new Error(`modified update failed: ${modResult.result.code}`);
         }
         modifiedSamples.push(modResult.ms);
-        // Restore the original file so the graph state is stable across
-        // iterations.
-        await store.upsertFileBatch([original]);
+        // Restore the FULL fixture so the graph returns to baseline.
+        // Restoring only this file leaves peer files' incoming edges —
+        // cascade-deleted by the churn prune (the store's FK ON DELETE
+        // CASCADE drops every edge whose endpoint is a pruned node) —
+        // unrecreated: the graph would shed cross-file edges each pass
+        // and later samples would time a progressively smaller graph
+        // (chatgpt-codex-connector + cursor review of #1688). Inspect
+        // the result so a failed restore throws instead of leaving the
+        // graph on the churn symbol set (cursor review of #1688). The
+        // restore is NOT timed — only the churn upsert above is
+        // measured.
+        const restoreResult = await store.upsertFileBatch(storeFiles);
+        if (!restoreResult.ok) {
+          throw new Error(`restore failed: ${restoreResult.code}`);
+        }
         sampleRss();
       }
 

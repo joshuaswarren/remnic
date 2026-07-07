@@ -13,6 +13,9 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 import {
   generateSyntheticRepo,
@@ -28,6 +31,13 @@ import {
   type CodingGraphBaseline,
   type MachineFingerprint,
 } from "./index.js";
+import {
+  GraphStore,
+  type StoreFileIR,
+  type EdgeIR,
+  type SymbolKind,
+  type CodingGraphLanguage,
+} from "@remnic/coding-graph";
 
 // ──────────────────────────────────────────────────────────────────────────
 // 1. Generator determinism (rule 38).
@@ -603,4 +613,204 @@ test("compareMachineFingerprints: lists every load-bearing differing field", () 
     [...diff.differingFields].sort(),
     ["arch", "cpuCores", "cpuModel", "nodeVersion(major)", "platform"],
   );
+});
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// 8. Guard ordering (#1688 review) — structural invariants beat the
+//    machine-fingerprint skip. A misconfigured run (wrong fixture or
+//    incompatible schema) on a different machine must FAIL on its real
+//    problem, not be silently skipped as "hardware variance".
+// ──────────────────────────────────────────────────────────────────────────
+
+test("guard ordering: fixture mismatch beats machine-fingerprint skip", () => {
+  // Report is on a DIFFERENT machine (arch x64) AND has a different
+  // fixture (fileCount 1000 vs 20). Before the reorder this returned
+  // {passed:true, skipped:true} — the machine skip masked the fixture
+  // mismatch. Now the structural fixture check must fail first.
+  const report = reportWithMachine({ ...SAME_MACHINE, arch: "x64" });
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const mismatchedReport: CodingGraphBenchReport = {
+    ...report,
+    fixture: {
+      ...report.fixture,
+      config: { ...report.fixture.config, fileCount: 1000 },
+    },
+  };
+  const result = checkCodingGraphRegression(mismatchedReport, baseline, 30);
+  assert.equal(result.passed, false, "fixture mismatch must fail, not skip");
+  assert.equal(result.skipped, undefined, "must not reach the machine skip");
+  assert.ok(
+    result.summary.includes("Fixture mismatch"),
+    "summary must explain the fixture mismatch",
+  );
+});
+
+test("guard ordering: schema-version mismatch fails instead of crashing", () => {
+  // A pre-v2 report (schemaVersion 1) compared against a v2 baseline.
+  // Before the schema guard, extractMetrics dereferenced the v2-only
+  // incrementalModifiedUpdate field and threw a TypeError. Now the
+  // schema guard fails the gate with an actionable message.
+  const report = reportWithMachine(SAME_MACHINE);
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const staleReport: CodingGraphBenchReport = {
+    ...report,
+    schemaVersion: 1,
+    incrementalModifiedUpdate:
+      undefined as unknown as CodingGraphBenchReport["incrementalModifiedUpdate"],
+  };
+  const result = checkCodingGraphRegression(staleReport, baseline, 30);
+  assert.equal(result.passed, false, "schema mismatch must fail the gate");
+  assert.equal(result.skipped, undefined, "schema mismatch is a hard fail, not a skip");
+  assert.ok(
+    result.summary.includes("Schema-version mismatch"),
+    "summary must explain the schema mismatch",
+  );
+});
+
+test("extractMetrics: throws on a report missing incrementalModifiedUpdate (guard is load-bearing)", () => {
+  // Proves the schema guard above is necessary: without it, extractMetrics
+  // deref-crashes on the v2-only field.
+  const report = reportWithMachine(SAME_MACHINE);
+  const staleReport = {
+    ...report,
+    incrementalModifiedUpdate: undefined,
+  } as CodingGraphBenchReport;
+  assert.throws(() => extractMetrics(staleReport));
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// 9. Modified-loop restore (#1688 review) — re-ingesting the full fixture
+//    restores cross-file edges that the churn prune cascade-deleted.
+//    Restoring only the churned file leaves peer files' incoming edges
+//    gone, so the graph would shrink each pass.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("modified-loop restore: full-fixture re-ingest restores cascade-deleted cross-file edges", async () => {
+  const repo = generateSyntheticRepo({
+    ...DEFAULT_SMOKE_FIXTURE,
+    callDensity: 0.5,
+  });
+  const storeFiles: StoreFileIR[] = repo.files.map((f) => ({
+    path: f.path,
+    language: f.language as CodingGraphLanguage,
+    contentHash: f.contentHash,
+    symbols: f.symbols.map((s) => ({
+      qualifiedName: s.qualifiedName,
+      name: s.name,
+      kind: s.kind as SymbolKind,
+      span: { startByte: s.startByte, endByte: s.endByte },
+    })),
+    edges: f.edges.map(
+      (e): EdgeIR => ({
+        srcQualifiedName: e.srcQualifiedName,
+        dstQualifiedName: e.dstQualifiedName,
+        type: e.type,
+        confidence: e.confidence,
+        provenance: e.provenance as EdgeIR["provenance"],
+      }),
+    ),
+  }));
+
+  const dir = await mkdtemp(path.join(tmpdir(), "cg-restore-test-"));
+  const dbPath = path.join(dir, "restore.sqlite");
+  try {
+    const store = await GraphStore.open({ dbPath });
+    try {
+      const indexResult = await store.upsertFileBatch(storeFiles);
+      assert.equal(indexResult.ok, true, "full index must succeed");
+
+      const baselineStats = store.schemaStats();
+      assert.ok(baselineStats.ok, "schemaStats must succeed after index");
+      const baselineEdges = baselineStats.ok ? baselineStats.stats.edges : 0;
+      assert.ok(baselineEdges > 0, "fixture must have edges to exercise the restore");
+
+      // Pick a target that has INCOMING cross-file edges so the
+      // single-file-restore defect is observable below.
+      let targetIdx = -1;
+      for (let i = 0; i < storeFiles.length; i++) {
+        const symSet = new Set(
+          storeFiles[i]!.symbols.map((s) => s.qualifiedName),
+        );
+        const hasIncoming = storeFiles.some(
+          (f, j) =>
+            j !== i &&
+            f.edges.some((e) => symSet.has(e.dstQualifiedName)),
+        );
+        if (hasIncoming) {
+          targetIdx = i;
+          break;
+        }
+      }
+      assert.ok(
+        targetIdx >= 0,
+        "fixture must have a file with incoming cross-file edges",
+      );
+      const target = storeFiles[targetIdx]!;
+
+      // Churn: replace the target with a single churn symbol + no edges.
+      const modified: StoreFileIR = {
+        ...target,
+        contentHash: target.contentHash + "-churn",
+        symbols: [
+          {
+            qualifiedName: "mod.churnSymbol",
+            name: "churnSymbol",
+            kind: "function" as SymbolKind,
+            span: { startByte: 0, endByte: 0 },
+          },
+        ],
+        edges: [],
+      };
+      const churnResult = await store.upsertFileBatch([modified]);
+      assert.equal(churnResult.ok, true, "churn upsert must succeed");
+
+      const afterChurn = store.schemaStats();
+      const afterChurnEdges = afterChurn.ok ? afterChurn.stats.edges : 0;
+      assert.ok(
+        afterChurnEdges < baselineEdges,
+        "churn must shed edges via cascade (after=" +
+          afterChurnEdges +
+          ", baseline=" +
+          baselineEdges +
+          ")",
+      );
+
+      // FIX: restore by re-ingesting the FULL fixture.
+      const restoreResult = await store.upsertFileBatch(storeFiles);
+      assert.equal(restoreResult.ok, true, "full-fixture restore must succeed");
+      const afterRestore = store.schemaStats();
+      const afterRestoreEdges = afterRestore.ok ? afterRestore.stats.edges : 0;
+      assert.equal(
+        afterRestoreEdges,
+        baselineEdges,
+        "full-fixture restore returns the graph to baseline edge count (after=" +
+          afterRestoreEdges +
+          ", baseline=" +
+          baselineEdges +
+          ")",
+      );
+
+      // DEFECT PROOF: re-churn, then restore ONLY the target file (the
+      // old behavior). Cross-file incoming edges stay gone.
+      const churnAgain = await store.upsertFileBatch([modified]);
+      assert.equal(churnAgain.ok, true);
+      const singleRestore = await store.upsertFileBatch([target]);
+      assert.equal(singleRestore.ok, true);
+      const afterSingle = store.schemaStats();
+      const afterSingleEdges = afterSingle.ok ? afterSingle.stats.edges : 0;
+      assert.ok(
+        afterSingleEdges < baselineEdges,
+        "single-file restore must NOT fully restore cross-file edges (after=" +
+          afterSingleEdges +
+          ", baseline=" +
+          baselineEdges +
+          ") — the defect the full-fixture fix closes",
+      );
+    } finally {
+      await store.close();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

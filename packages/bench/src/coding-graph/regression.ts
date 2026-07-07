@@ -113,9 +113,49 @@ export function checkCodingGraphRegression(
   baseline: CodingGraphBaseline,
   tolerancePercent: number = DEFAULT_TOLERANCE_PERCENT,
 ): RegressionGateResult {
-  const measured = extractMetrics(report);
-  const baselineMetrics = baseline.metrics;
-  const regressions: RegressionMetricDetail[] = [];
+
+  // Guard: a regression comparison is only meaningful when the report's
+  // fixture matches the baseline's fixture on EVERY knob. A different seed
+  // or language produces a structurally different synthetic repo, so timing
+  // deltas across mismatched fixtures are meaningless. Compare all keys
+  // present in the baseline config so new knobs are covered automatically.
+  const reportFixture = report.fixture.config;
+  const baselineFixture = baseline.fixtureConfig;
+  const mismatchedKeys = (Object.keys(baselineFixture) as Array<
+    keyof typeof baselineFixture
+  >).filter((key) => reportFixture[key] !== baselineFixture[key]);
+  if (mismatchedKeys.length > 0) {
+    const diffs = mismatchedKeys
+      .map(
+        (key) =>
+          `${key}: report=${reportFixture[key]} baseline=${baselineFixture[key]}`,
+      )
+      .join(", ");
+    return {
+      passed: false,
+      regressions: [],
+      summary: `Fixture mismatch (${diffs}). Metrics are not comparable across different fixtures.`,
+    };
+  }
+
+  // Guard: schema-version compatibility. extractMetrics below
+  // unconditionally dereferences v2-only fields (e.g.
+  // incrementalModifiedUpdate); a pre-v2 report lacks them and would
+  // throw a TypeError before any skip could run — defeating the
+  // cross-environment robustness the machine guard targets
+  // (kilo-code-bot review of #1688). A schema mismatch is a structural
+  // incompatibility: fail with an actionable message instead of
+  // crashing or silently skipping.
+  if (report.schemaVersion !== baseline.schemaVersion) {
+    return {
+      passed: false,
+      regressions: [],
+      summary:
+        `Schema-version mismatch: report=${report.schemaVersion} ` +
+        `baseline=${baseline.schemaVersion}. Metrics are not comparable ` +
+        `across schema versions — regenerate the baseline (#1688).`,
+    };
+  }
 
   // Guard (#1688 item 2): a timing comparison is only meaningful on the
   // same machine class. A baseline carries a fingerprint (arch/platform/
@@ -144,29 +184,9 @@ export function checkCodingGraphRegression(
     };
   }
 
-  // Guard: a regression comparison is only meaningful when the report's
-  // fixture matches the baseline's fixture on EVERY knob. A different seed
-  // or language produces a structurally different synthetic repo, so timing
-  // deltas across mismatched fixtures are meaningless. Compare all keys
-  // present in the baseline config so new knobs are covered automatically.
-  const reportFixture = report.fixture.config;
-  const baselineFixture = baseline.fixtureConfig;
-  const mismatchedKeys = (Object.keys(baselineFixture) as Array<
-    keyof typeof baselineFixture
-  >).filter((key) => reportFixture[key] !== baselineFixture[key]);
-  if (mismatchedKeys.length > 0) {
-    const diffs = mismatchedKeys
-      .map(
-        (key) =>
-          `${key}: report=${reportFixture[key]} baseline=${baselineFixture[key]}`,
-      )
-      .join(", ");
-    return {
-      passed: false,
-      regressions: [],
-      summary: `Fixture mismatch (${diffs}). Metrics are not comparable across different fixtures.`,
-    };
-  }
+  const measured = extractMetrics(report);
+  const baselineMetrics = baseline.metrics;
+  const regressions: RegressionMetricDetail[] = [];
 
   for (const key of Object.keys(METRIC_DIRECTION) as RegressionMetricKey[]) {
     const baseVal = baselineMetrics[key];
