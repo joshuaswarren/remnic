@@ -255,6 +255,59 @@ test("#1707 thread 2: backfill does NOT clobber an already-extracted valid_at", 
   }
 });
 
+// Review (codex PRRT_Ov68oA): an END-only extraction ("through 2026") sets
+// eventTimeSource = "extracted" but copies valid_at from observedAt (assumed
+// start). A later START-bound extraction must still correct valid_at — the
+// copy's eventTimeSource is "extracted" but its valid_at === observedAt
+// (batch-anchored start), which is NOT a per-fact-extracted start. This pins
+// the gate so end-only provenance does not block the start correction.
+test("#1707 thread 2: end-only extracted provenance does NOT block a later start-bound correction", async () => {
+  const { storage, cleanup } = await makeStorage("bitemporal-1707-endonly-");
+  try {
+    // Copy state after an end-only backfill: eventTimeSource = "extracted"
+    // (the end "through 2026" resolved), but valid_at is still the ingestion
+    // anchor (assumed start copied from observedAt).
+    const observedAt = "2026-06-01T00:00:00.000Z";
+    const content = "The service was maintained through 2026.";
+    const id = await storage.writeMemory("fact", content, {
+      confidence: 0.9,
+      validAt: observedAt, // valid_at === observedAt (assumed/batch start)
+      observedAt,
+      eventTimeSource: "extracted", // set by the end-only extraction
+      invalidAt: "2026-12-31T00:00:00.000Z", // the extracted end bound
+    });
+    const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(before);
+    assert.equal(before!.frontmatter.eventTimeSource, "extracted");
+    assert.equal(before!.frontmatter.valid_at, before!.frontmatter.observedAt);
+
+    // The helper's no-clobber gate for valid_at (mirrors orchestrator.ts):
+    //   startIsPerFactExtracted = eventTimeSource === "extracted" &&
+    //     valid_at !== observedAt
+    const startIsPerFactExtracted =
+      before!.frontmatter.eventTimeSource === "extracted" &&
+      before!.frontmatter.valid_at !== before!.frontmatter.observedAt;
+    assert.equal(
+      startIsPerFactExtracted,
+      false,
+      "valid_at === observedAt means the start is still batch-anchored, not per-fact-extracted",
+    );
+
+    // A later re-extraction with a real extracted start must correct valid_at.
+    const realStart = "2024-03-01T00:00:00.000Z";
+    const ok = await storage.writeMemoryFrontmatter(before!, {
+      valid_at: realStart,
+    });
+    assert.equal(ok, true);
+
+    const after = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(after);
+    assert.equal(after!.frontmatter.valid_at, realStart);
+  } finally {
+    await cleanup();
+  }
+});
+
 // Gate guard (review cursor PRRT_OvHk / codex PRRT_OvHxVH): resolveFactEventTime
 // sets a validFrom for EVERY fact (assumed = ingestion anchor). The helper's
 // I/O gate must NOT scan on an assumed validFrom — only an EXTRACTED start bound

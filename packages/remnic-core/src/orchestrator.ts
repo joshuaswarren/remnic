@@ -2854,27 +2854,35 @@ export class Orchestrator {
       // #1707 thread 2 — per-fact-anchored start bound. A re-extracted
       // duplicate whose event time resolves a real start bound must carry
       // that anchor onto the existing copy so as-of recall uses the corrected
-      // valid_at instead of the stale batch-anchored value the copy picked up
-      // before per-fact anchoring (#1670) existed. Only an EXTRACTED bound
-      // corrects the copy — an "assumed" bound is just the ingestion anchor
-      // (no correction). Never clobber a copy that already carries its own
-      // extracted per-fact anchor.
+      // valid_at instead of the stale batch-anchored value. Only an EXTRACTED
+      // bound corrects the copy; an "assumed" bound is just the ingestion
+      // anchor (no correction).
+      //
+      // No-clobber: a copy's START is per-fact-extracted only when
+      // eventTimeSource === "extracted" AND valid_at is a real per-fact start
+      // (differs from observedAt, the ingestion anchor). An END-only extraction
+      // ("through 2026") sets eventTimeSource = "extracted" but copies
+      // valid_at from observedAt (assumed start) — so its valid_at is still
+      // batch-anchored and a later extracted validFrom MUST still correct it
+      // (review codex PRRT_Ov68oA). Don't let end-only provenance block the
+      // start correction.
+      const startIsPerFactExtracted =
+        fm.eventTimeSource === "extracted" &&
+        fm.valid_at !== undefined &&
+        fm.valid_at.length > 0 &&
+        fm.valid_at !== fm.observedAt;
       if (
         bounds.validFrom &&
         bounds.eventTimeSource === "extracted" &&
-        (fm.eventTimeSource !== "extracted" ||
-          !fm.valid_at ||
-          fm.valid_at.length === 0)
+        !startIsPerFactExtracted
       ) {
         patch.valid_at = bounds.validFrom;
         // Mark the copy extracted-anchored in the SAME patch so its provenance
-        // reflects the correction (review cursor PRRT_OvHM / codex PRRT_OvHxVD).
-        // Without this, a copy upgraded from "assumed" would keep "assumed"
-        // provenance while carrying an extracted start — a later re-extraction
-        // would treat it as still batch-anchored and overwrite valid_at again,
-        // breaking the no-clobber protection for extracted anchors. (The
-        // earlier eventTimeSource block only fills an EMPTY source, so it does
-        // not fire for an existing "assumed" value.)
+        // reflects the correction (review cursor PRRT_OvHM / codex PRRT_OvHxVD):
+        // without this, a copy upgraded from "assumed" would keep "assumed"
+        // provenance while carrying an extracted start, so a later re-extraction
+        // would treat it as still batch-anchored and overwrite valid_at again.
+        // (The earlier eventTimeSource block only fills an EMPTY source.)
         if (fm.eventTimeSource !== "extracted") {
           patch.eventTimeSource = "extracted";
         }
