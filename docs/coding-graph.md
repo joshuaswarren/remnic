@@ -95,7 +95,7 @@ The runtime bridge is
 | `engram.codegraph_search_graph` | `codegraph_search_graph` | Structured label/name search. |
 | `engram.codegraph_trace_path` | `codegraph_trace_path` | Traverse from a symbol over typed edges. |
 | `engram.codegraph_detect_changes` | `codegraph_detect_changes` | Diff → affected symbols + [blast radius](#detect_changes--blast-radius). |
-| `engram.codegraph_query_graph` | `codegraph_query_graph` | [openCypher read subset](#opencypher-read-subset). |
+| `engram.codegraph_query_graph` | `codegraph_query_graph` | Structured label/name search (raw Cypher text rejected — see [openCypher read subset](#opencypher-read-subset)). |
 | `engram.codegraph_get_schema` | `codegraph_get_schema` | Node/edge label histogram. |
 | `engram.codegraph_get_snippet` | `codegraph_get_snippet` | Source snippet for a symbol (read from disk). |
 | `engram.codegraph_get_architecture` | `codegraph_get_architecture` | Composes Track A's architecture card with live graph stats. |
@@ -162,6 +162,16 @@ Additional tables: `node_attributes` (per-symbol `is_exported` /
 
 ## detect_changes + blast radius
 
+**Wiring status (honest).** The `engram.codegraph_detect_changes` MCP tool is
+registered and dispatches to a runtime delegate, but that delegate does **not**
+yet gather the diff or fresh-parse changed files — it calls `computeBlastRadius`
+with an empty affected set, so the tool returns an empty `affected` list today.
+The diff-gathering + fresh-parse pipeline (the library functions below) lands in a
+follow-up; until then the result is an honest empty set, never a stub claiming
+affected symbols. The library functions (`computeBlastRadius`,
+`findDirectlyAffectedSymbols`, `classifyRisk`) are implemented and work when called
+directly from `@remnic/coding-graph`.
+
 [`detect-changes.ts`](../packages/coding-graph/src/detect-changes.ts) maps the
 current diff (staged + unstaged + committed-since-last-index) hunks to symbols
 whose spans overlap the changed line ranges — against a **fresh parse** of the
@@ -187,6 +197,8 @@ backend/store failure during traversal is surfaced as
 
 ## Dead-code detection
 
+**Library primitive, not an MCP tool.** `deadCode()` is a `GraphStore` method — it is not one of the 14 `codegraph_*` parity tools, but the store primitive they and library consumers build on.
+
 [`GraphStore.deadCode()`](../packages/coding-graph/src/graph-store.ts) finds
 symbols with zero inbound `CALLS` / `USES_TYPE` edges, excluding the
 `DEAD_CODE_EXCLUSION` set. Two flags keep genuinely-reachable symbols off the
@@ -200,6 +212,9 @@ list:
   regardless of internal call edges.
 
 ## openCypher read subset
+
+**Two surfaces, one engine.** The MCP `engram.codegraph_query_graph` tool accepts a **structured** query object (`structuredQuery`) and **rejects raw Cypher text** — Cypher strings are not passed through the tool boundary. The openCypher parser + executor below (`executeCypher`) is a `@remnic/coding-graph` library capability for direct consumers; the MCP tool compiles the structured query to the same `searchGraph` / `traverse` primitives.
+
 
 [`cypher/query-parser.ts`](../packages/coding-graph/src/cypher/query-parser.ts)
 is a hand-written recursive-descent parser + executor compiling a strict
