@@ -194,3 +194,20 @@ test("#1669 thread #3 (first-line guard): valid patterns still pass", () => {
   assert.equal(validateRedactionPattern("(a|b)+"), "(a|b)+");
   assert.equal(validateRedactionPattern("/^secret-key-[a-f0-9]+$/"), "/^secret-key-[a-f0-9]+$/");
 });
+
+test("#1669 P2: validateRedactionPattern rejects zero-width regex", () => {
+  // Empty body or regex that matches the empty string would withhold every fact.
+  assert.throws(() => validateRedactionPattern("//"));
+  assert.throws(() => validateRedactionPattern("/a?/"));
+  assert.throws(() => validateRedactionPattern("/a*/"));
+  assert.throws(() => validateRedactionPattern("/(a|)/"));
+  // A bounded non-zero-width regex still passes.
+  assert.equal(validateRedactionPattern("/^secret-[a-f]+$/"), "/^secret-[a-f]+$/");
+});
+
+test("#1669 P2: compileRedactionPattern empty body never matches", () => {
+  // A hand-edited // rule file must not withhold all extraction.
+  const rule = compileRedactionPattern("//");
+  assert.equal(rule.matcher("anything"), false);
+  assert.equal(rule.matcher(""), false);
+});

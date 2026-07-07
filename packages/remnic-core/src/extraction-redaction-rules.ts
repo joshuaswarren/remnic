@@ -70,8 +70,7 @@ function isRegexLike(pattern: string): boolean {
  * apply time, but a hand-edited rule file or an edge case can still slip past.
  */
 function isSafeRegex(source: string): boolean {
-  // Bound the pattern length so a pathological rule cannot stall the check.
-  if (source.length > 512) return false;
+  if (source.length === 0 || source.length > 512) return false;
   // Reject overly-broad patterns (.*) that would match every fact and
   // withhold all extraction (cursor Bugbot thread — mirrors
   // isUnsafeRedactionRegex in correction-contract.ts).
@@ -130,12 +129,14 @@ export function compileRedactionPattern(pattern: string): CompiledRedactionRule 
   const body = trimmed.slice(1, -1);
   try {
     if (!isSafeRegex(body)) {
-      // Catastrophic-backtracking shape (e.g. (a+)+) — never compile.
-      // Fall back to literal substring on the BODY (without delimiters) so the
-      // rule still does something useful without risking a ReDoS.
+      if (body.length === 0) return { pattern: trimmed, matcher: () => false };
       return { pattern: trimmed, matcher: (content) => content.includes(body) };
     }
     const re = new RegExp(body);
+    if (re.test("")) {
+      // Zero-width regex matches every string — would withhold all extraction.
+      return { pattern: trimmed, matcher: (content) => content.includes(body) };
+    }
     return { pattern: trimmed, matcher: (content) => re.test(content) };
   } catch {
     // Malformed regex despite validation (e.g. rule file hand-edited) —

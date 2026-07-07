@@ -271,6 +271,24 @@ export function validateRedactionPattern(pattern: string): string {
       "redaction_rule.pattern is unsafe — use a bounded literal or a regex without nested quantifiers / overlapping alternation.",
     );
   }
+  // #1669 P2: reject zero-width regex (empty body or matches empty string)
+  // that would withhold every fact.
+  if (isRegexLike(trimmed)) {
+    const regexBody = trimmed.slice(1, -1);
+    if (regexBody.length === 0) {
+      throw new CorrectionContractError("redaction_rule.pattern body is empty — use a non-empty regex.");
+    }
+    try {
+      if (new RegExp(regexBody).test("")) {
+        throw new CorrectionContractError(
+          "redaction_rule.pattern matches the empty string — it would withhold every fact.",
+        );
+      }
+    } catch (e) {
+      if (e instanceof CorrectionContractError) throw e;
+      // Compilation failed — the extraction-time defense handles it.
+    }
+  }
   return trimmed;
 }
 

@@ -14910,7 +14910,7 @@ export class Orchestrator {
           }
           if (preJudgeRedactionRules.length > 0) {
             const rc = f.content + (f.structuredAttributes ? " " + JSON.stringify(f.structuredAttributes) : "")
-              + (f.procedureSteps ? " " + f.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""}`.trim()).join(" ") : "");
+              + (f.procedureSteps ? " " + f.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""} ${s.toolCall ? `${s.toolCall.kind} ${s.toolCall.signature}` : ""}`.trim()).join(" ") : "");
             if (contentMatchesRedactionRules(rc, preJudgeRedactionRules)) continue;
           }
           judgeCandidates.push({
@@ -15174,7 +15174,7 @@ export class Orchestrator {
         const redactionRules = await redactionRulesFor(sourceStorageDir, targetStorage.dir);
         const redactionCandidate = fact.content
           + (fact.structuredAttributes ? " " + JSON.stringify(fact.structuredAttributes) : "")
-          + (fact.procedureSteps ? " " + fact.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""}`.trim()).join(" ") : "");
+          + (fact.procedureSteps ? " " + fact.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""} ${s.toolCall ? `${s.toolCall.kind} ${s.toolCall.signature}` : ""}`.trim()).join(" ") : "");
         if (redactionRules.length > 0 && contentMatchesRedactionRules(redactionCandidate, redactionRules)) {
           redactionGatedCount++;
           log.debug(`extraction: redaction-rule withheld fact #${redactionGatedCount} in ${targetStorage.dir}`);
