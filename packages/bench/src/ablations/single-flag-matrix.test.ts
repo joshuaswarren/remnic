@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { buildBenchBaselineRemnicConfig } from "../adapters/remnic-adapter.ts";
+import { parseConfig } from "@remnic/core";
 import { DEFAULT_ABLATION_BENCHMARK, SINGLE_FLAG_ABLATION_MATRIX, getAblationCell } from "./single-flag-matrix.ts";
 
 test("SINGLE_FLAG_ABLATION_MATRIX has exactly the 3 #1574 axes in stable order", () => {
@@ -122,6 +123,23 @@ test("each cell's override actually changes the merged config vs the bench basel
   }
 });
 
+test("each cell's override differs from the config.ts parsed default (catches silent default drift)", () => {
+  // The bench baseline may omit a key (so the cell flips from the config.ts
+  // default) or pin it explicitly. But if someone changes a config.ts default
+  // to match a cell's override, the cell becomes a no-op while the bench-baseline
+  // test above still passes. This test catches that drift by comparing against
+  // the actual parsed config defaults (PR #1751 cursor review).
+  const defaults = parseConfig({});
+  for (const cell of SINGLE_FLAG_ABLATION_MATRIX) {
+    const cellValue = cell.configOverrides[cell.primaryFlag] as boolean;
+    const defaultValue = defaults[cell.primaryFlag] as boolean;
+    assert.notEqual(
+      defaultValue,
+      cellValue,
+      `${cell.id}: config.ts default for ${cell.primaryFlag} is already ${String(cellValue)} — the cell would be a no-op against the parsed default`
+    );
+  }
+});
 test("each cell's configOverrides win over the baseline when merged (override semantics)", () => {
   // The runner merges `{ ...resolved.adapterOptions.configOverrides, ...cell.configOverrides }`.
   // Since the baseline omits these keys, the merged result carries exactly the
