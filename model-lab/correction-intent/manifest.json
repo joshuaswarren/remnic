@@ -91,19 +91,18 @@
       },
       "macroF1": 1.0,
       "examples": 25,
-      "meanSpanOverlap": 0.142857,
       "latencyMs": {
         "count": 25.0,
-        "min": 11.097,
-        "mean": 11.456,
-        "p50": 11.444,
-        "p95": 11.794,
-        "p99": 11.949,
-        "max": 11.987
+        "min": 9.949,
+        "mean": 10.614,
+        "p50": 10.456,
+        "p95": 11.309,
+        "p99": 12.113,
+        "max": 12.354
       },
       "spanExtraction": {
         "status": "not-applicable-v1",
-        "$comment": "v1 is a detection classifier (issue #1738); it predicts {correction, none} and emits NO correctedAssertion span, so its predictions carry an empty corrections[] block. meanSpanOverlap is therefore NOT a measure of extraction quality here: it is 0.0 for update/stop_storing corrections (gold assertion non-empty, pred empty) and 1.0 for retract-polarity corrections (gold assertion is empty by morphology, pred empty -> trivial match), averaging 0.143 over the 14 gold-correction rows. Span extraction is the v2 causal-LM follow-up (<=4B instruct LM emitting the corrections[] JSON block). Detection F1 is the eval gate (#1585)."
+        "$comment": "v1 is a detection classifier (issue #1738); it predicts {correction, none} and emits NO correctedAssertion span, so its predictions carry an empty corrections[] block. meanSpanOverlap is omitted (not computed) for detection-only models because empty-vs-empty gold assertions (retract-polarity corrections) would score a misleading 1.0. Span extraction is the v2 causal-LM follow-up (<=4B instruct LM emitting the corrections[] JSON block). Detection F1 is the eval gate (#1585)."
       },
       "$comment": "Held-out 10% split (25 examples) of the 250-record synthetic set, scored by model-lab/correction-intent/eval.py with the trained checkpoint (inline inference, single-example forward, fp32, 1 warmup call excluded from the latency distribution). macroF1=1.0 meets the #1585 held-out detection target. Caveat: the held-out is drawn from the SAME systematic generator as the train split, so 1.0 reflects perfect separation of the morphology patterns, not real-world robustness — the number that matters for production is the downstream one."
     },
@@ -115,11 +114,11 @@
   },
   "artifact": {
     "hfRepo": "joshuawarren/remnic-correction-intent-v1",
-    "revision": "3bf0236dc5ae74bddd5c9be46c5860fbc57c960aebcb06dbe686df861ac1ff34",
+    "revision": "3fc6bd74124d4b8c9d98496f6f847dfcfded62d5c19d9fdaf5dfa51a1b0638b1",
     "quantizations": null,
     "publishStatus": "pending-hf-upload",
-    "localArtifactSha256": "3bf0236dc5ae74bddd5c9be46c5860fbc57c960aebcb06dbe686df861ac1ff34",
-    "$comment": "The trained weights (model.safetensors + tokenizer + config + held-out gold under model-lab/runs/correction-intent/v1/) are gitignored and were NOT published to the HF Hub: no HF credentials exist on the lab box and common/hf_push.py is a stub (NotImplementedError). For reproducibility the exact trained weights are content-pinned by localArtifactSha256 (sha256 over the sorted artifact-dir file set: config.json, correction-heldout.jsonl, model.safetensors, tokenizer.json, tokenizer_config.json, training_args.bin), recorded as revision. This is a verifiable integrity pin of what was trained; HF upload to hfRepo is the pending follow-up (shared with the faithfulness-gate gap, tracked in #1738). Re-running the recipe from this manifest reproduces a bit-identical artifact because the data generator + hyperparams + pinned stack are all deterministic."
+    "localArtifactSha256": "3fc6bd74124d4b8c9d98496f6f847dfcfded62d5c19d9fdaf5dfa51a1b0638b1",
+    "$comment": "The trained weights (model.safetensors + tokenizer + config + held-out gold under model-lab/runs/correction-intent/v1/) are gitignored and were NOT published to the HF Hub: no HF credentials exist on the lab box and common/hf_push.py is a stub (NotImplementedError). For reproducibility the exact trained weights are content-pinned by localArtifactSha256 (sha256 of concatenated per-file sha256 hexdigests for the sorted artifact-dir file set: config.json, correction-heldout.jsonl, model.safetensors, tokenizer.json, tokenizer_config.json, training_args.bin), recorded as revision. This is a verifiable integrity pin of what was trained; HF upload to hfRepo is the pending follow-up (shared with the faithfulness-gate gap, tracked in #1738). Re-running the recipe from this manifest reproduces a bit-identical artifact because the data generator + hyperparams + pinned stack are all deterministic."
   },
   "policyCompliance": {
     "targetMaxParamsB": 4,
