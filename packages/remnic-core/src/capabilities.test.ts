@@ -461,3 +461,188 @@ test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (par
     }
   }
 });
+
+
+// ---------------------------------------------------------------------------
+// IndexingCapabilitySet — gate-parity tests (issue #1523 batch 4).
+//
+// Same invariant as the sets above: every caps field must project from its
+// `<field>Enabled` config flag. All two flags are required booleans on
+// PluginConfig (defaults resolved at the parse boundary), so the projection
+// is a pure passthrough.
+//
+// Parity contract: a caps-resolved run and a config-derived run MUST produce
+// identical boolean values for every gate — on AND off.
+// ---------------------------------------------------------------------------
+
+import {
+  resolveIndexingCapabilities,
+  type IndexingCapabilitySet,
+} from "./capabilities.js";
+
+const INDEXING_FIELD_TO_FLAG: Record<keyof IndexingCapabilitySet, string> = {
+  queryAwareIndexing: "queryAwareIndexingEnabled",
+  conversationIndex: "conversationIndexEnabled",
+};
+
+const INDEXING_FIELDS = Object.keys(INDEXING_FIELD_TO_FLAG) as Array<
+  keyof IndexingCapabilitySet
+>;
+
+test("resolveIndexingCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(INDEXING_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveIndexingCapabilities(config);
+
+  for (const field of INDEXING_FIELDS) {
+    const flag = INDEXING_FIELD_TO_FLAG[field];
+    assert.equal(caps[field], true, `caps.${field} must be true when ${flag}=true`);
+  }
+});
+
+test("resolveIndexingCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(INDEXING_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveIndexingCapabilities(config);
+
+  for (const field of INDEXING_FIELDS) {
+    const flag = INDEXING_FIELD_TO_FLAG[field];
+    assert.equal(caps[field], false, `caps.${field} must be false when ${flag}=false`);
+  }
+});
+
+test("resolveIndexingCapabilities returns a frozen object", () => {
+  const config = parseConfig({});
+  const caps = resolveIndexingCapabilities(config);
+  assert.equal(Object.isFrozen(caps), true);
+});
+
+test("resolveIndexingCapabilities matches pre-migration config reads (parity contract)", () => {
+  const cases: Record<string, Record<string, boolean>> = {
+    "all-off": {
+      queryAwareIndexingEnabled: false,
+      conversationIndexEnabled: false,
+    },
+    "all-on": {
+      queryAwareIndexingEnabled: true,
+      conversationIndexEnabled: true,
+    },
+    "indexing-on-conv-off": {
+      queryAwareIndexingEnabled: true,
+      conversationIndexEnabled: false,
+    },
+    "conv-on-indexing-off": {
+      queryAwareIndexingEnabled: false,
+      conversationIndexEnabled: true,
+    },
+  };
+
+  for (const [label, overrides] of Object.entries(cases)) {
+    const config = parseConfig(overrides);
+    const caps = resolveIndexingCapabilities(config);
+
+    for (const field of INDEXING_FIELDS) {
+      const flag = INDEXING_FIELD_TO_FLAG[field];
+      assert.equal(
+        caps[field],
+        (config as unknown as Record<string, boolean>)[flag],
+        `[${label}] caps.${field} must equal config.${flag}`,
+      );
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// CreationMemoryCapabilitySet — gate-parity tests (issue #1523 batch 4).
+// ---------------------------------------------------------------------------
+
+import {
+  resolveCreationMemoryCapabilities,
+  type CreationMemoryCapabilitySet,
+} from "./capabilities.js";
+
+const CREATION_FIELD_TO_FLAG: Record<keyof CreationMemoryCapabilitySet, string> = {
+  creationMemory: "creationMemoryEnabled",
+  commitmentLedger: "commitmentLedgerEnabled",
+  resumeBundles: "resumeBundlesEnabled",
+  commitmentLifecycle: "commitmentLifecycleEnabled",
+};
+
+const CREATION_FIELDS = Object.keys(CREATION_FIELD_TO_FLAG) as Array<
+  keyof CreationMemoryCapabilitySet
+>;
+
+test("resolveCreationMemoryCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(CREATION_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveCreationMemoryCapabilities(config);
+
+  for (const field of CREATION_FIELDS) {
+    const flag = CREATION_FIELD_TO_FLAG[field];
+    assert.equal(caps[field], true, `caps.${field} must be true when ${flag}=true`);
+  }
+});
+
+test("resolveCreationMemoryCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(CREATION_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveCreationMemoryCapabilities(config);
+
+  for (const field of CREATION_FIELDS) {
+    const flag = CREATION_FIELD_TO_FLAG[field];
+    assert.equal(caps[field], false, `caps.${field} must be false when ${flag}=false`);
+  }
+});
+
+test("resolveCreationMemoryCapabilities returns a frozen object", () => {
+  const config = parseConfig({});
+  const caps = resolveCreationMemoryCapabilities(config);
+  assert.equal(Object.isFrozen(caps), true);
+});
+
+test("resolveCreationMemoryCapabilities matches pre-migration config reads (parity contract)", () => {
+  const cases: Record<string, Record<string, boolean>> = {
+    "all-off": {
+      creationMemoryEnabled: false,
+      commitmentLedgerEnabled: false,
+      resumeBundlesEnabled: false,
+      commitmentLifecycleEnabled: false,
+    },
+    "all-on": {
+      creationMemoryEnabled: true,
+      commitmentLedgerEnabled: true,
+      resumeBundlesEnabled: true,
+      commitmentLifecycleEnabled: true,
+    },
+    "creation-on-rest-off": {
+      creationMemoryEnabled: true,
+      commitmentLedgerEnabled: false,
+      resumeBundlesEnabled: false,
+      commitmentLifecycleEnabled: false,
+    },
+    "ledgers-on-rest-off": {
+      creationMemoryEnabled: false,
+      commitmentLedgerEnabled: true,
+      resumeBundlesEnabled: true,
+      commitmentLifecycleEnabled: true,
+    },
+  };
+
+  for (const [label, overrides] of Object.entries(cases)) {
+    const config = parseConfig(overrides);
+    const caps = resolveCreationMemoryCapabilities(config);
+
+    for (const field of CREATION_FIELDS) {
+      const flag = CREATION_FIELD_TO_FLAG[field];
+      assert.equal(
+        caps[field],
+        (config as unknown as Record<string, boolean>)[flag],
+        `[${label}] caps.${field} must equal config.${flag}`,
+      );
+    }
+  }
+});
