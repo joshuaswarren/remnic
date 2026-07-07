@@ -99,6 +99,26 @@ export function compareMachineFingerprints(
   if (report.cpuCores !== baseline.cpuCores) differing.push("cpuCores");
   return { differingFields: differing };
 }
+
+/**
+ * Validate the load-bearing fields of a machine fingerprint. JSON-loaded
+ * fingerprints bypass TS's nominal types, so a corrupt artifact may carry
+ * `machine: {}` or `nodeVersion` as a non-string; compareMachineFingerprints
+ * → nodeMajor then calls .replace on an invalid value and throws instead of
+ * returning the intended corrupt-artifact failure. Returns the names of
+ * fields that are missing or have the wrong runtime type.
+ * (chatgpt-codex-connector #1688 P2: 'Validate fingerprint field types'.)
+ */
+function invalidFingerprintFields(fp: MachineFingerprint): string[] {
+  const bad: string[] = [];
+  if (typeof fp.arch !== "string") bad.push("arch");
+  if (typeof fp.platform !== "string") bad.push("platform");
+  // nodeVersion feeds nodeMajor's .replace — a non-string throws.
+  if (typeof fp.nodeVersion !== "string") bad.push("nodeVersion");
+  if (typeof fp.cpuCores !== "number" || !Number.isFinite(fp.cpuCores)) bad.push("cpuCores");
+  return bad;
+}
+
 /**
  * Compare a report against a baseline. Returns a gate result that exits
  * non-zero when any metric regresses beyond the tolerance.
@@ -190,18 +210,53 @@ export function checkCodingGraphRegression(
     };
   }
 
-  // Machine-fingerprint presence guard: a corrupt JSON report or baseline
-  // may have a missing/null machine fingerprint. compareMachineFingerprints
-  // dereferences fingerprint fields; without this guard it throws on a null
-  // machine instead of returning a structured gate failure
-  // (chatgpt-codex-connector #1688 P2: 'Validate machine fingerprints').
-  if (report.machine == null || baseline.machine == null) {
+  // Baseline-side metric value guard: the report guard above only
+  // validates report values. A corrupt baseline JSON could carry a
+  // non-numeric metric (e.g. fullIndexLocsPerSecond: "oops") that reaches
+  // the comparison loop where measVal / baseVal yields NaN, and NaN >
+  // tolerance is false so the gate silently passes. The baseline is loaded
+  // from JSON and carries the regression thresholds, so require every
+  // PRESENT baseline metric to be a finite number. A metric that is simply
+  // absent stays additive (skipped below), preserving the "keys present in
+  // BOTH" contract — only a present non-number is corruption
+  // (chatgpt-codex-connector #1688 P2: 'Validate baseline metrics').
+  const badBaselineMetrics = (Object.keys(METRIC_DIRECTION) as RegressionMetricKey[])
+    .filter((key) => {
+      const v = baseline.metrics[key];
+      return v != null && (typeof v !== "number" || !Number.isFinite(v as number));
+    });
+  if (badBaselineMetrics.length > 0) {
     return {
       passed: false,
       regressions: [],
       summary:
-        "Report or baseline is missing the machine fingerprint — the " +
-        "artifact is incomplete or corrupt. Regenerate it (#1688).",
+        "Baseline has a non-numeric required metric field(s): " +
+        badBaselineMetrics.join(", ") +
+        " — the baseline is corrupt. Regenerate it (#1688).",
+    };
+  }
+
+  // Machine-fingerprint presence + field-type guard: a corrupt JSON report
+  // or baseline may carry a null fingerprint OR a fingerprint with wrong-
+  // typed fields (e.g. machine: {} or nodeVersion as a number).
+  // compareMachineFingerprints → nodeMajor calls .replace on nodeVersion; a
+  // non-string throws instead of returning the intended corrupt-artifact
+  // failure. Reject both missing and wrong-typed fingerprints before
+  // comparing (chatgpt-codex-connector #1688 P2: 'Validate fingerprint
+  // field types').
+  const reportFpBad = report.machine == null ? ["<missing>"] : invalidFingerprintFields(report.machine);
+  const baselineFpBad = baseline.machine == null ? ["<missing>"] : invalidFingerprintFields(baseline.machine);
+  if (reportFpBad.length > 0 || baselineFpBad.length > 0) {
+    const which: string[] = [];
+    if (reportFpBad.length > 0) which.push("report (" + reportFpBad.join(", ") + ")");
+    if (baselineFpBad.length > 0) which.push("baseline (" + baselineFpBad.join(", ") + ")");
+    return {
+      passed: false,
+      regressions: [],
+      summary:
+        "Report or baseline machine fingerprint is missing or has an invalid " +
+        "field type(s): " + which.join("; ") +
+        " — the artifact is incomplete or corrupt. Regenerate it (#1688).",
     };
   }
   // Guard (#1688 item 2): a timing comparison is only meaningful on the

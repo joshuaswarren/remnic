@@ -679,6 +679,86 @@ test("extractMetrics: throws on a report missing incrementalModifiedUpdate (guar
   assert.throws(() => extractMetrics(staleReport));
 });
 
+test("baseline guard: a non-numeric baseline metric fails instead of silently passing via NaN", () => {
+  // A corrupt baseline JSON carries fullIndexLocsPerSecond as a string.
+  // Before the guard, measVal / baseVal = number / "oops" = NaN, and
+  // NaN > tolerance is false so the gate silently PASSED. Now a
+  // present-but-non-finite baseline value fails loudly
+  // (chatgpt-codex-connector #1688 P2: 'Validate baseline metrics').
+  const report = reportWithMachine(SAME_MACHINE);
+  const baseline: CodingGraphBaseline = {
+    ...baselineWithMachine(SAME_MACHINE),
+    metrics: {
+      ...baselineWithMachine(SAME_MACHINE).metrics,
+      fullIndexLocsPerSecond: "oops" as unknown as number,
+    },
+  };
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.passed, false, "non-numeric baseline metric must fail the gate");
+  assert.equal(result.skipped, undefined, "must not reach the machine skip");
+  assert.ok(
+    result.summary.includes("non-numeric"),
+    "summary must flag the corrupt baseline metric",
+  );
+  assert.ok(result.summary.includes("fullIndexLocsPerSecond"), "summary must name the bad field");
+});
+
+test("baseline guard: a simply-absent baseline metric stays additive (skipped, not failed)", () => {
+  // A baseline that omits a metric (vs. carrying a non-number) is the
+  // documented additive case — the missing key is skipped, not treated as
+  // corruption. This guards against the validation over-reaching and
+  // breaking the "keys present in BOTH" contract.
+  const report = reportWithMachine(SAME_MACHINE);
+  const baseline: CodingGraphBaseline = {
+    ...baselineWithMachine(SAME_MACHINE),
+    metrics: {
+      fullIndexMs: 10,
+      fullIndexLocsPerSecond: 100000,
+      incrementalUpdateP50Ms: 1,
+      incrementalUpdateP95Ms: 2,
+      // incrementalModifiedUpdateP50Ms / P95Ms deliberately absent.
+      tracePathP95Ms: 2,
+      searchGraphP95Ms: 2,
+      deadCodeMs: 1,
+      dbBytesPerKloc: 280000,
+    },
+  };
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.passed, true, "absent metrics are additive — gate still passes on identical present metrics");
+  assert.equal(result.skipped, undefined);
+});
+
+test("fingerprint guard: a non-string nodeVersion fails instead of throwing in nodeMajor", () => {
+  // A corrupt JSON report carries nodeVersion as a number. Before the
+  // type guard, compareMachineFingerprints → nodeMajor called .replace on
+  // a number and threw. Now the wrong-typed field fails the gate with a
+  // structured message (chatgpt-codex-connector #1688 P2: 'Validate
+  // fingerprint field types').
+  const report = reportWithMachine({
+    ...SAME_MACHINE,
+    nodeVersion: 22 as unknown as string,
+  });
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.passed, false, "non-string nodeVersion must fail the gate");
+  assert.equal(result.skipped, undefined, "must not reach the machine skip");
+  assert.ok(
+    result.summary.includes("nodeVersion"),
+    "summary must name the invalid fingerprint field",
+  );
+});
+
+test("fingerprint guard: an empty machine object {} fails (present but fieldless)", () => {
+  // machine: {} passes the old null check but carries no typed fields.
+  const report = reportWithMachine({} as MachineFingerprint);
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const result = checkCodingGraphRegression(report, baseline, 30);
+  assert.equal(result.passed, false, "empty fingerprint must fail the gate");
+  assert.equal(result.skipped, undefined, "must not reach the machine skip");
+  assert.ok(result.summary.includes("report"), "summary must point at the report fingerprint");
+  assert.ok(result.summary.includes("arch"), "summary must name a missing field");
+});
+
 // ──────────────────────────────────────────────────────────────────────────
 // 9. Modified-loop restore (#1688 review) — re-ingesting the full fixture
 //    restores cross-file edges that the churn prune cascade-deleted.
