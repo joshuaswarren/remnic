@@ -18,6 +18,7 @@ import { FIXTURES } from "./fixtures.js";
 import { hashContent } from "./emit.js";
 import { hashContent as hashContentFromReindex } from "../reindex.js";
 import { sniffLanguage } from "./language-sniff.js";
+import { buildUtf16ToByteOffsetMap } from "./utf16-offsets.js";
 import { WasmTreeSitterBackend } from "./parser-backend.js";
 
 // ---------------------------------------------------------------------------
@@ -1151,6 +1152,21 @@ test("1659-3: UTF-16 offsets produce correct byte spans for multibyte content", 
   const sliced = buf.subarray(fn.span.startByte, fn.span.endByte).toString("utf-8");
   assert.ok(sliced.startsWith("function hello"), `byte-offset slice should start with 'function hello', got: ${sliced}`);
   await engine.dispose();
+});
+
+test("1659-3b: buildUtf16ToByteOffsetMap maps BOTH surrogate code units to the pair's start byte", () => {
+  // "𝕏" (U+1D54F) is one astral code point: 2 UTF-16 code units (a surrogate
+  // pair), 4 UTF-8 bytes. Before the fix the low surrogate's map entry pointed
+  // PAST the pair, so a span starting on the low code unit got an inflated
+  // startByte (cursor #1659 review: 'Surrogate UTF-16 index maps wrong').
+  const content = "a𝕏b"; // idx 0='a', 1=high surrogate, 2=low surrogate, 3='b'
+  const map = buildUtf16ToByteOffsetMap(content);
+  // byte layout: 'a'=1B, '𝕏'=4B, 'b'=1B → 0,1,5,6
+  assert.equal(map[0], 0, "'a' starts at byte 0");
+  assert.equal(map[1], 1, "high surrogate (pair start) at byte 1");
+  assert.equal(map[2], 1, "low surrogate must map to the PAIR start (byte 1), not past it");
+  assert.equal(map[3], 5, "'b' starts at byte 5 (1 + 4 for the pair)");
+  assert.equal(map[content.length], 6, "total byte length is 6");
 });
 
 test("1659-4: C++ out-of-class method A::start captured as method", async () => {

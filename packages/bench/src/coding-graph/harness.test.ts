@@ -814,3 +814,21 @@ test("modified-loop restore: full-fixture re-ingest restores cascade-deleted cro
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("guard ordering: corrupt v2 report missing a metric field fails instead of crashing", () => {
+  // schemaVersion matches the baseline (both 2) but the v2-only field is
+  // absent (a truncated/hand-edited report). Before the field-presence
+  // guard, extractMetrics dereferenced the missing field and threw an
+  // uncaught TypeError (cursor #1688 review: 'v2 report crashes gate').
+  const report = reportWithMachine(SAME_MACHINE);
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const corruptReport: CodingGraphBenchReport = {
+    ...report,
+    incrementalModifiedUpdate:
+      undefined as unknown as CodingGraphBenchReport["incrementalModifiedUpdate"],
+  };
+  const result = checkCodingGraphRegression(corruptReport, baseline, 30);
+  assert.equal(result.passed, false, "corrupt v2 report must fail, not crash");
+  assert.equal(result.skipped, undefined);
+  assert.ok(result.summary.includes("missing"), "summary must explain the missing field");
+});

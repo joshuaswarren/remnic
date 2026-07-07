@@ -286,7 +286,7 @@ export async function runCodingGraphBenchmark(
         // that survive the churn (the file's own symbols are pruned).
         const ownSyms = new Set(original.symbols.map((sym) => sym.qualifiedName));
         const churnName = `mod.benchChurnSymbol${i}`;
-        const representativeEdges: EdgeIR[] = original.edges
+        const representativeEdges: EdgeIR[] = (original.edges ?? [])
           .filter((e) => !ownSyms.has(e.dstQualifiedName))
           .slice(0, 2)
           .map((e) => ({ ...e, srcQualifiedName: churnName }));
