@@ -115,7 +115,7 @@ strings are rejected by the boundary, see below):
 {
   "tool": "engram.codegraph_query_graph",
   "sessionKey": "string",
-  "structuredQuery": { "label": "Function", "limit": 20 }
+  "structuredQuery": { "label": "function", "limit": 20 }
 }
 ```
 

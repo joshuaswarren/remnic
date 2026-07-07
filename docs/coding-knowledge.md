@@ -48,9 +48,9 @@ deep-equal characterization test so the schema and the docs cannot drift.
 | Key | Default | Behavior |
 |-----|---------|----------|
 | `codingKnowledge.enabled` | `false` | Master gate. Off = pre-feature behaviour on every path. |
-| `codingKnowledge.decisionRecords` | `true` | Decision-record MCP tool + briefing titles (under the master gate). |
-| `codingKnowledge.architectureCard` | `true` | Architecture-card build/refresh + briefing injection. |
-| `codingKnowledge.sessionDelta` | `true` | Last-seen-head persistence + delta briefing line. |
+| `codingKnowledge.decisionRecords` | `true` | Advertises the `engram.coding_decision` MCP tool + HTTP route (under the master gate). |
+| `codingKnowledge.architectureCard` | `true` | Advertises the `engram.coding_architecture` MCP tool + HTTP route. |
+| `codingKnowledge.sessionDelta` | `true` | Advertises the `engram.coding_delta` MCP tool + HTTP route. |
 | `codingKnowledge.architectureCardLlmSummary` | `false` | Opt-in LLM summary pass on the architecture card (costs tokens). |
 | `codingKnowledge.structuralProvider` | `"none"` | `"none" \| "subprocess" \| "native"`. See [Structural provider (reserved)](#structural-provider-reserved). |
 | `codingKnowledge.structuralProviderCommand` | `""` | Absolute path to the subprocess provider binary (used only when `structuralProvider = "subprocess"`). |
@@ -60,8 +60,10 @@ deep-equal characterization test so the schema and the docs cannot drift.
 Boolean values are coerced at the parse boundary (so `--config
 codingKnowledge.enabled=false` arrives as `false`, not a truthy string). An
 unknown `structuralProvider` value is rejected listing the valid options
-(rule 51 — silent defaulting is a contract lie). Env overrides follow the
-`REMNIC_*` + `ENGRAM_*` fallback already used elsewhere in `config.ts`.
+(rule 51 — silent defaulting is a contract lie). Configuration is set via the
+plugin config object (`openclaw.json`); per-key `REMNIC_*` / `ENGRAM_*` environment
+overrides are **not** wired for `codingKnowledge` today — set the keys in the plugin
+config, not via env vars.
 
 The type lives in
 [`packages/remnic-core/src/types.ts`](../packages/remnic-core/src/types.ts)
