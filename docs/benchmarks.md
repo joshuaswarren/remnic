@@ -61,14 +61,15 @@ should:
 The `docs/benchmarks/results/` directory now contains the **first real
 Tier L artifacts** (issue #1574), produced on an RTX 3090 lab box under
 the `local-lab` runtime profile. These are real Remnic recall-stack runs
-against the full LoCoMo-10 and LongMemEval-oracle datasets:
+against the full LoCoMo-10 dataset and the LongMemEval-oracle dataset
+(locomo is a full uncapped run; longmemeval is a 100/500 staged subset
+whose full run is in flight):
 
-- `2026-07-06-locomo-qwen2.5-7b-32k_latest-47aae03.json` — qwen2.5:7b-instruct
-  (Q4_K_M), seed 1. Metrics: `contains_answer=0.09`, `f1=0.1707`,
-  `llm_judge=0.3426`, `rouge_l=0.1629`, hidden-evidence-id leak = 1.0
-  (no cheating). Staged baseline: `--trial-limit 100` of the 1986 QA pairs
-  (all sampled from conversation 26); cross-conversation coverage is
-  deferred to the uncapped run.
+- `2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json` — qwen2.5:7b-instruct
+  (Q4_K_M), seed 1, **full run (1986/1986 QA across all 10 conversations)**.
+  Metrics: `contains_answer=0.0831`, `f1=0.1217`, `llm_judge=0.2243`,
+  `rouge_l=0.1177`, hidden-evidence-id leak = 1.0 (no cheating). 0 empty
+  answers; 1885 judge model calls (cache absorbs the ~5% repeated answers).
 - `2026-07-06-longmemeval-qwen2.5-7b-32k_latest-47aae03.json` — same model,
   seed 1. Metrics: `contains_answer=0.02`, `f1=0.0081`,
   `judge_accuracy=0.06`, `llm_judge=0.06`, `search_hits=9.58` (recall is
@@ -81,7 +82,8 @@ Both carry `tier: "local"` and
 credentials were available on the lab box, so Cohen's kappa could not be
 computed — responder and judge are the same qwen2.5:7b-instruct model, which
 carries a known self-preference caveat acceptable for Tier L regression.
-Judge-call counts: 100/100 for each (the judge cache is cold on a first run).
+Judge-call counts: locomo 1885/1986 (the cache absorbs the ~5% repeated
+answers); longmemeval 100/100 (staged subset, cold cache).
 
 The two `*-mock000.json` files remain as **pipeline examples** with
 `datasetVersion: "mock-fixture"` and placeholder scores; **do not cite
