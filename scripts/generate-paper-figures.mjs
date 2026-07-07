@@ -25,7 +25,8 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, basename } from "node:path";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -44,6 +45,36 @@ const TRUST_SCORE_SRC = join(
   "src",
   "trust-score.ts",
 );
+
+/**
+ * Git-tracked artifact basenames under the committed results dir.
+ *
+ * The self-hosted CI runner accumulates UNTRACKED benchmark artifacts in
+ * docs/benchmarks/results/ (the dir is gitignored), so a newest-by-finishedAt
+ * sort would otherwise grab an untracked leftover and the byte-identical
+ * regeneration test would fail in CI only. We therefore consider ONLY
+ * git-tracked artifacts when reading the committed repo dir.
+ *
+ * Returns `null` (no filtering) when the results dir has been env-overridden
+ * to a temp dir (the test seam) — a temp dir lives outside the worktree and is
+ * never tracked, so every file in it is a deliberate fixture. Also `null` when
+ * git is unavailable or reports nothing tracked (defensive: treat as
+ * unmanaged).
+ */
+function trackedResultsNames() {
+  if (process.env.REMNIC_FIGURES_RESULTS_DIR) return null;
+  try {
+    const out = execFileSync("git", ["ls-files", "docs/benchmarks/results"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    const names = new Set(out.split("\n").filter(Boolean).map((p) => basename(p)));
+    return names.size > 0 ? names : null;
+  } catch {
+    return null;
+  }
+}
+const TRACKED_RESULTS_NAMES = trackedResultsNames();
 
 // ─── Sources ──────────────────────────────────────────────────────────────
 
@@ -69,6 +100,7 @@ function findArtifact({ benchmarkId, tier, model, systemName = "remnic" }) {
   const candidates = readdirSync(RESULTS_DIR)
     .filter((name) => name.endsWith(".json"))
     .filter((name) => !name.includes("mock000"))
+    .filter((name) => !TRACKED_RESULTS_NAMES || TRACKED_RESULTS_NAMES.has(name))
     .map((name) => ({ name, abs: join(RESULTS_DIR, name) }))
     .map(({ name, abs }) => {
       try {
@@ -108,6 +140,7 @@ function findMemCorrectArtifacts() {
   const out = [];
   for (const name of readdirSync(RESULTS_DIR).sort()) {
     if (!name.endsWith(".json") || name.includes("mock000")) continue;
+    if (TRACKED_RESULTS_NAMES && !TRACKED_RESULTS_NAMES.has(name)) continue;
     const abs = join(RESULTS_DIR, name);
     let doc;
     try {
@@ -308,7 +341,7 @@ const LONGMEMEVAL_AXIS_METRICS = [
   { key: "judge_accuracy", label: "judge_accuracy", dir: "higher" },
 ];
 
-function renderComparisonPanel({ x, y, w, h, title, metrics, artifact, tierF }) {
+function renderComparisonPanel({ x, y, w, h, title, metrics, benchmarkId, artifact, tierF }) {
   // Panel geometry
   const padL = 46;
   const padR = 16;
@@ -330,7 +363,10 @@ function renderComparisonPanel({ x, y, w, h, title, metrics, artifact, tierF }) 
     ...THIRD_PARTY.map((tp) => ({
       ...tp,
       label: `${tp.label}\n(#${tp.blocksOn.replace("#", "")})`,
-      source: null,
+      // Auto-upgrade: when a #1747 recall-adapter run lands an artifact whose
+      // system.name matches the adapter, real bars render here. Until then the
+      // column stays an explicit DATA-PENDING placeholder (thread #2).
+      source: findArtifact({ benchmarkId, tier: "local", systemName: tp.key }),
     })),
   ];
   const groupW = plotW / metrics.length;
@@ -455,6 +491,7 @@ function figure1() {
     h: panelH,
     title: "LoCoMo (locomo-10, 1986 QA)",
     metrics: LOCOMO_AXIS_METRICS,
+    benchmarkId: "locomo",
     artifact: locomo,
     tierF: locomoF,
   });
@@ -465,6 +502,7 @@ function figure1() {
     h: panelH,
     title: "LongMemEval (oracle, 500 Q)",
     metrics: LONGMEMEVAL_AXIS_METRICS,
+    benchmarkId: "longmemeval",
     artifact: longmemeval,
     tierF: longmemevalF,
   });

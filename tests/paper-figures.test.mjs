@@ -58,9 +58,35 @@ function loadJson(p) {
 
 // ─── Helpers: find the real (non-mock) committed artifacts ────────────────
 
+// Basenames git-tracked under the committed results dir. The self-hosted CI
+// runner accumulates UNTRACKED artifacts there (the dir is gitignored); both
+// the generator and these assertions must ignore them or the byte-identical
+// regeneration test fails in CI only. `null` means git unavailable / nothing
+// tracked → no filtering (defensive).
+function trackedResultsNames() {
+  try {
+    const res = spawnSync("git", ["ls-files", "docs/benchmarks/results"], {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
+    });
+    if (res.status !== 0) return null;
+    const names = new Set(
+      res.stdout.split("\n").filter(Boolean).map((line) => line.split("/").pop()),
+    );
+    return names.size > 0 ? names : null;
+  } catch {
+    return null;
+  }
+}
+const TRACKED_RESULTS_NAMES = trackedResultsNames();
+function isTrackedResult(name) {
+  return !TRACKED_RESULTS_NAMES || TRACKED_RESULTS_NAMES.has(name);
+}
+
 function findRealArtifact(benchmarkId, tier) {
   for (const name of readdirSync(RESULTS_DIR).sort()) {
     if (!name.endsWith(".json") || name.includes("mock000")) continue;
+    if (!isTrackedResult(name)) continue;
     const doc = loadJson(join(RESULTS_DIR, name));
     if (doc.benchmarkId === benchmarkId && (!tier || doc.tier === tier)) {
       return { name, doc };
@@ -235,10 +261,15 @@ test("Figure 2: renders all 8 MemCorrect metrics with direction + adapter placeh
 });
 
 test("Figure 2: with no committed memcorrect artifact, every adapter bar is DATA-PENDING", () => {
+  // Only git-tracked artifacts count (mirror the generator) and accept both
+  // the flat published shape (benchmarkId) and the nested BenchmarkResult
+  // shape (meta.benchmark) the MemCorrect runner emits.
   const real = readdirSync(RESULTS_DIR).some((n) => {
     if (!n.endsWith(".json") || n.includes("mock000")) return false;
+    if (!isTrackedResult(n)) return false;
     try {
-      return loadJson(join(RESULTS_DIR, n)).benchmarkId === "memcorrect-v1";
+      const doc = loadJson(join(RESULTS_DIR, n));
+      return doc.benchmarkId === "memcorrect-v1" || doc?.meta?.benchmark === "memcorrect-v1";
     } catch {
       return false;
     }
