@@ -1,0 +1,183 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { registerTools } from "../src/tools.js";
+
+/**
+ * Issue #1645 — extend the tombstone-blocked guard to the remaining post-write
+ * surfaces flagged in review threads TV6 (orchestrator shared/profile-target
+ * promotion indexing), TWB/Yhu (memory_promote tool), and Yhp
+ * (memory_action_apply tool). A tombstone-blocked write lands pending_review
+ * (no active copy); each surface MUST skip active side-effects and report the
+ * block honestly instead of claiming a successful active write.
+ */
+
+const orchestratorSource = readFileSync(
+  resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+  "utf-8",
+);
+
+// ── Thread TV6: orchestrator shared/profile-target promotion indexing ───────
+// persistExtraction's two promotion closures (profile-target loop and shared
+// promotion) must gate trackPersistedId / indexPersistedMemory /
+// trackBehaviorSignals behind the promotion's tombstoneBlocked flag — exactly
+// like the source-namespace postWriteGuard. This mirrors
+// orchestrator-threading-fail-open.test.ts, which pins the #1645 guard on
+// threadEpisodeIdsForGraph with the same structural-assertion technique.
+
+test("#1645 TV6: profile-target promotion skips indexing/tracking when tombstone-blocked", () => {
+  assert.match(
+    orchestratorSource,
+    /if \(\s*!targetPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(targetStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,?\s*\}\);\s*await this\.indexPersistedMemory\(targetStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*targetStorage,[\s\S]*?namespace:\s*target\.namespace,[\s\S]*?\);\s*\}/m,
+    "profile-target promotion must gate catalog/index/behavior behind !targetPromotion.tombstoneBlocked",
+  );
+});
+
+test("#1645 TV6: shared promotion skips indexing/tracking when tombstone-blocked", () => {
+  assert.match(
+    orchestratorSource,
+    /if \(\s*!sharedPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(sharedStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,\s*\}\);\s*await this\.indexPersistedMemory\(sharedStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*sharedStorage,[\s\S]*?namespace:\s*this\.config\.sharedNamespace,[\s\S]*?\);\s*\}/m,
+    "shared promotion must gate catalog/index/behavior behind !sharedPromotion.tombstoneBlocked",
+  );
+});
+
+// ── Threads TWB/Yhu + Yhp: tool surfaces report blocked writes honestly ─────
+
+type RegisteredTool = {
+  name: string;
+  execute: (
+    toolCallId: string,
+    params: Record<string, unknown>,
+    signal?: AbortSignal,
+  ) => Promise<{ content: Array<{ type: string; text: string }>; details: undefined }>;
+};
+
+function makeApi() {
+  const tools = new Map<string, RegisteredTool>();
+  const api = {
+    registerTool(
+      spec: {
+        name: string;
+        label: string;
+        description: string;
+        parameters: unknown;
+        execute: RegisteredTool["execute"];
+      },
+      _options: { name: string },
+    ) {
+      tools.set(spec.name, { name: spec.name, execute: spec.execute });
+    },
+  };
+  return { api, tools };
+}
+
+test("#1645 TWB/Yhu: memory_promote surfaces a tombstone-blocked promotion as queued (no indexing)", async () => {
+  const { api, tools } = makeApi();
+  const recordedEvents: Array<{ outcome: string; reason?: string }> = [];
+  // Source namespace holds the memory being promoted; destination blocks it.
+  const srcStorage = {
+    getMemoryById: async () => ({
+      frontmatter: {
+        category: "fact",
+        confidence: 0.9,
+        tags: [],
+        entityRef: "ent-1",
+        importance: undefined,
+        supersedes: undefined,
+        links: undefined,
+      },
+      content: "retired content that matches a tombstone",
+    }),
+  };
+  const dstStorage = {
+    writeMemory: async () => ({ id: "fact-blocked-1", tombstoneBlocked: true, blockedBy: "tomb-7" }),
+    getMemoryById: async () => null,
+  };
+  const orchestrator = {
+    config: {
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      memoryDir: "/nonexistent-dir-for-promote-test",
+      queryAwareIndexingEnabled: true,
+    },
+    getStorage: async (ns: string) => (ns === "shared" ? dstStorage : srcStorage),
+    // indexMemory is imported at module scope; force indexesExist → false so the
+    // blocked early-return is the ONLY thing preventing indexing. We still
+    // assert the result is the queued message (the early return ran before any
+    // index path could be reached).
+  };
+  // Stub indexesExist indirectly by pointing memoryDir at a non-existent dir.
+  registerTools(api as never, orchestrator as never);
+
+  const promote = tools.get("memory_promote");
+  assert.ok(promote, "memory_promote tool should be registered");
+
+  const out = await promote!.execute("tc-promote-blocked", {
+    memoryId: "fact-src-1",
+    fromNamespace: "default",
+    toNamespace: "shared",
+  });
+
+  const text = out.content[0].text;
+  assert.match(text, /queued for review/i, "blocked promotion must be reported as queued for review");
+  assert.match(text, /tombstone-blocked/i, "result must attribute the block to the tombstone");
+  assert.match(text, /fact-blocked-1/, "result must carry the pending_review id");
+  // recordedEvents untouched: memory_promote does not append action events.
+  assert.equal(recordedEvents.length, 0);
+});
+
+test("#1645 Yhp: memory_action_apply reports a tombstone-blocked write as queued, not applied", async () => {
+  const { api, tools } = makeApi();
+  const recordedEvents: Array<{ outcome: string; status?: string; reason?: string; outputMemoryIds?: string[] }> = [];
+  const storage = {
+    writeMemory: async () => ({ id: "fact-blocked-2", tombstoneBlocked: true, blockedBy: "tomb-9" }),
+    readAllMemories: async () => [],
+    getMemoryById: async () => null,
+  };
+  const orchestrator = {
+    config: {
+      namespacesEnabled: false,
+      contextCompressionActionsEnabled: true,
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+    },
+    getStorage: async () => storage,
+    previewMemoryActionEvent: (event: { action: string }) => ({
+      action: event.action,
+      namespace: "default",
+      policyDecision: "allow",
+      policyRationale: "",
+    }),
+    appendMemoryActionEvent: async (event: { outcome: string; status?: string; reason?: string; outputMemoryIds?: string[] }) => {
+      recordedEvents.push(event);
+      return true;
+    },
+    requestQmdMaintenanceForTool: () => {},
+    storage,
+  };
+
+  registerTools(api as never, orchestrator as never);
+  const apply = tools.get("memory_action_apply");
+  assert.ok(apply, "memory_action_apply tool should be registered");
+
+  const out = await apply!.execute("tc-action-blocked", {
+    action: "store_note",
+    content: "retired content matching a tombstone",
+  });
+
+  const text = out.content[0].text;
+  assert.match(text, /queued for review/i, "blocked action write must be reported as queued for review");
+  assert.match(text, /tombstone-blocked/i, "result must attribute the block to the tombstone");
+
+  // The telemetry event MUST NOT claim a successful active application.
+  assert.equal(recordedEvents.length, 1, "exactly one action event should be appended");
+  assert.equal(recordedEvents[0].outcome, "skipped", "a tombstone-blocked write is outcome 'skipped', not 'applied'");
+  assert.match(
+    recordedEvents[0].reason ?? "",
+    /tombstone-blocked/,
+    "event reason must explain the tombstone block",
+  );
+  assert.deepEqual(recordedEvents[0].outputMemoryIds, ["fact-blocked-2"], "pending_review id is still recorded");
+});

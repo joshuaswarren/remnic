@@ -14363,19 +14363,23 @@ export class Orchestrator {
               );
             }
           }
-          trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false });
-          await this.indexPersistedMemory(targetStorage, promotedId);
-          trackBehaviorSignals(
-            targetStorage,
-            buildBehaviorSignalsForMemory({
-              memoryId: promotedId,
-              category: options.category as any,
-              content: options.content,
-              namespace: target.namespace,
-              confidence: options.confidence,
-              source: "extraction",
-            }),
-          );
+          // #1645 TV6: a tombstone-blocked promotion is pending_review (no
+          // active copy) — skip catalog/index/behavior like postWriteGuard.
+          if (!targetPromotion.tombstoneBlocked) {
+            trackPersistedId(targetStorage, promotedId, { includeReturnedIds: false });
+            await this.indexPersistedMemory(targetStorage, promotedId);
+            trackBehaviorSignals(
+              targetStorage,
+              buildBehaviorSignalsForMemory({
+                memoryId: promotedId,
+                category: options.category as any,
+                content: options.content,
+                namespace: target.namespace,
+                confidence: options.confidence,
+                source: "extraction",
+              }),
+            );
+          }
         } catch (err) {
           log.warn(
             `persistExtraction: ${target.target} promotion failed open for ${options.sourceMemoryId}: ${err}`,
@@ -14701,21 +14705,24 @@ export class Orchestrator {
         // the same promotion pass. The hot-path source-namespace touch uses a
         // different storage dir, so this does not double-count the source.
         // Best-effort and failure-tolerant — it must never crash the promotion.
-        trackPersistedId(sharedStorage, promotedId, {
-          includeReturnedIds: false,
-        });
-        await this.indexPersistedMemory(sharedStorage, promotedId);
-        trackBehaviorSignals(
-          sharedStorage,
-          buildBehaviorSignalsForMemory({
-            memoryId: promotedId,
-            category: options.category as any,
-            content: options.content,
-            namespace: this.config.sharedNamespace,
-            confidence: options.confidence,
-            source: "extraction",
-          }),
-        );
+        // #1645 TV6: same guard as the profile-target promotion above.
+        if (!sharedPromotion.tombstoneBlocked) {
+          trackPersistedId(sharedStorage, promotedId, {
+            includeReturnedIds: false,
+          });
+          await this.indexPersistedMemory(sharedStorage, promotedId);
+          trackBehaviorSignals(
+            sharedStorage,
+            buildBehaviorSignalsForMemory({
+              memoryId: promotedId,
+              category: options.category as any,
+              content: options.content,
+              namespace: this.config.sharedNamespace,
+              confidence: options.confidence,
+              source: "extraction",
+            }),
+          );
+        }
       } catch (err) {
         log.warn(
           `persistExtraction: shared promotion failed open for ${options.sourceMemoryId}: ${err}`,

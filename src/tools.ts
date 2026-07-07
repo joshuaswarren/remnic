@@ -1703,25 +1703,39 @@ Best for:
 
         const outputMemoryIds: string[] = [];
         let appliedMessage = "";
+        // #1645 (review thread Yhp): set when a write landed tombstone-blocked
+        // (pending_review) so the post-switch telemetry reports it as queued for
+        // review rather than a successful active write.
+        let queuedForReview = false;
 
         switch (action) {
           case "store_episode": {
-            const { id: createdId } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
+            const { id: createdId, tombstoneBlocked } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
               actor: "tool.memory_action_apply",
               source: "memory_action_apply",
               memoryKind: "episode",
             });
             outputMemoryIds.push(createdId);
-            appliedMessage = `Applied memory action: action=${action}, memoryId=${createdId}, namespace=${ns}.`;
+            if (tombstoneBlocked) {
+              queuedForReview = true;
+              appliedMessage = `Memory action queued for review: action=${action}, memoryId=${createdId}, namespace=${ns} (tombstone-blocked — no active copy created).`;
+            } else {
+              appliedMessage = `Applied memory action: action=${action}, memoryId=${createdId}, namespace=${ns}.`;
+            }
             break;
           }
           case "store_note": {
-            const { id: createdId } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
+            const { id: createdId, tombstoneBlocked } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
               actor: "tool.memory_action_apply",
               source: "memory_action_apply",
             });
             outputMemoryIds.push(createdId);
-            appliedMessage = `Applied memory action: action=${action}, memoryId=${createdId}, namespace=${ns}.`;
+            if (tombstoneBlocked) {
+              queuedForReview = true;
+              appliedMessage = `Memory action queued for review: action=${action}, memoryId=${createdId}, namespace=${ns} (tombstone-blocked — no active copy created).`;
+            } else {
+              appliedMessage = `Applied memory action: action=${action}, memoryId=${createdId}, namespace=${ns}.`;
+            }
             break;
           }
           case "update_note": {
@@ -1765,13 +1779,18 @@ Best for:
             break;
           }
           case "summarize_node": {
-            const { id: createdId } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
+            const { id: createdId, tombstoneBlocked } = await storage.writeMemory(normalizedCategory ?? "fact", contentValue!, {
               actor: "tool.memory_action_apply",
               source: "memory_action_apply",
               sourceMemoryId: memoryIdValue,
             });
             outputMemoryIds.push(createdId);
-            appliedMessage = `Applied memory action: action=${action}, memoryId=${createdId}, namespace=${ns}.`;
+            if (tombstoneBlocked) {
+              queuedForReview = true;
+              appliedMessage = `Memory action queued for review: action=${action}, memoryId=${createdId}, namespace=${ns} (tombstone-blocked — no active copy created).`;
+            } else {
+              appliedMessage = `Applied memory action: action=${action}, memoryId=${createdId}, namespace=${ns}.`;
+            }
             break;
           }
           case "discard": {
@@ -1839,10 +1858,17 @@ Best for:
         orchestrator.requestQmdMaintenanceForTool(`memory_action_apply.${action}`);
         const wrote = await orchestrator.appendMemoryActionEvent({
           ...structuredEvent,
-          outcome: "applied",
+          // #1645 (review thread Yhp): a tombstone-blocked write is NOT an
+          // active application — record it as skipped with the blocked id so an
+          // agent action that re-stores retired content is not reported as a
+          // successful active write (recall will not use it).
+          outcome: queuedForReview ? "skipped" : "applied",
           status: "applied",
           dryRun: false,
           outputMemoryIds,
+          ...(queuedForReview
+            ? { reason: "tombstone-blocked: write landed pending_review, no active copy created" }
+            : {}),
         });
         if (!wrote) {
           return toolResult(`${appliedMessage} Telemetry write failed (fail-open).`);
@@ -2169,7 +2195,7 @@ Best for:
         }
 
         const dst = await orchestrator.getStorage(dstNs);
-        const { id: newId } = await dst.writeMemory(mem.frontmatter.category, mem.content, {
+        const { id: newId, tombstoneBlocked } = await dst.writeMemory(mem.frontmatter.category, mem.content, {
           confidence: mem.frontmatter.confidence,
           tags: Array.from(new Set([...(mem.frontmatter.tags ?? []), "promoted", `promotedFrom:${srcNs}:${memoryId}`, ...(note ? [`note:${note}`] : [])])),
           entityRef: mem.frontmatter.entityRef,
@@ -2178,6 +2204,16 @@ Best for:
           supersedes: mem.frontmatter.supersedes,
           links: mem.frontmatter.links,
         });
+
+        // #1645 (review threads TWB/Yhu): if the destination namespace's
+        // tombstone blocked this promotion, the copy landed pending_review (no
+        // active promoted memory). Surface that honestly and SKIP query-aware
+        // indexing so the blocked copy is not embedded as if it were active.
+        if (tombstoneBlocked) {
+          return toolResult(
+            `Promotion of ${srcNs}:${memoryId} → ${dstNs}:${newId} is queued for review (tombstone-blocked): no active promoted copy was created.`,
+          );
+        }
 
         // Update temporal + tag indexes for the promoted copy (v8.1).
         // Same guard as memory_store: skip if indexes don't exist yet to avoid
