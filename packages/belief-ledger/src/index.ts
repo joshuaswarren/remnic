@@ -10,6 +10,7 @@ export {
 } from "./llm.js";
 export {
   RemnicLedgerStore,
+  RemnicLedgerTombstoneBlockedError,
   type RemnicLedgerStoreOptions,
 } from "./remnic-store.js";
 export {

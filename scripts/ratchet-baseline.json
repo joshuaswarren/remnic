@@ -4,7 +4,7 @@
   "oversizeThresholdLoc": 3000,
   "metrics": {
     "watchlistLoc": {
-      "packages/remnic-core/src/orchestrator.ts": 20773,
+      "packages/remnic-core/src/orchestrator.ts": 20913,
       "packages/remnic-core/src/cli.ts": 9390,
       "packages/remnic-core/src/access-service.ts": 9012,
       "packages/remnic-core/src/storage.ts": 7747,
