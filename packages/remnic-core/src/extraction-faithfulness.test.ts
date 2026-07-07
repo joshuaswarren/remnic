@@ -1554,3 +1554,22 @@ test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback does NOT 
     assert.equal(result.results[0].verdict, "contradicted", "valid local verdict is used");
   }
 });
+
+test('parseConfig: extractionFaithfulnessLocalParseFallback coerces CLI string "true" (#1700 review — coerceBool parity)', () => {
+  // A CLI override reaches the parser as the string "true"; === true would
+  // silently leave the flag disabled. coerceBool must turn it on (gotcha 36).
+  const onByString = parseConfig({
+    extractionFaithfulnessLocalParseFallback: "true",
+  });
+  assert.equal(onByString.extractionFaithfulnessLocalParseFallback, true);
+  const onByBool = parseConfig({
+    extractionFaithfulnessLocalParseFallback: true,
+  });
+  assert.equal(onByBool.extractionFaithfulnessLocalParseFallback, true);
+  const offDefault = parseConfig({});
+  assert.equal(offDefault.extractionFaithfulnessLocalParseFallback, false);
+  const offByString = parseConfig({
+    extractionFaithfulnessLocalParseFallback: "false",
+  });
+  assert.equal(offByString.extractionFaithfulnessLocalParseFallback, false);
+});

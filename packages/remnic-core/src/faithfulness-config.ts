@@ -17,7 +17,7 @@
  * `config.ts` spread the result in one line.
  */
 
-import { coerceNumber } from "./connectors/coerce.js";
+import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 
 /**
  * Parse a value as a strict integer >= `min`, throwing on anything else.
@@ -111,7 +111,13 @@ export function parseFaithfulnessGateConfig(cfg: Record<string, unknown>): {
   // garbage local response surfaces malformed_output so a misconfigured
   // endpoint is visible); true falls back to the configured chain on local
   // parse failure. Byte-identical pre-feature when unset (rule 39).
-  const extractionFaithfulnessLocalParseFallback = cfg.extractionFaithfulnessLocalParseFallback === true;
+  // coerceBool for CLI-string parity: a CLI override like
+  // --config extractionFaithfulnessLocalParseFallback=true reaches here as the
+  // string "true"; === true would silently leave the flag disabled. Matches
+  // every other CLI-settable boolean in config.ts (gotcha 36, codex P2
+  // PRRT_kwDORJXyws6O6gDQ / cursor BUGBOT e273b22c).
+  const extractionFaithfulnessLocalParseFallback =
+    coerceBool(cfg.extractionFaithfulnessLocalParseFallback) === true;
 
   return {
     extractionFaithfulnessGate,
