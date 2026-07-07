@@ -2854,35 +2854,30 @@ export class Orchestrator {
       // #1707 thread 2 — per-fact-anchored start bound. A re-extracted
       // duplicate whose event time resolves a real start bound must carry
       // that anchor onto the existing copy so as-of recall uses the corrected
-      // valid_at instead of the stale batch-anchored value. Only an EXTRACTED
-      // bound corrects the copy; an "assumed" bound is just the ingestion
-      // anchor (no correction).
+      // valid_at instead of a stale batch-anchored value. Only an EXTRACTED
+      // bound corrects; an "assumed" bound is just the ingestion anchor.
       //
-      // No-clobber: a copy's START is per-fact-extracted only when
-      // eventTimeSource === "extracted" AND valid_at is a real per-fact start
-      // (differs from observedAt, the ingestion anchor). An END-only extraction
-      // ("through 2026") sets eventTimeSource = "extracted" but copies
-      // valid_at from observedAt (assumed start) — so its valid_at is still
-      // batch-anchored and a later extracted validFrom MUST still correct it
-      // (review codex PRRT_Ov68oA). Don't let end-only provenance block the
-      // start correction.
-      const startIsPerFactExtracted =
-        fm.eventTimeSource === "extracted" &&
-        fm.valid_at !== undefined &&
-        fm.valid_at.length > 0 &&
-        fm.valid_at !== fm.observedAt;
+      // No-clobber via equality, not provenance inference: exact-content dedup
+      // re-extracts the SAME event-time expression, which #1670 per-fact
+      // anchoring resolves deterministically to the same validFrom — so for
+      // stable content the incoming validFrom EQUALS the copy's valid_at and
+      // we skip the redundant write (the only no-clobber that holds without a
+      // fragile provenance heuristic — review codex PRRT_Ov7LKC). When they
+      // differ (a prior batch/assumed anchor, end-only assumed start, or a
+      // non-deterministic re-resolution), the extracted validFrom is the
+      // authoritative correction and overwrites. The eventTimeSource upgrade
+      // below records that the start is now extracted-anchored.
       if (
         bounds.validFrom &&
         bounds.eventTimeSource === "extracted" &&
-        !startIsPerFactExtracted
+        fm.valid_at !== bounds.validFrom
       ) {
         patch.valid_at = bounds.validFrom;
         // Mark the copy extracted-anchored in the SAME patch so its provenance
         // reflects the correction (review cursor PRRT_OvHM / codex PRRT_OvHxVD):
         // without this, a copy upgraded from "assumed" would keep "assumed"
-        // provenance while carrying an extracted start, so a later re-extraction
-        // would treat it as still batch-anchored and overwrite valid_at again.
-        // (The earlier eventTimeSource block only fills an EMPTY source.)
+        // provenance while carrying an extracted start. (The earlier
+        // eventTimeSource block only fills an EMPTY source.)
         if (fm.eventTimeSource !== "extracted") {
           patch.eventTimeSource = "extracted";
         }
@@ -14813,13 +14808,14 @@ export class Orchestrator {
         Object.keys(args.structuredAttributes).length > 0
           ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs(args.structuredAttributes)}]`
           : sanitizedBase.text;
-      // Profile targets (mirrors promoteMemoryToProfileTargets). Only resolve
-      // when this category/confidence would auto-promote; otherwise there are
-      // no promoted profile copies to backfill.
-      if (
-        scopeProfileWritePlan &&
-        profileAutoPromotionAllows(args.category, args.confidence)
-      ) {
+      // Profile targets. NOTE: we do NOT gate on profileAutoPromotionAllows —
+      // a promoted profile copy may exist from an EARLIER extraction with
+      // higher confidence or older auto-promote settings, so the current
+      // duplicate's confidence must not skip backfilling an already-existing
+      // promoted copy (review codex PRRT_Ov7LKF). The helper no-ops when no
+      // matching copy is found, so resolving all configured auto-promote
+      // targets is safe.
+      if (scopeProfileWritePlan) {
         const autoTargets = new Set(
           scopeProfileWritePlan.profile.autoPromote.targets,
         );
@@ -14850,28 +14846,26 @@ export class Orchestrator {
           }
         }
       }
-      // Shared target (mirrors promoteMemoryToShared). Only when this
-      // category/confidence would promote to shared.
-      if (
-        shouldPromoteToShared(args.sourceStorage, args.category, args.confidence)
-      ) {
-        try {
-          const sharedStorage = await this.storageRouter.storageFor(
-            this.config.sharedNamespace,
-          );
-          if (sharedStorage.dir !== args.sourceStorage.dir) {
-            await this.backfillTemporalBoundsOnDedupHit(
-              sharedStorage,
-              dedupContent,
-              args.bounds,
-              args.entityRef,
-            );
-          }
-        } catch (err) {
-          log.warn(
-            `bitemporal-backfill: shared-target backfill failed open: ${err}`,
+      // Shared target. Same rationale as profile: a shared copy may exist from
+      // an earlier extraction regardless of the current confidence, so do not
+      // gate on shouldPromoteToShared (review codex PRRT_Ov7LKF). The helper
+      // no-ops when no matching shared copy is found.
+      try {
+        const sharedStorage = await this.storageRouter.storageFor(
+          this.config.sharedNamespace,
+        );
+        if (sharedStorage.dir !== args.sourceStorage.dir) {
+          await this.backfillTemporalBoundsOnDedupHit(
+            sharedStorage,
+            dedupContent,
+            args.bounds,
+            args.entityRef,
           );
         }
+      } catch (err) {
+        log.warn(
+          `bitemporal-backfill: shared-target backfill failed open: ${err}`,
+        );
       }
     };
 

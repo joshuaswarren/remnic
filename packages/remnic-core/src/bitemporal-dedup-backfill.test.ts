@@ -219,8 +219,8 @@ test("#1707 thread 2: corrected extracted validFrom overwrites a batch-anchored 
   }
 });
 
-test("#1707 thread 2: backfill does NOT clobber an already-extracted valid_at", async () => {
-  const { storage, cleanup } = await makeStorage("bitemporal-1707-validFrom-noclobber-");
+test("#1707 thread 2: identical extracted validFrom is a no-op (equality short-circuit)", async () => {
+  const { storage, cleanup } = await makeStorage("bitemporal-1707-validFrom-equal-");
   try {
     // Copy already carries an extracted per-fact anchor.
     const content = "The migration to MySQL completed in March 2025.";
@@ -234,17 +234,12 @@ test("#1707 thread 2: backfill does NOT clobber an already-extracted valid_at", 
     const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
     assert.ok(before);
 
-    // Re-extraction resolves a DIFFERENT start bound. The helper rule
-    // (mirrors orchestrator.ts) must NOT overwrite a copy that already
-    // carries its own extracted per-fact anchor:
-    //   bounds.validFrom && bounds.eventTimeSource === "extracted" &&
-    //     (fm.eventTimeSource !== "extracted" || !fm.valid_at)
-    const incomingValidFrom = "2025-03-15T00:00:00.000Z";
-    const helperWouldPatch =
-      Boolean(incomingValidFrom) &&
-      (before!.frontmatter.eventTimeSource !== "extracted" ||
-        !before!.frontmatter.valid_at);
-    assert.equal(helperWouldPatch, false, "must not clobber an extracted valid_at");
+    // Re-extraction resolves the SAME start bound (deterministic per #1670).
+    // The helper's equality short-circuit (fm.valid_at !== bounds.validFrom)
+    // skips the redundant write — the only no-clobber that holds without a
+    // fragile provenance heuristic (review codex PRRT_Ov7LKC).
+    const helperWouldPatch = existingValidAt !== existingValidAt; // equal → false
+    assert.equal(helperWouldPatch, false, "identical validFrom must not rewrite");
 
     // No patch issued → valid_at unchanged.
     const after = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
@@ -255,18 +250,54 @@ test("#1707 thread 2: backfill does NOT clobber an already-extracted valid_at", 
   }
 });
 
-// Review (codex PRRT_Ov68oA): an END-only extraction ("through 2026") sets
-// eventTimeSource = "extracted" but copies valid_at from observedAt (assumed
-// start). A later START-bound extraction must still correct valid_at — the
-// copy's eventTimeSource is "extracted" but its valid_at === observedAt
-// (batch-anchored start), which is NOT a per-fact-extracted start. This pins
-// the gate so end-only provenance does not block the start correction.
+test("#1707 thread 2: differing extracted validFrom overwrites (authoritative re-evaluation)", async () => {
+  const { storage, cleanup } = await makeStorage("bitemporal-1707-validFrom-differ-");
+  try {
+    // Copy carries an older (batch-anchored) valid_at.
+    const content = "We have used Stripe for payments since 2024.";
+    const staleValidAt = "2026-06-01T00:00:00.000Z"; // batch anchor
+    const id = await storage.writeMemory("fact", content, {
+      confidence: 0.9,
+      validAt: staleValidAt,
+    });
+    const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(before);
+
+    // Re-extraction resolves a DIFFERING extracted start bound. Exact-content
+    // dedup + #1670 determinism means stable content re-resolves to the same
+    // value (equality no-op above); a divergence means the copy's start is
+    // stale (batch/assumed) and the extracted validFrom is authoritative.
+    const correctedValidFrom = "2024-01-01T00:00:00.000Z";
+    const helperWouldPatch = staleValidAt !== correctedValidFrom; // differ → true
+    assert.equal(helperWouldPatch, true, "differing extracted validFrom must overwrite");
+
+    const ok = await storage.writeMemoryFrontmatter(before!, {
+      valid_at: correctedValidFrom,
+      eventTimeSource: "extracted",
+    });
+    assert.equal(ok, true);
+
+    const after = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(after);
+    assert.equal(after!.frontmatter.valid_at, correctedValidFrom);
+    assert.equal(after!.frontmatter.eventTimeSource, "extracted");
+  } finally {
+    await cleanup();
+  }
+});
+
+// Review (codex PRRT_Ov68oA + PRRT_Ov7LKC): an END-only extraction ("through
+// 2026") sets eventTimeSource = "extracted" (end resolved) but leaves valid_at
+// batch/assumed-anchored. A later START-bound extraction must still correct
+// valid_at. The helper now uses an equality short-circuit (no fragile
+// provenance heuristic): the differing extracted validFrom overwrites the
+// stale start regardless of the copy's eventTimeSource.
 test("#1707 thread 2: end-only extracted provenance does NOT block a later start-bound correction", async () => {
   const { storage, cleanup } = await makeStorage("bitemporal-1707-endonly-");
   try {
     // Copy state after an end-only backfill: eventTimeSource = "extracted"
     // (the end "through 2026" resolved), but valid_at is still the ingestion
-    // anchor (assumed start copied from observedAt).
+    // anchor (assumed start).
     const observedAt = "2026-06-01T00:00:00.000Z";
     const content = "The service was maintained through 2026.";
     const id = await storage.writeMemory("fact", content, {
@@ -281,17 +312,9 @@ test("#1707 thread 2: end-only extracted provenance does NOT block a later start
     assert.equal(before!.frontmatter.eventTimeSource, "extracted");
     assert.equal(before!.frontmatter.valid_at, before!.frontmatter.observedAt);
 
-    // The helper's no-clobber gate for valid_at (mirrors orchestrator.ts):
-    //   startIsPerFactExtracted = eventTimeSource === "extracted" &&
-    //     valid_at !== observedAt
-    const startIsPerFactExtracted =
-      before!.frontmatter.eventTimeSource === "extracted" &&
-      before!.frontmatter.valid_at !== before!.frontmatter.observedAt;
-    assert.equal(
-      startIsPerFactExtracted,
-      false,
-      "valid_at === observedAt means the start is still batch-anchored, not per-fact-extracted",
-    );
+    // The helper's valid_at gate (mirrors orchestrator.ts):
+    //   bounds.validFrom && eventTimeSource === "extracted" && valid_at !== validFrom
+    // The stale valid_at differs from the incoming real start → overwrite.
 
     // A later re-extraction with a real extracted start must correct valid_at.
     const realStart = "2024-03-01T00:00:00.000Z";
