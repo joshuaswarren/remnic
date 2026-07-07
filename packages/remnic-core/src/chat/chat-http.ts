@@ -303,12 +303,17 @@ export async function handleChatEventsSSE(
   // out before touching the response (prevents "headers after end").
   if (closed) return;
   if (!session) {
+    // No SSE stream is established — release the server stop() registration
+    // alongside the subscription so sseCleanupFns does not retain a stale
+    // callback for this JSON error response (cursor Medium: error-path leak).
     unsubscribe();
+    unregisterServerCleanup();
     respondJson(res, 404, { error: "chat_session_not_found", code: "chat_session_not_found" });
     return;
   }
   if (!sessionBelongsToPrincipal(session, principal)) {
     unsubscribe();
+    unregisterServerCleanup();
     respondJson(res, 403, { error: "access_denied", code: "access_denied" });
     return;
   }
