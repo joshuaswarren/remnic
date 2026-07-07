@@ -18,9 +18,10 @@
  */
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { statSync } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 
 import type { PluginConfig } from "../types.js";
+import { expandTildePath } from "../utils/path.js";
 import { isCodingGraphInstalled } from "./optional-coding-graph.js";
 import {
   describeStructuralProviderStatus,
@@ -77,7 +78,10 @@ const DEFAULT_SYMBOLS_SUBCOMMAND = "symbols-for-diff";
 export function createSubprocessStructuralProvider(
   options: SubprocessProviderOptions,
 ): StructuralContextProvider {
-  const command = options.command.trim();
+  // Rule 17 — expand a leading ~ so a home-relative binary path
+  // (e.g. ~/bin/cbm) resolves instead of degrading to unavailable.
+  // Mirrors the codegraph-runtime.ts precedent for operator paths.
+  const command = expandTildePath(options.command.trim());
   const extraArgs = options.args ?? [];
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const symbolsSubcommand = options.symbolsSubcommand ?? DEFAULT_SYMBOLS_SUBCOMMAND;
@@ -96,14 +100,29 @@ export function createSubprocessStructuralProvider(
     // a missing/renamed binary gets a DISTINCT `provider_unavailable` code,
     // never a silent empty result.
     let statOk = false;
+    let notExecutable = false;
     try {
       statOk = statSync(command).isFile();
     } catch {
       statOk = false;
     }
-    probeState = statOk
-      ? { available: true }
-      : { available: false, detail: `binary not found: ${command}` };
+    // P2 hardening: a non-executable regular file would report available
+    // here but fail later with EACCES/provider_error. On POSIX, enforce
+    // executable access so `remnic doctor` surfaces the real state. Windows
+    // has no reliable exec bit (Node X_OK is always true there), so the
+    // check is POSIX-only.
+    if (statOk && process.platform !== "win32") {
+      try {
+        accessSync(command, constants.X_OK);
+      } catch {
+        notExecutable = true;
+      }
+    }
+    probeState = !statOk
+      ? { available: false, detail: `binary not found: ${command}` }
+      : notExecutable
+        ? { available: false, detail: `binary not executable: ${command}` }
+        : { available: true };
     return probeState;
   }
 

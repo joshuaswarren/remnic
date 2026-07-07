@@ -17,7 +17,9 @@
  */
 import assert from "node:assert/strict";
 import path from "node:path";
-import { test } from "node:test";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { after, before, test } from "node:test";
 
 import {
   createSubprocessStructuralProvider,
@@ -26,9 +28,36 @@ import {
 } from "./structural-subprocess-provider.js";
 import type { PluginConfig } from "../types.js";
 
-const REPO_ROOT = "/Users/joshuawarren/src/remnic-wt-1548prov";
-const EXISTING_FILE = path.join(REPO_ROOT, "package.json");
-const MISSING_FILE = path.join(REPO_ROOT, "definitely-not-a-binary-xyz");
+// Machine-independent fixture paths: a temp dir is created in `before`
+// with a real (executable) dummy binary and a path that never exists. This
+// keeps the probe tests CI-portable (no hard-coded checkout path) and follows
+// the synthetic-test-data-only policy.
+let REPO_ROOT = "";
+let EXISTING_FILE = "";
+let MISSING_FILE = "";
+let NON_EXECUTABLE_FILE = "";
+let tempDir = "";
+
+before(() => {
+  tempDir = mkdtempSync(path.join(tmpdir(), "structural-provider-"));
+  REPO_ROOT = tempDir;
+  EXISTING_FILE = path.join(tempDir, "existing-bin");
+  // Mode 0o755 so the POSIX executable-access probe reports available.
+  writeFileSync(EXISTING_FILE, "#!/bin/sh\necho ok\n", { mode: 0o755 });
+  MISSING_FILE = path.join(tempDir, "definitely-missing-bin");
+  // A regular file WITHOUT the executable bit — used to assert the probe
+  // rejects non-executable files on POSIX (P2 hardening).
+  NON_EXECUTABLE_FILE = path.join(tempDir, "non-executable-bin");
+  writeFileSync(NON_EXECUTABLE_FILE, "not executable", { mode: 0o644 });
+});
+
+after(() => {
+  try {
+    if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+  } catch {
+    // best-effort cleanup
+  }
+});
 
 function configWith(
   codingKnowledge: Partial<PluginConfig["codingKnowledge"]>,
@@ -96,6 +125,29 @@ test("probe: statSync failure is swallowed (never throws)", async () => {
   const provider = createSubprocessStructuralProvider({ command: "/proc/this/does/not/exist/ anywhere" });
   const probe = await provider.probe();
   assert.equal(probe.available, false);
+});
+
+// Skip the executable-bit assertion on Windows (Node X_OK is always true there).
+const execCheckTest = process.platform === "win32" ? test.skip : test;
+execCheckTest("probe: non-executable regular file → unavailable (P2 hardening, POSIX only)", async () => {
+  const provider = createSubprocessStructuralProvider({ command: NON_EXECUTABLE_FILE });
+  const probe = await provider.probe();
+  assert.equal(probe.available, false);
+  assert.match(probe.detail ?? "", /not executable/);
+});
+
+test("probe: tilde-prefixed command is expanded (rule 17)", async () => {
+  // A tilde path pointing at the existing fixture must resolve after
+  // expansion. We point HOME at the temp dir so ~/existing-bin resolves.
+  const previousHome = process.env.HOME;
+  process.env.HOME = tempDir;
+  try {
+    const provider = createSubprocessStructuralProvider({ command: "~/existing-bin" });
+    const probe = await provider.probe();
+    assert.equal(probe.available, true, "tilde must expand so the probe finds the binary");
+  } finally {
+    process.env.HOME = previousHome;
+  }
 });
 
 // ──────────────────────────────────────────────────────────────────────────
