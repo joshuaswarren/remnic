@@ -131,6 +131,9 @@ function renderSyncSummary(summary: WearableSyncSummary): string {
   if (summary.memoriesDemoted > 0) {
     lines.push(`  memories demoted:       ${summary.memoriesDemoted}`);
   }
+  if (summary.memoriesBlocked > 0) {
+    lines.push(`  memories blocked:       ${summary.memoriesBlocked}`);
+  }
   if (summary.nativeMemoriesImported > 0) {
     lines.push(`  native memories queued: ${summary.nativeMemoriesImported}`);
   }

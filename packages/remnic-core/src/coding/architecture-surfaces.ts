@@ -119,6 +119,14 @@ export type ArchitectureSurfaceResponse =
       byteSize: number;
       truncated: boolean;
       buildCode?: string;
+      /**
+       * Present when the refresh was tombstone-blocked (#1579): the new card
+       * content landed pending_review (no active overwrite). Callers/UI surface
+       * this so operators see why the active card didn't update (#1645).
+       */
+      blockedReason?: string;
+      /** The tombstone id that blocked the write, when `blockedReason` is set. */
+      blockedBy?: string;
     };
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -308,22 +316,16 @@ async function architectureRefresh(
       log.warn(
         `coding_architecture/refresh: updateMemory returned false for id=${existing.frontmatter.id} — falling back to writeMemory`,
       );
-      const { id: memoryId } = await storage.writeMemory("fact", cardContent, {
+      const fallbackWrite = await storage.writeMemory("fact", cardContent, {
         confidence: 1.0,
         tags,
         source: "coding-architecture",
         structuredAttributes: { cardKind: ARCHITECTURE_CARD_KIND },
       });
       log.info(
-        `access-write op=coding_architecture/refresh memoryId=${memoryId} (fallback write) byteSize=${buildResult.card.byteSize}`,
+        `access-write op=coding_architecture/refresh memoryId=${fallbackWrite.id} (fallback write) byteSize=${buildResult.card.byteSize}`,
       );
-      return {
-        subcommand: "refresh",
-        refreshed: true,
-        memoryId,
-        byteSize: buildResult.card.byteSize,
-        truncated: buildResult.card.truncated,
-      };
+      return refreshResponse(fallbackWrite, buildResult.card);
     }
     log.info(
       `access-write op=coding_architecture/refresh memoryId=${existing.frontmatter.id} (updated) byteSize=${buildResult.card.byteSize}`,
@@ -338,27 +340,52 @@ async function architectureRefresh(
   }
 
   // First card for this namespace — write a new memory.
-  const { id: memoryId } = await storage.writeMemory("fact", cardContent, {
+  const newWrite = await storage.writeMemory("fact", cardContent, {
     confidence: 1.0,
     tags,
     source: "coding-architecture",
     structuredAttributes: { cardKind: ARCHITECTURE_CARD_KIND },
   });
   log.info(
-    `access-write op=coding_architecture/refresh memoryId=${memoryId} (new) byteSize=${buildResult.card.byteSize}`,
+    `access-write op=coding_architecture/refresh memoryId=${newWrite.id} (new) byteSize=${buildResult.card.byteSize}`,
   );
-  return {
-    subcommand: "refresh",
-    refreshed: true,
-    memoryId,
-    byteSize: buildResult.card.byteSize,
-    truncated: buildResult.card.truncated,
-  };
+  return refreshResponse(newWrite, buildResult.card);
 }
 
 // ──────────────────────────────────────────────────────────────────────────
 // Local helpers
 // ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the refresh response from a write outcome, surfacing a
+ * tombstone block (#1579) as `refreshed:false` + a blocked reason so
+ * callers/UI see why the active card didn't update (#1645). Mirrors the
+ * guard pattern in wearables/memory-gen.ts: a blocked write lands
+ * pending_review (no active copy) and must NOT report `refreshed:true`.
+ */
+function refreshResponse(
+  writeResult: MemoryWriteResult,
+  card: { byteSize: number; truncated: boolean },
+): ArchitectureSurfaceResponse {
+  if (writeResult.tombstoneBlocked) {
+    return {
+      subcommand: "refresh",
+      refreshed: false,
+      memoryId: writeResult.id,
+      byteSize: card.byteSize,
+      truncated: card.truncated,
+      blockedReason: "tombstone-blocked",
+      ...(writeResult.blockedBy !== undefined ? { blockedBy: writeResult.blockedBy } : {}),
+    };
+  }
+  return {
+    subcommand: "refresh",
+    refreshed: true,
+    memoryId: writeResult.id,
+    byteSize: card.byteSize,
+    truncated: card.truncated,
+  };
+}
 
 /**
  * Find the existing architecture-card memory in the namespace, if any.
