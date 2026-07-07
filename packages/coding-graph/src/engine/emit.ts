@@ -27,6 +27,7 @@ import {
   kindFromCapture,
   type DefKind,
 } from "./extractors.js";
+import { buildUtf16ToByteOffsetMap, utf16ToByte } from "./utf16-offsets.js";
 
 // ---------------------------------------------------------------------------
 // Content hashing — SHA-256 of the raw bytes (rule 23).
@@ -313,6 +314,7 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
       let handler = "";
       let startByte = 0;
       let endByte = 0;
+      let argsNode: TSNode | null = null;
       for (const cap of match.captures) {
         if (cap.name === "route.verb") {
           verb = cap.node.text.toUpperCase();
@@ -320,14 +322,20 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
         } else if (cap.name === "route.path") {
           pathTemplate = cleanModuleSpecifier(cap.node.text);
         } else if (cap.name === "route.handler") {
-          // Identifier handlers (Python function names, JS named route
-          // handlers like app.get("/x", handler)) carry the name directly.
-          // Function/arrow expression handlers need name extraction.
+          // Python route handlers (function names) and legacy JS patterns.
           handler = cap.node.type === "identifier"
             ? cap.node.text
             : (findHandlerName(cap.node) ?? "anonymous");
           endByte = cap.node.endIndex;
+        } else if (cap.name === "route.args") {
+          argsNode = cap.node;
+          endByte = cap.node.endIndex;
         }
+      }
+      // Extract handler from the last argument when we captured the args
+      // node (JS routes). Handles middleware: handler is the LAST arg (#1659 #5).
+      if (argsNode) {
+        handler = extractHandlerFromArgs(argsNode);
       }
       if (verb && pathTemplate) {
         routes.push({
@@ -344,6 +352,25 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
   } finally {
     query.delete();
   }
+}
+
+/**
+ * Extract the route handler name from the LAST argument of an arguments
+ * node. Handles middleware: app.get("/path", requireAuth, getUsers) →
+ * handler=getUsers (the last arg), not requireAuth (issue #1659 #5).
+ */
+function extractHandlerFromArgs(argsNode: TSNode): string {
+  const count = argsNode.namedChildCount;
+  if (count < 2) return "";
+  const lastArg = argsNode.namedChild(count - 1);
+  if (!lastArg) return "";
+  if (lastArg.type === "identifier") {
+    return lastArg.text;
+  }
+  if (lastArg.type === "function_expression") {
+    return findHandlerName(lastArg) ?? "anonymous";
+  }
+  return "anonymous";
 }
 
 /**
@@ -370,6 +397,13 @@ function findHandlerName(node: TSNode): string | null {
 /**
  * Assemble a FileIR from a parsed tree. All collections are sorted for
  * deterministic output (rule 38).
+ *
+ * `contentStr` is the UTF-8 string that was passed to the parser. It is used
+ * to build a UTF-16→byte offset map so all spans are converted from UTF-16
+ * code-unit offsets (what web-tree-sitter returns) to UTF-8 byte offsets
+ * (what on-disk files use). For ASCII-only content the two are identical;
+ * multibyte content (comments, strings, identifiers) needs the conversion
+ * (issue #1659 item 3).
  */
 export function emitFileIR(
   filePath: string,
@@ -377,20 +411,61 @@ export function emitFileIR(
   content: Uint8Array,
   root: TSNode,
   language: Language,
+  contentStr: string,
 ): FileIR {
   const symbols = extractSymbols(root, language, lang);
   const imports = extractImports(root, language, lang);
   const exports = extractExports(root, language, lang);
   const callSites = extractCallSites(root, language, lang);
   const routes = extractRoutes(root, language, lang);
+
+  // Convert UTF-16 code-unit offsets → UTF-8 byte offsets (issue #1659 #3).
+  // Spans are readonly, so rebuild each object with converted offsets.
+  const offsetMap = buildUtf16ToByteOffsetMap(contentStr);
+  const convSymbols = symbols.map((s) => ({
+    ...s,
+    span: {
+      startByte: utf16ToByte(offsetMap, s.span.startByte),
+      endByte: utf16ToByte(offsetMap, s.span.endByte),
+    },
+  }));
+  const convImports = imports.map((i) => ({
+    ...i,
+    span: {
+      startByte: utf16ToByte(offsetMap, i.span.startByte),
+      endByte: utf16ToByte(offsetMap, i.span.endByte),
+    },
+  }));
+  const convExports = exports.map((e) => ({
+    ...e,
+    span: {
+      startByte: utf16ToByte(offsetMap, e.span.startByte),
+      endByte: utf16ToByte(offsetMap, e.span.endByte),
+    },
+  }));
+  const convCallSites = callSites.map((c) => ({
+    ...c,
+    span: {
+      startByte: utf16ToByte(offsetMap, c.span.startByte),
+      endByte: utf16ToByte(offsetMap, c.span.endByte),
+    },
+  }));
+  const convRoutes = routes.map((r) => ({
+    ...r,
+    span: {
+      startByte: utf16ToByte(offsetMap, r.span.startByte),
+      endByte: utf16ToByte(offsetMap, r.span.endByte),
+    },
+  }));
+
   return {
     path: filePath,
     language: lang,
     contentHash: hashContent(content),
-    symbols,
-    imports,
-    exports,
-    callSites,
-    routes,
+    symbols: convSymbols,
+    imports: convImports,
+    exports: convExports,
+    callSites: convCallSites,
+    routes: convRoutes,
   };
 }

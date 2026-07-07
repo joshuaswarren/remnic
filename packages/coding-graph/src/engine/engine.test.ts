@@ -1050,3 +1050,131 @@ test("lifecycle: double dispose is safe", async () => {
   await engine.dispose();
   await engine.dispose(); // should not throw
 });
+
+// ===========================================================================
+// Issue #1659: export-capture edge cases (default exports, CJS alias,
+// UTF-16 offsets, C++ qualified methods, Express middleware, Python relative).
+// ===========================================================================
+
+test("1659-1: export default App (bare identifier) captured as export", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function App() { return null; }",
+    "export default App;",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/app.tsx", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const exportNames = result.ir.exports.map((e) => e.name);
+  assert.ok(exportNames.includes("App"), `TSX: export default App should be exported, got: ${exportNames.join(", ")}`);
+  await engine.dispose();
+});
+
+test("1659-1b: export default App in JS captured as export", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "const App = () => {}",
+    "export default App;",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/app.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const exportNames = result.ir.exports.map((e) => e.name);
+  assert.ok(exportNames.includes("App"), `JS: export default App should be exported, got: ${exportNames.join(", ")}`);
+  await engine.dispose();
+});
+
+test("1659-2: CJS alias target captures value identifier, not key", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function createRouter() { return {}; }",
+    "module.exports = { publicName: createRouter };",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/router.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const exportNames = result.ir.exports.map((e) => e.name);
+  assert.ok(
+    exportNames.includes("createRouter"),
+    `CJS: module.exports = { publicName: createRouter } should export createRouter (the value), got: ${exportNames.join(", ")}`,
+  );
+  await engine.dispose();
+});
+
+test("1659-3: UTF-16 offsets produce correct byte spans for multibyte content", async () => {
+  const engine = createCodingGraphEngine();
+  // Leading comment with multibyte chars so UTF-16 and byte offsets diverge.
+  // "café" = 4 UTF-16 code units but 5 UTF-8 bytes (é = 2 bytes).
+  const code = "// café comment\nfunction hello() { return 1; }\n";
+  const buf = Buffer.from(code, "utf-8");
+  const result = await engine.parseFile({ path: "src/multibyte.ts", content: buf });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const fn = result.ir.symbols.find((s) => s.name === "hello");
+  assert.ok(fn, "should find hello function");
+  if (!fn) return;
+  // The function keyword starts after "// café comment\n".
+  // "// " = 3 bytes, "café" = 5 bytes, " comment" = 8 bytes, "\n" = 1 byte = 17 bytes total prefix.
+  // So "function hello..." starts at byte offset 17.
+  assert.equal(
+    fn.span.startByte, 17,
+    `hello startByte should be 17 (byte offset), got ${fn.span.startByte}`,
+  );
+  // Verify we can slice the correct text from the byte buffer.
+  const sliced = buf.subarray(fn.span.startByte, fn.span.endByte).toString("utf-8");
+  assert.ok(sliced.startsWith("function hello"), `byte-offset slice should start with 'function hello', got: ${sliced}`);
+  await engine.dispose();
+});
+
+test("1659-4: C++ out-of-class method A::start captured as method", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "class Engine {",
+    "public:",
+    "  void start();",
+    "};",
+    "void Engine::start() { /* impl */ }",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/engine.cpp", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  // The qualified_identifier pattern captures "Engine::start" as the name.
+  const method = result.ir.symbols.find((s) => s.kind === "method");
+  assert.ok(method, "should find a method symbol for Engine::start");
+  await engine.dispose();
+});
+
+test("1659-5: Express middleware route captures handler, not middleware", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function requireAuth(req, res, next) { next(); }",
+    "function getUsers(req, res) { res.json([]); }",
+    "app.get(\"/users\", requireAuth, getUsers);",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/server.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should have a /users route");
+  if (!usersRoute) return;
+  assert.equal(
+    usersRoute.handlerQualifiedName, "getUsers",
+    `middleware route handler should be 'getUsers' (the handler), not 'requireAuth' (the middleware), got: ${usersRoute.handlerQualifiedName}`,
+  );
+  await engine.dispose();
+});
+
+test("1659-6: Python relative import from .models captures module", async () => {
+  const engine = createCodingGraphEngine();
+  const code = "from .models import User\n";
+  const result = await engine.parseFile({ path: "src/app.py", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const modules = result.ir.imports.map((i) => i.module);
+  assert.ok(
+    modules.some((m) => m.includes("models")),
+    `Python: from .models import User should capture 'models' module, got: ${modules.join(", ")}`,
+  );
+  await engine.dispose();
+});
