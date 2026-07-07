@@ -444,3 +444,50 @@ test("OgIql: untargeted search uses tokenized keyword matching (not exact-prefix
     assert.equal(classifyCandidates[0].memoryId, "mem-db");
   });
 });
+
+test("#1678: never_store plan redacts the request text in the persisted pending-plan file", async () => {
+  await withTempDir(async (dir) => {
+    const secret = "my API key is sk-secret-DO-NOT-STORE-12345";
+    const state: StubState = {
+      candidatesById: new Map([["mem-s", makeCandidate({ memoryId: "mem-s", content: secret })]]),
+      llmResult: {
+        classification: "never_store",
+        confidence: 0.95,
+        actions: [{ kind: "redaction_rule", pattern: "sk-secret-\\d+" }],
+        relevance: [],
+        warnings: [],
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const planner = new CorrectionPlanner(makeDeps(dir, state));
+    // The in-memory plan keeps the original text (the executor's audit body
+    // re-applies its own redaction).
+    const plan = await planner.plan({ text: secret, targetIds: ["mem-s"] }, ["default"]);
+    assert.equal(plan.request.text, secret, "in-memory plan keeps the original request text");
+    assert.equal(plan.classification, "never_store");
+
+    // The persisted file MUST NOT contain the secret.
+    const filePath = path.join(dir, "state", "corrections", "pending", `${plan.planId}.json`);
+    const raw = await readFile(filePath, "utf-8");
+    assert.ok(!raw.includes("sk-secret-DO-NOT-STORE"),
+      "the persisted pending-plan file must NOT contain the never-store secret (request.text is redacted)");
+    assert.ok(raw.includes("redacted"),
+      "the persisted request text must be the redaction placeholder");
+    // The redaction_rule.pattern is NOT redacted on disk: the executor's apply
+    // flow reloads via loadPlan and needs the real pattern to call
+    // registerRedactionRule. Redacting it would register a placeholder (#vZln).
+    // The pattern's transient exposure is bounded by the pending-plan TTL +
+    // consumed-on-apply lifecycle.
+    assert.ok(raw.includes("sk-secret"),
+      "the redaction_rule.pattern survives on disk for the apply flow (bounded by pending-plan TTL)");
+
+    // loadPlan reads from disk → the reloaded plan has the redacted text.
+    const reloaded = await planner.loadPlan("default", plan.planId);
+    assert.ok(reloaded, "plan round-trips");
+    assert.notEqual(reloaded!.request.text, secret,
+      "loaded plan must carry the redacted text, not the original secret");
+    assert.ok(reloaded!.request.text.includes("redacted"));
+  });
+});

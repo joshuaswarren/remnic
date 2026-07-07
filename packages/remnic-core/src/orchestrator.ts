@@ -44,6 +44,11 @@ import {
   createFaithfulnessCounters,
   runFaithfulnessGateBatch,
 } from "./extraction-faithfulness.js";
+import {
+  contentMatchesRedactionRules,
+  loadRedactionRules,
+  type CompiledRedactionRule,
+} from "./extraction-redaction-rules.js";
 import type { FaithfulnessGateCounters } from "./extraction-faithfulness.js";
 import {
   EXTRACTION_JUDGE_VERDICT_CATEGORY,
@@ -14119,6 +14124,23 @@ export class Orchestrator {
     // (declared here, inside persistExtraction) so a transient hiccup in one
     // batch does not permanently disable dedup in future batches.
     let batchBackendUnavailable = false;
+    // #1669: per-namespace redaction-rule cache for this persist pass. A
+    // `never_store` / redaction_rule correction persists patterns under each
+    // namespace's state/corrections/redaction-rules/ dir; we consult them
+    // before a fact reaches the storage write chokepoint so matching content
+    // is withheld entirely rather than landing as pending_review. Cached per
+    // dir so a multi-fact batch over one namespace reads the dir once.
+    let redactionGatedCount = 0;
+    const redactionRulesByDir = new Map<string, CompiledRedactionRule[]>();
+    const redactionRulesFor = async (...dirs: string[]): Promise<CompiledRedactionRule[]> => {
+      const out: CompiledRedactionRule[] = [];
+      for (const d of dirs) {
+        let r = redactionRulesByDir.get(d);
+        if (!r) { r = await loadRedactionRules(d); redactionRulesByDir.set(d, r); }
+        out.push(...r);
+      }
+      return out;
+    };
     const behaviorSignalsByStorage = new Map<
       string,
       { storage: StorageManager; events: BehaviorSignalEvent[] }
@@ -14846,6 +14868,10 @@ export class Orchestrator {
     // into the caller's buffer-retention decision.
     this.lastPersistExtractionDeferredCount = 0;
     if (this.config.extractionJudgeEnabled) {
+      // #1669 P1: pre-filter redacted facts from judge candidates so never-store
+      // content is not persisted as judge training data.
+      let preJudgeRedactionRules: CompiledRedactionRule[] = [];
+      try { preJudgeRedactionRules = await redactionRulesFor(storage.dir); } catch { /* fail open */ }
       try {
         const judgeCandidates: JudgeCandidate[] = [];
         const candidateToFactIndex: number[] = [];
@@ -14885,6 +14911,11 @@ export class Orchestrator {
             )
           ) {
             continue;
+          }
+          if (preJudgeRedactionRules.length > 0) {
+            const rc = f.content + (f.structuredAttributes ? " " + JSON.stringify(f.structuredAttributes) : "")
+              + (f.procedureSteps ? " " + f.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""} ${s.toolCall ? `${s.toolCall.kind} ${s.toolCall.signature}` : ""}`.trim()).join(" ") : "");
+            if (contentMatchesRedactionRules(rc, preJudgeRedactionRules)) continue;
           }
           judgeCandidates.push({
             text: f.content,
@@ -15064,6 +15095,7 @@ export class Orchestrator {
       // affect both the dedup fingerprint and importance (issue #519 procedure routing).
       let writeCategory = fact.category;
       let targetStorage = storage;
+      const sourceStorageDir = storage.dir; // #1669 thread #2: pre-routing source ns for redaction gate
       // Track the KNOWN target namespace NAME alongside targetStorage (round 6,
       // codex P2 — NCQI0). Re-deriving it from `targetStorage.dir` mangles a raw
       // namespace literally named like a canonical token (e.g. `ns-616c706861`
@@ -15137,6 +15169,23 @@ export class Orchestrator {
             `scope-routing: skipped shared namespace for global fact because active scope profile ${scopeProfileWritePlan?.profileId ?? "none"} does not authorize serverShared writes`,
           );
         }
+      }
+      // #1669 redaction-rule gate: consult BOTH source and target namespace
+      // rules before any write. A never-store pattern registered under the
+      // source namespace must survive scope-routing to a different target
+      // (review thread #2). Fails open on read error.
+      try {
+        const redactionRules = await redactionRulesFor(sourceStorageDir, targetStorage.dir);
+        const redactionCandidate = fact.content
+          + (fact.structuredAttributes ? " " + JSON.stringify(fact.structuredAttributes) : "")
+          + (fact.procedureSteps ? " " + fact.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""} ${s.toolCall ? `${s.toolCall.kind} ${s.toolCall.signature}` : ""}`.trim()).join(" ") : "");
+        if (redactionRules.length > 0 && contentMatchesRedactionRules(redactionCandidate, redactionRules)) {
+          redactionGatedCount++;
+          log.debug(`extraction: redaction-rule withheld fact #${redactionGatedCount} in ${targetStorage.dir}`);
+          continue;
+        }
+      } catch (redactionErr) {
+        log.warn(`extraction: redaction-rule gate failed open: ${redactionErr}`);
       }
 
       // Procedures: fingerprint the full serialized body (title + steps), not
@@ -16263,8 +16312,10 @@ export class Orchestrator {
       importanceGatedCount > 0 ? ` (${importanceGatedCount} gated)` : "";
     const judgeSuffix =
       judgeGatedCount > 0 ? ` (${judgeGatedCount} judge-rejected)` : "";
+    const redactionSuffix =
+      redactionGatedCount > 0 ? ` (${redactionGatedCount} redacted)` : "";
     log.info(
-      `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
+      `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
     );
 
     // Update temporal + tag indexes (v8.1) — fire-and-forget, fail-open

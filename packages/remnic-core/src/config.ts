@@ -2130,17 +2130,34 @@ export function parseConfig(
       const raw = rawNested !== undefined ? rawNested : cfg.correctionMaxAffected;
       if (raw === undefined || raw === null) return 10;
       const n = coerceNumber(raw);
-      if (n === undefined || !Number.isFinite(n) || n < 1) {
+      // #1678 (thread Oiup6): the error message says "integer" — enforce it
+      // with Number.isInteger so 3.7 is rejected rather than silently floored.
+      if (n === undefined || !Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
         throw new Error(`Invalid correction.maxAffected: expected an integer >= 1, got ${JSON.stringify(raw)}`);
       }
-      return Math.floor(n);
+      return n;
     })(),
     correctionPlanTtlHours: (() => {
       const nested = (cfg.correction as Record<string, unknown> | undefined)?.planTtlHours;
       const fromNested = nested !== undefined ? coerceNumber(nested) : undefined;
-      if (fromNested !== undefined && fromNested > 0) return fromNested;
+      if (fromNested !== undefined && fromNested >= 1) return fromNested;
+      // #1678 (threads Ohtvi/Ohyvf): reject invalid (0/negative/non-numeric)
+      // instead of silently defaulting to 24h — completes the config-reject
+      // class already enforced for enabled/applyRequiresConfirm/maxAffected.
+      if (nested !== undefined && fromNested === undefined) {
+        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(nested)}`);
+      }
+      if (fromNested !== undefined && fromNested < 1) {
+        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(nested)}`);
+      }
       const fromFlat = coerceNumber(cfg.correctionPlanTtlHours);
-      if (fromFlat !== undefined && fromFlat > 0) return fromFlat;
+      if (fromFlat !== undefined && fromFlat >= 1) return fromFlat;
+      if (cfg.correctionPlanTtlHours !== undefined && fromFlat === undefined) {
+        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(cfg.correctionPlanTtlHours)}`);
+      }
+      if (fromFlat !== undefined && fromFlat < 1) {
+        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(cfg.correctionPlanTtlHours)}`);
+      }
       return 24;
     })(),
     // Passive correction capture (issue #1581). Parsed from
