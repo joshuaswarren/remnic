@@ -836,3 +836,269 @@ test("toStrictIsoTimestamp path: valid MM/DD/YYYY still normalizes (thread dH47 
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
   );
 });
+
+
+// ---------------------------------------------------------------------------
+// Regression: issue #1657 — partial year-led timestamps must not be admitted
+// as fabricated complete dates. Date.parse fills in missing calendar
+// components ("2026-05" -> May 1) and the ymd guard misparses the date/time
+// boundary ("2026-05T10:00" reads the hour as the day). The normalization
+// path must reject any year-led shape with fewer than three complete calendar
+// components rather than persisting a fabricated observedAt.
+// ---------------------------------------------------------------------------
+
+test("toStrictIsoTimestamp path: partial YYYY-MM timestamp is rejected, not fabricated (issue #1657)", () => {
+  // "2026-05" is Date.parse-able (-> 2026-05-01) and passes the separator
+  // guard, so pre-fix the write path persisted a fabricated observedAt of
+  // 2026-05-01T00:00:00.000Z. Reject it so the source is dropped.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  // No verified source: the only matching turn has a partial timestamp.
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    "2026-05-01T00:00:00.000Z",
+    "partial YYYY-MM timestamp must not fabricate May 1",
+  );
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "rejected partial timestamp falls back to epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: partial YYYY-MM T HH:MM is rejected, not misparsed (issue #1657)", () => {
+  // "2026-05T10:00" is Date.parse-able; the ymd regex grabs the hour "10" as
+  // the day across the date/time boundary, so pre-fix the write path persisted
+  // a fabricated observedAt (on May 10, shifted by timezone). Reject it.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05T10:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "partial YYYY-MM T HH:MM timestamp must fall back to epoch, not a fabricated date",
+  );
+});
+
+test("toStrictIsoTimestamp path: complete YYYY-MM-DD (no time) still normalizes (issue #1657 non-regression)", () => {
+  // A complete calendar date with no time component must still round-trip
+  // through Date.parse to strict ISO. This is the boundary the partial-date
+  // guard must NOT over-reject.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05-03" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified");
+  assert.ok(result.sources);
+  assert.equal(
+    result.sources![0]!.observedAt,
+    "2026-05-03T00:00:00.000Z",
+    "complete date-only timestamp normalizes to UTC midnight",
+  );
+});
+
+test("toStrictIsoTimestamp path: space-separated partial YYYY-MM HH:MM is rejected (issue #1657, codex r2)", () => {
+  // "2026-05 10:00" is Date.parse-able; the date separator must be a real
+  // date separator (- or /), not the space that precedes the time component.
+  // Pre-fix the guard treated the space as a date separator and captured the
+  // hour "10" as the day, persisting a fabricated 2026-05-(10) source.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05 10:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "space-separated partial timestamp must fall back to epoch, not a fabricated date",
+  );
+});
+
+test("toStrictIsoTimestamp path: leading-whitespace partial timestamp is rejected (issue #1657, codex r3)", () => {
+  // Date.parse trims leading whitespace, so " 2026-05" parses as May 1 —
+  // but the ^\d{4} guard anchored at the start would not recognize the
+  // string as year-led, bypassing the partial-date rejection. Trim first.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: " 2026-05" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "leading-whitespace partial timestamp must fall back to epoch, not a fabricated date",
+  );
+});
+
+test("toStrictIsoTimestamp path: complete year-first textual-month date is preserved (issue #1657, codex r4)", () => {
+  // A complete year-first TEXTUAL-month date ("2026-Jan-15") is normalized by
+  // Date.parse and must stay verified — the unified guard must not reject a
+  // complete textual month. Date.parse parses this non-ISO form in the LOCAL
+  // timezone, so assert the source is preserved (verified, not the epoch
+  // fallback) and normalized to strict ISO — without assuming the UTC day,
+  // which shifts across timezones (codex r7).
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-Jan-15" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "complete textual-month date must stay verified");
+  assert.ok(result.sources);
+  const observedAt = result.sources![0]!.observedAt;
+  assert.match(
+    observedAt,
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+    "textual-month observedAt must normalize to strict ISO",
+  );
+  assert.notEqual(
+    observedAt,
+    new Date(0).toISOString(),
+    "complete textual-month date must not fall back to the epoch (it was accepted, not rejected)",
+  );
+});
+
+test("toStrictIsoTimestamp path: partial textual year-month is rejected (issue #1657, codex r5)", () => {
+  // "2026-Jan" is Date.parse-able (-> Jan 1) — a partial year-led TEXTUAL
+  // month that must be rejected just like the numeric "2026-05", not
+  // fabricated. The unified year-led guard covers textual months too.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-Jan" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "partial textual year-month must fall back to epoch, not a fabricated Jan 1",
+  );
+});
+
+test("toStrictIsoTimestamp path: partial textual year-month with time is rejected (issue #1657, codex r5)", () => {
+  // "2026-Jan 10:00" — the hour must not be captured as the day across the
+  // date/time boundary (textual analogue of "2026-05 10:00").
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-Jan 10:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "partial textual year-month with time must fall back to epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: textual-month calendar overflow is rejected (issue #1657, codex r5)", () => {
+  // "2026-Feb-30" is a COMPLETE textual date but Feb 30 overflows — Date.parse
+  // shifts it to March 2. The unified guard validates the textual month's
+  // calendar day too, so this is rejected rather than fabricated (textual
+  // analogue of the numeric dANc overflow).
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-Feb-30" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    "2026-03-02T00:00:00.000Z",
+    "textual-month overflow must not be silently shifted to March 2",
+  );
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "textual-month overflow falls back to epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: full month name is preserved (issue #1657, codex r6)", () => {
+  // Date.parse accepts full month names ("2026-January-15"), so the textual
+  // month map must include both abbreviations and full names — otherwise a
+  // complete, valid full-name date is dropped to an unverified epoch source.
+  // Date.parse parses this non-ISO form in the LOCAL timezone, so assert the
+  // source is preserved (verified, not epoch) without a UTC-day assumption.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-January-15" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "full-name textual month must stay verified");
+  assert.ok(result.sources);
+  const observedAt = result.sources![0]!.observedAt;
+  assert.match(
+    observedAt,
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+    "full-name textual month observedAt must normalize to strict ISO",
+  );
+  assert.notEqual(
+    observedAt,
+    new Date(0).toISOString(),
+    "full-name textual month must not fall back to the epoch (it was accepted, not rejected)",
+  );
+});

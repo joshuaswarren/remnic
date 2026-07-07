@@ -188,33 +188,39 @@ function isStrictIsoTimestamp(s: string): boolean {
  */
 function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined {
   if (typeof ts !== "string" || ts.length === 0) return undefined;
-  if (isStrictIsoTimestamp(ts)) return ts;
-  const parsed = Date.parse(ts);
+  // Trim surrounding whitespace: Date.parse accepts leading/trailing
+  // whitespace, so an imported " 2026-05" would otherwise bypass the
+  // year-led partial-date guard below and fabricate May 1
+  // (chatgpt-codex-connector review on #1714, issue #1657).
+  const value = ts.trim();
+  if (value.length === 0) return undefined;
+  if (isStrictIsoTimestamp(value)) return value;
+  const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return undefined;
   // Reject bare-year / numeric-only strings that Date.parse accepts (e.g.
   // "123") — isStrictIsoTimestamp already rejected them, and the round-trip
   // below would otherwise resurrect them. Require at least one date/time
   // separator so a plain number never round-trips into a fake epoch.
-  if (!/[-:T]/.test(ts)) return undefined;
-  // Reject calendar-overflow dates (chatgpt-codex-connector thread dANc):
-  // Date.parse silently rolls over invalid components — "2026-02-30" becomes
-  // 2026-03-02 — fabricating the observation date. For strings that carry an
-  // explicit numeric Y/M/D prefix (the common import/provider shape), validate
-  // the calendar components are in range before accepting the shifted result.
-  // isStrictIsoTimestamp already does this for full ISO strings; this closes
-  // the gap for the non-ISO normalization path.
-  const ymd = /^(\d{4})\D(\d{1,2})\D(\d{1,2})/.exec(ts);
-  if (ymd) {
-    const [_, ys, ms, ds] = ymd;
-    const y = Number(ys), mo = Number(ms), da = Number(ds);
-    if (!isValidCalendarDate(y, mo, da)) return undefined;
+  if (!/[-:T]/.test(value)) return undefined;
+  // Reject year-led timestamps that are not a COMPLETE, calendar-valid date
+  // (issue #1657). Date.parse silently fills missing components ("2026-05" ->
+  // May 1, "2026-Jan" -> Jan 1) and rolls overflow ("2026-02-30" and
+  // "2026-Feb-30" -> March 2), fabricating observedAt. `parseYearLedDatePrefix`
+  // requires a complete three-component date — numeric OR textual month — with
+  // real date separators (not T/:, and not the space that precedes a time
+  // component, so the hour is never captured as the day) and a calendar-valid
+  // day, in one rule (subsumes the prior partial-numeric and numeric-overflow
+  // checks, and extends them to textual months). Non-year-led shapes
+  // ("Jan 15 2026", "02/30/2026") fall through to Date.parse / the mdy check.
+  if (/^\d{4}\D/.test(value) && parseYearLedDatePrefix(value) === null) {
+    return undefined;
   }
   // Also validate M/D/Y or D/M/Y formats (provider/import common shapes:
   // 02/30/2026, 30-02-2026, etc.). Date.parse silently shifts overflow in
   // these too. Try both month-first and day-first interpretations; if
   // neither is a valid calendar date, reject (chatgpt-codex-connector thread
   // dH47 — non-YMD overflow timestamps).
-  const mdy = /^(\d{1,2})\D(\d{1,2})\D(\d{4})/.exec(ts);
+  const mdy = /^(\d{1,2})\D(\d{1,2})\D(\d{4})/.exec(value);
   if (mdy) {
     const a = Number(mdy[1]), b = Number(mdy[2]), yr = Number(mdy[3]);
     if (!isValidCalendarDate(yr, a, b) && !isValidCalendarDate(yr, b, a)) {
@@ -236,6 +242,50 @@ function isValidCalendarDate(y: number, mo: number, da: number): boolean {
   const leap = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) ? 29 : 28;
   const daysInMonth = [31, leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   return da <= daysInMonth[mo - 1]!;
+}
+
+/**
+ * Recognized month-name → number map for year-led textual-month dates
+ * (issue #1657). Both the 3-letter abbreviations and the full names that
+ * Date.parse accepts for year-first shapes (e.g. "2026-Jan-15",
+ * "2026-January-15", "2026 February 2").
+ */
+const MONTH_NAMES: Record<string, number> = {
+  jan: 1, january: 1,
+  feb: 2, february: 2,
+  mar: 3, march: 3,
+  apr: 4, april: 4,
+  may: 5,
+  jun: 6, june: 6,
+  jul: 7, july: 7,
+  aug: 8, august: 8,
+  sep: 9, september: 9,
+  sept: 9,
+  oct: 10, october: 10,
+  nov: 11, november: 11,
+  dec: 12, december: 12,
+};
+
+/**
+ * Parse a complete, calendar-valid year-led date prefix from `s`
+ * (issue #1657): `YYYY <sep> (MM | MonthName) <sep> DD` where the separators
+ * are real date separators (non-digit, non-T, non-colon) and the day is a
+ * true calendar day — not the hour before a `:` time separator (the
+ * `(?![\d:])` lookahead rejects "2026-05 10:00" capturing "10" as the day).
+ * Returns the numeric components for a complete, valid date; `null` for an
+ * incomplete ("2026-05", "2026-Jan"), overflowed ("2026-02-30",
+ * "2026-Feb-30"), or non-year-led prefix. Centralizes the fabricated-date
+ * rejection for the toStrictIsoTimestamp normalization path across numeric
+ * and textual months in one rule.
+ */
+function parseYearLedDatePrefix(s: string): { y: number; mo: number; da: number } | null {
+  const m = /^(\d{4})[^0-9T](\d{1,2}|[A-Za-z]{3,})[^0-9T:](\d{1,2})(?![\d:])/.exec(s);
+  if (!m) return null;
+  const y = Number(m[1]);
+  const da = Number(m[3]);
+  const mo = /^\d+$/.test(m[2]) ? Number(m[2]) : (MONTH_NAMES[m[2]!.toLowerCase()] ?? -1);
+  if (!isValidCalendarDate(y, mo, da)) return null;
+  return { y, mo, da };
 }
 
 /**
