@@ -287,6 +287,17 @@ class ClaudeCliProvider implements LlmProvider {
     prompt: string,
     opts: CompletionOpts,
   ): Promise<CompletionResult> {
+    // Runs AFTER the shared concurrency gate has been acquired (see
+    // `complete()` -> `gate.run`), so the per-attempt timeout armed inside
+    // `runClaudeCliCommand` only starts counting once this call is actually
+    // active, never while it was queued. A caller-provided `opts.signal`
+    // (e.g. a harness phase/trial timeout) is owned by the caller and does
+    // keep counting while queued; the provider can't extend it, but it MUST
+    // NOT spawn a doomed `claude -p` for a call whose signal already fired
+    // while it waited in the gate — fail fast here instead.
+    if (opts.signal?.aborted) {
+      throw claudeCliAbortError(opts.signal);
+    }
     const startedAt = performance.now();
     const maxAttempts = normalizeClaudeCliMaxAttempts(this.config.retryOptions?.maxAttempts);
     const usageLimitBudgetMs = normalizeUsageLimitMaxWaitMs(this.config.retryOptions?.max429WaitMs);
@@ -356,7 +367,12 @@ class ClaudeCliProvider implements LlmProvider {
           );
         }
 
-        const text = (payload.result ?? "").trim();
+        // `result` is `as`-cast from untrusted CLI JSON, so it may be a
+        // non-string (number/boolean/object/array). Coerce anything that
+        // isn't a string to empty so `.trim()` can't throw a TypeError — a
+        // non-string result falls into the same controlled "no result text" /
+        // usage-limit path below as an empty answer.
+        const text = typeof payload.result === "string" ? payload.result.trim() : "";
         if (text.length === 0) {
           // A zero-exit, empty-result payload whose quota text lives only on
           // stderr is still a usage-limit failure — back off like the other

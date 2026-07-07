@@ -1041,3 +1041,46 @@ test("claude-cli provider forwards CLAUDE_CODE_OAUTH_TOKEN but still drops ANTHR
     }
   }
 });
+
+test("claude-cli provider does not throw on a non-string JSON result (coerces to empty)", async () => {
+  for (const badResult of [42, true, {}, [1, 2]]) {
+    const provider = createClaudeCliProvider(
+      { provider: "claude-cli", model: "opus", retryOptions: { maxAttempts: 1 } },
+      {
+        async runClaudeCli() {
+          return {
+            status: 0,
+            signal: null,
+            // is_error not strictly true; result is a non-string.
+            stdout: JSON.stringify({ is_error: false, result: badResult }),
+            stderr: "",
+          };
+        },
+      },
+    );
+    // Coerced to empty -> falls into the controlled "no result text" path,
+    // a plain Error, NOT a TypeError from calling .trim() on a non-string.
+    await assert.rejects(provider.complete("hello"), (err) => {
+      assert.ok(err instanceof Error);
+      assert.ok(!(err instanceof TypeError), `non-string result ${JSON.stringify(badResult)} threw a TypeError`);
+      return true;
+    });
+  }
+});
+
+test("claude-cli provider fails fast when opts.signal is already aborted (no claude -p spawn)", async () => {
+  let spawned = 0;
+  const controller = new AbortController();
+  controller.abort(new Error("phase timeout already elapsed while queued"));
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        spawned += 1;
+        return { status: 0, signal: null, stdout: JSON.stringify({ is_error: false, result: "ok" }), stderr: "" };
+      },
+    },
+  );
+  await assert.rejects(provider.complete("hello", { signal: controller.signal }));
+  assert.equal(spawned, 0, "must not spawn claude -p for an already-aborted call");
+});
