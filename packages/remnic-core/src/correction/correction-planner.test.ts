@@ -491,3 +491,234 @@ test("#1678: never_store plan redacts the request text in the persisted pending-
     assert.ok(reloaded!.request.text.includes("redacted"));
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1713 Item 2: stale applying plan recovery
+// ---------------------------------------------------------------------------
+
+test("#1713: markConsumed(applying) stamps applyingAt", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-x", makeCandidate({ memoryId: "mem-x", content: "old fact" })],
+      ]),
+      llmResult: {
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-x", replacement: { content: "new fact" } }],
+        relevance: [],
+        warnings: [],
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const planner = new CorrectionPlanner(makeDeps(dir, state));
+    const plan = await planner.plan({ text: "correct this" }, ["default"]);
+    await planner.markConsumed("default", plan.planId, "applying");
+    const reloaded = await planner.loadPlan("default", plan.planId);
+    assert.equal(reloaded!.status, "applying");
+    assert.ok(reloaded!.applyingAt, "applyingAt must be stamped when entering applying state");
+  });
+});
+
+test("#1713: markConsumed(applied) clears applyingAt", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-x", makeCandidate({ memoryId: "mem-x", content: "old fact" })],
+      ]),
+      llmResult: {
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-x", replacement: { content: "new fact" } }],
+        relevance: [],
+        warnings: [],
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const planner = new CorrectionPlanner(makeDeps(dir, state));
+    const plan = await planner.plan({ text: "correct this" }, ["default"]);
+    await planner.markConsumed("default", plan.planId, "applying");
+    await planner.markConsumed("default", plan.planId, "applied");
+    const reloaded = await planner.loadPlan("default", plan.planId);
+    assert.equal(reloaded!.status, "applied");
+    assert.ok(!reloaded!.applyingAt, "applyingAt must be cleared on terminal status");
+  });
+});
+
+test("#1713: recoverStaleApplyingPlans discards stale applying plans", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-x", makeCandidate({ memoryId: "mem-x", content: "secret-token-1234" })],
+      ]),
+      llmResult: {
+        classification: "never_store",
+        confidence: 0.9,
+        actions: [{ kind: "redaction_rule", pattern: "secret-token-\\d+" }],
+        relevance: [],
+        warnings: [],
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const planTime = new Date("2026-03-15T12:00:00Z");
+    const recoveryTime = new Date("2026-03-15T13:00:00Z");
+    const deps = makeDeps(dir, state);
+    deps.now = () => planTime;
+    const planner = new CorrectionPlanner(deps);
+    const plan = await planner.plan({ text: "never store this secret", targetIds: ["mem-x"] }, ["default"]);
+    await planner.markConsumed("default", plan.planId, "applying");
+
+    let reloaded = await planner.loadPlan("default", plan.planId);
+    assert.equal(reloaded!.status, "applying");
+
+    const recovered = await planner.recoverStaleApplyingPlans("default", { now: recoveryTime });
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0], plan.planId);
+
+    // Read the raw file (loadPlan/parsePlan rejects the scrubbed pattern by
+    // design — validation rejects placeholder patterns on re-load).
+    const { readFile: rf } = await import("node:fs/promises");
+    const rawPlan = JSON.parse(
+      await rf(dir + "/state/corrections/pending/" + plan.planId + ".json", "utf-8"),
+    );
+    assert.equal(rawPlan.status, "discarded");
+    assert.ok(!rawPlan.applyingAt, "applyingAt cleared on discard");
+    const redactionAction = rawPlan.actions.find(
+      (a: { kind: string }) => a.kind === "redaction_rule",
+    );
+    assert.ok(redactionAction, "redaction_rule action should still exist");
+    assert.match(String(redactionAction.pattern), /redacted/);
+  });
+});
+
+test("#1713: recoverStaleApplyingPlans leaves fresh applying plans alone", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-x", makeCandidate({ memoryId: "mem-x", content: "old fact" })],
+      ]),
+      llmResult: {
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-x", replacement: { content: "new fact" } }],
+        relevance: [],
+        warnings: [],
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const fixedNow = new Date("2026-03-15T12:00:00Z");
+    const deps = makeDeps(dir, state);
+    const planner = new CorrectionPlanner(deps);
+    const plan = await planner.plan({ text: "correct this" }, ["default"]);
+    await planner.markConsumed("default", plan.planId, "applying");
+
+    const recovered = await planner.recoverStaleApplyingPlans("default", {
+      now: new Date(fixedNow.getTime() + 2 * 60 * 1000),
+    });
+    assert.equal(recovered.length, 0);
+
+    const reloaded = await planner.loadPlan("default", plan.planId);
+    assert.equal(reloaded!.status, "applying");
+  });
+});
+
+test("#1713: recoverStaleApplyingPlans returns empty for namespace with no plans", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map(),
+      llmResult: { classification: "outdated", confidence: 0.5, actions: [], relevance: [], warnings: [] },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const planner = new CorrectionPlanner(makeDeps(dir, state));
+    const recovered = await planner.recoverStaleApplyingPlans("default");
+    assert.deepEqual(recovered, []);
+  });
+});
+
+test("#1713: recoverStaleApplyingPlans recovers pre-fix plans via expiresAt fallback", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-x", makeCandidate({ memoryId: "mem-x", content: "old fact" })],
+      ]),
+      llmResult: {
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-x", replacement: { content: "new fact" } }],
+        relevance: [],
+        warnings: [],
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const fixedNow = new Date("2026-03-15T12:00:00Z");
+    const deps = makeDeps(dir, state);
+    const planner = new CorrectionPlanner(deps);
+    const plan = await planner.plan({ text: "correct this" }, ["default"]);
+
+    await planner.markConsumed("default", plan.planId, "applying");
+    // Simulate a pre-fix plan: manually strip applyingAt from the file
+    const { readFile: rf, writeFile: wf } = await import("node:fs/promises");
+    const planFile = dir + "/state/corrections/pending/" + plan.planId + ".json";
+    const planJson = JSON.parse(await rf(planFile, "utf-8"));
+    delete planJson.applyingAt;
+    await wf(planFile, JSON.stringify(planJson) + "\n", "utf-8");
+
+    // Recovery 25h later (past the 24h expiry, no applyingAt → falls back to expiresAt)
+    const recovered = await planner.recoverStaleApplyingPlans("default", {
+      now: new Date(fixedNow.getTime() + 25 * 60 * 60 * 1000),
+    });
+    assert.equal(recovered.length, 1);
+    assert.equal(recovered[0], plan.planId);
+  });
+});
+
+test("#1713: recoverStaleApplyingPlans recovers pre-fix plans immediately at expiry (no extra TTL wait)", async () => {
+  await withTempDir(async (dir) => {
+    const state: StubState = {
+      candidatesById: new Map([
+        ["mem-x", makeCandidate({ memoryId: "mem-x", content: "old fact" })],
+      ]),
+      llmResult: {
+        classification: "outdated",
+        confidence: 0.9,
+        actions: [{ kind: "supersede", loserId: "mem-x", replacement: { content: "new fact" } }],
+        relevance: [],
+        warnings: [],
+      },
+      writeReplacementCalls: 0,
+      propagateCalls: 0,
+      retireCalls: 0,
+    };
+    const fixedNow = new Date("2026-03-15T12:00:00Z");
+    const deps = makeDeps(dir, state);
+    const planner = new CorrectionPlanner(deps);
+    const plan = await planner.plan({ text: "correct this" }, ["default"]);
+
+    await planner.markConsumed("default", plan.planId, "applying");
+    // Simulate a pre-fix plan: manually strip applyingAt from the file
+    const { readFile: rf, writeFile: wf } = await import("node:fs/promises");
+    const planFile = dir + "/state/corrections/pending/" + plan.planId + ".json";
+    const planJson = JSON.parse(await rf(planFile, "utf-8"));
+    delete planJson.applyingAt;
+    await wf(planFile, JSON.stringify(planJson) + "\n", "utf-8");
+
+    // Recovery at exactly expiresAt: plan is already expired -> recover now
+    // (review thread ff034716: no extra TTL wait for pre-fix plans)
+    const recovered = await planner.recoverStaleApplyingPlans("default", {
+      now: new Date(planJson.expiresAt),
+    });
+    assert.equal(recovered.length, 1, "pre-fix plan at expiry must be recovered immediately");
+  });
+});
