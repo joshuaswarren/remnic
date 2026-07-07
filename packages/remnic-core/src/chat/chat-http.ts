@@ -21,8 +21,9 @@
  *  - The SSE stream subscribes to live transcript appends and pushes new
  *    entries to connected clients (issue #1685 item 2 / #1687 Thread 8).
  *    Subscription is established before the transcript snapshot is read so no
- *    concurrent append is missed (cursor Bugbot race fix), and the disconnect
- *    cleanup is registered immediately so an early close cannot leak it.
+ *    concurrent append is missed (cursor Bugbot race fix). The disconnect
+ *    cleanup is registered immediately and guarded by a `closed` flag so an
+ *    early close cannot leak the heartbeat or write to an ended response.
  *
  * This module is imported by access-http.ts with thin route registration —
  * the god-file ratchet (#1520) tracks access-http.ts LOC.
@@ -216,8 +217,10 @@ export async function handleChatMessage(
  * snapshot read are buffered, then drained after the burst (dropping any the
  * burst already delivered, by `seq`), so no live append is ever missed and
  * none is delivered twice. The disconnect cleanup is registered immediately
- * after the subscription so a client that closes during the load or burst
- * still releases the subscription (no listener leak).
+ * after the subscription and guarded by a `closed` flag: if the client goes
+ * away during the load or burst the flag flips, the handler bails out before
+ * writing anything else, and the heartbeat is never created — so no interval
+ * leaks and no write hits an ended response (cursor/kilo review threads).
  */
 export async function handleChatEventsSSE(
   req: IncomingMessage,
@@ -231,13 +234,20 @@ export async function handleChatEventsSSE(
     return;
   }
 
+  // Liveness flag + handle, both closed over by the disconnect cleanup. The
+  // cleanup is idempotent (guarded by `closed`) so a repeat close is harmless.
+  let heartbeat: NodeJS.Timeout | undefined;
+  let closed = false;
+
   // Subscribe BEFORE reading the transcript so a concurrent append between
   // the snapshot read and subscription is never missed (cursor Bugbot race).
   // During the initial burst entries are buffered; after the burst the
-  // listener switches to writing straight to the response.
+  // listener switches to writing straight to the response. A `closed` check
+  // short-circuits pushes to a connection that is already gone.
   const pending: ChatTranscriptEntry[] = [];
   let bursting = true;
   const unsubscribe = subscribeChatTranscript(opts.memoryDir, chatSessionId, (entry) => {
+    if (closed) return;
     if (bursting) {
       pending.push(entry);
       return;
@@ -250,16 +260,21 @@ export async function handleChatEventsSSE(
   });
 
   // Register disconnect cleanup IMMEDIATELY so a close during loadChatSession
-  // or the burst still releases the subscription (cursor Bugbot). The
-  // heartbeat is assigned later; the handler clears it only if set.
-  let heartbeat: NodeJS.Timeout | undefined;
+  // or the burst still releases the subscription (cursor Bugbot). The flag
+  // gates every later write so the handler never touches an ended response
+  // (kilo review thread) and never sets up a heartbeat for a dead socket
+  // (cursor review thread).
   req.on("close", () => {
+    closed = true;
     clearInterval(heartbeat);
     unsubscribe();
     try { res.end(); } catch { /* already ended */ }
   });
 
   const session = await loadChatSession(opts.memoryDir, chatSessionId);
+  // If the client disconnected during the load, cleanup already ran — bail
+  // out before touching the response (prevents "headers after end").
+  if (closed) return;
   if (!session) {
     unsubscribe();
     respondJson(res, 404, { error: "chat_session_not_found", code: "chat_session_not_found" });
@@ -302,8 +317,10 @@ export async function handleChatEventsSSE(
   bursting = false;
 
   // Heartbeat. Unref'd so a lingering connection never blocks process
-  // exit (rule 47 — no shared mutable objects keep the loop alive).
+  // exit (rule 47 — no shared mutable objects keep the loop alive). Cleared
+  // by the close handler above when the client disconnects.
   heartbeat = setInterval(() => {
+    if (closed) return;
     try {
       res.write(`data: ${JSON.stringify({ type: "heartbeat" })}\n\n`);
     } catch {

@@ -292,3 +292,24 @@ test("HTTP chat/message: distinct messages are NOT deduplicated (issue #1687)", 
     assert.equal(llmCalls, 2, "distinct messages must not be coalesced");
   });
 });
+
+test("HTTP chat/events SSE: early disconnect during load bails cleanly — no write to ended response, no leak (issue #1687 review)", async () => {
+  await withTempDir(async (memoryDir) => {
+    const session = await createChatSession(memoryDir, { principal: "alice" });
+    const service = makeService({
+      memoryDir,
+      configRef: parseConfig({ memoryDir, chat: { ...DEFAULT_CHAT_CONFIG, enabled: true } }),
+    });
+    const m = mockRes();
+    const req = mockReq();
+    // Emit close as a microtask so it fires while the handler is awaiting
+    // loadChatSession (before writeHead). The handler must bail out without
+    // writing to the ended response and without setting up a heartbeat.
+    queueMicrotask(() => req.emit("close"));
+    // Resolving without throwing is the core contract.
+    await handleChatEventsSSE(req as never, m as never, session.id, { service, config: service.configRef!.chat, memoryDir }, "alice");
+    // writeHead was skipped (status stays 0) because the handler returned at
+    // the `if (closed) return` guard before any SSE framing.
+    assert.equal(m.status, 0, "handler must not writeHead after an early close");
+  });
+});
