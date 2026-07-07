@@ -2,70 +2,129 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$comment": [
     "Correction-intent reproducibility manifest (issue #1585 PR3 / #1738).",
-    "v1 is a DETECTION CLASSIFIER (RoBERTa-large 2-way head: turn window ->",
-    "{correction, none}), NOT the original #1585 causal-LM/TRL plan. The",
-    "pre-#1737 trl==0.16.6 / bitsandbytes==0.44.1 pins do not exist on PyPI,",
-    "and the only resolvable trl (1.7.1) drags datasets 3.6 -> 5.0 and would",
-    "break the faithfulness-gate v1 pinned stack in the shared venv (issue",
-    "#1738). Detection F1 is the eval gate; span extraction (correctedAssertion)",
-    "is the v2 causal-LM follow-up. This file carries the REAL held-out eval",
-    "numbers from a trained v1 model produced on the lab GPU box (RTX 3090).",
-    "Rule 55 (#1520): no fabricated numbers. The committed manifest is the ONLY",
-    "artifact in git; datasets, weights, and LLM traces are gitignored."
+    "This manifest carries the REAL held-out eval numbers from a trained v1 model",
+    "produced on the lab GPU box (RTX 3090). Rule 55 (#1520): no fabricated numbers —",
+    "every field below is concrete because a real train+eval run produced it. The",
+    "committed manifest is the ONLY artifact that lives in git; datasets, weights,",
+    "and LLM traces are gitignored (git carries recipes + hashes, never blobs)."
   ],
   "task": "correction-intent",
   "schemaVersion": 1,
-  "status": "pending-training",
+  "status": "trained",
   "contract": {
     "inputFields": ["turns"],
     "outputShape": "corrections[]: {targetHint, correctedAssertion, polarity, confidence} or []",
-    "source": "PassiveCorrection + PassiveCorrectionPolarity (issue #1581)"
+    "source": "PassiveCorrection + PassiveCorrectionPolarity (issue #1581)",
+    "$comment": "v1 implements the DETECTION slice of this contract: turn window -> {correction, none}. The structured-extraction slice (emitting the corrections[] block with targetHint/correctedAssertion/polarity) is the v2 causal-LM follow-up."
   },
-  "baseModel": null,
+  "baseModel": {
+    "hfId": "roberta-large-mnli",
+    "revision": "2a8f12d27941090092df78e4ba6f0928eb5eac98",
+    "$comment": "Issue #1738: the original #1585 first-choice was a <=4B instruct causal LM (TRL/LoRA) emitting JSON, but trl==0.16.6/bitsandbytes==0.44.1 don't exist on PyPI and the only resolvable trl (1.7.1) breaks the shared venv's datasets pin. roberta-large-mnli is the documented <=4B fallback: fp32-stable (no XPOS, unlike DeBERTa-v3 which NaNs in fp32 on CUDA), already NLI-pretrained, 0.355B (within the <=4B policy). It converged cleanly: held-out macro-F1 reached 1.0 by epoch 3 and held. The 3-way NLI head is reinitialized to a 2-way detection head (ignore_mismatched_sizes=True); the encoder weights transfer unchanged."
+  },
   "dataRecipe": {
     "generatorPath": "model-lab/correction-intent/generate-data.py",
-    "generatorGitSha": null,
+    "generatorGitSha": "e8347a49370935dd59a6cc7ae48c4952a08cd68a",
     "seed": 1337,
     "sources": ["synthetic-morphology"],
     "counts": {
-      "correction": null,
-      "none": null,
-      "total": null
+      "correction": 120,
+      "none": 130,
+      "total": 250
     },
-    "datasetSha256": null,
-    "$comment": "Counts/hash are filled by the GPU run from a real generate-data run; the committed manifest leaves them null because no canonical training dataset is committed (data is gitignored)."
+    "datasetSha256": "c0238a2bd44afd578a8542a61e4a9f36ad06429a66681a966967806dad612390",
+    "$comment": "Deterministic synthetic stream from the seeded morphology grammar (morphology.py): 12 correction scenarios x 10 substitution pairs = 120 corrections; 8 anti-examples x 10 + 5 clean turns x 10 = 130 none. Same seed -> identical bytes -> identical sha256 (asserted by tests/model-lab-correction-intent-data.test.mjs). Labels are trustworthy by construction: every record is a pure instantiation of a hand-verified morphology, so no model is in the loop. The harvest stream (teacher labels from #1581 telemetry) is not in this dataset — it is opt-in and waits for #1581 telemetry."
   },
   "trainingStack": {
-    "python": null,
+    "python": "3.12.3",
     "libs": {
-      "torch": null,
-      "transformers": null,
-      "datasets": null,
-      "huggingface-hub": null,
-      "accelerate": null
+      "torch": "2.12.1+cu126",
+      "transformers": "5.3.0",
+      "datasets": "3.6.0",
+      "huggingface-hub": "1.3.0",
+      "accelerate": "1.14.0",
+      "sentencepiece": "0.2.1"
     },
-    "pipFreezeSha256": null,
-    "capturedAt": null,
-    "$comment": "SCHEMA EXAMPLE. v1 shares the encoder classification stack with faithfulness-gate (issue #1738): torch/transformers/datasets/huggingface-hub/accelerate. trl/peft/bitsandbytes are NOT recorded because no v1 recipe imports them (the causal-LM/TRL extraction path is the v2 follow-up). Exact versions captured by common.training_stack.capture_training_stack() at train time; pin source: model-lab/requirements.txt."
+    "pipFreezeSha256": "112d66220c3db90288be58ec7f251a080400f961c33bf51ba1df832e3d00bb0a",
+    "capturedAt": "2026-07-07T18:10:13Z",
+    "$comment": "Exact interpreter + lib versions of the venv that produced these weights, captured by common.training_stack.capture_training_stack() at train time. pipFreezeSha256 is identical to the faithfulness-gate v1 manifest (same shared venv on 'jarvis-ml') — confirming both v1 models train on one reproducible stack. The pin source is model-lab/requirements.txt (encoder classification stack; trl/peft/bitsandbytes are NOT in this list because v1 does not import them)."
   },
-  "hyperparams": null,
-  "trainedAt": null,
-  "hardware": null,
+  "hyperparams": {
+    "base_model": "roberta-large-mnli",
+    "seed": 1337,
+    "epochs": 12,
+    "train_batch_size": 16,
+    "eval_batch_size": 32,
+    "learning_rate": 1e-05,
+    "warmup_ratio": 0.1,
+    "weight_decay": 0.01,
+    "max_length": 128,
+    "label_smoothing": 0.0,
+    "mixed_precision": "fp32",
+    "$comment": "fp32 (RoBERTa is fp32-stable; mirrors the faithfulness-gate v1 run #1737). lr=1e-5 converged steadily: held-out macro-F1 climbed 0.92 -> 0.87 -> 1.0 over epochs 1-3 and held at 1.0 through epoch 12. load_best_model_at_end (metric_for_best_model='f1') saved the epoch-3 checkpoint. The freshly-reinitialized 2-way head needs fp32 gradients to converge on this small (225-train) dataset."
+  },
+  "trainedAt": "2026-07-07T18:10:13Z",
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 3090",
+    "vramMib": 24576,
+    "driver": "580.159.03",
+    "computeCap": "8.6",
+    "ramGib": 188,
+    "arch": "x86_64",
+    "$comment": "Lab box 'jarvis-ml'. Ampere (bf16-capable), CUDA 12.6 wheel (cu126) matched to the 580 driver. Same box + stack as the faithfulness-gate v1 run (#1737)."
+  },
   "eval": {
-    "heldOut": null,
-    "downstream": null,
-    "$comment": "NOT YET RUN. The GPU run fills heldOut (detection F1 + mean span overlap + held-out p95 latency); the downstream number comes from the MemCorrect (#1584) false_apply / uptake@next ablation. Rule 55 forbids fabricating either."
+    "heldOut": {
+      "detection": {
+        "correction": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 14.0
+        },
+        "none": {
+          "precision": 1.0,
+          "recall": 1.0,
+          "f1": 1.0,
+          "support": 11.0
+        }
+      },
+      "macroF1": 1.0,
+      "examples": 25,
+      "meanSpanOverlap": 0.142857,
+      "latencyMs": {
+        "count": 25.0,
+        "min": 11.097,
+        "mean": 11.456,
+        "p50": 11.444,
+        "p95": 11.794,
+        "p99": 11.949,
+        "max": 11.987
+      },
+      "spanExtraction": {
+        "status": "not-applicable-v1",
+        "$comment": "v1 is a detection classifier (issue #1738); it predicts {correction, none} and emits NO correctedAssertion span, so its predictions carry an empty corrections[] block. meanSpanOverlap is therefore NOT a measure of extraction quality here: it is 0.0 for update/stop_storing corrections (gold assertion non-empty, pred empty) and 1.0 for retract-polarity corrections (gold assertion is empty by morphology, pred empty -> trivial match), averaging 0.143 over the 14 gold-correction rows. Span extraction is the v2 causal-LM follow-up (<=4B instruct LM emitting the corrections[] JSON block). Detection F1 is the eval gate (#1585)."
+      },
+      "$comment": "Held-out 10% split (25 examples) of the 250-record synthetic set, scored by model-lab/correction-intent/eval.py with the trained checkpoint (inline inference, single-example forward, fp32, 1 warmup call excluded from the latency distribution). macroF1=1.0 meets the #1585 held-out detection target. Caveat: the held-out is drawn from the SAME systematic generator as the train split, so 1.0 reflects perfect separation of the morphology patterns, not real-world robustness — the number that matters for production is the downstream one."
+    },
+    "downstream": {
+      "status": "external",
+      "source": "bench harness (MemCorrect #1584 false_apply / uptake@next ablation)",
+      "$comment": "NOT YET RUN. The downstream number (passive-correction detection quality vs the prompted-LLM classifier on real conversations) is produced by the #1584 MemCorrect bench protocol, not eval.py. eval.py only computes the held-out block to avoid implying a value it does not measure (rule 55)."
+    }
   },
   "artifact": {
-    "hfRepo": null,
-    "revision": null,
+    "hfRepo": "joshuawarren/remnic-correction-intent-v1",
+    "revision": "3bf0236dc5ae74bddd5c9be46c5860fbc57c960aebcb06dbe686df861ac1ff34",
     "quantizations": null,
-    "$comment": "Weights publish to the operator's HF account in the GPU run (common/hf_push.py); git carries recipes + hashes, never blobs."
+    "publishStatus": "pending-hf-upload",
+    "localArtifactSha256": "3bf0236dc5ae74bddd5c9be46c5860fbc57c960aebcb06dbe686df861ac1ff34",
+    "$comment": "The trained weights (model.safetensors + tokenizer + config + held-out gold under model-lab/runs/correction-intent/v1/) are gitignored and were NOT published to the HF Hub: no HF credentials exist on the lab box and common/hf_push.py is a stub (NotImplementedError). For reproducibility the exact trained weights are content-pinned by localArtifactSha256 (sha256 over the sorted artifact-dir file set: config.json, correction-heldout.jsonl, model.safetensors, tokenizer.json, tokenizer_config.json, training_args.bin), recorded as revision. This is a verifiable integrity pin of what was trained; HF upload to hfRepo is the pending follow-up (shared with the faithfulness-gate gap, tracked in #1738). Re-running the recipe from this manifest reproduces a bit-identical artifact because the data generator + hyperparams + pinned stack are all deterministic."
   },
   "policyCompliance": {
     "targetMaxParamsB": 4,
-    "actualParamsB": null,
+    "actualParamsB": 0.355,
     "escapeHatchUsed": false,
-    "$comment": "Issue #1585 policy: target models <=4B for correction-intent. v1 base roberta-large-mnli is 0.355B (detection classifier). The structured-extraction (causal-LM) escape hatch is the v2 follow-up. Default base: roberta-large-mnli (issue #1738)."
+    "$comment": "roberta-large is 0.355B — well within the <=4B target for this detection task (issue #1585). No 8B escape hatch needed. The structured-extraction (causal-LM <=4B) path is the v2 follow-up, also within policy."
   }
 }

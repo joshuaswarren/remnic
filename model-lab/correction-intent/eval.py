@@ -48,6 +48,12 @@ from typing import Any, Mapping
 _MODEL_LAB_ROOT = Path(__file__).resolve().parents[1]
 if str(_MODEL_LAB_ROOT) not in sys.path:
     sys.path.insert(0, str(_MODEL_LAB_ROOT))
+# morphology is a sibling module in this dir; add it to sys.path too so the
+# import resolves both when run as a script AND when exec'd as a module by the
+# eval-guard test (which only puts model-lab/ on the path).
+_THIS_DIR = Path(__file__).resolve().parent
+if str(_THIS_DIR) not in sys.path:
+    sys.path.insert(0, str(_THIS_DIR))
 
 from common.eval_runner import correction_held_out_block, span_overlap  # noqa: E402
 from common.latency import summarize  # noqa: E402
