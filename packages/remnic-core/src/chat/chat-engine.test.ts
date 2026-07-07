@@ -7,7 +7,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdir, rm, readFile, utimes, unlink } from "node:fs/promises";
+import { mkdir, rm, readFile, utimes, unlink, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -22,6 +22,7 @@ import {
   sessionBelongsToPrincipal,
   chatSessionFile,
   cleanupExpiredChatSessions,
+  __resetTranscriptSeqForTest,
 } from "./chat-session.js";
 import type { ChatSessionState } from "./chat-types.js";
 import type { ChatToolExecutor } from "./chat-engine.js";
@@ -333,5 +334,42 @@ test("appendTranscriptEntry refuses to recreate a swept session (chat_session_ex
   await assert.rejects(
     appendTranscriptEntry(dir, session.id, { role: "user", content: "x" }),
     /chat_session_expired/,
+  );
+});
+
+
+test("loadChatSession raises the seq counter above the on-disk max on backward clock skew (issue #1718)", async () => {
+  const dir = await makeTempDir();
+  const session = await createChatSession(dir, { principal: "skew" });
+  // Simulate a previous process that ran with a forward-skewed clock: append a
+  // transcript line whose seq is far in the future relative to the current
+  // Date.now(). A later restart with a normal (or backward-stepped) clock must
+  // still issue seqs strictly greater than this persisted line.
+  const futureSeq = Date.now() + 10_000_000;
+  await appendFile(
+    chatSessionFile(dir, session.id),
+    JSON.stringify({
+      seq: futureSeq,
+      ts: new Date().toISOString(),
+      role: "user",
+      content: "future-dated line from a forward-skewed prior process",
+    }) + "\n",
+    "utf8",
+  );
+  // Simulate a process restart whose module-level counter starts below the
+  // persisted on-disk seq (the backward-clock-skew window).
+  __resetTranscriptSeqForTest();
+  // Resume the session: loadChatSession must raise the counter above the
+  // on-disk max so the next append is strictly greater, regardless of the
+  // current Date.now().
+  const loaded = await loadChatSession(dir, session.id);
+  assert.ok(loaded, "session must load");
+  const next = await appendTranscriptEntry(dir, session.id, {
+    role: "assistant",
+    content: "resumed after backward clock skew",
+  });
+  assert.ok(
+    next.seq > futureSeq,
+    `seq ${next.seq} must exceed the on-disk max ${futureSeq} after a backward clock skew (issue #1718)`,
   );
 });
