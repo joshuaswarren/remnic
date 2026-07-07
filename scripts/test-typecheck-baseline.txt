@@ -94,8 +94,6 @@ packages/import-mem0/src/client.test.ts(219,38): TS2304
 packages/import-mem0/src/client.test.ts(312,38): TS2304
 packages/import-mem0/src/client.test.ts(340,38): TS2304
 packages/import-mem0/src/client.test.ts(373,38): TS2304
-packages/remnic-cli/src/bench-args.ts(236,7): TS2322
-packages/remnic-cli/src/bench-args.ts(259,47): TS2367
 src/index.ts(2,40): TS2307
 src/index.ts(3987,38): TS2307
 src/index.ts(4161,23): TS2307
