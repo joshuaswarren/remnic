@@ -377,7 +377,7 @@ class ClaudeCliProvider implements LlmProvider {
       cwd,
       timeoutMs: this.config.retryOptions?.timeoutMs,
       signal: opts.signal,
-      env: buildIsolatedClaudeEnv(this.config),
+      env: buildIsolatedClaudeEnv(this.config, opts.maxTokens),
     };
   }
 }
@@ -417,6 +417,16 @@ class ClaudeCliProvider implements LlmProvider {
  *   JSON result read from stdin (see `runClaudeCliCommand`, which pipes the
  *   prompt over stdin rather than argv — mirrors codex-cli.ts's approach so
  *   large benchmark prompts never hit an OS argv length limit).
+ * - `--no-session-persistence` (verified against `claude -p --help` on the
+ *   installed CLI, v2.1.202: "Disable session persistence - sessions will
+ *   not be saved to disk and cannot be resumed (only works with --print)")
+ *   stops the CLI from writing this call's transcript/session state to disk
+ *   at all, so recalled-memory context and expected answers fed into a
+ *   responder/judge call can't leak into or be resumed by a later `claude
+ *   -p` call (PR #1735 review, finding 1). This is in addition to, not a
+ *   replacement for, the isolated per-call temp `cwd`: the flag addresses
+ *   session-transcript persistence, while the fresh cwd addresses
+ *   CLAUDE.md/project-file discovery.
  *
  * There is no `--max-turns` flag on this CLI build (`claude --help` was
  * checked; codex CLI's `exec` equivalent doesn't need one either since
@@ -436,6 +446,7 @@ function buildClaudeCliArgs(config: ClaudeCliProviderConfig, systemPrompt?: stri
     "--strict-mcp-config",
     "--tools",
     "",
+    "--no-session-persistence",
   ];
 
   const trimmedSystemPrompt = systemPrompt?.trim();
@@ -462,7 +473,26 @@ function buildClaudeCompletionPrompt(userPrompt: string): string {
   ].join("\n");
 }
 
-function buildIsolatedClaudeEnv(config: ClaudeCliProviderConfig): NodeJS.ProcessEnv {
+/**
+ * `claude -p --help` has no `--max-tokens` / `--max-output-tokens` flag (v2.1.202
+ * checked; see `buildClaudeCliArgs` for the flags that do exist). The CLI does,
+ * however, honor an undocumented-in---help env var, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`:
+ * it appears in the installed binary's own strings alongside the runtime message
+ * "Claude's response exceeded the ... output token maximum. To configure this
+ * behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.", and was
+ * confirmed live (PR #1735 review, finding 2) — a `claude -p` call asked to count
+ * to 200 produced 434 output tokens uncapped, and only 117 output tokens (8 lines)
+ * with `CLAUDE_CODE_MAX_OUTPUT_TOKENS=50` set, with `is_error: false` (a silent
+ * truncation, not a hard error). This is the CLI's real, if unofficial, mechanism
+ * for `opts.maxTokens`, so it's forwarded here rather than left unhonored. Because
+ * truncation is silent, this is a soft cap: the judge/responder prompts themselves
+ * ("answer yes/no only", "return a single number", ...) still do the primary work
+ * of keeping the answer shape small; this env var is a backstop, not a hard
+ * contract enforced by the API itself the way an SDK's `max_tokens` param is.
+ */
+const CLAUDE_CLI_MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS";
+
+function buildIsolatedClaudeEnv(config: ClaudeCliProviderConfig, maxTokens?: number): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && isAllowedClaudeRuntimeEnvKey(key)) {
@@ -478,6 +508,9 @@ function buildIsolatedClaudeEnv(config: ClaudeCliProviderConfig): NodeJS.Process
   }
   if (config.baseUrl && config.baseUrl.trim().length > 0) {
     env.ANTHROPIC_BASE_URL = config.baseUrl.trim();
+  }
+  if (typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0) {
+    env[CLAUDE_CLI_MAX_OUTPUT_TOKENS_ENV] = String(Math.floor(maxTokens));
   }
 
   return env;

@@ -65,6 +65,7 @@ test("claude-cli provider invokes claude -p in an isolated benchmark mode", asyn
     "--strict-mcp-config",
     "--tools",
     "",
+    "--no-session-persistence",
     "--append-system-prompt",
     "Answer using only benchmark context.",
   ]);
@@ -730,7 +731,68 @@ test("claude-cli buildClaudeCliArgs passes systemPrompt via --append-system-prom
     "--strict-mcp-config",
     "--tools",
     "",
+    "--no-session-persistence",
   ]);
+});
+
+test("claude-cli buildClaudeCliArgs always includes --no-session-persistence (verified real flag, claude -p --help v2.1.202)", () => {
+  const { buildClaudeCliArgs } = __claudeCliProviderTestHooks;
+
+  assert.ok(buildClaudeCliArgs({ provider: "claude-cli", model: "opus" }).includes("--no-session-persistence"));
+});
+
+test("claude-cli buildIsolatedClaudeEnv forwards opts.maxTokens as CLAUDE_CODE_MAX_OUTPUT_TOKENS", () => {
+  const { buildIsolatedClaudeEnv } = __claudeCliProviderTestHooks;
+
+  const withMaxTokens = buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 50);
+  assert.equal(withMaxTokens.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "50");
+
+  // Fractional values are floored to an integer token count.
+  const withFractionalMaxTokens = buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 50.9);
+  assert.equal(withFractionalMaxTokens.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "50");
+});
+
+test("claude-cli buildIsolatedClaudeEnv omits CLAUDE_CODE_MAX_OUTPUT_TOKENS when maxTokens is absent or invalid", () => {
+  const { buildIsolatedClaudeEnv } = __claudeCliProviderTestHooks;
+
+  assert.equal(
+    buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }).CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+    undefined,
+  );
+  assert.equal(
+    buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 0).CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+    undefined,
+  );
+  assert.equal(
+    buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, -5).CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+    undefined,
+  );
+  assert.equal(
+    buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, Number.NaN).CLAUDE_CODE_MAX_OUTPUT_TOKENS,
+    undefined,
+  );
+});
+
+test("claude-cli provider forwards opts.maxTokens through to the child process env end to end", async () => {
+  let capturedEnv: NodeJS.ProcessEnv | undefined;
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli(request) {
+        capturedEnv = request.env;
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({ is_error: false, result: "ok" }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await provider.complete("hello", { maxTokens: 128 });
+
+  assert.equal(capturedEnv?.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "128");
 });
 
 function escapeRegExp(value: string): string {
