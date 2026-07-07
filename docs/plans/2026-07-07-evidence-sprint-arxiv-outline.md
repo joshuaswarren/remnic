@@ -62,7 +62,7 @@ This rubric is the benchmark-side analogue of the vault's *Definition of Shippab
 1. **Paper skeleton in-repo** (`docs/paper/` or `.tex`) — instantiate the Part-1 outline as the working draft. *(Fable-worthy: framing.)*
 2. **Third-party MemCorrect adapters — Mem0, Zep, Letta** (`MemCorrectSystemAdapter`). *(Fleet: implementation. Highest leverage.)*
 3. **Tier-F run** — LoCoMo + LongMemEval with **Opus 4.8 via `claude -p`** as responder and the **local 3090 as judge** (no API budget/credential; see the Update section); calibrate the local judge against a small Opus-judged slice for the kappa. *(Fleet: run, isolated + session-limit-aware.)*
-4. **Head-to-head reproduction** — reproduce or cite-with-caveat Mem0/Zep published numbers via our harness. *(Fleet.)*
+4. **Head-to-head reproduction** — reproduce or cite-with-caveat Mem0/Zep published numbers via our harness. Needs Mem0/Zep/Letta wired as **`BenchMemoryAdapter`** (the recall interface LoCoMo/LongMemEval score against) — distinct from the `MemCorrectSystemAdapter` in child #2; add that recall-adapter coverage as a prerequisite, not just the correction adapters. *(Fleet.)*
 5. **Ablation data** — confirm/produce the #1574 single-flag ablations; coordinate **#1708** bounded-memory ablation as a paper section (don't duplicate — it's open and unclaimed). *(Fleet.)*
 6. **Related Work draft** from `docs/research/paper-mapping.md`. *(Fable-worthy.)*
 7. **Figures** — LoCoMo/LongMemEval chart vs Mem0/Zep/Letta; MemCorrect metric bars; TrustScore illustration. *(Fleet, using dataviz standards.)*
@@ -102,7 +102,7 @@ A full run (~1986 LoCoMo + 500 LongMemEval ≈ 2486 responder calls, ×2 if the 
 1. **Judge on the local 3090, not Opus** — the single biggest lever; keeps Opus for the responder only (halves the `claude -p` load). Calibrate the local judge against a small Opus-judged sample (Cohen's kappa) so it stays defensible.
 2. **Checkpoint + resume** — persist per-item results (`results-store.ts`/`repro-manifest.ts`) and skip completed items, so a run spans multiple 5-hour windows / days.
 3. **Low concurrency + usage-limit backoff** — concurrency 1; detect the usage-limit message, sleep until the window resets, resume (built into the `claude-cli` adapter).
-4. **Sample first** — a stratified 200–300-item pass gives publishable July numbers + method posts cheaply; scale to full once the pipeline is proven.
+4. **Sample first** — a stratified 200–300-item pass is a **pilot** (method posts + pipeline validation), NOT a publishable leaderboard number: the publishability rubric (Part 3) requires full, non-mock datasets. Scale to the full set before any number is published.
 5. **Judge cache** (already in the harness) — never re-judge an identical answer.
 
 Net: responder = Opus via `claude -p` (chunked across windows, resumable, isolated); judge = local 3090 (calibrated); start sampled, then full.
