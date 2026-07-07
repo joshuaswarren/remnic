@@ -92,12 +92,23 @@ A prior-art sweep (live web research, 2026-07-07) confirms MemCorrect is a **gen
 
 **Required fix before publishing:** `docs/benchmarks/memcorrect.md:8` states LongMemEval's knowledge-update category is "near ceiling" — that's the paper's stated *motivation* and it is fact-checkably wrong (KU scores span ~70–90% by system). Soften to: *"KU only checks instantaneous answer correctness, not correction durability/collateral/scope."* This is the single most checkable claim in the doc.
 
-### Tier-F responder: split the roles
-- **Published headline number → raw Anthropic Messages API** (`packages/bench/src/providers/anthropic.ts`, already wired). A `claude -p`-mediated number is a *different measurement* (Claude Code adds system-prompt scaffolding + model-alias routing; not reproducible by anyone without your Claude Code entitlement) — reviewers/leaderboards could reject it. `published-artifact.ts` treats `tier: "frontier"` as the trusted leaderboard number, so it must be API-sourced.
-- **`claude -p` / Opus 4.8 → the judge + cheap internal iteration.** Feasible and cheap: the harness already has a CLI-shelling provider (`packages/bench/src/providers/codex-cli.ts`); a `claude-cli.ts` sibling is ~1–4 days. The judge via `claude -p` needs **zero** extra plumbing (`createProviderBackedJudge` is provider-agnostic). **Critical isolation requirement:** run `claude -p` from an isolated empty temp workspace with tools disabled — otherwise it inherits `~/.claude/CLAUDE.md`/project settings and silently contaminates every benchmark answer (mirror codex-cli.ts's `--ignore-user-config`/`--sandbox read-only` + "you are a benchmark endpoint" prompt). If a `claude-cli` number is ever published, label it distinctly from an API `tier: frontier`.
+### Tier-F responder: `claude -p` / Opus 4.8 IS the path (no API budget)
+There is no budget for a raw-API frontier run, so the Tier-F responder **is** Opus 4.8 via Claude Code headless (`claude -p`), through the new `claude-cli` bench provider (branch `feat/bench-claude-cli-provider`, modeled on `packages/bench/src/providers/codex-cli.ts`).
+- **Label it honestly — don't hide it.** A `claude -p` number is "Opus 4.8 via Claude Code," NOT a raw-API `tier: "frontier"` result (Claude Code adds system-prompt scaffolding + model-alias routing, and it isn't reproducible without a Claude Code entitlement). Publish it as its own clearly-labeled tier (e.g. `tier: "frontier-cc"` or a `note`), not as an API frontier number. Stated plainly, this is a defensible position; the only thing that would sink credibility is presenting it *as* an API number.
+- **Isolation is mandatory.** Run `claude -p` from an isolated empty temp workspace with tools disabled, or it inherits `~/.claude/CLAUDE.md`/project settings and silently contaminates every answer (the adapter mirrors codex-cli.ts's `--ignore-user-config` / isolated-cwd + "you are a benchmark endpoint" prompt).
+
+### Fitting Claude Max x20 session limits (the real constraint)
+A full run (~1986 LoCoMo + 500 LongMemEval ≈ 2486 responder calls, ×2 if the judge is also Opus) will blow the 5-hour/weekly caps. To fit:
+1. **Judge on the local 3090, not Opus** — the single biggest lever; keeps Opus for the responder only (halves the `claude -p` load). Calibrate the local judge against a small Opus-judged sample (Cohen's kappa) so it stays defensible.
+2. **Checkpoint + resume** — persist per-item results (`results-store.ts`/`repro-manifest.ts`) and skip completed items, so a run spans multiple 5-hour windows / days.
+3. **Low concurrency + usage-limit backoff** — concurrency 1; detect the usage-limit message, sleep until the window resets, resume (built into the `claude-cli` adapter).
+4. **Sample first** — a stratified 200–300-item pass gives publishable July numbers + method posts cheaply; scale to full once the pipeline is proven.
+5. **Judge cache** (already in the harness) — never re-judge an identical answer.
+
+Net: responder = Opus via `claude -p` (chunked across windows, resumable, isolated); judge = local 3090 (calibrated); start sampled, then full.
 
 ### Confirmed decisions (Joshua, 2026-07-07)
 - **Lead with MemCorrect** — with the honest composition framing above.
-- **Tier-F on Opus 4.8** — via the API for the published number; `claude -p`/Opus as judge + internal iteration.
+- **Tier-F on Opus 4.8 via `claude -p`** (no API budget) — labeled as its own tier, not an API frontier number; local 3090 as judge to fit Claude Max x20 session limits; checkpoint/resume + sampled-first.
 - **Adapter order: Mem0 → Zep → Letta.**
 - **Infra:** jarvis becomes the primary Remnic host (full Linux parity verified; a GPU upgrade); macstudio failover. See `homelab-infra/docs/fleet-macstudio-spof-and-failover.md`.
