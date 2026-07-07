@@ -284,7 +284,14 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = args.runs_dir / args.version_tag
     out_dir.mkdir(parents=True, exist_ok=True)
-    fp16 = hyperparams.mixed_precision == "bf16"
+    # bf16 is the operator-controlled escape hatch (--mixed-precision). It must
+    # drive the Trainer's ``bf16`` flag (NOT ``fp16``): setting fp16=True would
+    # run FP16 mixed precision, a different numerical mode than the documented
+    # bf16 Ampere escape hatch, changing convergence + making the run
+    # unreproducible from its manifest. fp32 (default) leaves both flags False
+    # and mirrors the faithfulness-gate v1 run: RoBERTa is fp32-stable and the
+    # freshly-initialized 2-way head needs fp32 gradients on small data.
+    bf16 = hyperparams.mixed_precision == "bf16"
     training_args = TrainingArguments(
         output_dir=str(out_dir),
         num_train_epochs=hyperparams.epochs,
@@ -294,11 +301,7 @@ def main(argv: list[str] | None = None) -> int:
         warmup_ratio=hyperparams.warmup_ratio,
         weight_decay=hyperparams.weight_decay,
         label_smoothing_factor=hyperparams.label_smoothing,
-        # bf16 is the operator-controlled escape hatch (--mixed-precision).
-        # fp32 (default) mirrors the faithfulness-gate v1 run: RoBERTa is
-        # fp32-stable and the freshly-initialized 2-way head needs fp32
-        # gradients to converge on small data.
-        fp16=fp16,
+        bf16=bf16,
         # transformers 5.x API: ``eval_strategy`` (``evaluation_strategy`` was
         # removed in 5.0). Reproducibility comes from ``seed`` + ``data_seed``;
         # ``deterministic``/``full_determinism`` is omitted to avoid torch

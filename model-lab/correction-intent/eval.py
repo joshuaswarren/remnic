@@ -96,6 +96,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--max-length", type=int, default=128,
         help="max tokens for the joined turn window (inline path; must match train.py).",
     )
+    parser.add_argument(
+        "--latency-samples", type=Path,
+        help="Offline path only: file of per-call latency samples (ms, one per line) "
+             "from a separately-run inference, for the held-out p95 latency block. "
+             "The inline path measures latency itself and ignores this.",
+    )
     return parser
 
 
@@ -215,8 +221,19 @@ def _score_offline(args: argparse.Namespace) -> int:
         _gold_labels(pred_rows),
         span_overlaps=_span_overlaps(gold_rows, pred_rows),
     )
-
     out: dict[str, Any] = {"heldOut": block}
+    # Offline path: an operator who ran inference separately (e.g. a served
+    # model over the held-out) attaches the per-call latency samples here so
+    # the emitted eval block carries the documented p95 latency without the
+    # GPU stack (the inline path measures latency itself; this is the side
+    # channel for the CPU-only/offline workflow — issue #1700 nit #1).
+    if args.latency_samples and args.latency_samples.is_file():
+        samples = [float(x) for x in args.latency_samples.read_text().splitlines() if x.strip()]
+        if samples:
+            out["heldOut"]["latencyMs"] = summarize(samples)
+        else:
+            print("eval.py: --latency-samples file has no non-blank lines; skipping latency block.",
+                  file=sys.stderr)
     print(json.dumps({"task": "correction-intent", "eval": out}, indent=2))
     print(
         "\nNOTE: downstream number (MemCorrect #1584 false_apply / uptake@next) "
