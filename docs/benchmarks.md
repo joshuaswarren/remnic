@@ -84,6 +84,12 @@ carries a known self-preference caveat acceptable for Tier L regression.
 Judge-call counts: locomo 1885/1986 and longmemeval 407/500 (the
 content-keyed judge cache absorbs repeated/identical answers).
 
+Single-flag ablation deltas against this Tier L baseline (memory-worth,
+contradiction-scan, graph-recall) are in
+[`docs/benchmarks/ablations.md`](./benchmarks/ablations.md) (issue #1730).
+At 7B-Q4 single-seed no cell moves any metric outside the run-to-run noise
+band, so no shipped default is changed by that ablation.
+
 The two `*-mock000.json` files remain as **pipeline examples** with
 `datasetVersion: "mock-fixture"` and placeholder scores; **do not cite
 them publicly**. They will be removed once full uncapped Tier L runs
