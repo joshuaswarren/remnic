@@ -106,6 +106,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help=f"output runs directory (default: {DEFAULT_RUNS_DIR})")
     parser.add_argument("--base-model", type=str, default=DEFAULT_BASE_MODEL,
                         help=f"Hugging Face base model id (default: {DEFAULT_BASE_MODEL})")
+    parser.add_argument("--base-model-revision", type=str,
+                        default="2a8f12d27941090092df78e4ba6f0928eb5eac98",
+                        help="HF base model git revision for reproducibility. Default pins "
+                             "the manifest baseModel.revision so re-runs fetch the exact base "
+                             "checkpoint even if the HF default branch moves (cursor PA_vX).")
     parser.add_argument("--seed", type=int, default=1337, help="training seed (default: 1337)")
     parser.add_argument("--epochs", type=int, default=12, help="epochs (default: 12)")
     parser.add_argument("--train-batch-size", type=int, default=16)
@@ -271,7 +276,9 @@ def main(argv: list[str] | None = None) -> int:
     raw_dataset = Dataset.from_list(rows)
     split = raw_dataset.train_test_split(test_size=0.1, seed=hyperparams.seed)
 
-    tokenizer = AutoTokenizer.from_pretrained(hyperparams.base_model)
+    tokenizer = AutoTokenizer.from_pretrained(
+        hyperparams.base_model, revision=args.base_model_revision
+    )
 
     def tokenize(batch: dict[str, Any]) -> dict[str, Any]:
         return tokenizer(batch["text"], truncation=True, max_length=hyperparams.max_length)
@@ -284,6 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     # unchanged). transformers 5.x raises on a mismatch unless this is set.
     model = AutoModelForSequenceClassification.from_pretrained(
         hyperparams.base_model,
+        revision=args.base_model_revision,
         num_labels=len(morphology.LABELS),
         id2label=ID_TO_LABEL,
         label2id=LABEL_TO_ID,
@@ -364,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         "status": "trained",
         "runsDir": str(out_dir),
         "hyperparams": hyperparams.to_dict(),
+        "baseModelRevision": args.base_model_revision,
         "labelSet": list(morphology.LABELS),
         "heldOut": str(heldout_path),
     }, indent=2))
