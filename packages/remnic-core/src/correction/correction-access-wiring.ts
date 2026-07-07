@@ -515,7 +515,7 @@ async function rescopeMemoryFn(
   const destContent = fm.structuredAttributes
     ? stripAttributesSuffix(memory.content)
     : memory.content;
-  const { id: destId } = await destStorage.writeMemory(fm.category, destContent, {
+  const { id: destId, tombstoneBlocked: destBlocked } = await destStorage.writeMemory(fm.category, destContent, {
     source: `correction:rescope:${namespace}`,
     ...(typeof fm.confidence === "number" ? { confidence: fm.confidence } : {}),
     ...(Array.isArray(fm.tags) ? { tags: fm.tags } : {}),
@@ -527,6 +527,14 @@ async function rescopeMemoryFn(
     ...(Array.isArray(fm.links) ? { links: fm.links } : {}),
     ...(fm.intentGoal ? { intentGoal: fm.intentGoal } : {}),
   });
+  if (destBlocked) {
+    // #1645: destination tombstone-blocked the rescope (pending_review). Don't
+    // archive the source — that deletes the only active copy while the
+    // replacement sits behind review. Fail the rescope; source stays active.
+    throw new CorrectionContractError(
+      `rescope of ${memoryId} into "${toNamespace}" was tombstone-blocked (pending_review ${destId}) — keeping source active`,
+    );
+  }
   // Unlink the source by archiving (non-destructive — rule 25). If the archive
   // fails AFTER the destination write succeeded, compensate by archiving the
   // destination too so no duplicate ACTIVE fact remains, then re-throw so the

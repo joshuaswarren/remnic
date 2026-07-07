@@ -408,7 +408,7 @@ async function decisionSupersede(
     supersedes: targetId,
   };
   const replacementContent = serializeDecisionRecord(replacement);
-  const { id: replacementId } = await storage.writeMemory(
+  const { id: replacementId, tombstoneBlocked: replacementBlocked } = await storage.writeMemory(
     "decision",
     replacementContent,
     {
@@ -421,6 +421,14 @@ async function decisionSupersede(
       structuredAttributes: { decisionStatus: "accepted" },
     },
   );
+  if (replacementBlocked) {
+    // #1645: the replacement decision matched a tombstone (pending_review).
+    // Don't archive the old record — superseding with a non-active
+    // replacement retires the only active decision. Abort; old stays active.
+    ctx.throwInputError(
+      `replacement decision was tombstone-blocked (pending_review ${replacementId}) — keeping decision ${targetId} active`,
+    );
+  }
   // Mark the old record superseded: set BOTH frontmatter.status (so
   // recall/search/maintenance exclude it from the active corpus — review P2)
   // AND structuredAttributes.decisionStatus (the decision-specific lifecycle
