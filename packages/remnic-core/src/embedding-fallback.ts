@@ -1,6 +1,7 @@
 import path from "node:path";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
+import { resolveMemoryLifecycleCapabilities } from "./capabilities.js";
 import { readEnvVar } from "./runtime/env.js";
 import type { PluginConfig } from "./types.js";
 import {
@@ -397,7 +398,7 @@ export class EmbeddingFallback {
   private async resolveProvider(
     options: { includeHost?: boolean } = {},
   ): Promise<ProviderConfig | null> {
-    if (!this.config.embeddingFallbackEnabled) return null;
+    if (!resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) return null;
 
     if (
       options.includeHost !== false &&

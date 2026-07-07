@@ -1,4 +1,5 @@
 import { log } from "../logger.js";
+import { resolveMemoryLifecycleCapabilities } from "../capabilities.js";
 import type { PluginConfig } from "../types.js";
 import { isAbortError } from "../abort-error.js";
 import { withTimeoutSignal } from "./abort.js";
@@ -209,7 +210,7 @@ export class EmbedHelper {
   }
 
   private resolveProvider(options: { includeHost?: boolean } = {}): ProviderConfig | null {
-    if (!this.config.embeddingFallbackEnabled) return null;
+    if (!resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) return null;
 
     if (
       options.includeHost !== false &&
@@ -244,7 +245,7 @@ export class EmbedHelper {
   }
 
   private resolveFallbackProviderForIdentity(identity: EmbedProviderIdentity): ProviderConfig | null {
-    if (!this.config.embeddingFallbackEnabled) return null;
+    if (!resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) return null;
     const separator = identity.indexOf(":");
     if (separator <= 0 || separator === identity.length - 1) return null;
     const type = identity.slice(0, separator);

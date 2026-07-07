@@ -248,6 +248,8 @@ export interface MemoryLifecycleCapabilitySet {
   readonly extractionTelemetryPrefilter: boolean;
   /** `extractionJudgeTelemetryEnabled` — collect judge verdict telemetry. */
   readonly extractionJudgeTelemetry: boolean;
+  /** `embeddingFallbackEnabled` — semantic-dedup / archive-search embedding fallback. */
+  readonly embeddingFallback: boolean;
 }
 
 /**
@@ -265,6 +267,7 @@ export type MemoryLifecycleConfigProjection = Pick<
   | "extractionDedupeEnabled"
   | "extractionTelemetryPrefilterEnabled"
   | "extractionJudgeTelemetryEnabled"
+  | "embeddingFallbackEnabled"
 >;
 
 /**
@@ -288,5 +291,6 @@ export function resolveMemoryLifecycleCapabilities(
     extractionDedupe: config.extractionDedupeEnabled,
     extractionTelemetryPrefilter: config.extractionTelemetryPrefilterEnabled,
     extractionJudgeTelemetry: config.extractionJudgeTelemetryEnabled,
+    embeddingFallback: config.embeddingFallbackEnabled,
   });
 }

@@ -38,6 +38,7 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
+import { resolveMemoryLifecycleCapabilities } from "./capabilities.js";
 
 type ExtractionQuestion = ExtractionResult["questions"][number];
 type ExtractedFactResult = ExtractionResult["facts"][number];
@@ -1055,6 +1056,7 @@ export class ExtractionEngine {
   }
 
   async extract(turns: BufferTurn[], existingEntities?: string[]): Promise<ExtractionResult> {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
 
     // Guard: skip if buffer is empty or all turns are whitespace-only
     const substantiveTurns = turns.filter((t) => t.content.trim().length > 0);
@@ -1083,7 +1085,7 @@ export class ExtractionEngine {
       return { facts: [], profileUpdates: [], entities: [], questions: [] };
     }
     if (
-      this.config.extractionTelemetryPrefilterEnabled &&
+      lifecycleCaps.extractionTelemetryPrefilter &&
       looksLikeMechanicalTelemetryTranscript(conversation)
     ) {
       log.debug("extraction skipped — mechanical action/state telemetry without durable-memory cues");
@@ -1331,6 +1333,7 @@ export class ExtractionEngine {
    * Uses a minimal prompt to fit within local model context limits (typically 4k-8k).
    */
   private async extractWithLocalLlm(conversation: string, existingEntities?: string[]): Promise<ExtractionResult | null> {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     log.debug(
       `extractWithLocalLlm: starting extraction, localLlmEnabled=${this.shouldUseLocalLlm}, model=${this.config.localLlmModel}`,
     );
@@ -1406,7 +1409,7 @@ These are durable insights - capture them:
 - CRITICAL: Use canonical hyphenated entity names (e.g., "jane-doe" not "janedoe")
 - CRITICAL: NEVER extract the same fact twice - check for duplicates before adding to facts array
 - CRITICAL: NEVER extract cron job schedules, automation configurations, or system monitoring details (these are operational noise)
-- If uncertain about relevance, prefer NOT extracting${this.config.extractionScopeClassificationEnabled ? `
+- If uncertain about relevance, prefer NOT extracting${lifecycleCaps.extractionScopeClassification ? `
 - For each fact, set "scope" to "global" (cross-project knowledge: framework bugs, library behavior, user preferences, tool configs, general patterns) or "project" (codebase-specific: file paths, env configs, deployment details, project workarounds). When in doubt, prefer "project".` : ""}
 
 === Structured Attributes ===
@@ -1645,6 +1648,7 @@ Omit "eventTime" when the fact has no explicit temporal anchor — do NOT guess 
    * Build extraction instructions shared between local and cloud LLM.
    */
   private buildExtractionInstructions(existingEntities?: string[]): string {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     return `You are a memory extraction system. Analyze the following conversation and extract durable, reusable memories.
 
 Memory categories:
@@ -1681,7 +1685,7 @@ Rules:
   * Inferred (0.40-0.69): Pattern recognition — reasonable guess from limited evidence
   * Speculative (0.00-0.39): Tentative hypothesis — weak signal, needs future confirmation. Speculative memories auto-expire after 30 days if not confirmed.${this.config.provenance?.enabled ? `
 - Source quotes: For each fact, include a "quote" field containing the EXACT verbatim words from the conversation that support the fact. Copy a contiguous span from a single speaker turn (not a paraphrase, not a summary). Cap at ~300 characters. This grounds every memory in the literal utterance that created it.` : ""}
-- For commitments: include any deadline or timeframe mentioned${this.config.extractionScopeClassificationEnabled ? `
+- For commitments: include any deadline or timeframe mentioned${lifecycleCaps.extractionScopeClassification ? `
 
 Scope classification:
 For each fact, set "scope" to one of:

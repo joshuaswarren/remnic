@@ -338,6 +338,7 @@ const LIFECYCLE_FIELD_TO_FLAG: Record<keyof MemoryLifecycleCapabilitySet, string
   extractionDedupe: "extractionDedupeEnabled",
   extractionTelemetryPrefilter: "extractionTelemetryPrefilterEnabled",
   extractionJudgeTelemetry: "extractionJudgeTelemetryEnabled",
+  embeddingFallback: "embeddingFallbackEnabled",
 };
 
 const LIFECYCLE_FIELDS = Object.keys(LIFECYCLE_FIELD_TO_FLAG) as Array<
@@ -403,6 +404,7 @@ test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (par
       extractionDedupeEnabled: false,
       extractionTelemetryPrefilterEnabled: false,
       extractionJudgeTelemetryEnabled: false,
+      embeddingFallbackEnabled: false,
     },
     "all-on": {
       temporalSupersessionEnabled: true,
@@ -415,6 +417,7 @@ test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (par
       extractionDedupeEnabled: true,
       extractionTelemetryPrefilterEnabled: true,
       extractionJudgeTelemetryEnabled: true,
+      embeddingFallbackEnabled: true,
     },
     "temporal-on-rest-off": {
       temporalSupersessionEnabled: true,
@@ -427,6 +430,7 @@ test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (par
       extractionDedupeEnabled: false,
       extractionTelemetryPrefilterEnabled: false,
       extractionJudgeTelemetryEnabled: false,
+      embeddingFallbackEnabled: false,
     },
     "extraction-on-rest-off": {
       temporalSupersessionEnabled: false,
@@ -439,6 +443,7 @@ test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (par
       extractionDedupeEnabled: true,
       extractionTelemetryPrefilterEnabled: true,
       extractionJudgeTelemetryEnabled: true,
+      embeddingFallbackEnabled: true,
     },
   };
 

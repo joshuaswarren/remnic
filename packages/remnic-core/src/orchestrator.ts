@@ -269,8 +269,10 @@ import { tryDirectAnswer, type DirectAnswerSources } from "./direct-answer-wirin
 import {
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
+  resolveMemoryLifecycleCapabilities,
   type CapabilitySet,
   type GraphConstructionCapabilitySet,
+  type MemoryLifecycleCapabilitySet,
 } from "./capabilities.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/index.js";
 import {
@@ -3094,9 +3096,10 @@ export class Orchestrator {
     );
     // BoxBuilders are created per-namespace on first use in runExtraction().
 
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(config);
     // Temporal Memory Tree (v8.2) — lazy build during consolidation
     this.tmtBuilder = new TmtBuilder(config.memoryDir, {
-      temporalMemoryTreeEnabled: config.temporalMemoryTreeEnabled,
+      temporalMemoryTreeEnabled: lifecycleCaps.temporalMemoryTree,
       tmtHourlyMinMemories: config.tmtHourlyMinMemories,
       tmtSummaryMaxTokens: config.tmtSummaryMaxTokens,
     });
@@ -3654,6 +3657,7 @@ export class Orchestrator {
   }
 
   private async deferredInitialize(signal: AbortSignal): Promise<void> {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
 
     // Sync QMD index with current disk state so recall finds recently-written
     // facts. Without this, the index stays stale from the last extraction-
@@ -3707,7 +3711,7 @@ export class Orchestrator {
           }),
       );
     }
-    if (this.config.embeddingFallbackEnabled) {
+    if (resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) {
       warmupPromises.push(
         this.embeddingFallback
           .isAvailable()
@@ -3792,7 +3796,7 @@ export class Orchestrator {
     // sweep (capped at 50 demotions) so the hot tier isn't flooded on the
     // first real cron pass. Non-fatal — a failure here must not break init.
     if (signal.aborted) return;
-    if (this.config.lifecyclePolicyEnabled && this.config.qmdTierMigrationEnabled) {
+    if (lifecycleCaps.lifecyclePolicy && this.config.qmdTierMigrationEnabled) {
       try {
         const { runFirstStartMigration } = await import(
           "./maintenance/first-start-migration.js"
@@ -4117,6 +4121,7 @@ export class Orchestrator {
    * default storage.
    */
   async runLifecyclePolicyFanout(): Promise<NamespaceMaintenanceSummary> {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     return this.runNamespaceMaintenanceFanoutForJob(
       "lifecycle",
       async (ctx) => {
@@ -4125,7 +4130,7 @@ export class Orchestrator {
         const assessed = await this.runLifecyclePolicyPass(corpus, storage);
         return { itemCount: assessed };
       },
-      { enabled: this.config.lifecyclePolicyEnabled },
+      { enabled: lifecycleCaps.lifecyclePolicy },
     );
   }
 
@@ -7438,6 +7443,7 @@ export class Orchestrator {
     options: RecallInvocationOptions = {},
     caps: CapabilitySet = resolveCapabilities(this.config),
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
+    lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.config),
   ): Promise<string> {
     const recallStart = Date.now();
     // Backend degradations observed by this recall's QMD searches (#1536):
@@ -10845,9 +10851,9 @@ export class Orchestrator {
     if (
       this.isRecallSectionEnabled(
         "temporal-memory-tree",
-        this.config.temporalMemoryTreeEnabled === true,
+        lifecycleCaps.temporalMemoryTree,
       ) &&
-      this.config.temporalMemoryTreeEnabled &&
+      lifecycleCaps.temporalMemoryTree &&
       recallMode !== "minimal" &&
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {
@@ -11707,7 +11713,7 @@ export class Orchestrator {
           // Using the shared gate fixes both Finding 2 and Finding 3 from
           // PR #402 (round 6).
           const supersessionOptions = {
-            enabled: this.config.temporalSupersessionEnabled,
+            enabled: lifecycleCaps.temporalSupersession,
             includeInRecall: this.config.temporalSupersessionIncludeInRecall,
           };
           // Cursor Medium on PR #713: when `as_of` is active, the
@@ -13231,7 +13237,8 @@ export class Orchestrator {
     turns: BufferTurn[],
     options: { commit?: boolean; bufferKey?: string } = {},
   ): boolean {
-    if (!this.config.extractionDedupeEnabled) return true;
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
+    if (!lifecycleCaps.extractionDedupe) return true;
     if (!Array.isArray(turns) || turns.length === 0) return false;
 
     const bufferKey = options.bufferKey ?? turns[0]?.sessionKey ?? "default";
@@ -14090,6 +14097,7 @@ export class Orchestrator {
     /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */
     sourceText?: string,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
+    lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.config),
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
     // fact is rewritten to carry a compact provenance tag inside its body so
@@ -14388,7 +14396,7 @@ export class Orchestrator {
             },
           );
           if (
-            this.config.temporalSupersessionEnabled &&
+            lifecycleCaps.temporalSupersession &&
             options.category === "fact" &&
             options.entityRef &&
             options.structuredAttributes &&
@@ -14552,7 +14560,7 @@ export class Orchestrator {
           // would have run post-writeMemory.  This is a best-effort / fail-open
           // step — if the lookup fails we skip silently (same as the normal path).
           if (
-            this.config.temporalSupersessionEnabled &&
+            lifecycleCaps.temporalSupersession &&
             options.entityRef &&
             options.structuredAttributes &&
             Object.keys(options.structuredAttributes).length > 0
@@ -14714,7 +14722,7 @@ export class Orchestrator {
         // shared recall continues returning the stale state.  Reuses the same
         // applyTemporalSupersession helper — no logic duplication.
         if (
-          this.config.temporalSupersessionEnabled &&
+          lifecycleCaps.temporalSupersession &&
           options.entityRef &&
           options.structuredAttributes &&
           Object.keys(options.structuredAttributes).length > 0
@@ -15024,7 +15032,7 @@ export class Orchestrator {
     // persistExtraction call so stale state from a prior call cannot leak
     // into the caller's buffer-retention decision.
     this.lastPersistExtractionDeferredCount = 0;
-    if (this.config.extractionJudgeEnabled) {
+    if (lifecycleCaps.extractionJudge) {
       // #1669 P1: pre-filter redacted facts from judge candidates so never-store
       // content is not persisted as judge training data.
       let preJudgeRedactionRules: CompiledRedactionRule[] = [];
@@ -15090,7 +15098,7 @@ export class Orchestrator {
         // off; the combined callback itself is undefined when both are
         // disabled so there is zero overhead in the default configuration.
         const judgeTelemetryOpts = {
-          enabled: this.config.extractionJudgeTelemetryEnabled === true,
+          enabled: lifecycleCaps.extractionJudgeTelemetry,
           memoryDir: this.config.memoryDir,
         };
         const judgeTrainingOpts = {
@@ -15301,7 +15309,7 @@ export class Orchestrator {
       // do not block scope routing). Rule 30: gated by
       // extractionScopeClassificationEnabled.
       if (
-        this.config.extractionScopeClassificationEnabled &&
+        lifecycleCaps.extractionScopeClassification &&
         this.config.namespacesEnabled &&
         fact.scope === "global" &&
         !routedNamespaceExplicit
@@ -15954,7 +15962,7 @@ export class Orchestrator {
                 // #1578 r3: an extracted end-only bound (validFrom absent) is
                 // historical, not a new authoritative state — never let it
                 // supersede a later active fact (codex P1 on :15534).
-                enabled: this.config.temporalSupersessionEnabled &&
+                enabled: lifecycleCaps.temporalSupersession &&
                   !(biTemporal && !biTemporal.validFrom),
               });
             } catch (err) {
@@ -16190,7 +16198,7 @@ export class Orchestrator {
             entityRef: supersessionEntityRef,
             structuredAttributes: fact.structuredAttributes,
             createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
-            enabled: this.config.temporalSupersessionEnabled &&
+            enabled: lifecycleCaps.temporalSupersession &&
               !(biTemporal && !biTemporal.validFrom),
           });
         } catch (err) {
@@ -16557,7 +16565,7 @@ export class Orchestrator {
     storage: StorageManager,
     memoryId: string,
   ): Promise<void> {
-    if (!this.config.embeddingFallbackEnabled) return;
+    if (!resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) return;
     if (!(await this.embeddingFallback.isAvailable())) return;
     const memory = await storage.getMemoryById(memoryId);
     if (!memory) return;
@@ -16749,6 +16757,7 @@ export class Orchestrator {
     merged: number;
     invalidated: number;
   }> {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     log.info("running consolidation pass");
     let merged = 0;
     let invalidated = 0;
@@ -16985,7 +16994,7 @@ export class Orchestrator {
     }
 
     // v8.3 Lifecycle policy pass — deterministic promotion/decay metadata
-    if (this.config.lifecyclePolicyEnabled) {
+    if (lifecycleCaps.lifecyclePolicy) {
       try {
         const lightSleepStartedAt = new Date().toISOString();
         const lifecycleCorpus = await this.storage.readAllMemories();
@@ -17173,7 +17182,7 @@ export class Orchestrator {
     await this.storage.saveMeta(meta);
 
     // Temporal Memory Tree (v8.2) — rebuild nodes from all memories, fail-open
-    if (this.config.temporalMemoryTreeEnabled) {
+    if (lifecycleCaps.temporalMemoryTree) {
       try {
         const tmtEntries = allMemories
           .filter(
@@ -17715,6 +17724,7 @@ export class Orchestrator {
     let updatedCount = 0;
     let disputedCount = 0;
     let evaluatedCount = 0;
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
 
     const thresholds = this.effectiveLifecycleThresholds();
     const policy = {
@@ -17780,7 +17790,7 @@ export class Orchestrator {
 
     // Report how many memories had frontmatter rewritten so callers can record a
     // catalog write touch for lifecycle-only passes (codex NR-tS).
-    if (!this.config.lifecycleMetricsEnabled) return updatedCount;
+    if (!lifecycleCaps.lifecycleMetrics) return updatedCount;
 
     const total = evaluatedCount;
     const metrics = {
@@ -19226,7 +19236,7 @@ export class Orchestrator {
     //   • search() throws                 → re-throw (network/provider error).
     //   • search() returns []             → return [] (empty index, not a
     //     backend failure; decideSemanticDedup reports no_candidates).
-    if (!this.config.embeddingFallbackEnabled) {
+    if (!resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) {
       throw new Error("semantic dedup: embedding backend not configured");
     }
     if (!(await this.embeddingFallback.isAvailable())) {
@@ -19300,7 +19310,7 @@ export class Orchestrator {
     query: string,
     limit: number,
   ): Promise<QmdSearchResult[]> {
-    if (!this.config.embeddingFallbackEnabled) return [];
+    if (!resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) return [];
     if (!(await this.embeddingFallback.isAvailable())) return [];
     const hits = await this.embeddingFallback.search(query, limit);
     if (hits.length === 0) return [];
@@ -20010,6 +20020,7 @@ export class Orchestrator {
       blockedPaths?: Set<string>;
     },
   ): QmdSearchResult[] {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     let lifecycleFilteredCount = 0;
     let temporalSupersededFilteredCount = 0;
     let biTemporalExpiredFilteredCount = 0;
@@ -20043,9 +20054,9 @@ export class Orchestrator {
         if (
           options?.allowLifecycleFiltered !== true &&
           shouldFilterLifecycleRecallCandidate(memory.frontmatter, {
-            lifecyclePolicyEnabled: this.config.lifecyclePolicyEnabled,
+            lifecyclePolicyEnabled: lifecycleCaps.lifecyclePolicy,
             lifecycleFilterStaleEnabled:
-              this.config.lifecycleFilterStaleEnabled,
+              lifecycleCaps.lifecycleFilterStale,
           })
         ) {
           lifecycleFilteredCount += 1;
@@ -20079,7 +20090,7 @@ export class Orchestrator {
           // half-open `[valid_at, invalid_at)` evaluation in isValidAsOf
           // is the authoritative gate for historical recall.
           shouldFilterSupersededFromRecall(memory.frontmatter, {
-            enabled: this.config.temporalSupersessionEnabled,
+            enabled: lifecycleCaps.temporalSupersession,
             includeInRecall: this.config.temporalSupersessionIncludeInRecall,
           })
         ) {
@@ -20223,6 +20234,7 @@ export class Orchestrator {
       asOfMs?: number;
     },
   ): Promise<QmdSearchResult[]> {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     if (results.length === 0) return results;
 
     const safety = await this.filterSearchResultsForRecall(
@@ -20397,7 +20409,7 @@ export class Orchestrator {
         const lifecycleDelta = lifecycleRecallScoreAdjustment(
           memory.frontmatter,
           {
-            lifecyclePolicyEnabled: this.config.lifecyclePolicyEnabled,
+            lifecyclePolicyEnabled: lifecycleCaps.lifecyclePolicy,
           },
         );
         score += applyUtilityRankingRuntimeDelta(
