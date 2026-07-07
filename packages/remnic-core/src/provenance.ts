@@ -197,22 +197,47 @@ function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined
   if (isStrictIsoTimestamp(value)) return value;
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return undefined;
+  // Year-led date guard (issues #1657 + #1723). `parseYearLedDatePrefix`
+  // recognizes a COMPLETE, calendar-valid year-led prefix — numeric OR textual
+  // month — with real date-separator RUNS of non-alphanumeric, non-colon chars
+  // (so complete-but-unusual-punctuation dates like "2026 May, 10",
+  // "2026, May 10", "2026 Jan. 15" are accepted), the day-not-the-hour
+  // invariant via the `(?![\d:])` lookahead, and a calendar-valid day. This
+  // single rule subsumes the prior partial-numeric ("2026-05"), textual-partial
+  // ("2026-Jan"), and calendar-overflow ("2026-02-30", "2026-Feb-30") checks
+  // and extends them to textual months — Date.parse silently fills missing
+  // components and rolls overflow, fabricating observedAt, so a non-complete
+  // or invalid year-led prefix is rejected. Non-year-led shapes
+  // ("Jan 15 2026", "02/30/2026") fall through to Date.parse / the mdy check.
+  const yearLedPrefix = parseYearLedDatePrefix(value);
+  // Agreement check (issue #1723 codex r2/r3/r4): exotic punctuation can make
+  // the prefix structure disagree with Date.parse's own interpretation — e.g.
+  // "2026 (May) 10" parses as a valid May 10 PREFIX but Date.parse reads
+  // October 1; "2026 May (10)" agrees on month but Date.parse reads day 1 — so
+  // the round-trip would persist a fabricated observedAt while the guard
+  // "validated" a different date. Require Date.parse's interpretation to match
+  // the prefix's FULL (y, m, d) tuple. Offset-bearing inputs compare in the
+  // source's explicit offset frame (the prefix date is offset-local, so a UTC
+  // instant legitimately falls on an adjacent UTC/local day); offset-free
+  // inputs compare both the local and UTC frames (Date.parse uses UTC for ISO
+  // date-only strings and local for non-ISO — a single frame would wrongly
+  // reject legitimate month/day-boundary dates that shift across timezones).
+  const yearLedAgrees = yearLedAgreesWithDateParse(parsed, value, yearLedPrefix);
+  const validYearLed = yearLedPrefix !== null && yearLedAgrees;
   // Reject bare-year / numeric-only strings that Date.parse accepts (e.g.
   // "123") — isStrictIsoTimestamp already rejected them, and the round-trip
   // below would otherwise resurrect them. Require at least one date/time
-  // separator so a plain number never round-trips into a fake epoch.
-  if (!/[-:T]/.test(value)) return undefined;
+  // separator so a plain number never round-trips into a fake epoch — UNLESS
+  // the value is itself a complete, calendar-valid year-led date that
+  // Date.parse agrees with (issue #1723: a date-only punctuated textual form
+  // like "2026 May, 10" has no -/:/T yet parses to the correct calendar day).
+  if (!/[-:T]/.test(value) && !validYearLed) {
+    return undefined;
+  }
   // Reject year-led timestamps that are not a COMPLETE, calendar-valid date
-  // (issue #1657). Date.parse silently fills missing components ("2026-05" ->
-  // May 1, "2026-Jan" -> Jan 1) and rolls overflow ("2026-02-30" and
-  // "2026-Feb-30" -> March 2), fabricating observedAt. `parseYearLedDatePrefix`
-  // requires a complete three-component date — numeric OR textual month — with
-  // real date separators (not T/:, and not the space that precedes a time
-  // component, so the hour is never captured as the day) and a calendar-valid
-  // day, in one rule (subsumes the prior partial-numeric and numeric-overflow
-  // checks, and extends them to textual months). Non-year-led shapes
-  // ("Jan 15 2026", "02/30/2026") fall through to Date.parse / the mdy check.
-  if (/^\d{4}\D/.test(value) && parseYearLedDatePrefix(value) === null) {
+  // Date.parse agrees with (covers partial, overflow, AND the punctuation
+  // misinterpretation above).
+  if (/^\d{4}\D/.test(value) && !validYearLed) {
     return undefined;
   }
   // Also validate M/D/Y or D/M/Y formats (provider/import common shapes:
@@ -268,24 +293,135 @@ const MONTH_NAMES: Record<string, number> = {
 
 /**
  * Parse a complete, calendar-valid year-led date prefix from `s`
- * (issue #1657): `YYYY <sep> (MM | MonthName) <sep> DD` where the separators
- * are real date separators (non-digit, non-T, non-colon) and the day is a
- * true calendar day — not the hour before a `:` time separator (the
- * `(?![\d:])` lookahead rejects "2026-05 10:00" capturing "10" as the day).
- * Returns the numeric components for a complete, valid date; `null` for an
- * incomplete ("2026-05", "2026-Jan"), overflowed ("2026-02-30",
- * "2026-Feb-30"), or non-year-led prefix. Centralizes the fabricated-date
- * rejection for the toStrictIsoTimestamp normalization path across numeric
- * and textual months in one rule.
+ * (issue #1657, relaxed in #1723): `YYYY <sep> (MM | MonthName) <sep> DD`
+ * where each separator is a RUN of non-alphanumeric, non-colon chars (so a
+ * complete date with any punctuation — "2026 May, 10", "2026, May 10",
+ * "2026 Jan. 15" — is accepted; the run excludes letters so a textual month
+ * is never consumed by the separator, and excludes the colon so the date/time
+ * boundary stays clean) and the day is a true calendar day — not the hour
+ * before a `:` time separator (the `(?![\d:])` lookahead rejects
+ * "2026-05 10:00" capturing "10" as the day). Returns the numeric components
+ * for a complete, valid date; `null` for an incomplete ("2026-05",
+ * "2026-Jan"), overflowed ("2026-02-30", "2026-Feb-30"), or non-year-led
+ * prefix. Centralizes the fabricated-date rejection for the
+ * toStrictIsoTimestamp normalization path across numeric and textual months
+ * in one rule.
  */
 function parseYearLedDatePrefix(s: string): { y: number; mo: number; da: number } | null {
-  const m = /^(\d{4})[^0-9T](\d{1,2}|[A-Za-z]{3,})[^0-9T:](\d{1,2})(?![\d:])/.exec(s);
+  const m = /^(\d{4})[^0-9A-Za-z]+(\d{1,2}|[A-Za-z]{3,})[^0-9A-Za-z:]+(\d{1,2})(?![\d:])/.exec(s);
   if (!m) return null;
   const y = Number(m[1]);
   const da = Number(m[3]);
   const mo = /^\d+$/.test(m[2]) ? Number(m[2]) : (MONTH_NAMES[m[2]!.toLowerCase()] ?? -1);
   if (!isValidCalendarDate(y, mo, da)) return null;
   return { y, mo, da };
+}
+
+/**
+ * Extract an explicit timezone offset (ms east of UTC) from a non-strict-ISO
+ * timestamp, or `null` if none is present (issue #1723 codex r4). Recognizes
+ * the offset forms `Date.parse` accepts for non-ISO year-led dates: a trailing
+ * `±HH:MM` / `±HHMM`, and a `GMT`/`UTC` token optionally followed by
+ * `±HHMM` (bare `GMT`/`UTC` ⇒ offset 0). Strict ISO `Z` forms are handled
+ * by `isStrictIsoTimestamp` before this point, so they never reach here.
+ */
+/**
+ * Named timezone abbreviations Node's `Date.parse` accepts for non-ISO dates
+ * (issue #1723 codex r8). V8 recognizes a fixed set of US zones; each maps to a
+ * fixed offset (the abbreviation itself encodes standard vs daylight, so PST is
+ * always -8 and PDT always -7 regardless of the calendar date). Other named
+ * zones (CET/CEST/JST/…) return NaN from `Date.parse` and never reach here.
+ */
+const NAMED_ZONE_OFFSETS_MS: Record<string, number> = {
+  PST: -8 * 60, PDT: -7 * 60,
+  MST: -7 * 60, MDT: -6 * 60,
+  CST: -6 * 60, CDT: -5 * 60,
+  EST: -5 * 60, EDT: -4 * 60,
+};
+
+function explicitOffsetMs(value: string): number | null {
+  // Recognize the offset forms Date.parse accepts for non-ISO year-led dates,
+  // returning ms east of UTC or null. Tries each shape in order; a stray run
+  // of date digits can never pose as an offset because (a) trailing numeric
+  // offsets must be preceded by whitespace or glued to a ":SS" seconds field
+  // (lookbehind), and (b) every candidate is range-validated (|hh| ≤ 14,
+  // mm < 59).
+  // Named US zone abbreviation (PST/EST/EDT/…), trailing token (codex r8).
+  const nz = /\b([A-Z]{3,4})\s*$/.exec(value);
+  if (nz && NAMED_ZONE_OFFSETS_MS[nz[1]] !== undefined) {
+    return NAMED_ZONE_OFFSETS_MS[nz[1]] * 60_000;
+  }
+  const tryOff = (sign: string | undefined, hh: number, mm: number): number | null => {
+    if (hh > 14 || mm > 59) return null;
+    return (sign === "-" ? -1 : 1) * (hh * 60 + mm) * 60_000;
+  };
+  let m: RegExpExecArray | null;
+  // GMT/UTC token: colon form, then ±HHMM (4-digit, before bare hour so
+  // "GMT+0530" is not read as "+05"), then bare hour, then the bare token
+  // itself (offset 0).
+  if (
+    (m = /\b(?:GMT|UTC)\b\s*([+-])?(\d{1,2}):(\d{2})/i.exec(value)) ||
+    (m = /\b(?:GMT|UTC)\b\s*([+-])?(\d{2})(\d{2})/i.exec(value))
+  ) {
+    const r = tryOff(m[1], Number(m[2]), Number(m[3]));
+    if (r !== null) return r;
+  }
+  if ((m = /\b(?:GMT|UTC)\b\s*([+-])?(\d{1,2})\b/i.exec(value))) {
+    const r = tryOff(m[1], Number(m[2]), 0);
+    if (r !== null) return r;
+  }
+  if (/\b(?:GMT|UTC)\b/i.test(value)) return 0;
+  // Trailing numeric offset: whitespace-delimited OR glued to a ":SS"
+  // seconds field (lookbehind), so date digits ("-0510" in "2026-0510") are
+  // never misread as an offset. Colon form, then ±HHMM, then bare hour — each
+  // for BOTH the whitespace and glued contexts.
+  if (
+    (m = /(?:\s|(?<=:\d{2}))([+-])(\d{1,2}):(\d{2})\s*$/.exec(value)) ||
+    (m = /(?:\s|(?<=:\d{2}))([+-])(\d{2})(\d{2})\s*$/.exec(value)) ||
+    (m = /(?:\s|(?<=:\d{2}))([+-])(\d{1,2})\s*$/.exec(value))
+  ) {
+    const r = tryOff(m[1], Number(m[2]), m[3] ? Number(m[3]) : 0);
+    if (r !== null) return r;
+  }
+  return null;
+}
+
+/**
+ * Verify `Date.parse`'s interpretation of `value` agrees with the year-led
+ * `prefix` components `(y, m, d)` (issue #1723 codex r2/r3/r4). Returns
+ * `false` when `prefix` is `null` (no complete year-led date). Otherwise
+ * compares the FULL tuple so punctuation that shifts the month OR the day is
+ * caught. Offset-bearing inputs are compared in the source's explicit offset
+ * frame (the prefix date is offset-local, so the same instant legitimately
+ * lands on an adjacent UTC/local day); offset-free inputs accept either the
+ * local or UTC frame, because `Date.parse` uses UTC for ISO date-only strings
+ * and local for non-ISO forms.
+ */
+function yearLedAgreesWithDateParse(
+  parsed: number,
+  value: string,
+  prefix: { y: number; mo: number; da: number } | null,
+): boolean {
+  if (prefix === null) return false;
+  const off = explicitOffsetMs(value);
+  if (off !== null) {
+    const shifted = new Date(parsed + off);
+    return (
+      shifted.getUTCFullYear() === prefix.y &&
+      shifted.getUTCMonth() + 1 === prefix.mo &&
+      shifted.getUTCDate() === prefix.da
+    );
+  }
+  const pd = new Date(parsed);
+  const localMatch =
+    pd.getFullYear() === prefix.y &&
+    pd.getMonth() + 1 === prefix.mo &&
+    pd.getDate() === prefix.da;
+  const utcMatch =
+    pd.getUTCFullYear() === prefix.y &&
+    pd.getUTCMonth() + 1 === prefix.mo &&
+    pd.getUTCDate() === prefix.da;
+  return localMatch || utcMatch;
 }
 
 /**
