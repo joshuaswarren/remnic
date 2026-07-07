@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.3.725",
+  "version": "9.3.726",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -1451,8 +1451,9 @@
       },
       "correctionPlanTtlHours": {
         "type": "number",
+        "minimum": 1,
         "default": 24,
-        "description": "Hours a pending correction plan remains valid before it expires and must be re-planned (#1580)."
+        "description": "Hours a pending correction plan remains valid before it expires and must be re-planned (#1580). Invalid values (0/negative/non-numeric) are rejected."
       },
       "creationMemoryEnabled": {
         "type": "boolean",
