@@ -61,20 +61,19 @@ should:
 The `docs/benchmarks/results/` directory now contains the **first real
 Tier L artifacts** (issue #1574), produced on an RTX 3090 lab box under
 the `local-lab` runtime profile. These are real Remnic recall-stack runs
-against the full LoCoMo-10 dataset and the LongMemEval-oracle dataset
-(locomo is a full uncapped run; longmemeval is a 100/500 staged subset
-whose full run is in flight):
+against the full LoCoMo-10 and LongMemEval-oracle datasets (both uncapped
+full runs):
 
 - `2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json` — qwen2.5:7b-instruct
   (Q4_K_M), seed 1, **full run (1986/1986 QA across all 10 conversations)**.
   Metrics: `contains_answer=0.0831`, `f1=0.1217`, `llm_judge=0.2243`,
   `rouge_l=0.1177`, hidden-evidence-id leak = 1.0 (no cheating). 0 empty
   answers; 1885 judge model calls (cache absorbs the ~5% repeated answers).
-- `2026-07-06-longmemeval-qwen2.5-7b-32k_latest-47aae03.json` — same model,
-  seed 1. Metrics: `contains_answer=0.02`, `f1=0.0081`,
-  `judge_accuracy=0.06`, `llm_judge=0.06`, `search_hits=9.58` (recall is
-  surfacing ~9.6 evidence hits/query). Staged baseline: `--limit 100` of
-  the 500 oracle questions.
+- `2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json` — same model,
+  seed 1, **full run (500/500 oracle questions)**. Metrics:
+  `contains_answer=0.098`, `f1=0.0708`, `judge_accuracy=0.186`,
+  `llm_judge=0.186`, `search_hits=8.52` (recall surfaces ~8.5 evidence
+  hits/query). 0 empty answers; 407 judge model calls.
 
 Both carry `tier: "local"` and
 `hardware: { gpu: "NVIDIA RTX 3090", vramGb: 24, quantization: "Q4_K_M" }`.
@@ -82,8 +81,8 @@ Both carry `tier: "local"` and
 credentials were available on the lab box, so Cohen's kappa could not be
 computed — responder and judge are the same qwen2.5:7b-instruct model, which
 carries a known self-preference caveat acceptable for Tier L regression.
-Judge-call counts: locomo 1885/1986 (the cache absorbs the ~5% repeated
-answers); longmemeval 100/100 (staged subset, cold cache).
+Judge-call counts: locomo 1885/1986 and longmemeval 407/500 (the
+content-keyed judge cache absorbs repeated/identical answers).
 
 The two `*-mock000.json` files remain as **pipeline examples** with
 `datasetVersion: "mock-fixture"` and placeholder scores; **do not cite
