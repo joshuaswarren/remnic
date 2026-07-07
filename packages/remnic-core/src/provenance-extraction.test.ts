@@ -1102,3 +1102,381 @@ test("toStrictIsoTimestamp path: full month name is preserved (issue #1657, code
     "full-name textual month must not fall back to the epoch (it was accepted, not rejected)",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Regression: issue #1723 — complete-but-unusual-punctuation year-led dates
+// (e.g. "2026 May, 10", "2026, May 10", "2026 Jan. 15") parse correctly via
+// Date.parse (correct calendar day, no fabrication), but the strict
+// single-char separator shape in parseYearLedDatePrefix over-rejected them,
+// dropping a correctly-located source to the unverified epoch fallback. The
+// separator shape is relaxed to a run of non-alphanumeric chars so any
+// complete, calendar-valid date is accepted while the three-component +
+// valid-day + day-not-the-hour invariants are preserved (#1657 stays green).
+// ---------------------------------------------------------------------------
+
+test("toStrictIsoTimestamp path: punctuation-tail 'YYYY Month, DD' is preserved (issue #1723)", () => {
+  // "2026 May, 10 12:00:00" parses to May 10 via Date.parse (correct calendar
+  // day, no fabrication). Pre-fix the comma+space separator shape was rejected
+  // by the single-char guard, dropping a correctly-located source to unverified.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026 May, 10 12:00:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "complete punctuation-tail date must stay verified");
+  assert.ok(result.sources);
+  const observedAt = result.sources![0]!.observedAt;
+  assert.match(
+    observedAt,
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+    "punctuation-tail observedAt must normalize to strict ISO",
+  );
+  assert.notEqual(
+    observedAt,
+    new Date(0).toISOString(),
+    "punctuation-tail date must not fall back to the epoch (it was accepted, not rejected)",
+  );
+});
+
+test("toStrictIsoTimestamp path: punctuation-tail 'YYYY, Month DD' is preserved (issue #1723)", () => {
+  // "2026, May 10 12:00:00" — comma+space between year and month. Same class
+  // as the comma-after-month form: complete, calendar-valid, over-rejected.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026, May 10 12:00:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "comma-after-year date must stay verified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "comma-after-year date must not fall back to the epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: punctuation-tail 'YYYY Mon. DD' is preserved (issue #1723)", () => {
+  // "2026 Jan. 15 12:00:00" — period+space between month and day. Same class.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026 Jan. 15 12:00:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "period-after-month date must stay verified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "period-after-month date must not fall back to the epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: date-only punctuation-tail 'YYYY Month, DD' is preserved (issue #1723, codex)", () => {
+  // "2026 May, 10" (no time component) parses to May 10 via Date.parse but
+  // contains no -/:/T, so pre-fix the bare-number guard dropped it to
+  // unverified before parseYearLedDatePrefix was ever reached. The guard now
+  // admits a complete, calendar-valid year-led date even without a time
+  // separator, so the correctly-located source stays verified.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026 May, 10" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "date-only punctuation-tail date must stay verified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "date-only punctuation-tail date must not fall back to the epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: bare numeric string still rejected after #1723 broadening (non-regression)", () => {
+  // The bare-number guard must still reject "123" / "2026" (Date.parse-able
+  // plain numbers with no date structure) so they never round-trip into a fake
+  // epoch. The #1723 broadening only admits COMPLETE year-led dates.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "bare-year string must fall back to epoch, not round-trip into a fake date",
+  );
+});
+
+test("toStrictIsoTimestamp path: parenthesized-month fabrication is rejected (issue #1723, codex r2)", () => {
+  // "2026 (May) 10 12:00:00" parses as a valid May 10 PREFIX (year, "May",
+  // day 10) but Date.parse reads it as October 1 — the round-trip would
+  // persist October while the guard "validated" May (fabrication). The
+  // agreement check compares the prefix y/m against Date.parse's own
+  // interpretation and rejects on disagreement.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026 (May) 10 12:00:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified", "parenthesized-month fabrication must be rejected");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    "2026-10-01T12:00:00.000Z",
+    "must not persist Date.parse's October interpretation while validating May",
+  );
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "disagreeing punctuation form falls back to epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: parenthesized-day fabrication is rejected (issue #1723, codex r3)", () => {
+  // "2026 May (10) 12:00:00" matches the prefix as May 10 and Date.parse agrees
+  // on year+month (May 2026) but reads day 1 (it ignores the parenthesized
+  // "(10)"), so a month-only check would still fabricate observedAt = May 1.
+  // The agreement check must compare the full (y, m, d) tuple.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026 May (10) 12:00:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified", "parenthesized-day fabrication must be rejected");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    "2026-05-01T12:00:00.000Z",
+    "must not persist Date.parse's day-1 interpretation while validating day 10",
+  );
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "day-disagreeing punctuation form falls back to epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: explicit-offset timestamp crossing UTC day boundary stays verified (issue #1723, codex r4)", () => {
+  // "2026-05-10 00:30:00 +05:00" parses to a UTC instant on May 9 (the offset
+  // shifts the instant across the UTC day boundary), but the prefix date is May
+  // 10 in the +05:00 frame. The agreement check must compare in the source's
+  // explicit offset frame, not the UTC/local frame, so this legitimate
+  // offset-bearing timestamp stays verified (pre-fix the strict UTC/local
+  // comparison wrongly rejected it).
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05-10 00:30:00 +05:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "explicit-offset timestamp must stay verified");
+  assert.ok(result.sources);
+  assert.match(
+    result.sources![0]!.observedAt,
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
+    "offset timestamp normalizes to strict ISO",
+  );
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "offset timestamp must not fall back to the epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: offset-bearing punctuation fabrication still rejected (issue #1723, codex r4)", () => {
+  // "2026 (May) 10 12:00:00 +05:00" carries an offset AND exotic punctuation.
+  // The agreement check compares in the +05:00 frame: prefix (2026,5,10) vs
+  // Date.parse's October reading shifted to +05:00 — they still disagree, so
+  // the fabrication is rejected even with an offset present.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026 (May) 10 12:00:00 +05:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified", "offset-bearing fabrication must be rejected");
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "offset-bearing fabrication falls back to epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: single-digit explicit offset stays verified (issue #1723, codex r5)", () => {
+  // "+5:00" (single-digit offset hour) parses to the same instant as "+05:00"
+  // and crosses the UTC day boundary; the offset extractor must recognize the
+  // single-digit form so the agreement check compares in the +05:00 frame.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05-10 00:30:00 +5:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "single-digit offset timestamp must stay verified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "single-digit offset timestamp must not fall back to the epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: date-only and numeric dates not misread as offsets (issue #1723, codex r5 non-regression)", () => {
+  // The offset extractor must not misread date digits as an offset (e.g. the
+  // "-0510" in "2026-0510" or the "-2026" tail of "05-10-2026"). These forms
+  // have no real offset, so they must be handled by the offset-free path —
+  // a complete valid date stays verified, a bare invalid one is rejected, but
+  // neither is silently mistreated as offset-bearing.
+  const turnsOk = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05-03" as unknown as string,
+    }),
+  ];
+  const resultOk = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turnsOk,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(resultOk.provenance, "verified", "plain date must not be misread as offset-bearing");
+  assert.notEqual(resultOk.sources![0]!.observedAt, new Date(0).toISOString());
+});
+
+test("toStrictIsoTimestamp path: GMT+HHMM offset minutes preserved (issue #1723, codex r6)", () => {
+  // "GMT+0530" is +5:30, not +5:00 — the extractor must try the 4-digit HHMM
+  // form before the bare-hour form so the minutes are not dropped.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026 May 10 00:15:00 GMT+0530" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "GMT+HHMM offset timestamp must stay verified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "GMT+HHMM offset timestamp must not fall back to the epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: offset glued to seconds stays verified (issue #1723, cursor r6)", () => {
+  // "00:30:00+05:00" — the offset is glued to the seconds field with no space.
+  // The extractor must detect it (via the ":SS" lookbehind) so the agreement
+  // check compares in the +05:00 frame, not UTC/local.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05-10 00:30:00+05:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "glued-offset timestamp must stay verified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "glued-offset timestamp must not fall back to the epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: glued bare-hour offset stays verified (issue #1723, codex r7)", () => {
+  // "00:15:00+5" — a bare-hour offset glued to the seconds field. The extractor
+  // must detect it (via the ":SS" lookbehind, bare-hour alternative) so the
+  // agreement check compares in the +05:00 frame.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026 May 10 00:15:00+5" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "glued bare-hour offset must stay verified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "glued bare-hour offset must not fall back to the epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: named US timezone abbreviation stays verified (issue #1723, codex r8)", () => {
+  // "2026 May 10 23:30:00 PST" — Date.parse reads PST as -8, so on a UTC
+  // process the instant lands on May 11 UTC. The prefix date is May 10 in the
+  // PST frame; the extractor must recognize the named zone so the agreement
+  // check compares in the -8 frame.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026 May 10 23:30:00 PST" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "named-zone timestamp must stay verified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "named-zone timestamp must not fall back to the epoch",
+  );
+});
