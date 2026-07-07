@@ -836,3 +836,88 @@ test("toStrictIsoTimestamp path: valid MM/DD/YYYY still normalizes (thread dH47 
     /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/,
   );
 });
+
+
+// ---------------------------------------------------------------------------
+// Regression: issue #1657 — partial year-led timestamps must not be admitted
+// as fabricated complete dates. Date.parse fills in missing calendar
+// components ("2026-05" -> May 1) and the ymd guard misparses the date/time
+// boundary ("2026-05T10:00" reads the hour as the day). The normalization
+// path must reject any year-led shape with fewer than three complete calendar
+// components rather than persisting a fabricated observedAt.
+// ---------------------------------------------------------------------------
+
+test("toStrictIsoTimestamp path: partial YYYY-MM timestamp is rejected, not fabricated (issue #1657)", () => {
+  // "2026-05" is Date.parse-able (-> 2026-05-01) and passes the separator
+  // guard, so pre-fix the write path persisted a fabricated observedAt of
+  // 2026-05-01T00:00:00.000Z. Reject it so the source is dropped.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  // No verified source: the only matching turn has a partial timestamp.
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  assert.notEqual(
+    result.sources![0]!.observedAt,
+    "2026-05-01T00:00:00.000Z",
+    "partial YYYY-MM timestamp must not fabricate May 1",
+  );
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "rejected partial timestamp falls back to epoch",
+  );
+});
+
+test("toStrictIsoTimestamp path: partial YYYY-MM T HH:MM is rejected, not misparsed (issue #1657)", () => {
+  // "2026-05T10:00" is Date.parse-able; the ymd regex grabs the hour "10" as
+  // the day across the date/time boundary, so pre-fix the write path persisted
+  // a fabricated observedAt (on May 10, shifted by timezone). Reject it.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05T10:00" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "unverified");
+  assert.ok(result.sources);
+  assert.equal(
+    result.sources![0]!.observedAt,
+    new Date(0).toISOString(),
+    "partial YYYY-MM T HH:MM timestamp must fall back to epoch, not a fabricated date",
+  );
+});
+
+test("toStrictIsoTimestamp path: complete YYYY-MM-DD (no time) still normalizes (issue #1657 non-regression)", () => {
+  // A complete calendar date with no time component must still round-trip
+  // through Date.parse to strict ISO. This is the boundary the partial-date
+  // guard must NOT over-reject.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-05-03" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified");
+  assert.ok(result.sources);
+  assert.equal(
+    result.sources![0]!.observedAt,
+    "2026-05-03T00:00:00.000Z",
+    "complete date-only timestamp normalizes to UTC midnight",
+  );
+});

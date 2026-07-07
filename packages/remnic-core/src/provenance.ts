@@ -196,6 +196,19 @@ function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined
   // below would otherwise resurrect them. Require at least one date/time
   // separator so a plain number never round-trips into a fake epoch.
   if (!/[-:T]/.test(ts)) return undefined;
+  // Reject partial year-led timestamps (issue #1657, codex thread
+  // PRRT_kwDORJXyws6OdKaD). Date.parse silently fills in missing calendar
+  // components for incomplete shapes — "2026-05" becomes 2026-05-01 — and
+  // the ymd guard below misparses the date/time boundary ("2026-05T10:00"
+  // reads the hour "10" as the day, since \D matches "T"). Require a
+  // complete three-component calendar date (YYYY<sep>MM<sep>DD) where <sep>
+  // is a date separator (any non-digit except the time markers T and :)
+  // before trusting the normalized round-trip. Non-numeric-month shapes
+  // ("Jan 15 2026") do not start with a 4-digit year and fall through to
+  // Date.parse unchanged.
+  if (/^\d{4}\D/.test(ts) && !/^\d{4}[^0-9T:]\d{1,2}[^0-9T:]\d{1,2}/.test(ts)) {
+    return undefined;
+  }
   // Reject calendar-overflow dates (chatgpt-codex-connector thread dANc):
   // Date.parse silently rolls over invalid components — "2026-02-30" becomes
   // 2026-03-02 — fabricating the observation date. For strings that carry an
@@ -203,7 +216,9 @@ function toStrictIsoTimestamp(ts: string | undefined | null): string | undefined
   // the calendar components are in range before accepting the shifted result.
   // isStrictIsoTimestamp already does this for full ISO strings; this closes
   // the gap for the non-ISO normalization path.
-  const ymd = /^(\d{4})\D(\d{1,2})\D(\d{1,2})/.exec(ts);
+  // Use date separators only ([^0-9T:], not \D) so the capture cannot cross
+  // the date/time boundary and grab the hour as the day (issue #1657).
+  const ymd = /^(\d{4})[^0-9T:](\d{1,2})[^0-9T:](\d{1,2})/.exec(ts);
   if (ymd) {
     const [_, ys, ms, ds] = ymd;
     const y = Number(ys), mo = Number(ms), da = Number(ds);
