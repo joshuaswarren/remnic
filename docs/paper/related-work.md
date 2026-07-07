@@ -83,15 +83,24 @@ superseded, does the system ever serve it again?). StateBench exposes baseline
 `transcript_latest_wins`, …) and reports its own engine Memgine at 95.8–97.3%
 decision accuracy with SFRR in the 23–37% band across model configurations
 ([StateBench README, v1.1 leaderboard](https://github.com/Parslee-ai/statebench)).
-The overlap is real and we do not hide it. The differences: StateBench is **not
-peer-reviewed** (vendor artifact), ships **one engine's** results rather than an
-open adapter contract for third-party systems, and its SFRR does not combine the
+The overlap is real and we do not hide it. StateBench is **not peer-reviewed**
+(vendor artifact) and its published results are its own engine plus ten in-tree
+baselines — but it is *not* closed to third-party scoring: the harness exposes a
+`MemoryStrategy` interface (`process_event`, `build_context`,
+`get_system_prompt`, `reset`) that you register in the harness and run via
+`statebench leaderboard --baseline my_strategy`
+([StateBench README, "Adding Your Implementation"](https://github.com/Parslee-ai/statebench#adding-your-implementation)).
+So the differentiator is *not* "open vs. closed." It is **adapter shape** and
+**adversary**: a `MemoryStrategy` is an *in-harness* strategy — you reimplement
+context-building (`build_context`) inside the StateBench Python process — whereas
+MemCorrect's `MemCorrectSystemAdapter` wraps an *external* memory system
+(Mem0/Zep/Letta-shaped) behind `ingestTurn` / `recall` / `correct` /
+`runMaintenance`, scoring it as a black box over its own write/read path with no
+in-harness context reimplementation. StateBench's SFRR also does not combine the
 **re-ingest adversary** (re-feeding the original establishing transcript) with
-maintenance cycling the way `non_resurrection` does, nor does it measure
-write-path `false_apply`, scoped `scope_precision`, or `reassertion`. MemCorrect's
-`MemCorrectSystemAdapter` is the contribution that lets Mem0/Zep/Letta-shaped
-systems be scored on identical scenarios; StateBench scores its own baselines plus
-frontier models.
+maintenance cycling the way `non_resurrection` does, nor does StateBench score
+write-path `false_apply`, scoped `scope_precision`, `reassertion`, or
+correction-event `provenance_fidelity`.
 
 > Disambiguation: a separate **STATE-Bench** was announced by Microsoft Open Source
 > in May 2026 ([blog](https://opensource.microsoft.com/blog/2026/05/19/introducing-state-bench-a-benchmark-for-ai-agent-memory/)).
@@ -258,7 +267,7 @@ behavior (some may surface it incidentally as a failure class without scoring it
 | Benchmark | Correction uptake timed? | Non-resurrection under **re-ingest**? | Collateral safety? | Scope precision (multi-tenant twin)? | Write-path false-apply? | Revocation / re-assertion? | Provenance of correction? | System-agnostic adapter contract? | Deterministic synthetic corpus? | Peer-reviewed? |
 |---|---|---|---|---|---|---|---|---|---|---|
 | **MemCorrect** (this work, [#1584](https://github.com/joshuaswarren/remnic/issues/1584)) | ✅ `uptake_latency` | ✅ `non_resurrection` | ✅ `collateral_delta` | ✅ `scope_precision` | ✅ `false_apply` | ✅ `reassertion` | ✅ `provenance_fidelity` | ✅ `MemCorrectSystemAdapter` | ✅ seeded, hash-stable | — (artifact, not paper) |
-| StateBench (Parslee) | — (snapshot accuracy) | ◐ SFRR (no re-ingest adversary) | — | ◐ "Scope Leak" class, no twin | — | — | — | — (own baselines + frontier models) | ✅ generated | ✗ vendor white paper |
+| StateBench (Parslee) | — (snapshot accuracy) | ◐ SFRR (no re-ingest adversary) | — | ◐ "Scope Leak" class, no twin | — | — | — | ◐ MemoryStrategy plug-in (in-harness) | ✅ generated | ✗ vendor white paper |
 | STALE [2605.06527](https://arxiv.org/abs/2605.06527) | — | ◐ State Resolution (no re-ingest) | — | — | ◐ Premise Resistance (read-time) | — | — | — | ✅ expert-validated | ✗ (preprint, May 2026) |
 | MemSyco-Bench [2607.01071](https://arxiv.org/abs/2607.01071) | — | — | — | ◐ scope-respect task (read-time) | ◐ read-time only | — | — | — | ✅ | ✗ (preprint, Jul 2026) |
 | MemStrata [2606.26511](https://arxiv.org/abs/2606.26511) | — | ◐ stale-fact-error vs RAG (no re-ingest) | — | — | — | — | ◐ bi-temporal ledger (not scored as correction-cite) | — (self-eval vs RAG) | ✅ calibrated | ✗ (preprint, Jun 2026) |
