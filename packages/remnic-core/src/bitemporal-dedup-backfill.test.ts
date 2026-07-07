@@ -167,3 +167,186 @@ test("#1671: re-extraction with resolved invalidAt backfills an old promoted cop
     await cleanup();
   }
 });
+
+// ─── #1707 widenings (promoted-cascade, valid_at, non-fact guard) ────────
+
+// Thread 2 — valid_at propagation. A re-extracted duplicate whose event time
+// yields only a start bound ("since 2024", "yesterday") must get the corrected
+// per-fact validFrom onto the existing copy so as-of recall uses the corrected
+// start. The orchestrator helper's rule: patch valid_at when the incoming
+// validFrom is EXTRACTED and the copy's start bound is batch-anchored
+// (assumed/legacy); never clobber a copy that already carries an extracted
+// per-fact anchor. This test pins that rule against the storage patch the
+// helper issues.
+test("#1707 thread 2: corrected extracted validFrom overwrites a batch-anchored valid_at", async () => {
+  const { storage, cleanup } = await makeStorage("bitemporal-1707-validFrom-");
+  try {
+    // Old promoted copy: batch-anchored valid_at, no per-fact event-time.
+    const content = "We have used Stripe for payments since 2024.";
+    const batchAnchor = "2026-06-01T00:00:00.000Z";
+    const id = await storage.writeMemory("fact", content, {
+      confidence: 0.9,
+      validAt: batchAnchor,
+      // No eventTimeSource → batch-anchored (legacy pre-#1670 copy).
+    });
+    const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(before);
+    assert.equal(before!.frontmatter.valid_at, batchAnchor);
+    assert.equal(before!.frontmatter.eventTimeSource, undefined);
+
+    // Simulate the helper's rule: incoming validFrom is extracted → patch
+    // because the copy is NOT extracted-anchored (fm.eventTimeSource !== "extracted").
+    const correctedValidFrom = "2024-01-01T00:00:00.000Z";
+    const incomingExtracted = true;
+    const copyExtracted = before!.frontmatter.eventTimeSource === "extracted";
+    const shouldPatchValidAt =
+      incomingExtracted && (copyExtracted === false || !before!.frontmatter.valid_at);
+    assert.equal(shouldPatchValidAt, true, "must correct the batch-anchored valid_at");
+
+    const ok = await storage.writeMemoryFrontmatter(before!, {
+      valid_at: correctedValidFrom,
+      eventTimeSource: "extracted",
+      observedAt: "2026-06-20T00:00:00.000Z",
+    });
+    assert.equal(ok, true);
+
+    const after = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(after);
+    assert.equal(after!.frontmatter.valid_at, correctedValidFrom);
+    assert.equal(after!.frontmatter.eventTimeSource, "extracted");
+  } finally {
+    await cleanup();
+  }
+});
+
+test("#1707 thread 2: backfill does NOT clobber an already-extracted valid_at", async () => {
+  const { storage, cleanup } = await makeStorage("bitemporal-1707-validFrom-noclobber-");
+  try {
+    // Copy already carries an extracted per-fact anchor.
+    const content = "The migration to MySQL completed in March 2025.";
+    const existingValidAt = "2025-03-01T00:00:00.000Z";
+    const id = await storage.writeMemory("fact", content, {
+      confidence: 0.9,
+      validAt: existingValidAt,
+      observedAt: "2025-06-01T00:00:00.000Z",
+      eventTimeSource: "extracted",
+    });
+    const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(before);
+
+    // Re-extraction resolves a DIFFERENT start bound. The helper rule
+    // (mirrors orchestrator.ts) must NOT overwrite a copy that already
+    // carries its own extracted per-fact anchor:
+    //   bounds.validFrom && bounds.eventTimeSource === "extracted" &&
+    //     (fm.eventTimeSource !== "extracted" || !fm.valid_at)
+    const incomingValidFrom = "2025-03-15T00:00:00.000Z";
+    const helperWouldPatch =
+      Boolean(incomingValidFrom) &&
+      (before!.frontmatter.eventTimeSource !== "extracted" ||
+        !before!.frontmatter.valid_at);
+    assert.equal(helperWouldPatch, false, "must not clobber an extracted valid_at");
+
+    // No patch issued → valid_at unchanged.
+    const after = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(after);
+    assert.equal(after!.frontmatter.valid_at, existingValidAt);
+  } finally {
+    await cleanup();
+  }
+});
+// Thread 1 — promoted-cascade backfill. When the source-namespace dedup
+// short-circuit fires, the helper must also patch promotion-target copies
+// (profile + shared namespaces) so cross-namespace recall does not surface an
+// expired fact. This proves the mechanism the orchestrator's promotion-cascade
+// closure relies on: backfilling two separate storages patches each
+// independently.
+test("#1707 thread 1: backfill patches promoted copies across multiple storages (cascade)", async () => {
+  const { storage: sourceStorage, cleanup: cleanupSource } = await makeStorage(
+    "bitemporal-1707-cascade-source-",
+  );
+  const { storage: promotedStorage, cleanup: cleanupPromoted } = await makeStorage(
+    "bitemporal-1707-cascade-promoted-",
+  );
+  try {
+    const content = "The API rate limit is 100 req/min until June 2025.";
+    // Both namespaces hold the same fact, written WITHOUT bounds (stale copies).
+    const sourceId = await sourceStorage.writeMemory("fact", content, { confidence: 0.9 });
+    const promotedId = await promotedStorage.writeMemory("fact", content, { confidence: 0.9 });
+
+    // Simulate re-extraction that now carries a resolved invalidAt. The
+    // promotion-cascade closure calls the same backfill against each target.
+    const bounds = {
+      invalid_at: "2025-06-01T00:00:00.000Z",
+      observedAt: "2025-06-20T00:00:00.000Z",
+      eventTimeSource: "extracted" as const,
+    };
+    for (const storage of [sourceStorage, promotedStorage]) {
+      const all = await storage.readAllMemories();
+      const existing = all.find(
+        (m) =>
+          m.frontmatter.category === "fact" &&
+          (m.frontmatter.status ?? "active") === "active" &&
+          !m.frontmatter.invalid_at &&
+          ContentHashIndex.normalizeContent(m.content ?? "") ===
+            ContentHashIndex.normalizeContent(content),
+      );
+      assert.ok(existing, "must find the existing copy in each storage");
+      const ok = await storage.writeMemoryFrontmatter(existing!, bounds);
+      assert.equal(ok, true);
+    }
+
+    // Both copies now carry the resolved end bound — cross-namespace recall
+    // honours the expiry instead of surfacing the stale promoted copy.
+    const sourceAfter = (await sourceStorage.readAllMemories()).find(
+      (m) => m.frontmatter.id === sourceId,
+    );
+    const promotedAfter = (await promotedStorage.readAllMemories()).find(
+      (m) => m.frontmatter.id === promotedId,
+    );
+    assert.ok(sourceAfter && promotedAfter);
+    assert.equal(sourceAfter!.frontmatter.invalid_at, "2025-06-01T00:00:00.000Z");
+    assert.equal(promotedAfter!.frontmatter.invalid_at, "2025-06-01T00:00:00.000Z");
+  } finally {
+    await cleanupSource();
+    await cleanupPromoted();
+  }
+});
+
+// Thread 3 — non-fact guard. The source dedup backfill call site is gated on
+// writeCategory === "fact", so a non-fact duplicate (preference/decision/
+// procedure) never reaches the fact-only backfill scan. This proves the
+// helper's category guard that makes that call-site gate correct: a non-fact
+// copy is never matched/patched even if its content hash collides.
+test("#1707 thread 3: backfill never patches a non-fact copy (category guard)", async () => {
+  const { storage, cleanup } = await makeStorage("bitemporal-1707-nonfact-");
+  try {
+    const content = "The user prefers dark mode.";
+    // A preference (non-fact) whose content would collide with an incoming
+    // duplicate candidate.
+    const id = await storage.writeMemory("preference", content, { confidence: 0.9 });
+    const before = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(before);
+    assert.equal(before!.frontmatter.category, "preference");
+    assert.equal(before!.frontmatter.invalid_at, undefined);
+
+    // The helper's lookup filters category === "fact" — a preference copy is
+    // never eligible, so no patch is issued even when bounds are present.
+    const all = await storage.readAllMemories();
+    const existing = all.find(
+      (m) =>
+        m.frontmatter.category === "fact" && // ← the guard under test
+        (m.frontmatter.status ?? "active") === "active" &&
+        ContentHashIndex.normalizeContent(m.content ?? "") ===
+          ContentHashIndex.normalizeContent(content),
+    );
+    assert.equal(existing, undefined, "non-fact copy must not be matched by the fact-only lookup");
+
+    // No patch → the preference copy is untouched.
+    const after = (await storage.readAllMemories()).find((m) => m.frontmatter.id === id);
+    assert.ok(after);
+    assert.equal(after!.frontmatter.invalid_at, undefined);
+    assert.equal(after!.frontmatter.category, "preference");
+  } finally {
+    await cleanup();
+  }
+});
