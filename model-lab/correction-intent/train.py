@@ -70,7 +70,12 @@ ID_TO_LABEL: dict[int, str] = {index: label for label, index in LABEL_TO_ID.item
 #: faithfulness gate (#1737). 0.355B — well within the ≤4B policy. The
 #: original #1585 first-choice (a ≤4B instruct causal LM emitting JSON) is the
 #: v2 extraction path; v1 is detection-only (see module docstring).
+#: The exact HF git revision of roberta-large-mnli used for v1 training
+#: (manifest baseModel.revision). Only applied when --base-model is the
+#: default roberta-large-mnli; custom bases default to None (latest) unless
+#: the operator passes --base-model-revision (cursor PBKKl).
 DEFAULT_BASE_MODEL = "roberta-large-mnli"
+_PINNED_BASE_REVISION = "2a8f12d27941090092df78e4ba6f0928eb5eac98"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "data"
 DEFAULT_RUNS_DIR = Path(__file__).resolve().parents[1] / "runs" / "correction-intent"
 
@@ -106,11 +111,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         help=f"output runs directory (default: {DEFAULT_RUNS_DIR})")
     parser.add_argument("--base-model", type=str, default=DEFAULT_BASE_MODEL,
                         help=f"Hugging Face base model id (default: {DEFAULT_BASE_MODEL})")
-    parser.add_argument("--base-model-revision", type=str,
-                        default="2a8f12d27941090092df78e4ba6f0928eb5eac98",
-                        help="HF base model git revision for reproducibility. Default pins "
-                             "the manifest baseModel.revision so re-runs fetch the exact base "
-                             "checkpoint even if the HF default branch moves (cursor PA_vX).")
+    parser.add_argument("--base-model-revision", type=str, default=None,
+                        help="HF base model git revision for reproducibility. Defaults to the "
+                             "manifest-pinned revision (2a8f12d…) for roberta-large-mnli, or "
+                             "None (latest) for custom bases. Pass explicitly to pin any model "
+                             "(cursor PA_vX/PBKKl).")
     parser.add_argument("--seed", type=int, default=1337, help="training seed (default: 1337)")
     parser.add_argument("--epochs", type=int, default=12, help="epochs (default: 12)")
     parser.add_argument("--train-batch-size", type=int, default=16)
@@ -253,6 +258,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     hyperparams = hyperparams_from_args(args)
+    # Resolve the base-model revision: the pinned commit for the default
+    # model (roberta-large-mnli), or None (latest) for custom bases unless
+    # the operator passed --base-model-revision explicitly (cursor PBKKl).
+    base_model_revision = args.base_model_revision or (
+        _PINNED_BASE_REVISION if hyperparams.base_model == DEFAULT_BASE_MODEL else None
+    )
     # Seed BEFORE model construction: from_pretrained(ignore_mismatched_sizes=True)
     # reinitializes the 2-way head with random weights, and TrainingArguments'
     # seed/data_seed only apply at trainer.train() time. Setting the seed here
@@ -277,7 +288,7 @@ def main(argv: list[str] | None = None) -> int:
     split = raw_dataset.train_test_split(test_size=0.1, seed=hyperparams.seed)
 
     tokenizer = AutoTokenizer.from_pretrained(
-        hyperparams.base_model, revision=args.base_model_revision
+        hyperparams.base_model, revision=base_model_revision
     )
 
     def tokenize(batch: dict[str, Any]) -> dict[str, Any]:
@@ -331,22 +342,6 @@ def main(argv: list[str] | None = None) -> int:
         data_seed=hyperparams.seed,
         use_cpu=not torch.cuda.is_available(),
     )
-    # Persist the held-out gold next to the checkpoint (version-scoped) so
-    # eval.py defaults to <checkpoint>/correction-heldout.jsonl and an older
-    # checkpoint is never scored against a newer run's split. The full record
-    # (turns + corrections[]) is kept so eval.py can compute the span-overlap
-    # tiebreaker against gold correctedAssertions.
-    heldout_path = out_dir / "correction-heldout.jsonl"
-    with heldout_path.open("w", encoding="utf-8") as handle:
-        for example in split["test"]:
-            handle.write(json.dumps({
-                "turns": example["turns"],
-                "label": example["label"],
-                "corrections": example.get("corrections", []),
-                "morphology": example.get("morphology", ""),
-                "sourceId": example.get("sourceId", ""),
-            }, sort_keys=True, ensure_ascii=False) + "\n")
-
     trainer = Trainer(
         model=model,
         args=training_args,
@@ -368,11 +363,28 @@ def main(argv: list[str] | None = None) -> int:
     trainer.save_model(str(out_dir))
     tokenizer.save_pretrained(str(out_dir))
 
+    # Persist the held-out gold next to the checkpoint (version-scoped) so
+    # eval.py defaults to <checkpoint>/correction-heldout.jsonl and an older
+    # checkpoint is never scored against a newer run's split. The full record
+    # (turns + corrections[]) is kept so eval.py can compute the span-overlap
+    # tiebreaker against gold correctedAssertions.
+    heldout_path = out_dir / "correction-heldout.jsonl"
+    with heldout_path.open("w", encoding="utf-8") as handle:
+        for example in split["test"]:
+            handle.write(json.dumps({
+                "turns": example["turns"],
+                "label": example["label"],
+                "corrections": example.get("corrections", []),
+                "morphology": example.get("morphology", ""),
+                "sourceId": example.get("sourceId", ""),
+            }, sort_keys=True, ensure_ascii=False) + "\n")
+
+
     print(json.dumps({
         "status": "trained",
         "runsDir": str(out_dir),
         "hyperparams": hyperparams.to_dict(),
-        "baseModelRevision": args.base_model_revision,
+        "baseModelRevision": base_model_revision,
         "labelSet": list(morphology.LABELS),
         "heldOut": str(heldout_path),
     }, indent=2))
