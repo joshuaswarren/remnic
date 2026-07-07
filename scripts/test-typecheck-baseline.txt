@@ -115,9 +115,9 @@ packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(18
   Type 'undefined' is not assignable to type 'number'.
 packages/bench/src/benchmarks/remnic/retrieval-reasoning-trace/runner.test.ts(206,60): error TS2352: Conversion of type '{ benchmark: BenchmarkDefinition; mode: "full"; runCount: number; adapterMode: string; }' to type 'ResolvedRunBenchmarkOptions' may be a mistake because neither type sufficiently overlaps with the other. If this was intentional, convert the expression to 'unknown' first.
   Property 'system' is missing in type '{ benchmark: BenchmarkDefinition; mode: "full"; runCount: number; adapterMode: string; }' but required in type 'ResolvedRunBenchmarkOptions'.
-packages/bench/src/providers/claude-cli.test.ts(513,24): error TS2722: Cannot invoke an object which is possibly 'undefined'.
-packages/bench/src/providers/claude-cli.test.ts(513,24): error TS18048: 'provider.discover' is possibly 'undefined'.
-packages/bench/src/providers/claude-cli.test.ts(531,24): error TS2722: Cannot invoke an object which is possibly 'undefined'.
+packages/bench/src/providers/claude-cli.test.ts(579,24): error TS2722: Cannot invoke an object which is possibly 'undefined'.
+packages/bench/src/providers/claude-cli.test.ts(579,24): error TS18048: 'provider.discover' is possibly 'undefined'.
+packages/bench/src/providers/claude-cli.test.ts(597,24): error TS2722: Cannot invoke an object which is possibly 'undefined'.
 packages/bench/src/providers/local-llm.test.ts(155,50): error TS2304: Cannot find name 'HeadersInit'.
 packages/bench/src/providers/ollama.test.ts(10,50): error TS2304: Cannot find name 'HeadersInit'.
 packages/bench/src/responders.test.ts(368,5): error TS2322: Type '() => { chatCompletion(_messages: { role: "user" | "assistant" | "system"; content: string; }[], options: FallbackLlmOptions | undefined): Promise<void>; }' is not assignable to type '(gatewayConfig: GatewayConfig, runtimeContext: FallbackLlmRuntimeContext) => Pick<FallbackLlmClient, "chatCompletion">'.

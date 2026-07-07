@@ -770,6 +770,7 @@ test("fallback llm invokes registered claude-cli fallback runner", { concurrency
     modelId?: string;
     messages?: Array<{ role: "system" | "user" | "assistant"; content: string }>;
     apiKey?: string | Record<string, unknown>;
+    baseUrl?: unknown;
     executable?: unknown;
     reasoningEffort?: unknown;
     timeoutMs?: number;
@@ -779,6 +780,7 @@ test("fallback llm invokes registered claude-cli fallback runner", { concurrency
       captured.modelId = request.modelId;
       captured.messages = request.messages;
       captured.apiKey = request.config.apiKey;
+      captured.baseUrl = request.config.baseUrl;
       captured.executable = request.config.executable;
       captured.reasoningEffort = request.config.reasoningEffort;
       captured.timeoutMs = request.config.retryOptions?.timeoutMs as number | undefined;
@@ -804,7 +806,7 @@ test("fallback llm invokes registered claude-cli fallback runner", { concurrency
     models: {
       providers: {
         "claude-cli": {
-          baseUrl: "",
+          baseUrl: "https://claude-internal.example",
           api: "claude-cli",
           apiKey: "claude-test-key",
           executable: "claude-test-bin",
@@ -834,6 +836,7 @@ test("fallback llm invokes registered claude-cli fallback runner", { concurrency
       { role: "user", content: "Say OK" },
     ]);
     assert.equal(captured.apiKey, "claude-test-key");
+    assert.equal(captured.baseUrl, "https://claude-internal.example");
     assert.equal(captured.executable, "claude-test-bin");
     assert.equal(captured.reasoningEffort, "high");
     assert.equal(captured.timeoutMs, 1234);

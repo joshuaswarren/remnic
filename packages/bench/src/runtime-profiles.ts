@@ -845,6 +845,9 @@ function registerClaudeCliFallbackRunnerIfNeeded(config: ProviderConfig | null):
         ...(typeof request.config.apiKey === "string"
           ? { apiKey: request.config.apiKey }
           : {}),
+        ...(typeof request.config.baseUrl === "string"
+          ? { baseUrl: request.config.baseUrl }
+          : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
         ...(typeof request.config.claudeCliExecutable === "string"
           ? { executable: request.config.claudeCliExecutable }

@@ -175,6 +175,7 @@ export interface ClaudeCliFallbackMessage {
 
 export interface ClaudeCliFallbackConfig {
   apiKey?: string | Record<string, unknown>;
+  baseUrl?: unknown;
   executable?: unknown;
   claudeCliExecutable?: unknown;
   reasoningEffort?: unknown;
@@ -253,6 +254,9 @@ function normalizeClaudeCliFallbackConfig(
     ...config,
     ...(config.executable !== undefined
       ? { executable: normalizeOptionalString(config.executable, "claude-cli executable") }
+      : {}),
+    ...(config.baseUrl !== undefined
+      ? { baseUrl: normalizeOptionalString(config.baseUrl, "claude-cli baseUrl") }
       : {}),
     ...(config.claudeCliExecutable !== undefined
       ? { claudeCliExecutable: normalizeOptionalString(config.claudeCliExecutable, "claude-cli executable") }
