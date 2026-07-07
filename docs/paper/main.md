@@ -221,10 +221,11 @@ passes the §5 publishability rubric.** Until then, every block is a TODO.
     `docs/benchmarks/results/2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json`
     (`tier: "local"`, model `qwen2.5-7b-32k:latest`). Reference them by path
     in the draft; do **not** quote their metric values in the skeleton.
-  - `TODO(#1727)`: reproduce-or-cite-with-caveat the Mem0 (LoCoMo 91.6%) and
-    Zep (+18.5% LongMemEval) self-reported numbers via our harness. Currently
-    these are cited-from-issue-text, **not** reproduced — mark as such or run
-    them.
+  - `TODO(#1727)`: reproduce-or-cite-with-caveat the Mem0 and Zep
+    self-reported published numbers (per the plan doc's Part 2, item 4) via
+    our harness. Those competitor figures are currently cited-from-issue-text,
+    **not** reproduced by our harness — mark as cited-not-reproduced or run
+    them; do not echo the literal values here until they are reproduced.
 - **6.3 TrustScore / faithfulness behavior.**
   - `TODO(#1577)`: TrustScore is a shipped recall feature, **not a benchmark
     metric yet.** Report it as system behavior (qualitative + a worked example)
