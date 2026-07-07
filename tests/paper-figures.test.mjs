@@ -85,10 +85,45 @@ test("all three figure SVGs are committed and well-formed", () => {
   }
 });
 
-test("generator runs clean and exits 0", () => {
-  const res = runGenerator();
-  assert.equal(res.status, 0, `generator failed:\n${res.stderr}`);
-  assert.match(res.stdout, /\[figures\] wrote:/);
+test("generator runs clean and exits 0 (into a temp dir — never mutates committed figures)", () => {
+  // node:test runs subtests concurrently; writing to the committed figures
+  // here would race the content tests below that read them. Always render
+  // into an isolated temp dir.
+  const tmp = mkdtempSync(join(tmpdir(), "fig-run-"));
+  try {
+    const res = runGenerator({ REMNIC_FIGURES_OUT_DIR: tmp });
+    assert.equal(res.status, 0, `generator failed:\n${res.stderr}`);
+    assert.match(res.stdout, /\[figures\] wrote:/);
+    for (const f of [
+      "fig1-locomo-longmemeval.svg",
+      "fig2-memcorrect-metrics.svg",
+      "fig3-trustscore-components.svg",
+    ]) {
+      assert.ok(existsSync(join(tmp, f)), `${f} written to temp out dir`);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("committed figures are in sync with the generator (regeneration is byte-identical)", () => {
+  // Catches stale committed figures: if someone edits an artifact or the
+  // generator and forgets to re-run `pnpm run figures:paper`, this fails.
+  const tmp = mkdtempSync(join(tmpdir(), "fig-sync-"));
+  try {
+    runGenerator({ REMNIC_FIGURES_OUT_DIR: tmp });
+    for (const f of [
+      "fig1-locomo-longmemeval.svg",
+      "fig2-memcorrect-metrics.svg",
+      "fig3-trustscore-components.svg",
+    ]) {
+      const fresh = readFileSync(join(tmp, f), "utf8");
+      const committed = readFigure(f);
+      assert.equal(fresh, committed, `committed ${f} is stale — run \`pnpm run figures:paper\``);
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 // ─── 2. Real values trace to committed artifacts / source ─────────────────

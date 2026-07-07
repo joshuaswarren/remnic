@@ -301,11 +301,19 @@ function renderComparisonPanel({ x, y, w, h, title, metrics, artifact, tierF }) 
   const plotY = y + padT;
   const plotH = h - padT - padB;
 
-  // Systems: Remnic Tier-L (real), Remnic Tier-F (pending), Mem0/Zep/Letta (pending)
+  // Systems: each carries its own artifact source (Tier-L, Tier-F, or none).
+  // A system renders REAL bars only when its artifact exists; otherwise it is
+  // a DATA-PENDING placeholder. Tier-F and third-party are pending until their
+  // artifacts (#1728 / #1747) land — but the wiring renders them automatically
+  // the moment they do.
   const systems = [
-    { key: "remnic-l", label: "Remnic\n(Tier L)", color: COLORS.remnic, real: artifact != null },
-    { key: "remnic-f", label: "Remnic\n(Tier F)", color: COLORS.remnicTierF, real: false },
-    ...THIRD_PARTY.map((tp) => ({ ...tp, label: `${tp.label}\n(#${tp.blocksOn.replace("#", "")})`, real: false })),
+    { key: "remnic-l", label: "Remnic\n(Tier L)", color: COLORS.remnic, source: artifact },
+    { key: "remnic-f", label: "Remnic\n(Tier F)", color: COLORS.remnicTierF, source: tierF },
+    ...THIRD_PARTY.map((tp) => ({
+      ...tp,
+      label: `${tp.label}\n(#${tp.blocksOn.replace("#", "")})`,
+      source: null,
+    })),
   ];
   const groupW = plotW / metrics.length;
   const barGap = 3;
@@ -341,8 +349,9 @@ function renderComparisonPanel({ x, y, w, h, title, metrics, artifact, tierF }) 
     systems.forEach((sys, si) => {
       const bx = gx + barGap + si * (barW + barGap);
       const fullH = plotH;
-      if (sys.real && artifact) {
-        const val = num(artifact.doc.metrics?.[metric.key]);
+      const src = sys.source;
+      if (src) {
+        const val = num(src.doc.metrics?.[metric.key]);
         const bh = Math.max(0, Math.min(1, val)) * fullH;
         const by = plotY + fullH - bh;
         body += bar(bx, by, barW, bh, sys.color) + "\n";
@@ -360,7 +369,7 @@ function renderComparisonPanel({ x, y, w, h, title, metrics, artifact, tierF }) 
   let lx = x + 4;
   const ly = y + h - 30;
   for (const sys of systems) {
-    const swatch = sys.real
+    const swatch = sys.source
       ? `<rect x="${lx}" y="${ly - 8}" width="12" height="10" fill="${sys.color}"/>`
       : `<rect x="${lx}" y="${ly - 8}" width="12" height="10" fill="url(#pendingHatch1)" stroke="${COLORS.pendingStroke}" stroke-width="1" stroke-dasharray="2 2"/>`;
     body += swatch + "\n";
@@ -409,11 +418,15 @@ function figure1() {
     size: 17,
     weight: 700,
   }) + "\n";
+  const tierFPresent = Boolean(locomoF || longmemevalF);
+  const tierFLine = tierFPresent
+    ? "Real: Remnic Tier-L anchor + Tier-F head-to-head. Pending: third-party recall adapters (#1747)."
+    : "Real: Remnic Tier-L reproducibility anchor (RTX 3090, qwen2.5-7b Q4_K_M). Pending: Tier-F run (#1728) + third-party recall adapters (#1747).";
   body +=
     text(
       16,
       48,
-      "Real: Remnic Tier-L reproducibility anchor (RTX 3090, qwen2.5-7b Q4_K_M). Pending: Tier-F run (#1728) + third-party recall adapters (#1747).",
+      tierFLine,
       { size: 10.5, fill: COLORS.subink },
     ) + "\n";
 
@@ -442,7 +455,7 @@ function figure1() {
   const srcs = [
     locomo ? `locomo ${locomo.name}` : "locomo: no real artifact",
     longmemeval ? `longmemeval ${longmemeval.name}` : "longmemeval: no real artifact",
-    `Tier-F pending #1728`,
+    locomoF || longmemevalF ? `Tier-F real (${[locomoF?.name, longmemevalF?.name].filter(Boolean).join(", ")})` : `Tier-F pending #1728`,
     `third-party pending #1747`,
   ];
   body += provenanceFooter(W, topY + panelH + 14, srcs);
@@ -474,6 +487,22 @@ const MEMCORRECT_ADAPTERS = [
   { key: "prompt-only", label: "Prompt-only\nbaseline", color: COLORS.baseline, blocksOn: "#1584" },
   ...THIRD_PARTY.map((tp) => ({ ...tp, label: tp.label, blocksOn: "#1747" })),
 ];
+/**
+ * Resolve a committed MemCorrect artifact for an adapter. The artifact's
+ * `adapter` label (from config.adapterMode) may not be an exact key match, so
+ * fall back to a case-insensitive contains check. Returns the artifact or null.
+ * Shared by the bar loop and the legend so they always agree on real vs
+ * pending (no `??` on a boolean — `has()` never returns nullish).
+ */
+function matchMemCorrectAdapter(have, adp) {
+  const exact = have.get(adp.key);
+  if (exact) return exact;
+  const labelHead = String(adp.label).split("\n")[0].toLowerCase();
+  for (const [key, val] of have) {
+    if (key === adp.key || key.includes(labelHead) || labelHead.includes(key)) return val;
+  }
+  return null;
+}
 
 function figure2() {
   const artifacts = findMemCorrectArtifacts();
@@ -496,7 +525,14 @@ function figure2() {
 
   const rowH = plotH / MEMCORRECT_METRICS.length;
   const adapterCount = MEMCORRECT_ADAPTERS.length;
-  const barH = Math.max(8, (rowH - 8) / adapterCount - 3);
+  // Bars start at ry+8 and step by (barH+3); all adapterCount bars must fit
+  // inside the row track (ry+6 .. ry+rowH-6). Solve for the largest barH that
+  // fits so bars never overflow into the next metric's row.
+  const BAR_GAP = 3;
+  const barH = Math.max(
+    3,
+    Math.floor((rowH - 14 - (adapterCount - 1) * BAR_GAP) / adapterCount),
+  );
 
   let body = "";
   body += `<defs>${hatchDef("pendingHatch2")}</defs>` + "\n";
@@ -542,8 +578,8 @@ function figure2() {
     }
 
     MEMCORRECT_ADAPTERS.forEach((adp, ai) => {
-      const ay = ry + 8 + ai * (barH + 3);
-      const matched = have.get(adp.key) ?? have.get(adp.label.split("\n")[0].toLowerCase());
+      const ay = ry + 8 + ai * (barH + BAR_GAP);
+      const matched = matchMemCorrectAdapter(have, adp);
       if (matched && onAxis) {
         const val = matched.row[metric.key];
         if (val === null || val === undefined) {
@@ -574,13 +610,17 @@ function figure2() {
   let lx = 16;
   const ly = H - 36;
   for (const adp of MEMCORRECT_ADAPTERS) {
-    const committed = have.has(adp.key) ?? [...have.keys()].some((k) => k.includes(adp.key));
+    // Use the same matcher as the bar loop so legend and bars agree. `||` not
+    // `??`: matchMemCorrectAdapter returns a truthy artifact or null.
+    const committed = matchMemCorrectAdapter(have, adp) != null;
     const swatch = committed
       ? `<rect x="${lx}" y="${ly - 9}" width="12" height="10" fill="${adp.color}"/>`
       : `<rect x="${lx}" y="${ly - 9}" width="12" height="10" fill="url(#pendingHatch2)" stroke="${COLORS.pendingStroke}" stroke-width="1" stroke-dasharray="2 2"/>`;
     body += swatch + "\n";
-    body += text(lx + 16, ly, `${adp.label.split("\n")[0]} (pending ${adp.blocksOn})`, { size: 9.5, fill: COLORS.subink }) + "\n";
-    lx += 16 + `${adp.label.split("\n")[0]} (pending ${adp.blocksOn})`.length * 5.4 + 16;
+    const head = adp.label.split("\n")[0];
+    const status = committed ? "real" : `pending ${adp.blocksOn}`;
+    body += text(lx + 16, ly, `${head} (${status})`, { size: 9.5, fill: COLORS.subink }) + "\n";
+    lx += 16 + `${head} (${status})`.length * 5.4 + 16;
   }
 
   const srcs = [
