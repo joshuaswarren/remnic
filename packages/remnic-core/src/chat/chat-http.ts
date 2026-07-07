@@ -16,11 +16,13 @@
  *  - Concurrent identical POSTs are coalesced by an in-flight dedup keyed on
  *    `memoryDir + chatSessionId + principal + message` so a double-submit
  *    processes exactly once (issue #1687 Thread 18 / #1685). The memoryDir
- *    scopes the key per store (AGENTS.md State Scoping).
+ *    scopes the key per store (AGENTS.md State Scoping); an absent principal
+ *    is encoded distinctly so it can never alias a real principal string.
  *  - The SSE stream subscribes to live transcript appends and pushes new
  *    entries to connected clients (issue #1685 item 2 / #1687 Thread 8).
  *    Subscription is established before the transcript snapshot is read so no
- *    concurrent append is missed (cursor Bugbot race fix).
+ *    concurrent append is missed (cursor Bugbot race fix), and the disconnect
+ *    cleanup is registered immediately so an early close cannot leak it.
  *
  * This module is imported by access-http.ts with thin route registration —
  * the god-file ratchet (#1520) tracks access-http.ts LOC.
@@ -63,12 +65,24 @@ export interface ChatHttpHandlerOptions {
  */
 const chatInFlight = new Map<string, Promise<ChatTurnResult>>();
 
-function chatDedupFingerprint(memoryDir: string, chatSessionId: string, principal: string, message: string): string {
-  // sha256 keeps the key bounded for long messages; the principal is part of
-  // the key so two callers targeting the same session id can never share a
-  // result (the wrong principal still independently hits access_denied).
+/**
+ * Encode the principal into a fingerprint component where an absent principal
+ * occupies a distinct namespace from any real principal string (control-byte
+ * prefix), so a no-principal request can never coalesce with a request whose
+ * principal is literally `"_"` (or any other string) and reuse its authorized
+ * promise (codex P2 review thread).
+ */
+function principalFingerprintComponent(principal: string | undefined): string {
+  return principal === undefined ? "\x00absent" : `\x01${principal}`;
+}
+
+function chatDedupFingerprint(memoryDir: string, chatSessionId: string, principal: string | undefined, message: string): string {
+  // sha256 keeps the key bounded for long messages; the principal component
+  // is distinct per principal (incl. absent) so two callers targeting the
+  // same session id can never share a result — the wrong principal still
+  // independently hits access_denied inside processChatMessage.
   const messageHash = createHash("sha256").update(message, "utf8").digest("hex").slice(0, 32);
-  return `${memoryDir}:${chatSessionId}:${principal}:${messageHash}`;
+  return `${memoryDir}:${chatSessionId}:${principalFingerprintComponent(principal)}:${messageHash}`;
 }
 
 /**
@@ -87,8 +101,7 @@ function processChatMessageDedup(opts: {
   if (!opts.chatSessionId) {
     return processChatMessage(opts);
   }
-  const principal = opts.principal ?? "_";
-  const fp = chatDedupFingerprint(opts.memoryDir, opts.chatSessionId, principal, opts.message);
+  const fp = chatDedupFingerprint(opts.memoryDir, opts.chatSessionId, opts.principal, opts.message);
   const existing = chatInFlight.get(fp);
   if (existing) return existing;
   const pending = processChatMessage(opts).finally(() => {
@@ -202,7 +215,9 @@ export async function handleChatMessage(
  * the transcript snapshot is read. Entries appended concurrently during the
  * snapshot read are buffered, then drained after the burst (dropping any the
  * burst already delivered, by `seq`), so no live append is ever missed and
- * none is delivered twice.
+ * none is delivered twice. The disconnect cleanup is registered immediately
+ * after the subscription so a client that closes during the load or burst
+ * still releases the subscription (no listener leak).
  */
 export async function handleChatEventsSSE(
   req: IncomingMessage,
@@ -232,6 +247,16 @@ export async function handleChatEventsSSE(
     } catch {
       // Connection closed — cleanup below.
     }
+  });
+
+  // Register disconnect cleanup IMMEDIATELY so a close during loadChatSession
+  // or the burst still releases the subscription (cursor Bugbot). The
+  // heartbeat is assigned later; the handler clears it only if set.
+  let heartbeat: NodeJS.Timeout | undefined;
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    unsubscribe();
+    try { res.end(); } catch { /* already ended */ }
   });
 
   const session = await loadChatSession(opts.memoryDir, chatSessionId);
@@ -278,20 +303,14 @@ export async function handleChatEventsSSE(
 
   // Heartbeat. Unref'd so a lingering connection never blocks process
   // exit (rule 47 — no shared mutable objects keep the loop alive).
-  const heartbeat = setInterval(() => {
+  heartbeat = setInterval(() => {
     try {
       res.write(`data: ${JSON.stringify({ type: "heartbeat" })}\n\n`);
     } catch {
-      // Connection closed — clearInterval below.
+      // Connection closed — clearInterval via the close handler.
     }
   }, 25_000);
-  heartbeat.unref();
-
-  req.on("close", () => {
-    clearInterval(heartbeat);
-    unsubscribe();
-    try { res.end(); } catch { /* already ended */ }
-  });
+  heartbeat.unref?.();
 }
 
 // ---------------------------------------------------------------------------
