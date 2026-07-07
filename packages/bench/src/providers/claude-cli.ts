@@ -86,11 +86,15 @@ export const DEFAULT_CLAUDE_CLI_MODEL_ALIAS = "opus";
  * pointed at the real user home (not redirected) so the CLI can still find
  * its OAuth session — isolation from CLAUDE.md / project settings is
  * achieved via `--safe-mode` plus a freshly created empty cwd instead, see
- * `buildClaudeCliArgs`.
+ * `buildClaudeCliArgs`. CLAUDE_CODE_OAUTH_TOKEN IS forwarded: it is the
+ * subscription OAuth token (free under the Max plan) used to authenticate
+ * headless/CI runs that have no interactive keychain login — unlike
+ * ANTHROPIC_API_KEY it does not switch the child to metered API billing.
  */
 const CLAUDE_CLI_RUNTIME_ENV_ALLOWLIST = new Set([
   "ALL_PROXY",
   "APPDATA",
+  "CLAUDE_CODE_OAUTH_TOKEN",
   "COLORTERM",
   "COMSPEC",
   "FORCE_COLOR",

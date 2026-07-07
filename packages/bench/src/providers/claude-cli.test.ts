@@ -852,3 +852,35 @@ test("claude-cli provider backs off on a zero-exit empty result whose quota text
     global.setTimeout = originalSetTimeout;
   }
 });
+
+test("claude-cli provider forwards CLAUDE_CODE_OAUTH_TOKEN but still drops ANTHROPIC_API_KEY", async () => {
+  const seededEnv: Record<string, string> = {
+    CLAUDE_CODE_OAUTH_TOKEN: "oauth-token-should-forward",
+    ANTHROPIC_API_KEY: "ambient-secret-should-not-leak",
+  };
+  const previousEnv = new Map<string, string | undefined>();
+  for (const [k, v] of Object.entries(seededEnv)) {
+    previousEnv.set(k, process.env[k]);
+    process.env[k] = v;
+  }
+  let capturedEnv: NodeJS.ProcessEnv | undefined;
+  try {
+    const provider = createClaudeCliProvider(
+      { provider: "claude-cli", model: "opus" },
+      {
+        async runClaudeCli(request) {
+          capturedEnv = request.env;
+          return { status: 0, signal: null, stdout: JSON.stringify({ is_error: false, result: "ok" }), stderr: "" };
+        },
+      },
+    );
+    await provider.complete("hello");
+    assert.equal(capturedEnv?.CLAUDE_CODE_OAUTH_TOKEN, "oauth-token-should-forward");
+    assert.equal(capturedEnv?.ANTHROPIC_API_KEY, undefined);
+  } finally {
+    for (const [k, v] of previousEnv) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
