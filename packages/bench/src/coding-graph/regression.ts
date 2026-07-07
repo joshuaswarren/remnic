@@ -173,6 +173,10 @@ export function checkCodingGraphRegression(
   if (report.incrementalModifiedUpdate?.p95 == null) missingFields.push("incrementalModifiedUpdate.p95");
   if (report.tracePath?.p95 == null) missingFields.push("tracePath.p95");
   if (report.searchGraph?.p95 == null) missingFields.push("searchGraph.p95");
+  if (report.fullIndexMs?.ms == null) missingFields.push("fullIndexMs.ms");
+  if (report.fullIndexLocsPerSecond == null) missingFields.push("fullIndexLocsPerSecond");
+  if (report.deadCodeMs?.ms == null) missingFields.push("deadCodeMs.ms");
+  if (report.dbBytesPerKloc == null) missingFields.push("dbBytesPerKloc");
   if (missingFields.length > 0) {
     return {
       passed: false,

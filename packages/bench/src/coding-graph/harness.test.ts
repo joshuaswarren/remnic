@@ -887,5 +887,24 @@ test("guard ordering: corrupt v2 report missing p50 (but has p95) fails the gate
   assert.ok(result.summary.includes("incrementalModifiedUpdate.p50"), "summary must name the missing p50 field");
 });
 
+test("guard ordering: corrupt v2 report missing scalar metrics fails before machine skip", () => {
+  // The field-presence guard must also validate scalar/complex metrics
+  // (fullIndexMs.ms, fullIndexLocsPerSecond, deadCodeMs.ms, dbBytesPerKloc),
+  // not just nested micro-metrics. A report missing these on a different
+  // machine would otherwise fall through to the skip as hardware variance
+  // (chatgpt-codex-connector #1688 P2: "Validate scalar report metrics").
+  const report = reportWithMachine({ ...SAME_MACHINE, arch: "x64" });
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const missingScalar: CodingGraphBenchReport = {
+    ...report,
+    fullIndexMs: undefined as unknown as CodingGraphBenchReport["fullIndexMs"],
+  };
+  const result = checkCodingGraphRegression(missingScalar, baseline, 30);
+  assert.equal(result.passed, false, "missing scalar metric must fail");
+  assert.equal(result.skipped, undefined, "must not reach machine skip");
+  assert.ok(result.summary.includes("fullIndexMs.ms"), "summary must name the missing scalar field");
+});
+
+
 
 
