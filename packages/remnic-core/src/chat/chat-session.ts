@@ -7,7 +7,8 @@
  * *about* memories does not create memories of the conversation itself.
  */
 
-import { mkdir, readFile, appendFile, readdir, stat, unlink } from "node:fs/promises";
+import { mkdir, readFile, appendFile, readdir, stat, unlink, open } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -38,6 +39,26 @@ export function chatSessionFile(memoryDir: string, chatSessionId: string): strin
     throw new Error("Invalid chat session id");
   }
   return join(chatSessionDir(memoryDir), `${chatSessionId}.jsonl`);
+}
+
+// ---------------------------------------------------------------------------
+// Monotonic transcript seq (issue #1687 review — strictly increasing)
+// ---------------------------------------------------------------------------
+
+/**
+ * Last emitted transcript `seq`. Seeded from `Date.now()` on first use and
+ * incremented when two appends land in the same millisecond, so `seq` is
+ * strictly increasing within a process (review thread: `Date.now()` alone is
+ * not monotonic — same-ms entries would share a seq and break the SSE
+ * reconnect dedup-by-seq contract). Across process restarts `Date.now()` is
+ * already forward-moving, so no collision occurs in practice.
+ */
+let lastTranscriptSeq = 0;
+
+function nextTranscriptSeq(): number {
+  const now = Date.now();
+  lastTranscriptSeq = now > lastTranscriptSeq ? now : lastTranscriptSeq + 1;
+  return lastTranscriptSeq;
 }
 
 /**
@@ -169,23 +190,128 @@ export async function loadChatSession(
 
 /**
  * Append a transcript entry to the session file (atomic append, rule 54).
+ *
+ * After the append resolves, in-process subscribers (open SSE connections —
+ * issue #1687) are notified synchronously so live clients receive the new
+ * entry without polling.  Listener errors are swallowed so a misbehaving
+ * subscriber can never break a transcript append (rule 54 — atomic + safe).
  */
 export async function appendTranscriptEntry(
   memoryDir: string,
   chatSessionId: string,
   entry: Omit<ChatTranscriptEntry, "seq" | "ts">,
 ): Promise<ChatTranscriptEntry> {
+  const filePath = chatSessionFile(memoryDir, chatSessionId);
   const full: ChatTranscriptEntry = {
     ...entry,
-    seq: Date.now(),
+    seq: nextTranscriptSeq(),
     ts: new Date().toISOString(),
   };
-  await appendFile(
-    chatSessionFile(memoryDir, chatSessionId),
-    JSON.stringify(full) + "\n",
-    "utf8",
-  );
+  // Atomic resurrection guard (codex P2): open with O_APPEND but WITHOUT
+  // O_CREAT so a session already unlinked by a concurrent TTL sweep fails at
+  // open-time (ENOENT) — there is no stat->appendFile TOCTOU. A headerless
+  // recreation would load with no principal binding and be treated as public
+  // by sessionBelongsToPrincipal. A concurrent unlink during the append is
+  // caught by the post-append re-stat below so the turn fails visibly rather
+  // than writing to an orphaned inode and returning 200.
+  let fh;
+  try {
+    fh = await open(filePath, fsConstants.O_APPEND | fsConstants.O_WRONLY);
+  } catch (err) {
+    // Only ENOENT (session unlinked by a concurrent TTL sweep) maps to
+    // chat_session_expired; real fs errors (EACCES, EMFILE, EISDIR, ...)
+    // are rethrown so the caller surfaces the actual failure (codex P2).
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("chat_session_expired");
+    }
+    throw err;
+  }
+  try {
+    await fh.appendFile(JSON.stringify(full) + "\n", "utf8");
+  } finally {
+    await fh.close();
+  }
+  // Post-append re-check (codex P2): if a concurrent TTL sweep unlinked the
+  // session between open() and here, the append landed on the orphaned inode
+  // and the directory no longer references it. Re-stat the PATH (not the fd)
+  // so the turn fails with chat_session_expired instead of returning 200 with
+  // a reply the client cannot resume. A later sweep unlinking an over-TTL
+  // session is a legitimate TTL action, not a silent loss.
+  try {
+    await stat(filePath);
+  } catch (err) {
+    // Only ENOENT (concurrent TTL unlink) is session expiry; other fs
+    // errors (EACCES, EMFILE, ENOTDIR, ...) are rethrown (codex/kilo P2).
+    if (err instanceof Error && (err as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error("chat_session_expired");
+    }
+    throw err;
+  }
+  notifyTranscriptListeners(memoryDir, chatSessionId, full);
   return full;
+}
+
+// ---------------------------------------------------------------------------
+// In-process transcript pub/sub (issue #1687 SSE push)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-session listener sets, keyed by `memoryDir + chatSessionId` so two
+ * memory stores sharing a legacy/imported session id cannot leak transcript
+ * entries to each other (AGENTS.md State Scoping — module-level singletons
+ * are scoped per store).  Kept module-level so appendTranscriptEntry can fan
+ * out new entries to open SSE connections regardless of which caller
+ * appended (HTTP, MCP, or CLI).  Empty sets are pruned so the map never
+ * grows unbounded (rule 47 — no leak).
+ */
+const transcriptListeners = new Map<string, Set<(entry: ChatTranscriptEntry) => void>>();
+
+function transcriptListenerKey(memoryDir: string, chatSessionId: string): string {
+  return `${memoryDir}\x00${chatSessionId}`;
+}
+
+function notifyTranscriptListeners(memoryDir: string, chatSessionId: string, entry: ChatTranscriptEntry): void {
+  const set = transcriptListeners.get(transcriptListenerKey(memoryDir, chatSessionId));
+  if (!set) return;
+  for (const fn of set) {
+    try {
+      fn(entry);
+    } catch {
+      // A listener must never break the append path (rule 54).
+    }
+  }
+}
+
+/**
+ * Subscribe to live transcript entries for a chat session in a given memory
+ * store.  Returns an unsubscribe function that removes the listener and
+ * prunes the session's set when it becomes empty.  Used by the SSE handler
+ * to push new user/assistant entries to connected clients (issue #1687).
+ *
+ * The `memoryDir` scopes the subscription to its store so a process hosting
+ * two Remnic services cannot cross-deliver transcript entries (AGENTS.md
+ * State Scoping).
+ */
+export function subscribeChatTranscript(
+  memoryDir: string,
+  chatSessionId: string,
+  listener: (entry: ChatTranscriptEntry) => void,
+): () => void {
+  const key = transcriptListenerKey(memoryDir, chatSessionId);
+  let set = transcriptListeners.get(key);
+  if (!set) {
+    set = new Set();
+    transcriptListeners.set(key, set);
+  }
+  set.add(listener);
+  return () => {
+    const current = transcriptListeners.get(key);
+    if (!current) return;
+    current.delete(listener);
+    if (current.size === 0) {
+      transcriptListeners.delete(key);
+    }
+  };
 }
 
 /**
@@ -271,6 +397,16 @@ export async function cleanupExpiredChatSessions(
       // boundary is inclusive; sub-millisecond APFS mtime skew is negligible
       // against an hour-scale threshold (rule 54 — deterministic cleanup).
       if (ttlHours <= 0 || ageHours >= ttlHours) {
+        // Re-check mtime immediately before unlinking so a turn appended
+        // mid-sweep (which refreshes mtime) is not deleted by the stale age
+        // decision captured above (codex P2). ttlHours <= 0 (expire-all)
+        // skips the re-check. The residual microsecond window is a
+        // legitimate sweep of an over-TTL file.
+        if (ttlHours > 0) {
+          const fresh = await stat(filePath);
+          const freshAge = (Date.now() - fresh.mtimeMs) / (1000 * 60 * 60);
+          if (freshAge < ttlHours) continue;
+        }
         await unlink(filePath);
         removed++;
       }

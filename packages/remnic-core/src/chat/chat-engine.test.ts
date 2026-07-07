@@ -7,7 +7,7 @@
  */
 
 import { strict as assert } from "node:assert";
-import { mkdir, rm, readFile } from "node:fs/promises";
+import { mkdir, rm, readFile, utimes, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -269,4 +269,69 @@ test("budget exhaustion summary LLM failure does not crash (Thread 16)", async (
   // Should return a partial reply, not throw.
   assert.ok(result.reply.length > 0, "Should return a fallback reply");
   assert.ok(result.skippedTools !== undefined, "Should report skipped tools");
+});
+
+// ---------------------------------------------------------------------------
+// TTL boundary (issue #1685 item 1 / #1687 Thread 21)
+// ---------------------------------------------------------------------------
+
+test("cleanupExpiredChatSessions honors TTL boundary [0, ttlHours) — age >= ttl expires", async () => {
+  const dir = await makeTempDir();
+  const ttlHours = 2;
+  const ttlMs = ttlHours * 3600 * 1000;
+
+  // Session aged past the TTL (mtime set to ttlHours ago; by the time the
+  // sweep stat()s it a few ms have elapsed, so age >= ttl deterministically
+  // — the boundary is inclusive: age ∈ [0, ttl) survives, age >= ttl expires).
+  const expired = await createChatSession(dir, { principal: "expired" });
+  const expiredFile = chatSessionFile(dir, expired.id);
+  const atTtlSeconds = (Date.now() - ttlMs) / 1000;
+  await utimes(expiredFile, atTtlSeconds, atTtlSeconds);
+
+  // Session aged well under the TTL → must survive.
+  const fresh = await createChatSession(dir, { principal: "fresh" });
+  const freshFile = chatSessionFile(dir, fresh.id);
+  const underTtlSeconds = (Date.now() - (ttlMs - 6 * 60 * 1000)) / 1000; // ~1.9h old
+  await utimes(freshFile, underTtlSeconds, underTtlSeconds);
+
+  const removed = await cleanupExpiredChatSessions(dir, ttlHours);
+  assert.equal(removed, 1, "only the expired session should be removed");
+
+  // The fresh session file must still be on disk.
+  const freshStillExists = await readFile(freshFile, "utf8").then(() => true).catch(() => false);
+  assert.ok(freshStillExists, "session aged under the TTL must survive the sweep");
+
+  // The expired session file must be gone.
+  const expiredGone = await readFile(expiredFile, "utf8").then(() => false).catch(() => true);
+  assert.ok(expiredGone, "session aged at/over the TTL must be swept");
+});
+
+
+test("appendTranscriptEntry emits strictly-increasing seqs even within the same millisecond (issue #1687 review)", async () => {
+  const dir = await makeTempDir();
+  const session = await createChatSession(dir, { principal: "seq" });
+  // Append several entries as fast as possible (same-ms collisions would have
+  // shared a Date.now()-based seq before the monotonic counter fix).
+  const entries: number[] = [];
+  for (let i = 0; i < 8; i++) {
+    const e = await appendTranscriptEntry(dir, session.id, { role: "user", content: `m${i}` });
+    entries.push(e.seq);
+  }
+  // Every seq must be distinct and strictly increasing.
+  for (let i = 1; i < entries.length; i++) {
+    assert.ok(entries[i]! > entries[i - 1]!, `seq ${entries[i]} must exceed ${entries[i - 1]}`);
+  }
+  assert.equal(new Set(entries).size, entries.length, "seqs must be unique");
+});
+
+test("appendTranscriptEntry refuses to recreate a swept session (chat_session_expired) — codex P2 #1687", async () => {
+  const dir = await makeTempDir();
+  const session = await createChatSession(dir, { principal: "alice" });
+  // Simulate the TTL sweep unlinking the file mid-turn (resurrection race).
+  await unlink(chatSessionFile(dir, session.id));
+  // Must throw instead of silently recreating a headerless (public) file.
+  await assert.rejects(
+    appendTranscriptEntry(dir, session.id, { role: "user", content: "x" }),
+    /chat_session_expired/,
+  );
 });
