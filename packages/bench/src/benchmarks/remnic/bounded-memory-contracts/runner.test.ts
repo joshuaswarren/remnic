@@ -212,7 +212,11 @@ test("runner: identical mode → identical datasetHash and identical aggregate t
 
 test("runner: datasetHash matches the standalone fixture hash", async () => {
   const result = await runBoundedMemoryContractsBenchmark(options());
-  assert.equal(result.meta.datasetHash, fixtureHash());
+  // Quick mode serves the smoke subset, so the digest must hash THAT slice —
+  // not the full 16-task fixture (a run with --limit would differ again).
+  assert.equal(result.meta.datasetHash, fixtureHash(BOUNDED_MEMORY_SMOKE_FIXTURE));
+  assert.notEqual(result.meta.datasetHash, fixtureHash(BOUNDED_MEMORY_FIXTURE),
+    "quick-mode digest must differ from the full-fixture digest");
 });
 
 // ---------------------------------------------------------------------------
@@ -276,7 +280,7 @@ test("runner: emitted result validates against BENCHMARK_RESULT_SCHEMA", async (
     assert.ok(key in result, `result missing required top-level key ${key}`);
   }
   assert.equal(result.meta.benchmark, "bounded-memory-contracts");
-  assert.equal(result.meta.datasetHash, fixtureHash());
+  assert.equal(result.meta.datasetHash, fixtureHash(BOUNDED_MEMORY_SMOKE_FIXTURE));
 });
 
 // ---------------------------------------------------------------------------

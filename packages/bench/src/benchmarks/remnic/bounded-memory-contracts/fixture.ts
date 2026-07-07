@@ -577,11 +577,18 @@ export const BOUNDED_MEMORY_SMOKE_FIXTURE: BoundedMemoryTask[] = [
   BOUNDED_MEMORY_FIXTURE.find((t) => t.id === "stale-feature-flag")!,
 ];
 
-/** Deterministic hash of the fixture payload (for the reproducibility manifest). */
-export function fixtureHash(): string {
+/**
+ * Deterministic hash of the task payload actually served by a run (for the
+ * reproducibility manifest). Hashes the SELECTED slice — quick mode (10-task
+ * smoke subset) and `--limit` runs therefore get a distinct digest from the
+ * full 16-task fixture, so result comparisons keyed by dataset hash can tell
+ * the datasets apart. Defaults to the full fixture when no slice is passed.
+ */
+export function fixtureHash(tasks?: readonly BoundedMemoryTask[]): string {
   // Simple, stable hash over task ids + expected answers + item ids. Kept
   // deterministic and dependency-free (no crypto of user data).
-  const payload = BOUNDED_MEMORY_FIXTURE.map((t) =>
+  const source = tasks ?? BOUNDED_MEMORY_FIXTURE;
+  const payload = source.map((t) =>
     [
       t.id,
       t.family,

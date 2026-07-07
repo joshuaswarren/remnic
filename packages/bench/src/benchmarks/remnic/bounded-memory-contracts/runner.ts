@@ -102,6 +102,10 @@ export async function runBoundedMemoryContractsBenchmark(
 
   const seed = typeof options.seed === "number" ? options.seed : 0;
 
+  // One TaskResult is emitted per (task × condition) pair; the progress
+  // callback total is the full pair count, not the running emitted count.
+  const totalPairs = tasks.length * BOUNDED_MEMORY_CONDITIONS.length;
+
   // Run every condition over the task set.
   const byCondition = new Map<BoundedMemoryConditionId, ConditionTaskResult[]>();
   for (const condition of BOUNDED_MEMORY_CONDITIONS) {
@@ -159,7 +163,7 @@ export async function runBoundedMemoryContractsBenchmark(
         },
       };
       taskResults.push(tr);
-      options.onTaskComplete?.(tr, taskResults.length, taskResults.length);
+      options.onTaskComplete?.(tr, taskResults.length, totalPairs);
     }
   }
 
@@ -191,7 +195,7 @@ export async function runBoundedMemoryContractsBenchmark(
       mode: options.mode,
       runCount: 1,
       seeds: [seed],
-      datasetHash: fixtureHash(),
+      datasetHash: fixtureHash(tasks),
     },
     config: {
       runtimeProfile: options.runtimeProfile ?? null,

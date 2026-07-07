@@ -148,35 +148,48 @@ export function assemblePack(
     };
   }
 
-  // C2 / C3: typed contract.
+  // C2 / C3: typed contract. Each memory item is assigned to AT MOST ONE
+  // slot (no double-counting) and the shared token budget is enforced across
+  // the whole pack, so typed conditions are held to the same cap as C1.
   const inScope = task.memoryItems.filter((m) => m.scope === task.scope);
   const boundaryItem = inScope.find(
     (m) => m.category === "boundary" && m.status === "active",
   );
   const boundaryNote = boundaryItem ? boundaryItem.content : null;
 
-  const slots = contract.slots.map((slot) => {
-    const matching = inScope.filter((m) => {
-      if (!slot.memoryCategories.includes(m.category)) return false;
-      if (slot.excludeIfSuperseded && m.status === "superseded") return false;
-      if (m.status === "pending_review") return false;
-      return true;
-    });
-    // Rank within a slot: relevance then recency.
-    matching.sort((a, b) => {
+  // Rank all in-scope, non-pending-review candidates once by relevance then
+  // recency. Each candidate is offered to the first accepting slot; an item
+  // already claimed by an earlier slot is skipped so cost metrics count each
+  // trace item exactly once.
+  const rankedCandidates = inScope
+    .filter((m) => m.status !== "pending_review")
+    .slice()
+    .sort((a, b) => {
       const oa = keywordOverlap(a.subjectKeywords, task.subjectKeywords);
       const ob = keywordOverlap(b.subjectKeywords, task.subjectKeywords);
       if (ob !== oa) return ob - oa;
       return b.turn - a.turn;
     });
-    const picked = matching.slice(0, slot.maxItems);
-    return { id: slot.id, items: picked.map((m) => toPackItem(m, true)) };
+
+  const alreadyPicked = new Set<string>();
+  let budget = contract.maxTotalTokens;
+  const slots = contract.slots.map((slot) => {
+    const items: MemoryPackItem[] = [];
+    for (const m of rankedCandidates) {
+      if (budget <= 0) break;
+      if (alreadyPicked.has(m.id)) continue;
+      if (!slot.memoryCategories.includes(m.category)) continue;
+      if (slot.excludeIfSuperseded && m.status === "superseded") continue;
+      if (items.length >= slot.maxItems) break;
+      if (m.tokens > budget) continue;
+      items.push(toPackItem(m, true));
+      alreadyPicked.add(m.id);
+      budget -= m.tokens;
+    }
+    return { id: slot.id, items };
   });
 
-  let totalTokens = slots.reduce(
-    (s, slot) => s + slot.items.reduce((ss, it) => ss + it.tokens, 0),
-    0,
-  );
+  let totalTokens = contract.maxTotalTokens - budget;
 
   // C3: append triggered skills as a procedural slot, respecting the budget.
   if (condition === "typed-plus-skills" && injectSkills.length > 0) {
