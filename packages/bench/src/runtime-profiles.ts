@@ -4,8 +4,10 @@ import { readFile } from "node:fs/promises";
 import {
   type FallbackLlmRuntimeContext,
   resolvePluginEntry,
+  setClaudeCliFallbackRunnerForProcess,
   setCodexCliFallbackRunnerForProcess,
   type GatewayConfig,
+  type ClaudeCliFallbackRunner,
   type CodexCliFallbackRunner,
 } from "@remnic/core";
 import type {
@@ -136,6 +138,8 @@ const REDACTED_CONFIG_VALUE = "[redacted]";
 const INTERNAL_GATEWAY_AGENT_ID = "remnic-bench-internal";
 let codexCliFallbackRegistered = false;
 let codexCliFallbackChain: Promise<void> = Promise.resolve();
+let claudeCliFallbackRegistered = false;
+let claudeCliFallbackChain: Promise<void> = Promise.resolve();
 
 export async function resolveBenchRuntimeProfile(
   options: ResolveBenchRuntimeProfileOptions,
@@ -199,6 +203,7 @@ export async function resolveBenchRuntimeProfile(
     options.drainTimeout ?? options.requestTimeout,
   );
   registerCodexCliFallbackRunnerIfNeeded(internalProvider);
+  registerClaudeCliFallbackRunnerIfNeeded(internalProvider);
   const responderFactoryConfig = systemProvider
     ? asProviderFactoryConfig(systemProvider)
     : undefined;
@@ -621,7 +626,11 @@ function buildInternalGatewayConfig(
           api: gatewayProviderApi(config.provider),
           ...(config.apiKey ? { apiKey: config.apiKey } : {}),
           ...(config.disableThinking || options.disableThinking ? { disableThinking: true } : {}),
-          ...(config.reasoningEffort ? { codexCliReasoningEffort: config.reasoningEffort } : {}),
+          ...(config.reasoningEffort
+            ? config.provider === "claude-cli"
+              ? { claudeCliReasoningEffort: config.reasoningEffort }
+              : { codexCliReasoningEffort: config.reasoningEffort }
+            : {}),
           ...(timeoutMs ? { retryOptions: { timeoutMs } } : {}),
           models: [{ id: config.model, name: config.model }],
         },
@@ -816,6 +825,79 @@ function splitCodexFallbackMessages(
     prompt: prompt || messages.map((message) => message.content).join("\n\n"),
   };
 }
+
+function registerClaudeCliFallbackRunnerIfNeeded(config: ProviderConfig | null): void {
+  if (!config || config.provider !== "claude-cli" || claudeCliFallbackRegistered) {
+    return;
+  }
+
+  const runner: ClaudeCliFallbackRunner = async (request) =>
+    enqueueClaudeCliFallback(async () => {
+      if (request.options.signal?.aborted) {
+        throw claudeAbortReason(request.options.signal);
+      }
+      const reasoningEffort = asCodexReasoningEffort(
+        request.config.claudeCliReasoningEffort ?? request.config.reasoningEffort,
+      );
+      const provider = createProvider({
+        provider: "claude-cli",
+        model: request.modelId,
+        ...(typeof request.config.apiKey === "string"
+          ? { apiKey: request.config.apiKey }
+          : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+        ...(typeof request.config.claudeCliExecutable === "string"
+          ? { executable: request.config.claudeCliExecutable }
+          : typeof request.config.executable === "string"
+            ? { executable: request.config.executable }
+            : {}),
+        ...(typeof request.config.retryOptions?.timeoutMs === "number" ||
+          typeof request.options.timeoutMs === "number"
+          ? {
+              retryOptions: {
+                timeoutMs:
+                  typeof request.config.retryOptions?.timeoutMs === "number"
+                    ? request.config.retryOptions.timeoutMs
+                    : request.options.timeoutMs,
+              },
+            }
+          : {}),
+      });
+      const split = splitCodexFallbackMessages(request.messages);
+      const completion = await provider.complete(split.prompt, {
+        systemPrompt: split.systemPrompt,
+        temperature: 0.3,
+        maxTokens: 4096,
+        signal: request.options.signal,
+      });
+      return {
+        content: completion.text,
+        usage: {
+          inputTokens: completion.tokens.input,
+          outputTokens: completion.tokens.output,
+          totalTokens: completion.tokens.input + completion.tokens.output,
+        },
+      };
+    });
+
+  setClaudeCliFallbackRunnerForProcess(runner);
+  claudeCliFallbackRegistered = true;
+}
+
+function enqueueClaudeCliFallback<T>(task: () => Promise<T>): Promise<T> {
+  const run = claudeCliFallbackChain.then(task, task);
+  claudeCliFallbackChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function claudeAbortReason(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason;
+  return reason instanceof Error ? reason : new Error("claude-cli fallback aborted");
+}
+
 
 function withAssistantHooks(
   config: Record<string, unknown>,

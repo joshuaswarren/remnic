@@ -3,7 +3,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { FallbackLlmClient, gatewayTaskChainOptions } from "./fallback-llm.js";
-import { __codexCliFallbackTestHooks } from "./cli-fallback.js";
+import { __codexCliFallbackTestHooks, __claudeCliFallbackTestHooks } from "./cli-fallback.js";
 import { clearModelsJsonCache, __setModelsJsonForTest } from "./models-json.js";
 import {
   __setGatewayRuntimeAuthForModelForTest,
@@ -753,6 +753,88 @@ test("fallback llm invokes registered codex-cli fallback runner", { concurrency:
     ]);
     assert.equal(captured.apiKey, "codex-test-key");
     assert.equal(captured.executable, "codex-test-bin");
+    assert.equal(captured.reasoningEffort, "high");
+    assert.equal(captured.timeoutMs, 1234);
+  } finally {
+    restoreRunner();
+    clearModelsJsonCache();
+    clearSecretCache();
+  }
+});
+
+test("fallback llm invokes registered claude-cli fallback runner", { concurrency: false }, async () => {
+  clearModelsJsonCache();
+  clearSecretCache();
+
+  const captured: {
+    modelId?: string;
+    messages?: Array<{ role: "system" | "user" | "assistant"; content: string }>;
+    apiKey?: string | Record<string, unknown>;
+    executable?: unknown;
+    reasoningEffort?: unknown;
+    timeoutMs?: number;
+  } = {};
+  const restoreRunner = __claudeCliFallbackTestHooks.setRunClaudeCliForTest(
+    async (request) => {
+      captured.modelId = request.modelId;
+      captured.messages = request.messages;
+      captured.apiKey = request.config.apiKey;
+      captured.executable = request.config.executable;
+      captured.reasoningEffort = request.config.reasoningEffort;
+      captured.timeoutMs = request.config.retryOptions?.timeoutMs as number | undefined;
+      return {
+        content: "final claude answer",
+        usage: {
+          inputTokens: 40,
+          outputTokens: 4,
+          totalTokens: 44,
+        },
+      };
+    },
+  );
+
+  const llm = new FallbackLlmClient({
+    agents: {
+      defaults: {
+        model: {
+          primary: "claude-cli/opus",
+        },
+      },
+    },
+    models: {
+      providers: {
+        "claude-cli": {
+          baseUrl: "",
+          api: "claude-cli",
+          apiKey: "claude-test-key",
+          executable: "claude-test-bin",
+          reasoningEffort: "high",
+          retryOptions: { timeoutMs: 1234 },
+          models: [],
+        },
+      },
+    },
+  });
+
+  try {
+    const response = await llm.chatCompletion(
+      [
+        { role: "system", content: "Return concise JSON." },
+        { role: "user", content: "Say OK" },
+      ],
+      { temperature: 0, maxTokens: 16, timeoutMs: 5000 },
+    );
+
+    assert.equal(response?.content, "final claude answer");
+    assert.equal(response?.modelUsed, "claude-cli/opus");
+    assert.equal(response?.usage?.totalTokens, 44);
+    assert.equal(captured.modelId, "opus");
+    assert.deepEqual(captured.messages, [
+      { role: "system", content: "Return concise JSON." },
+      { role: "user", content: "Say OK" },
+    ]);
+    assert.equal(captured.apiKey, "claude-test-key");
+    assert.equal(captured.executable, "claude-test-bin");
     assert.equal(captured.reasoningEffort, "high");
     assert.equal(captured.timeoutMs, 1234);
   } finally {

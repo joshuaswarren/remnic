@@ -14,7 +14,7 @@ import {
   type ResolveApiKeyFn,
 } from "./resolve-provider-secret.js";
 import { loadModelsJsonProviders } from "./models-json.js";
-import { callCodexCliFallback } from "./cli-fallback.js";
+import { callClaudeCliFallback, callCodexCliFallback } from "./cli-fallback.js";
 import { resolveHomeDir } from "./runtime/env.js";
 import { expandTildePath } from "./utils/path.js";
 
@@ -523,13 +523,15 @@ export class FallbackLlmClient {
   ): Promise<{ content: string; usage?: FallbackLlmResponse["usage"] } | null> {
     // Try the gateway's native runtime auth first — it handles all provider-
     // specific transforms (OAuth exchange, base URL rewrite, etc.)
-    const runtimeAuth = model.providerConfig.api === "codex-cli"
+    const runtimeAuth = model.providerConfig.api === "codex-cli" ||
+      model.providerConfig.api === "claude-cli"
       ? null
       : await this.resolveRuntimeAuth(model);
     const effectiveBaseUrl = runtimeAuth?.baseUrl ?? model.providerConfig.baseUrl;
     const resolvedApiKey = runtimeAuth?.apiKey
       ?? (
-        model.providerConfig.api === "codex-cli" && model.providerConfig.apiKey === undefined
+        (model.providerConfig.api === "codex-cli" ||
+          model.providerConfig.api === "claude-cli") && model.providerConfig.apiKey === undefined
           ? undefined
           : await this.resolveFallbackApiKey(model)
       );
@@ -555,6 +557,15 @@ export class FallbackLlmClient {
 
     if (model.providerConfig.api === "codex-cli") {
       return await callCodexCliFallback(
+        effectiveConfig,
+        model.modelId,
+        messages,
+        { timeoutMs: options.timeoutMs, signal: options.signal },
+      );
+    }
+
+    if (model.providerConfig.api === "claude-cli") {
+      return await callClaudeCliFallback(
         effectiveConfig,
         model.modelId,
         messages,

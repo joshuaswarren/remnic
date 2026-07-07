@@ -118,7 +118,14 @@ export {
 
 export { ExtractionEngine } from "./extraction.js";
 export {
+  setClaudeCliFallbackRunnerForProcess,
   setCodexCliFallbackRunnerForProcess,
+  type ClaudeCliFallbackConfig,
+  type ClaudeCliFallbackMessage,
+  type ClaudeCliFallbackOptions,
+  type ClaudeCliFallbackRequest,
+  type ClaudeCliFallbackResult,
+  type ClaudeCliFallbackRunner,
   type CodexCliFallbackConfig,
   type CodexCliFallbackMessage,
   type CodexCliFallbackOptions,
