@@ -114,7 +114,7 @@ export async function semanticQuery(input: SemanticQueryInput): Promise<Semantic
   // Coerce to a finite positive integer, falling back to the default.
   const rawLimit = input.limit;
   const limit = (typeof rawLimit === "number" && Number.isFinite(rawLimit) && rawLimit > 0)
-    ? Math.floor(rawLimit)
+    ? Math.max(1, Math.floor(rawLimit))
     : DEFAULT_SEMANTIC_QUERY_LIMIT;
   // Only score vectors whose dimensionality matches the query embedding.
   // cosineSimilarity compares over the SHORTER length, so a row from a

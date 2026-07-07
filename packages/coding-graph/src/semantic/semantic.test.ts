@@ -1204,6 +1204,39 @@ test("semanticQuery: NaN/Infinity limit falls back to default (no empty/all slic
   }
 });
 
+
+test("semanticQuery: a fractional limit between 0 and 1 returns at least 1 hit (not an empty slice)", async () => {
+  // Math.floor(0.5) === 0; without clamping, slice(0, 0) returns no hits
+  // even when matching vectors exist (#1680 review: 'Clamp sub-one query
+  // limits before slicing').
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const src = Array.from({ length: 3 }, (_, i) => `function f${i}() { return ${i}; }`).join("\n");
+    await writeFile(path.join(dir, "many.ts"), src);
+    const symbols = Array.from({ length: 3 }, (_, i) => ({
+      name: `f${i}`,
+      qname: `mod.f${i}`,
+      kind: "function",
+      start: src.indexOf(`function f${i}`),
+      end: src.length,
+    }));
+    for (let i = 0; i < symbols.length; i++) {
+      symbols[i]!.end = i + 1 < symbols.length ? symbols[i + 1]!.start : src.length;
+    }
+    await store.upsertFileBatch([makeFileIR("many.ts", symbols, src)]);
+    const provider = countingProvider();
+    await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+
+    const r = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "function", limit: 0.5 });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.ok(r.hits.length >= 1, `fractional limit 0.5 must return at least 1 hit (clamped to 1), got ${r.hits.length}`);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
 // SIMILAR_TO recompute is replace-not-append: the README example clears
 // semantic SIMILAR_TO edges before upserting so two symbols that STOP being
 // similar do not leave a stale edge (upsertEdges does not delete absent rows).

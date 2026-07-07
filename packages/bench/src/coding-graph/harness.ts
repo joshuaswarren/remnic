@@ -278,18 +278,30 @@ export async function runCodingGraphBenchmark(
         // Modified variant: a single churn symbol with a fresh qualified
         // name + bumped content hash forces the store to delete the file's
         // prior symbols/edges and create new ones (the change-heavy path).
+        // Carry a couple of the original's CROSS-FILE edges (re-pointed at
+        // the churn symbol) so the timed upsert also measures edge CREATION
+        // + resolution, not just pruning + a node insert — matching the
+        // metric's "edge deletion/creation" contract (#1688 review: codex).
+        // Cross-file dsts are filtered so the edges resolve against symbols
+        // that survive the churn (the file's own symbols are pruned).
+        const ownSyms = new Set(original.symbols.map((sym) => sym.qualifiedName));
+        const churnName = `mod.benchChurnSymbol${i}`;
+        const representativeEdges: EdgeIR[] = original.edges
+          .filter((e) => !ownSyms.has(e.dstQualifiedName))
+          .slice(0, 2)
+          .map((e) => ({ ...e, srcQualifiedName: churnName }));
         const modified: StoreFileIR = {
           ...original,
           contentHash: `${original.contentHash}-mod-${i}`,
           symbols: [
             {
-              qualifiedName: `mod.benchChurnSymbol${i}`,
+              qualifiedName: churnName,
               name: `benchChurnSymbol${i}`,
               kind: "function" as SymbolKind,
               span: { startByte: 0, endByte: 0 },
             },
           ],
-          edges: [],
+          edges: representativeEdges,
         };
         const modResult = await timeAsync(() =>
           store.upsertFileBatch([modified]),
