@@ -50,8 +50,10 @@ export function chatSessionFile(memoryDir: string, chatSessionId: string): strin
  * incremented when two appends land in the same millisecond, so `seq` is
  * strictly increasing within a process (review thread: `Date.now()` alone is
  * not monotonic — same-ms entries would share a seq and break the SSE
- * reconnect dedup-by-seq contract). Across process restarts `Date.now()` is
- * already forward-moving, so no collision occurs in practice.
+ * reconnect dedup-by-seq contract). Across process restarts the counter is
+ * raised above the on-disk max by `loadChatSession` (issue #1718), so a
+ * backward clock step (NTP, VM migration, manual change) cannot re-seed it
+ * below lines already persisted for a resumed session.
  */
 let lastTranscriptSeq = 0;
 
@@ -59,6 +61,14 @@ function nextTranscriptSeq(): number {
   const now = Date.now();
   lastTranscriptSeq = now > lastTranscriptSeq ? now : lastTranscriptSeq + 1;
   return lastTranscriptSeq;
+}
+
+/**
+ * Test-only: reset the module-level transcript seq counter so a regression
+ * test can deterministically simulate a fresh process restart (issue #1718).
+ */
+export function __resetTranscriptSeqForTest(): void {
+  lastTranscriptSeq = 0;
 }
 
 /**
@@ -173,6 +183,19 @@ export async function loadChatSession(
     } catch {
       // Skip malformed lines (rule 54 — atomic appends; partial lines are
       // tolerated, never crash the engine).
+    }
+  }
+  // Issue #1718 — backward-clock-skew robustness: raise the module-level seq
+  // counter so the next append is strictly greater than any line already on
+  // disk for this session, regardless of clock direction across restarts
+  // (NTP step, VM migration, manual change). Without this, a backward clock
+  // skew would re-seed the counter below the on-disk max and the SSE
+  // reconnect dedup-by-seq contract could drop freshly-appended entries as
+  // duplicates. The transcript is already fully parsed above, so this is a
+  // single pass over the in-memory array.
+  for (const e of transcript) {
+    if (typeof e.seq === "number" && e.seq + 1 > lastTranscriptSeq) {
+      lastTranscriptSeq = e.seq + 1;
     }
   }
   return {
