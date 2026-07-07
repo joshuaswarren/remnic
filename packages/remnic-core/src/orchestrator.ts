@@ -2771,16 +2771,25 @@ export class Orchestrator {
     dedupContent: string,
     bounds: {
       invalidAt?: string;
+      // #1707 thread 2 — per-fact start bound (valid_at). Carried so a
+      // re-extracted duplicate whose event time yields only a start bound
+      // ("since 2024", "yesterday", an absolute date) gets the corrected
+      // per-fact anchoring onto the existing copy.
+      validFrom?: string;
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
     },
     entityRef?: string,
   ): Promise<void> {
-    // I/O gate: only scan when there is an end bound to backfill. Without
-    // invalidAt there is nothing that changes recall behavior — observedAt
-    // and eventTimeSource alone do not expire a fact. This avoids a full
-    // readAllMemories on every dedup short-circuit under biTemporal.
-    if (!bounds.invalidAt) return;
+    // I/O gate: scan when there is a recall-relevant bound to backfill —
+    // either an end bound (invalidAt, which expires the fact) or a corrected
+    // start bound (validFrom, which the as-of filter uses to exclude facts
+    // whose valid_at is after the as-of instant). observedAt and
+    // eventTimeSource alone do not change recall, so backfilling them without
+    // a bound would cause a full readAllMemories scan on every dedup hit
+    // under biTemporal for no recall benefit (#1707 thread 2 widened this
+    // from invalidAt-only to also accept validFrom).
+    if (!bounds.invalidAt && !bounds.validFrom) return;
     try {
       const incomingHash = ContentHashIndex.computeHash(dedupContent);
       const normalizedIncoming = ContentHashIndex.normalizeContent(dedupContent);
@@ -2838,6 +2847,23 @@ export class Orchestrator {
         (!fm.eventTimeSource || fm.eventTimeSource.length === 0)
       ) {
         patch.eventTimeSource = bounds.eventTimeSource;
+      }
+      // #1707 thread 2 — per-fact-anchored start bound. A re-extracted
+      // duplicate whose event time resolves a real start bound must carry
+      // that anchor onto the existing copy so as-of recall uses the corrected
+      // valid_at instead of the stale batch-anchored value the copy picked up
+      // before per-fact anchoring (#1670) existed. Only an EXTRACTED bound
+      // corrects the copy — an "assumed" bound is just the ingestion anchor
+      // (no correction). Never clobber a copy that already carries its own
+      // extracted per-fact anchor.
+      if (
+        bounds.validFrom &&
+        bounds.eventTimeSource === "extracted" &&
+        (fm.eventTimeSource !== "extracted" ||
+          !fm.valid_at ||
+          fm.valid_at.length === 0)
+      ) {
+        patch.valid_at = bounds.validFrom;
       }
       if (Object.keys(patch).length === 0) return;
       const ok = await targetStorage.writeMemoryFrontmatter(existing, patch);
@@ -14302,12 +14328,14 @@ export class Orchestrator {
             // lacks (re-extraction with a now-resolved invalidAt). Best-effort,
             // fail-open; the helper gates on invalidAt to avoid I/O when no
             // end bound is present.
-            if (options.invalidAt) {
+            if (options.invalidAt || options.validAt) {
               await this.backfillTemporalBoundsOnDedupHit(
                 targetStorage,
                 dedupContent,
                 {
                   invalidAt: options.invalidAt,
+                  // #1707 thread 2 — carry the corrected start bound.
+                  validFrom: options.validAt,
                   ...(options.observedAt ? { observedAt: options.observedAt } : {}),
                   ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
                 },
@@ -14481,12 +14509,14 @@ export class Orchestrator {
           // before the supersession short-circuit. Covers all return paths below
           // (supersession-hit, catch-skip, and the no-supersession short-circuit)
           // in one shot. Best-effort / fail-open; the helper gates on invalidAt.
-          if (options.invalidAt) {
+          if (options.invalidAt || options.validAt) {
             await this.backfillTemporalBoundsOnDedupHit(
               sharedStorage,
               dedupContent,
               {
                 invalidAt: options.invalidAt,
+                // #1707 thread 2 — carry the corrected start bound.
+                validFrom: options.validAt,
                 ...(options.observedAt ? { observedAt: options.observedAt } : {}),
                 ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
               },
@@ -14715,6 +14745,105 @@ export class Orchestrator {
         log.warn(
           `persistExtraction: shared promotion failed open for ${options.sourceMemoryId}: ${err}`,
         );
+      }
+    };
+    // #1707 thread 1 — backfill temporal bounds onto promotion copies when the
+    // SOURCE-namespace dedup short-circuit fires. That branch patches the
+    // source copy then `continue`s before the promotion dedup paths run, so
+    // promoted shared/profile copies written before the source fact carried
+    // resolved bounds stay stale (cross-namespace recall surfaces an expired
+    // fact). This mirrors the promotion-target resolution used by the two
+    // promote closures above and calls the same fail-open helper against each
+    // target storage. Backfill-only: never writes a new promoted copy.
+    const backfillTemporalBoundsOnPromotionCopies = async (args: {
+      sourceStorage: StorageManager;
+      content: string;
+      category: string;
+      confidence: number;
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+      bounds: {
+        invalidAt?: string;
+        validFrom?: string;
+        observedAt?: string;
+        eventTimeSource?: "extracted" | "assumed";
+      };
+    }): Promise<void> => {
+      // The helper gates its own I/O on invalidAt || validFrom, so an early
+      // return here is just a cheap skip when there is nothing recall-relevant.
+      if (!args.bounds.invalidAt && !args.bounds.validFrom) return;
+      // Build the same dedupContent the promotion functions hash on so the
+      // content-hash lookup in the helper matches what was stored.
+      const rawContent =
+        citationEnabled && hasCitationForTemplate(args.content, citationTemplate)
+          ? stripCitationForTemplate(args.content, citationTemplate)
+          : args.content;
+      const sanitizedBase = sanitizeMemoryContent(rawContent);
+      const dedupContent =
+        args.category === "fact" &&
+        args.structuredAttributes &&
+        Object.keys(args.structuredAttributes).length > 0
+          ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs(args.structuredAttributes)}]`
+          : sanitizedBase.text;
+      // Profile targets (mirrors promoteMemoryToProfileTargets). Only resolve
+      // when this category/confidence would auto-promote; otherwise there are
+      // no promoted profile copies to backfill.
+      if (
+        scopeProfileWritePlan &&
+        profileAutoPromotionAllows(args.category, args.confidence)
+      ) {
+        const autoTargets = new Set(
+          scopeProfileWritePlan.profile.autoPromote.targets,
+        );
+        const profileTargets = scopeProfileWritePlan.promotionTargets.filter(
+          (target) =>
+            target.target !== "serverShared" &&
+            autoTargets.has(target.target) &&
+            target.authorized &&
+            target.namespace,
+        );
+        for (const target of profileTargets) {
+          if (!target.namespace) continue;
+          try {
+            const targetStorage = await this.storageRouter.storageFor(
+              target.namespace,
+            );
+            if (targetStorage.dir === args.sourceStorage.dir) continue;
+            await this.backfillTemporalBoundsOnDedupHit(
+              targetStorage,
+              dedupContent,
+              args.bounds,
+              args.entityRef,
+            );
+          } catch (err) {
+            log.warn(
+              `bitemporal-backfill: profile-target backfill failed open for ${target.target}: ${err}`,
+            );
+          }
+        }
+      }
+      // Shared target (mirrors promoteMemoryToShared). Only when this
+      // category/confidence would promote to shared.
+      if (
+        shouldPromoteToShared(args.sourceStorage, args.category, args.confidence)
+      ) {
+        try {
+          const sharedStorage = await this.storageRouter.storageFor(
+            this.config.sharedNamespace,
+          );
+          if (sharedStorage.dir !== args.sourceStorage.dir) {
+            await this.backfillTemporalBoundsOnDedupHit(
+              sharedStorage,
+              dedupContent,
+              args.bounds,
+              args.entityRef,
+            );
+          }
+        } catch (err) {
+          log.warn(
+            `bitemporal-backfill: shared-target backfill failed open: ${err}`,
+          );
+        }
       }
     };
 
@@ -15226,7 +15355,20 @@ export class Orchestrator {
         // Skip when the fact would be rejected/deferred/pending by downstream
         // gates — a non-durable candidate must not expire an active fact
         // (chatgpt-codex P1: faithfulness, requireSpans, extraction judge).
-        if (biTemporal && biTemporal.validUntil) {
+        // #1671 + #1707: backfill bi-temporal bounds onto the existing
+        // source-namespace copy if it lacks bounds the incoming fact now
+        // carries (re-extraction with a resolved bound). #1707 thread 3:
+        // gate on writeCategory === "fact" — the helper only matches facts,
+        // so a non-fact duplicate must not reach the fact-only scan.
+        // #1707 thread 2: also fire when only a corrected start bound
+        // (validFrom) is present, not just an end bound (validUntil). The
+        // downstream-gate skip still applies — a non-durable candidate must
+        // not expire an active fact (chatgpt-codex P1).
+        if (
+          biTemporal &&
+          writeCategory === "fact" &&
+          (biTemporal.validUntil || biTemporal.validFrom)
+        ) {
           const fr = faithfulnessResultsByFactIndex?.get(factLoopIndex);
           const faithfulnessWouldPending =
             faithfulnessMode === "enforce" &&
@@ -15254,11 +15396,33 @@ export class Orchestrator {
               contentHashDedupKey,
               {
                 invalidAt: biTemporal.validUntil,
+                // #1707 thread 2 — carry the corrected start bound too.
+                validFrom: biTemporal.validFrom,
                 observedAt: biTemporal.observedAt,
                 eventTimeSource: biTemporal.eventTimeSource,
               },
               fact.entityRef,
             );
+            // #1707 thread 1 — the source branch short-circuits (`continue`
+            // below) before the promotion dedup paths run, so promoted
+            // shared/profile copies written before the source fact carried
+            // resolved bounds stay stale and cross-namespace recall surfaces
+            // an expired fact. Backfill the promotion targets too (fail-open,
+            // backfill-only — never writes a new promoted copy).
+            await backfillTemporalBoundsOnPromotionCopies({
+              sourceStorage: targetStorage,
+              content: fact.content,
+              category: writeCategory,
+              confidence: fact.confidence,
+              entityRef: fact.entityRef,
+              structuredAttributes: fact.structuredAttributes,
+              bounds: {
+                invalidAt: biTemporal.validUntil,
+                validFrom: biTemporal.validFrom,
+                observedAt: biTemporal.observedAt,
+                eventTimeSource: biTemporal.eventTimeSource,
+              },
+            });
           }
         }
         log.debug(
