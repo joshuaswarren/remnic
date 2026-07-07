@@ -669,8 +669,9 @@ export async function importNativeMemories(
   alreadyImportedIds: ReadonlySet<string>,
   settings: WearableSourceSettings,
   deps: WearableMemoryGenDeps,
-): Promise<{ imported: number; importedIds: string[]; warnings: string[] }> {
+): Promise<{ imported: number; tombstoneBlocked: number; importedIds: string[]; warnings: string[] }> {
   let imported = 0;
+  let tombstoneBlocked = 0;
   const importedIds: string[] = [];
   const warnings: string[] = [];
   const seenContent = new Set<string>();
@@ -758,7 +759,7 @@ export async function importNativeMemories(
           : {}),
       };
     }
-    await deps.writer.writeMemory("fact", content, {
+    const nativeWriteResult = await deps.writer.writeMemory("fact", content, {
       confidence,
       tags: [
         ...new Set([
@@ -779,8 +780,16 @@ export async function importNativeMemories(
       contentHashSource: content,
       status,
     });
-    imported += 1;
+    // #1645: a tombstone-blocked native import lands pending_review (no active
+    // copy) — count it as blocked, NOT imported. Still record the provider id in
+    // importedIds so the next sync doesn't re-import and duplicate the pending
+    // row; the block is permanent for this content.
+    if (nativeWriteResult.tombstoneBlocked) {
+      tombstoneBlocked += 1;
+    } else {
+      imported += 1;
+    }
     importedIds.push(memory.id);
   }
-  return { imported, importedIds, warnings };
+  return { imported, tombstoneBlocked, importedIds, warnings };
 }

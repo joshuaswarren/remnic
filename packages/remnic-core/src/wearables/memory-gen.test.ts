@@ -789,3 +789,25 @@ test("#1645: a tombstone-blocked wearable write counts as blocked, not created",
   assert.equal(result.created, 0, "blocked write must NOT count as created");
   assert.equal(result.tombstoneBlocked, 1, "blocked write counted separately");
 });
+
+
+test("#1645: a tombstone-blocked native import counts as blocked, not imported", async () => {
+  const writer: WearableMemoryWriter = {
+    async writeMemory() {
+      return { id: "blocked-native-1", tombstoneBlocked: true, blockedBy: "tomb-1" };
+    },
+    async hasFactContentHash() {
+      return false;
+    },
+  };
+  const result = await importNativeMemories(
+    "bee",
+    [{ id: "n1", content: "A native fact that matches a tombstone.", createdIso: "2026-06-10T10:00:00Z" }],
+    new Set(),
+    settings({ importNativeMemories: "review" }),
+    { extract: extractionReturning([]), writer },
+  );
+  assert.equal(result.imported, 0, "blocked native import must NOT count as imported");
+  assert.equal(result.tombstoneBlocked, 1, "blocked native import counted separately");
+  assert.deepEqual(result.importedIds, ["n1"], "provider id still recorded to prevent duplicate re-import");
+});
