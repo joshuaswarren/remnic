@@ -333,6 +333,15 @@ function extractCallSites(root: TSNode, language: Language, lang: CodingGraphLan
 // Route extraction (Express/Fastify/Flask/etc.).
 // ---------------------------------------------------------------------------
 
+
+// Common HTTP client variable names that should NOT produce routes.
+// These objects have methods named get/post/etc. that match the route
+// verb pattern but are client-side calls, not server route registrations.
+// Without this exclusion, httpClient.get("/api", opts, cb) would produce
+// a spurious route with handler=cb, marking cb as is_route_handler and
+// hiding it from dead-code detection (chatgpt-codex-connector #1688 P2).
+const HTTP_CLIENT_OBJECT_PATTERNS = /^(http|https|client|httpClient|axios|fetch|request|req|res|\$|superagent|got)$/;
+
 function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLanguage): RouteIR[] {
   const extractor = EXTRACTORS[lang];
   if (!extractor.routesQuery) return [];
@@ -347,10 +356,17 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
       let startByte = 0;
       let endByte = 0;
       let argsNode: TSNode | null = null;
+      let routeObject = "";
       for (const cap of match.captures) {
         if (cap.name === "route.verb") {
           verb = cap.node.text.toUpperCase();
           startByte = cap.node.parent?.startIndex ?? cap.node.startIndex;
+          // Extract the receiver object name for the HTTP-client exclusion.
+          const memberExpr = cap.node.parent;
+          const objectNode = memberExpr?.childForFieldName("object");
+          if (objectNode) {
+            routeObject = objectNode.text;
+          }
         } else if (cap.name === "route.path") {
           pathTemplate = cleanModuleSpecifier(cap.node.text);
         } else if (cap.name === "route.handler") {
@@ -369,15 +385,14 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
       if (argsNode) {
         handler = extractHandlerFromArgs(argsNode);
       }
-      // Path-prefix guard: real route paths always start with "/" or "*"
-      // (Express/Fastify/etc.). This filters non-route call expressions
-      // whose "path" is a full URL (httpClient.get("https://...", opts, cb)).
-      // Relative-path client calls (httpClient.get("/api", opts, cb)) are a
-      // semantic ambiguity that needs type inference to fully resolve —
-      // documented here as a known limitation (chatgpt-codex-connector #1688
-      // P2: 'Reject client callbacks as route handlers').
+      // Guards: (1) path-prefix — routes start with "/" or "*";
+      // (2) HTTP-client exclusion — objects named http/client/axios/etc.
+      // are clients, not routers. Together these filter the most common
+      // non-route call expressions that match the verb+string-arg pattern
+      // (chatgpt-codex-connector #1688 P2: 'Reject client callbacks').
       const isRoutePath = pathTemplate.startsWith("/") || pathTemplate.startsWith("*");
-      if (verb && pathTemplate && handler && isRoutePath) {
+      const isHttpClient = HTTP_CLIENT_OBJECT_PATTERNS.test(routeObject);
+      if (verb && pathTemplate && handler && isRoutePath && !isHttpClient) {
         routes.push({
           verb,
           pathTemplate,

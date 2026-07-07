@@ -1321,6 +1321,31 @@ test("1688-route-3: full-URL client calls do NOT produce routes (path-prefix gua
   await engine.dispose();
 });
 
+test("1688-route-4: HTTP client objects (http/client/axios) do NOT produce routes", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "const httpClient = { get: (url, opts, cb) => {} };",
+    'httpClient.get("/api/users", { headers: {} }, cb);',
+    "const client = { post: (url, data, cb) => {} };",
+    'client.post("/api/data", { id: 1 }, handler);',
+    "const axios = { delete: (url) => {} };",
+    'axios.delete("/api/item/1");',
+    "",
+    "function getUsers(req, res) { res.json([]); }",
+    'app.get("/users", getUsers);',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/client3.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should still capture the real app.get /users route");
+  const clientRoutes = routes.filter((r) => r.pathTemplate.startsWith("/api"));
+  assert.equal(clientRoutes.length, 0, "httpClient/client/axios calls must NOT produce routes");
+  await engine.dispose();
+});
+
+
 
 
 

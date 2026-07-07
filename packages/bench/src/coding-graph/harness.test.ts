@@ -921,6 +921,22 @@ test("guard ordering: report with non-numeric metric value fails (NaN guard)", (
   assert.ok(result.summary.includes("fullIndexLocsPerSecond"), "summary must name the bad field");
 });
 
+test("guard ordering: report with null machine fingerprint fails before compare", () => {
+  // A corrupt JSON report may have machine: null. Without the guard,
+  // compareMachineFingerprints dereferences the null and crashes.
+  // (chatgpt-codex-connector #1688 P2: "Validate machine fingerprints").
+  const report = reportWithMachine(SAME_MACHINE);
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const nullMachineReport: CodingGraphBenchReport = {
+    ...report,
+    machine: undefined as unknown as CodingGraphBenchReport["machine"],
+  };
+  const result = checkCodingGraphRegression(nullMachineReport, baseline, 30);
+  assert.equal(result.passed, false, "null machine must fail the gate");
+  assert.ok(result.summary.includes("machine"), "summary must mention the missing machine fingerprint");
+});
+
+
 
 
 

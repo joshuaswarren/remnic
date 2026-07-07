@@ -190,6 +190,20 @@ export function checkCodingGraphRegression(
     };
   }
 
+  // Machine-fingerprint presence guard: a corrupt JSON report or baseline
+  // may have a missing/null machine fingerprint. compareMachineFingerprints
+  // dereferences fingerprint fields; without this guard it throws on a null
+  // machine instead of returning a structured gate failure
+  // (chatgpt-codex-connector #1688 P2: 'Validate machine fingerprints').
+  if (report.machine == null || baseline.machine == null) {
+    return {
+      passed: false,
+      regressions: [],
+      summary:
+        "Report or baseline is missing the machine fingerprint — the " +
+        "artifact is incomplete or corrupt. Regenerate it (#1688).",
+    };
+  }
   // Guard (#1688 item 2): a timing comparison is only meaningful on the
   // same machine class. A baseline carries a fingerprint (arch/platform/
   // nodeVersion/cpuModel/cores); a report from a different machine class
