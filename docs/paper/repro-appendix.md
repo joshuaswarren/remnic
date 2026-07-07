@@ -334,11 +334,16 @@ remnic bench run locomo \
 ```
 
 > **Seed consistency.** The committed Tier L artifacts (§A.1.2) used
-> `seed: 1`; use `--seed 1` to reproduce them. The committed profile
-> placeholder (`local-lab-3090.json`) carries `seed: 1573` — the CLI
-> `--seed` flag overrides the manifest's seed for the run, so match the
-> seed of the artifact you are reproducing. Keep the seed fixed across all
-> benchmarks in a comparable suite.
+> `seed: 1`. To reproduce them fully, an operator must set the seed in
+> **two** places: (a) edit `responder.seed` and `judge.seed` in the
+> local-lab manifest to `1` (the committed profile placeholder carries
+> `1573`), and (b) pass `--seed 1` on the CLI. The CLI `--seed` flag sets
+> the benchmark's reporting seed (item selection + the `seed` field
+> serialized into the artifact); the manifest's `role.seed` is forwarded
+> into the `ProviderConfig` and sent on each model request (Ollama /
+> OpenAI-compatible providers both send `config.seed`). Setting only one
+> leaves the artifact seed and the actual sampling seed mismatched. Keep
+> the seed fixed across all benchmarks in a comparable suite.
 
 This will: load the full dataset; reset the Remnic orchestrator per item;
 ingest the benchmark's memory sessions into the isolated benchmark adapter;
