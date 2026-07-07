@@ -1065,3 +1065,26 @@ test("toStrictIsoTimestamp path: textual-month calendar overflow is rejected (is
     "textual-month overflow falls back to epoch",
   );
 });
+
+test("toStrictIsoTimestamp path: full month name is preserved (issue #1657, codex r6)", () => {
+  // Date.parse accepts full month names ("2026-January-15"), so the textual
+  // month map must include both abbreviations and full names — otherwise a
+  // complete, valid full-name date is dropped to an unverified epoch source.
+  const turns = [
+    makeTurn("We migrated the production database to pgBouncer.", {
+      timestamp: "2026-January-15" as unknown as string,
+    }),
+  ];
+  const result = buildFactProvenance(
+    "migrated the production database to pgBouncer",
+    turns,
+    DEFAULT_CONFIG,
+  );
+  assert.equal(result.provenance, "verified", "full-name textual month must stay verified");
+  assert.ok(result.sources);
+  assert.match(
+    result.sources![0]!.observedAt,
+    /^2026-01-15T/,
+    "full-name textual month must round-trip to Jan 15",
+  );
+});

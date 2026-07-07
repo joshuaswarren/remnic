@@ -246,12 +246,24 @@ function isValidCalendarDate(y: number, mo: number, da: number): boolean {
 
 /**
  * Recognized month-name → number map for year-led textual-month dates
- * (issue #1657). Lowercase 3-letter abbreviations — the only form Date.parse
- * accepts for year-first shapes (e.g. "2026-Jan-15").
+ * (issue #1657). Both the 3-letter abbreviations and the full names that
+ * Date.parse accepts for year-first shapes (e.g. "2026-Jan-15",
+ * "2026-January-15", "2026 February 2").
  */
 const MONTH_NAMES: Record<string, number> = {
-  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
-  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+  jan: 1, january: 1,
+  feb: 2, february: 2,
+  mar: 3, march: 3,
+  apr: 4, april: 4,
+  may: 5,
+  jun: 6, june: 6,
+  jul: 7, july: 7,
+  aug: 8, august: 8,
+  sep: 9, september: 9,
+  sept: 9,
+  oct: 10, october: 10,
+  nov: 11, november: 11,
+  dec: 12, december: 12,
 };
 
 /**
