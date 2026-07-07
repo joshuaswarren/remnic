@@ -8957,16 +8957,30 @@ export class EngramAccessService {
       },
       writePromotedMemory: async (namespace, memory) => {
         const resolved = await this.orchestrator.getStorage(namespace);
-        const { id } = await resolved.writeMemory(memory.category, memory.content, {
-          confidence: memory.confidence,
-          tags: memory.tags,
-          entityRef: memory.entityRef,
-          source: `admin-promotion:${memory.sourceNamespace}:${memory.reason.slice(0, 120)}`,
-          lineage: memory.lineage,
-          sourceMemoryId: memory.sourceMemoryId,
-          actor: memory.actor,
-          validAt: memory.validAt,
-        });
+        const { id, tombstoneBlocked } = await resolved.writeMemory(
+          memory.category,
+          memory.content,
+          {
+            confidence: memory.confidence,
+            tags: memory.tags,
+            entityRef: memory.entityRef,
+            source: `admin-promotion:${memory.sourceNamespace}:${memory.reason.slice(0, 120)}`,
+            lineage: memory.lineage,
+            sourceMemoryId: memory.sourceMemoryId,
+            actor: memory.actor,
+            validAt: memory.validAt,
+          },
+        );
+        // #1645: a tombstone-blocked promotion lands pending_review (no active
+        // copy in the target). Report it as a failed promotion so the admin
+        // sees an honest result — the content is queued for review, not
+        // actively promoted. promoteMemory's catch block sanitizes this into
+        // a generic "promotion write failed" audit entry.
+        if (tombstoneBlocked) {
+          throw new Error(
+            "target namespace tombstone-blocked the promoted content (pending_review)",
+          );
+        }
         return id;
       },
     };
