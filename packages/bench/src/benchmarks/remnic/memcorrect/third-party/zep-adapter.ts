@@ -98,10 +98,11 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
 
   async reset(): Promise<void> {
     this.ensureReady();
-    // Delete every known session for a clean slate. The runner calls reset()
-    // before each scenario, so this clears only sessions created during the
-    // current bench process. A server-side reset (delete all) is intentionally
-    // NOT called to avoid destroying unrelated operator data.
+    // Delete every known session AND its user for a clean slate. The runner
+    // calls reset() before each scenario. Zep's v2 session delete removes
+    // messages but NOT the user's knowledge graph (per Zep docs), and we now
+    // search facts via the user's graph — so the user must be deleted too or
+    // extracted facts survive reset and contaminate later scenarios.
     for (const sessionId of this.knownSessions) {
       try {
         await httpJson(
@@ -112,6 +113,16 @@ export class ZepMemCorrectAdapter implements MemCorrectSystemAdapter {
         );
       } catch {
         // Session may not exist yet (first reset) — swallow.
+      }
+      try {
+        await httpJson(
+          this.fetchImpl,
+          "DELETE",
+          `${this.baseUrl}/users/${encodeURIComponent(sessionId)}`,
+          { headers: this.authHeaders(), timeoutMs: this.timeoutMs },
+        );
+      } catch {
+        // User may not exist — swallow.
       }
     }
     this.knownSessions.clear();

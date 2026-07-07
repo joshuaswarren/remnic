@@ -150,18 +150,21 @@ test("zep: correct() ingests a user turn", async () => {
   });
 });
 
-test("zep: reset() deletes known sessions", async () => {
+test("zep: reset() deletes known sessions and users", async () => {
   const ff = new FakeFetchBuilder()
     .when("POST", "/users", { status: 201, body: {} })
     .when("POST", "/sessions", { status: 200, body: {} })
     .when("POST", "/memory", { status: 200, body: {} })
     .when("DELETE", "/sessions/", { status: 204 })
+    .when("DELETE", "/users/", { status: 204 })
     .build();
   const adapter = new ZepMemCorrectAdapter({ apiKey: "k", fetch: ff.fetch });
   await adapter.ingestTurn("s1", "user", "hello", "2026-07-07T00:00:00Z");
   await adapter.ingestTurn("s2", "user", "world", "2026-07-07T00:01:00Z");
   await adapter.reset();
   assert.equal(ff.countRequests("DELETE", "/sessions/"), 2);
+  // Users must be deleted too — the knowledge graph survives session delete.
+  assert.equal(ff.countRequests("DELETE", "/users/"), 2);
   // After reset, session is re-created on next ingest.
   await adapter.ingestTurn("s1", "user", "again", "2026-07-07T00:02:00Z");
   const postResetCreations = ff.requests.filter(
