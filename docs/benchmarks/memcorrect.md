@@ -15,7 +15,7 @@ protocol. The closest recall benchmark — LongMemEval's knowledge-update
 (KU) category — only checks *instantaneous answer correctness*: does the
 newest fact win at answer time? The motivation is not saturation: our own
 in-repo Tier-L LongMemEval run (`docs/benchmarks/results/2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json`,
-full 500/500 LongMemEval-oracle, qwen2.5:7b-instruct Q4_K_M, tier `local`)
+full 500/500 LongMemEval-oracle, qwen2.5-7b-32k:latest (Q4_K_M), tier `local`)
 scores `judge_accuracy=0.186` across all categories — far from ceiling
 (its `perTaskScores` carry no `question_type`, so no KU-only figure is
 derivable from it). The gap MemCorrect fills is that KU does not measure:
