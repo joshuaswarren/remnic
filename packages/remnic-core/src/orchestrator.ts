@@ -14846,26 +14846,32 @@ export class Orchestrator {
           }
         }
       }
-      // Shared target. Same rationale as profile: a shared copy may exist from
-      // an earlier extraction regardless of the current confidence, so do not
-      // gate on shouldPromoteToShared (review codex PRRT_Ov7LKF). The helper
-      // no-ops when no matching shared copy is found.
-      try {
-        const sharedStorage = await this.storageRouter.storageFor(
-          this.config.sharedNamespace,
-        );
-        if (sharedStorage.dir !== args.sourceStorage.dir) {
-          await this.backfillTemporalBoundsOnDedupHit(
-            sharedStorage,
-            dedupContent,
-            args.bounds,
-            args.entityRef,
+      // Shared target. A shared copy may exist from an earlier extraction
+      // regardless of the current confidence, so do not gate on
+      // shouldPromoteToShared (review codex PRRT_Ov7LKF) — BUT still respect
+      // shared-write AUTHORIZATION: a scoped profile that does not authorize
+      // serverShared writes must not have its shared namespace backfilled
+      // (review codex PRRT_Ov7dHR). profileAllowsSharedWrites is true for the
+      // legacy no-scope case and encodes the readable/writable/authorized
+      // checks under a scope profile.
+      if (profileAllowsSharedWrites) {
+        try {
+          const sharedStorage = await this.storageRouter.storageFor(
+            this.config.sharedNamespace,
+          );
+          if (sharedStorage.dir !== args.sourceStorage.dir) {
+            await this.backfillTemporalBoundsOnDedupHit(
+              sharedStorage,
+              dedupContent,
+              args.bounds,
+              args.entityRef,
+            );
+          }
+        } catch (err) {
+          log.warn(
+            `bitemporal-backfill: shared-target backfill failed open: ${err}`,
           );
         }
-      } catch (err) {
-        log.warn(
-          `bitemporal-backfill: shared-target backfill failed open: ${err}`,
-        );
       }
     };
 

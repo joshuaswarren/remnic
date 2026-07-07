@@ -224,7 +224,7 @@ test("#1707 thread 2: identical extracted validFrom is a no-op (equality short-c
   try {
     // Copy already carries an extracted per-fact anchor.
     const content = "The migration to MySQL completed in March 2025.";
-    const existingValidAt = "2025-03-01T00:00:00.000Z";
+    const existingValidAt: string = "2025-03-01T00:00:00.000Z";
     const id = await storage.writeMemory("fact", content, {
       confidence: 0.9,
       validAt: existingValidAt,
@@ -255,7 +255,7 @@ test("#1707 thread 2: differing extracted validFrom overwrites (authoritative re
   try {
     // Copy carries an older (batch-anchored) valid_at.
     const content = "We have used Stripe for payments since 2024.";
-    const staleValidAt = "2026-06-01T00:00:00.000Z"; // batch anchor
+    const staleValidAt: string = "2026-06-01T00:00:00.000Z"; // batch anchor
     const id = await storage.writeMemory("fact", content, {
       confidence: 0.9,
       validAt: staleValidAt,
@@ -267,7 +267,7 @@ test("#1707 thread 2: differing extracted validFrom overwrites (authoritative re
     // dedup + #1670 determinism means stable content re-resolves to the same
     // value (equality no-op above); a divergence means the copy's start is
     // stale (batch/assumed) and the extracted validFrom is authoritative.
-    const correctedValidFrom = "2024-01-01T00:00:00.000Z";
+    const correctedValidFrom: string = "2024-01-01T00:00:00.000Z";
     const helperWouldPatch = staleValidAt !== correctedValidFrom; // differ → true
     assert.equal(helperWouldPatch, true, "differing extracted validFrom must overwrite");
 
