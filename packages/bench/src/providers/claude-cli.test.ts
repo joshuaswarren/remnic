@@ -463,9 +463,8 @@ test("claude-cli provider backs off much longer on a detected usage-limit than a
   const originalSetTimeout = global.setTimeout;
   // Short-circuit real waiting: record the requested delay and resolve
   // immediately, so the backoff *decision* is exercised without the test
-  // actually sleeping for minutes.
-  // @ts-expect-error -- test-only monkeypatch of the timer used by the
-  // provider's abort-aware sleep helper.
+  // actually sleeping for minutes. Test-only monkeypatch of the timer
+  // used by the provider's abort-aware sleep helper.
   global.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number) => {
     sleepCalls.push(ms ?? 0);
     return originalSetTimeout(fn, 0);
@@ -514,7 +513,7 @@ test("claude-cli provider backs off much longer on a detected usage-limit than a
 test("claude-cli provider gives up once the usage-limit backoff budget is exhausted", async () => {
   let attempts = 0;
   const originalSetTimeout = global.setTimeout;
-  // @ts-expect-error -- test-only monkeypatch, see above.
+  // Test-only monkeypatch, see above.
   global.setTimeout = ((fn: (...args: unknown[]) => void) => originalSetTimeout(fn, 0)) as typeof setTimeout;
 
   try {
@@ -972,7 +971,7 @@ test("claude-cli provider backs off on a zero-exit empty result whose quota text
   let attempts = 0;
   const sleepCalls: number[] = [];
   const originalSetTimeout = global.setTimeout;
-  // @ts-expect-error -- test-only monkeypatch of the provider's sleep timer.
+  // Test-only monkeypatch of the provider's sleep timer.
   global.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number) => {
     sleepCalls.push(ms ?? 0);
     return originalSetTimeout(fn, 0);
