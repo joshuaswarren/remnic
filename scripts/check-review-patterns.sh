@@ -498,9 +498,15 @@ if [[ -n "$CACHE_INVALIDATE" ]]; then
   done <<< "$CACHE_INVALIDATE"
 fi
 
-# ---- 22. Serialized promise chains without catch recovery ----
-echo "[check] Serialized promise chains without rejection recovery..."
+# ---- 22. Self-referential serialized promise chains without rejection recovery ----
+echo "[check] Self-referential serialized promise chains without rejection recovery..."
 
+# A serialized chain is poisoned when a variable is reassigned to its OWN
+# .then() with no rejection handler:  x = x.then(fn)   (no .catch, no 2nd
+# onRejected arg). ERE has no backreferences, so we require the SAME identifier
+# on both sides of '=' via awk; this avoids false positives on safe patterns
+# like `const next = prev.then(fn, fn)` (different identifiers, 2-arg recovery).
+# serialize-mutations (#1524) is the sanctioned chokepoint and is excluded.
 POISON_CHAIN=$(grep -rn '\.then(' \
   --include="*.ts" \
   packages/ src/ \
@@ -509,14 +515,29 @@ POISON_CHAIN=$(grep -rn '\.then(' \
   | grep -v dist \
   | grep -v ".test." \
   | grep -v "// " \
-  | grep -E "\b\w+\s*=\s*\w+\.then\(" \
-  | grep -v "\.catch(" \
   | grep -v "serialize-mutations" \
+  | grep -v '\.catch(' \
+  | awk '
+      function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s; }
+      {
+        p1 = index($0, ":"); p2 = index(substr($0, p1+1), ":") + p1;
+        c = substr($0, p2+1);
+        if (match(c, /[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\.then[[:space:]]*\(/)) {
+          seg = substr(c, RSTART, RLENGTH);
+          eq = index(seg, "=");
+          lhs = trim(substr(seg, 1, eq-1));
+          rhs = trim(substr(seg, eq+1));
+          sub(/\.then.*$/, "", rhs);
+          rhs = trim(rhs);
+          tail = substr(c, RSTART + RLENGTH);
+          if (lhs == rhs && index(tail, ",") == 0) print $0;
+        }
+      }' \
   || true)
 
 if [[ -n "$POISON_CHAIN" ]]; then
   COUNT=$(echo "$POISON_CHAIN" | wc -l | tr -d ' ')
-  warn "$COUNT serialized promise chains (x = x.then(...)) without .catch() recovery. A single rejection permanently breaks all subsequent chained operations:"
+  warn "$COUNT self-referential serialized promise chains (x = x.then(...)) without .catch() or 2-arg rejection recovery. A single rejection permanently breaks all subsequent chained operations:"
   echo "$POISON_CHAIN" | head -5 || true
 fi
 
