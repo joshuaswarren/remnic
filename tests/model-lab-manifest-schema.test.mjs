@@ -180,7 +180,7 @@ function makeValidTrainedManifest() {
     schemaVersion: 1,
     status: "trained",
     contract: { inputFields: ["turns"], outputShape: "corrections[]", source: "PassiveCorrection" },
-    baseModel: { name: "Qwen/Qwen2.5-3B-Instruct" },
+    baseModel: { name: "roberta-large-mnli" },
     dataRecipe: {
       generatorPath: "model-lab/correction-intent/generate-data.py",
       generatorGitSha: "deadbeef",
@@ -192,19 +192,18 @@ function makeValidTrainedManifest() {
     trainingStack: {
       python: "3.12.3",
       libs: {
-        torch: "2.12.1", transformers: "5.3.0", trl: "0.11.1", peft: "0.10.0",
-        datasets: "2.18.0", "huggingface-hub": "0.25.0", accelerate: "1.14.0",
-        bitsandbytes: "0.43.1",
+        torch: "2.12.1", transformers: "5.3.0",
+        datasets: "3.6.0", "huggingface-hub": "1.3.0", accelerate: "1.14.0",
       },
       pipFreezeSha256: "freezehash",
       capturedAt: "2026-07-06",
     },
-    hyperparams: { lr: 1e-4, epochs: 3 },
+    hyperparams: { lr: 1e-5, epochs: 12 },
     trainedAt: "2026-07-06T00:00:00Z",
     hardware: { gpu: "RTX 3090" },
     eval: { heldOut: { macroF1: 0.91 }, downstream: null },
     artifact: { hfRepo: "op/correction-intent-v1", revision: "abc", quantizations: ["fp16"] },
-    policyCompliance: { targetMaxParamsB: 4, actualParamsB: 3, escapeHatchUsed: false },
+    policyCompliance: { targetMaxParamsB: 4, actualParamsB: 0.355, escapeHatchUsed: false },
   }));
 }
 
@@ -213,14 +212,14 @@ test(
   { skip: skipReason },
   () => {
     const m = makeValidTrainedManifest();
-    m.trainingStack.libs.trl = null; // declared but unpinned — must not pass strict
+    m.trainingStack.libs.datasets = null; // declared but unpinned — must not pass strict
     const tmp = path.join(os.tmpdir(), `remnic-ci-libs-${process.pid}.json`);
     fs.writeFileSync(tmp, JSON.stringify(m));
     try {
       const { errors } = validateManifest(tmp, false);
       assert.ok(
-        errors.some((e) => e.includes("trainingStack.libs.trl")),
-        `strict mode must reject a null trl pin, got: ${JSON.stringify(errors)}`,
+        errors.some((e) => e.includes("trainingStack.libs.datasets")),
+        `strict mode must reject a null datasets pin, got: ${JSON.stringify(errors)}`,
       );
     } finally {
       fs.unlinkSync(tmp);
@@ -368,29 +367,16 @@ test(
   "manifest schema: strict mode REJECTS a correction-intent manifest that OMITS a task-required lib (#1700 nit #2)",
   { skip: skipReason },
   () => {
-    // Omitting trl entirely (not just null) must fail strict — the per-task
-    // minimum matrix requires it for the causal-LM stack.
-    const m = makeValidTrainedManifest();
-    delete m.trainingStack.libs.trl;
-    const tmp = path.join(os.tmpdir(), `remnic-ci-tasklibs-ci-${process.pid}.json`);
-    fs.writeFileSync(tmp, JSON.stringify(m));
-    try {
-      const { errors } = validateManifest(tmp, false);
-      assert.ok(
-        errors.some((e) => e.includes("trainingStack.libs.trl")),
-        `strict mode must reject an omitted trl, got: ${JSON.stringify(errors)}`,
-      );
-    } finally {
-      fs.unlinkSync(tmp);
-    }
-
-    // Same for datasets (named explicitly in #1700), peft, and accelerate
-    // (Trainer/TRL runtime dep — required for both tasks, codex P2 PRRT_kwDORJXyws6O7kTC).
-    for (const lib of ["datasets", "peft", "accelerate"]) {
-      const m2 = makeValidTrainedManifest();
-      delete m2.trainingStack.libs[lib];
-      const t = path.join(os.tmpdir(), `remnic-ci-tasklibs-${lib}-${process.pid}.json`);
-      fs.writeFileSync(t, JSON.stringify(m2));
+    // Issue #1738: correction-intent v1 is a DETECTION CLASSIFIER sharing the
+    // faithfulness-gate encoder Trainer stack. Its task-required libs are
+    // datasets / huggingface-hub / accelerate (NOT trl/peft — the causal-LM
+    // plan was deferred; see manifest_schema.TASK_REQUIRED_LIBS). Omitting any
+    // of them must fail strict via the per-task minimum matrix.
+    for (const lib of ["datasets", "huggingface-hub", "accelerate"]) {
+      const m = makeValidTrainedManifest();
+      delete m.trainingStack.libs[lib];
+      const t = path.join(os.tmpdir(), `remnic-ci-citasklibs-${lib}-${process.pid}.json`);
+      fs.writeFileSync(t, JSON.stringify(m));
       try {
         const { errors } = validateManifest(t, false);
         assert.ok(

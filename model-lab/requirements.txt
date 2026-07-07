@@ -33,17 +33,18 @@ huggingface-hub==1.3.0  # transformers 5.3.0 requires huggingface-hub>=1.3.0
 sentencepiece==0.2.1  # >=0.2.1: GHSA-38vq-g6vr-w8wf
 accelerate==1.14.0
 
-# --- Correction-intent causal-LM stack (issue #1585 PR3) -------------------
-# PENDING — the correction-intent recipe is NOT yet runnable on this stack:
-# train.py is a scaffold that captures the reproducibility contract and exits
-# `recipe-ready-not-run` (no fine-tune loop), and the pins as originally
-# written do NOT resolve on PyPI — `trl==0.16.6` and `bitsandbytes==0.44.1`
-# have no such release (available as of 2026-07: trl 1.7.1, peft 0.19.1,
-# bitsandbytes 0.49.2). They are commented out so `setup.sh` completes for the
-# runnable faithfulness-gate recipe. The correction-intent train loop + the
-# trl/peft/bitsandbytes versions compatible with transformers 5.3.0 land in the
-# correction-intent follow-up (issue filed with the GPU-run PR). accelerate is
-# already pinned above (Trainer device management).
-#trl==1.7.1            # TODO(corr-intent): pin a version compatible w/ transformers 5.3.0
-#peft==0.19.1
-#bitsandbytes==0.49.2  # QLoRA 4-bit base + paged optimizer (8B escape hatch)
+# --- Correction-intent v1: shares the encoder stack above (issue #1738) ----
+# v1 is a DETECTION classifier (turn window -> {correction, none}) — same
+# RoBERTa-large encoder + HF Trainer stack as the faithfulness gate. The
+# original #1585 plan called for a <=4B instruct causal LM (TRL/LoRA) emitting
+# the full corrections[] JSON block, but the pre-#1737 pins (trl==0.16.6 /
+# bitsandbytes==0.44.1) DO NOT EXIST on PyPI, and the only resolvable trl
+# (1.7.1) drags datasets 3.6 -> 5.0 and would break the faithfulness-gate v1
+# pinned stack in the shared venv. Detection F1 is the eval gate (#1585), and
+# roberta-large-mnli (the documented <=4B fallback) already trained cleanly on
+# this box (#1737). So v1 needs NO extra pins beyond the encoder stack above.
+# The structured-extraction path (correctedAssertion span + polarity) is the
+# v2 causal-LM follow-up; when it lands it pins real, resolvable
+# trl/peft/bitsandbytes versions here and manifest_schema regrows them in
+# TASK_REQUIRED_LIBS. Until then this file installs cleanly with
+# `pip install -r model-lab/requirements.txt` (no broken pins).
