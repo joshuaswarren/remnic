@@ -97,12 +97,25 @@ export async function semanticQuery(input: SemanticQueryInput): Promise<Semantic
 
   // Brute-force cosine over all vectors for this model.
   const modelId = modelIdFor(provider);
-  const rows = store.readAllSymbolVectors(modelId);
+  // Wrap the store read so a transient SQLite error (SQLITE_BUSY / CORRUPT)
+  // maps to a tagged db_error instead of escaping semanticQuery (#1680).
+  let rows: readonly ReturnType<typeof store.readAllSymbolVectors>[number][];
+  try {
+    rows = store.readAllSymbolVectors(modelId);
+  } catch {
+    return { ok: false, code: "db_error" };
+  }
   if (rows.length === 0) {
     return { ok: false, code: "no_vectors" };
   }
 
-  const limit = Math.max(1, input.limit ?? DEFAULT_SEMANTIC_QUERY_LIMIT);
+  // Validate limit: NaN/Infinity/non-numeric must not produce a NaN/Infinity
+  // slice (#1680). NaN → slice(0, NaN) returns no hits; Infinity → every row.
+  // Coerce to a finite positive integer, falling back to the default.
+  const rawLimit = input.limit;
+  const limit = (typeof rawLimit === "number" && Number.isFinite(rawLimit) && rawLimit > 0)
+    ? Math.floor(rawLimit)
+    : DEFAULT_SEMANTIC_QUERY_LIMIT;
   // Only score vectors whose dimensionality matches the query embedding.
   // cosineSimilarity compares over the SHORTER length, so a row from a
   // different model size would otherwise get a misleading partial-overlap
