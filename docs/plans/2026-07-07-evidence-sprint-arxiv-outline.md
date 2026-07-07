@@ -2,7 +2,7 @@
 
 **Created:** 2026-07-07 · **Owner:** Joshua Warren · **Horizon:** Q3 2026 (July benchmarks → August paper → September visibility)
 
-**Alignment (read first).** This plan builds on epic **#1572 "Glass-Box Memory"** and does **not** redo finished work. Already DONE and cited, not re-run: W0 benchmark lab (#1573, #1574 — real Tier-L LoCoMo/LongMemEval artifacts in `docs/benchmarks/results/2026-07-07-*.json`), W1 accuracy flywheel (#1575–1579, #1539), W2 correction loop (#1580–1584, incl. **MemCorrect v1** in `packages/bench/src/benchmarks/remnic/memcorrect/`), W3 model lab (#1585). The harness (`@remnic/bench`), the 9-benchmark registry (`docs/benchmarks/sota-readiness.md`), `BenchmarkArtifact v1`, repro manifests, and judge cache all exist. This document adds the four things that genuinely don't exist yet: **(1) the paper outline, (2) a frontier-tier (Tier-F) run, (3) third-party Mem0/Zep/Letta adapters, and (4) the honest-framing decision.** Seeds to lift, not rewrite: `docs/benchmarks/memcorrect.md`, `docs/benchmarks/sota-readiness.md`, `docs/research/paper-mapping.md`, `docs/plans/2026-07-03-glass-box-memory-sota-plan.md`.
+**Alignment (read first).** This plan builds on epic **#1572 "Glass-Box Memory"** and does **not** redo finished work. Already DONE and cited, not re-run: W0 benchmark lab (#1573, #1574 — the RTX-3090 Tier-L harness + runtime profile; note the committed `docs/benchmarks/results/` currently holds only the `2026-04-20-*-mock000.json` placeholders, so producing and committing a real Tier-L/Tier-F artifact is still an open sprint task, not done), W1 accuracy flywheel (#1575–1579, #1539), W2 correction loop (#1580–1584, incl. **MemCorrect v1** in `packages/bench/src/benchmarks/remnic/memcorrect/`), W3 model lab (#1585). The harness (`@remnic/bench`), the 9-benchmark registry (`docs/benchmarks/sota-readiness.md`), `BenchmarkArtifact v1`, repro manifests, and judge cache all exist. This document adds the four things that genuinely don't exist yet: **(1) the paper outline, (2) a frontier-tier (Tier-F) run, (3) third-party Mem0/Zep/Letta adapters, and (4) the honest-framing decision.** Seeds to lift, not rewrite: `docs/benchmarks/memcorrect.md`, `docs/benchmarks/sota-readiness.md`, `docs/research/paper-mapping.md`, `docs/plans/2026-07-03-glass-box-memory-sota-plan.md`.
 
 ---
 
@@ -33,7 +33,7 @@
 **Document (lift from existing, minimal new writing):** the two-tier protocol, `BenchmarkArtifact v1` schema, `results-store.ts`/`repro-manifest.ts`, judge cache, the 9 published-benchmark registry with leaderboard-safety guards, and MemCorrect's construction. These are written already in `docs/benchmarks/*` — the paper's methodology section is largely an adaptation, not new research.
 
 **Build (the real gaps):**
-- **Tier-F run.** Only Tier-L exists. A frontier-tier run of LoCoMo + LongMemEval is required for a credible head-to-head (competitors report on frontier models) and to fill the `judgeCalibration` (Cohen's kappa) gap documented as omitted in PR #1709.
+- **A real benchmark run at all.** The committed results are only `2026-04-20-*-mock000.json` placeholders — no real Tier-L *or* Tier-F artifact exists yet. The Tier-F run (Opus 4.8 via `claude -p` responder + local 3090 judge — see the Update section) produces the head-to-head numbers and closes the `judgeCalibration` (Cohen's kappa) gap noted in PR #1709; run it isolated and session-limit-aware.
 - **Third-party adapters.** `MemCorrectSystemAdapter` is a public interface with only in-tree adapters (`PromptOnlyBaselineAdapter`, `createRemnicMemCorrectAdapter`). Implement **Mem0, Zep, Letta** adapters — the single highest-leverage missing piece for any "we beat X" claim.
 - **Reproduce competitor claims.** Current Mem0 (LoCoMo 91.6%) and Zep (+18.5% LongMemEval) figures are their self-reported numbers cited from issue text, not reproduced by our harness. Reproduce them (or clearly mark as cited-not-reproduced).
 
@@ -61,7 +61,7 @@ This rubric is the benchmark-side analogue of the vault's *Definition of Shippab
 
 1. **Paper skeleton in-repo** (`docs/paper/` or `.tex`) — instantiate the Part-1 outline as the working draft. *(Fable-worthy: framing.)*
 2. **Third-party MemCorrect adapters — Mem0, Zep, Letta** (`MemCorrectSystemAdapter`). *(Fleet: implementation. Highest leverage.)*
-3. **Tier-F run** — LoCoMo + LongMemEval with a frontier responder + frontier judge; produce the judge-kappa calibration. *(Fleet: run; needs a frontier judge credential.)*
+3. **Tier-F run** — LoCoMo + LongMemEval with **Opus 4.8 via `claude -p`** as responder and the **local 3090 as judge** (no API budget/credential; see the Update section); calibrate the local judge against a small Opus-judged slice for the kappa. *(Fleet: run, isolated + session-limit-aware.)*
 4. **Head-to-head reproduction** — reproduce or cite-with-caveat Mem0/Zep published numbers via our harness. *(Fleet.)*
 5. **Ablation data** — confirm/produce the #1574 single-flag ablations; coordinate **#1708** bounded-memory ablation as a paper section (don't duplicate — it's open and unclaimed). *(Fleet.)*
 6. **Related Work draft** from `docs/research/paper-mapping.md`. *(Fable-worthy.)*
@@ -71,7 +71,7 @@ This rubric is the benchmark-side analogue of the vault's *Definition of Shippab
 
 **Open decisions for Joshua:**
 - **Lead framing:** MemCorrect (field-first) vs reproducible-consumer-hardware vs glass-box — recommend leading with **MemCorrect**, supported by the other two. Do NOT lead with raw Tier-L accuracy.
-- **Tier-F judge/responder model + credential** — which frontier model, and the cost envelope.
+- **Tier-F is settled** (Opus via `claude -p` responder + local 3090 judge — see Update, no API credential needed). Remaining sub-choices: the exact local judge model and the size of the Opus-judged calibration slice.
 - **Adapter scope** — all three competitors, or Mem0 first (most-cited) then Zep/Letta.
 
 **Not to redo:** anything under W0–W3 (see Alignment). Coordinate with open issues #1708, #1700/#1717, #1712 rather than reimplementing.
