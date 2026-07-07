@@ -72,7 +72,12 @@ function isRegexLike(pattern: string): boolean {
 function isSafeRegex(source: string): boolean {
   // Bound the pattern length so a pathological rule cannot stall the check.
   if (source.length > 512) return false;
-  // Scan for a group (...) or [...]{n,m} followed by a quantifier, where the
+  // Reject overly-broad patterns (.*) that would match every fact and
+  // withhold all extraction (cursor Bugbot thread — mirrors
+  // isUnsafeRedactionRegex in correction-contract.ts).
+  if (/(?:^|[^\\])\(\.\*\)|(?:^|[^\\])\.\*|(?:^|[^\\])\.\+|^\.([^*+]?)$/.test(source)) {
+    return false;
+  }
   // group body itself ends with a quantifier. This catches (a+)+, (a*)*, etc.
   // Also catches overlapping alternation like (a|a)+.
   for (let i = 0; i < source.length; i++) {

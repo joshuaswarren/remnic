@@ -156,6 +156,17 @@ test("#1669 thread #3: safe regex pattern still compiles as RegExp", () => {
   assert.equal(rule.matcher("not-a-secret"), false);
 });
 
+test("#1669 cursor thread: overly broad /wrapped/ regex falls back to literal (not compiled)", () => {
+  // A hand-edited rule file with /.*/ must NOT compile — it would match every
+  // fact and withhold all extraction. isSafeRegex now rejects overly-broad
+  // bodies, so the rule falls back to literal substring on the body.
+  const rule = compileRedactionPattern("/.*/");
+  assert.ok(!rule.matcher("any fact content"),
+    "overly broad regex must not match arbitrary content");
+  assert.ok(rule.matcher("contains .* literally"),
+    "literal fallback on the body must still match the substring .*");
+});
+
 test("#1669 thread #3 (first-line guard): validateRedactionPattern rejects catastrophic-backtracking shapes", () => {
   // Classic ReDoS shapes must be rejected at apply time — not just fall back
   // to literal at extraction time. Each is a nested quantifier or overlapping
