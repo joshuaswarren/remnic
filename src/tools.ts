@@ -411,6 +411,17 @@ export function registerTools(api: ToolApi, orchestrator: Orchestrator): void {
       );
       const result = await persistExplicitCapture(orchestrator, candidate, source);
 
+      // #1645 (review thread yG-): a tombstone-blocked explicit capture lands
+      // pending_review (no active copy). Skip query-aware indexing and report it
+      // as queued for review so the caller doesn't believe an active memory was
+      // stored.
+      if (result.tombstoneBlocked) {
+        orchestrator.requestQmdMaintenanceForTool(maintenanceReason);
+        return toolResult(
+          `Memory queued for review (tombstone-blocked): ${result.id}${candidate.namespace ? ` (namespace: ${candidate.namespace})` : ""} — no active copy was created.\n\nContent: ${candidate.content}`,
+        );
+      }
+
       if (!result.duplicateOf && orchestrator.config.queryAwareIndexingEnabled && indexesExist(orchestrator.config.memoryDir)) {
         const storage = await orchestrator.getStorage(candidate.namespace);
         const mem = await storage.getMemoryById(result.id).catch(() => null);
@@ -1863,7 +1874,10 @@ Best for:
           // agent action that re-stores retired content is not reported as a
           // successful active write (recall will not use it).
           outcome: queuedForReview ? "skipped" : "applied",
-          status: "applied",
+          // #1645 (review thread yGr): status must agree with outcome — a
+          // blocked write is not "applied"; "rejected" reflects that the
+          // tombstone gate refused the active write (row is pending_review).
+          status: queuedForReview ? "rejected" : "applied",
           dryRun: false,
           outputMemoryIds,
           ...(queuedForReview

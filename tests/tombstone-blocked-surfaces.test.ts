@@ -174,10 +174,99 @@ test("#1645 Yhp: memory_action_apply reports a tombstone-blocked write as queued
   // The telemetry event MUST NOT claim a successful active application.
   assert.equal(recordedEvents.length, 1, "exactly one action event should be appended");
   assert.equal(recordedEvents[0].outcome, "skipped", "a tombstone-blocked write is outcome 'skipped', not 'applied'");
+  assert.equal(recordedEvents[0].status, "rejected", "#1645 yGr: a tombstone-blocked write is status 'rejected', not 'applied'");
   assert.match(
     recordedEvents[0].reason ?? "",
     /tombstone-blocked/,
     "event reason must explain the tombstone block",
   );
   assert.deepEqual(recordedEvents[0].outputMemoryIds, ["fact-blocked-2"], "pending_review id is still recorded");
+});
+
+test("#1645 yG-: memory_store surfaces a tombstone-blocked capture as queued for review", async () => {
+  type RegisteredTool = {
+    execute: (
+      toolCallId: string,
+      params: Record<string, unknown>,
+    ) => Promise<{ content: Array<{ type: string; text: string }>; details: undefined }>;
+  };
+  const tools = new Map<string, RegisteredTool>();
+  const api = {
+    registerTool(spec: { name: string; execute: RegisteredTool["execute"] }) {
+      tools.set(spec.name, { execute: spec.execute });
+    },
+  };
+  const maintenanceReasons: string[] = [];
+  const orchestrator = {
+    config: {
+      defaultNamespace: "default",
+      sharedNamespace: "shared",
+      feedbackEnabled: false,
+      namespacesEnabled: false,
+      queryAwareIndexingEnabled: true,
+      memoryDir: "/nonexistent-dir-for-store-test",
+    },
+    getStorage: async () => ({
+      readAllMemories: async () => [],
+      // Destination tombstone blocks the explicit capture (pending_review).
+      writeMemory: async (_category: string, content: string) => ({
+        id: "fact-blocked-store",
+        tombstoneBlocked: true,
+        blockedBy: "tomb-store",
+      }),
+      getMemoryById: async () => null,
+      appendMemoryLifecycleEvents: async (events: unknown[]) => events.length,
+    }),
+    requestQmdMaintenanceForTool: (reason: string) => {
+      maintenanceReasons.push(reason);
+    },
+    qmd: { search: async () => [], searchGlobal: async () => [] },
+    lastRecall: { get: () => null, getMostRecent: () => null },
+    recordMemoryFeedback: async () => {},
+    storage: {
+      readProfile: async () => "",
+      readIdentity: async () => "",
+      resolveQuestion: async () => false,
+      listQuestions: async () => [],
+      getMemoryById: async () => null,
+    },
+    summarizeNow: async () => undefined,
+    runConversationIndexUpdate: async () => ({ indexedSessions: 0, indexedChunks: 0, embeddedRuns: 0 }),
+    sharedContext: null,
+    compoundingEngine: null,
+  };
+
+  registerTools(api as never, orchestrator as never);
+  const memoryStore = tools.get("memory_store");
+  assert.ok(memoryStore, "memory_store tool should be registered");
+
+  const out = await memoryStore!.execute("tc-store-blocked", {
+    content: "retired content that matches a tombstone",
+    category: "fact",
+  });
+
+  const text = out.content[0].text;
+  assert.match(text, /queued for review/i, "blocked capture must be reported as queued for review");
+  assert.match(text, /tombstone-blocked/i, "result must attribute the block to the tombstone");
+  assert.match(text, /fact-blocked-store/, "result must carry the pending_review id");
+  // The tool must NOT claim a successful active store.
+  assert.doesNotMatch(text, /Memory stored:/, "a blocked capture must not be reported as 'Memory stored'");
+});
+
+test("#1645 yG-: persistExplicitCapture surfaces tombstoneBlocked in its result", async () => {
+  const { persistExplicitCapture, validateExplicitCaptureInput } = await import("../src/explicit-capture.js");
+  const storage = {
+    hasFactContentHash: async () => false,
+    isFactContentHashAuthoritative: async () => false,
+    readAllMemories: async () => [],
+    writeMemory: async () => ({ id: "fact-blocked-persist", tombstoneBlocked: true, blockedBy: "tomb-p" }),
+    appendMemoryLifecycleEvents: async () => 1,
+  };
+  const result = await persistExplicitCapture(
+    { getStorage: async () => storage } as never,
+    validateExplicitCaptureInput({ content: "retired content", category: "fact" }),
+    "memory_store",
+  );
+  assert.equal(result.tombstoneBlocked, true, "persistExplicitCapture must surface tombstoneBlocked");
+  assert.equal(result.id, "fact-blocked-persist");
 });

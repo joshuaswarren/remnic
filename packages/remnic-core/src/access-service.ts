@@ -4327,14 +4327,18 @@ export class EngramAccessService {
       // rejection, or an explicit-namespace write (which bypasses the overlay),
       // since those don't reach this point or aren't project-scoped (Codex review).
       await this.attachCodingContextAfterScopedWrite(request);
+      // #1645 (review thread yG-): a tombstone-blocked capture is pending_review
+      // (no active copy) — report it as queued_for_review so the HTTP/MCP caller
+      // doesn't read it as a successfully stored active memory.
+      const blocked = result.tombstoneBlocked === true;
       const response: EngramAccessWriteResponse = {
         schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
         operation: "memory_store",
         namespace,
         dryRun: false,
         accepted: true,
-        queued: false,
-        status: result.duplicateOf ? "duplicate" : "stored",
+        queued: blocked,
+        status: blocked ? "queued_for_review" : result.duplicateOf ? "duplicate" : "stored",
         memoryId: result.id,
         duplicateOf: result.duplicateOf,
         idempotencyKey: request.idempotencyKey?.trim() || undefined,

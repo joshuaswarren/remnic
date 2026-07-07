@@ -20673,6 +20673,20 @@ export class Orchestrator {
     newMemoryId: string,
     postWriteGuard: boolean,
   ): Promise<void> {
+    // #1645 yG2: clear the pre-write `supersedes` link from a blocked row so
+    // it doesn't claim to supersede a still-active memory (best-effort).
+    if (postWriteGuard && contradiction && this.config.contradictionAutoResolve) {
+      try {
+        const blockedRow = await storage.getMemoryById(newMemoryId);
+        if (blockedRow?.frontmatter?.supersedes) {
+          await storage.writeMemoryFrontmatter(blockedRow, { supersedes: undefined });
+        }
+      } catch (err) {
+        log.warn(
+          `contradiction auto-resolve supersedes clear failed for blocked ${newMemoryId}: ${err}`,
+        );
+      }
+    }
     if (
       !contradiction ||
       !this.config.contradictionAutoResolve ||

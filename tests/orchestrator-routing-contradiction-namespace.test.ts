@@ -291,3 +291,70 @@ test("contradiction and link checks fail open when search is unavailable without
   assert.equal(contradiction, null);
   assert.deepEqual(links, []);
 });
+
+test("#1645 yG2: applyDeferredContradictionResolve clears supersedes on a tombstone-blocked write", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-1645-tombstone-supersedes-clear-"));
+  const config = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    namespacesEnabled: false,
+    contradictionAutoResolve: true,
+  });
+  const orchestrator = new Orchestrator(config) as any;
+  const storage = await orchestrator.getStorage();
+  await storage.ensureDirectories();
+  storage.setTombstonesConfig({
+    enabled: true,
+    semanticMatch: false,
+    semanticThreshold: 0.9,
+    namespace: "default",
+  });
+
+  const { id: oldId } = await storage.writeMemory("fact", "The cache TTL is 60 seconds");
+  await storage.appendTombstone({
+    reason: "correction",
+    createdBy: "user",
+    sourceMemoryId: oldId,
+    rawContent: "The cache TTL is 300 seconds",
+  });
+
+  // New write that is tombstone-blocked AND carries the pre-write supersedes
+  // link (mirrors the extraction path when contradictionAutoResolve sets
+  // supersedes before tombstone status is known).
+  const blocked = await storage.writeMemory("fact", "The cache TTL is 300 seconds", {
+    source: "extraction",
+    supersedes: oldId,
+  });
+  assert.equal(blocked.tombstoneBlocked, true, "write must be tombstone-blocked");
+  const before = await storage.getMemoryById(blocked.id);
+  assert.equal(
+    before?.frontmatter.supersedes,
+    oldId,
+    "blocked row carries the pre-write supersedes link",
+  );
+
+  await orchestrator.applyDeferredContradictionResolve(
+    {
+      supersededId: oldId,
+      reason: "ttl changed",
+      supersededPath: before!.path,
+      supersededCreated: before!.frontmatter.created,
+      supersededTags: [],
+    },
+    storage,
+    blocked.id,
+    true, // postWriteGuard — the new write is tombstone-blocked
+  );
+
+  const after = await storage.getMemoryById(blocked.id);
+  assert.equal(
+    after?.frontmatter.supersedes,
+    undefined,
+    "#1645 yG2: supersedes must be cleared on a blocked row so it does not claim to supersede a still-active memory",
+  );
+
+  // The old memory stays active — neither copy is lost.
+  const oldAfter = await storage.getMemoryById(oldId);
+  assert.equal(oldAfter?.frontmatter.status, "active");
+});

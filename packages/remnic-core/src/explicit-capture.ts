@@ -418,7 +418,7 @@ export async function persistExplicitCapture(
   orchestrator: Orchestrator,
   candidate: ValidExplicitCapture,
   source: ExplicitCaptureSource,
-): Promise<{ id: string; duplicateOf?: string }> {
+): Promise<{ id: string; duplicateOf?: string; tombstoneBlocked?: boolean }> {
   const resolvedNamespace = candidate.namespacePreResolved
     ? asTrimmed(candidate.namespace)
     : resolveExplicitCaptureNamespace(orchestrator, candidate.namespace);
@@ -428,7 +428,10 @@ export async function persistExplicitCapture(
   }
 
   const storage = await orchestrator.getStorage(resolvedNamespace);
-  const { id: id } = await storage.writeMemory(candidate.category, candidate.content, {
+  // #1645 (review thread yG-): surface the tombstone block so callers
+  // (memory_store tool, access-service HTTP/MCP) can report the capture as
+  // queued for review instead of a successfully stored active memory.
+  const { id, tombstoneBlocked } = await storage.writeMemory(candidate.category, candidate.content, {
     confidence: candidate.confidence,
     tags: candidate.tags,
     entityRef: candidate.entityRef,
@@ -450,7 +453,7 @@ export async function persistExplicitCapture(
   };
   await storage.appendMemoryLifecycleEvents([event]);
 
-  return { id };
+  return { id, tombstoneBlocked };
 }
 
 function buildExplicitCaptureReviewContent(input: ExplicitCaptureInput, reason: string): string {
