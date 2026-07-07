@@ -15617,6 +15617,16 @@ export class Orchestrator {
       // `supersedes` is intentionally left unset to avoid retiring the old
       // memory without user confirmation).
       let contradictionDetected = false;
+      // #1645: hoist the contradiction result so the deferred auto-resolve
+      // (post-write, gated on tombstone status) can read its fields.
+      let contradiction: {
+        supersededId: string;
+        confidence: number;
+        reason: string;
+        supersededPath: string;
+        supersededCreated: string;
+        supersededTags: string[];
+      } | null | undefined;
 
       // Faithfulness gate (#1576, chatgpt P2): skip contradiction detection
       // for a pending_review fact — an unfaithful extraction in the review queue
@@ -15627,7 +15637,7 @@ export class Orchestrator {
         faithfulnessEnforceStatus !== "pending_review"
       ) {
         const targetNamespace = this.storageDirNamespace(targetStorage.dir);
-        const contradiction = await this.checkForContradiction(
+        contradiction = await this.checkForContradiction(
           fact.content,
           writeCategory,
           targetNamespace,
@@ -15649,22 +15659,10 @@ export class Orchestrator {
             strength: contradiction.confidence,
             reason: contradiction.reason,
           });
-          // Deindex the superseded memory so stale paths don't remain in
-          // index_time.json / index_tags.json after the incremental update.
-          // Only applicable when auto-resolve is on and the old memory is
-          // actually being retired; skip when manual review is required.
-          if (
-            this.config.contradictionAutoResolve &&
-            this.config.queryAwareIndexingEnabled &&
-            contradiction.supersededPath
-          ) {
-            deindexMemory(
-              this.config.memoryDir,
-              contradiction.supersededPath,
-              contradiction.supersededCreated,
-              contradiction.supersededTags,
-            );
-          }
+          // #1645: deindex + supersede are deferred to after writeMemory so the
+          // caller can gate them on the new write's tombstone status. A
+          // tombstone-blocked write (pending_review) must not deindex or retire
+          // the existing active memory — see the post-write guard below.
         }
       }
 
@@ -15812,6 +15810,14 @@ export class Orchestrator {
           const tombstoneBlocked = parentWrite.tombstoneBlocked;
           const postWriteGuard =
             faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
+          // #1645: defer contradiction auto-resolve until tombstone status is
+          // known (see applyDeferredContradictionResolve).
+          await this.applyDeferredContradictionResolve(
+            contradiction,
+            targetStorage,
+            parentId,
+            postWriteGuard,
+          );
           try {
             // Write individual chunks with parent reference
             for (const chunk of chunkResult.chunks) {
@@ -16150,6 +16156,14 @@ export class Orchestrator {
       const tombstoneBlocked = factWrite.tombstoneBlocked;
       const postWriteGuard =
         faithfulnessEnforceStatus === "pending_review" || tombstoneBlocked;
+      // #1645: defer contradiction auto-resolve until tombstone status is
+      // known (see applyDeferredContradictionResolve).
+      await this.applyDeferredContradictionResolve(
+        contradiction,
+        targetStorage,
+        memoryId,
+        postWriteGuard,
+      );
       if (routedRuleId) {
         log.debug(
           `routing applied for memory ${memoryId}: rule=${routedRuleId} category=${writeCategory} storage=${targetStorage.dir}`,
@@ -20603,15 +20617,13 @@ export class Orchestrator {
         }
 
         // The new fact is newer than the existing one. When auto-resolve is
-        // enabled, immediately retire the old memory. When disabled, leave the
-        // old memory active for manual review.
-        if (this.config.contradictionAutoResolve) {
-          await resultStorage.supersedeMemory(
-            existingMemory.frontmatter.id,
-            "pending-new", // Will be updated after the new memory is written
-            verification.reasoning,
-          );
-        }
+        // enabled, the caller retires the old memory AFTER the new write lands
+        // and its tombstone status is known (#1645: defer auto-resolve until
+        // tombstone status is known — a tombstone-blocked new write must not
+        // retire the only active copy, leaving neither memory active). When
+        // disabled, the old memory stays active for manual review. The
+        // contradiction info is returned in both cases so the caller can apply
+        // the deferred retire post-write.
 
         // Return the contradiction info regardless of auto-resolve setting.
         // The caller uses this to set `contradictionDetected=true` which
@@ -20632,6 +20644,57 @@ export class Orchestrator {
     }
 
     return null;
+  }
+
+  /**
+   * #1645: Complete the deferred contradiction auto-resolve after writeMemory
+   * returns and the new write's tombstone status is known. Retires the old
+   * memory + deindexes it ONLY when the new write is genuinely active (not
+   * tombstone-blocked / pending_review). A blocked write must not retire the
+   * only active copy — deferring here closes the "contradictionAutoResolve
+   * supersedes before tombstone status is known" defect class.
+   */
+  private async applyDeferredContradictionResolve(
+    contradiction: {
+      supersededId: string;
+      reason: string;
+      supersededPath: string;
+      supersededCreated: string;
+      supersededTags: string[];
+    } | null | undefined,
+    storage: StorageManager,
+    newMemoryId: string,
+    postWriteGuard: boolean,
+  ): Promise<void> {
+    if (
+      !contradiction ||
+      !this.config.contradictionAutoResolve ||
+      postWriteGuard
+    ) {
+      return;
+    }
+    try {
+      await storage.supersedeMemory(
+        contradiction.supersededId,
+        newMemoryId,
+        contradiction.reason,
+      );
+      if (
+        this.config.queryAwareIndexingEnabled &&
+        contradiction.supersededPath
+      ) {
+        deindexMemory(
+          this.config.memoryDir,
+          contradiction.supersededPath,
+          contradiction.supersededCreated,
+          contradiction.supersededTags,
+        );
+      }
+    } catch (err) {
+      log.warn(
+        `contradiction auto-resolve supersede failed for ${contradiction.supersededId}: ${err}`,
+      );
+    }
   }
 
   // ---------------------------------------------------------------------------
