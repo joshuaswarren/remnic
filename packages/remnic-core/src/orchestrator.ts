@@ -15165,7 +15165,7 @@ export class Orchestrator {
         const redactionRules = await redactionRulesFor(sourceStorageDir, targetStorage.dir);
         const redactionCandidate = fact.content
           + (fact.structuredAttributes ? " " + JSON.stringify(fact.structuredAttributes) : "")
-          + (fact.procedureSteps ? " " + fact.procedureSteps.join(" ") : "");
+          + (fact.procedureSteps ? " " + fact.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""}`.trim()).join(" ") : "");
         if (redactionRules.length > 0 && contentMatchesRedactionRules(redactionCandidate, redactionRules)) {
           redactionGatedCount++;
           log.debug(`extraction: redaction-rule withheld fact #${redactionGatedCount} in ${targetStorage.dir}`);

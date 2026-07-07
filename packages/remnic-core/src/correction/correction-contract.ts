@@ -274,10 +274,10 @@ export function validateRedactionPattern(pattern: string): string {
   return trimmed;
 }
 
-/** Heuristic: treat `/.../` or presence of regex metacharacters as regex. */
+/** Only `/.../`-wrapped patterns are treated as regex; everything else is a
+ *  literal (review thread P1 — consistent with extraction-redaction-rules.ts). */
 function isRegexLike(pattern: string): boolean {
-  if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length >= 2) return true;
-  return /[\\^$.|?*+()[\]{}]/.test(pattern);
+  return pattern.startsWith("/") && pattern.endsWith("/") && pattern.length >= 2;
 }
 
 /**

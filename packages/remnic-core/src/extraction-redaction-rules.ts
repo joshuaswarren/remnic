@@ -51,14 +51,12 @@ interface RedactionRuleFile {
 }
 
 /**
- * Heuristic mirroring `isRegexLike` in correction-contract.ts: a pattern is
- * regex-like when it is wrapped in `/…/` OR contains regex metacharacters.
- * Kept in this module so the matcher does not import the correction module
- * (the correction module owns persistence; this owns consultation).
+ * Only `/…/`-wrapped patterns compile as RegExp; everything else is a literal
+ * substring (review thread P1). An unwrapped pattern like `abc+def` must match
+ * the literal string `abc+def`, NOT the regex `abccccdef`.
  */
 function isRegexLike(pattern: string): boolean {
-  if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length >= 2) return true;
-  return /[\\^$.|?*+()[\]{}]/.test(pattern);
+  return pattern.startsWith("/") && pattern.endsWith("/") && pattern.length >= 2;
 }
 
 /**
@@ -115,32 +113,30 @@ function isSafeRegex(source: string): boolean {
 
 /**
  * Compile a single pattern into a matcher. A literal pattern matches by
- * case-sensitive substring; a regex-like pattern compiles into a RegExp
+ * case-sensitive substring; a `/…/`-wrapped pattern compiles into a RegExp
  * anchored to search (global flag off — we only need a boolean). Compilation
  * failures fall back to literal substring so a bad pattern never throws here.
  */
 export function compileRedactionPattern(pattern: string): CompiledRedactionRule {
   const trimmed = pattern.trim();
-  if (isRegexLike(trimmed)) {
-    const body = trimmed.startsWith("/") && trimmed.endsWith("/")
-      ? trimmed.slice(1, -1)
-      : trimmed;
-    try {
-      if (!isSafeRegex(body)) {
-        // Catastrophic-backtracking shape (e.g. (a+)+) — never compile.
-        // Fall back to literal substring so the rule still does something
-        // useful without risking a ReDoS on every extracted fact.
-        return { pattern: trimmed, matcher: (content) => content.includes(trimmed) };
-      }
-      const re = new RegExp(body);
-      return { pattern: trimmed, matcher: (content) => re.test(content) };
-    } catch {
-      // Malformed regex despite validation (e.g. rule file hand-edited) —
-      // treat as a literal so the rule still does something useful.
-      return { pattern: trimmed, matcher: (content) => content.includes(trimmed) };
-    }
+  if (!isRegexLike(trimmed)) {
+    return { pattern: trimmed, matcher: (content) => content.includes(trimmed) };
   }
-  return { pattern: trimmed, matcher: (content) => content.includes(trimmed) };
+  const body = trimmed.slice(1, -1);
+  try {
+    if (!isSafeRegex(body)) {
+      // Catastrophic-backtracking shape (e.g. (a+)+) — never compile.
+      // Fall back to literal substring on the BODY (without delimiters) so the
+      // rule still does something useful without risking a ReDoS.
+      return { pattern: trimmed, matcher: (content) => content.includes(body) };
+    }
+    const re = new RegExp(body);
+    return { pattern: trimmed, matcher: (content) => re.test(content) };
+  } catch {
+    // Malformed regex despite validation (e.g. rule file hand-edited) —
+    // treat as a literal on the BODY so the rule still does something useful.
+    return { pattern: trimmed, matcher: (content) => content.includes(body) };
+  }
 }
 
 /**
@@ -157,10 +153,21 @@ export async function loadRedactionRules(stateDir: string): Promise<CompiledReda
     // ENOENT (cold install, no rules yet) or permission error — no rules.
     return [];
   }
+  // Sort deterministically (alphabetical by filename) so the set of rules
+  // that survives the MAX_RULE_FILES cap is NOT filesystem-dependent (review
+  // thread P2). Without this, readdir order varies by OS/FS and the silently
+  // truncated rules are arbitrary — a never-store pattern could be dropped.
+  const jsonFiles = names.filter((n) => n.endsWith(".json")).sort();
+  if (jsonFiles.length > MAX_RULE_FILES) {
+    // Visible failure mode: log a warning so the operator knows rules were
+    // truncated, rather than silently dropping enforcement.
+    console.warn(
+      `extraction-redaction: ${jsonFiles.length} redaction rules in ${dir} exceed the ${MAX_RULE_FILES} cap; ` +
+      `${jsonFiles.length - MAX_RULE_FILES} rules will NOT be enforced. Remove unused rules or raise the cap.`,
+    );
+  }
   const rules: CompiledRedactionRule[] = [];
-  for (const name of names) {
-    if (rules.length >= MAX_RULE_FILES) break;
-    if (!name.endsWith(".json")) continue;
+  for (const name of jsonFiles.slice(0, MAX_RULE_FILES)) {
     try {
       const raw = await readFile(path.join(dir, name), "utf-8");
       const parsed = JSON.parse(raw) as RedactionRuleFile;

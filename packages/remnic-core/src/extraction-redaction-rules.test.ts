@@ -46,9 +46,23 @@ test("compileRedactionPattern: literal pattern matches by substring", () => {
 });
 
 test("compileRedactionPattern: regex-like pattern compiles to a RegExp", () => {
-  const rule = compileRedactionPattern("secret-token-\\d+");
+  // Only /.../-wrapped patterns compile as RegExp (review thread P1).
+  const rule = compileRedactionPattern("/secret-token-\\d+/");
   assert.ok(rule.matcher("found secret-token-999 in logs"));
   assert.ok(!rule.matcher("found secret-token-abc in logs"));
+});
+
+test("compileRedactionPattern (P1): unwrapped pattern with metacharacters is literal", () => {
+  // abc+def must match the LITERAL string, not the regex abccccdef.
+  const rule = compileRedactionPattern("abc+def");
+  assert.ok(rule.matcher("the value is abc+def here"),
+    "unwrapped metachar pattern must match the literal substring");
+  assert.ok(!rule.matcher("abccccdef"),
+    "unwrapped metachar pattern must NOT be compiled as a regex");
+  // An API-token-shaped literal like foo(bar) also works.
+  const rule2 = compileRedactionPattern("foo(bar)");
+  assert.ok(rule2.matcher("contains foo(bar) text"));
+  assert.ok(!rule2.matcher("contains foobar text"));
 });
 
 test("compileRedactionPattern: /wrapped/ regex strips delimiters", () => {
@@ -57,9 +71,10 @@ test("compileRedactionPattern: /wrapped/ regex strips delimiters", () => {
   assert.ok(!rule.matcher("this is public data"));
 });
 
-test("compileRedactionPattern: malformed regex falls back to literal", () => {
-  // Unbalanced bracket — would throw in `new RegExp`. Must not throw here.
-  const rule = compileRedactionPattern("[unclosed");
+test("compileRedactionPattern: malformed /wrapped/ regex falls back to literal", () => {
+  // /.../-wrapped with an unbalanced bracket — RegExp() throws, falls back
+  // to literal substring on the BODY (without delimiters).
+  const rule = compileRedactionPattern("/[unclosed/");
   assert.ok(rule.matcher("contains [unclosed literally"));
   assert.ok(!rule.matcher("no match"));
 });
@@ -74,7 +89,7 @@ test("loadRedactionRules: empty when the dir does not exist (cold install)", asy
 test("loadRedactionRules: reads persisted literal + regex patterns", async () => {
   await withTempDir(async (dir) => {
     await writeRule(dir, "secret-token-123");
-    await writeRule(dir, "api-key-[a-f0-9]{8}");
+    await writeRule(dir, "/api-key-[a-f0-9]{8}/");
     const rules = await loadRedactionRules(dir);
     assert.equal(rules.length, 2);
     assert.ok(contentMatchesRedactionRules("leaked secret-token-123 here", rules));
@@ -145,7 +160,7 @@ test("#1669 thread #3 (first-line guard): validateRedactionPattern rejects catas
   // Classic ReDoS shapes must be rejected at apply time — not just fall back
   // to literal at extraction time. Each is a nested quantifier or overlapping
   // alternation that would hang on a near-miss fact.
-  const pathological = ["(a+)+", "(a*)*", "(a?)+", "(a|a)+"];
+  const pathological = ["/(a+)+/", "/(a*)*/", "/(a?)+/", "/(a|a)+/"];
   for (const p of pathological) {
     assert.throws(
       () => validateRedactionPattern(p),
@@ -153,9 +168,9 @@ test("#1669 thread #3 (first-line guard): validateRedactionPattern rejects catas
       `validateRedactionPattern must reject catastrophic pattern: ${p}`,
     );
   }
-  // The overly-broad check still fires for bare .* / .+ patterns.
-  assert.throws(() => validateRedactionPattern(".*"));
-  assert.throws(() => validateRedactionPattern(".+"));
+  // The overly-broad check still fires for /.../-wrapped .* / .+ patterns.
+  assert.throws(() => validateRedactionPattern("/.*/"));
+  assert.throws(() => validateRedactionPattern("/.+/"));
   // A near-miss string that would cause exponential backtracking on the
   // regex never reaches extraction — the plan is rejected at apply time.
   const nearMiss = "a".repeat(100) + "!";
