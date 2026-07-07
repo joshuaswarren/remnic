@@ -239,18 +239,16 @@ async function main(): Promise<number> {
       `\n### ${cell.id} — ${cell.label}\n- status: RUNNING\n- axis: ${cell.axis}\n- baseline: ${cell.baselineState}\n`
     );
     try {
-      const artifactPath = await runOneCell(args, resolved, cell);
-      const { artifact, sha256 } = await loadBenchmarkArtifact(artifactPath);
+      const written = await runOneCell(args, resolved, cell);
+      const { artifact } = await loadBenchmarkArtifact(written.path);
       const metrics = Object.entries(artifact.metrics)
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed(4) : v}`)
         .join(", ");
-      process.stdout.write(
-        `${label} DONE → ${path.basename(artifactPath)} (${metrics}) sha256=${sha256.slice(0, 12)}\n`
-      );
+      process.stdout.write(`${label} DONE → ${written.filename} (${metrics}) sha256=${written.sha256.slice(0, 12)}\n`);
       await appendStatus(
         statusPath,
-        `- status: DONE\n  - artifact: \`${path.basename(artifactPath)}\`\n  - metrics: ${metrics}\n  - sha256: ${sha256}\n`
+        `- status: DONE\n  - artifact: \`${written.filename}\`\n  - metrics: ${metrics}\n  - sha256: ${written.sha256}\n`
       );
     } catch (error) {
       failures += 1;
