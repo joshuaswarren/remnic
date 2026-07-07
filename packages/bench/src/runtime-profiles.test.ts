@@ -460,6 +460,18 @@ test("runtime profile can route Remnic internal LLM calls through codex-cli", as
   );
 });
 
+test("runtime profile rejects claude-cli as an internal provider (PR #1735 review: no @remnic/core gateway wiring)", async () => {
+  await assert.rejects(
+    () =>
+      resolveBenchRuntimeProfile({
+        runtimeProfile: "baseline",
+        internalProvider: "claude-cli",
+        internalModel: "opus",
+      }),
+    /claude-cli.*not supported/,
+  );
+});
+
 test("runtime profile can decouple provider request timeout from drain timeout", async () => {
   const resolved = await resolveBenchRuntimeProfile({
     runtimeProfile: "baseline",

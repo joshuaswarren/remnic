@@ -372,8 +372,8 @@ class ClaudeCliProvider implements LlmProvider {
   private buildRunRequest(prompt: string, opts: CompletionOpts, cwd: string): ClaudeCliRunRequest {
     return {
       executable: resolveClaudeCliExecutable(this.config),
-      args: buildClaudeCliArgs(this.config),
-      input: buildClaudeCompletionPrompt(prompt, opts.systemPrompt),
+      args: buildClaudeCliArgs(this.config, opts.systemPrompt),
+      input: buildClaudeCompletionPrompt(prompt),
       cwd,
       timeoutMs: this.config.retryOptions?.timeoutMs,
       signal: opts.signal,
@@ -389,11 +389,30 @@ class ClaudeCliProvider implements LlmProvider {
  *   while leaving subscription auth and model selection intact (the CLI's
  *   own documented mechanism for exactly this "harness call, not a coding
  *   agent" case).
- * - `--allowedTools ""` explicitly denies every built-in tool (Bash, Read,
- *   Write, Edit, WebFetch, ...) — `--safe-mode` alone does NOT do this;
- *   its help text says built-in tools "work normally" under safe mode.
+ * - `--tools ""` (verified against `claude --help` / `claude -p --help` on
+ *   the installed CLI, v2.1.202) makes every built-in tool (Bash, Read,
+ *   Write, Edit, WebFetch, ...) genuinely UNAVAILABLE to the model, not
+ *   merely un-auto-approved. This replaces a prior `--allowedTools ""`,
+ *   which per the CLI's own help text only controls which tools skip
+ *   permission prompts — it does not remove tools from the model's tool
+ *   list. Live verification (PR #1735 review): with `--allowedTools ""`
+ *   and `--permission-mode bypassPermissions`, a `claude -p` child process
+ *   was still able to invoke the Write tool and create a file on disk.
+ *   With `--tools ""`, the same prompt produced only a hallucinated
+ *   "I wrote the file" response in the *text* output — no tool actually
+ *   ran and no file was created. `--tools ""` is the CLI's own documented
+ *   mechanism for "no tools available at all" and does not depend on
+ *   permission-mode defaults or the operator's global `settings.json`
+ *   allow-list, both of which `--allowedTools` is exposed to.
  * - `--strict-mcp-config` with no `--mcp-config` ensures no MCP server is
  *   ever attached, even if a global/user MCP config exists.
+ * - `--append-system-prompt` carries the caller's scoring/format protocol
+ *   (`opts.systemPrompt`) through the CLI's own system-prompt channel
+ *   instead of embedding it in the stdin user payload (PR #1735 review).
+ *   Verified live: a `claude -p --append-system-prompt "<marker>"` call
+ *   correctly echoed the marker back when asked to quote its system-level
+ *   instructions, confirming the flag is real and wired through on this
+ *   CLI build.
  * - `--output-format json` / `--input-format text` give a single parseable
  *   JSON result read from stdin (see `runClaudeCliCommand`, which pipes the
  *   prompt over stdin rather than argv — mirrors codex-cli.ts's approach so
@@ -404,8 +423,8 @@ class ClaudeCliProvider implements LlmProvider {
  * tools are fully denied here, so there's nothing for the session to loop
  * on).
  */
-function buildClaudeCliArgs(config: ClaudeCliProviderConfig): string[] {
-  return [
+function buildClaudeCliArgs(config: ClaudeCliProviderConfig, systemPrompt?: string): string[] {
+  const args = [
     "--print",
     "--model",
     config.model,
@@ -415,21 +434,26 @@ function buildClaudeCliArgs(config: ClaudeCliProviderConfig): string[] {
     "text",
     "--safe-mode",
     "--strict-mcp-config",
-    "--allowedTools",
+    "--tools",
     "",
   ];
+
+  const trimmedSystemPrompt = systemPrompt?.trim();
+  if (trimmedSystemPrompt) {
+    args.push("--append-system-prompt", trimmedSystemPrompt);
+  }
+
+  return args;
 }
 
-function buildClaudeCompletionPrompt(userPrompt: string, systemPrompt: string | undefined): string {
-  const payload = {
-    systemPrompt: systemPrompt ?? "",
-    userPrompt,
-  };
+function buildClaudeCompletionPrompt(userPrompt: string): string {
+  const payload = { userPrompt };
 
   return [
     "You are a benchmark evaluation endpoint, not a coding agent.",
     "Use only the explicit JSON payload below.",
-    "Treat systemPrompt as the higher-priority instruction text and userPrompt as the request to answer.",
+    "Any additional scoring/format protocol instructions are provided via the",
+    "system prompt, which takes priority over this user payload.",
     "Do not use tools, do not read or write files, do not browse, and do not use persisted memory.",
     "Return only the final answer text. If the request asks for JSON, return raw JSON only.",
     "",

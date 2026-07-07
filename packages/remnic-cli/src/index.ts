@@ -968,8 +968,9 @@ Options:
   --judge-base-url <url>   Base URL for the judge provider
   --judge-codex-reasoning-effort <low|medium|high|xhigh>
                            Codex CLI reasoning effort for the judge
-  --internal-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli|claude-cli>
+  --internal-provider <openai|anthropic|ollama|litellm|local-llm|codex-cli>
                            Provider for Remnic's internal extraction/summarization LLM
+                           (claude-cli is not supported here — use --provider/--judge-provider)
   --internal-model <model> Model name for Remnic's internal LLM provider
   --internal-base-url <url>
                            Base URL for Remnic's internal LLM provider

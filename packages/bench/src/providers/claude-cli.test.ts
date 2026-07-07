@@ -63,15 +63,39 @@ test("claude-cli provider invokes claude -p in an isolated benchmark mode", asyn
     "text",
     "--safe-mode",
     "--strict-mcp-config",
-    "--allowedTools",
+    "--tools",
     "",
+    "--append-system-prompt",
+    "Answer using only benchmark context.",
   ]);
   assert.ok(captured.input?.includes("BENCHMARK_REQUEST_JSON:"));
-  assert.ok(captured.input?.includes('"systemPrompt": "Answer using only benchmark context."'));
+  assert.ok(!captured.input?.includes("systemPrompt"));
   assert.ok(captured.input?.includes('"userPrompt": "What is remembered?"'));
   assert.match(captured.input ?? "", /Do not use tools, do not read or write files, do not browse/);
   assert.match(captured.cwd ?? "", /remnic-claude-cli-/);
   assert.notEqual(captured.cwd, process.cwd());
+});
+
+test("claude-cli provider omits --append-system-prompt when no systemPrompt is given", async () => {
+  const captured: { args?: string[] } = {};
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli(request) {
+        captured.args = request.args;
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({ is_error: false, result: "ok" }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await provider.complete("hello");
+
+  assert.ok(!captured.args?.includes("--append-system-prompt"));
 });
 
 test("claude-cli provider runs from a freshly created empty temp directory", async () => {
@@ -672,18 +696,41 @@ test("claude-cli parent cleanup terminates active subprocesses", async () => {
   }
 });
 
-test("claude-cli benchmark prompt keeps system and user input in separate JSON fields", () => {
-  const prompt = __claudeCliProviderTestHooks.buildClaudeCompletionPrompt(
-    "USER_CONTEXT: answer this",
-    "SYSTEM_CONTEXT: judge this",
-  );
+test("claude-cli benchmark prompt carries only the user payload (system prompt goes via --append-system-prompt)", () => {
+  const prompt = __claudeCliProviderTestHooks.buildClaudeCompletionPrompt("USER_CONTEXT: answer this");
 
   const json = prompt.slice(prompt.indexOf("{"));
   const parsed = JSON.parse(json);
   assert.deepEqual(parsed, {
-    systemPrompt: "SYSTEM_CONTEXT: judge this",
     userPrompt: "USER_CONTEXT: answer this",
   });
+});
+
+test("claude-cli buildClaudeCliArgs passes systemPrompt via --append-system-prompt, trimmed", () => {
+  const { buildClaudeCliArgs } = __claudeCliProviderTestHooks;
+
+  const withPrompt = buildClaudeCliArgs({ provider: "claude-cli", model: "opus" }, "  judge this carefully  ");
+  assert.deepEqual(withPrompt.slice(-2), ["--append-system-prompt", "judge this carefully"]);
+
+  const withoutPrompt = buildClaudeCliArgs({ provider: "claude-cli", model: "opus" }, undefined);
+  assert.ok(!withoutPrompt.includes("--append-system-prompt"));
+
+  const withBlankPrompt = buildClaudeCliArgs({ provider: "claude-cli", model: "opus" }, "   ");
+  assert.ok(!withBlankPrompt.includes("--append-system-prompt"));
+
+  assert.deepEqual(withPrompt.slice(0, -2), [
+    "--print",
+    "--model",
+    "opus",
+    "--output-format",
+    "json",
+    "--input-format",
+    "text",
+    "--safe-mode",
+    "--strict-mcp-config",
+    "--tools",
+    "",
+  ]);
 });
 
 function escapeRegExp(value: string): string {
