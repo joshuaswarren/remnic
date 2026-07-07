@@ -429,9 +429,11 @@ jq . ~/.remnic/bench/results/MANIFEST.json
 > available, so they omit `judgeCalibration` — this is expected, not a gap,
 > until the Tier F run lands.
 
-The build script refuses to promote partial or quick-mode runs, runs with a
-`limit`/`trialLimit`, or unpublished benchmark ids — only complete full runs
-may be published (issue #1712 publish-safety guards).
+The build script rejects partial and quick-mode runs and runs that record a
+`config.benchmarkOptions.limit` / `trialLimit` (issue #1712 publish-safety
+guards). Note: a top-level CLI `--limit` that lands outside
+`benchmarkOptions` is not currently caught by this check — verify manually
+that no `--limit` was used before promoting a full-mode run.
 
 To promote a specific artifact to the public results directory (which is
 gitignored by default), use `git add -f` on exactly the file(s) you intend
@@ -610,7 +612,7 @@ the 5-hour / weekly caps. The protocol:
 | --- | --- |
 | Non-mock | The artifact filename's sha segment is not `mock000`; `datasetVersion ≠ "mock-fixture"` |
 | Repro manifest present | `MANIFEST.json` exists beside the result; `jq .artifactHash` is non-empty |
-| Seed / model / quant / ctx / dataset pinned | `run.seed`, `command.argv`, `datasets[].sha256`, and the local-lab manifest's `responder.{model,quantization,ctx,seed}` all match the reproduced run |
+| Seed / model / quant / dataset pinned | `run.seed`, `command.argv`, `datasets[].sha256` all match; `responder.{model,quantization,seed}` verified against the local-lab manifest (the manifest is operator-supplied content — hash it separately if you need a committed pin; `ctx` is declared in the manifest but not currently serialized into the artifact) |
 | Judge calibration reported | `judgeCalibration.kappa` present on the artifact (after `judge-calibrate`); `warning` considered |
 | Honest framing attached | artifact `note` states the tier label honestly (e.g. "Opus 4.8 via Claude Code" for Tier F; "7B local, non-thinking" for Tier L) |
 | Leaderboard-safe | explicit-cue-recall guards respected (#841–#850); no hidden gold metadata in the answering path; harness leakage tests pass |
