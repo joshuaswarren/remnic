@@ -251,6 +251,12 @@ test("validateResultForPromotion rejects a limited run via benchmarkOptions.tria
   assert.match(!r.ok && r.message, /refusing to promote a limited run/);
 });
 
+test("validateResultForPromotion treats a null benchmarkOptions as absent (typeof null === object footgun)", () => {
+  // JSON `null` must not crash the limit check (typeof null === "object").
+  const r = validateResultForPromotion(makeResult({ benchmarkOptions: null as unknown as Record<string, unknown> }));
+  assert.equal(r.ok, true);
+});
+
 test("validateResultForPromotion rejects a non-object result", () => {
   assert.equal(validateResultForPromotion(null).ok, false);
   assert.equal(validateResultForPromotion("nope").ok, false);

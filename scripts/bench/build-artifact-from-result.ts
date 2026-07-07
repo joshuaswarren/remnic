@@ -205,7 +205,7 @@ export function parseArgs(argv: string[]): ArgParseResult {
  */
 export function validateResultForPromotion(result: unknown): ValidationResult {
   if (typeof result !== "object" || result === null) {
-    return { ok: false, message: "ERROR: result file is not a JSON object." };
+    return { ok: false, message: "result file is not a JSON object." };
   }
   const r = result as Record<string, unknown>;
   const meta = r.meta as Record<string, unknown> | undefined;
@@ -215,7 +215,7 @@ export function validateResultForPromotion(result: unknown): ValidationResult {
     return {
       ok: false,
       message:
-        `ERROR: meta.benchmark "${String(benchmarkId)}" is not a published benchmark artifact id ` +
+        `meta.benchmark "${String(benchmarkId)}" is not a published benchmark artifact id ` +
         `(allowed: ${PUBLISHED_BENCHMARK_ARTIFACT_IDS.join(", ")}).`,
     };
   }
@@ -224,7 +224,7 @@ export function validateResultForPromotion(result: unknown): ValidationResult {
     return {
       ok: false,
       message:
-        'ERROR: refusing to promote a partial run (meta.status="partial"); only complete runs may be published.',
+        'refusing to promote a partial run (meta.status="partial"); only complete runs may be published.',
     };
   }
 
@@ -232,18 +232,18 @@ export function validateResultForPromotion(result: unknown): ValidationResult {
     return {
       ok: false,
       message:
-        'ERROR: refusing to promote a quick-mode run (meta.mode="quick"); only full runs may be published.',
+        'refusing to promote a quick-mode run (meta.mode="quick"); only full runs may be published.',
     };
   }
 
   const config = r.config as Record<string, unknown> | undefined;
   const benchmarkOptions = config?.benchmarkOptions as Record<string, unknown> | undefined;
-  if (benchmarkOptions !== undefined && typeof benchmarkOptions === "object") {
+  if (benchmarkOptions !== null && typeof benchmarkOptions === "object") {
     if (benchmarkOptions.limit !== undefined || benchmarkOptions.trialLimit !== undefined) {
       return {
         ok: false,
         message:
-          "ERROR: refusing to promote a limited run (config.benchmarkOptions.limit/trialLimit set); only full runs may be published.",
+          "refusing to promote a limited run (config.benchmarkOptions.limit/trialLimit set); only full runs may be published.",
       };
     }
   }
