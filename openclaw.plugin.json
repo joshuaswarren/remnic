@@ -2006,6 +2006,11 @@
         "default": 8000,
         "description": "Per-batch timeout in ms for the faithfulness check. Timeout produces a tagged error and never blocks memory writes (graceful degradation)."
       },
+      "extractionFaithfulnessLocalParseFallback": {
+        "type": "boolean",
+        "default": false,
+        "description": "Resilient-fallback toggle for the local model-lab faithfulness endpoint (issue #1700). Default false surfaces malformed_output when the local endpoint returns 200 with non-verdict JSON (alerts the operator to a misconfigured endpoint). Set true to instead fall back to the configured chain on local parse failure."
+      },
       "extractionFaithfulnessBaseUrl": {
         "type": "string",
         "default": "",

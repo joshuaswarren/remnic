@@ -1223,6 +1223,14 @@ export interface PluginConfig {
   /** Per-batch timeout in ms; timeout → tagged error, never blocks writes. Default 8000. */
   extractionFaithfulnessTimeoutMs: number;
   /**
+   * Resilient-fallback toggle for the local model-lab endpoint (issue #1700
+   * nit #6). When the local endpoint returns 200 with non-verdict JSON, the
+   * default (false) surfaces `malformed_output` so a misconfigured endpoint is
+   * visible to the operator. Set true to instead fall back to the configured
+   * chain on local parse failure (pre-validated via parseFaithfulnessResponse).
+   */
+  extractionFaithfulnessLocalParseFallback: boolean;
+  /**
    * Correction-intent model-lab pointer (issue #1581 / #1585). When both this
    * and `correctionIntentBaseUrl` are set, the detection path can route to a
    * local fine-tuned correction-intent classifier. Empty default keeps the

@@ -17,7 +17,7 @@
  * `config.ts` spread the result in one line.
  */
 
-import { coerceNumber } from "./connectors/coerce.js";
+import { coerceBool, coerceNumber } from "./connectors/coerce.js";
 
 /**
  * Parse a value as a strict integer >= `min`, throwing on anything else.
@@ -67,6 +67,7 @@ export function parseFaithfulnessGateConfig(cfg: Record<string, unknown>): {
   extractionFaithfulnessBaseUrl: string;
   extractionFaithfulnessContextChars: number;
   extractionFaithfulnessTimeoutMs: number;
+  extractionFaithfulnessLocalParseFallback: boolean;
 } {
   const gateValue = cfg.extractionFaithfulnessGate;
   let extractionFaithfulnessGate: "off" | "shadow" | "enforce";
@@ -105,12 +106,26 @@ export function parseFaithfulnessGateConfig(cfg: Record<string, unknown>): {
     60_000,
   );
 
+  // Issue #1700 nit #6: resilient-fallback toggle for the local model-lab
+  // endpoint. Default false preserves the loud-signal behavior (a 200-with-
+  // garbage local response surfaces malformed_output so a misconfigured
+  // endpoint is visible); true falls back to the configured chain on local
+  // parse failure. Byte-identical pre-feature when unset (rule 39).
+  // coerceBool for CLI-string parity: a CLI override like
+  // --config extractionFaithfulnessLocalParseFallback=true reaches here as the
+  // string "true"; === true would silently leave the flag disabled. Matches
+  // every other CLI-settable boolean in config.ts (gotcha 36, codex P2
+  // PRRT_kwDORJXyws6O6gDQ / cursor BUGBOT e273b22c).
+  const extractionFaithfulnessLocalParseFallback =
+    coerceBool(cfg.extractionFaithfulnessLocalParseFallback) === true;
+
   return {
     extractionFaithfulnessGate,
     extractionFaithfulnessModel,
     extractionFaithfulnessBaseUrl,
     extractionFaithfulnessContextChars,
     extractionFaithfulnessTimeoutMs,
+    extractionFaithfulnessLocalParseFallback,
   };
 }
 

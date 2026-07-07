@@ -42,10 +42,15 @@ export interface EndpointChatMessage {
 
 /** Options for a single local-endpoint chat call. */
 export interface EndpointChatOptions {
-  /** Per-call timeout in ms. The caller's batch AbortSignal is NOT forwarded
-   *  (matches the local-LLM precedent: each attempt is bounded by its own
-   *  timer so one slow server can't starve the batch). */
+  /** Per-call timeout in ms. Bounds each attempt so one slow server can't
+   *  starve the batch (matches the local-LLM precedent). */
   timeoutMs: number;
+  /** Optional batch AbortSignal forwarded into the probe (issue #1700 nit #5).
+   *  When the batch budget elapses (or the caller aborts), the in-flight probe
+   *  aborts immediately instead of waiting for its own `timeoutMs` — a
+   *  micro-optimization, not a correctness fix (the outer race already bounds
+   *  the total). Undefined preserves the prior per-attempt-only behavior. */
+  signal?: AbortSignal;
   /** Sampling temperature — classification wants low entropy (0.0–0.2). */
   temperature?: number;
   /** Max output tokens. */
@@ -119,6 +124,21 @@ export async function callOpenAiCompatibleChat(
   const url = joinBaseUrl(endpoint.baseUrl, "/chat/completions");
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), options.timeoutMs);
+  // Forward the batch AbortSignal into the probe (issue #1700 nit #5): if the
+  // batch budget already elapsed, abort the in-flight probe immediately rather
+  // than waiting for the probe's own timeoutMs. AbortSignal.any is ES2024
+  // (forbidden here); wire the listener manually + guard the already-aborted
+  // case. The fetch still uses the probe's controller, so clearing the timer
+  // below is the only cleanup needed.
+  const batchSignal = options.signal;
+  const onBatchAbort = () => controller.abort();
+  if (batchSignal) {
+    if (batchSignal.aborted) {
+      controller.abort();
+    } else {
+      batchSignal.addEventListener("abort", onBatchAbort, { once: true });
+    }
+  }
   try {
     const body: Record<string, unknown> = {
       model: endpoint.model,
@@ -150,6 +170,7 @@ export async function callOpenAiCompatibleChat(
     return { content, modelUsed: extractModel(parsed) ?? endpoint.model };
   } finally {
     clearTimeout(timer);
+    if (batchSignal) batchSignal.removeEventListener("abort", onBatchAbort);
   }
 }
 
