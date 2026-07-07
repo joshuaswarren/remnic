@@ -270,11 +270,16 @@ def main(argv: list[str] | None = None) -> int:
 
     train_tokenized = Dataset.from_list(featurize(list(split["train"]))).map(tokenize, batched=True)
     test_tokenized = Dataset.from_list(featurize(list(split["test"]))).map(tokenize, batched=True)
+    # ``ignore_mismatched_sizes=True``: roberta-large-mnli ships a 3-way NLI
+    # head; we want a 2-way detection head, so the classifier.out_proj is
+    # shape-mismatched and must be reinitialized (the encoder weights transfer
+    # unchanged). transformers 5.x raises on a mismatch unless this is set.
     model = AutoModelForSequenceClassification.from_pretrained(
         hyperparams.base_model,
         num_labels=len(morphology.LABELS),
         id2label=ID_TO_LABEL,
         label2id=LABEL_TO_ID,
+        ignore_mismatched_sizes=True,
     )
 
     out_dir = args.runs_dir / args.version_tag
