@@ -30,7 +30,7 @@ model-lab/
   correction-intent/
     generate-data.py              synthetic morphology generator (CI-tested; mirrors #1581)
     morphology.py                 seed grammar: #1581 polarities + anti-fixtures
-    train.py                      ≤4B instruct-LM LoRA recipe (GPU + deps at runtime)
+    train.py                      RoBERTa detection classifier (v1, issue #1738); causal-LM extraction is v2
     eval.py                       held-out detection F1 + span quality + p95 latency
     harvest-shadow-logs.py        shadow-log harvest — STUB; waits for #1581 telemetry
     manifest.json                 THE reproducibility artifact (schema example; pending-training)

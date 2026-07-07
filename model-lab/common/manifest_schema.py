@@ -60,18 +60,27 @@ KNOWN_TASKS: tuple[str, ...] = ("faithfulness-gate", "correction-intent")
 #: ``torch`` + ``transformers`` (issue #1700 nit #2). Source of truth: each
 #: task's ``train.py`` required-imports + ``model-lab/requirements.txt``. A
 #: manifest that OMITS a task-required lib (not merely one left null) now fails
-#: strict validation -- a correction-intent run without ``trl``/``peft``, or a
-#: faithfulness-gate run without its encoder Trainer stack, cannot reproduce
-#: its eval numbers. ``bitsandbytes`` is intentionally NOT required for
-#: correction-intent (it is the optional <=8B QLoRA escape hatch; a <=4B LoRA run
-#: does not import it). ``datasets`` + ``huggingface-hub`` are universal
+#: strict validation -- a correction-intent run without its encoder Trainer
+#: stack, or a faithfulness-gate run without its encoder Trainer stack, cannot
+#: reproduce its eval numbers. ``datasets`` + ``huggingface-hub`` are universal
 #: (data loading + weight publish) so they appear in both rows. ``accelerate``
 #: is also required for BOTH tasks: transformers Trainer / TrainingArguments
-#: import it for device management, and the correction-intent TRL SFTTrainer
-#: depends on it transitively at runtime (codex P2 PRRT_kwDORJXyws6O7kTC).
+#: import it for device management (codex P2 PRRT_kwDORJXyws6O7kTC).
+#:
+#: Issue #1738: correction-intent v1 is a DETECTION CLASSIFIER (RoBERTa-large
+#: 2-way head), NOT the original #1585 causal-LM/TRL plan -- the pre-#1737
+#: ``trl==0.16.6``/``bitsandbytes==0.44.1`` pins do not exist on PyPI, and the
+#: only resolvable trl drags datasets 3.6->5.0 (breaking the faithfulness
+#: stack in the shared venv). So v1's required libs are the SAME encoder
+#: Trainer stack as faithfulness (datasets/huggingface-hub/accelerate); ``trl``
+#: /``peft``/``bitsandbytes`` are NOT required and are regrown here only when
+#: the v2 causal-LM extraction follow-up lands (it pins real versions in
+#: requirements.txt first). ``sentencepiece`` is faithfulness-only (its
+#: DeBERTa-v3 first-choice tokenizer); correction-intent's roberta-large-mnli
+#: base uses a BPE tokenizer that does not import sentencepiece.
 TASK_REQUIRED_LIBS: Mapping[str, tuple[str, ...]] = {
     "faithfulness-gate": ("datasets", "huggingface-hub", "accelerate", "sentencepiece"),
-    "correction-intent": ("trl", "peft", "datasets", "huggingface-hub", "accelerate"),
+    "correction-intent": ("datasets", "huggingface-hub", "accelerate"),
 }
 
 
@@ -223,9 +232,9 @@ def _validate_training_stack(
     "task" enables the per-task required-lib matrix (issue #1700 nit #2): a
     real run must pin not only the universal torch/transformers and the libs it
     DECLARES, but also the libs its task's recipe imports -- otherwise a
-    manifest that silently OMITS trl/peft (correction-intent) or the encoder
-    Trainer stack (faithfulness-gate) passes strict validation despite being
-    unable to reproduce its eval numbers.
+    manifest that silently OMITS a task-required lib (e.g. the encoder Trainer
+    stack for either task) passes strict validation despite being unable to
+    reproduce its eval numbers.
     """
     errors: list[str] = []
     required = ("python", "libs")
@@ -244,9 +253,10 @@ def _validate_training_stack(
     elif not allow_pending:
         # A real run must pin an exact version for the UNIVERSAL minimum
         # (torch + transformers) PLUS the task-specific minimum (issue #1700
-        # nit #2 -- a correction-intent run must pin trl/peft/datasets; a
-        # faithfulness-gate run must pin its encoder Trainer stack) PLUS every
-        # other lib the manifest DECLARES. The previous check only covered
+        # nit #2 -- both tasks must pin their encoder Trainer stack:
+        # datasets/huggingface-hub/accelerate, + sentencepiece for
+        # faithfulness-gate) PLUS every other lib the manifest DECLARES.
+        # The previous check only covered
         # torch/transformers + declared keys, so a manifest that OMITTED a
         # task-required lib passed strict validation (kilo WARNING
         # PRRT_kwDORJXyws6OtyS- for the null-declared case; this closes the

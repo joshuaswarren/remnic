@@ -22,6 +22,12 @@ from typing import Mapping
 
 #: Libs whose exact versions a reproducible run MUST record. The load-bearing
 #: training stack; anything else is ancillary. Keep in sync with requirements.txt.
+#: Issue #1738: both v1 tasks are encoder-classification fine-tunes sharing one
+#: stack (RoBERTa-large + HF Trainer). The causal-LM/TRL libs (trl/peft/
+#: bitsandbytes) are NOT recorded because no v1 recipe imports them — they are
+#: regrown here when the v2 correction-intent extraction follow-up pins real,
+#: resolvable versions in requirements.txt (the pre-#1737 trl==0.16.6 /
+#: bitsandbytes==0.44.1 pins do not exist on PyPI).
 PINNED_LIBS: tuple[str, ...] = (
     "torch",
     "transformers",
@@ -29,10 +35,6 @@ PINNED_LIBS: tuple[str, ...] = (
     "huggingface-hub",
     "accelerate",
     "sentencepiece",
-    # Correction-intent causal-LM stack (uncommented in requirements.txt for PR3):
-    "trl",
-    "peft",
-    "bitsandbytes",
 )
 
 

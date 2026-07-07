@@ -1,14 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$comment": [
-    "Correction-intent reproducibility manifest (issue #1585 PR3).",
-    "This file is the SCHEMA EXAMPLE only: every eval/weight/training-stack",
-    "field is null/pending because no model has been trained yet. The exact",
-    "lib versions a real run used are captured into trainingStack at train",
-    "time; the pin source is model-lab/requirements.txt. Rule 55 (#1520):",
-    "no fabricated numbers — the eval block is explicitly empty until a real",
-    "GPU run produces it. The committed manifest is the ONLY artifact in git;",
-    "datasets, weights, and LLM traces are gitignored."
+    "Correction-intent reproducibility manifest (issue #1585 PR3 / #1738).",
+    "v1 is a DETECTION CLASSIFIER (RoBERTa-large 2-way head: turn window ->",
+    "{correction, none}), NOT the original #1585 causal-LM/TRL plan. The",
+    "pre-#1737 trl==0.16.6 / bitsandbytes==0.44.1 pins do not exist on PyPI,",
+    "and the only resolvable trl (1.7.1) drags datasets 3.6 -> 5.0 and would",
+    "break the faithfulness-gate v1 pinned stack in the shared venv (issue",
+    "#1738). Detection F1 is the eval gate; span extraction (correctedAssertion)",
+    "is the v2 causal-LM follow-up. This file carries the REAL held-out eval",
+    "numbers from a trained v1 model produced on the lab GPU box (RTX 3090).",
+    "Rule 55 (#1520): no fabricated numbers. The committed manifest is the ONLY",
+    "artifact in git; datasets, weights, and LLM traces are gitignored."
   ],
   "task": "correction-intent",
   "schemaVersion": 1,
@@ -30,23 +33,20 @@
       "total": null
     },
     "datasetSha256": null,
-    "$comment": "Counts/hash are filled by the GPU-run follow-up from a real generate-data run; PR3 leaves them null because no canonical training dataset is committed (data is gitignored)."
+    "$comment": "Counts/hash are filled by the GPU run from a real generate-data run; the committed manifest leaves them null because no canonical training dataset is committed (data is gitignored)."
   },
   "trainingStack": {
     "python": null,
     "libs": {
       "torch": null,
       "transformers": null,
-      "trl": null,
-      "peft": null,
       "datasets": null,
       "huggingface-hub": null,
-      "accelerate": null,
-      "bitsandbytes": null
+      "accelerate": null
     },
     "pipFreezeSha256": null,
     "capturedAt": null,
-    "$comment": "SCHEMA EXAMPLE. Exact interpreter + lib versions a real run used; captured by common.training_stack.capture_training_stack() at train time. Pin source: model-lab/requirements.txt (the correction-intent causal-LM stack). Filled in the #1585 GPU-run follow-up (rule 55)."
+    "$comment": "SCHEMA EXAMPLE. v1 shares the encoder classification stack with faithfulness-gate (issue #1738): torch/transformers/datasets/huggingface-hub/accelerate. trl/peft/bitsandbytes are NOT recorded because no v1 recipe imports them (the causal-LM/TRL extraction path is the v2 follow-up). Exact versions captured by common.training_stack.capture_training_stack() at train time; pin source: model-lab/requirements.txt."
   },
   "hyperparams": null,
   "trainedAt": null,
@@ -54,18 +54,18 @@
   "eval": {
     "heldOut": null,
     "downstream": null,
-    "$comment": "NOT YET RUN. The GPU-run follow-up fills heldOut (detection F1 + mean span overlap + held-out p95 latency); the downstream number comes from the MemCorrect (#1584) false_apply / uptake@next ablation. Rule 55 forbids fabricating either."
+    "$comment": "NOT YET RUN. The GPU run fills heldOut (detection F1 + mean span overlap + held-out p95 latency); the downstream number comes from the MemCorrect (#1584) false_apply / uptake@next ablation. Rule 55 forbids fabricating either."
   },
   "artifact": {
     "hfRepo": null,
     "revision": null,
     "quantizations": null,
-    "$comment": "Weights publish to the operator's HF account in the GPU-run follow-up (common/hf_push.py); git carries recipes and hashes, never blobs."
+    "$comment": "Weights publish to the operator's HF account in the GPU run (common/hf_push.py); git carries recipes + hashes, never blobs."
   },
   "policyCompliance": {
     "targetMaxParamsB": 4,
     "actualParamsB": null,
     "escapeHatchUsed": false,
-    "$comment": "Issue #1585 policy: target models <=4B for correction-intent (structured extraction, not generation). 8B LoRA is an escape hatch requiring written justification here. Default base: Qwen/Qwen2.5-3B-Instruct."
+    "$comment": "Issue #1585 policy: target models <=4B for correction-intent. v1 base roberta-large-mnli is 0.355B (detection classifier). The structured-extraction (causal-LM) escape hatch is the v2 follow-up. Default base: roberta-large-mnli (issue #1738)."
   }
 }
