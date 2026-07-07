@@ -149,11 +149,15 @@ def main(argv: list[str] | None = None) -> int:
     # Warm the accelerator (CUDA kernel compile / lazy init) on the first
     # example so one-time setup is not charged to the first timed prediction —
     # the latency distribution should describe steady-state serving, not a
- # cold start.
+    # cold start. Guard on a non-empty split: an empty/whitespace-only held-out
+    # JSONL would otherwise IndexError here (rows[0]) before the scoring loop,
+    # which itself handles zero rows, can report an empty result (cursor review:
+    # empty held-out must not crash eval).
     with torch.no_grad():
-        _forward(rows[0])
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
+        if rows:
+            _forward(rows[0])
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
 
     latencies_ms: list[float] = []
     with torch.no_grad():

@@ -99,9 +99,21 @@ test(
   "manifest schema: validator REJECTS pending fields when allow_pending=False (a real run must pin everything)",
   { skip: skipReason },
   () => {
-    const full = path.join(repoRoot, "model-lab/faithfulness-gate/manifest.json");
+    // Build a minimal pending scaffold inline. The committed faithfulness-gate
+    // manifest is now a REAL trained run (issue #1585), so it no longer stands
+    // in for the pending-scaffold case; a hand-built minimal pending manifest
+    // is the stable fixture for this validator-rejection check.
+    const pending = {
+      task: "faithfulness-gate", schemaVersion: 1, status: "pending-training",
+      contract: {}, baseModel: null, dataRecipe: {}, trainingStack: null,
+      hyperparams: null, trainedAt: null, hardware: null, eval: null,
+      artifact: null, policyCompliance: { targetMaxParamsB: 4 },
+    };
+    const full = path.join(os.tmpdir(), `remnic-ci-pending-${process.pid}.json`);
+    fs.writeFileSync(full, JSON.stringify(pending));
     const { errors } = validateManifest(full, false);
-    // The committed scaffold must FAIL strict mode — it's pending by design.
+    fs.unlinkSync(full);
+    // A hand-built pending manifest must FAIL strict mode by design.
     assert.ok(
       errors.some((e) => e.includes("pending") || e.includes("trainingStack")),
       `strict mode should reject the pending scaffold, got: ${JSON.stringify(errors)}`,
@@ -134,6 +146,13 @@ test(
       eval: { heldOut: { macroF1: 0.92 }, downstream: null },
       artifact: { hfRepo: "op/model", revision: "abc", quantizations: ["fp16"] },
       // baseModel / hyperparams / trainedAt / hardware intentionally left null.
+      // Set explicitly because the committed faithfulness-gate manifest is now
+      // a REAL trained run — spreading it would inherit concrete values here
+      // and defeat the half-recorded-run fixture.
+      baseModel: null,
+      hyperparams: null,
+      trainedAt: null,
+      hardware: null,
     };
     const tmp = path.join(os.tmpdir(), `remnic-ci-manifest-${process.pid}.json`);
     fs.writeFileSync(tmp, JSON.stringify(half));
