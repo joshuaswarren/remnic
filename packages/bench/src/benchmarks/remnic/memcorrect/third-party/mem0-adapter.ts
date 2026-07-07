@@ -91,6 +91,8 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
   private readonly maxPolls: number;
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number | undefined;
+  /** Session-scoped user_ids we have ingested under, for precise reset. */
+  private readonly knownSessions = new Set<string>();
 
   constructor(config: Mem0AdapterConfig = {}) {
     this.mode =
@@ -137,35 +139,38 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
     }
     return { Authorization: `Bearer ${this.apiKey}` };
   }
-
   async reset(): Promise<void> {
     this.ensureReady();
-    const userId = this.userIdFor("__reset_all__");
-    // Delete all memories for every session prefix we may have created.
-    // MemCorrect calls reset() before each scenario, so we only need to clear
-    // the current session's user_id. We pass the session via the delete query.
-    // For a clean-slate guarantee we delete by the global prefix pattern.
-    // Mem0's delete-by-user-id is the supported reset path.
-    if (this.mode === "oss") {
-      await httpJson(this.fetchImpl, "DELETE", `${this.baseUrl}/memories`, {
-        headers: this.authHeaders(),
-        body: { user_id: this.userIdPrefix },
-        timeoutMs: this.timeoutMs,
-      });
-    } else {
-      // Hosted V3: delete by user filter.
-      await httpJson(
-        this.fetchImpl,
-        "DELETE",
-        `${this.baseUrl}/v3/memories/`,
-        {
-          headers: this.authHeaders(),
-          body: { filters: { user_id: this.userIdPrefix } },
-          timeoutMs: this.timeoutMs,
-        },
-      );
+    // Delete memories for every session we ingested under. Mem0's DELETE
+    // matches exact user_id — the prefix alone does NOT match session-scoped
+    // ids like "memcorrect:s1". Tracking known sessions ensures every prior
+    // scenario's memories are cleared before the next scenario runs.
+    for (const sessionKey of this.knownSessions) {
+      const userId = this.userIdFor(sessionKey);
+      try {
+        if (this.mode === "oss") {
+          await httpJson(this.fetchImpl, "DELETE", `${this.baseUrl}/memories`, {
+            headers: this.authHeaders(),
+            body: { user_id: userId },
+            timeoutMs: this.timeoutMs,
+          });
+        } else {
+          await httpJson(
+            this.fetchImpl,
+            "DELETE",
+            `${this.baseUrl}/v3/memories/`,
+            {
+              headers: this.authHeaders(),
+              body: { filters: { user_id: userId } },
+              timeoutMs: this.timeoutMs,
+            },
+          );
+        }
+      } catch {
+        // Session may have no memories yet — swallow.
+      }
     }
-    void userId;
+    this.knownSessions.clear();
   }
 
   async ingestTurn(
@@ -176,6 +181,7 @@ export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
   ): Promise<void> {
     this.ensureReady();
     const userId = this.userIdFor(sessionKey);
+    this.knownSessions.add(sessionKey);
     if (this.mode === "oss") {
       await httpJson(this.fetchImpl, "POST", `${this.baseUrl}/memories`, {
         headers: this.authHeaders(),

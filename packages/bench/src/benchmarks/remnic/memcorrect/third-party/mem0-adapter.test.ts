@@ -145,7 +145,34 @@ test("mem0 oss: correct() ingests a user turn", async () => {
   });
 });
 
-test("mem0 oss: reset() DELETEs memories by user prefix", async () => {
+test("mem0 oss: reset() DELETEs each ingested session's user_id", async () => {
+  const ff = new FakeFetchBuilder()
+    .when("POST", "/memories", { status: 200, body: [] })
+    .when("DELETE", "/memories", { status: 200, body: {} })
+    .build();
+  const adapter = new Mem0MemCorrectAdapter({
+    mode: "oss",
+    baseUrl: "http://localhost:8888",
+    apiKey: "test-key",
+    fetch: ff.fetch,
+  });
+  // Ingest under two sessions so reset has something to clean.
+  await adapter.ingestTurn("s1", "user", "fact one", "2026-07-07T00:00:00Z");
+  await adapter.ingestTurn("s2", "user", "fact two", "2026-07-07T00:01:00Z");
+  await adapter.reset();
+  // Each session's exact user_id is deleted — NOT the bare prefix.
+  assert.equal(ff.countRequests("DELETE", "/memories"), 2);
+  const deletedIds = ff.requests
+    .filter((r) => r.method === "DELETE")
+    .map((r) => r.body.user_id);
+  assert.ok(deletedIds.includes("memcorrect:s1"));
+  assert.ok(deletedIds.includes("memcorrect:s2"));
+  assert.ok(!deletedIds.includes("memcorrect"), "must not delete bare prefix");
+  // After reset, known sessions are cleared.
+  assert.equal(ff.requests.filter((r) => r.method === "DELETE").length, 2);
+});
+
+test("mem0 oss: reset() with no prior ingest is a no-op", async () => {
   const ff = new FakeFetchBuilder()
     .when("DELETE", "/memories", { status: 200, body: {} })
     .build();
@@ -156,9 +183,7 @@ test("mem0 oss: reset() DELETEs memories by user prefix", async () => {
     fetch: ff.fetch,
   });
   await adapter.reset();
-  ff.assertRequest("DELETE", "/memories", (req) => {
-    assert.deepEqual(req.body, { user_id: "memcorrect" });
-  });
+  assert.equal(ff.requests.length, 0, "no sessions to delete");
 });
 
 test("mem0 oss: runMaintenance is a no-op (no requests)", async () => {
