@@ -294,6 +294,19 @@ class ClaudeCliProvider implements LlmProvider {
 
         const text = (payload.result ?? "").trim();
         if (text.length === 0) {
+          // A zero-exit, empty-result payload whose quota text lives only on
+          // stderr is still a usage-limit failure — back off like the other
+          // failure shapes instead of throwing a terminal "no result text".
+          if (isClaudeUsageLimitSignal(`${result.stderr}\n${payload.error ?? ""}`)) {
+            await sleepBeforeUsageLimitRetry({
+              attempt,
+              loopStartedAt,
+              budgetMs: usageLimitBudgetMs,
+              failureSummary: summarizeProcessOutput(result.stderr, result.stdout),
+              signal: opts.signal,
+            });
+            continue;
+          }
           throw new Error(
             `Claude CLI completion returned no result text: ${summarizeProcessOutput(result.stderr, result.stdout)}`,
           );
@@ -481,8 +494,14 @@ function parseClaudeCliJsonResult(stdout: string): ClaudeCliJsonResult {
   }
 
   try {
-    const parsed = JSON.parse(trimmed) as ClaudeCliJsonResult;
-    return parsed;
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      // `--output-format json` yielding a non-object (null / number / string /
+      // array) is itself an anomaly; treat it as an error blob so a later
+      // `payload.is_error` read can't throw a TypeError.
+      return { is_error: true, error: trimmed.slice(-1_000) };
+    }
+    return parsed as ClaudeCliJsonResult;
   } catch {
     // Fall back to treating raw stdout as an error blob — a non-JSON
     // response from `--output-format json` is itself an anomaly.

@@ -689,3 +689,57 @@ test("claude-cli benchmark prompt keeps system and user input in separate JSON f
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+test("claude-cli parseClaudeCliJsonResult treats non-object JSON as an error blob (no TypeError)", () => {
+  const { parseClaudeCliJsonResult } = __claudeCliProviderTestHooks;
+  for (const stdout of ["null", "42", "\"a string\"", "[1,2,3]"]) {
+    const parsed = parseClaudeCliJsonResult(stdout);
+    assert.equal(parsed.is_error, true, `expected non-object JSON ${stdout} to become an error blob`);
+  }
+  const ok = parseClaudeCliJsonResult(JSON.stringify({ is_error: false, result: "hi" }));
+  assert.equal(ok.is_error, false);
+  assert.equal(ok.result, "hi");
+});
+
+test("claude-cli provider backs off on a zero-exit empty result whose quota text is only on stderr", async () => {
+  let attempts = 0;
+  const sleepCalls: number[] = [];
+  const originalSetTimeout = global.setTimeout;
+  // @ts-expect-error -- test-only monkeypatch of the provider's sleep timer.
+  global.setTimeout = ((fn: (...args: unknown[]) => void, ms?: number) => {
+    sleepCalls.push(ms ?? 0);
+    return originalSetTimeout(fn, 0);
+  }) as typeof setTimeout;
+  try {
+    const provider = createClaudeCliProvider(
+      { provider: "claude-cli", model: "opus", retryOptions: { maxAttempts: 1, max429WaitMs: 5 * 60_000 } },
+      {
+        async runClaudeCli() {
+          attempts += 1;
+          if (attempts === 1) {
+            // zero exit, is_error unset, empty result — quota only on stderr.
+            return {
+              status: 0,
+              signal: null,
+              stdout: JSON.stringify({ is_error: false, result: "" }),
+              stderr: "Claude AI usage limit reached, resets at 5pm",
+            };
+          }
+          return {
+            status: 0,
+            signal: null,
+            stdout: JSON.stringify({ is_error: false, result: "recovered after empty usage-limit" }),
+            stderr: "",
+          };
+        },
+      },
+    );
+    const result = await provider.complete("hello");
+    assert.equal(result.text, "recovered after empty usage-limit");
+    assert.equal(attempts, 2);
+    assert.equal(sleepCalls.length, 1);
+    assert.ok(sleepCalls[0] >= 60_000, `expected a usage-limit backoff, got ${sleepCalls[0]}ms`);
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+});
