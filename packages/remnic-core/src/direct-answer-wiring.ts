@@ -14,8 +14,9 @@
  *
  * Short-circuit contract:
  *
- * - When the resolved gate (`input.enabled` if supplied, else
- *   `config.recallDirectAnswerEnabled`) is `false`, the function returns the
+ * - When the resolved gate (`input.enabled`, projected from
+ *   `caps.recallDirectAnswer` at the recall-operation entry) is `false`, the
+ *   function returns the
  *   eligibility verdict with reason `"disabled"` without touching any source
  *   accessor.  This is the documented default.
  * - When enabled, the wiring cheaply drops non-trusted-zone memories
@@ -74,7 +75,6 @@ export interface DirectAnswerWiringInput {
   namespace: string;
   config: Pick<
     PluginConfig,
-    | "recallDirectAnswerEnabled"
     | "recallDirectAnswerTokenOverlapFloor"
     | "recallDirectAnswerImportanceFloor"
     | "recallDirectAnswerAmbiguityMargin"
@@ -82,13 +82,12 @@ export interface DirectAnswerWiringInput {
   >;
   /**
    * Direct-answer capability gate, resolved once at the recall-operation entry
-   * (issue #1523: `caps.recallDirectAnswer`). OPTIONAL and additive: when the
-   * caller supplies it, this module and the orchestrator agree on a single
-   * resolved gate value for the whole operation. When omitted, we fall back to
-   * `config.recallDirectAnswerEnabled` so existing callers on the old input
-   * shape keep identical behavior.
+   * via `resolveCapabilities(config).recallDirectAnswer` (issue #1523). This
+   * is the sole gate — the function no longer reads the config flag directly.
+   * Callers MUST pass the resolved capability so the whole operation agrees on
+   * a single gate value.
    */
-  enabled?: boolean;
+  enabled: boolean;
   sources: DirectAnswerSources;
   queryEntityRefs?: string[];
   abortSignal?: AbortSignal;
@@ -105,10 +104,7 @@ export async function tryDirectAnswer(
   const { query, namespace, config, enabled, sources, queryEntityRefs, abortSignal } = input;
 
   const eligibilityConfig: DirectAnswerConfig = {
-    // Prefer the resolved capability when supplied; fall back to the config
-    // flag so callers on the old input shape (config-only, no `enabled`) get
-    // identical gating (issue #1523 backward-compat).
-    enabled: enabled ?? config.recallDirectAnswerEnabled,
+    enabled,
     tokenOverlapFloor: config.recallDirectAnswerTokenOverlapFloor,
     importanceFloor: config.recallDirectAnswerImportanceFloor,
     ambiguityMargin: config.recallDirectAnswerAmbiguityMargin,

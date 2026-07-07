@@ -33,6 +33,8 @@ import {
   resolveSemanticConfig,
   DEFAULT_SIMILAR_TO_THRESHOLD,
   DEFAULT_MAX_SYMBOLS_PER_RUN,
+  DEFAULT_SEMANTIC_QUERY_LIMIT,
+  DEFAULT_CANONICAL_BODY_LINES,
   type SemanticConfig,
 } from "./index.js";
 
@@ -360,14 +362,25 @@ test("SIMILAR_TO: computeSimilarTo with gate-off returns semantic_disabled", () 
   if (!r.ok) assert.equal(r.code, "semantic_disabled");
 });
 
-test("SIMILAR_TO: similarEdgesToEdgeIR maps to EdgeIR with semantic provenance", () => {
+test("SIMILAR_TO: similarEdgesToEdgeIR maps to EdgeIR with semantic provenance + node ids", () => {
   const edges = similarEdgesToEdgeIR([
-    { srcQualifiedName: "mod.a", dstQualifiedName: "mod.b", confidence: 0.95, confirmed: true },
+    {
+      srcNodeId: "id-a",
+      dstNodeId: "id-b",
+      srcQualifiedName: "mod.a",
+      dstQualifiedName: "mod.b",
+      confidence: 0.95,
+      confirmed: true,
+    },
   ]);
   assert.equal(edges.length, 1);
   assert.equal(edges[0]!.type, "SIMILAR_TO");
   assert.equal(edges[0]!.provenance, "semantic");
   assert.equal(edges[0]!.confidence, 0.95);
+  // Node ids are carried through so the store resolves endpoints by id
+  // (issue #1677 — duplicate qualified-name support).
+  assert.equal(edges[0]!.srcNodeId, "id-a");
+  assert.equal(edges[0]!.dstNodeId, "id-b");
 });
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -1004,6 +1017,298 @@ test("cache-hit: provider without dimensions still caches on reindex", async () 
       assert.equal(r2.cached, 1);
     }
     assert.equal(calls, 1, "reindex must hit cache — no second embed");
+  } finally {
+    await cleanup();
+  }
+});
+
+
+// ──────────────────────────────────────────────────────────────────────────
+// SIMILAR_TO end-to-end: two symbols that share a qualified name across two
+// files are persisted as a SIMILAR_TO edge by node id (issue #1677). Before
+// the fix the edge was dropped because resolveNodeId returns undefined for an
+// ambiguous qualified name.
+// ──────────────────────────────────────────────────────────────────────────
+
+test("SIMILAR_TO: duplicate qualified name across files persists by node id (issue #1677)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    // Identical bodies → MinHash candidate. Same qualified name, different
+    // files → distinct node ids, ambiguous qualified name.
+    const body = "function clone() { const x = 1; const y = 2; return x + y; }";
+    await writeFile(path.join(dir, "a.ts"), body);
+    await writeFile(path.join(dir, "b.ts"), body);
+    await store.upsertFileBatch([
+      makeFileIR("a.ts", [{ name: "clone", qname: "mod.clone", kind: "function", start: 0, end: body.length }], body),
+      makeFileIR("b.ts", [{ name: "clone", qname: "mod.clone", kind: "function", start: 0, end: body.length }], body),
+    ]);
+
+    const idA = nodeIdFor({ qualifiedName: "mod.clone", filePath: "a.ts", label: "function" });
+    const idB = nodeIdFor({ qualifiedName: "mod.clone", filePath: "b.ts", label: "function" });
+    assert.notEqual(idA, idB, "same-qname symbols in different files have distinct node ids");
+
+    // No provider → MinHash-only path (deterministic, local).
+    const r = computeSimilarTo({ store, provider: undefined, config: ENABLED_CONFIG, repoRoot: dir });
+    assert.equal(r.ok, true);
+    if (!r.ok) throw new Error("expected ok");
+    assert.ok(r.edges.length >= 1, "a near-clone candidate is produced");
+
+    // The candidate edges MUST carry node ids (the fix).
+    const pair = r.edges.find((e) => e.srcNodeId === idA && e.dstNodeId === idB);
+    assert.ok(pair, "emitted edge carries the content-derived node ids of both same-qname nodes");
+
+    // Persist via the store. Pre-fix this returned skipped=1, persisted=0.
+    const edgeIRs = similarEdgesToEdgeIR(r.edges);
+    const upsert = await store.upsertEdges(edgeIRs);
+    assert.equal(upsert.ok, true);
+    if (!upsert.ok) throw new Error("expected ok");
+    assert.equal(upsert.persisted, edgeIRs.length, "all SIMILAR_TO edges persisted by node id");
+    assert.equal(upsert.skipped, 0, "no edge dropped as an ambiguous qualified name");
+
+    // Traversal by node id confirms the edge links the two same-qname nodes.
+    const t1 = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
+    assert.equal(t1.ok, true);
+    if (t1.ok) {
+      assert.ok(
+        t1.hits.some((h) => h.nodeId === idB),
+        "SIMILAR_TO edge connects the two distinct same-qname nodes",
+      );
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// #1680 — deferred review nits on the semantic layer (tagged read failures,
+// limit validation, negative body budget, README recompute example).
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * Wrap a real store so one read method throws (simulates SQLITE_BUSY/CORRUPT)
+ * while the rest of the surface (isClosed, etc.) keeps working. Used to prove
+ * the tagged db_error wrapping (#1680) rather than an escaping throw.
+ */
+function throwingReadStore(
+  base: GraphStore,
+  method: "readAllSymbolVectors" | "readNodesForSemantic",
+): GraphStore {
+  return new Proxy(base as object, {
+    get(target, prop, receiver) {
+      if (prop === method) {
+        return () => {
+          throw new Error("stub: SQLITE_BUSY");
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  }) as GraphStore;
+}
+
+// config: a negative/zero canonicalBodyLines must NOT clamp to 0 (which
+// extractBodyText treats as unlimited, sending full symbol bodies to the
+// remote embedder and defeating the cost/privacy cap). It falls back to the
+// documented default instead (#1680).
+test("config: negative/zero canonicalBodyLines falls back to default (not 0/unlimited)", () => {
+  const neg = resolveSemanticConfig({ enabled: true, canonicalBodyLines: -5 });
+  assert.equal(neg.canonicalBodyLines, DEFAULT_CANONICAL_BODY_LINES, "negative → default");
+  const zero = resolveSemanticConfig({ enabled: true, canonicalBodyLines: 0 });
+  assert.equal(zero.canonicalBodyLines, DEFAULT_CANONICAL_BODY_LINES, "zero → default");
+  // A positive value is still honored (not clobbered by the fallback).
+  const ok = resolveSemanticConfig({ enabled: true, canonicalBodyLines: 7 });
+  assert.equal(ok.canonicalBodyLines, 7, "positive value honored");
+  // String coercion path (coerceHostNumber) — a numeric string like "-3"
+  // must also fall back, not clamp to 0.
+  const negStr = resolveSemanticConfig({ enabled: true, canonicalBodyLines: "-3" as never });
+  assert.equal(negStr.canonicalBodyLines, DEFAULT_CANONICAL_BODY_LINES, "numeric-string -3 → default");
+});
+
+// semanticQuery: a transient store read failure (SQLITE_BUSY/CORRUPT) on
+// readAllSymbolVectors maps to a tagged db_error instead of escaping as a
+// throw (#1680).
+test("semanticQuery: transient store read error → db_error (tagged, not thrown)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const throwing = throwingReadStore(store, "readAllSymbolVectors");
+    const provider = countingProvider();
+    const r = await semanticQuery({ store: throwing, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "anything" });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "db_error");
+  } finally {
+    await cleanup();
+  }
+});
+
+// indexSymbolVectors: a transient store read failure on readNodesForSemantic
+// maps to a tagged db_error instead of rejecting the promise (#1680).
+test("indexSymbolVectors: transient store read error → db_error (tagged, not thrown)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const throwing = throwingReadStore(store, "readNodesForSemantic");
+    const provider = countingProvider();
+    const r = await indexSymbolVectors({ store: throwing, provider, repoRoot: dir, config: ENABLED_CONFIG });
+    assert.equal(r.ok, false);
+    if (!r.ok) assert.equal(r.code, "db_error");
+  } finally {
+    await cleanup();
+  }
+});
+
+// semanticQuery: a caller-supplied limit of NaN/Infinity must not produce a
+// NaN/Infinity slice. slice(0, NaN) returns no hits; slice(0, Infinity)
+// returns every scored vector. Both are wrong — coerce to the finite default
+// (#1680).
+test("semanticQuery: NaN/Infinity limit falls back to default (no empty/all slice)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    // Index more symbols than DEFAULT_SEMANTIC_QUERY_LIMIT so the default
+    // cap is observable (default=10; 12 symbols → NaN must NOT return 0 and
+    // Infinity must NOT return 12).
+    const src = Array.from({ length: 12 }, (_, i) => `function f${i}() { return ${i}; }`).join("\n");
+    await writeFile(path.join(dir, "many.ts"), src);
+    const symbols = Array.from({ length: 12 }, (_, i) => ({
+      name: `f${i}`,
+      qname: `mod.f${i}`,
+      kind: "function",
+      start: src.indexOf(`function f${i}`),
+      end: src.length,
+    }));
+    // Fix the end byte for each to the next symbol's start (last = src.length).
+    for (let i = 0; i < symbols.length; i++) {
+      symbols[i]!.end = i + 1 < symbols.length ? symbols[i + 1]!.start : src.length;
+    }
+    await store.upsertFileBatch([makeFileIR("many.ts", symbols, src)]);
+
+    const provider = countingProvider();
+    await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+
+    // NaN limit → default (10), not 0.
+    const nanR = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "function", limit: NaN });
+    assert.equal(nanR.ok, true);
+    if (nanR.ok) {
+      assert.ok(nanR.hits.length > 0, `NaN limit must not return zero hits, got ${nanR.hits.length}`);
+      assert.ok(nanR.hits.length <= DEFAULT_SEMANTIC_QUERY_LIMIT, `NaN limit capped to default, got ${nanR.hits.length}`);
+    }
+    // Infinity limit → default (10), not all 12.
+    const infR = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "function", limit: Infinity });
+    assert.equal(infR.ok, true);
+    if (infR.ok) {
+      assert.ok(infR.hits.length <= DEFAULT_SEMANTIC_QUERY_LIMIT, `Infinity limit capped to default, got ${infR.hits.length}`);
+    }
+    // A finite positive limit is honored.
+    const two = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "function", limit: 2 });
+    assert.equal(two.ok, true);
+    if (two.ok) assert.equal(two.hits.length, 2, "limit=2 returns exactly 2 hits");
+  } finally {
+    await cleanup();
+  }
+});
+
+
+test("semanticQuery: a fractional limit between 0 and 1 returns at least 1 hit (not an empty slice)", async () => {
+  // Math.floor(0.5) === 0; without clamping, slice(0, 0) returns no hits
+  // even when matching vectors exist (#1680 review: 'Clamp sub-one query
+  // limits before slicing').
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    const src = Array.from({ length: 3 }, (_, i) => `function f${i}() { return ${i}; }`).join("\n");
+    await writeFile(path.join(dir, "many.ts"), src);
+    const symbols = Array.from({ length: 3 }, (_, i) => ({
+      name: `f${i}`,
+      qname: `mod.f${i}`,
+      kind: "function",
+      start: src.indexOf(`function f${i}`),
+      end: src.length,
+    }));
+    for (let i = 0; i < symbols.length; i++) {
+      symbols[i]!.end = i + 1 < symbols.length ? symbols[i + 1]!.start : src.length;
+    }
+    await store.upsertFileBatch([makeFileIR("many.ts", symbols, src)]);
+    const provider = countingProvider();
+    await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+
+    const r = await semanticQuery({ store, provider, repoRoot: dir, config: ENABLED_CONFIG, query: "function", limit: 0.5 });
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.ok(r.hits.length >= 1, `fractional limit 0.5 must return at least 1 hit (clamped to 1), got ${r.hits.length}`);
+    }
+  } finally {
+    await cleanup();
+  }
+});
+
+// SIMILAR_TO recompute is replace-not-append: the README example clears
+// semantic SIMILAR_TO edges before upserting so two symbols that STOP being
+// similar do not leave a stale edge (upsertEdges does not delete absent rows).
+// This test exercises the documented README flow end to end (#1680).
+test("SIMILAR_TO recompute: clearSemanticSimilarToEdges makes recompute replace-not-append (README example)", async () => {
+  const { store, dir, cleanup } = await tempStore();
+  try {
+    // Two near-identical bodies → MinHash candidate → SIMILAR_TO edge.
+    const bodyA = "function twin() { const x = 1; const y = 2; return x + y; }";
+    const bodyB = "function twin() { const x = 1; const y = 2; return x + y; }";
+    await writeFile(path.join(dir, "a.ts"), bodyA);
+    await writeFile(path.join(dir, "b.ts"), bodyB);
+    await store.upsertFileBatch([
+      makeFileIR("a.ts", [{ name: "twin", qname: "mod.a", kind: "function", start: 0, end: bodyA.length }], bodyA),
+      makeFileIR("b.ts", [{ name: "twin", qname: "mod.b", kind: "function", start: 0, end: bodyB.length }], bodyB),
+    ]);
+
+    const provider = countingProvider();
+    // README step 0: index vectors FIRST so cosine confirmation has data.
+    await indexSymbolVectors({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+    const r1 = computeSimilarTo({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+    assert.equal(r1.ok, true);
+    if (!r1.ok) throw new Error("expected ok");
+    assert.ok(r1.edges.length >= 1, "first recompute finds the near-clone pair");
+    await store.upsertEdges(similarEdgesToEdgeIR(r1.edges));
+
+    const idA = nodeIdFor({ qualifiedName: "mod.a", filePath: "a.ts", label: "function" });
+    const beforeClear = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
+    assert.ok(beforeClear.ok, "traverse ok before clear");
+    if (beforeClear.ok) {
+      assert.ok(beforeClear.hits.some((h) => h.qualifiedName === "mod.b"), "mod.b reachable via SIMILAR_TO before clear");
+    }
+
+    // README flow: compute-first-then-swap. computeSimilarTo is pure (no
+    // edge mutation), so compute candidates BEFORE clearing — if the
+    // recompute fails, existing SIMILAR_TO edges are preserved instead of
+    // leaving the graph empty (chatgpt-codex-connector P2: "Preserve
+    // existing edges until recompute succeeds").
+    const r2 = computeSimilarTo({ store, provider, repoRoot: dir, config: ENABLED_CONFIG });
+    assert.equal(r2.ok, true);
+    if (!r2.ok) throw new Error("expected ok");
+
+    // Compute succeeded → safe to swap. Clear makes it replace-not-append
+    // (upsertEdges does not delete absent rows); without it, a stale edge
+    // recompute would NOT re-emit would survive.
+    await store.clearSemanticSimilarToEdges();
+    const afterClear = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
+    assert.ok(afterClear.ok, "traverse ok after clear");
+    if (afterClear.ok) {
+      assert.ok(!afterClear.hits.some((h) => h.qualifiedName === "mod.b"), "SIMILAR_TO edge to mod.b gone after clear");
+    }
+    if (r2.edges.length >= 1) {
+      await store.upsertEdges(similarEdgesToEdgeIR(r2.edges));
+    }
+    const final = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
+    assert.ok(final.ok, "traverse ok");
+    if (final.ok) {
+      // After clear + recompute + upsert, mod.b is reachable again — the
+      // still-similar pair has its edge (clean replace, not a stale append).
+      assert.ok(final.hits.some((h) => h.qualifiedName === "mod.b"), "mod.b reachable again after recompute (replace worked)");
+    }
+
+    // Preserve-on-failure: a recompute that returns { ok: false } must NOT
+    // clear — the existing edge survives. semantic_disabled short-circuits
+    // before any table work, so no clear runs and mod.b stays reachable.
+    const failing = computeSimilarTo({ store, provider, repoRoot: dir, config: DISABLED_CONFIG });
+    assert.equal(failing.ok, false);
+    const preserved = store.traverse({ start: idA, edgeTypes: ["SIMILAR_TO"], maxDepth: 1 });
+    assert.ok(preserved.ok, "traverse ok");
+    if (preserved.ok) {
+      assert.ok(preserved.hits.some((h) => h.qualifiedName === "mod.b"), "existing SIMILAR_TO edge preserved when recompute fails");
+    }
   } finally {
     await cleanup();
   }

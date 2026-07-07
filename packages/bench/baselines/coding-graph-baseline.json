@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "machine": {
     "arch": "arm64",
     "platform": "darwin",
@@ -16,15 +16,17 @@
     "language": "typescript"
   },
   "metrics": {
-    "fullIndexMs": 14.864042000000154,
-    "fullIndexLocsPerSecond": 136302,
-    "incrementalUpdateP50Ms": 0.19358299999998962,
-    "incrementalUpdateP95Ms": 0.26237500000002,
-    "tracePathP95Ms": 0.15750000000002728,
-    "searchGraphP95Ms": 0.19700000000011642,
-    "deadCodeMs": 2.29424999999992,
-    "dbBytesPerKloc": 280636
+    "fullIndexMs": 15.452540999999655,
+    "fullIndexLocsPerSecond": 131111,
+    "incrementalUpdateP50Ms": 0.173167000000376,
+    "incrementalUpdateP95Ms": 0.23908399999982066,
+    "incrementalModifiedUpdateP50Ms": 0.6047909999997501,
+    "incrementalModifiedUpdateP95Ms": 0.9565000000002328,
+    "tracePathP95Ms": 0.13425000000006548,
+    "searchGraphP95Ms": 0.1764170000001286,
+    "deadCodeMs": 0.5299169999998412,
+    "dbBytesPerKloc": 270468
   },
-  "createdAt": "2026-07-06T10:50:56.821Z",
-  "note": "Initial baseline — first harness run with WAL-aware DB sizing (issue #1557 PR1)."
+  "createdAt": "2026-07-07T12:35:48.738Z",
+  "note": "Regenerated baseline — adds incrementalModifiedUpdate metric (#1688 item 1) + machine-fingerprint guard (#1688 item 2). WAL-aware DB sizing retained (#1557 PR1)."
 }

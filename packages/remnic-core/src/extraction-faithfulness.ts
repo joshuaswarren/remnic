@@ -34,6 +34,10 @@ import { log } from "./logger.js";
 import type { PluginConfig, MemoryFrontmatter, FaithfulnessFrontmatter } from "./types.js";
 import type { LocalLlmClient } from "./local-llm.js";
 import { type FallbackLlmClient, gatewayTaskChainOptions } from "./fallback-llm.js";
+import {
+  callOpenAiCompatibleChat,
+  resolveFaithfulnessGateEndpoint,
+} from "./local-model-endpoint.js";
 import { extractJsonCandidates } from "./json-extract.js";
 
 // Re-export for callers importing from this module.
@@ -216,6 +220,27 @@ export function parseFaithfulnessResponse(
   return null;
 }
 
+/**
+ * True when `map` contains an entry for every integer index in
+ * [0, expectedCount). The local parse-fallback gate uses this to accept a
+ * local model-lab response only when it is COMPLETE: size alone is
+ * insufficient because a malformed response with duplicate/fractional indexes
+ * can yield expectedCount distinct map keys without covering index 0..N-1
+ * (codex P2 PRRT_kwDORJXyws6O7PfY). parseEntries now rejects non-integer
+ * indexes so the two checks agree, but the explicit coverage loop documents
+ * the invariant and stays robust to any future parser relaxation.
+ */
+function coversAllIndexes(
+  map: Map<number, ParsedFaithfulnessEntry>,
+  expectedCount: number,
+): boolean {
+  if (map.size < expectedCount) return false;
+  for (let i = 0; i < expectedCount; i++) {
+    if (!map.has(i)) return false;
+  }
+  return true;
+}
+
 function parseEntries(
   data: unknown,
   expectedCount: number,
@@ -239,7 +264,7 @@ function parseEntries(
     if (!entry || typeof entry !== "object") continue;
     const obj = entry as Record<string, unknown>;
     const idx = typeof obj.index === "number" ? obj.index : undefined;
-    if (idx === undefined || idx < 0 || idx >= expectedCount) continue;
+    if (idx === undefined || !Number.isInteger(idx) || idx < 0 || idx >= expectedCount) continue;
     const verdictRaw = typeof obj.verdict === "string" ? obj.verdict : undefined;
     if (!verdictRaw || !VALID_VERDICTS.has(verdictRaw)) continue;
     const rationale =
@@ -275,18 +300,89 @@ interface LlmCallResult {
 async function callFaithfulnessLlm(
   systemPrompt: string,
   userPrompt: string,
+  expectedCount: number,
   config: PluginConfig,
   localLlm: LocalLlmClient | null,
   fallbackLlm: FallbackLlmClient | null,
   timeoutMs: number,
   signal?: AbortSignal,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<LlmCallResult> {
   const messages: Array<{ role: "system" | "user"; content: string }> = [
     { role: "system", content: systemPrompt },
     { role: "user", content: userPrompt },
   ];
 
-  const modelOverride = config.extractionFaithfulnessModel || undefined;
+  // Issue #1585 model-lab pointer: when an explicit local fine-tuned endpoint
+  // is configured (base URL + model name), try it FIRST — it is the cheapest,
+  // deterministic path the operator opted into by setting
+  // extractionFaithfulnessBaseUrl. Unset (the default) skips this entirely,
+  // preserving byte-identical pre-feature routing (rule 39). Any failure
+  // (network, non-2xx, malformed body, timeout) returns null and falls through
+  // to the configured chain (checklist §4 graceful degradation).
+  const localEndpoint = resolveFaithfulnessGateEndpoint(config);
+  if (localEndpoint) {
+    // Give the local probe a SMALLER budget than the outer batch timeout so a
+    // wedged local model returns null (and falls through to the configured
+    // chain) before the batch timer fires. The local endpoint is meant to be
+    // the fast path; if it cannot answer within half the budget (min 500ms),
+    // abandon it and let the fallback chain use the remainder (codex P2 — the
+    // advertised graceful fallback must actually reach the chain, not be starved
+    // by a hanging probe sharing the full batch budget).
+    const probeBudgetMs = Math.max(500, Math.floor(timeoutMs / 2));
+    const result = await callOpenAiCompatibleChat(
+      localEndpoint,
+      messages,
+      {
+        temperature: 0.1,
+        maxTokens: 2048,
+        responseFormatJson: true,
+        timeoutMs: probeBudgetMs,
+        // Forward the batch signal so the probe aborts the instant the batch
+        // budget elapses, not after probeBudgetMs (issue #1700 nit #5).
+        ...(signal ? { signal } : {}),
+      },
+      fetchImpl,
+    );
+    if (result?.content) {
+      // Issue #1700 nit #6: pre-validate the local endpoint response shape.
+      // Default (extractionFaithfulnessLocalParseFallback=false) returns the
+      // content as-is -- a 200-with-garbage local response surfaces
+      // malformed_output, alerting the operator to a misconfigured endpoint.
+      // When the operator opts into resilient fallback, an unparseable OR
+      // PARTIAL local response falls through to the configured chain instead
+      // of surfacing. parseFaithfulnessResponse is truthy as soon as ONE entry
+      // is valid, so accept the local response only when the parsed verdict
+      // map covers every expected index -- otherwise the missing indexes would
+      // surface as malformed_output downstream, defeating the resilient
+      // fallback (codex P2 PRRT_kwDORJXyws6O6zwZ).
+      if (!config.extractionFaithfulnessLocalParseFallback) {
+        return { content: result.content, modelUsed: result.modelUsed };
+      }
+      const parsedLocal = parseFaithfulnessResponse(result.content, expectedCount);
+      if (parsedLocal && coversAllIndexes(parsedLocal, expectedCount)) {
+        return { content: result.content, modelUsed: result.modelUsed };
+      }
+      log.debug(
+        "extraction-faithfulness: local endpoint returned incomplete/unparseable output; falling back to configured chain",
+      );
+    } else {
+      log.debug(
+        "extraction-faithfulness: local model-lab endpoint unavailable, trying configured chain",
+      );
+    }
+  }
+
+  // extractionFaithfulnessModel is the LOCAL served model's name (e.g.
+  // remnic-faithfulness-gate-v1). When a local endpoint is configured it
+  // belongs to that endpoint ONLY — it must NOT leak into the fallback chain
+  // as a gateway/local-LLM override, or a local outage forces the configured
+  // chain onto an unavailable local-only model and turns graceful fallback
+  // into backend_unavailable (codex P2 PRRT_kwDORJXyws6Otp-L). Decouple: the
+  // override reaches the fallback chain only when NO local endpoint is
+  // configured (the pre-feature model-override contract, preserved
+  // byte-identical — rule 39).
+  const modelOverride = localEndpoint ? undefined : (config.extractionFaithfulnessModel || undefined);
 
   // Skip the local backend when (a) modelSource is "gateway", or (b) a
   // faithfulness model override is set. The local client always sends
@@ -415,6 +511,12 @@ export async function checkFaithfulnessBatch(
   config: PluginConfig,
   localLlm: LocalLlmClient | null,
   fallbackLlm: FallbackLlmClient | null,
+  /**
+   * Optional fetch injection (issue #1585). The orchestrator does not pass it
+   * (uses global fetch); tests pass a stub to exercise the local model-lab
+   * endpoint path without a live server. See callFaithfulnessLlm.
+   */
+  fetchImpl?: typeof fetch,
 ): Promise<FaithfulnessBatchResult> {
   const timeoutMs =
     typeof config.extractionFaithfulnessTimeoutMs === "number" &&
@@ -481,11 +583,13 @@ export async function checkFaithfulnessBatch(
     const callPromise = callFaithfulnessLlm(
       FAITHFULNESS_SYSTEM_PROMPT,
       userPrompt,
+      checkableInputs.length,
       config,
       localLlm,
       fallbackLlm,
       timeoutMs,
       controller.signal,
+      fetchImpl,
     );
     const settled = await Promise.race([
       callPromise.then(

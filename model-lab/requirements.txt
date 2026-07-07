@@ -33,8 +33,17 @@ huggingface-hub==1.3.0  # transformers 5.3.0 requires huggingface-hub>=1.3.0
 sentencepiece==0.2.1  # >=0.2.1: GHSA-38vq-g6vr-w8wf
 accelerate==1.14.0
 
-# --- Fine-tuning stack (uncomment in PR2 when first LoRA/causal run lands) -
-# trl==0.9.6
-# peft==0.12.0
-# accelerate==0.33.0
-# bitsandbytes==0.43.3   # QLoRA 4-bit base + paged optimizer (≤14B policy ceiling)
+# --- Correction-intent causal-LM stack (issue #1585 PR3) -------------------
+# PENDING — the correction-intent recipe is NOT yet runnable on this stack:
+# train.py is a scaffold that captures the reproducibility contract and exits
+# `recipe-ready-not-run` (no fine-tune loop), and the pins as originally
+# written do NOT resolve on PyPI — `trl==0.16.6` and `bitsandbytes==0.44.1`
+# have no such release (available as of 2026-07: trl 1.7.1, peft 0.19.1,
+# bitsandbytes 0.49.2). They are commented out so `setup.sh` completes for the
+# runnable faithfulness-gate recipe. The correction-intent train loop + the
+# trl/peft/bitsandbytes versions compatible with transformers 5.3.0 land in the
+# correction-intent follow-up (issue filed with the GPU-run PR). accelerate is
+# already pinned above (Trainer device management).
+#trl==1.7.1            # TODO(corr-intent): pin a version compatible w/ transformers 5.3.0
+#peft==0.19.1
+#bitsandbytes==0.49.2  # QLoRA 4-bit base + paged optimizer (8B escape hatch)

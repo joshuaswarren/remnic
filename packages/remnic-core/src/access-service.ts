@@ -5,6 +5,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import { resolveMemoryLifecycleCapabilities } from "./capabilities.js";
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
@@ -109,7 +110,11 @@ import {
   type ScopeProfileLayerResolution,
   type ScopeProfilePromotionResolution,
 } from "./namespaces/scope-profiles.js";
-import { type ScopePlan, resolveScopePlan } from "./scopes/scope-plan.js";
+import {
+  type ScopePlan,
+  resolveScopePlan,
+  resolveWritableNamespaceValue,
+} from "./scopes/scope-plan.js";
 import { namespaceIdentityFromToken } from "./namespaces/identity.js";
 import { namespaceCollectionName } from "./namespaces/search.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
@@ -239,6 +244,7 @@ import {
   type ActionConfidenceResult,
 } from "./action-confidence.js";
 import { formatProfileTraceAscii } from "./profiling.js";
+import { resolveAccessSetupCapabilities, resolveGraphConstructionCapabilities } from "./capabilities.js";
 
 export class EngramAccessInputError extends Error {}
 
@@ -1295,14 +1301,15 @@ export class EngramAccessService {
 
   constructor(private readonly orchestrator: Orchestrator) {
     this.idempotency = new AccessIdempotencyStore(orchestrator.config.memoryDir);
+    const accessCaps = resolveAccessSetupCapabilities(orchestrator.config); // #1566 Cluster B
     this.budget = new CrossNamespaceBudget({
-      enabled: orchestrator.config.recallCrossNamespaceBudgetEnabled,
+      enabled: accessCaps.recallCrossNamespaceBudget,
       windowMs: orchestrator.config.recallCrossNamespaceBudgetWindowMs,
       softLimit: orchestrator.config.recallCrossNamespaceBudgetSoftLimit,
       hardLimit: orchestrator.config.recallCrossNamespaceBudgetHardLimit,
     });
 
-    const auditEnabled = orchestrator.config.recallAuditAnomalyDetectionEnabled === true;
+    const auditEnabled = accessCaps.recallAuditAnomalyDetection;
     const auditLogEnabled = false; // Audit JSONL logging — off until wired to a directory
     if (auditEnabled || auditLogEnabled) {
       const auditConfig: AccessAuditConfig = {
@@ -1367,17 +1374,28 @@ export class EngramAccessService {
     return resolvePrincipal(sessionKey, this.orchestrator.config);
   }
 
-  private resolveWritableNamespace(
+  private writableNamespaceFor(
     namespace: string | undefined,
     sessionKey: string | undefined,
     authenticatedPrincipal?: string,
   ): string {
-    const resolved = this.resolveNamespace(namespace);
-    const principal = this.resolveRequestPrincipal(sessionKey, authenticatedPrincipal);
-    if (!canWriteNamespace(principal, resolved, this.orchestrator.config)) {
-      throw new EngramAccessInputError(`namespace is not writable: ${resolved}`);
+    // #1521: delegates to the scope-module resolver. The inline
+    // namespace/principal resolution + writability check is retired so the
+    // adHocNamespaceResolutions ratchet no longer counts this site.
+    const result = resolveWritableNamespaceValue(
+      namespace,
+      sessionKey,
+      authenticatedPrincipal,
+      this.orchestrator.config,
+    );
+    if (!result.ok) {
+      throw new EngramAccessInputError(
+        result.reason === "unsupported"
+          ? `unsupported namespace: ${result.namespace}`
+          : `namespace is not writable: ${result.namespace}`,
+      );
     }
-    return resolved;
+    return result.namespace;
   }
 
   /**
@@ -1487,7 +1505,7 @@ export class EngramAccessService {
     const hasExplicitNamespace =
       typeof request.namespace === "string" && request.namespace.trim().length > 0;
     if (hasExplicitNamespace) {
-      return this.resolveWritableNamespace(
+      return this.writableNamespaceFor(
         request.namespace,
         request.sessionKey,
         request.authenticatedPrincipal,
@@ -1509,7 +1527,7 @@ export class EngramAccessService {
     if (!overlay) {
       // No coding overlay → unqualified write stays on config.defaultNamespace,
       // exactly the pre-#1434 behavior (auth-checked, like the legacy path).
-      return this.resolveWritableNamespace(
+      return this.writableNamespaceFor(
         undefined,
         request.sessionKey,
         request.authenticatedPrincipal,
@@ -1624,7 +1642,7 @@ export class EngramAccessService {
       // The overlay never applies, so base == write == the explicit namespace.
       // Objective-state converges on the same explicit target (the stricter
       // principal-self contract only governs the IMPLICIT path).
-      const writeNamespace = this.resolveWritableNamespace(
+      const writeNamespace = this.writableNamespaceFor(
         request.namespace,
         request.sessionKey,
         request.authenticatedPrincipal,
@@ -1779,7 +1797,7 @@ export class EngramAccessService {
       // namespace), collapsing the namespaces-disabled / no-session /
       // projectScope-off cases to config.defaultNamespace exactly as before
       // (rule 39 parity with resolveCodingScopedWriteNamespace).
-      const writeNamespace = this.resolveWritableNamespace(
+      const writeNamespace = this.writableNamespaceFor(
         undefined,
         request.sessionKey,
         request.authenticatedPrincipal,
@@ -4757,7 +4775,7 @@ export class EngramAccessService {
     const service = createCorrectionService({
       orchestrator: this.orchestrator,
       resolveAuthorizedNamespace: async (req) =>
-        this.resolveWritableNamespace(req.namespace, req.sessionKey, req.principal),
+        this.writableNamespaceFor(req.namespace, req.sessionKey, req.principal),
       resolveReadableNamespaces: (req) => {
         const principal = this.resolveRequestPrincipal(req.sessionKey, req.principal);
         return recallNamespacesForPrincipal(principal, this.orchestrator.config);
@@ -4766,7 +4784,7 @@ export class EngramAccessService {
         // resolveWritableNamespace resolves + checks writability in one step;
         // reusing it avoids a second ad-hoc namespace-resolution call site.
         try {
-          this.resolveWritableNamespace(req.namespace, req.sessionKey, req.principal);
+          this.writableNamespaceFor(req.namespace, req.sessionKey, req.principal);
           return Promise.resolve(true);
         } catch {
           return Promise.resolve(false);
@@ -5176,7 +5194,7 @@ export class EngramAccessService {
     if (deepSleep.enabled === false && deepSleep.enabledExplicitlySet === true) {
       throw new Error("memory governance is disabled by dreams.phases.deepSleep.enabled=false");
     }
-    const resolvedNamespace = this.resolveWritableNamespace(
+    const resolvedNamespace = this.writableNamespaceFor(
       request.namespace,
       undefined,
       request.authenticatedPrincipal ?? principal,
@@ -5236,7 +5254,7 @@ export class EngramAccessService {
     proceduresWritten: number;
     skippedReason?: string;
   }> {
-    const resolvedNamespace = this.resolveWritableNamespace(
+    const resolvedNamespace = this.writableNamespaceFor(
       request.namespace,
       undefined,
       request.authenticatedPrincipal ?? principal,
@@ -5262,7 +5280,7 @@ export class EngramAccessService {
     } = {},
     principal?: string,
   ): Promise<LiveConnectorsRunSummary> {
-    this.resolveWritableNamespace(
+    this.writableNamespaceFor(
       undefined,
       undefined,
       request.authenticatedPrincipal ?? principal,
@@ -5308,7 +5326,7 @@ export class EngramAccessService {
     duplicatesSuperseded: number;
     result?: PatternReinforcementResult;
   }> {
-    const resolvedNamespace = this.resolveWritableNamespace(
+    const resolvedNamespace = this.writableNamespaceFor(
       request.namespace,
       undefined,
       request.authenticatedPrincipal ?? principal,
@@ -5598,7 +5616,7 @@ export class EngramAccessService {
     if (!isTrustZoneName(request.targetZone)) {
       throw new EngramAccessInputError(`unsupported trust-zone target: ${String(request.targetZone)}`);
     }
-    const resolvedNamespace = this.resolveWritableNamespace(
+    const resolvedNamespace = this.writableNamespaceFor(
       request.namespace,
       undefined,
       request.authenticatedPrincipal,
@@ -5632,7 +5650,7 @@ export class EngramAccessService {
   async trustZoneDemoSeed(
     request: EngramAccessTrustZoneDemoSeedRequest,
   ): Promise<EngramAccessTrustZoneDemoSeedResponse> {
-    const resolvedNamespace = this.resolveWritableNamespace(
+    const resolvedNamespace = this.writableNamespaceFor(
       request.namespace,
       undefined,
       request.authenticatedPrincipal,
@@ -5669,7 +5687,7 @@ export class EngramAccessService {
       throw new EngramAccessInputError("reasonCode is required");
     }
 
-    const resolvedNamespace = this.resolveWritableNamespace(
+    const resolvedNamespace = this.writableNamespaceFor(
       request.namespace,
       undefined,
       request.authenticatedPrincipal,
@@ -5835,7 +5853,7 @@ export class EngramAccessService {
 
     // Backward-compatible BASE writable namespace (pre-#1495 response semantics)
     // for the legacy `namespace` response field. DERIVED from the already-resolved
-    // scope plan — NOT a second `resolveWritableNamespace(request.namespace,...)`
+    // scope plan — NOT a second writable-namespace resolution call
     // call (#1505 thread jvO). The fresh call re-authorized `undefined ⇒
     // config.defaultNamespace` a SECOND time; under a restrictive default-namespace
     // write policy that re-auth could REJECT an otherwise valid project-scoped
@@ -5845,7 +5863,7 @@ export class EngramAccessService {
     // the coding context, leaving an orphaned session binding behind. The plan is
     // the single authorization point (rule 22 / 39); the legacy field must reuse it
     // and never re-authorize. Pre-#1495 semantics were exactly
-    // `resolveWritableNamespace(request.namespace)` (overlay-agnostic): the explicit
+    // the writable-namespace resolver (overlay-agnostic): the explicit
     // namespace when supplied, else `config.defaultNamespace` for user-project
     // coding overlays. Hosted scope-profile layers such as `teamProject` report
     // their effective profile write namespace because there is no legacy
@@ -6680,7 +6698,7 @@ export class EngramAccessService {
 
     // Authorize compaction against the SCOPED WRITE TARGET — the SAME effective
     // write namespace `observe` archived the LCM queue under — NOT a premature
-    // `resolveWritableNamespace(undefined ⇒ config.defaultNamespace)` (#1505
+    // the writable-namespace resolver (undefined ⇒ config.defaultNamespace) (#1505
     // thread NBHWs). Under a restrictive `default` WRITE policy where the
     // principal can still write its self/project overlay, that premature default
     // write-auth threw `namespace is not writable: default` BEFORE the scoped key
@@ -6692,7 +6710,7 @@ export class EngramAccessService {
     // default` for a validly scoped observe's queue.
     const scope = await this.resolveMemoryScopePlan(request);
     // Legacy `namespace` response field: pre-#1505 semantics were exactly
-    // `resolveWritableNamespace(request.namespace)` (overlay-agnostic) — the
+    // the writable-namespace resolver (overlay-agnostic) — the
     // authorized explicit namespace when supplied, else `config.defaultNamespace`.
     // DERIVED from the scope plan (NOT a second auth pass, #1505 thread jvO):
     // explicit ⇒ writeNamespace; user-project coding overlay ⇒ defaultNamespace;
@@ -6747,7 +6765,7 @@ export class EngramAccessService {
 
     // Authorize compaction against the SCOPED WRITE TARGET — the SAME effective
     // write namespace `observe` archived the LCM queue under — NOT a premature
-    // `resolveWritableNamespace(undefined ⇒ config.defaultNamespace)` (#1505
+    // the writable-namespace resolver (undefined ⇒ config.defaultNamespace) (#1505
     // thread NBHWs). See `lcmCompactionFlush` for the full rationale: under a
     // restrictive `default` WRITE policy where the principal can still write its
     // self/project overlay, the old premature default write-auth threw `namespace
@@ -6832,7 +6850,7 @@ export class EngramAccessService {
     }
     const symptom = request.symptom?.trim();
     if (!symptom) throw new EngramAccessInputError("symptom is required");
-    const resolvedNs = this.resolveWritableNamespace(request.namespace, undefined, request.principal);
+    const resolvedNs = this.writableNamespaceFor(request.namespace, undefined, request.principal);
     const storage = await this.orchestrator.getStorage(resolvedNs);
     const created = await storage.appendContinuityIncident({
       symptom,
@@ -6862,7 +6880,7 @@ export class EngramAccessService {
     if (!fixApplied) throw new EngramAccessInputError("fixApplied is required");
     const verificationResult = request.verificationResult?.trim();
     if (!verificationResult) throw new EngramAccessInputError("verificationResult is required");
-    const resolvedNs = this.resolveWritableNamespace(request.namespace, undefined, request.principal);
+    const resolvedNs = this.writableNamespaceFor(request.namespace, undefined, request.principal);
     const storage = await this.orchestrator.getStorage(resolvedNs);
     const closed = await storage.closeContinuityIncident(id, {
       fixApplied,
@@ -6904,7 +6922,7 @@ export class EngramAccessService {
     if (!this.orchestrator.config.identityContinuityEnabled) {
       return { enabled: false, reason: "Identity continuity is disabled." };
     }
-    const resolvedNs = this.resolveWritableNamespace(request.namespace, undefined, request.principal);
+    const resolvedNs = this.writableNamespaceFor(request.namespace, undefined, request.principal);
     const storage = await this.orchestrator.getStorage(resolvedNs);
     const loop = await storage.upsertIdentityImprovementLoop({
       id: request.id?.trim() || "",
@@ -6931,7 +6949,7 @@ export class EngramAccessService {
     }
     const id = request.id?.trim();
     if (!id) throw new EngramAccessInputError("id is required");
-    const resolvedNs = this.resolveWritableNamespace(request.namespace, undefined, request.principal);
+    const resolvedNs = this.writableNamespaceFor(request.namespace, undefined, request.principal);
     const storage = await this.orchestrator.getStorage(resolvedNs);
     const reviewed = await storage.reviewIdentityImprovementLoop(id, {
       status: request.status,
@@ -6985,7 +7003,7 @@ export class EngramAccessService {
     const hasUpdate = Object.values(updates).some((v) => typeof v === "string" && v.length > 0);
     if (!hasUpdate) throw new EngramAccessInputError("At least one section field is required.");
 
-    const resolvedNs = this.resolveWritableNamespace(request.namespace, undefined, request.principal);
+    const resolvedNs = this.writableNamespaceFor(request.namespace, undefined, request.principal);
     const storage = await this.orchestrator.getStorage(resolvedNs);
     const existing = await storage.readIdentityAnchor();
 
@@ -7497,6 +7515,7 @@ export class EngramAccessService {
     );
     const storage = await this.orchestrator.getStorage(namespace);
     const cfg = this.orchestrator.config;
+    const graphCaps = resolveGraphConstructionCapabilities(cfg);
     // Canonicalize the storage root once — through `realpath` so that any
     // symlink in the namespace root path itself is resolved before we
     // compare children against it.  This is required because
@@ -7593,9 +7612,9 @@ export class EngramAccessService {
     return buildGraphSnapshot({
       memoryDir: namespaceRootReal,
       graphConfig: {
-        entityGraphEnabled: cfg.entityGraphEnabled === true,
-        timeGraphEnabled: cfg.timeGraphEnabled === true,
-        causalGraphEnabled: cfg.causalGraphEnabled === true,
+        entityGraph: graphCaps.entityGraph,
+        timeGraph: graphCaps.timeGraph,
+        causalGraph: graphCaps.causalGraph,
       },
       request: {
         limit: request.limit,
@@ -7654,7 +7673,7 @@ export class EngramAccessService {
         "memoryId must not contain path separators",
       );
     }
-    const resolvedNs = this.resolveWritableNamespace(
+    const resolvedNs = this.writableNamespaceFor(
       request.namespace,
       request.sessionKey,
       request.principal,
@@ -7678,7 +7697,7 @@ export class EngramAccessService {
     principal?: string;
     sessionKey?: string;
   }): Promise<unknown> {
-    const resolvedNs = this.resolveWritableNamespace(request.namespace, request.sessionKey, request.principal);
+    const resolvedNs = this.writableNamespaceFor(request.namespace, request.sessionKey, request.principal);
     const storage = await this.orchestrator.getStorage(resolvedNs);
     // Update frontmatter to active status (promote from pending/draft)
     await storage.updateMemoryFrontmatter(request.memoryId, {
@@ -7734,7 +7753,7 @@ export class EngramAccessService {
       );
     }
 
-    const resolvedNs = this.resolveWritableNamespace(
+    const resolvedNs = this.writableNamespaceFor(
       request.namespace,
       request.sessionKey,
       request.principal,
@@ -7784,7 +7803,7 @@ export class EngramAccessService {
     namespace?: string;
     principal?: string;
   }): Promise<{ saved: boolean }> {
-    const resolvedNs = this.resolveWritableNamespace(request.namespace, request.sessionKey, request.principal);
+    const resolvedNs = this.writableNamespaceFor(request.namespace, request.sessionKey, request.principal);
     const storage = await this.orchestrator.getStorage(resolvedNs);
     const storageDir = storage.dir;
     const { writeFile, mkdir } = await import("node:fs/promises");
@@ -7842,7 +7861,7 @@ export class EngramAccessService {
     // Pass authenticatedPrincipal so the principal resolution matches other
     // write endpoints (gotcha #42: read and write paths must resolve through
     // the same namespace layer).
-    const resolvedNamespace = this.resolveWritableNamespace(
+    const resolvedNamespace = this.writableNamespaceFor(
       request.namespace,
       request.sessionId,
       request.authenticatedPrincipal,
@@ -8144,7 +8163,7 @@ export class EngramAccessService {
         "authentication required: namespaces are enabled and no principal was supplied",
       );
     }
-    const resolved = this.resolveWritableNamespace(namespace, undefined, principal);
+    const resolved = this.writableNamespaceFor(namespace, undefined, principal);
     const storage = await this.orchestrator.getStorage(resolved);
     return { namespace: resolved, storage };
   }
@@ -8169,7 +8188,7 @@ export class EngramAccessService {
 
   get embeddingLookupFactoryRef(): (storage: import("./storage.js").StorageManager) => SemanticDedupLookup | undefined {
     return (storage) => {
-      if (!this.orchestrator.config.embeddingFallbackEnabled) return undefined;
+      if (!resolveMemoryLifecycleCapabilities(this.orchestrator.config).embeddingFallback) return undefined;
       return async (content: string, limit: number) => {
         try {
           return await this.orchestrator.semanticDedupLookup(content, limit, storage);
@@ -8201,7 +8220,7 @@ export class EngramAccessService {
     },
   ): Promise<ImportCapsuleResult> {
     const { namespace, principal, root: explicitRoot, memoryDir: explicitMemoryDir, ...importOptions } = opts;
-    const resolvedNamespace = this.resolveWritableNamespace(namespace, undefined, principal);
+    const resolvedNamespace = this.writableNamespaceFor(namespace, undefined, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const root = explicitRoot ?? storage.dir;
     const memoryDir = explicitMemoryDir ?? this.orchestrator.config.memoryDir;
@@ -8288,7 +8307,7 @@ export class EngramAccessService {
     },
   ): Promise<ExportCapsuleResult> {
     const { namespace, principal, root: explicitRoot, memoryDir: explicitMemoryDir, ...exportOptions } = opts;
-    const resolvedNamespace = this.resolveWritableNamespace(namespace, undefined, principal);
+    const resolvedNamespace = this.writableNamespaceFor(namespace, undefined, principal);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const root = explicitRoot ?? storage.dir;
     const memoryDir = explicitMemoryDir ?? this.orchestrator.config.memoryDir;
@@ -8522,7 +8541,7 @@ export class EngramAccessService {
   async offlineSyncApplyFileContent(
     options: EngramAccessOfflineSyncApplyFileContentRequest,
   ): Promise<EngramAccessOfflineSyncApplyFileContentResponse> {
-    const resolvedNamespace = this.resolveWritableNamespace(
+    const resolvedNamespace = this.writableNamespaceFor(
       options.namespace,
       undefined,
       options.principal,
@@ -8573,7 +8592,7 @@ export class EngramAccessService {
   async offlineSyncApply(
     options: EngramAccessOfflineSyncApplyRequest,
   ): Promise<EngramAccessOfflineSyncApplyResponse> {
-    const resolvedNamespace = this.resolveWritableNamespace(
+    const resolvedNamespace = this.writableNamespaceFor(
       options.namespace,
       undefined,
       options.principal,
@@ -8655,7 +8674,7 @@ export class EngramAccessService {
       );
     }
     const dryRun = options.dryRun === true;
-    const resolvedNamespace = this.resolveWritableNamespace(
+    const resolvedNamespace = this.writableNamespaceFor(
       options.namespace,
       undefined,
       options.authenticatedPrincipal,

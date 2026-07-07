@@ -100,7 +100,14 @@ export async function indexSymbolVectors(
   }
 
   const modelId = modelIdFor(provider);
-  const nodes = store.readNodesForSemantic();
+  // Wrap the store read so a transient SQLite error (SQLITE_BUSY / CORRUPT)
+  // maps to a tagged db_error instead of escaping indexSymbolVectors (#1680).
+  let nodes: readonly ReturnType<typeof store.readNodesForSemantic>[number][];
+  try {
+    nodes = store.readNodesForSemantic();
+  } catch {
+    return { ok: false, code: "db_error" };
+  }
   // Budget applies to EMBED WORK, not the candidate list. Slicing the
   // full node list (ordered by qualified_name) BEFORE the cache check
   // meant a bounded run kept re-visiting the cached alphabetical prefix

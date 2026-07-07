@@ -18,6 +18,7 @@
  */
 
 import type { Orchestrator } from "../orchestrator.js";
+import { resolveCapabilities } from "../capabilities.js";
 import type { CliCommand } from "../cli.js";
 import type { UtilityTelemetryEvent } from "../utility-telemetry.js";
 import {
@@ -42,6 +43,9 @@ export function registerResearchStatusCommands(
   cmd: CliCommand,
   orchestrator: Orchestrator,
 ): void {
+  // Resolve recall-operation gates once (#1566 Cluster C — harmonicRetrieval is a
+  // mixed-op flag read here on the CLI-search path as well as in recall).
+  const caps = resolveCapabilities(orchestrator.config);
 cmd
   .command("objective-state-status")
   .description("Show objective-state store status, snapshot counts, and latest stored snapshot")
@@ -111,7 +115,7 @@ cmd
     const status = await runAbstractionNodeStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       abstractionNodeStoreDir: orchestrator.config.abstractionNodeStoreDir,
-      harmonicRetrievalEnabled: orchestrator.config.harmonicRetrievalEnabled,
+      harmonicRetrievalEnabled: caps.harmonicRetrieval,
       abstractionAnchorsEnabled: orchestrator.config.abstractionAnchorsEnabled,
     });
     console.log(JSON.stringify(status, null, 2));
@@ -125,7 +129,7 @@ cmd
     const status = await runCueAnchorStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       abstractionNodeStoreDir: orchestrator.config.abstractionNodeStoreDir,
-      harmonicRetrievalEnabled: orchestrator.config.harmonicRetrievalEnabled,
+      harmonicRetrievalEnabled: caps.harmonicRetrieval,
       abstractionAnchorsEnabled: orchestrator.config.abstractionAnchorsEnabled,
     });
     console.log(JSON.stringify(status, null, 2));
@@ -147,7 +151,7 @@ cmd
     const results = await runHarmonicSearchCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       abstractionNodeStoreDir: orchestrator.config.abstractionNodeStoreDir,
-      harmonicRetrievalEnabled: orchestrator.config.harmonicRetrievalEnabled,
+      harmonicRetrievalEnabled: caps.harmonicRetrieval,
       abstractionAnchorsEnabled: orchestrator.config.abstractionAnchorsEnabled,
       query,
       maxResults: Number.isFinite(maxResults) ? maxResults : 3,

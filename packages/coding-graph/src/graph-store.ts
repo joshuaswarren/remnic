@@ -106,6 +106,17 @@ export type SymbolKind =
  * can resolve them against the same batch's symbol set plus the on-disk
  * node table. PR1 only carries CALLS-style edges; PR2 adds the rest of
  * #1552's edge types.
+ *
+ * Optional `srcNodeId` / `dstNodeId` (issue #1677) carry the content-
+ * derived node id (the same canonical hash form the store uses as
+ * `nodes.id`, see `nodeIdFor`). When present, the standalone
+ * `upsertEdges` path resolves the endpoint by `nodes.id` (unique) instead
+ * of by qualified name, so a SIMILAR_TO edge between two symbols that
+ * share a qualified name across files is persisted rather than dropped as
+ * ambiguous. The qname-keyed file-batch path and the existing
+ * `ambiguous … drops edges` behavior are unchanged. Only populated by
+ * callers that originate edges from node-id-keyed pairs (the semantic
+ * SIMILAR_TO pipeline); structural/trace edges keep the qname path.
  */
 export interface EdgeIR {
   /** Qualified name of the source node (caller / definition site). */
@@ -115,6 +126,14 @@ export interface EdgeIR {
   type: string;
   confidence: number;
   provenance: EdgeProvenance;
+  /**
+   * Optional content-derived source node id (`nodes.id`). When present on
+   * a standalone-edge upsert, the store resolves the endpoint by id
+   * (unambiguous) instead of falling back to qualified-name resolution.
+   */
+  readonly srcNodeId?: string;
+  /** Optional content-derived destination node id — see {@link EdgeIR.srcNodeId}. */
+  readonly dstNodeId?: string;
 }
 
 /**
@@ -264,6 +283,101 @@ export interface TraverseHit {
 
 export type TraverseResult =
   | { ok: true; hits: TraverseHit[] }
+  | ({ ok: false } & GraphStoreFailure)
+  | { ok: false; code: "unknown_start" | "ambiguous_start" | "invalid_query" };
+
+/**
+ * Default cap on the number of concrete paths {@link GraphStore.traversePaths}
+ * enumerates before stopping and flagging `truncated`. Bounds the worst-case
+ * exponential blowup of relationship-simple path enumeration on dense
+ * subgraphs (issue #1650). Callers may override per-query via
+ * {@link TraversePathsQuery.maxPaths}.
+ */
+export const DEFAULT_TRAVERSE_PATHS_MAX = 10_000;
+
+/**
+ * Hard upper bound on {@link TraversePathsQuery.maxHops}. The DFS recurses
+ * once per hop; an unbounded depth (e.g. a Cypher `*15000`) would overflow
+ * the call stack before `maxPaths` could stop it. 1000 is ~100x any
+ * realistic code-graph depth and recurses safely (chatgpt-codex-connector
+ * P2: 'Avoid recursive DFS for deep bounded paths').
+ */
+export const MAX_TRAVERSE_PATHS_HOPS = 1000;
+
+/**
+ * Path-enumerating traversal query (issue #1650). Mirrors {@link TraverseQuery}
+ * but yields CONCRETE paths rather than BFS-shortest-depth reachability, so an
+ * exact `*N` (N > 1) hop count is honored for nodes reachable at both a shorter
+ * and a length-N path.
+ */
+export interface TraversePathsQuery {
+  /** Start node id or qualified name (same resolution rules as {@link TraverseQuery.start}). */
+  start: string;
+  /** Default `"outgoing"`. */
+  direction?: TraverseDirection;
+  /** Edge types to follow; omitted/empty means every type. */
+  edgeTypes?: readonly string[];
+  /**
+   * Inclusive upper bound on enumerated path LENGTH (hop count). MUST be a
+   * non-negative integer. A `maxHops` of 0 yields no paths (every enumerated
+   * path has length >= 1); callers that need the length-0 trivial path add it
+   * themselves.
+   */
+  maxHops: number;
+  /**
+   * Inclusive LOWER bound on EMITTED path length (hop count). Defaults
+   * to 1. The DFS still EXPLORES shorter prefixes to reach longer paths,
+   * but only EMITS (and counts toward {@link maxPaths}) paths whose length
+   * is in `[minHops, maxHops]` -- so an exact `*N` cap is not consumed by
+   * the shorter prefixes (cursor Bugbot: 'Path cap ignores hop minimum').
+   * MUST be a positive integer (>= 1) when present.
+   */
+  minHops?: number;
+  /**
+   * Safety cap on total enumerated paths. Defaults to
+   * {@link DEFAULT_TRAVERSE_PATHS_MAX}. When the cap is reached, enumeration
+   * STOPS and the result carries `truncated: true` so callers can detect that
+   * the result is incomplete (e.g. to narrow the query or raise the cap).
+   */
+  maxPaths?: number;
+}
+
+/**
+ * One enumerated path. The endpoint node is fully resolved; the full node-id
+ * sequence lets callers reconstruct the path (issue #1650 acceptance).
+ */
+export interface TraversePathHit {
+  nodeId: string;
+  qualifiedName: string;
+  name: string;
+  label: string;
+  filePath: string;
+  /** Length of this path in hops (>= 1). */
+  length: number;
+  /** Full path as node ids, start-first (`length + 1` entries). */
+  nodeIds: string[];
+  /**
+   * Edge type per hop, parallel to {@link nodeIds} (`length` entries). Two
+   * distinct relationships can connect the same node pair with different
+   * types (the edges table is UNIQUE on `(src, dst, type)`); exposing the
+   * type per hop lets callers distinguish those otherwise-identical-node
+   * paths (chatgpt-codex-connector P2: 'Include edge identity in path
+   * hits').
+   */
+  edgeTypes: string[];
+  /**
+   * Per-hop edge endpoints, parallel to {@link nodeIds} (`length` entries).
+   * Under `direction: "both"` antiparallel same-type edges (A->B and B->A)
+   * yield distinct relationship-simple paths that share nodeIds + edgeTypes;
+   * the src/dst per hop disambiguates which edge was traversed and in which
+   * direction (chatgpt-codex-connector P2: 'Include edge endpoints in path
+   * hits').
+   */
+  edgeEndpoints: Array<{ src: string; dst: string }>;
+}
+
+export type TraversePathsResult =
+  | { ok: true; hits: TraversePathHit[]; truncated: boolean }
   | ({ ok: false } & GraphStoreFailure)
   | { ok: false; code: "unknown_start" | "ambiguous_start" | "invalid_query" };
 
@@ -759,11 +873,17 @@ export class GraphStore {
    * observations as edges with `provenance: "trace"` — upgrading
    * confidence on existing edges and inserting new ones.
    *
-   * Both `src` and `dst` are resolved by qualified_name via the global
-   * `resolveNodeId` fallback (unambiguous single-match policy). Edges
-   * whose endpoints do not resolve to exactly one node are skipped (and
-   * counted in `skipped`) rather than attached to the wrong node — the
-   * dangling-edge policy from `upsertFileBatch` applies.
+   * Endpoint resolution: when an edge carries `srcNodeId` / `dstNodeId`
+   * (issue #1677 — the SIMILAR_TO pipeline populates them from
+   * content-derived node ids), the endpoint is resolved by `nodes.id`
+   * (unique primary key), so an edge between two symbols that share a
+   * qualified name across files is persisted rather than dropped as
+   * ambiguous. Edges WITHOUT node ids fall back to qualified_name
+   * resolution via the global `resolveNodeId` (unambiguous single-match
+   * policy). Edges whose endpoints do not resolve (missing node id row OR
+   * an ambiguous/dangling qualified name) are skipped (and counted in
+   * `skipped`) rather than attached to the wrong node — the dangling-edge
+   * policy from `upsertFileBatch` applies.
    *
    * Serialized on the store's write queue like `upsertFileBatch` so a
    * concurrent file-batch upsert and a trace upsert cannot interleave
@@ -1215,6 +1335,17 @@ export class GraphStore {
            confidence = excluded.confidence,
            provenance = excluded.provenance`,
     );
+    // node-id resolution (issue #1677). `nodes.id` is the PRIMARY KEY, so
+    // this is a unique, unambiguous lookup — a SIMILAR_TO edge between two
+    // same-qualified-name symbols resolves here instead of being dropped by
+    // the ambiguous qualified-name fallback. The row's qualified_name is
+    // returned so the caller's (src|dst)QualifiedName can be matched against
+    // it: a stale or mismatched id+qname pair is skipped (counted in
+    // `skipped`) rather than silently writing an edge from the wrong node
+    // (chatgpt-codex-connector P2 — id/qname consistency at the boundary).
+    const nodeById = this.db.prepare(
+      "SELECT qualified_name FROM nodes WHERE id = ? LIMIT 1",
+    );
     try {
       let persisted = 0;
       let skipped = 0;
@@ -1234,8 +1365,19 @@ export class GraphStore {
               `graph-store: edge confidence ${edge.confidence} is out of range [0, 1] for edge ${edge.srcQualifiedName} → ${edge.dstQualifiedName}`,
             );
           }
-          const srcId = resolveNodeId(edge.srcQualifiedName, emptyBatch, this.db);
-          const dstId = resolveNodeId(edge.dstQualifiedName, emptyBatch, this.db);
+          // Prefer the content-derived node id when the caller supplied one
+          // (issue #1677). Only fall through to qualified-name resolution
+          // when no id is present, preserving the existing trace/HTTP_CALLS
+          // path verbatim. When an id IS supplied, its row's qualified_name
+          // MUST match the edge's (src|dst)QualifiedName — a mismatched pair
+          // (stale body map, custom integration) is skipped like a dangling
+          // edge instead of corrupting the graph (chatgpt-codex-connector P2).
+          const srcId = edge.srcNodeId
+            ? resolveByNodeId(nodeById, edge.srcNodeId, edge.srcQualifiedName)
+            : resolveNodeId(edge.srcQualifiedName, emptyBatch, this.db);
+          const dstId = edge.dstNodeId
+            ? resolveByNodeId(nodeById, edge.dstNodeId, edge.dstQualifiedName)
+            : resolveNodeId(edge.dstQualifiedName, emptyBatch, this.db);
           if (!srcId || !dstId) {
             skipped += 1;
             continue;
@@ -2066,6 +2208,264 @@ export class GraphStore {
     }
   }
   /**
+   * Path-enumerating traversal (issue #1650). Unlike {@link traverse}'s BFS —
+   * which visits each node ONCE at its shortest-path depth and so cannot honor
+   * an exact `*N` (N > 1) hop count for nodes reachable at both a shorter and a
+   * length-N path — this primitive enumerates concrete relationship-simple
+   * paths from the start, yielding one hit per distinct (path, endpoint) pair
+   * up to {@link TraversePathsQuery.maxHops}.
+   *
+   * Cycle safety uses RELATIONSHIP UNIQUENESS (the real Cypher rule): a single
+   * path never traverses the same edge twice, keyed by the edge's canonical
+   * `(src, dst, type)` identity. A node MAY recur in a path via distinct edges
+   * (e.g. A->B->A over two different edges) — that is correct Cypher behavior.
+   * The {@link TraversePathsQuery.maxHops} cap bounds each path's length;
+   * {@link TraversePathsQuery.maxPaths} bounds the total enumerated count so a
+   * dense subgraph cannot blow enumeration up exponentially without notice
+   * (when hit, enumeration stops and the result carries `truncated: true`).
+   *
+   * Every yielded path has length >= 1 (at least one edge). A length-0 "path"
+   * (the trivial start->start) is NOT enumerated; callers that need the start
+   * node for a `*0..N` bound add it themselves.
+   */
+  traversePaths(query: TraversePathsQuery): TraversePathsResult {
+    if (this.closed) return { ok: false, code: "store_closed" };
+    // Guard the query object before any dereference (mirrors traverse).
+    if (query == null || typeof query !== "object") {
+      return { ok: false, code: "invalid_query" };
+    }
+    if (
+      typeof query.maxHops !== "number" ||
+      !Number.isInteger(query.maxHops) ||
+      query.maxHops < 0
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    // Reject depths that would overflow the recursive DFS before maxPaths
+    // can bind it (chatgpt-codex-connector P2: 'Avoid recursive DFS for deep
+    // bounded paths').
+    if (query.maxHops > MAX_TRAVERSE_PATHS_HOPS) {
+      return { ok: false, code: "invalid_query" };
+    }
+    const direction: TraverseDirection =
+      query.direction === undefined ? "outgoing" : query.direction;
+    if (
+      direction !== "outgoing" &&
+      direction !== "incoming" &&
+      direction !== "both"
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    if (
+      query.edgeTypes !== undefined &&
+      (!Array.isArray(query.edgeTypes) ||
+        !query.edgeTypes.every((e) => typeof e === "string"))
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    if (typeof query.start !== "string" || query.start.length === 0) {
+      return { ok: false, code: "invalid_query" };
+    }
+    // minHops: validate only when explicitly provided; default 1. MUST be a
+    // positive integer -- the primitive never emits length-0 paths.
+    const minHops = query.minHops === undefined ? 1 : query.minHops;
+    if (
+      typeof minHops !== "number" ||
+      !Number.isInteger(minHops) ||
+      minHops < 1
+    ) {
+      return { ok: false, code: "invalid_query" };
+    }
+    // maxPaths: reject a malformed EXPLICIT value rather than silently
+    // defaulting (rule 51 -- surface what's wrong). Only `undefined` defaults
+    // (chatgpt-codex-connector P2: 'Reject malformed maxPaths instead of
+    // defaulting').
+    let maxPaths: number;
+    if (query.maxPaths === undefined) {
+      maxPaths = DEFAULT_TRAVERSE_PATHS_MAX;
+    } else if (
+      typeof query.maxPaths !== "number" ||
+      !Number.isInteger(query.maxPaths) ||
+      query.maxPaths < 0
+    ) {
+      return { ok: false, code: "invalid_query" };
+    } else {
+      maxPaths = query.maxPaths;
+    }
+
+    try {
+      // Resolve the start node — same split id/qualified_name policy as
+      // traverse (cursor Bugbot: 'Traverse start conflates id and name').
+      const isNodeId = /^[0-9a-f]{64}$/.test(query.start);
+      const rows = expectRows<{ id: string }>(
+        this.db
+          .prepare(
+            isNodeId
+              ? "SELECT id FROM nodes WHERE id = ?"
+              : "SELECT id FROM nodes WHERE qualified_name = ?",
+          )
+          .all(query.start),
+        ["id"],
+      );
+      if (rows.length === 0) return { ok: false, code: "unknown_start" };
+      if (rows.length > 1) return { ok: false, code: "ambiguous_start" };
+      const startId = rows[0]!.id;
+
+      // maxHops === 0 -> no edge paths exist.
+      if (query.maxHops === 0) {
+        return { ok: true, hits: [], truncated: false };
+      }
+
+      const edgeTypes = query.edgeTypes ?? [];
+      const typeClause =
+        edgeTypes.length > 0
+          ? `AND type IN (${edgeTypes.map(() => "?").join(", ")})`
+          : "";
+      // Return the canonical (src, dst, type) so relationship-uniqueness keys
+      // are direction-independent: traversing edge A->B outgoing then B->A
+      // incoming reuses the SAME relationship and is blocked.
+      const outgoingStmt = this.db.prepare(
+        `SELECT dst AS neighbor, src, dst, type FROM edges WHERE src = ? ${typeClause}`,
+      );
+      const incomingStmt = this.db.prepare(
+        `SELECT src AS neighbor, src, dst, type FROM edges WHERE dst = ? ${typeClause}`,
+      );
+      const nodeStmt = this.db.prepare(
+        "SELECT n.id, n.qualified_name, n.name, n.label, f.path AS file_path FROM nodes n JOIN files f ON n.file_id = f.id WHERE n.id = ?",
+      );
+
+      type NodeRow = {
+        id: string;
+        qualified_name: string;
+        name: string;
+        label: string;
+        file_path: string;
+      };
+      type EdgeRow = {
+        neighbor: string;
+        src: string;
+        dst: string;
+        type: string;
+      };
+
+      const nodeCache = new Map<string, NodeRow>();
+      const getNode = (id: string): NodeRow | undefined => {
+        const cached = nodeCache.get(id);
+        if (cached) return cached;
+        const row = expectRow<NodeRow>(nodeStmt.get(id), [
+          "id",
+          "qualified_name",
+          "name",
+          "label",
+          "file_path",
+        ]);
+        if (row) nodeCache.set(id, row);
+        return row;
+      };
+
+      const neighborsOf = (id: string): EdgeRow[] => {
+        const params = [id, ...edgeTypes];
+        const out: EdgeRow[] =
+          direction === "outgoing" || direction === "both"
+            ? expectRows<EdgeRow>(outgoingStmt.all(...params), [
+                "neighbor",
+                "src",
+                "dst",
+                "type",
+              ])
+            : [];
+        const inn: EdgeRow[] =
+          direction === "incoming" || direction === "both"
+            ? expectRows<EdgeRow>(incomingStmt.all(...params), [
+                "neighbor",
+                "src",
+                "dst",
+                "type",
+              ])
+            : [];
+        // Dedupe by the canonical (src, dst, type) key. Under
+        // direction "both" a SELF-LOOP (src == dst) is matched by BOTH
+        // the outgoing and incoming SELECTs, and because usedEdges is
+        // cleared after each branch the same relationship-simple path
+        // would otherwise be emitted twice -- violating the one-hit-per-
+        // distinct-path contract and double-consuming the maxPaths cap
+        // (chatgpt-codex-connector P2: 'Deduplicate self-loop edges for
+        // both-direction traversal'). The UNIQUE(src,dst,type) table
+        // constraint guarantees no dup within a single direction, so this
+        // only ever collapses the both-direction self-loop overlap.
+        const seenEdge = new Set<string>();
+        const deduped: EdgeRow[] = [];
+        for (const e of [...out, ...inn]) {
+          const k = e.src + "\u0000" + e.dst + "\u0000" + e.type;
+          if (seenEdge.has(k)) continue;
+          seenEdge.add(k);
+          deduped.push(e);
+        }
+        return deduped;
+      };
+
+      const hits: TraversePathHit[] = [];
+      let truncated = false;
+      const usedEdges = new Set<string>();
+      const pathNodes: string[] = [startId];
+      const pathEdgeTypes: string[] = [];
+      const pathEndpoints: Array<{ src: string; dst: string }> = [];
+
+      // Recursive DFS. `length` is the current path's hop count (edges taken).
+      // We EXPLORE while length < maxHops (shorter prefixes must be walked to
+      // reach longer paths) but EMIT only when newLength >= minHops, so the
+      // maxPaths cap protects the in-range result set instead of being
+      // consumed by discarded shorter prefixes (cursor Bugbot: 'Path cap
+      // ignores hop minimum').
+      const dfs = (currentId: string, length: number): void => {
+        if (truncated) return;
+        if (length >= query.maxHops) return;
+        for (const e of neighborsOf(currentId)) {
+          if (truncated) return;
+          const key = `${e.src}\u0000${e.dst}\u0000${e.type}`;
+          if (usedEdges.has(key)) continue;
+          usedEdges.add(key);
+          pathNodes.push(e.neighbor);
+          pathEdgeTypes.push(e.type);
+          pathEndpoints.push({ src: e.src, dst: e.dst });
+          const newLength = length + 1;
+          if (newLength >= minHops) {
+            // Cap check on EMITTED (in-range) hits only.
+            if (hits.length >= maxPaths) {
+              truncated = true;
+            } else {
+              const info = getNode(e.neighbor);
+              if (info) {
+                hits.push({
+                  nodeId: info.id,
+                  qualifiedName: info.qualified_name,
+                  name: info.name,
+                  label: info.label,
+                  filePath: info.file_path,
+                  length: newLength,
+                  nodeIds: pathNodes.slice(),
+                  edgeTypes: pathEdgeTypes.slice(),
+                  edgeEndpoints: pathEndpoints.slice(),
+                });
+              }
+            }
+          }
+          if (!truncated) dfs(e.neighbor, newLength);
+          pathEndpoints.pop();
+          pathEdgeTypes.pop();
+          pathNodes.pop();
+          usedEdges.delete(key);
+        }
+      };
+
+      dfs(startId, 0);
+      return { ok: true, hits, truncated };
+    } catch (error) {
+      logWriteFailure(error);
+      return classifyReadError(error) as TraversePathsResult;
+    }
+  }
+  /**
    * Structured node search. All filters are AND-combined; patterns use
    * SQLite LIKE (case-insensitive via COLLATE NOCASE). Patterns and
    * limits are parameter-bound, never string-interpolated, so user
@@ -2887,6 +3287,30 @@ function resolveNodeId(
     return undefined;
   }
   return rows[0]?.id;
+}
+
+/**
+ * Resolve a standalone-edge endpoint by content-derived node id (issue #1677).
+ *
+ * `nodes.id` is the PRIMARY KEY, so the lookup is unique and unambiguous —
+ * this is what lets a SIMILAR_TO edge between two same-qualified-name symbols
+ * resolve where the qualified-name fallback would be ambiguous. The supplied
+ * `qualifiedName` is validated against the row: a stale or mismatched
+ * id+qname pair (stale body map, custom integration) returns `undefined` so
+ * the caller skips the edge like a dangling endpoint instead of silently
+ * writing an edge from the wrong node (chatgpt-codex-connector P2 — id/qname
+ * consistency at the store boundary). `stmt` is the caller's prepared
+ * `SELECT qualified_name FROM nodes WHERE id = ?`.
+ */
+function resolveByNodeId(
+  stmt: { get(...args: unknown[]): unknown },
+  nodeId: string,
+  qualifiedName: string,
+): string | undefined {
+  const row = expectRow<{ qualified_name: string }>(stmt.get(nodeId), ["qualified_name"]);
+  if (!row) return undefined;
+  if (row.qualified_name !== qualifiedName) return undefined;
+  return nodeId;
 }
 // ──────────────────────────────────────────────────────────────────────────
 // Error classification — tag SQLITE_BUSY / SQLITE_CORRUPT into the failure

@@ -13,7 +13,6 @@ import type { TrustZoneName } from "./trust-zones.js";
 type WiringConfig = DirectAnswerWiringInput["config"];
 
 const BASE_CONFIG: WiringConfig = {
-  recallDirectAnswerEnabled: true,
   recallDirectAnswerTokenOverlapFloor: 0.5,
   recallDirectAnswerImportanceFloor: 0.7,
   recallDirectAnswerAmbiguityMargin: 0.15,
@@ -105,27 +104,14 @@ test("tryDirectAnswer disabled-path does not call any source accessor", async ()
   assert.deepEqual(sources.calls.importance, []);
 });
 
-// ── Backward-compat (#1523): omit top-level `enabled`, fall back to config ──
+// ── One-resolution-per-op (#1523): `enabled` is the sole gate ──────────────
 
-test("tryDirectAnswer falls back to config.recallDirectAnswerEnabled when `enabled` is omitted (disabled)", async () => {
-  // Old input shape: config carries recallDirectAnswerEnabled: false and no
-  // top-level `enabled`. Must short-circuit as "disabled" (identical to the
-  // pre-#1523 behavior) rather than treating undefined as enabled.
-  const sources = makeMockSources({ memories: [makeMemory()] });
-  const result = await tryDirectAnswer({
-    query: "does not matter",
-    namespace: "default",
-    config: { ...BASE_CONFIG, recallDirectAnswerEnabled: false },
-    sources,
-  });
-  assert.equal(result.eligible, false);
-  assert.equal(result.reason, "disabled");
-  assert.equal(sources.calls.listCandidates, 0);
-});
-
-test("tryDirectAnswer falls back to config.recallDirectAnswerEnabled when `enabled` is omitted (enabled)", async () => {
-  // Old input shape with recallDirectAnswerEnabled: true and no `enabled` must
-  // NOT short-circuit — it proceeds to materialize candidates.
+test("tryDirectAnswer disabled when `enabled: false` even with matching candidates (caps wins over any config-derived value)", async () => {
+  // Issue #1523 contract: the resolved capability is the sole gate.
+  // `enabled` comes from `resolveCapabilities(config).recallDirectAnswer`,
+  // resolved ONCE at the recall entry. This test proves the gate value is
+  // authoritative — when it says disabled, the function short-circuits
+  // regardless of candidate quality.
   const sources = makeMockSources({
     memories: [makeMemory({ tags: ["pnpm"], content: "remnic uses pnpm" })],
     trustZones: { m1: "trusted" },
@@ -134,7 +120,28 @@ test("tryDirectAnswer falls back to config.recallDirectAnswerEnabled when `enabl
   const result = await tryDirectAnswer({
     query: "package manager remnic",
     namespace: "default",
-    config: BASE_CONFIG, // recallDirectAnswerEnabled: true
+    config: BASE_CONFIG,
+    enabled: false,
+    sources,
+  });
+  assert.equal(result.eligible, false);
+  assert.equal(result.reason, "disabled");
+  assert.equal(sources.calls.listCandidates, 0);
+});
+
+test("tryDirectAnswer proceeds when `enabled: true` and candidates match", async () => {
+  // Same contract, positive case: when the resolved capability says enabled,
+  // the function proceeds to materialize candidates.
+  const sources = makeMockSources({
+    memories: [makeMemory({ tags: ["pnpm"], content: "remnic uses pnpm" })],
+    trustZones: { m1: "trusted" },
+    importance: { m1: 0.9 },
+  });
+  const result = await tryDirectAnswer({
+    query: "package manager remnic",
+    namespace: "default",
+    config: BASE_CONFIG,
+    enabled: true,
     sources,
   });
   assert.notEqual(result.reason, "disabled");

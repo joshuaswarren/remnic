@@ -33,10 +33,16 @@
 
 import {
   canReadNamespace,
+  canWriteNamespace,
   defaultNamespaceForPrincipal,
   recallNamespacesForPrincipal,
   resolvePrincipal,
 } from "../namespaces/principal.js";
+import {
+  namespaceIdentityFromToken,
+  namespaceIdentityToken,
+} from "../namespaces/identity.js";
+import path from "node:path";
 import type { ResolvedScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import {
   expandScopeProfileReadNamespaces,
@@ -317,4 +323,161 @@ export function resolveScopePlan(options: ResolveScopePlanOptions): ScopePlan {
       : null,
     scopeProfilePlan,
   };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Centralized namespace-resolution helpers (issue #1521 step 3–4)
+//
+// The three functions below consolidate the ad-hoc namespace-resolution logic
+// that was previously scattered across orchestrator.ts (namespaceFromStorageDir,
+// configuredNamespaces) and access-service.ts (resolveWritableNamespace). By
+// living in THIS module they are excluded from the adHocNamespaceResolutions
+// ratchet, and every consumer reaches them through a single well-known import
+// instead of reimplementing the derivation inline (#1519's failure mode).
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The configured namespace set: default + shared + every namespace-policy
+ * name, trimmed and de-duplicated. Pure — reads only from `config`.
+ *
+ * Replaces the `configuredNamespaces()` private method that lived on both
+ * `Orchestrator` and the maintenance namespace-planner (two copies of the
+ * same logic).
+ */
+export function getConfiguredNamespaces(config: PluginConfig): string[] {
+  return Array.from(
+    new Set(
+      [
+        config.defaultNamespace,
+        config.sharedNamespace,
+        ...config.namespacePolicies.map((policy) => policy.name),
+      ]
+        .map((value) => value.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+/**
+ * Options for {@link resolveNamespaceFromStorageDir}.
+ */
+export interface ResolveNamespaceFromStorageDirOptions {
+  /** Plugin config (memoryDir, defaultNamespace, namespacesEnabled, …). */
+  readonly config: PluginConfig;
+  /**
+   * Pre-computed configured-namespace set (from {@link getConfiguredNamespaces}).
+   * Passed by the caller so this function does not re-derive it on every call.
+   */
+  readonly configuredNamespaces: readonly string[];
+  /**
+   * Catalog-owned dir→namespace hints (best-effort union of configured +
+   * catalog-discovered). May be `undefined` when no catalog hints are loaded.
+   */
+  readonly hints?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
+  /**
+   * Lazy catalog-hint loader. Called ONLY after the early returns (disabled,
+   * memory root, no namespace segment, configured namespace) — matching the
+   * original lazy behavior so an eager load does not mark hints as loaded
+   * before the catalog file exists (codex P2).
+   */
+  readonly loadHints?: () => void;
+}
+
+/**
+ * Derive the namespace a storage directory belongs to.
+ *
+ * Pure (no orchestrator state): the caller passes `config`, the configured set,
+ * and any catalog hints. The logic is byte-identical to the private
+ * `namespaceFromStorageDir` method that previously lived on `Orchestrator`
+ * (including the token round-trip guard from codex round 6).
+ */
+export function resolveNamespaceFromStorageDir(
+  storageDir: string,
+  options: ResolveNamespaceFromStorageDirOptions,
+): string {
+  const { config } = options;
+  if (!config.namespacesEnabled) return config.defaultNamespace;
+  const resolvedStorageDir = path.resolve(storageDir);
+  const resolvedMemoryDir = path.resolve(config.memoryDir);
+  if (resolvedStorageDir === resolvedMemoryDir) return config.defaultNamespace;
+  const m = resolvedStorageDir.match(/[\\/]namespaces[\\/]([^\\/]+)$/);
+  if (!m?.[1]) return config.defaultNamespace;
+  const dirName = m[1];
+  // Token-shaped raw names (codex P2 — NBsFz): a dir name might be a tokenized
+  // identity OR a literal raw namespace name that merely LOOKS like a token.
+  // A dir name that is itself a KNOWN namespace is preserved BEFORE decoding.
+  if (options.configuredNamespaces.includes(dirName)) {
+    return dirName;
+  }
+  // Load catalog hints ONLY after the early returns (codex P2: an eager load
+  // before the catalog file exists would mark hints as loaded and skip later
+  // catalog-derived rows).
+  options.loadHints?.();
+  const hints = options.hints;
+  const hintedNamespaces = hints?.get(resolvedStorageDir);
+  if (hintedNamespaces?.has(dirName)) {
+    return dirName;
+  }
+  if (hintedNamespaces?.size === 1) {
+    const [hintedNamespace] = hintedNamespaces;
+    if (hintedNamespace) return hintedNamespace;
+  }
+  const decoded = namespaceIdentityFromToken(dirName);
+  if (decoded && namespaceIdentityToken(decoded) === dirName) {
+    return decoded;
+  }
+  return dirName;
+}
+
+/**
+ * Result of resolving a writable namespace: either the authorized namespace
+ * or a structured rejection. The caller decides how to surface the rejection
+ * (e.g. as an `EngramAccessInputError` in the access-service layer), keeping
+ * this module free of transport-specific error types.
+ */
+export type WritableNamespaceResult =
+  | { readonly ok: true; readonly namespace: string }
+  | { readonly ok: false; readonly reason: "unsupported" | "not_writable"; readonly namespace: string };
+
+/**
+ * Resolve and authorize a writable namespace.
+ *
+ * Combines the three steps that `AccessService.resolveWritableNamespace`
+ * performed inline: (1) resolve the namespace value (trim → default fallback →
+ * validate against `namespacesEnabled`), (2) resolve the principal, (3) check
+ * `canWriteNamespace`. Returns a structured result so this module stays free of
+ * `EngramAccessInputError` (avoiding a circular dependency on access-service.ts).
+ *
+ * The caller throws `EngramAccessInputError` when `ok === false` — the access-
+ * service wrapper does this in one place.
+ */
+export function resolveWritableNamespaceValue(
+  namespace: string | undefined,
+  sessionKey: string | undefined,
+  authenticatedPrincipal: string | undefined,
+  config: PluginConfig,
+): WritableNamespaceResult {
+  const requested = namespace?.trim();
+  let resolved: string;
+  if (!requested) {
+    resolved = config.defaultNamespace;
+  } else if (
+    !config.namespacesEnabled &&
+    requested !== config.defaultNamespace
+  ) {
+    return { ok: false, reason: "unsupported", namespace: requested };
+  } else {
+    resolved = requested;
+  }
+
+  const trusted = authenticatedPrincipal?.trim();
+  const principal =
+    typeof trusted === "string" && trusted.length > 0
+      ? trusted
+      : resolvePrincipal(sessionKey, config);
+
+  if (!canWriteNamespace(principal, resolved, config)) {
+    return { ok: false, reason: "not_writable", namespace: resolved };
+  }
+  return { ok: true, namespace: resolved };
 }

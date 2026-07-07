@@ -862,6 +862,29 @@ export interface PluginConfig {
    * `24`. Parsed from `correction.planTtlHours` / `correctionPlanTtlHours`.
    */
   correctionPlanTtlHours: number;
+  /**
+   * Passive correction capture (issue #1581) — detects corrections expressed
+   * passively in conversation turns during extraction and routes them to the
+   * Correction Contract (#1580). `"off"` disables detection entirely; `"queue"`
+   * plans corrections for human review (conservative); `"auto"` applies
+   * immediately when all safety guards pass, otherwise falls back to queue.
+   * Default `"off"` — operators opt in (rule 48). Parsed from
+   * `correctionCapture.mode` / `correctionCaptureMode`.
+   */
+  correctionCaptureMode: "off" | "queue" | "auto";
+  /**
+   * Minimum planner confidence for auto-apply (issue #1581). Plans below this
+   * floor are queued even in `"auto"` mode. Default `0.85`. Parsed from
+   * `correctionCapture.confidenceFloor` / `correctionCaptureConfidenceFloor`.
+   */
+  correctionCaptureConfidenceFloor: number;
+  /**
+   * Maximum affected memories for auto-apply (issue #1581). Plans touching more
+   * memories than this are queued even in `"auto"` mode — a blast-radius cap.
+   * Default `2`. Parsed from `correctionCapture.autoApplyMaxAffected` /
+   * `correctionCaptureAutoApplyMaxAffected`.
+   */
+  correctionCaptureAutoApplyMaxAffected: number;
   // Tombstones — non-resurrection invariant (issue #1579).
   /**
    * Master gate for the tombstone non-resurrection invariant. When `true`
@@ -970,6 +993,31 @@ export interface PluginConfig {
    * once the benchmark shows precision tie-or-win.
    */
   recallMemoryWorthFilterEnabled: boolean;
+  // Unified TrustScore recall stage (issue #1577). Combines memory-worth,
+  // provenance, faithfulness, corroboration, contradiction, feedback, recency,
+  // and optional domain calibration into one [0,1] trust score applied as a
+  // bounded recall multiplier. Subsumes the Memory Worth multiplier when on
+  // (the orchestrator runs exactly one of the two — rule 39).
+  /**
+   * Master gate for the unified TrustScore recall stage. Default `false`: off
+   * = the stage is absent and ranking is byte-identical to the pre-feature
+   * pipeline (rule 39). Flip via #1574 ablation evidence only.
+   */
+  trustScoreEnabled: boolean;
+  /** Append epistemic hedge suffixes to injected memory lines. Separate gate. */
+  trustScoreEpistemicRendering: boolean;
+  /**
+   * Exclude hard-negative (quarantine-band) items from injection. Default
+   * `true`; only effective under the master gate. Quarantined items stay
+   * visible in X-ray with a reason (rule 34).
+   */
+  trustScoreQuarantine: boolean;
+  /** Lower bound of the trust multiplier (default 0.5). */
+  trustScoreMinMultiplier: number;
+  /** Upper bound of the trust multiplier (default 1.25). */
+  trustScoreMaxMultiplier: number;
+  /** Per-component weights for the TrustScore blend; invalid weights rejected at parse. */
+  trustScoreWeights: TrustWeights;
   /**
    * Recall-audit anomaly detector (issue #565 PR 5/5). When true,
    * access surfaces run the anomaly detector over a tail of the audit
@@ -1159,12 +1207,38 @@ export interface PluginConfig {
   // extracted facts against their verified source spans from #1575.
   /** Gate mode: "off" (default, byte-identical pre-feature), "shadow" (record only), "enforce" (route to pending_review). */
   extractionFaithfulnessGate: "off" | "shadow" | "enforce";
-  /** Override model/endpoint; empty string = default routing chain. */
+  /** Override model name; empty string = default routing chain. */
   extractionFaithfulnessModel: string;
+  /**
+   * Base URL of a local openai-compatible endpoint serving a fine-tuned
+   * faithfulness gate (issue #1585 model-lab), e.g.
+   * `http://localhost:11434/v1` (Ollama) or `http://localhost:8000/v1` (vLLM).
+   * Empty string (default) preserves the existing routing chain exactly;
+   * set together with `extractionFaithfulnessModel` to route the gate to the
+   * local model first, falling back to the chain on failure.
+   */
+  extractionFaithfulnessBaseUrl: string;
   /** Context window (chars) around the quote sent to the verifier. Default 400. */
   extractionFaithfulnessContextChars: number;
   /** Per-batch timeout in ms; timeout → tagged error, never blocks writes. Default 8000. */
   extractionFaithfulnessTimeoutMs: number;
+  /**
+   * Resilient-fallback toggle for the local model-lab endpoint (issue #1700
+   * nit #6). When the local endpoint returns 200 with non-verdict JSON, the
+   * default (false) surfaces `malformed_output` so a misconfigured endpoint is
+   * visible to the operator. Set true to instead fall back to the configured
+   * chain on local parse failure (pre-validated via parseFaithfulnessResponse).
+   */
+  extractionFaithfulnessLocalParseFallback: boolean;
+  /**
+   * Correction-intent model-lab pointer (issue #1581 / #1585). When both this
+   * and `correctionIntentBaseUrl` are set, the detection path can route to a
+   * local fine-tuned correction-intent classifier. Empty default keeps the
+   * rule-based passive-correction detector as the sole path (byte-identical).
+   */
+  correctionIntentModel: string;
+  /** Base URL of a local openai-compatible endpoint serving the correction-intent classifier (issue #1585). Empty default = rule-based detection. */
+  correctionIntentBaseUrl: string;
   // Hourly summaries
   hourlySummariesEnabled: boolean;
   daySummaryEnabled: boolean;
@@ -2178,6 +2252,19 @@ export interface BriefingResult {
    * Allows callers to distinguish "no events today" from "source unavailable".
    */
   calendarSourceErrors?: BriefingCalendarSourceError[];
+  /**
+   * Auto-applied passive corrections drained from the notification queue at
+   * briefing time (issue #1581). Each carries a one-line summary and the undo
+   * command. Drained exactly once — the queue file is cleared on read, so a
+   * notification appears in at most one briefing. Absent when the correction
+   * capture feature is off or no corrections were auto-applied.
+   */
+  correctionNotifications?: ReadonlyArray<{
+    planId: string;
+    summary: string;
+    undoCommand: string;
+    createdAt: string;
+  }>;
 }
 
 /**
@@ -2749,6 +2836,23 @@ export interface FaithfulnessFrontmatter {
   at?: string;
 }
 
+/**
+ * Per-component weights for the unified TrustScore blend (issue #1577). Every
+ * field is optional and defaults to the documented value in `trust-score.ts`;
+ * weights are sum-normalized at score time so only relative magnitudes matter.
+ * Invalid weights (non-finite, outside `[0,1]`) are rejected at config parse.
+ */
+export interface TrustWeights {
+  memoryWorth?: number;
+  provenance?: number;
+  faithfulness?: number;
+  corroboration?: number;
+  contradiction?: number;
+  domainCalibration?: number;
+  feedback?: number;
+  recency?: number;
+}
+
 /** Memory link relationship types */
 export type MemoryLinkType = "follows" | "references" | "contradicts" | "supports" | "related";
 
@@ -2959,6 +3063,20 @@ export interface ExtractedFact {
    * when `temporal.biTemporal` is off.
    */
   eventTime?: string;
+  /**
+   * Per-fact source-turn timestamp for bi-temporal event-time resolution
+   * (#1670). When set, `resolveFactEventTime` anchors this fact's
+   * `eventTime` expression against THIS turn's timestamp instead of the
+   * batch-wide latest turn timestamp — so a buffered conversation spanning
+   * a date boundary resolves "yesterday" on an early-turn fact against
+   * that early turn's date, not the last turn's.
+   *
+   * Programmatic-only: extractors that know the exact source turn set this
+   * directly. The LLM extraction prompt never emits it (models cannot know
+   * turn timestamps). Falls back to the earliest provenance span's
+   * `observedAt`, then to the batch anchor, when absent.
+   */
+  sourceTurnTimestamp?: string;
 }
 
 export interface ExtractedReasoningTraceStep {

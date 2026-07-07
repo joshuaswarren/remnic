@@ -129,6 +129,13 @@ export interface LlmClassificationResult {
   fallback?: boolean;
 }
 
+/**
+ * Placeholder substituted for the request text when persisting a never-store /
+ * redaction-rule plan (#1678 thread Oid8t). Mirrors the durable-audit
+ * redaction so the transient pending-plan file never holds the secret.
+ */
+const REDACTED_REQUEST_TEXT = "[redacted — never-store/redaction correction text withheld from the pending-plan file]";
+
 // ---------------------------------------------------------------------------
 // Planner
 // ---------------------------------------------------------------------------
@@ -382,10 +389,31 @@ export class CorrectionPlanner {
   private async persist(plan: CorrectionPlan): Promise<CorrectionPlan> {
     const dir = await this.pendingDir(plan.namespace);
     const target = path.join(dir, `${plan.planId}.json`);
+    // #1678 (thread Oid8t): never-store/redaction corrections carry the very
+    // secret/pattern the user asked Remnic NOT to retain. The durable audit
+    // already withholds the text; the TRANSIENT pending-plan file must too,
+    // or the secret sits on disk (pending until apply/discard + TTL). Redact
+    // the request text in the persisted copy for never_store classifications
+    // or any redaction_rule action. The in-memory plan keeps the original
+    // text so the executor's audit body (which re-applies its own redaction)
+    // is unaffected; only the on-disk JSON is sanitized.
+    const sensitive =
+      plan.classification === "never_store" ||
+      plan.actions.some((a) => a.kind === "redaction_rule");
+    // #1678 (threads vMLN/vZln): redact request.text (the executor does not
+    // need the raw request text for redaction_rule actions). The pattern is
+    // NOT redacted: the executor's apply flow reloads via loadPlan (disk) and
+    // needs the real pattern to call registerRedactionRule. Redacting it would
+    // register a placeholder and the extraction redaction (#1669) would never
+    // block the intended content. The pattern's transient on-disk exposure is
+    // bounded by the pending-plan TTL + consumed-on-apply lifecycle.
+    const persistedPlan: CorrectionPlan = sensitive
+      ? { ...plan, request: { ...plan.request, text: REDACTED_REQUEST_TEXT } }
+      : plan;
     await serializeMutations(`correction-plan:${target}`, async () => {
       await mkdir(dir, { recursive: true });
       const tmp = `${target}.${process.pid}.${Date.now().toString(36)}.tmp`;
-      await writeFile(tmp, `${JSON.stringify(plan)}\n`, "utf-8");
+      await writeFile(tmp, `${JSON.stringify(persistedPlan)}\n`, "utf-8");
       // rename() is atomic on POSIX for same-filesystem renames (rule 54).
       await rename(tmp, target);
     });
@@ -450,6 +478,17 @@ export class CorrectionPlanner {
       const plan = parsePlan(raw);
       if (!plan) return;
       plan.status = status;
+      // #1669 thread P1: scrub redaction_rule patterns from consumed plans so
+      // a never-store pattern does not persist on disk after apply/discard.
+      // The executor reloads via loadPlan only between "applying" (step 1) and
+      // "applied" (step 4), so scrubbing at the terminal status is safe.
+      if (status !== "applying") {
+        plan.actions = plan.actions.map((a) =>
+          a.kind === "redaction_rule"
+            ? { ...a, pattern: "[redacted — pattern applied]" }
+            : a,
+        );
+      }
       const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
       await writeFile(tmp, `${JSON.stringify(plan)}\n`, "utf-8");
       await rename(tmp, file);

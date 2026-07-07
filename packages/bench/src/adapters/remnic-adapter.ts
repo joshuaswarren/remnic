@@ -161,7 +161,12 @@ type OrchestratorDrainDiagnosticsView = {
     isQmdMaintenancePending(): boolean;
     isQmdMaintenanceInFlight(): boolean;
   };
-  tierMigrationInFlight?: boolean;
+  /** Tier migration coordinator owns the in-flight guard after the #1526
+   *  extraction; read it through the coordinator's public accessor (the
+   *  orchestrator no longer exposes this field directly). */
+  tierMigrationCoordinator?: {
+    isInFlight(): boolean;
+  };
 };
 
 type BenchOrchestratorState = {
@@ -2562,7 +2567,7 @@ function describeDrainState(orchestrator: Orchestrator): string {
     `consolidationInFlight=${view.maintenanceScheduler?.isConsolidationInFlight() === true}`,
     `qmdMaintenancePending=${view.maintenanceScheduler?.isQmdMaintenancePending() === true}`,
     `qmdMaintenanceInFlight=${view.maintenanceScheduler?.isQmdMaintenanceInFlight() === true}`,
-    `tierMigrationInFlight=${view.tierMigrationInFlight === true}`,
+    `tierMigrationInFlight=${view.tierMigrationCoordinator?.isInFlight() === true}`,
   ].join(", ");
 }
 

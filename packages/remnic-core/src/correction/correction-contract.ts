@@ -263,31 +263,89 @@ export function validateRedactionPattern(pattern: string): string {
       `redaction_rule.pattern exceeds the ${REDACTION_PATTERN_MAX}-character bound.`,
     );
   }
-  // Reject patterns that could match an unbounded string (catastrophic /
-  // overly-broad). A literal or a bounded regex is fine; a bare `.*` / `.`
-  // regex is not. We do NOT execute the regex (ReDoS); we only inspect shape.
-  if (isRegexLike(trimmed) && isOverlyBroadRegex(trimmed)) {
+  // Reject patterns that could match an unbounded string (overly-broad) OR
+  // exhibit catastrophic backtracking (nested quantifiers like `(a+)+`). We do
+  // NOT execute the regex (that would be ReDoS itself); we only inspect shape.
+  if (isRegexLike(trimmed) && isUnsafeRedactionRegex(trimmed)) {
     throw new CorrectionContractError(
-      "redaction_rule.pattern is too broad — use a bounded literal or a more specific pattern.",
+      "redaction_rule.pattern is unsafe — use a bounded literal or a regex without nested quantifiers / overlapping alternation.",
     );
+  }
+  // #1669 P2: reject zero-width regex (empty body or matches empty string)
+  // that would withhold every fact.
+  if (isRegexLike(trimmed)) {
+    const regexBody = trimmed.slice(1, -1);
+    if (regexBody.length === 0) {
+      throw new CorrectionContractError("redaction_rule.pattern body is empty — use a non-empty regex.");
+    }
+    try {
+      if (new RegExp(regexBody).test("")) {
+        throw new CorrectionContractError(
+          "redaction_rule.pattern matches the empty string — it would withhold every fact.",
+        );
+      }
+    } catch (e) {
+      if (e instanceof CorrectionContractError) throw e;
+      // Compilation failed — the extraction-time defense handles it.
+    }
   }
   return trimmed;
 }
 
-/** Heuristic: treat `/.../` or presence of regex metacharacters as regex. */
+/** Only `/.../`-wrapped patterns are treated as regex; everything else is a
+ *  literal (review thread P1 — consistent with extraction-redaction-rules.ts). */
 function isRegexLike(pattern: string): boolean {
-  if (pattern.startsWith("/") && pattern.endsWith("/") && pattern.length >= 2) return true;
-  return /[\\^$.|?*+()[\]{}]/.test(pattern);
+  return pattern.startsWith("/") && pattern.endsWith("/") && pattern.length >= 2;
 }
 
-/** Reject a regex that would match an arbitrary-length run of any character. */
-function isOverlyBroadRegex(pattern: string): boolean {
+/**
+ * Reject a regex that would either match an arbitrary-length run of any
+ * character (overly-broad) OR exhibit catastrophic backtracking (ReDoS).
+ * Mirrors the safe-regex heuristic in extraction-redaction-rules.ts so the
+ * apply-time chokepoint and the extraction-time defense agree on what is
+ * pathological — intentionally not imported to keep the two modules decoupled
+ * (contract owns validation; extraction owns consultation).
+ */
+function isUnsafeRedactionRegex(pattern: string): boolean {
   const body = pattern.startsWith("/") && pattern.endsWith("/")
     ? pattern.slice(1, -1)
     : pattern;
   // `.*`, `.+`, `.`, or `(.*)` etc. anywhere → overly broad.
   if (/(?:^|[^\\])\(\.\*\)|(?:^|[^\\])\.\*|(?:^|[^\\])\.\+|^\.([^*+]?)$/.test(body)) {
     return true;
+  }
+  // Nested quantifier: a group (...) whose body ends with a quantifier and
+  // which is itself quantified → exponential blowup on near-miss inputs
+  // (classic ReDoS shapes: (a+)+, (a*)*, (a?)+). Also catches overlapping
+  // alternation under repetition: (a|a)+ where branches share a prefix.
+  if (body.length > 512) return true;
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== "(") continue;
+    let depth = 1;
+    let j = i + 1;
+    while (j < body.length && depth > 0) {
+      if (body[j] === "\\") { j += 2; continue; }
+      if (body[j] === "(") depth++;
+      else if (body[j] === ")") depth--;
+      j++;
+    }
+    if (depth !== 0) continue;
+    const afterGroup = body[j];
+    if (afterGroup !== "+" && afterGroup !== "*" && afterGroup !== "{") continue;
+    const groupBody = body.slice(i + 1, j - 1);
+    if (/[+*?]$/.test(groupBody) || /\{\d+,?\d*\}[+*?]?$/.test(groupBody)) {
+      return true;
+    }
+    if (groupBody.includes("|")) {
+      const branches = groupBody.split("|");
+      if (branches.length >= 2) {
+        const firstChars = new Set(branches.map((b) => b[0]).filter(Boolean));
+        if (firstChars.size < branches.filter((b) => b.length > 0).length) {
+          return true;
+        }
+      }
+    }
+    i = j;
   }
   return false;
 }

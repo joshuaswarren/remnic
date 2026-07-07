@@ -1,6 +1,6 @@
 {
   "name": "@remnic/core",
-  "version": "9.3.714",
+  "version": "9.3.728",
   "description": "Framework-agnostic Remnic memory engine — orchestrator, storage, extraction, search, trust zones",
   "type": "module",
   "main": "dist/index.js",
@@ -440,6 +440,30 @@
       "types": "./dist/thread-key.d.ts",
       "remnic-source": "./src/thread-key.ts",
       "import": "./dist/thread-key.js"
+    },
+    "./codex-cli-fallback": {
+      "types": "./dist/compat/codex-cli-fallback.d.ts",
+      "remnic-source": "./src/compat/codex-cli-fallback.ts",
+      "import": "./dist/compat/codex-cli-fallback.js",
+      "deprecated": "Deprecated alias of @remnic/core/cli-fallback (PR #1638 renamed codex-cli-fallback.ts to cli-fallback.ts). Import from @remnic/core/cli-fallback instead. Removed in v10.0.0. See issue #1643."
+    },
+    "./codex-cli-fallback.js": {
+      "types": "./dist/compat/codex-cli-fallback.d.ts",
+      "remnic-source": "./src/compat/codex-cli-fallback.ts",
+      "import": "./dist/compat/codex-cli-fallback.js",
+      "deprecated": "Deprecated alias of @remnic/core/cli-fallback (PR #1638 renamed codex-cli-fallback.ts to cli-fallback.ts). Import from @remnic/core/cli-fallback instead. Removed in v10.0.0. See issue #1643."
+    },
+    "./codex-thread-key": {
+      "types": "./dist/compat/codex-thread-key.d.ts",
+      "remnic-source": "./src/compat/codex-thread-key.ts",
+      "import": "./dist/compat/codex-thread-key.js",
+      "deprecated": "Deprecated alias of @remnic/core/thread-key (PR #1638 renamed codex-thread-key.ts to thread-key.ts). Import from @remnic/core/thread-key instead. Removed in v10.0.0. See issue #1643."
+    },
+    "./codex-thread-key.js": {
+      "types": "./dist/compat/codex-thread-key.d.ts",
+      "remnic-source": "./src/compat/codex-thread-key.ts",
+      "import": "./dist/compat/codex-thread-key.js",
+      "deprecated": "Deprecated alias of @remnic/core/thread-key (PR #1638 renamed codex-thread-key.ts to thread-key.ts). Import from @remnic/core/thread-key instead. Removed in v10.0.0. See issue #1643."
     },
     "./coding/optional-coding-graph": {
       "types": "./dist/coding/optional-coding-graph.d.ts",
@@ -2973,7 +2997,7 @@
     "core"
   ],
   "peerDependencies": {
-    "@remnic/coding-graph": "^9.3.714"
+    "@remnic/coding-graph": "^9.3.728"
   },
   "peerDependenciesMeta": {
     "@remnic/coding-graph": {

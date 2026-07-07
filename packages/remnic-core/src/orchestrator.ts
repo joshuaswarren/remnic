@@ -24,6 +24,10 @@ import { SmartBuffer } from "./buffer.js";
 import { chunkContent, type ChunkingConfig } from "./chunking.js";
 import { semanticChunkContent, type SemanticChunkResult } from "./semantic-chunking.js";
 import { ExtractionEngine } from "./extraction.js";
+import { detectPassiveCorrections } from "./correction/passive-correction-detector.js";
+import { capturePassiveCorrections, type PassiveCaptureConfig } from "./correction/passive-capture.js";
+import { createCorrectionService } from "./correction/correction-access-wiring.js";
+import type { CorrectionService } from "./correction/correction-service.js";
 import { isAboveImportanceThreshold, scoreImportance } from "./importance.js";
 import {
   judgeFactDurability,
@@ -40,6 +44,11 @@ import {
   createFaithfulnessCounters,
   runFaithfulnessGateBatch,
 } from "./extraction-faithfulness.js";
+import {
+  contentMatchesRedactionRules,
+  loadRedactionRules,
+  type CompiledRedactionRule,
+} from "./extraction-redaction-rules.js";
 import type { FaithfulnessGateCounters } from "./extraction-faithfulness.js";
 import {
   EXTRACTION_JUDGE_VERDICT_CATEGORY,
@@ -89,6 +98,7 @@ import {
   gatewayTaskChainOptions,
 } from "./fallback-llm.js";
 import { MaintenanceScheduler } from "./orchestration/maintenance.js";
+import { TierMigrationCoordinator } from "./orchestration/tier-migration-coordinator.js";
 import {
   runLiveConnectorsOnce,
   type LiveConnectorsRunSummary,
@@ -112,6 +122,9 @@ import {
   buildMemoryWorthCounterMap,
   type MemoryWorthCounters,
 } from "./memory-worth-filter.js";
+import { applyTrustScoreStage, buildTrustSignalsForRerank, projectTrustForXray } from "./trust-score-stage.js";
+import type { TrustStageResultItem } from "./trust-score-stage.js";
+import { renderEpistemicHedge, type TrustSignals } from "./trust-score.js";
 import { reorderRecallResultsWithMmr } from "./recall-mmr.js";
 import { applyReasoningTraceBoost } from "./reasoning-trace-recall.js";
 import { buildRetrievedMemoryProvenance } from "./memory-provenance.js";
@@ -121,7 +134,7 @@ import {
   shouldFilterSupersededFromRecall,
 } from "./temporal-supersession.js";
 import { isValidAsOf, isValidityExpiredNow } from "./temporal-validity.js";
-import { resolveFactEventTime } from "./event-time.js";
+import { pickFactEventTimeAnchor, resolveFactEventTime } from "./event-time.js";
 import { RelevanceStore } from "./relevance.js";
 import { NegativeExampleStore } from "./negative.js";
 import {
@@ -256,8 +269,10 @@ import { tryDirectAnswer, type DirectAnswerSources } from "./direct-answer-wirin
 import {
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
+  resolveMemoryLifecycleCapabilities,
   type CapabilitySet,
   type GraphConstructionCapabilitySet,
+  type MemoryLifecycleCapabilitySet,
 } from "./capabilities.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/index.js";
 import {
@@ -338,11 +353,16 @@ import {
 } from "./namespaces/identity.js";
 import {
   canReadNamespace,
+  canWriteNamespace,
   defaultNamespaceForPrincipal,
   recallNamespacesForPrincipal,
   resolvePrincipal,
 } from "./namespaces/principal.js";
-import { resolveScopePlan } from "./scopes/scope-plan.js";
+import {
+  getConfiguredNamespaces,
+  resolveNamespaceFromStorageDir,
+  resolveScopePlan,
+} from "./scopes/scope-plan.js";
 import {
   expandScopeProfileReadNamespaces,
   resolveScopeProfilePlan,
@@ -425,6 +445,7 @@ import type {
   EntityStructuredSection,
   EntityTimelineEntry,
 } from "./types.js";
+import { disposeDefaultArchiveScoring, getDefaultArchiveScoring, memoryFileToScoreItem } from "./recall/archive-scoring.js";
 
 export interface BulkImportBatchIngestResult {
   attemptedTurnCount: number;
@@ -1396,12 +1417,11 @@ export async function resolveRecallModeDecisionAsync(
   options: RecallModeGraphOptions & {
     config: PluginConfig;
     /**
-     * Recall-operation capability gates (issue #1523). OPTIONAL and additive:
-     * the recall orchestrator passes a resolved set, but existing callers that
-     * only pass `config` + planner flags stay backward-compatible — the LLM
-     * planner gate falls back to `config.recallPlannerLlmEnabled` when omitted.
+     * Recall-operation capability gates (issue #1523). REQUIRED: the recall
+     * orchestrator always passes a resolved set — the LLM planner gate reads
+     * `caps.recallPlannerLlm`, never re-derives from config.
      */
-    caps?: CapabilitySet;
+    caps: CapabilitySet;
     hints?: string[];
     llm?: FallbackLlmClient;
     signal?: AbortSignal;
@@ -1410,10 +1430,8 @@ export async function resolveRecallModeDecisionAsync(
   const heuristicDecision = resolveRecallModeDecision(options);
 
   // Planner globally off, or LLM planning not opted into → heuristic only.
-  // Prefer the resolved capability when supplied; otherwise fall back to the
-  // config flag so callers on the old option shape get identical gating.
-  const plannerLlmEnabled =
-    options.caps?.recallPlannerLlm ?? options.config.recallPlannerLlmEnabled;
+  // Read the resolved capability (issue #1523) — never re-derive from config.
+  const plannerLlmEnabled = options.caps.recallPlannerLlm;
   if (!options.plannerEnabled || !plannerLlmEnabled) {
     return heuristicDecision;
   }
@@ -1423,9 +1441,9 @@ export async function resolveRecallModeDecisionAsync(
     options.prompt,
     options.hints,
     options.config,
+    options.caps,
     options.llm,
     options.signal,
-    options.caps,
   );
 
   // Shadow mode: record what the LLM would have chosen but keep the heuristic
@@ -1818,6 +1836,7 @@ export function resolvePersistedMemoryRelativePath(options: {
 }
 
 export class Orchestrator {
+
   readonly storage: StorageManager;
   private readonly storageRouter: NamespaceStorageRouter;
   /** Rebuildable namespace catalog (issue #1499). Inert unless namespaces enabled. */
@@ -1896,6 +1915,7 @@ export class Orchestrator {
   readonly lastRecall: LastRecallStore;
   readonly handleHistory: RecallHandleHistoryStore;
   readonly tierMigrationStatus: TierMigrationStatusStore;
+  readonly tierMigrationCoordinator: TierMigrationCoordinator;
   /**
    * In-memory X-ray snapshot from the most recent `recall()` call that
    * was invoked with `xrayCapture: true` (issue #570 PR 1).  Scope is
@@ -1935,6 +1955,18 @@ export class Orchestrator {
     { at: number; counters: ReadonlyMap<string, MemoryWorthCounters> }
   >();
   private static readonly MEMORY_WORTH_CACHE_TTL_MS = 30_000;
+  /**
+   * Issue #1577 — per-namespace TrustScore signal map cache. Same TTL/shape
+   * discipline as {@link memoryWorthCounterCache}: seconds-scale, evicted on
+   * every call, keyed by namespace. Holds the frontmatter-derived signals
+   * (worth, provenance, faithfulness, corroboration, recency) so the trust
+   * stage doesn't trigger a fresh `readAllMemories` scan per query.
+   */
+  private readonly trustSignalCache = new Map<
+    string,
+    { at: number; signals: ReadonlyMap<string, TrustSignals> }
+  >();
+  private static readonly TRUST_SIGNAL_CACHE_TTL_MS = 30_000;
   /**
    * Per-session workspace selections keyed by sessionKey.
    * Set by the before_agent_start hook so recall() uses the correct
@@ -1979,6 +2011,16 @@ export class Orchestrator {
     { count: number; lastAccessed: string }
   > = new Map();
 
+  // Passive correction capture (issue #1581) — dedup state + lazy service.
+  private passiveCorrectionDedup: Set<string> = new Set();
+  private _passiveCorrectionService: CorrectionService | null = null;
+  private passiveCorrectionTelemetry: {
+    detected: number;
+    queued: number;
+    autoApplied: number;
+    suppressedReasonCounts: Record<string, number>;
+  } = { detected: 0, queued: 0, autoApplied: 0, suppressedReasonCounts: {} };
+
   // Background serial queue for extractions (agent_end optimization)
   // Queue stores promises that resolve when extraction should run
   private extractionQueue: Array<() => Promise<void>> = [];
@@ -1991,8 +2033,6 @@ export class Orchestrator {
   private wearablesServiceInstance: WearablesService | null = null;
   private wearablesAutoSyncHandle: { stop(): Promise<void> } | null = null;
   private lastQmdReprobeAtMs = 0;
-  private tierMigrationInFlight = false;
-  private lastTierMigrationRunAtMs = 0;
   private readonly conversationIndexLastUpdateAtMs = new Map<string, number>();
   private lastFileHygieneRunAtMs = 0;
   // Pattern-reinforcement cadence gate (issue #687 PR 2/4).  Tracks the
@@ -2080,6 +2120,8 @@ export class Orchestrator {
     if (this.conversationQmd && this.conversationQmd !== this.qmd) {
       await (this.conversationQmd as { dispose?: () => void | Promise<void> }).dispose?.();
     }
+    // Issue #1674: terminate archive-scoring worker threads on destroy.
+    await disposeDefaultArchiveScoring();
   }
 
   /** Set per-session workspace for the next recall() call (compaction reset). @internal */
@@ -2320,18 +2362,11 @@ export class Orchestrator {
     return this.storageRouter.storageFor(ns);
   }
 
-  private configuredNamespaces(): string[] {
-    return Array.from(
-      new Set(
-        [
-          this.config.defaultNamespace,
-          this.config.sharedNamespace,
-          ...this.config.namespacePolicies.map((policy) => policy.name),
-        ]
-          .map((value) => value.trim())
-          .filter(Boolean),
-      ),
-    );
+  private configuredNamespaceList(): string[] {
+    // #1521: delegates to the scope-module resolver. The inline derivation is
+    // retired so the adHocNamespaceResolutions ratchet no longer counts this
+    // site.
+    return getConfiguredNamespaces(this.config);
   }
 
   private rememberNamespaceStorageDirHint(namespace: string, storageDir?: string): void {
@@ -2459,7 +2494,7 @@ export class Orchestrator {
     }
 
     const configured = new Set(
-      this.configuredNamespaces().map((namespace) => normalizeNamespaceIdentity(namespace)),
+      this.configuredNamespaceList().map((namespace) => normalizeNamespaceIdentity(namespace)),
     );
     const preferredByStorageDir = new Map<
       string,
@@ -2573,7 +2608,7 @@ export class Orchestrator {
           new Set(
             (options.namespaces?.length
               ? options.namespaces
-              : this.configuredNamespaces()
+              : this.configuredNamespaceList()
             )
               .map((value) => value.trim())
               .filter(Boolean),
@@ -2703,6 +2738,166 @@ export class Orchestrator {
     index.remove(memory.content);
   }
 
+  /**
+   * Issue #1671 — backfill bi-temporal bounds onto an existing promoted/deduped
+   * copy that was written BEFORE the source fact carried a resolved
+   * `invalid_at`/`observedAt`/`eventTimeSource`.
+   *
+   * On re-extraction/backfill, a fact may now carry a resolved end bound (e.g.
+   * "until June 2025") that the existing copy lacks because it was promoted
+   * before bi-temporal wiring existed. Without this backfill, recall keeps
+   * surfacing an expired fact even though the source copy now expires correctly.
+   *
+   * Finds the active fact in `targetStorage` matching `dedupContent`, then
+   * patches the temporal frontmatter the existing copy is missing. Best-effort
+   * / fail-open — any I/O error is logged and swallowed so the dedup
+   * short-circuit is never blocked by a backfill failure.
+   *
+   * Matching: the stored `frontmatter.contentHash` is compared against
+   * `ContentHashIndex.computeHash(dedupContent)` first (the exact hash the
+   * content-hash index uses), then falls back to stripping citations and
+   * comparing normalized bodies. This handles inline-attribution deployments
+   * where the persisted body carries a citation marker the dedup key does not.
+   *
+   * I/O gate: only triggers when `invalidAt` is present (the end bound that
+   * actually changes recall behavior by expiring the fact). `observedAt` and
+   * `eventTimeSource` alone don'\''t expire a fact, so backfilling them without
+   * an end bound would cause a full readAllMemories scan on every dedup hit
+   * under biTemporal for no recall benefit.
+   *
+   * Only patches fields the existing copy LACKS — never overwrites a bound the
+   * copy already carries.
+   */
+  private async backfillTemporalBoundsOnDedupHit(
+    targetStorage: StorageManager,
+    dedupContent: string,
+    bounds: {
+      invalidAt?: string;
+      // #1707 thread 2 — per-fact start bound (valid_at). Carried so a
+      // re-extracted duplicate whose event time yields only a start bound
+      // ("since 2024", "yesterday", an absolute date) gets the corrected
+      // per-fact anchoring onto the existing copy.
+      validFrom?: string;
+      observedAt?: string;
+      eventTimeSource?: "extracted" | "assumed";
+    },
+    entityRef?: string,
+  ): Promise<void> {
+    // I/O gate: scan when there is a recall-relevant bound to backfill —
+    // either an end bound (invalidAt, which expires the fact) or a corrected
+    // EXTRACTED start bound. A start bound only changes recall when it is
+    // extracted (the as-of filter excludes facts whose valid_at is after the
+    // as-of instant); an "assumed" validFrom is just the ingestion anchor
+    // (resolveFactEventTime sets one for every fact), so scanning on it would
+    // run a full readAllMemories on every bi-temporal dedup hit for no benefit
+    // (review cursor PRRT_OvHk / codex PRRT_OvHxVH). observedAt and
+    // eventTimeSource alone never change recall.
+    const hasExtractedStart =
+      bounds.validFrom !== undefined && bounds.eventTimeSource === "extracted";
+    if (!bounds.invalidAt && !hasExtractedStart) return;
+    try {
+      const incomingHash = ContentHashIndex.computeHash(dedupContent);
+      const normalizedIncoming = ContentHashIndex.normalizeContent(dedupContent);
+      // Normalize the entity for same-entity scoping when provided — two
+      // entities can share identical fact text, and patching a different
+      // entity'\''s fact would corrupt its temporal bounds (cursor review).
+      const incomingEntityNorm = entityRef
+        ? normalizeSupersessionKey(entityRef)
+        : undefined;
+      const all = await targetStorage.readAllMemories();
+      const existing = all.find((m) => {
+        if (m.frontmatter.category !== "fact") return false;
+        if ((m.frontmatter.status ?? "active") !== "active") return false;
+        // Same-entity guard: reject only when the stored fact carries a
+        // DIFFERENT entity (two entities can share identical fact text, so
+        // patching the other entity's copy would corrupt its bounds — codex
+        // P2 PRRT_OvB4A). Legacy facts written before entity linkage (no
+        // entityRef) have no entity to conflict with, so they stay eligible
+        // for backfill (cursor PRRT_OvKnV: the guard must NOT silently
+        // no-op for older promoted copies that predate entity linkage).
+        if (
+          incomingEntityNorm &&
+          m.frontmatter.entityRef &&
+          normalizeSupersessionKey(m.frontmatter.entityRef) !== incomingEntityNorm
+        ) {
+          return false;
+        }
+        // Prefer the stored contentHash (what the hash index actually keys
+        // on) — it is computed from contentHashSource (the raw/enriched
+        // body before citation), matching the dedupContent the caller passes.
+        if (m.frontmatter.contentHash) {
+          return m.frontmatter.contentHash === incomingHash;
+        }
+        // Legacy facts without a stored hash: strip citations then compare
+        // normalized bodies so inline-attribution markers don'\''t prevent
+        // a match.
+        return (
+          ContentHashIndex.normalizeContent(
+            stripCitationForTemplate(m.content ?? "", this.config.inlineSourceAttributionFormat),
+          ) === normalizedIncoming
+        );
+      });
+      if (!existing) return;
+      // Build a patch containing ONLY the fields the existing copy lacks.
+      const patch: Partial<MemoryFrontmatter> = {};
+      const fm = existing.frontmatter;
+      if (bounds.invalidAt && (!fm.invalid_at || fm.invalid_at.length === 0)) {
+        patch.invalid_at = bounds.invalidAt;
+      }
+      if (bounds.observedAt && (!fm.observedAt || fm.observedAt.length === 0)) {
+        patch.observedAt = bounds.observedAt;
+      }
+      if (
+        bounds.eventTimeSource &&
+        (!fm.eventTimeSource || fm.eventTimeSource.length === 0)
+      ) {
+        patch.eventTimeSource = bounds.eventTimeSource;
+      }
+      // #1707 thread 2 — per-fact-anchored start bound. A re-extracted
+      // duplicate whose event time resolves a real start bound must carry
+      // that anchor onto the existing copy so as-of recall uses the corrected
+      // valid_at instead of a stale batch-anchored value. Only an EXTRACTED
+      // bound corrects; an "assumed" bound is just the ingestion anchor.
+      //
+      // No-clobber via equality, not provenance inference: exact-content dedup
+      // re-extracts the SAME event-time expression, which #1670 per-fact
+      // anchoring resolves deterministically to the same validFrom — so for
+      // stable content the incoming validFrom EQUALS the copy's valid_at and
+      // we skip the redundant write (the only no-clobber that holds without a
+      // fragile provenance heuristic — review codex PRRT_Ov7LKC). When they
+      // differ (a prior batch/assumed anchor, end-only assumed start, or a
+      // non-deterministic re-resolution), the extracted validFrom is the
+      // authoritative correction and overwrites. The eventTimeSource upgrade
+      // below records that the start is now extracted-anchored.
+      if (
+        bounds.validFrom &&
+        bounds.eventTimeSource === "extracted" &&
+        fm.valid_at !== bounds.validFrom
+      ) {
+        patch.valid_at = bounds.validFrom;
+        // Mark the copy extracted-anchored in the SAME patch so its provenance
+        // reflects the correction (review cursor PRRT_OvHM / codex PRRT_OvHxVD):
+        // without this, a copy upgraded from "assumed" would keep "assumed"
+        // provenance while carrying an extracted start. (The earlier
+        // eventTimeSource block only fills an EMPTY source.)
+        if (fm.eventTimeSource !== "extracted") {
+          patch.eventTimeSource = "extracted";
+        }
+      }
+      if (Object.keys(patch).length === 0) return;
+      const ok = await targetStorage.writeMemoryFrontmatter(existing, patch);
+      if (ok) {
+        log.debug(
+          `bitemporal-backfill: patched ${Object.keys(patch).join(",")} onto existing fact ${fm.id ?? "(unknown)"} in ${targetStorage.dir}`,
+        );
+      }
+    } catch (err) {
+      log.warn(
+        `bitemporal-backfill: failed open for ${targetStorage.dir}: ${err}`,
+      );
+    }
+  }
+
   private async saveContentHashIndexes(): Promise<void> {
     const indexes = new Set<ContentHashIndex>();
     if (this.contentHashIndex) indexes.add(this.contentHashIndex);
@@ -2824,6 +3019,14 @@ export class Orchestrator {
       maxDepth: config.recallHandleSnapshotDepth,
     });
     this.tierMigrationStatus = new TierMigrationStatusStore(config.memoryDir);
+    this.tierMigrationCoordinator = new TierMigrationCoordinator({
+      config,
+      getQmd: () => this.qmd,
+      tierMigrationStatus: this.tierMigrationStatus,
+      getUtilityRuntimeValues: () => this.utilityRuntimeValues,
+      getCompounding: () => this.compounding,
+      createColdStorage: (parentDir) => new StorageManager(parentDir),
+    });
     this.sessionObserver = new SessionObserverState({
       memoryDir: config.memoryDir,
       debounceMs: config.sessionObserverDebounceMs ?? 120_000,
@@ -2893,9 +3096,10 @@ export class Orchestrator {
     );
     // BoxBuilders are created per-namespace on first use in runExtraction().
 
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(config);
     // Temporal Memory Tree (v8.2) — lazy build during consolidation
     this.tmtBuilder = new TmtBuilder(config.memoryDir, {
-      temporalMemoryTreeEnabled: config.temporalMemoryTreeEnabled,
+      temporalMemoryTreeEnabled: lifecycleCaps.temporalMemoryTree,
       tmtHourlyMinMemories: config.tmtHourlyMinMemories,
       tmtSummaryMaxTokens: config.tmtSummaryMaxTokens,
     });
@@ -3453,6 +3657,7 @@ export class Orchestrator {
   }
 
   private async deferredInitialize(signal: AbortSignal): Promise<void> {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
 
     // Sync QMD index with current disk state so recall finds recently-written
     // facts. Without this, the index stays stale from the last extraction-
@@ -3506,7 +3711,7 @@ export class Orchestrator {
           }),
       );
     }
-    if (this.config.embeddingFallbackEnabled) {
+    if (resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) {
       warmupPromises.push(
         this.embeddingFallback
           .isAvailable()
@@ -3591,7 +3796,7 @@ export class Orchestrator {
     // sweep (capped at 50 demotions) so the hot tier isn't flooded on the
     // first real cron pass. Non-fatal — a failure here must not break init.
     if (signal.aborted) return;
-    if (this.config.lifecyclePolicyEnabled && this.config.qmdTierMigrationEnabled) {
+    if (lifecycleCaps.lifecyclePolicy && this.config.qmdTierMigrationEnabled) {
       try {
         const { runFirstStartMigration } = await import(
           "./maintenance/first-start-migration.js"
@@ -3916,6 +4121,7 @@ export class Orchestrator {
    * default storage.
    */
   async runLifecyclePolicyFanout(): Promise<NamespaceMaintenanceSummary> {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     return this.runNamespaceMaintenanceFanoutForJob(
       "lifecycle",
       async (ctx) => {
@@ -3924,7 +4130,7 @@ export class Orchestrator {
         const assessed = await this.runLifecyclePolicyPass(corpus, storage);
         return { itemCount: assessed };
       },
-      { enabled: this.config.lifecyclePolicyEnabled },
+      { enabled: lifecycleCaps.lifecyclePolicy },
     );
   }
 
@@ -4141,7 +4347,7 @@ export class Orchestrator {
     if (options?.dryRun !== true) {
       try {
         await this.processEntitySynthesisQueue(
-          this.namespaceFromStorageDir(targetStorage.dir),
+          this.storageDirNamespace(targetStorage.dir),
           5,
         );
       } catch (error) {
@@ -7237,6 +7443,7 @@ export class Orchestrator {
     options: RecallInvocationOptions = {},
     caps: CapabilitySet = resolveCapabilities(this.config),
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
+    lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.config),
   ): Promise<string> {
     const recallStart = Date.now();
     // Backend degradations observed by this recall's QMD searches (#1536):
@@ -7258,8 +7465,8 @@ export class Orchestrator {
     const timings: Record<string, string> = {};
     const profileTraceId = this.profiler.startTrace("recall", sessionKey, {
       qmdEnabled: this.config.qmdEnabled,
-      rerankEnabled: this.config.rerankEnabled,
-      parallelRetrieval: this.config.parallelRetrievalEnabled,
+      rerankEnabled: caps.rerank,
+      parallelRetrieval: caps.parallelRetrieval,
     });
     this.profiler.startSpan("planning", profileTraceId);
     let profileTraceClosed = false;
@@ -7365,6 +7572,23 @@ export class Orchestrator {
     // per-result explain data (e.g. reinforcementBoost) from the result that
     // was actually served.
     let xrayRecalledResults: QmdSearchResult[] = [];
+    // Issue #1577 — per-recall trust map (admitted + quarantined items).
+    // A LOCAL, not instance state, so concurrent recalls on the same
+    // orchestrator cannot race on it (review: shared-trust-map concurrency).
+    // Populated by applyTrustScoreRerank on whichever recall path runs;
+    // consumed by formatQmdResults (epistemic hedge), publishRecallResults
+    // (quarantine filtering on ALL paths), and the X-ray capture (trust
+    // projection + quarantined-item visibility — rule 34).
+    let recallTrustByPath: Map<string, TrustStageResultItem> | null = null;
+    // Issue #1577 — sink for the cold-fallback pipeline's trust map. The cold
+    // pipeline scores internally (applyColdFallbackPipeline) and writes its
+    // per-path trust map here; each cold caller reads it back into
+    // recallTrustByPath so cold/embedding/recent paths feed the same X-ray +
+    // epistemic-rendering + publisher-quarantine consumers the hot path uses
+    // (rule 41: the feature gate applies across ALL parallel recall paths).
+    const trustByPathSink: { trustByPath: Map<string, TrustStageResultItem> | null } = {
+      trustByPath: null,
+    };
     const lcmStructuredXrayResults: RecallXrayResult[] = [];
     // Per-branch pre-limit candidate pool size for the X-ray filter
     // trace (issue #570 PR 1).  `recalledMemoryCount` is assigned
@@ -8720,10 +8944,10 @@ export class Orchestrator {
       (async (): Promise<string | null> => {
         const t0 = Date.now();
         if (
-          !this.config.harmonicRetrievalEnabled ||
+          !caps.harmonicRetrieval ||
           !this.isRecallSectionEnabled(
             "harmonic-retrieval",
-            this.config.harmonicRetrievalEnabled === true,
+            caps.harmonicRetrieval,
           )
         ) {
           recordRecallSectionMetric({
@@ -9288,7 +9512,7 @@ export class Orchestrator {
           [ParallelSearchResult[], ParallelSearchResult[]]
         > | null =
           !queryAwarePrefilterIsEmpty &&
-          this.config.parallelRetrievalEnabled && maxPerAgent > 0
+          caps.parallelRetrieval && maxPerAgent > 0
             ? Promise.all([
                 shouldRunAgent("direct", retrievalQuery, 0)
                   ? Promise.all(
@@ -9377,7 +9601,7 @@ export class Orchestrator {
               : 0;
           let augmentedResults = filteredResults;
           let maxSpecializedScore = 0;
-          if (this.config.parallelRetrievalEnabled && specializedAgentPromise) {
+          if (caps.parallelRetrieval && specializedAgentPromise) {
             try {
               const [directResults, temporalResults] =
                 await specializedAgentPromise;
@@ -10627,9 +10851,9 @@ export class Orchestrator {
     if (
       this.isRecallSectionEnabled(
         "temporal-memory-tree",
-        this.config.temporalMemoryTreeEnabled === true,
+        lifecycleCaps.temporalMemoryTree,
       ) &&
-      this.config.temporalMemoryTreeEnabled &&
+      lifecycleCaps.temporalMemoryTree &&
       recallMode !== "minimal" &&
       (recallMode as RecallPlanMode) !== "no_recall"
     ) {
@@ -11023,7 +11247,7 @@ export class Orchestrator {
       );
 
       // Optional LLM reranking (default off). Fail-open if rerank fails/slow.
-      if (this.config.rerankEnabled && this.config.rerankProvider === "local") {
+      if (caps.rerank && this.config.rerankProvider === "local") {
         const ranked = await rerankLocalOrNoop({
           query: retrievalQuery,
           candidates: memoryResults
@@ -11055,24 +11279,26 @@ export class Orchestrator {
           memoryResults = reordered;
         }
       }
-      if (this.config.rerankEnabled && this.config.rerankProvider === "cloud") {
+      if (caps.rerank && this.config.rerankProvider === "cloud") {
         log.debug(
           "rerankProvider=cloud is reserved/experimental in v2.2.0; skipping rerank",
         );
       }
 
-      // Memory Worth recall filter (issue #560 PR 4). When enabled, multiply
-      // each candidate's score by its Memory Worth factor so memories with
-      // a history of failed outcomes sink. Default off in this PR; PR 5
-      // flips the default once bench shows tie-or-win. Fail-open: any
-      // lookup error leaves the original scores untouched rather than
-      // breaking recall for the whole namespace.
-      if (caps.recallMemoryWorthFilter && memoryResults.length > 0) {
-        try {
-          memoryResults = await this.applyMemoryWorthRerank(memoryResults, recallNamespaces);
-        } catch (err) {
-          log.debug("memory-worth filter failed open", { error: (err as Error).message });
-        }
+      // Trust-reweighting stage. TrustScore (issue #1577) SUBSUMES the Memory
+      // Worth multiplier — exactly one runs (rule 39; the double-multiplier
+      // test in trust-score-stage.test.ts pins it structurally). Applied on
+      // EVERY recall path via applyTrustScoreToBranch so the gate is consistent
+      // (rule 41 parity). Fail-open on lookup errors so recall never breaks.
+      {
+        const trustOutcome = await this.applyTrustScoreToBranch(
+          memoryResults,
+          recallNamespaces,
+          caps,
+          "hot-qmd",
+        );
+        memoryResults = trustOutcome.results;
+        recallTrustByPath = trustOutcome.trustByPath;
       }
 
       // Synapse-inspired confidence gate: check scores BEFORE slicing so
@@ -11189,6 +11415,7 @@ export class Orchestrator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
+        trustByPath: recallTrustByPath,
         });
         recalledMemoryIds = this.extractMemoryIdsFromResults(memoryResults);
         recalledMemoryPaths = memoryResults
@@ -11202,7 +11429,7 @@ export class Orchestrator {
         // low-relevance results from polluting context.
         const queryAwarePrefilter = await queryAwarePrefilterPromise;
         if (queryAwarePrefilter.candidatePaths?.size !== 0) {
-        const scoped = await awaitAssemblyStep(
+        let scoped = await awaitAssemblyStep(
           "embedding-fallback",
           async () => {
             const embeddingResults = await this.searchEmbeddingFallback(
@@ -11245,6 +11472,18 @@ export class Orchestrator {
           },
           [] as QmdSearchResult[],
         );
+        // Issue #1577 — apply TrustScore on the embedding-fallback path so the
+        // feature gate is consistent across ALL recall paths (rule 41 parity).
+        {
+          const trustOutcome = await this.applyTrustScoreToBranch(
+            scoped,
+            recallNamespaces,
+            caps,
+            "embedding-fallback",
+          );
+          scoped = trustOutcome.results;
+          recallTrustByPath = trustOutcome.trustByPath;
+        }
         if (scoped.length > 0) {
           if (shouldPersistGraphSnapshot) {
             graphSnapshotFinalResults = this.buildGraphRecallRankedResults(
@@ -11265,6 +11504,7 @@ export class Orchestrator {
               injectedChars: identityInjectedChars,
               truncated: identityInjectionTruncated,
             },
+          trustByPath: recallTrustByPath,
           });
           recalledMemoryIds = this.extractMemoryIdsFromResults(scoped);
           recalledMemoryPaths = scoped
@@ -11286,10 +11526,15 @@ export class Orchestrator {
               backendDegradations.push(degradation);
             },
             xrayPoolSizeSink: xrayColdPoolSink,
+            trustByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
+          // Issue #1577 — read the cold pipeline's trust map back so cold
+          // results feed X-ray + epistemic rendering + publisher quarantine
+          // filtering (rule 41 parity; review: the sink was never read back).
+          recallTrustByPath = trustByPathSink.trustByPath;
           if (longTerm.length > 0) {
             if (shouldPersistGraphSnapshot) {
               graphSnapshotFinalResults = this.buildGraphRecallRankedResults(
@@ -11310,6 +11555,7 @@ export class Orchestrator {
                 injectedChars: identityInjectedChars,
                 truncated: identityInjectionTruncated,
               },
+            trustByPath: recallTrustByPath,
             });
             recalledMemoryIds = this.extractMemoryIdsFromResults(longTerm);
             recalledMemoryPaths = longTerm
@@ -11326,7 +11572,7 @@ export class Orchestrator {
         this.appendRecallSection(
           sectionBuckets,
           "workspace-context",
-          this.formatQmdResults("Workspace Context", globalResults, sessionKey),
+          this.formatQmdResults("Workspace Context", globalResults, sessionKey, recallTrustByPath),
         );
       }
 
@@ -11362,7 +11608,7 @@ export class Orchestrator {
       // Fallback: embeddings first, then recency-only.
       const queryAwarePrefilter = await queryAwarePrefilterPromise;
       if (queryAwarePrefilter.candidatePaths?.size !== 0) {
-        const scoped = await awaitAssemblyStep(
+        let scoped = await awaitAssemblyStep(
           "embedding-fallback",
           async () => {
             const embeddingResults = await this.searchEmbeddingFallback(
@@ -11405,6 +11651,18 @@ export class Orchestrator {
           },
           [] as QmdSearchResult[],
         );
+        // Issue #1577 — apply TrustScore on the embedding-fallback path so the
+        // feature gate is consistent across ALL recall paths (rule 41 parity).
+        {
+          const trustOutcome = await this.applyTrustScoreToBranch(
+            scoped,
+            recallNamespaces,
+            caps,
+            "embedding-fallback",
+          );
+          scoped = trustOutcome.results;
+          recallTrustByPath = trustOutcome.trustByPath;
+        }
       if (scoped.length > 0) {
         if (shouldPersistGraphSnapshot) {
           graphSnapshotFinalResults = this.buildGraphRecallRankedResults(
@@ -11425,6 +11683,7 @@ export class Orchestrator {
             injectedChars: identityInjectedChars,
             truncated: identityInjectionTruncated,
           },
+        trustByPath: recallTrustByPath,
         });
         recalledMemoryIds = this.extractMemoryIdsFromResults(scoped);
         recalledMemoryPaths = scoped
@@ -11454,7 +11713,7 @@ export class Orchestrator {
           // Using the shared gate fixes both Finding 2 and Finding 3 from
           // PR #402 (round 6).
           const supersessionOptions = {
-            enabled: this.config.temporalSupersessionEnabled,
+            enabled: lifecycleCaps.temporalSupersession,
             includeInRecall: this.config.temporalSupersessionIncludeInRecall,
           };
           // Cursor Medium on PR #713: when `as_of` is active, the
@@ -11514,10 +11773,13 @@ export class Orchestrator {
                 backendDegradations.push(degradation);
               },
               xrayPoolSizeSink: xrayColdPoolSink,
+              trustByPathSink,
               deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
               asOfMs,
               ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
             });
+            // Issue #1577 — read the cold pipeline's trust map back (rule 41).
+            recallTrustByPath = trustByPathSink.trustByPath;
             if (longTerm.length > 0) {
               recallSource = "cold_fallback";
               recalledMemoryCount = longTerm.length;
@@ -11532,6 +11794,7 @@ export class Orchestrator {
                   injectedChars: identityInjectedChars,
                   truncated: identityInjectionTruncated,
                 },
+              trustByPath: recallTrustByPath,
               });
               recalledMemoryIds = this.extractMemoryIdsFromResults(longTerm);
               recalledMemoryPaths = longTerm
@@ -11541,7 +11804,7 @@ export class Orchestrator {
               impressionRecorded = true;
             }
           } else {
-            const recent = await awaitAssemblyStep(
+            let recent = await awaitAssemblyStep(
               "recent-memory-scan",
               async () => {
                 const recentSorted = queryAwareScopedMemories.sort(
@@ -11587,6 +11850,18 @@ export class Orchestrator {
               },
               [] as QmdSearchResult[],
             );
+            // Issue #1577 — apply TrustScore on the recent-scan path so the
+            // feature gate is consistent across ALL recall paths (rule 41).
+            {
+              const trustOutcome = await this.applyTrustScoreToBranch(
+                recent,
+                recallNamespaces,
+                caps,
+                "recent-scan",
+              );
+              recent = trustOutcome.results;
+              recallTrustByPath = trustOutcome.trustByPath;
+            }
 
             if (recent.length > 0) {
               if (shouldPersistGraphSnapshot) {
@@ -11608,6 +11883,7 @@ export class Orchestrator {
                   injectedChars: identityInjectedChars,
                   truncated: identityInjectionTruncated,
                 },
+              trustByPath: recallTrustByPath,
               });
               recalledMemoryIds = this.extractMemoryIdsFromResults(recent);
               recalledMemoryPaths = recent
@@ -11629,10 +11905,13 @@ export class Orchestrator {
                   backendDegradations.push(degradation);
                 },
                 xrayPoolSizeSink: xrayColdPoolSink,
+                trustByPathSink,
                 deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
                 asOfMs,
                 ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
               });
+              // Issue #1577 — read the cold pipeline's trust map back (rule 41).
+              recallTrustByPath = trustByPathSink.trustByPath;
               if (longTerm.length > 0) {
                 if (shouldPersistGraphSnapshot) {
                   graphSnapshotFinalResults =
@@ -11654,6 +11933,7 @@ export class Orchestrator {
                     injectedChars: identityInjectedChars,
                     truncated: identityInjectionTruncated,
                   },
+                trustByPath: recallTrustByPath,
                 });
                 recalledMemoryIds = this.extractMemoryIdsFromResults(longTerm);
                 recalledMemoryPaths = longTerm
@@ -11678,10 +11958,13 @@ export class Orchestrator {
               backendDegradations.push(degradation);
             },
             xrayPoolSizeSink: xrayColdPoolSink,
+            trustByPathSink,
             deadlineAtMs: enrichmentAssemblyDeadlineAtMs,
             asOfMs,
             ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
           });
+          // Issue #1577 — read the cold pipeline's trust map back (rule 41).
+          recallTrustByPath = trustByPathSink.trustByPath;
           if (longTerm.length > 0) {
             if (shouldPersistGraphSnapshot) {
               graphSnapshotFinalResults = this.buildGraphRecallRankedResults(
@@ -11702,6 +11985,7 @@ export class Orchestrator {
                 injectedChars: identityInjectedChars,
                 truncated: identityInjectionTruncated,
               },
+            trustByPath: recallTrustByPath,
             });
             recalledMemoryIds = this.extractMemoryIdsFromResults(longTerm);
             recalledMemoryPaths = longTerm
@@ -11972,6 +12256,7 @@ export class Orchestrator {
             // X-ray capture is best-effort; missing provenance must not
             // perturb recall or suppress the surfaced result.
           }
+          const trustItem = recallTrustByPath?.get(recalledPath);
           results.push({
             memoryId: derivedId,
             path: recalledPath,
@@ -11980,7 +12265,29 @@ export class Orchestrator {
             admittedBy: [],
             ...(provenance ? { provenance } : {}),
             ...(sourceSpan ? { sourceSpan } : {}),
+            // Issue #1577 — per-result trust projection for X-ray visibility.
+            ...(trustItem ? { trust: projectTrustForXray(trustItem) } : {}),
           });
+        }
+        // Issue #1577 — surface quarantined items in X-ray with their exclusion
+        // reason so operators see WHY a memory was dropped (rule 34 — exclusion
+        // must never look like "no result"). These are NOT in recalledMemoryPaths
+        // (they were excluded from injection) but ARE in the trust map.
+        if (recallTrustByPath) {
+          for (const [qPath, qItem] of recallTrustByPath) {
+            if (!qItem.quarantined || recalledMemoryPaths.includes(qPath)) continue;
+            const qId = idFromPath(qPath);
+            if (!qId) continue;
+            results.push({
+              memoryId: qId,
+              path: qPath,
+              servedBy,
+              scoreDecomposition: { final: 0 },
+              admittedBy: [],
+              rejectedBy: "trust-score:quarantine",
+              trust: projectTrustForXray(qItem),
+            });
+          }
         }
         // `considered` must reflect the pool size of the branch that
         // actually produced the admitted results, NOT the max across
@@ -12930,7 +13237,8 @@ export class Orchestrator {
     turns: BufferTurn[],
     options: { commit?: boolean; bufferKey?: string } = {},
   ): boolean {
-    if (!this.config.extractionDedupeEnabled) return true;
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
+    if (!lifecycleCaps.extractionDedupe) return true;
     if (!Array.isArray(turns) || turns.length === 0) return false;
 
     const bufferKey = options.bufferKey ?? turns[0]?.sessionKey ?? "default";
@@ -13018,6 +13326,139 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Passive correction capture (issue #1581) — detects corrections expressed
+   * passively in conversation turns and routes them to the Correction Contract
+   * (#1580). Called from `runExtraction` after persistence completes.
+   *
+   * Thin wiring: delegates ALL correction logic to the detector + capture
+   * modules + the CorrectionService. This method only checks gates, calls the
+   * detector, and routes results. Fail-open: capture errors never block the
+   * extraction return path.
+   */
+  private async maybeCapturePassiveCorrections(
+    turns: readonly BufferTurn[],
+    opts: {
+      sessionKey: string;
+      principal?: string;
+      namespace: string;
+      bufferKey: string;
+      isLiveSession: boolean;
+    },
+  ): Promise<void> {
+    const mode = this.config.correctionCaptureMode;
+    if (mode === "off") return;
+    if (!this.config.correctionEnabled) return;
+
+    try {
+      const corrections = detectPassiveCorrections(
+        turns.map((t) => ({ role: t.role, content: t.content })),
+      );
+      if (corrections.length === 0) return;
+
+      // Replay/import: force queue-only mode even if config says auto.
+      const effectiveMode = opts.isLiveSession ? mode : "queue";
+      const captureConfig: PassiveCaptureConfig = {
+        mode: effectiveMode,
+        confidenceFloor: this.config.correctionCaptureConfidenceFloor,
+        autoApplyMaxAffected: this.config.correctionCaptureAutoApplyMaxAffected,
+      };
+
+      const service = this.passiveCorrectionService();
+      const result = await capturePassiveCorrections(
+        corrections,
+        {
+          correctionEnabled: this.config.correctionEnabled,
+          isLiveSession: opts.isLiveSession,
+          bufferKey: opts.bufferKey,
+          sessionKey: opts.sessionKey,
+          principal: opts.principal,
+          namespace: opts.namespace,
+        },
+        captureConfig,
+        {
+          planCorrection: (req) => service.plan(req),
+          applyCorrection: (planId, applyOpts) => service.apply(planId, applyOpts),
+          storageDir: async (ns) => (await this.getStorage(ns)).dir,
+          // Resolve `[m:xxxx]` handles to concrete memory ids via the single
+          // shared helper (#1582). Returns null on miss/ambiguity so the
+          // capture loop drops the handle and the planner falls back to text
+          // search (review: "memory handles not resolved").
+          resolveHandle: (ref, sessionKey) => {
+            try {
+              return this.resolveMemoryIdOrHandle(ref, sessionKey);
+            } catch {
+              return null;
+            }
+          },
+        },
+        this.passiveCorrectionDedup,
+      );
+
+      // Accumulate telemetry
+      this.passiveCorrectionTelemetry.detected += result.telemetry.detected;
+      this.passiveCorrectionTelemetry.queued += result.telemetry.queued;
+      this.passiveCorrectionTelemetry.autoApplied += result.telemetry.autoApplied;
+      for (const [reason, count] of Object.entries(result.telemetry.suppressedReasons)) {
+        this.passiveCorrectionTelemetry.suppressedReasonCounts[reason] =
+          (this.passiveCorrectionTelemetry.suppressedReasonCounts[reason] ?? 0) + count;
+      }
+    } catch (err) {
+      // Fail-open: passive capture never blocks extraction.
+      log.debug(
+        `passive-correction: capture failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** Lazily construct the CorrectionService for passive capture. Stateless
+   *  across requests (per #1580 design); cached for the orchestrator's life. */
+  private passiveCorrectionService(): CorrectionService {
+    if (this._passiveCorrectionService) return this._passiveCorrectionService;
+    this._passiveCorrectionService = createCorrectionService({
+      orchestrator: this,
+      // Session-scoped write ACL (review: "passive capture bypasses write
+      // ACL"). A correction detected in session S plans only against S readable
+      // namespaces and applies only to writable ones (rule 42) — passive
+      // capture never becomes a cross-tenant mutation vector. Mirrors the
+      // access-service createCorrectionService wiring rather than bypassing it.
+      resolveAuthorizedNamespace: async (req) => {
+        const principal = req.principal || resolvePrincipal(req.sessionKey, this.config);
+        const ns = req.namespace ?? defaultNamespaceForPrincipal(principal, this.config);
+        if (!canWriteNamespace(principal, ns, this.config)) {
+          throw new Error(
+            `passive correction: namespace "${ns}" is not writable for principal ${principal ?? "(none)"}`,
+          );
+        }
+        return ns;
+      },
+      resolveReadableNamespaces: (req) => {
+        const principal = req.principal || resolvePrincipal(req.sessionKey, this.config);
+        return recallNamespacesForPrincipal(principal, this.config);
+      },
+      canWriteNamespace: async (req) => {
+        const principal = req.principal || resolvePrincipal(req.sessionKey, this.config);
+        return canWriteNamespace(principal, req.namespace, this.config);
+      },
+      llmComplete: async ({ system, user }) => {
+        const llmResult = await this.localLlm.chatCompletion(
+          [
+            { role: "system", content: system },
+            { role: "user", content: user },
+          ],
+          { operation: "correction-classify", priority: "background" },
+        );
+        if (!llmResult) {
+          throw new Error(
+            "passive correction classify+draft: local LLM unavailable (disabled or in cooldown)",
+          );
+        }
+        return llmResult.content;
+      },
+    });
+    return this._passiveCorrectionService;
+  }
+
   private async runExtraction(
     turns: BufferTurn[],
     options: {
@@ -13103,13 +13544,13 @@ export class Orchestrator {
     );
     if (targetTurns.length === 0) {
       log.debug("skipping extraction: no non-context turns after normalization");
+      // Context-only turns may still contain corrections (review: "context-only
+      // turns skip capture"). Scan normalizedTurns before clearing the buffer.
+      if (normalizedTurns.length > 0) {
+        await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], { sessionKey, principal: resolvePrincipal(sessionKey, this.config), namespace: this.resolveSelfNamespace(sessionKey), bufferKey, isLiveSession: clearBufferAfterExtraction });
+      }
       await clearBuffer();
-      return {
-        status: "skipped",
-        reason: "empty_normalized_turns",
-        persistedCount: 0,
-        durableOutputCount: 0,
-      };
+      return { status: "skipped", reason: "empty_normalized_turns", persistedCount: 0, durableOutputCount: 0 };
     }
     const sourceValidAt = latestSourceValidAtFromTurns(targetTurns);
     throwIfDeadlineExceeded("before_extract");
@@ -13129,6 +13570,30 @@ export class Orchestrator {
         `skipping extraction: below threshold (totalChars=${totalChars}, userTurns=${userTurns.length})`,
       );
       await clearBuffer();
+      // Passive correction capture runs even when extraction is skipped for
+      // being below the char/user-turn threshold (review: "skipped extraction
+      // skips capture"). A short correction like "stop using Vim" is under
+      // extractionMinChars but is exactly the high-value case this feature
+      // exists for. The write namespace resolves through the SAME scope-profile
+      // plan as the full extraction path so corrections target the active
+      // profile's write layer, not just resolveSelfNamespace (review:
+      // "below-threshold wrong namespace"). The ACL in passiveCorrectionService
+      // authorizes the actual plan/apply.
+      {
+        const capturePrincipal =
+          typeof options.principalOverride === "string" && options.principalOverride.length > 0
+            ? options.principalOverride
+            : resolvePrincipal(sessionKey, this.config);
+        const captureWO = typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
+          ? options.writeNamespaceOverride : undefined;
+        const captureCodingCtx = sessionKey ? this.getCodingContextForSession(sessionKey) : null;
+        const captureCodingOv = resolveCodingNamespaceOverlay(captureCodingCtx, this.config.codingMode, this.config.defaultNamespace);
+        const captureScopePlan = resolveScopeProfilePlan({ config: this.config, principal: capturePrincipal, codingContext: captureCodingCtx, codingOverlay: captureCodingOv });
+        const captureNamespace = captureWO ?? captureScopePlan?.writeNamespace ?? this.resolveSelfNamespace(sessionKey);
+        await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+          sessionKey, principal: capturePrincipal, namespace: captureNamespace, bufferKey, isLiveSession: clearBufferAfterExtraction,
+        });
+      }
       return {
         status: "skipped",
         reason: "below_threshold",
@@ -13328,13 +13793,12 @@ export class Orchestrator {
         meta.lastExtractionAt = new Date().toISOString();
         await storage.saveMeta(meta);
       }
+      // Correction-only turns that meet char/user-turn thresholds but yield
+      // zero facts still need passive capture (review: "empty extraction skips
+      // capture"). selfNamespace/principal already resolved above.
+      await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], { sessionKey, principal, namespace: selfNamespace, bufferKey, isLiveSession: clearBufferAfterExtraction });
       await clearBuffer();
-      return {
-        status: "skipped",
-        reason: "empty_extraction_result",
-        persistedCount: 0,
-        durableOutputCount: 0,
-      };
+      return { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
     }
 
     let threadIdForExtraction: string | null = null;
@@ -13450,6 +13914,19 @@ export class Orchestrator {
     }
 
     await clearBuffer({ ignoreAbort: true });
+
+    // Passive correction capture (issue #1581) — detect corrections expressed
+    // passively in the extracted turns and route to the Correction Contract.
+    // Runs AFTER persistence + buffer clear so a capture failure never blocks
+    // the extraction return. `clearBufferAfterExtraction` gates live-session
+    // auto-apply (replay/import → queue-only).
+    await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
+      sessionKey,
+      principal,
+      namespace: selfNamespace,
+      bufferKey,
+      isLiveSession: clearBufferAfterExtraction,
+    });
 
     // Build memory box from this extraction (v8.0 Phase 2A)
     // Topics are derived from the current extraction's facts and entities only —
@@ -13573,192 +14050,7 @@ export class Orchestrator {
       force?: boolean;
     },
   ): Promise<TierMigrationCycleSummary> {
-    const dryRun = options?.dryRun === true;
-    const persistSkipped = options?.force === true || trigger === "manual";
-    if (!this.config.qmdTierMigrationEnabled && options?.force !== true) {
-      const skipped: TierMigrationCycleSummary = {
-        trigger,
-        scanned: 0,
-        migrated: 0,
-        promoted: 0,
-        demoted: 0,
-        limit: 0,
-        dryRun,
-        skipped: "tier_migration_disabled",
-      };
-      if (persistSkipped) await this.tierMigrationStatus.recordCycle(skipped);
-      return skipped;
-    }
-    if (
-      trigger === "maintenance" &&
-      !this.config.qmdTierAutoBackfillEnabled &&
-      options?.force !== true
-    ) {
-      const skipped: TierMigrationCycleSummary = {
-        trigger,
-        scanned: 0,
-        migrated: 0,
-        promoted: 0,
-        demoted: 0,
-        limit: 0,
-        dryRun,
-        skipped: "maintenance_backfill_disabled",
-      };
-      if (persistSkipped) await this.tierMigrationStatus.recordCycle(skipped);
-      return skipped;
-    }
-    if (this.tierMigrationInFlight) {
-      const skipped: TierMigrationCycleSummary = {
-        trigger,
-        scanned: 0,
-        migrated: 0,
-        promoted: 0,
-        demoted: 0,
-        limit: 0,
-        dryRun,
-        skipped: "migration_in_flight",
-      };
-      if (persistSkipped) await this.tierMigrationStatus.recordCycle(skipped);
-      return skipped;
-    }
-
-    const budgetTrigger = trigger === "manual" ? "maintenance" : trigger;
-    const budget =
-      this.compounding?.tierMigrationCycleBudget(budgetTrigger) ??
-      defaultTierMigrationCycleBudget(this.config, budgetTrigger);
-    const limit =
-      options?.limitOverride !== undefined
-        ? Math.max(0, Math.floor(options.limitOverride))
-        : budget.limit;
-    const nowMs = Date.now();
-    if (
-      options?.force !== true &&
-      nowMs - this.lastTierMigrationRunAtMs < budget.minIntervalMs
-    ) {
-      const skipped: TierMigrationCycleSummary = {
-        trigger,
-        scanned: 0,
-        migrated: 0,
-        promoted: 0,
-        demoted: 0,
-        limit,
-        dryRun,
-        skipped: "min_interval",
-      };
-      if (persistSkipped) await this.tierMigrationStatus.recordCycle(skipped);
-      return skipped;
-    }
-
-    const policy = applyUtilityPromotionRuntimePolicy(
-      {
-        enabled: this.config.qmdTierMigrationEnabled,
-        demotionMinAgeDays: this.config.qmdTierDemotionMinAgeDays,
-        demotionValueThreshold: this.config.qmdTierDemotionValueThreshold,
-        promotionValueThreshold: this.config.qmdTierPromotionValueThreshold,
-      },
-      this.utilityRuntimeValues,
-    );
-
-    this.tierMigrationInFlight = true;
-    try {
-      const coldStorage = new StorageManager(path.join(storage.dir, "cold"));
-      const [hotMemories, coldMemories] = await Promise.all([
-        storage.readAllMemories(),
-        coldStorage.readAllMemories(),
-      ]);
-      const now = new Date();
-      const scanLimit = Math.max(0, Math.floor(budget.scanLimit));
-      const hotScanLimit = Math.min(
-        hotMemories.length,
-        Math.ceil(scanLimit * 0.75),
-      );
-      const coldScanLimit = Math.min(
-        coldMemories.length,
-        Math.max(0, scanLimit - hotScanLimit),
-      );
-      const toTimestamp = (memory: MemoryFile): number =>
-        Date.parse(memory.frontmatter.updated ?? memory.frontmatter.created);
-      const hotCandidates = hotMemories
-        .map((memory) => ({ memory, tier: "hot" as MemoryTier }))
-        .sort((a, b) => toTimestamp(a.memory) - toTimestamp(b.memory))
-        .slice(0, hotScanLimit);
-      const coldCandidates = coldMemories
-        .map((memory) => ({ memory, tier: "cold" as MemoryTier }))
-        .sort((a, b) => toTimestamp(b.memory) - toTimestamp(a.memory))
-        .slice(0, coldScanLimit);
-      const candidates = [...hotCandidates, ...coldCandidates];
-
-      const migration = new TierMigrationExecutor({
-        storage,
-        qmd: this.qmd,
-        hotCollection: this.config.qmdCollection,
-        coldCollection:
-          this.config.qmdColdCollection ?? `${this.config.qmdCollection}-cold`,
-        autoEmbed: this.config.qmdAutoEmbedEnabled,
-      });
-
-      let migrated = 0;
-      let promoted = 0;
-      let demoted = 0;
-      for (const candidate of candidates) {
-        if (migrated >= limit) break;
-        const decision = decideTierTransition(
-          candidate.memory,
-          candidate.tier,
-          policy,
-          now,
-        );
-        if (!decision.changed) continue;
-
-        if (!dryRun) {
-          const res = await migration.migrateMemory({
-            memory: candidate.memory,
-            fromTier: candidate.tier,
-            toTier: decision.nextTier,
-            reason: `${trigger}:${decision.reason}`,
-          });
-          if (!res.changed) continue;
-        }
-        migrated += 1;
-        if (decision.nextTier === "cold") demoted += 1;
-        if (decision.nextTier === "hot") promoted += 1;
-      }
-
-      if (!dryRun) this.lastTierMigrationRunAtMs = Date.now();
-      log.debug(
-        `tier migration cycle completed: trigger=${trigger} scanned=${candidates.length} migrated=${migrated} limit=${limit}${dryRun ? " dryRun=true" : ""}`,
-      );
-      const summary: TierMigrationCycleSummary = {
-        trigger,
-        scanned: candidates.length,
-        migrated,
-        promoted,
-        demoted,
-        limit,
-        dryRun,
-      };
-      const shouldPersistCycle = trigger === "manual" || migrated > 0;
-      if (shouldPersistCycle)
-        await this.tierMigrationStatus.recordCycle(summary);
-      return summary;
-    } catch (err) {
-      this.lastTierMigrationRunAtMs = Date.now();
-      log.warn(`tier migration cycle failed (${trigger}, fail-open): ${err}`);
-      const failed: TierMigrationCycleSummary = {
-        trigger,
-        scanned: 0,
-        migrated: 0,
-        promoted: 0,
-        demoted: 0,
-        limit,
-        dryRun,
-        errorCount: 1,
-      };
-      await this.tierMigrationStatus.recordCycle(failed);
-      return failed;
-    } finally {
-      this.tierMigrationInFlight = false;
-    }
+    return this.tierMigrationCoordinator.runCycle(storage, trigger, options);
   }
 
   async getTierMigrationStatus(): Promise<TierMigrationStatusSnapshot> {
@@ -13805,6 +14097,7 @@ export class Orchestrator {
     /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */
     sourceText?: string,
     graphCaps: GraphConstructionCapabilitySet = resolveGraphConstructionCapabilities(this.config),
+    lifecycleCaps: MemoryLifecycleCapabilitySet = resolveMemoryLifecycleCapabilities(this.config),
   ): Promise<string[]> {
     // Inline source attribution (issue #369). When enabled, every extracted
     // fact is rewritten to carry a compact provenance tag inside its body so
@@ -13882,6 +14175,23 @@ export class Orchestrator {
     // (declared here, inside persistExtraction) so a transient hiccup in one
     // batch does not permanently disable dedup in future batches.
     let batchBackendUnavailable = false;
+    // #1669: per-namespace redaction-rule cache for this persist pass. A
+    // `never_store` / redaction_rule correction persists patterns under each
+    // namespace's state/corrections/redaction-rules/ dir; we consult them
+    // before a fact reaches the storage write chokepoint so matching content
+    // is withheld entirely rather than landing as pending_review. Cached per
+    // dir so a multi-fact batch over one namespace reads the dir once.
+    let redactionGatedCount = 0;
+    const redactionRulesByDir = new Map<string, CompiledRedactionRule[]>();
+    const redactionRulesFor = async (...dirs: string[]): Promise<CompiledRedactionRule[]> => {
+      const out: CompiledRedactionRule[] = [];
+      for (const d of dirs) {
+        let r = redactionRulesByDir.get(d);
+        if (!r) { r = await loadRedactionRules(d); redactionRulesByDir.set(d, r); }
+        out.push(...r);
+      }
+      return out;
+    };
     const behaviorSignalsByStorage = new Map<
       string,
       { storage: StorageManager; events: BehaviorSignalEvent[] }
@@ -13974,7 +14284,7 @@ export class Orchestrator {
       )
         return false;
       if (
-        this.namespaceFromStorageDir(targetStorage.dir) ===
+        this.storageDirNamespace(targetStorage.dir) ===
         this.config.sharedNamespace
       )
         return false;
@@ -14039,6 +14349,24 @@ export class Orchestrator {
             options.category === "fact" &&
             (await targetStorage.hasFactContentHash(dedupContent))
           ) {
+            // #1671 — backfill bi-temporal bounds the existing promoted copy
+            // lacks (re-extraction with a now-resolved invalidAt). Best-effort,
+            // fail-open; the helper gates on invalidAt to avoid I/O when no
+            // end bound is present.
+            if (options.invalidAt || options.validAt) {
+              await this.backfillTemporalBoundsOnDedupHit(
+                targetStorage,
+                dedupContent,
+                {
+                  invalidAt: options.invalidAt,
+                  // #1707 thread 2 — carry the corrected start bound.
+                  validFrom: options.validAt,
+                  ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+                  ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
+                },
+                options.entityRef,
+              );
+            }
             continue;
           }
           const promotedId = await targetStorage.writeMemory(
@@ -14068,7 +14396,7 @@ export class Orchestrator {
             },
           );
           if (
-            this.config.temporalSupersessionEnabled &&
+            lifecycleCaps.temporalSupersession &&
             options.category === "fact" &&
             options.entityRef &&
             options.structuredAttributes &&
@@ -14202,6 +14530,24 @@ export class Orchestrator {
           options.category === "fact" &&
           (await sharedStorage.hasFactContentHash(dedupContent))
         ) {
+          // #1671 — backfill bi-temporal bounds onto the existing shared copy
+          // before the supersession short-circuit. Covers all return paths below
+          // (supersession-hit, catch-skip, and the no-supersession short-circuit)
+          // in one shot. Best-effort / fail-open; the helper gates on invalidAt.
+          if (options.invalidAt || options.validAt) {
+            await this.backfillTemporalBoundsOnDedupHit(
+              sharedStorage,
+              dedupContent,
+              {
+                invalidAt: options.invalidAt,
+                // #1707 thread 2 — carry the corrected start bound.
+                validFrom: options.validAt,
+                ...(options.observedAt ? { observedAt: options.observedAt } : {}),
+                ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
+              },
+              options.entityRef,
+            );
+          }
           // Uj6H fix: shared-namespace temporal supersession must also run when
           // the hash-dedup short-circuit fires.  Without this, an existing shared
           // fact whose structuredAttributes are stale (or an older conflicting
@@ -14214,7 +14560,7 @@ export class Orchestrator {
           // would have run post-writeMemory.  This is a best-effort / fail-open
           // step — if the lookup fails we skip silently (same as the normal path).
           if (
-            this.config.temporalSupersessionEnabled &&
+            lifecycleCaps.temporalSupersession &&
             options.entityRef &&
             options.structuredAttributes &&
             Object.keys(options.structuredAttributes).length > 0
@@ -14376,7 +14722,7 @@ export class Orchestrator {
         // shared recall continues returning the stale state.  Reuses the same
         // applyTemporalSupersession helper — no logic duplication.
         if (
-          this.config.temporalSupersessionEnabled &&
+          lifecycleCaps.temporalSupersession &&
           options.entityRef &&
           options.structuredAttributes &&
           Object.keys(options.structuredAttributes).length > 0
@@ -14424,6 +14770,116 @@ export class Orchestrator {
         log.warn(
           `persistExtraction: shared promotion failed open for ${options.sourceMemoryId}: ${err}`,
         );
+      }
+    };
+    // #1707 thread 1 — backfill temporal bounds onto promotion copies when the
+    // SOURCE-namespace dedup short-circuit fires. That branch patches the
+    // source copy then `continue`s before the promotion dedup paths run, so
+    // promoted shared/profile copies written before the source fact carried
+    // resolved bounds stay stale (cross-namespace recall surfaces an expired
+    // fact). This mirrors the promotion-target resolution used by the two
+    // promote closures above and calls the same fail-open helper against each
+    // target storage. Backfill-only: never writes a new promoted copy.
+    const backfillTemporalBoundsOnPromotionCopies = async (args: {
+      sourceStorage: StorageManager;
+      content: string;
+      category: string;
+      confidence: number;
+      entityRef?: string;
+      structuredAttributes?: Record<string, string>;
+      bounds: {
+        invalidAt?: string;
+        validFrom?: string;
+        observedAt?: string;
+        eventTimeSource?: "extracted" | "assumed";
+      };
+    }): Promise<void> => {
+      // Mirror the helper's I/O gate: only resolve promotion targets when
+      // there is an end bound OR an EXTRACTED start bound. An "assumed"
+      // validFrom is just the ingestion anchor (no recall effect), so
+      // skipping it avoids resolving target storages on every bi-temporal
+      // duplicate (review cursor PRRT_OvHk).
+      const hasExtractedStart =
+        args.bounds.validFrom !== undefined &&
+        args.bounds.eventTimeSource === "extracted";
+      if (!args.bounds.invalidAt && !hasExtractedStart) return;
+      // Build the same dedupContent the promotion functions hash on so the
+      // content-hash lookup in the helper matches what was stored.
+      const rawContent =
+        citationEnabled && hasCitationForTemplate(args.content, citationTemplate)
+          ? stripCitationForTemplate(args.content, citationTemplate)
+          : args.content;
+      const sanitizedBase = sanitizeMemoryContent(rawContent);
+      const dedupContent =
+        args.category === "fact" &&
+        args.structuredAttributes &&
+        Object.keys(args.structuredAttributes).length > 0
+          ? `${sanitizedBase.text}\n[Attributes: ${normalizeAttributePairs(args.structuredAttributes)}]`
+          : sanitizedBase.text;
+      // Profile targets. NOTE: we do NOT gate on profileAutoPromotionAllows —
+      // a promoted profile copy may exist from an EARLIER extraction with
+      // higher confidence or older auto-promote settings, so the current
+      // duplicate's confidence must not skip backfilling an already-existing
+      // promoted copy (review codex PRRT_Ov7LKF). The helper no-ops when no
+      // matching copy is found, so resolving all configured auto-promote
+      // targets is safe.
+      if (scopeProfileWritePlan) {
+        const autoTargets = new Set(
+          scopeProfileWritePlan.profile.autoPromote.targets,
+        );
+        const profileTargets = scopeProfileWritePlan.promotionTargets.filter(
+          (target) =>
+            target.target !== "serverShared" &&
+            autoTargets.has(target.target) &&
+            target.authorized &&
+            target.namespace,
+        );
+        for (const target of profileTargets) {
+          if (!target.namespace) continue;
+          try {
+            const targetStorage = await this.storageRouter.storageFor(
+              target.namespace,
+            );
+            if (targetStorage.dir === args.sourceStorage.dir) continue;
+            await this.backfillTemporalBoundsOnDedupHit(
+              targetStorage,
+              dedupContent,
+              args.bounds,
+              args.entityRef,
+            );
+          } catch (err) {
+            log.warn(
+              `bitemporal-backfill: profile-target backfill failed open for ${target.target}: ${err}`,
+            );
+          }
+        }
+      }
+      // Shared target. A shared copy may exist from an earlier extraction
+      // regardless of the current confidence, so do not gate on
+      // shouldPromoteToShared (review codex PRRT_Ov7LKF) — BUT still respect
+      // shared-write AUTHORIZATION: a scoped profile that does not authorize
+      // serverShared writes must not have its shared namespace backfilled
+      // (review codex PRRT_Ov7dHR). profileAllowsSharedWrites is true for the
+      // legacy no-scope case and encodes the readable/writable/authorized
+      // checks under a scope profile.
+      if (profileAllowsSharedWrites) {
+        try {
+          const sharedStorage = await this.storageRouter.storageFor(
+            this.config.sharedNamespace,
+          );
+          if (sharedStorage.dir !== args.sourceStorage.dir) {
+            await this.backfillTemporalBoundsOnDedupHit(
+              sharedStorage,
+              dedupContent,
+              args.bounds,
+              args.entityRef,
+            );
+          }
+        } catch (err) {
+          log.warn(
+            `bitemporal-backfill: shared-target backfill failed open: ${err}`,
+          );
+        }
       }
     };
 
@@ -14576,7 +15032,11 @@ export class Orchestrator {
     // persistExtraction call so stale state from a prior call cannot leak
     // into the caller's buffer-retention decision.
     this.lastPersistExtractionDeferredCount = 0;
-    if (this.config.extractionJudgeEnabled) {
+    if (lifecycleCaps.extractionJudge) {
+      // #1669 P1: pre-filter redacted facts from judge candidates so never-store
+      // content is not persisted as judge training data.
+      let preJudgeRedactionRules: CompiledRedactionRule[] = [];
+      try { preJudgeRedactionRules = await redactionRulesFor(storage.dir); } catch { /* fail open */ }
       try {
         const judgeCandidates: JudgeCandidate[] = [];
         const candidateToFactIndex: number[] = [];
@@ -14617,6 +15077,11 @@ export class Orchestrator {
           ) {
             continue;
           }
+          if (preJudgeRedactionRules.length > 0) {
+            const rc = f.content + (f.structuredAttributes ? " " + JSON.stringify(f.structuredAttributes) : "")
+              + (f.procedureSteps ? " " + f.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""} ${s.toolCall ? `${s.toolCall.kind} ${s.toolCall.signature}` : ""}`.trim()).join(" ") : "");
+            if (contentMatchesRedactionRules(rc, preJudgeRedactionRules)) continue;
+          }
           judgeCandidates.push({
             text: f.content,
             category: judgeCategory,
@@ -14633,7 +15098,7 @@ export class Orchestrator {
         // off; the combined callback itself is undefined when both are
         // disabled so there is zero overhead in the default configuration.
         const judgeTelemetryOpts = {
-          enabled: this.config.extractionJudgeTelemetryEnabled === true,
+          enabled: lifecycleCaps.extractionJudgeTelemetry,
           memoryDir: this.config.memoryDir,
         };
         const judgeTrainingOpts = {
@@ -14769,7 +15234,14 @@ export class Orchestrator {
         typeof (fact as any).confidence === "number"
           ? (fact as any).confidence
           : 0.7;
-      const biTemporal = this.config.temporalBiTemporal && sourceContext?.validAt ? resolveFactEventTime(fact.eventTime, sourceContext.validAt) : undefined;
+      // #1670 — anchor each fact's event-time to its SOURCE TURN timestamp,
+      // not the batch-wide latest. When a buffered conversation spans a date
+      // boundary, a relative expression ("yesterday") on an early-turn fact
+      // must resolve against that early turn's date. Prefer the fact's
+      // explicit sourceTurnTimestamp, then the earliest provenance span's
+      // observedAt, then fall back to the batch anchor (legacy extractors).
+      const factAnchor = pickFactEventTimeAnchor(fact, sourceContext?.validAt);
+      const biTemporal = this.config.temporalBiTemporal && factAnchor ? resolveFactEventTime(fact.eventTime, factAnchor) : undefined;
       // Content-hash dedup check (v6.0)
       //
       // Canonicalize pre-tagged facts before hashing (Codex P2 — issue #369).
@@ -14788,6 +15260,7 @@ export class Orchestrator {
       // affect both the dedup fingerprint and importance (issue #519 procedure routing).
       let writeCategory = fact.category;
       let targetStorage = storage;
+      const sourceStorageDir = storage.dir; // #1669 thread #2: pre-routing source ns for redaction gate
       // Track the KNOWN target namespace NAME alongside targetStorage (round 6,
       // codex P2 — NCQI0). Re-deriving it from `targetStorage.dir` mangles a raw
       // namespace literally named like a canonical token (e.g. `ns-616c706861`
@@ -14800,7 +15273,7 @@ export class Orchestrator {
       let targetNamespaceName =
         baseNamespace && baseNamespace.length > 0
           ? baseNamespace
-          : this.namespaceFromStorageDir(targetStorage.dir);
+          : this.storageDirNamespace(targetStorage.dir);
       let routedRuleId: string | undefined;
       let routedNamespaceExplicit = false;
       if (routeRules.length > 0) {
@@ -14836,12 +15309,12 @@ export class Orchestrator {
       // do not block scope routing). Rule 30: gated by
       // extractionScopeClassificationEnabled.
       if (
-        this.config.extractionScopeClassificationEnabled &&
+        lifecycleCaps.extractionScopeClassification &&
         this.config.namespacesEnabled &&
         fact.scope === "global" &&
         !routedNamespaceExplicit
       ) {
-        const currentNs = this.namespaceFromStorageDir(targetStorage.dir);
+        const currentNs = this.storageDirNamespace(targetStorage.dir);
         if (currentNs !== this.config.sharedNamespace && profileAllowsSharedWrites) {
           try {
             targetStorage = await this.storageRouter.storageFor(
@@ -14862,6 +15335,23 @@ export class Orchestrator {
           );
         }
       }
+      // #1669 redaction-rule gate: consult BOTH source and target namespace
+      // rules before any write. A never-store pattern registered under the
+      // source namespace must survive scope-routing to a different target
+      // (review thread #2). Fails open on read error.
+      try {
+        const redactionRules = await redactionRulesFor(sourceStorageDir, targetStorage.dir);
+        const redactionCandidate = fact.content
+          + (fact.structuredAttributes ? " " + JSON.stringify(fact.structuredAttributes) : "")
+          + (fact.procedureSteps ? " " + fact.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""} ${s.toolCall ? `${s.toolCall.kind} ${s.toolCall.signature}` : ""}`.trim()).join(" ") : "");
+        if (redactionRules.length > 0 && contentMatchesRedactionRules(redactionCandidate, redactionRules)) {
+          redactionGatedCount++;
+          log.debug(`extraction: redaction-rule withheld fact #${redactionGatedCount} in ${targetStorage.dir}`);
+          continue;
+        }
+      } catch (redactionErr) {
+        log.warn(`extraction: redaction-rule gate failed open: ${redactionErr}`);
+      }
 
       // Procedures: fingerprint the full serialized body (title + steps), not
       // the title alone, so distinct step lists are not collapsed (issue #519).
@@ -14874,6 +15364,15 @@ export class Orchestrator {
         writeCategory === "procedure"
           ? buildProcedurePersistBody(fact.content, fact.procedureSteps)
           : canonicalContentForHash;
+      // Importance is scored before the dedup short-circuit so #1671 backfill
+      // can gate on it (cursor PRRT_OvKnS): a low-value duplicate that the
+      // importance write-gate (#372) or the judge pre-filter would drop must
+      // not expire an active fact.
+      const importance = scoreImportance(
+        fact.content,
+        writeCategory,
+        fact.tags,
+      );
       let exactDuplicate = false;
       try {
         exactDuplicate = await this.hasContentHashDedup(
@@ -14886,20 +15385,88 @@ export class Orchestrator {
         );
       }
       if (exactDuplicate) {
+        // #1671 — before short-circuiting, backfill bi-temporal bounds
+        // onto the existing source-namespace copy if it lacks bounds the
+        // incoming fact now carries (re-extraction with a resolved invalidAt).
+        // Skip when the fact would be rejected/deferred/pending by downstream
+        // gates — a non-durable candidate must not expire an active fact
+        // (chatgpt-codex P1: faithfulness, requireSpans, extraction judge).
+        // #1671 + #1707: backfill bi-temporal bounds onto the existing
+        // source-namespace copy if it lacks bounds the incoming fact now
+        // carries (re-extraction with a resolved bound). #1707 thread 3:
+        // gate on writeCategory === "fact" — the helper only matches facts,
+        // so a non-fact duplicate must not reach the fact-only scan.
+        // #1707 thread 2: also fire when only a corrected start bound
+        // (validFrom) is present, not just an end bound (validUntil). The
+        // downstream-gate skip still applies — a non-durable candidate must
+        // not expire an active fact (chatgpt-codex P1).
+        if (
+          biTemporal &&
+          writeCategory === "fact" &&
+          (biTemporal.validUntil || biTemporal.validFrom)
+        ) {
+          const fr = faithfulnessResultsByFactIndex?.get(factLoopIndex);
+          const faithfulnessWouldPending =
+            faithfulnessMode === "enforce" &&
+            fr?.ok === true &&
+            (fr.verdict === "unsupported" || fr.verdict === "contradicted");
+          const requireSpansWouldPending =
+            this.config.provenance?.requireSpans === true &&
+            fact.requireSpansPending === true;
+          const judgeVerdict = judgeVerdictsByFactIndex?.get(factLoopIndex);
+          const judgeWouldGate =
+            !this.config.extractionJudgeShadow &&
+            judgeVerdict !== undefined &&
+            !judgeVerdict.durable;
+          // Importance gate (cursor PRRT_OvKnS): below-threshold duplicates
+          // would never persist (#372) and carry no judge verdict (the
+          // pre-filter skips them), so they must not expire an active fact.
+          if (
+            isAboveImportanceThreshold(importance.level, this.config.extractionMinImportanceLevel) &&
+            !faithfulnessWouldPending &&
+            !requireSpansWouldPending &&
+            !judgeWouldGate
+          ) {
+            await this.backfillTemporalBoundsOnDedupHit(
+              targetStorage,
+              contentHashDedupKey,
+              {
+                invalidAt: biTemporal.validUntil,
+                // #1707 thread 2 — carry the corrected start bound too.
+                validFrom: biTemporal.validFrom,
+                observedAt: biTemporal.observedAt,
+                eventTimeSource: biTemporal.eventTimeSource,
+              },
+              fact.entityRef,
+            );
+            // #1707 thread 1 — the source branch short-circuits (`continue`
+            // below) before the promotion dedup paths run, so promoted
+            // shared/profile copies written before the source fact carried
+            // resolved bounds stay stale and cross-namespace recall surfaces
+            // an expired fact. Backfill the promotion targets too (fail-open,
+            // backfill-only — never writes a new promoted copy).
+            await backfillTemporalBoundsOnPromotionCopies({
+              sourceStorage: targetStorage,
+              content: fact.content,
+              category: writeCategory,
+              confidence: fact.confidence,
+              entityRef: fact.entityRef,
+              structuredAttributes: fact.structuredAttributes,
+              bounds: {
+                invalidAt: biTemporal.validUntil,
+                validFrom: biTemporal.validFrom,
+                observedAt: biTemporal.observedAt,
+                eventTimeSource: biTemporal.eventTimeSource,
+              },
+            });
+          }
+        }
         log.debug(
           `dedup: skipping duplicate fact "${fact.content.slice(0, 60)}…" in storage ${targetStorage.dir}`,
         );
         dedupedCount++;
         continue;
       }
-
-      // Score importance using local heuristics (Phase 1B).
-      // writeCategory / targetStorage already reflect routing.
-      const importance = scoreImportance(
-        fact.content,
-        writeCategory,
-        fact.tags,
-      );
 
       if (writeCategory === "procedure" && this.config.procedural?.enabled !== true) {
         log.debug("persistExtraction: skip procedure memory (procedural.enabled is false)");
@@ -15109,7 +15676,7 @@ export class Orchestrator {
         this.qmd.isAvailable() &&
         faithfulnessEnforceStatus !== "pending_review"
       ) {
-        const targetNamespace = this.namespaceFromStorageDir(targetStorage.dir);
+        const targetNamespace = this.storageDirNamespace(targetStorage.dir);
         const contradiction = await this.checkForContradiction(
           fact.content,
           writeCategory,
@@ -15395,7 +15962,7 @@ export class Orchestrator {
                 // #1578 r3: an extracted end-only bound (validFrom absent) is
                 // historical, not a new authoritative state — never let it
                 // supersede a later active fact (codex P1 on :15534).
-                enabled: this.config.temporalSupersessionEnabled &&
+                enabled: lifecycleCaps.temporalSupersession &&
                   !(biTemporal && !biTemporal.validFrom),
               });
             } catch (err) {
@@ -15528,7 +16095,7 @@ export class Orchestrator {
               memoryId: parentId,
               category: writeCategory,
               content: fact.content,
-              namespace: this.namespaceFromStorageDir(targetStorage.dir),
+              namespace: this.storageDirNamespace(targetStorage.dir),
               confidence: fact.confidence,
               source: "extraction",
             }),
@@ -15539,7 +16106,7 @@ export class Orchestrator {
 
       // Suggest links for this memory (Phase 3A)
       if (this.config.memoryLinkingEnabled && this.qmd.isAvailable()) {
-        const targetNamespace = this.namespaceFromStorageDir(targetStorage.dir);
+        const targetNamespace = this.storageDirNamespace(targetStorage.dir);
         const suggestedLinks = await this.suggestLinksForMemory(
           fact.content,
           writeCategory,
@@ -15631,7 +16198,7 @@ export class Orchestrator {
             entityRef: supersessionEntityRef,
             structuredAttributes: fact.structuredAttributes,
             createdAt: supersessionOrderingAt(biTemporal?.validFrom ?? sourceContext?.validAt),
-            enabled: this.config.temporalSupersessionEnabled &&
+            enabled: lifecycleCaps.temporalSupersession &&
               !(biTemporal && !biTemporal.validFrom),
           });
         } catch (err) {
@@ -15645,7 +16212,7 @@ export class Orchestrator {
             memoryId,
             category: writeCategory,
             content: fact.content,
-            namespace: this.namespaceFromStorageDir(targetStorage.dir),
+            namespace: this.storageDirNamespace(targetStorage.dir),
             confidence: fact.confidence,
             source: "extraction",
           }),
@@ -15791,7 +16358,7 @@ export class Orchestrator {
       const baseTouchNamespace =
         baseNamespace && baseNamespace.length > 0
           ? baseNamespace
-          : this.namespaceFromStorageDir(storage.dir);
+          : this.storageDirNamespace(storage.dir);
     };
     const recordDurableNonFactWrite = () => {
       durableNonFactWritten = true;
@@ -15945,8 +16512,10 @@ export class Orchestrator {
       importanceGatedCount > 0 ? ` (${importanceGatedCount} gated)` : "";
     const judgeSuffix =
       judgeGatedCount > 0 ? ` (${judgeGatedCount} judge-rejected)` : "";
+    const redactionSuffix =
+      redactionGatedCount > 0 ? ` (${redactionGatedCount} redacted)` : "";
     log.info(
-      `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
+      `persisted: ${facts.length - dedupedCount - importanceGatedCount - judgeGatedCount - redactionGatedCount} facts${dedupSuffix}${gatedSuffix}${judgeSuffix}${redactionSuffix}, ${entities.length} entities, ${questions.length} questions, ${profileUpdates.length} profile updates`,
     );
 
     // Update temporal + tag indexes (v8.1) — fire-and-forget, fail-open
@@ -15996,7 +16565,7 @@ export class Orchestrator {
     storage: StorageManager,
     memoryId: string,
   ): Promise<void> {
-    if (!this.config.embeddingFallbackEnabled) return;
+    if (!resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) return;
     if (!(await this.embeddingFallback.isAvailable())) return;
     const memory = await storage.getMemoryById(memoryId);
     if (!memory) return;
@@ -16105,6 +16674,7 @@ export class Orchestrator {
     storage: StorageManager,
     persistedIds: string[],
   ): Promise<void> {
+    const caps = resolveCapabilities(this.config); // #1566 Cluster C
     // Build temporal/tag indexes whenever either consumer is enabled:
     // - queryAwareIndexingEnabled: uses indexes for query-aware prefiltering in recall
     // - parallelRetrievalEnabled: temporal agent reads index_time.json for date-range lookup
@@ -16112,7 +16682,7 @@ export class Orchestrator {
     // produce an empty temporal index, leaving the temporal agent with no data to work from.
     if (
       !this.config.queryAwareIndexingEnabled &&
-      !this.config.parallelRetrievalEnabled
+      !caps.parallelRetrieval
     )
       return;
     // Check for missing indexes BEFORE the early-return so first-time enablement
@@ -16187,6 +16757,7 @@ export class Orchestrator {
     merged: number;
     invalidated: number;
   }> {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     log.info("running consolidation pass");
     let merged = 0;
     let invalidated = 0;
@@ -16423,7 +16994,7 @@ export class Orchestrator {
     }
 
     // v8.3 Lifecycle policy pass — deterministic promotion/decay metadata
-    if (this.config.lifecyclePolicyEnabled) {
+    if (lifecycleCaps.lifecyclePolicy) {
       try {
         const lightSleepStartedAt = new Date().toISOString();
         const lifecycleCorpus = await this.storage.readAllMemories();
@@ -16611,7 +17182,7 @@ export class Orchestrator {
     await this.storage.saveMeta(meta);
 
     // Temporal Memory Tree (v8.2) — rebuild nodes from all memories, fail-open
-    if (this.config.temporalMemoryTreeEnabled) {
+    if (lifecycleCaps.temporalMemoryTree) {
       try {
         const tmtEntries = allMemories
           .filter(
@@ -17153,6 +17724,7 @@ export class Orchestrator {
     let updatedCount = 0;
     let disputedCount = 0;
     let evaluatedCount = 0;
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
 
     const thresholds = this.effectiveLifecycleThresholds();
     const policy = {
@@ -17218,7 +17790,7 @@ export class Orchestrator {
 
     // Report how many memories had frontmatter rewritten so callers can record a
     // catalog write touch for lifecycle-only passes (codex NR-tS).
-    if (!this.config.lifecycleMetricsEnabled) return updatedCount;
+    if (!lifecycleCaps.lifecycleMetrics) return updatedCount;
 
     const total = evaluatedCount;
     const metrics = {
@@ -17541,6 +18113,7 @@ export class Orchestrator {
     title: string,
     results: QmdSearchResult[],
     sessionKey?: string,
+    trustByPath?: Map<string, TrustStageResultItem> | null,
   ): string {
     // Issue #1582 — handles are only rendered when a session key is available:
     // resolution requires the handle history to have been recorded for this
@@ -17551,6 +18124,13 @@ export class Orchestrator {
       results,
       this.config.recallMemoryHandles === true && sessionKey != null,
     );
+    // Issue #1577 — epistemic hedge. Append a deterministic, component-derived
+    // suffix so the downstream model knows each memory's trust status (the
+    // cheap lever against confident-stale-answer failures). Gated separately
+    // from scoring so rendering can ship after the stage is stable. High-band
+    // and neutral items get no suffix (don't waste tokens on the common case).
+    const renderHedge = this.config.trustScoreEpistemicRendering && trustByPath !== null && trustByPath !== undefined;
+    const hedgeMap = renderHedge ? trustByPath : null;
     const lines = results.map((r, i) => {
       const snippet = r.snippet
         ? r.snippet.slice(0, 500).replace(/\n/g, " ")
@@ -17558,7 +18138,16 @@ export class Orchestrator {
       const source = typeof r.line === "number" ? `${r.path}:${r.line}` : r.path;
       const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
       const handle = handleByIndex.get(i);
-      return handle ? `${head.replace(/\s+$/, "")} ${handle}` : head;
+      const hedged = head.replace(/\s+$/, "");
+      const withHandle = handle ? `${hedged} ${handle}` : hedged;
+      if (hedgeMap) {
+        const item = hedgeMap.get(r.path);
+        if (item) {
+          const hedge = renderEpistemicHedge(item.trust);
+          if (hedge.length > 0) return `${withHandle} ${hedge}`;
+        }
+      }
+      return withHandle;
     });
     return `## ${title}\n\n${lines.join("\n\n")}`;
   }
@@ -17915,15 +18504,30 @@ export class Orchestrator {
       injectedChars: number;
       truncated: boolean;
     };
+    /**
+     * Issue #1577 — per-recall trust map. When present, quarantined items
+     * are filtered from injection on EVERY recall path (hot QMD, embedding
+     * fallback, cold archive, recent) so a faithfulness-contradicted memory
+     * cannot sneak in via a branch that bypasses trust scoring (review:
+     * fallback paths bypass trust). The map is also threaded to
+     * formatQmdResults for the epistemic hedge.
+     */
+    trustByPath?: Map<string, TrustStageResultItem> | null;
   }): void {
     const sectionId = "memories";
-    const memoryIds = this.extractMemoryIdsFromResults(options.results);
+    // Filter quarantined items from ALL recall paths so no branch can inject
+    // a hard-negative memory that trust scoring excluded on another path.
+    const trustByPath = options.trustByPath ?? null;
+    const injectable = trustByPath
+      ? options.results.filter((r) => !trustByPath.get(r.path)?.quarantined)
+      : options.results;
+    const memoryIds = this.extractMemoryIdsFromResults(injectable);
     this.trackMemoryAccess(memoryIds);
 
     this.appendRecallSection(
       options.sectionBuckets,
       sectionId,
-      this.formatQmdResults(options.title, options.results, options.sessionKey),
+      this.formatQmdResults(options.title, injectable, options.sessionKey, trustByPath),
     );
   }
 
@@ -17982,7 +18586,7 @@ export class Orchestrator {
 
       const fallbackNamespace =
         fallbackStorageDir !== null
-          ? this.namespaceFromStorageDir(fallbackStorageDir)
+          ? this.storageDirNamespace(fallbackStorageDir)
           : this.config.defaultNamespace;
       if (
         recallNamespaces.length === 0 ||
@@ -18172,7 +18776,7 @@ export class Orchestrator {
 
     const fallbackNamespace =
       fallbackStorageDir !== null
-        ? this.namespaceFromStorageDir(fallbackStorageDir)
+        ? this.storageDirNamespace(fallbackStorageDir)
         : this.config.defaultNamespace;
     maybeAddStorage(fallbackStorage, fallbackNamespace);
 
@@ -18344,6 +18948,125 @@ export class Orchestrator {
     return reordered;
   }
 
+  /**
+   * Issue #1577 — unified TrustScore recall stage. Thin wiring over the pure
+   * {@link applyTrustScoreStage} scorer + the {@link buildTrustSignalsForRerank}
+   * signal builder. The stage subsumes the Memory Worth multiplier — the
+   * orchestrator runs exactly one of the two (mutual exclusion, rule 39; the
+   * double-multiplier test in trust-score-stage.test.ts pins it structurally).
+   *
+   * Returns the admitted results AND the per-path trust map (including
+   * quarantined items) so the caller can: (a) render epistemic hedges, (b)
+   * surface quarantined items in X-ray with a reason (rule 34), and (c) filter
+   * quarantined paths from fallback recall branches. The trust map is a
+   * per-recall local — never instance state — so concurrent recalls cannot
+   * race on it (review: shared-trust-map concurrency).
+   */
+  private async applyTrustScoreRerank(
+    results: QmdSearchResult[],
+    namespaces: string[],
+  ): Promise<{
+    results: QmdSearchResult[];
+    trustByPath: Map<string, TrustStageResultItem> | null;
+  }> {
+    if (results.length === 0) return { results, trustByPath: null };
+    const now = new Date();
+    const halfLifeDays =
+      this.config.recallMemoryWorthHalfLifeMs > 0
+        ? this.config.recallMemoryWorthHalfLifeMs / (24 * 60 * 60 * 1000)
+        : undefined;
+    // Cold-tier direct-fallback reader: resolve once, reuse for every missing
+    // candidate (mirrors the memory-worth filter's reader selection).
+    let fallbackReader: StorageManager | null = null;
+    const signals = await buildTrustSignalsForRerank(
+      results.map((r) => r.path),
+      namespaces,
+      {
+        readNamespaceMemories: async (ns) => (await this.getStorage(ns)).readAllMemories(),
+        readMemoryFrontmatter: async (path) => {
+          if (!fallbackReader) {
+            for (const ns of namespaces) {
+              try {
+                fallbackReader = await this.getStorage(ns);
+                break;
+              } catch {
+                // try next namespace
+              }
+            }
+          }
+          if (!fallbackReader) return null;
+          const memory = await this.readQmdResultMemory(path, fallbackReader, namespaces);
+          return memory ? memory.frontmatter : null;
+        },
+      },
+      { cache: this.trustSignalCache, ttlMs: Orchestrator.TRUST_SIGNAL_CACHE_TTL_MS },
+      now,
+      {
+        recencyHalfLifeDays: halfLifeDays,
+        logDebug: (message, context) => log.debug(message, context),
+      },
+    );
+    if (signals.size === 0) {
+      return { results, trustByPath: null };
+    }
+    // Synthetic monotone-decreasing rank so the multiplier rebias is applied
+    // on top of upstream ordering, not raw QMD scores (see applyMemoryWorthRerank).
+    const rankedInputs = results.map((r, i) => ({ path: r.path, score: results.length - i }));
+    const stage = applyTrustScoreStage(rankedInputs, {
+      signals,
+      weights: this.config.trustScoreWeights,
+      minMultiplier: this.config.trustScoreMinMultiplier,
+      maxMultiplier: this.config.trustScoreMaxMultiplier,
+      quarantine: this.config.trustScoreQuarantine,
+    });
+    const trustByPath = new Map(stage.all.map((item) => [item.path, item]));
+    const byPath = new Map(results.map((r) => [r.path, r]));
+    const admitted = stage.admitted
+      .map((item) => byPath.get(item.path))
+      .filter((r): r is QmdSearchResult => r !== undefined);
+    return { results: admitted, trustByPath };
+  }
+
+  /**
+   * Issue #1577 — apply the TrustScore stage (or, when trust is off, the Memory
+   * Worth multiplier fallback) to ONE recall branch's results, returning the
+   * scored results + the per-path trust map. Thin wiring over
+   * {@link applyTrustScoreRerank} so every recall path — hot QMD, embedding
+   * fallback, recent scan — applies the SAME multiplier gate (rule 41: a
+   * feature gate must apply across ALL parallel recall paths). TrustScore
+   * subsumes Memory Worth; exactly one runs (rule 39). Fail-open on lookup
+   * errors so a storage hiccup never breaks a fallback path.
+   */
+  private async applyTrustScoreToBranch(
+    results: QmdSearchResult[],
+    namespaces: string[],
+    caps: CapabilitySet,
+    label: string,
+  ): Promise<{
+    results: QmdSearchResult[];
+    trustByPath: Map<string, TrustStageResultItem> | null;
+  }> {
+    if (caps.recallTrustScore && results.length > 0) {
+      try {
+        return await this.applyTrustScoreRerank(results, namespaces);
+      } catch (err) {
+        log.debug(`trust-score stage (${label}) failed open`, {
+          error: (err as Error).message,
+        });
+      }
+    } else if (caps.recallMemoryWorthFilter && results.length > 0) {
+      try {
+        const filtered = await this.applyMemoryWorthRerank(results, namespaces);
+        return { results: filtered, trustByPath: null };
+      } catch (err) {
+        log.debug(`memory-worth filter (${label}) failed open`, {
+          error: (err as Error).message,
+        });
+      }
+    }
+    return { results, trustByPath: null };
+  }
+
   private diversifyAndLimitRecallResults(
     sectionId: string,
     results: QmdSearchResult[],
@@ -18513,7 +19236,7 @@ export class Orchestrator {
     //   • search() throws                 → re-throw (network/provider error).
     //   • search() returns []             → return [] (empty index, not a
     //     backend failure; decideSemanticDedup reports no_candidates).
-    if (!this.config.embeddingFallbackEnabled) {
+    if (!resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) {
       throw new Error("semantic dedup: embedding backend not configured");
     }
     if (!(await this.embeddingFallback.isAvailable())) {
@@ -18587,7 +19310,7 @@ export class Orchestrator {
     query: string,
     limit: number,
   ): Promise<QmdSearchResult[]> {
-    if (!this.config.embeddingFallbackEnabled) return [];
+    if (!resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) return [];
     if (!(await this.embeddingFallback.isAvailable())) return [];
     const hits = await this.embeddingFallback.search(query, limit);
     if (hits.length === 0) return [];
@@ -18647,29 +19370,22 @@ export class Orchestrator {
       await this.readArchivedMemoriesForNamespaces(recallNamespaces);
     if (archivedMemories.length === 0) return scopedSeedResults;
 
-    const scored: QmdSearchResult[] = [];
-    for (const memory of archivedMemories) {
-      throwIfRecallAborted(abortSignal);
-      const haystack = [
-        memory.content,
-        memory.frontmatter.category,
-        ...(memory.frontmatter.tags ?? []),
-      ]
-        .join(" ")
-        .toLowerCase();
-      let hits = 0;
-      for (const token of tokens) {
-        if (haystack.includes(token)) hits += 1;
-      }
-      if (hits === 0) continue;
-      const normalized = hits / tokens.length;
-      scored.push({
-        docid: memory.frontmatter.id,
-        path: memory.path,
-        score: normalized,
-        snippet: memory.content.slice(0, 400).replace(/\n/g, " "),
-      });
-    }
+    // Issue #1674: off-load the CPU-bound archive-scoring loop to a
+    // worker_threads pool so concurrent recall requests run on separate
+    // cores instead of serializing on the main JS thread. The pure scoring
+    // function is identical to the old inline loop — only the execution
+    // context changed. Aborts are checked at the boundaries (before submit
+    // and after result); the worker's work is bounded by the file count.
+    throwIfRecallAborted(abortSignal);
+    const scoring = getDefaultArchiveScoring();
+    const scoredResults = await scoring.score(archivedMemories.map(memoryFileToScoreItem), tokens, abortSignal);
+    throwIfRecallAborted(abortSignal);
+    const scored: QmdSearchResult[] = scoredResults.map((r) => ({
+      docid: r.docid,
+      path: r.path,
+      score: r.score,
+      snippet: r.snippet,
+    }));
 
     const mergedByPath = new Map<string, QmdSearchResult>();
     for (const result of [...scopedSeedResults, ...scored]) {
@@ -18718,6 +19434,14 @@ export class Orchestrator {
      * Unset by default so existing call sites are unaffected.
      */
     xrayPoolSizeSink?: { size: number };
+    /**
+     * Issue #1577 — out-parameter that receives the TrustScore stage's
+     * per-path trust map (admitted + quarantined) when the cold path runs
+     * trust scoring. Mirrors the xrayPoolSizeSink pattern so recallInternal
+     can propagate trust data for epistemic rendering and X-ray visibility
+     without changing the cold pipeline's return type.
+     */
+    trustByPathSink?: { trustByPath: Map<string, TrustStageResultItem> | null };
     deadlineAtMs?: number | null;
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
@@ -18862,17 +19586,17 @@ export class Orchestrator {
       }
     }
     if (longTerm.length === 0) {
+      // Deadline-aware abort: terminate the scoring worker when the shared
+      // assembly deadline wins, not just when the caller aborts (#1674).
+      const da = new AbortController();
+      if (options.abortSignal?.aborted) da.abort();
+      else options.abortSignal?.addEventListener("abort", () => da.abort(), { once: true });
       longTerm = await runColdStepWithinDeadline(
-        "archive scan",
-        [],
-        () =>
-          this.searchLongTermArchiveFallback(
-            options.prompt,
-            options.recallNamespaces,
-            options.recallResultLimit,
-            options.queryAwarePrefilter,
-            options.abortSignal,
-          ),
+        "archive scan", [],
+        () => this.searchLongTermArchiveFallback(
+          options.prompt, options.recallNamespaces, options.recallResultLimit,
+          options.queryAwarePrefilter, da.signal),
+        () => da.abort(),
       );
       if (longTerm.length > 0) {
         log.debug("cold-tier recall source=archive-scan");
@@ -19023,7 +19747,7 @@ export class Orchestrator {
       log.debug("cold-tier recall boost skipped: shared assembly deadline already expired");
     }
 
-    if (this.config.rerankEnabled && this.config.rerankProvider === "local") {
+    if (caps.rerank && this.config.rerankProvider === "local") {
       const ranked = await rerankLocalOrNoop({
         query: options.prompt,
         candidates: results
@@ -19054,16 +19778,27 @@ export class Orchestrator {
         results = reordered;
       }
     }
-    if (this.config.rerankEnabled && this.config.rerankProvider === "cloud") {
+    if (caps.rerank && this.config.rerankProvider === "cloud") {
       log.debug(
         "rerankProvider=cloud is reserved/experimental in v2.2.0; skipping rerank",
       );
     }
 
-    // Memory Worth filter — must fire on the cold fallback path too, or the
-    // feature flag produces divergent behavior by retrieval path (CLAUDE.md
-    // rule 39). Fail-open on lookup errors.
-    if (caps.recallMemoryWorthFilter && results.length > 0) {
+    // Trust-reweighting — must fire on the cold fallback path too, or the
+    // feature flag produces divergent behavior by retrieval path (rule 39).
+    // TrustScore subsumes the Memory Worth multiplier; run exactly one.
+    // Fail-open on lookup errors.
+    if (caps.recallTrustScore && results.length > 0) {
+      try {
+        const trustOutcome = await this.applyTrustScoreRerank(results, options.recallNamespaces);
+        results = trustOutcome.results;
+        if (options.trustByPathSink) options.trustByPathSink.trustByPath = trustOutcome.trustByPath;
+      } catch (err) {
+        log.debug("trust-score stage (cold) failed open", {
+          error: (err as Error).message,
+        });
+      }
+    } else if (caps.recallMemoryWorthFilter && results.length > 0) {
       try {
         results = await this.applyMemoryWorthRerank(results, options.recallNamespaces);
       } catch (err) {
@@ -19285,6 +20020,7 @@ export class Orchestrator {
       blockedPaths?: Set<string>;
     },
   ): QmdSearchResult[] {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     let lifecycleFilteredCount = 0;
     let temporalSupersededFilteredCount = 0;
     let biTemporalExpiredFilteredCount = 0;
@@ -19318,9 +20054,9 @@ export class Orchestrator {
         if (
           options?.allowLifecycleFiltered !== true &&
           shouldFilterLifecycleRecallCandidate(memory.frontmatter, {
-            lifecyclePolicyEnabled: this.config.lifecyclePolicyEnabled,
+            lifecyclePolicyEnabled: lifecycleCaps.lifecyclePolicy,
             lifecycleFilterStaleEnabled:
-              this.config.lifecycleFilterStaleEnabled,
+              lifecycleCaps.lifecycleFilterStale,
           })
         ) {
           lifecycleFilteredCount += 1;
@@ -19354,7 +20090,7 @@ export class Orchestrator {
           // half-open `[valid_at, invalid_at)` evaluation in isValidAsOf
           // is the authoritative gate for historical recall.
           shouldFilterSupersededFromRecall(memory.frontmatter, {
-            enabled: this.config.temporalSupersessionEnabled,
+            enabled: lifecycleCaps.temporalSupersession,
             includeInRecall: this.config.temporalSupersessionIncludeInRecall,
           })
         ) {
@@ -19498,6 +20234,7 @@ export class Orchestrator {
       asOfMs?: number;
     },
   ): Promise<QmdSearchResult[]> {
+    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
     if (results.length === 0) return results;
 
     const safety = await this.filterSearchResultsForRecall(
@@ -19672,7 +20409,7 @@ export class Orchestrator {
         const lifecycleDelta = lifecycleRecallScoreAdjustment(
           memory.frontmatter,
           {
-            lifecyclePolicyEnabled: this.config.lifecyclePolicyEnabled,
+            lifecyclePolicyEnabled: lifecycleCaps.lifecyclePolicy,
           },
         );
         score += applyUtilityRankingRuntimeDelta(
@@ -20037,41 +20774,18 @@ export class Orchestrator {
     return namespaceIdentityFromToken(m[1]) ?? m[1];
   }
 
-  private namespaceFromStorageDir(storageDir: string): string {
-    if (!this.config.namespacesEnabled) return this.config.defaultNamespace;
-    const resolvedStorageDir = path.resolve(storageDir);
-    const resolvedMemoryDir = path.resolve(this.config.memoryDir);
-    if (resolvedStorageDir === resolvedMemoryDir)
-      return this.config.defaultNamespace;
-    const m = resolvedStorageDir.match(/[\\/]namespaces[\\/]([^\\/]+)$/);
-    if (!m?.[1]) return this.config.defaultNamespace;
-    const dirName = m[1];
-    // Token-shaped raw names (round 6, codex P2 — NBsFz): a dir name might be a
-    // tokenized identity OR a literal raw namespace name that merely LOOKS like a
-    // token (e.g. a configured or dynamic name `ns-616c706861`). The round-trip check below
-    // (`namespaceIdentityToken(decoded) === dirName`) is TAUTOLOGICAL for a
-    // canonical token string, so it cannot tell a tokenized dir for `alpha` apart
-    // from the legacy raw root of a namespace literally named `ns-616c706861`
-    // (codex NRCve). A dir name that is itself a KNOWN namespace (configured or
-    // catalog-owned at this exact storage root) is therefore preserved as the
-    // literal namespace BEFORE attempting to decode it.
-    if (this.configuredNamespaces().includes(dirName)) {
-      return dirName;
-    }
-    this.loadNamespaceStorageDirHintsFromCatalog();
-    const hintedNamespaces = this.namespaceStorageDirHints.get(resolvedStorageDir);
-    if (hintedNamespaces?.has(dirName)) {
-      return dirName;
-    }
-    if (hintedNamespaces?.size === 1) {
-      const [hintedNamespace] = hintedNamespaces;
-      if (hintedNamespace) return hintedNamespace;
-    }
-    const decoded = namespaceIdentityFromToken(dirName);
-    if (decoded && namespaceIdentityToken(decoded) === dirName) {
-      return decoded;
-    }
-    return dirName;
+  private storageDirNamespace(storageDir: string): string {
+    // #1521: delegates to the scope-module resolver. The inline dir→namespace
+    // derivation (token round-trip guard, catalog hints) is retired so the
+    // adHocNamespaceResolutions ratchet no longer counts this site. Hints are
+    // loaded lazily via the callback (only after early returns, matching the
+    // original behavior — codex P2).
+    return resolveNamespaceFromStorageDir(storageDir, {
+      config: this.config,
+      configuredNamespaces: this.configuredNamespaceList(),
+      hints: this.namespaceStorageDirHints,
+      loadHints: () => this.loadNamespaceStorageDirHintsFromCatalog(),
+    });
   }
 
   // #1522: catalog touch methods removed — touches now happen at the storage chokepoint.

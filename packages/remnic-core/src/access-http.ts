@@ -34,6 +34,9 @@ import { getOperation } from "./access-boundary.js";
 // dispatch the migrated routes through the registry (issue #1525).
 import "./access-operations.js";
 import { handleChatMessage, handleChatEventsSSE } from "./chat/chat-http.js";
+// cleanupExpiredChatSessions wires the chat session TTL sweep into the
+// server lifecycle (issue #1685 item 1 / #1687 Thread 21).
+import { cleanupExpiredChatSessions } from "./chat/chat-session.js";
 
 export interface EngramAccessHttpServerOptions {
   service: EngramAccessService;
@@ -293,6 +296,13 @@ export class EngramAccessHttpServer {
    */
   private readonly sseCleanupFns = new Set<() => void>();
 
+  /**
+   * Periodic chat-session TTL sweep handle (issue #1685 item 1 /
+   * #1687 Thread 21).  unref'd so it never blocks process exit
+   * (rule 47); cleared in `stop()`.
+   */
+  private chatTtlTimer: NodeJS.Timeout | null = null;
+
   constructor(options: EngramAccessHttpServerOptions) {
     this.service = options.service;
     this.host = options.host?.trim() || "127.0.0.1";
@@ -386,11 +396,25 @@ export class EngramAccessHttpServer {
     this.server = server;
     const address = server.address();
     this.boundPort = typeof address === "object" && address ? address.port : this.requestedPort;
+
+    // ── Chat session TTL sweep (issue #1685 item 1 / #1687 Thread 21) ──
+    // Expire idle chat sessions so the JSONL store cannot grow unbounded.
+    // A one-shot sweep runs on startup; a periodic re-sweep follows on an
+    // unref'd 1-hour cadence (rule 47 — never blocks process exit).  Both
+    // are no-ops when chat is disabled (no TTL configured).
+    this.scheduleChatSessionTtlSweep();
+
     return this.status();
   }
 
   async stop(): Promise<void> {
     if (!this.server) return;
+    // Release the chat-session TTL sweep timer (issue #1685) alongside
+    // the SSE cleanups below.
+    if (this.chatTtlTimer) {
+      clearInterval(this.chatTtlTimer);
+      this.chatTtlTimer = null;
+    }
     const server = this.server;
     this.server = null;
     this.boundPort = 0;
@@ -416,6 +440,36 @@ export class EngramAccessHttpServer {
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
     });
+  }
+
+  /**
+   * Schedule the chat-session TTL sweep: one immediate pass plus a
+   * recurring hourly pass (issue #1685 item 1 / #1687 Thread 21).  Both
+   * are skipped when chat is disabled.  The recurring timer is unref'd
+   * so it never keeps the event loop alive on its own (rule 47).  The
+   * sweep itself is best-effort — cleanup failures are swallowed inside
+   * `cleanupExpiredChatSessions`.
+   */
+  private scheduleChatSessionTtlSweep(): void {
+    // Clear any prior handle so a second start() without an intervening
+    // stop() cannot leak a dangling setInterval (Kilo review thread).
+    if (this.chatTtlTimer) {
+      clearInterval(this.chatTtlTimer);
+      this.chatTtlTimer = null;
+    }
+    const chat = this.service.configRef?.chat;
+    if (!chat?.enabled) return;
+    const ttlHours = typeof chat.sessionTtlHours === "number" && chat.sessionTtlHours > 0
+      ? chat.sessionTtlHours
+      : 72;
+    // Startup sweep — fire and forget; failures never block the server.
+    void cleanupExpiredChatSessions(this.service.memoryDir, ttlHours).catch(() => { /* best-effort */ });
+    // Hourly re-sweep (unref'd — rule 47).
+    const SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+    this.chatTtlTimer = setInterval(() => {
+      void cleanupExpiredChatSessions(this.service.memoryDir, ttlHours).catch(() => { /* best-effort */ });
+    }, SWEEP_INTERVAL_MS);
+    this.chatTtlTimer.unref?.();
   }
 
   status(): EngramAccessHttpServerStatus {
@@ -1496,14 +1550,23 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/correction/pending") {
-      const namespace = parsed.searchParams.get("namespace") ?? undefined;
-      const sessionKey = parsed.searchParams.get("sessionKey") ?? undefined;
-      const plans = await this.service.correctionListPending({
-        ...(namespace ? { namespace } : {}),
-        ...(sessionKey ? { sessionKey } : {}),
-        principal: this.resolveRequestPrincipal(req),
-      });
-      this.respondJson(res, 200, plans);
+      const op = getOperation("correction_pending");
+      if (op) {
+        const output = (await op.run(
+          { namespace: parsed.searchParams.get("namespace") ?? undefined, sessionKey: parsed.searchParams.get("sessionKey") ?? undefined },
+          { service: this.service, authenticatedPrincipal: this.resolveRequestPrincipal(req) },
+        )) as { result: unknown };
+        this.respondJson(res, 200, output.result);
+      } else {
+        const namespace = parsed.searchParams.get("namespace") ?? undefined;
+        const sessionKey = parsed.searchParams.get("sessionKey") ?? undefined;
+        const plans = await this.service.correctionListPending({
+          ...(namespace ? { namespace } : {}),
+          ...(sessionKey ? { sessionKey } : {}),
+          principal: this.resolveRequestPrincipal(req),
+        });
+        this.respondJson(res, 200, plans);
+      }
       return;
     }
 
@@ -2074,7 +2137,20 @@ export class EngramAccessHttpServer {
       void getOperation("chat_events"); // boundary dispatch (issue #1525)
       await handleChatEventsSSE(
         req, res, chatEventsMatch[1] ?? "",
-        { service: this.service, config: this.service.configRef?.chat, memoryDir: this.service.memoryDir },
+        {
+          service: this.service,
+          config: this.service.configRef?.chat,
+          memoryDir: this.service.memoryDir,
+          // Register the chat-SSE disconnect cleanup with this server's
+          // stop() set so an HTTP shutdown forcibly releases the heartbeat
+          // and transcript subscription even when a lingering client never
+          // emits 'close' (cursor Medium review; mirrors handleGraphEventsSSE
+          // which registers in sseCleanupFns at access-http.ts:2604).
+          registerSseCleanup: (cleanup) => {
+            this.sseCleanupFns.add(cleanup);
+            return () => { this.sseCleanupFns.delete(cleanup); };
+          },
+        },
         this.resolveRequestPrincipal(req),
       );
       return;

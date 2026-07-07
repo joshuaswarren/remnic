@@ -963,24 +963,68 @@ function restorePublishSnapshot(extensionRoot: string, rootExisted: boolean, sna
   if (!rootExisted && !canCleanNewExtensionRoot(extensionRoot)) return;
 
   for (const snapshot of snapshots) {
-    if (!snapshot.existed) {
-      assertSafeExistingPath(snapshot.path);
-      fs.rmSync(snapshot.path, { force: true });
-      continue;
-    }
-    fs.mkdirSync(path.dirname(snapshot.path), { recursive: true });
-    fs.writeFileSync(snapshot.path, snapshot.content ?? Buffer.alloc(0), { mode: snapshot.mode });
-    if (snapshot.mode !== undefined) {
-      try {
-        fs.chmodSync(snapshot.path, snapshot.mode);
-      } catch {
-        // Best effort for platforms that do not support chmod.
-      }
-    }
+    restoreOwnedFile(snapshot);
   }
 
   if (!rootExisted) {
     removeEmptyDirectory(extensionRoot);
+  }
+}
+
+/**
+ * Restores a single owned file to its pre-publish state, atomically.
+ *
+ * Two cases:
+ *
+ *  - The file did NOT exist before publish (publish created it): remove it to
+ *    undo the publish. {@link assertSafeExistingPath} re-checks it is not a
+ *    symlink swapped in after the snapshot; `rmSync` removes a symlink itself
+ *    rather than following it, but refusing surfaces tampering loudly.
+ *
+ *  - The file DID exist before publish: restore its prior content using
+ *    "write-new-before-delete-old" (rules 42/54). We write the prior content to
+ *    a temp path in the same directory, then {@link fs.renameSync} it into
+ *    place. The live file is never truncated, so a mid-restore failure (disk
+ *    full, EACCES, …) leaves the current on-disk content intact rather than
+ *    half-written — the restore either fully lands or does nothing. The temp
+ *    path uses the `.tmp-<pid>-<ts>` suffix tracked by
+ *    {@link EXTENSION_OWNED_TEMP_FILE_SUFFIX}, so any lingering temp is swept
+ *    by unpublish. The final `renameSync` does NOT follow a symlink even if one
+ *    was swapped into the snapshot path after the snapshot (TOCTOU
+ *    defense-in-depth): `rename(2)` replaces the symlink itself, so no write
+ *    ever reaches an arbitrary target. We still re-check for a symlink right
+ *    before the rename so the rollback surfaces tampering instead of silently
+ *    replacing it.
+ */
+function restoreOwnedFile(snapshot: FileSnapshot): void {
+  if (!snapshot.existed) {
+    assertSafeExistingPath(snapshot.path);
+    fs.rmSync(snapshot.path, { force: true });
+    return;
+  }
+
+  fs.mkdirSync(path.dirname(snapshot.path), { recursive: true });
+  const tmpPath = `${snapshot.path}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    fs.writeFileSync(tmpPath, snapshot.content ?? Buffer.alloc(0), {
+      mode: snapshot.mode ?? 0o644,
+    });
+    if (snapshot.mode !== undefined) {
+      try {
+        fs.chmodSync(tmpPath, snapshot.mode);
+      } catch {
+        // Best effort for platforms that do not support chmod.
+      }
+    }
+    rejectSymlinkPath(snapshot.path);
+    fs.renameSync(tmpPath, snapshot.path);
+  } catch (err) {
+    try {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    } catch {
+      // Best-effort cleanup only.
+    }
+    throw err;
   }
 }
 

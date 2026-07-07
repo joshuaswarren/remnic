@@ -501,3 +501,65 @@ test("RecallXrayBuilder produces unique snapshotId per build when no generator i
   assert.ok(typeof b.snapshotId === "string" && b.snapshotId.length > 0);
   assert.notEqual(a.snapshotId, b.snapshotId);
 });
+
+// ─── Issue #1577 — cloneResult preserves the trust projection (review Oqg_o) ─
+
+test("RecallXrayBuilder clones the trust projection so the snapshot surfaces it (#1577)", () => {
+  // Review Oqg_o: cloneResult was silently dropping the `trust` field, so a
+  // snapshot built via recordResult() lost trust score/band/quarantine reason
+  // even when the live capture had it. The clone must deep-copy the projection.
+  const builder = new RecallXrayBuilder({ query: "q" });
+  builder.recordResult({
+    memoryId: "mem-admitted",
+    path: "mems/a.md",
+    servedBy: "hybrid",
+    scoreDecomposition: { final: 0.9 },
+    admittedBy: [],
+    trust: {
+      score: 0.82,
+      band: "high",
+      components: { faithfulness: { value: 1, weight: 0.4 } },
+      multiplier: 1.15,
+      quarantined: false,
+    },
+  });
+  builder.recordResult({
+    memoryId: "mem-quarantined",
+    path: "mems/b.md",
+    servedBy: "hybrid",
+    scoreDecomposition: { final: 0 },
+    admittedBy: [],
+    rejectedBy: "trust-score:quarantine",
+    trust: {
+      score: 0,
+      band: "quarantine",
+      components: { faithfulness: { value: 0, weight: 0.4 } },
+      multiplier: 1,
+      quarantined: true,
+      quarantineReason: "faithfulness: contradicted",
+    },
+  });
+  const snap = builder.build();
+  const admitted = snap.results.find((r) => r.memoryId === "mem-admitted");
+  const quarantined = snap.results.find((r) => r.memoryId === "mem-quarantined");
+  assert.ok(admitted, "admitted result present in snapshot");
+  assert.ok(admitted!.trust, "admitted result keeps its trust projection through the clone");
+  assert.equal(admitted!.trust!.score, 0.82);
+  assert.equal(admitted!.trust!.band, "high");
+  assert.equal(admitted!.trust!.multiplier, 1.15);
+  assert.equal(admitted!.trust!.quarantined, false);
+  assert.deepEqual(
+    admitted!.trust!.components,
+    { faithfulness: { value: 1, weight: 0.4 } },
+    "components deep-copied",
+  );
+  assert.ok(quarantined, "quarantined result present in snapshot");
+  assert.ok(quarantined!.trust, "quarantined result keeps its trust projection through the clone");
+  assert.equal(quarantined!.trust!.band, "quarantine");
+  assert.equal(quarantined!.trust!.quarantined, true);
+  assert.equal(
+    quarantined!.trust!.quarantineReason,
+    "faithfulness: contradicted",
+    "quarantine reason preserved so exclusion never looks like 'no result' (rule 34)",
+  );
+});

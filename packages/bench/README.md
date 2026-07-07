@@ -211,7 +211,8 @@ A dedicated benchmark suite for [`@remnic/coding-graph`](https://www.npmjs.com/p
 |---|---|
 | `fullIndexMs` | Wall time to index the entire fixture in one batch. |
 | `fullIndexLocsPerSecond` | Sustained LOC/s during full index (higher is better). |
-| `incrementalUpdateP50Ms` / `incrementalUpdateP95Ms` | Single-file re-ingest latency (p50/p95 over ≥20 iterations). |
+| `incrementalUpdateP50Ms` / `incrementalUpdateP95Ms` | Single-file re-ingest latency for UNCHANGED content (the common-case no-op path; p50/p95 over ≥20 iterations). |
+| `incrementalModifiedUpdateP50Ms` / `incrementalModifiedUpdateP95Ms` | Single-file re-ingest latency for MODIFIED content — the change-heavy path (edge deletion/creation, symbol re-resolution). Complementary to `incrementalUpdate` (#1688). |
 | `tracePathP95Ms` | `trace_path` (BFS, depth ≤ 5) p95. |
 | `searchGraphP95Ms` | `search_graph` name-pattern p95. |
 | `deadCodeMs` | Dead-code query wall time. |
@@ -225,18 +226,21 @@ The harness ships a **deterministic** synthetic repo generator (`generateSynthet
 
 The measured numbers live in [`baselines/coding-graph-baseline.json`](./baselines/coding-graph-baseline.json) — bench-owned, separate from the structural ratchets in `scripts/ratchet-baseline.json`. The regression gate (`checkCodingGraphRegression`) compares a report against the baseline with a generous tolerance (default 30%). It hard-fails on gross regression — a real failing step, not a warning (rule 50). Tightening the baseline is a deliberate PR act (mirrors `check-ratchets --update`).
 
+The gate carries a **machine-fingerprint guard** (`compareMachineFingerprints`): when the report's machine class differs from the baseline's (arch/platform/Node major/cpuModel/cores), the comparison is *skipped* (`passed: true`, `skipped: true`, `machineMismatch` populated) rather than failed, so a cross-machine CI run does not false-positive on legitimate hardware variance (#1688). Regenerate the baseline on the target machine class for a real comparison.
+
 ### Measured numbers (first baseline)
 
 > Numbers below are from the **baseline JSON file** — this section is checked against it so prose can't drift from measurement. Run `remnic bench coding-graph` to reproduce.
 
 | Metric | Value | Machine |
 |---|---|---|
-| Full index | ~17.6 ms, ~115k LOC/s | Apple M2 Max, Node v22 |
-| Incremental update p95 | ~0.26 ms | Apple M2 Max |
-| trace_path p95 | ~0.14 ms | Apple M2 Max |
-| search_graph p95 | ~0.29 ms | Apple M2 Max |
-| dead_code | ~0.67 ms | Apple M2 Max |
-| DB size | ~2 KB/KLOC | Apple M2 Max |
+| Full index | ~15 ms, ~131k LOC/s | Apple M2 Max, Node v22 |
+| Incremental update p95 (idempotent) | ~0.24 ms | Apple M2 Max |
+| Incremental modified update p95 (change-heavy) | ~0.96 ms | Apple M2 Max |
+| trace_path p95 | ~0.13 ms | Apple M2 Max |
+| search_graph p95 | ~0.18 ms | Apple M2 Max |
+| dead_code | ~0.53 ms | Apple M2 Max |
+| DB size | ~270 KB/KLOC | Apple M2 Max |
 
 These are **working targets on a small fixture (20 files, 200 symbols)**, NOT parity claims against codebase-memory-mcp's published numbers (28M LOC in 3 min, <1ms Cypher). Scale targets at 1M+ LOC are tracked as stretch goals — the harness will measure them when Tier-L fixtures are wired (issue #1557 PR2).
 
@@ -245,9 +249,14 @@ These are **working targets on a small fixture (20 files, 200 symbols)**, NOT pa
 ```typescript
 import { runCodingGraphBenchmark, checkCodingGraphRegression } from "@remnic/bench";
 
+// Use the SAME fixture as the bundled baseline (20×10, density 0.3, seed
+// 42) so the regression gate compares like-for-like. A custom fixture
+// (different fileCount/symbolsPerFile/callDensity/seed/language) needs its
+// OWN baseline — build one with buildBaselineFromReport(report, note) and
+// commit it, otherwise checkCodingGraphRegression reports a fixture mismatch.
 const report = await runCodingGraphBenchmark({
-  fixture: { fileCount: 1000, symbolsPerFile: 10, callDensity: 0.2 },
-  iterations: 25,
+  fixture: { seed: 42, fileCount: 20, symbolsPerFile: 10, callDensity: 0.3, language: "typescript" },
+  iterations: 20,
 });
 
 const baseline = require("@remnic/bench/baselines/coding-graph-baseline.json");
@@ -256,4 +265,7 @@ if (!gate.passed) {
   console.error(gate.summary);
   process.exit(1);
 }
+// gate.skipped === true when the report's machine fingerprint differs from
+// the baseline's (different CPU/arch/Node major) — the comparison is skipped
+// rather than failed so cross-machine CI does not false-positive (#1688).
 ```

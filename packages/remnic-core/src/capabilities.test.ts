@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { parseConfig } from "./config.js";
-import { resolveCapabilities, type CapabilitySet } from "./capabilities.js";
+import {
+  resolveCapabilities,
+  resolveAccessSetupCapabilities,
+  type CapabilitySet,
+  type AccessSetupCapabilitySet,
+} from "./capabilities.js";
 
 /**
  * Characterization tests for the recall-operation CapabilitySet (issue #1523).
@@ -22,6 +27,7 @@ const FIELD_TO_FLAG: Record<keyof CapabilitySet, string> = {
   rerankCache: "rerankCacheEnabled",
   recallDirectAnswer: "recallDirectAnswerEnabled",
   recallMemoryWorthFilter: "recallMemoryWorthFilterEnabled",
+  recallTrustScore: "trustScoreEnabled",
   recallMmr: "recallMmrEnabled",
   recallReasoningTraceBoost: "recallReasoningTraceBoostEnabled",
   recallPlannerLlm: "recallPlannerLlmEnabled",
@@ -30,6 +36,10 @@ const FIELD_TO_FLAG: Record<keyof CapabilitySet, string> = {
   graphRecall: "graphRecallEnabled",
   graphAssistInFullMode: "graphAssistInFullModeEnabled",
   graphExpandedIntent: "graphExpandedIntentEnabled",
+  // Issue #1566 Cluster C: mixed-operation flags.
+  rerank: "rerankEnabled",
+  harmonicRetrieval: "harmonicRetrievalEnabled",
+  parallelRetrieval: "parallelRetrievalEnabled",
 };
 
 const FIELDS = Object.keys(FIELD_TO_FLAG) as Array<keyof CapabilitySet>;
@@ -96,6 +106,34 @@ test("resolveCapabilities returns a frozen object", () => {
   assert.equal(Object.isFrozen(caps), true, "CapabilitySet must be frozen");
 });
 
+test("resolveCapabilities is deterministic — same config always yields identical gate values (one-resolution-per-op #1523)", () => {
+  // The one-resolution-per-op contract (issue #1523): resolve ONCE at the
+  // operation entry, thread the frozen result down. This test proves the
+  // resolution is deterministic — calling it twice with the same config
+  // produces identical values for every gate, so there is never a reason to
+  // re-resolve mid-operation.
+  const config = parseConfig({
+    rerankCacheEnabled: true,
+    recallDirectAnswerEnabled: false,
+    recallMmrEnabled: true,
+    recallPlannerLlmEnabled: true,
+    graphRecallEnabled: true,
+  });
+  const first = resolveCapabilities(config);
+  const second = resolveCapabilities(config);
+  for (const field of FIELDS) {
+    assert.equal(
+      first[field],
+      second[field],
+      `field ${field} must be deterministic across resolutions`,
+    );
+  }
+  // Both must be frozen — a mid-operation mutation would break the contract.
+  assert.equal(Object.isFrozen(first), true);
+  assert.equal(Object.isFrozen(second), true);
+});
+
+
 // ---------------------------------------------------------------------------
 // GraphConstructionCapabilitySet — gate-parity tests (issue #1566 Cluster A).
 //
@@ -114,6 +152,12 @@ import {
   resolveGraphConstructionCapabilities,
   type GraphConstructionCapabilitySet,
 } from "./capabilities.js";
+
+import {
+  resolveMemoryLifecycleCapabilities,
+  type MemoryLifecycleCapabilitySet,
+} from "./capabilities.js";
+
 
 const GRAPH_FIELD_TO_FLAG: Record<keyof GraphConstructionCapabilitySet, string> = {
   entityGraph: "entityGraphEnabled",
@@ -266,5 +310,154 @@ test("resolveGraphConstructionCapabilities matches pre-migration config reads (p
       config.graphWriteSessionAdjacencyEnabled !== false,
       `[${label}] graphWriteSessionAdjacency parity (must match !== false)`,
     );
+  }
+});
+
+
+// ---------------------------------------------------------------------------
+// MemoryLifecycleCapabilitySet — gate-parity tests (issue #1523 batch 3).
+//
+// Same invariant as the sets above: every caps field must project from its
+// `<field>Enabled` config flag, so a future edit that maps a field to the wrong
+// flag fails loudly here. All ten flags are required booleans on PluginConfig
+// (defaults resolved at the parse boundary), so the projection is a pure
+// passthrough — no optional-default variants needed.
+//
+// Parity contract: a caps-resolved run and a config-derived run MUST produce
+// identical boolean values for every gate — on AND off.
+// ---------------------------------------------------------------------------
+
+const LIFECYCLE_FIELD_TO_FLAG: Record<keyof MemoryLifecycleCapabilitySet, string> = {
+  temporalSupersession: "temporalSupersessionEnabled",
+  temporalMemoryTree: "temporalMemoryTreeEnabled",
+  lifecyclePolicy: "lifecyclePolicyEnabled",
+  lifecycleFilterStale: "lifecycleFilterStaleEnabled",
+  lifecycleMetrics: "lifecycleMetricsEnabled",
+  extractionScopeClassification: "extractionScopeClassificationEnabled",
+  extractionJudge: "extractionJudgeEnabled",
+  extractionDedupe: "extractionDedupeEnabled",
+  extractionTelemetryPrefilter: "extractionTelemetryPrefilterEnabled",
+  extractionJudgeTelemetry: "extractionJudgeTelemetryEnabled",
+  embeddingFallback: "embeddingFallbackEnabled",
+};
+
+const LIFECYCLE_FIELDS = Object.keys(LIFECYCLE_FIELD_TO_FLAG) as Array<
+  keyof MemoryLifecycleCapabilitySet
+>;
+
+test("resolveMemoryLifecycleCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(LIFECYCLE_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveMemoryLifecycleCapabilities(config);
+
+  for (const field of LIFECYCLE_FIELDS) {
+    const flag = LIFECYCLE_FIELD_TO_FLAG[field];
+    assert.equal(
+      caps[field],
+      (config as unknown as Record<string, boolean>)[flag],
+      `caps.${field} must equal config.${flag} (true variant)`,
+    );
+    assert.equal(caps[field], true, `caps.${field} should be true here`);
+  }
+});
+
+test("resolveMemoryLifecycleCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(LIFECYCLE_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveMemoryLifecycleCapabilities(config);
+
+  for (const field of LIFECYCLE_FIELDS) {
+    const flag = LIFECYCLE_FIELD_TO_FLAG[field];
+    assert.equal(
+      caps[field],
+      (config as unknown as Record<string, boolean>)[flag],
+      `caps.${field} must equal config.${flag} (false variant)`,
+    );
+    assert.equal(caps[field], false, `caps.${field} should be false here`);
+  }
+});
+
+test("resolveMemoryLifecycleCapabilities returns a frozen object", () => {
+  const config = parseConfig({});
+  const caps = resolveMemoryLifecycleCapabilities(config);
+  assert.equal(Object.isFrozen(caps), true);
+});
+
+test("resolveMemoryLifecycleCapabilities matches pre-migration config reads (parity contract)", () => {
+  // For representative on/off combinations, the caps-resolved values MUST be
+  // identical to what the old scattered `this.config.<flag>Enabled` reads
+  // produced. All ten flags used bare reads (no `!== false`/`=== true` at the
+  // call site that would change the value — the two sites that wrote
+  // `=== true` were redundant coercion on an already-boolean config field),
+  // so parity is a direct equality against the resolved config boolean.
+  const cases: Record<string, Record<string, boolean>> = {
+    "all-off": {
+      temporalSupersessionEnabled: false,
+      temporalMemoryTreeEnabled: false,
+      lifecyclePolicyEnabled: false,
+      lifecycleFilterStaleEnabled: false,
+      lifecycleMetricsEnabled: false,
+      extractionScopeClassificationEnabled: false,
+      extractionJudgeEnabled: false,
+      extractionDedupeEnabled: false,
+      extractionTelemetryPrefilterEnabled: false,
+      extractionJudgeTelemetryEnabled: false,
+      embeddingFallbackEnabled: false,
+    },
+    "all-on": {
+      temporalSupersessionEnabled: true,
+      temporalMemoryTreeEnabled: true,
+      lifecyclePolicyEnabled: true,
+      lifecycleFilterStaleEnabled: true,
+      lifecycleMetricsEnabled: true,
+      extractionScopeClassificationEnabled: true,
+      extractionJudgeEnabled: true,
+      extractionDedupeEnabled: true,
+      extractionTelemetryPrefilterEnabled: true,
+      extractionJudgeTelemetryEnabled: true,
+      embeddingFallbackEnabled: true,
+    },
+    "temporal-on-rest-off": {
+      temporalSupersessionEnabled: true,
+      temporalMemoryTreeEnabled: true,
+      lifecyclePolicyEnabled: false,
+      lifecycleFilterStaleEnabled: false,
+      lifecycleMetricsEnabled: false,
+      extractionScopeClassificationEnabled: false,
+      extractionJudgeEnabled: false,
+      extractionDedupeEnabled: false,
+      extractionTelemetryPrefilterEnabled: false,
+      extractionJudgeTelemetryEnabled: false,
+      embeddingFallbackEnabled: false,
+    },
+    "extraction-on-rest-off": {
+      temporalSupersessionEnabled: false,
+      temporalMemoryTreeEnabled: false,
+      lifecyclePolicyEnabled: false,
+      lifecycleFilterStaleEnabled: false,
+      lifecycleMetricsEnabled: false,
+      extractionScopeClassificationEnabled: true,
+      extractionJudgeEnabled: true,
+      extractionDedupeEnabled: true,
+      extractionTelemetryPrefilterEnabled: true,
+      extractionJudgeTelemetryEnabled: true,
+      embeddingFallbackEnabled: true,
+    },
+  };
+
+  for (const [label, overrides] of Object.entries(cases)) {
+    const config = parseConfig(overrides);
+    const caps = resolveMemoryLifecycleCapabilities(config);
+
+    for (const field of LIFECYCLE_FIELDS) {
+      const flag = LIFECYCLE_FIELD_TO_FLAG[field];
+      assert.equal(
+        caps[field],
+        (config as unknown as Record<string, boolean>)[flag],
+        `[${label}] caps.${field} must equal config.${flag}`,
+      );
+    }
   }
 });

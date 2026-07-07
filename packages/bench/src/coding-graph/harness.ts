@@ -261,6 +261,73 @@ export async function runCodingGraphBenchmark(
       const kloc = Math.max(1, repo.approximateLoc / 1000);
       const dbBytesPerKloc = dbBytes / kloc;
 
+      // ── Metric 3b: incremental MODIFIED-content re-ingest p50/p95 ──
+      // Complementary to metric 3 (idempotent no-op): measures the
+      // change-heavy path — edge deletion/creation + symbol re-resolution —
+      // by re-ingesting a file whose symbol set has changed, then restoring
+      // the original so the graph returns to baseline (#1688 item 1). Runs
+      // AFTER the steady-state DB-size measurement: each churn upsert moves
+      // pages to the SQLite free-list without shrinking the file, so a
+      // pre-DB-size churn would inflate dbBytesPerKloc with churn residue
+      // rather than reflecting the indexed fixture's steady-state footprint.
+      const modifiedSamples: number[] = [];
+      for (let i = 0; i < iterations; i++) {
+        const fileIdx = i % storeFiles.length;
+        const original = storeFiles[fileIdx];
+        if (!original) continue;
+        // Modified variant: a single churn symbol with a fresh qualified
+        // name + bumped content hash forces the store to delete the file's
+        // prior symbols/edges and create new ones (the change-heavy path).
+        // Carry a couple of the original's CROSS-FILE edges (re-pointed at
+        // the churn symbol) so the timed upsert also measures edge CREATION
+        // + resolution, not just pruning + a node insert — matching the
+        // metric's "edge deletion/creation" contract (#1688 review: codex).
+        // Cross-file dsts are filtered so the edges resolve against symbols
+        // that survive the churn (the file's own symbols are pruned).
+        const ownSyms = new Set(original.symbols.map((sym) => sym.qualifiedName));
+        const churnName = `mod.benchChurnSymbol${i}`;
+        const representativeEdges: EdgeIR[] = (original.edges ?? [])
+          .filter((e) => !ownSyms.has(e.dstQualifiedName))
+          .slice(0, 2)
+          .map((e) => ({ ...e, srcQualifiedName: churnName }));
+        const modified: StoreFileIR = {
+          ...original,
+          contentHash: `${original.contentHash}-mod-${i}`,
+          symbols: [
+            {
+              qualifiedName: churnName,
+              name: `benchChurnSymbol${i}`,
+              kind: "function" as SymbolKind,
+              span: { startByte: 0, endByte: 0 },
+            },
+          ],
+          edges: representativeEdges,
+        };
+        const modResult = await timeAsync(() =>
+          store.upsertFileBatch([modified]),
+        );
+        if (!modResult.result.ok) {
+          throw new Error(`modified update failed: ${modResult.result.code}`);
+        }
+        modifiedSamples.push(modResult.ms);
+        // Restore the FULL fixture so the graph returns to baseline.
+        // Restoring only this file leaves peer files' incoming edges —
+        // cascade-deleted by the churn prune (the store's FK ON DELETE
+        // CASCADE drops every edge whose endpoint is a pruned node) —
+        // unrecreated: the graph would shed cross-file edges each pass
+        // and later samples would time a progressively smaller graph
+        // (chatgpt-codex-connector + cursor review of #1688). Inspect
+        // the result so a failed restore throws instead of leaving the
+        // graph on the churn symbol set (cursor review of #1688). The
+        // restore is NOT timed — only the churn upsert above is
+        // measured.
+        const restoreResult = await store.upsertFileBatch(storeFiles);
+        if (!restoreResult.ok) {
+          throw new Error(`restore failed: ${restoreResult.code}`);
+        }
+        sampleRss();
+      }
+
       // ── Metric 8: peak RSS (tracked across the run) ──
       sampleRss();
       const peakRssBytes = peakRss;
@@ -279,6 +346,9 @@ export async function runCodingGraphBenchmark(
         fullIndexMs: { ms: fullIndex.ms },
         fullIndexLocsPerSecond: Math.round(locsPerSecond),
         incrementalUpdate: computeMicroMetric(incrementalSamples),
+        incrementalModifiedUpdate: computeMicroMetric(
+          modifiedSamples.length > 0 ? modifiedSamples : [0],
+        ),
         tracePath: computeMicroMetric(traceSamples.length > 0 ? traceSamples : [0]),
         searchGraph: computeMicroMetric(searchSamples),
         deadCodeMs: { ms: deadCode.ms },

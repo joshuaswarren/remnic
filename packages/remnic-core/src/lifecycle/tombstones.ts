@@ -40,7 +40,7 @@
 //   - Semantic tier (4) ships dark, off by default (rule 48).
 // ---------------------------------------------------------------------------
 
-import { serializeMutations } from "../utils/serialize-mutations.js";
+import { serializeMutations, withHeldFileLock } from "../utils/serialize-mutations.js";
 
 /** Why a tombstone was emitted. */
 export type TombstoneReason =
@@ -129,6 +129,20 @@ export interface TombstoneStoreOptions {
    * skipped entirely.
    */
   semanticSimilarity?: (a: string, b: string) => number;
+  /**
+   * Cross-process write-lock timings for the tombstone JSONL mutation lock
+   * (issue #1639). The secure-store append is a read-merge-write (read
+   * encrypted → decrypt → concat → re-encrypt → atomic rename), so two
+   * Remnic processes appending concurrently can each read the same contents
+   * and the last writer drops the other's entry — breaking the
+   * non-resurrection invariant. The lock serializes the mutation across
+   * processes. When omitted, defaults that fit the short tombstone critical
+   * section (mirroring the summary-snapshot lock): staleMs 30s, maxWaitMs 5s,
+   * heartbeatMs floor(staleMs/3).
+   */
+  readonly lockStaleMs?: number;
+  readonly lockMaxWaitMs?: number;
+  readonly lockHeartbeatMs?: number;
 }
 
 /** Injected file I/O — the StorageManager wires its secure-store-aware
@@ -261,7 +275,33 @@ export class TombstoneStore {
     private readonly namespace: string,
     private readonly options: TombstoneStoreOptions,
     private readonly io: TombstoneFileIo,
-  ) {}
+  ) {
+    this.lockStaleMs = this.options.lockStaleMs ?? 30_000;
+    this.lockMaxWaitMs = this.options.lockMaxWaitMs ?? 5_000;
+    this.lockHeartbeatMs =
+      this.options.lockHeartbeatMs ?? Math.max(100, Math.floor(this.lockStaleMs / 3));
+  }
+
+  /**
+   * Resolved cross-process write-lock timings (issue #1639). Defaults mirror
+   * the summary-snapshot lock: a tombstone append critical section is
+   * sub-second, so a stale lock older than 30s is a crashed holder; bounded
+   * acquisition gives up after 5s and strict-fails rather than clobbering a
+   * concurrent writer (which would reintroduce the lost-write race this lock
+   * closes).
+   */
+  private readonly lockStaleMs: number;
+  private readonly lockMaxWaitMs: number;
+  private readonly lockHeartbeatMs: number;
+
+  /**
+   * Sibling advisory lockfile: `<tombstones>.jsonl` → `<tombstones>.lock`.
+   * Shared by append, revoke, and rebuild so every JSONL mutation serializes
+   * against the others across processes (issue #1639: "shared with rebuilds").
+   */
+  private get lockPath(): string {
+    return this.filePath.replace(/\.jsonl$/i, "") + ".lock";
+  }
 
   /** Lazy load + build the in-memory index. Idempotent. */
   async load(): Promise<void> {
@@ -473,10 +513,48 @@ export class TombstoneStore {
 
   private serializeAppend(entry: TombstoneEntry): Promise<void> {
     const line = JSON.stringify(entry) + "\n";
-    // serializeMutations recovers after rejection (rule 40): a failed append
-    // surfaces to THIS caller but the next append is not poisoned.
+    // serializeMutations (in-process, rule 40 rejection recovery) wraps the
+    // cross-process lock: within one process appends are queued, and across
+    // processes the advisory lockfile serializes the read-merge-write so two
+    // Remnic processes appending concurrently cannot drop each other's entry
+    // (issue #1639). Under the lock we re-sync the in-memory index against
+    // disk first, so indexEntry builds on the peer's just-appended entries.
     return serializeMutations(`tombstone:${this.filePath}`, () =>
-      this.io.append(this.filePath, line),
+      this.withWriteLock(async () => {
+        await this.ensureFreshAgainstDisk();
+        await this.io.append(this.filePath, line);
+      }),
+    );
+  }
+
+  /**
+   * Acquire the cross-process tombstone write lock and run `task` under it
+   * (issue #1639). Strict-fail on acquisition timeout: the secure-store append
+   * is a read-merge-write, so a best-effort unlocked run would clobber a
+   * concurrent writer — reintroducing the lost-write race this lock closes.
+   * The thrown error surfaces to the caller (rule 34: never silently drop);
+   * rebuild recovers the tombstone on the next maintenance cycle.
+   *
+   * In-process callers are already serialized by serializeMutations (one key
+   * for append/revoke/rebuild), so this lock only contends across processes —
+   * the single-process daemon (default deployment) acquires it immediately.
+   */
+  private withWriteLock<T>(task: () => Promise<T>): Promise<T> {
+    return withHeldFileLock(
+      this.lockPath,
+      {
+        staleMs: this.lockStaleMs,
+        maxWaitMs: this.lockMaxWaitMs,
+        heartbeatMs: this.lockHeartbeatMs,
+      },
+      async (acquired) => {
+        if (!acquired) {
+          throw new Error(
+            "could not acquire tombstone write lock (contention timeout or filesystem error)",
+          );
+        }
+        return task();
+      },
     );
   }
 
@@ -595,72 +673,81 @@ export class TombstoneStore {
    * Returns the count of tombstone entries written.
    */
   async rebuild(retiredMemories: ReadonlyArray<RetiredMemoryRecord>): Promise<number> {
-    // Preserve existing revocations (all namespaces — ids are globally
-    // unique) so a rebuild does not silently un-revoke.
-    const existingRevocations = this.entries.filter((e) => e.kind === "revocation");
-    // Preserve tombstone entries from OTHER namespaces when the backing file
-    // is shared (issue #1579 thread Oc2MJ). rebuild rewrites the entire file;
-    // without preserving foreign entries, rebuilding namespace A would
-    // silently delete namespace B's tombstones, allowing resurrection in B.
-    const foreignTombstones = this.entries.filter(
-      (e) => e.kind === "tombstone" && e.namespace !== this.namespace,
+    // The full read-merge-write runs UNDER the cross-process lock (issue #1639,
+    // cursor/codex review): we ensureFreshAgainstDisk() first so the in-memory
+    // index reflects any peer append/revoke that landed while we waited for the
+    // lock, THEN compute the payload. Rebuild rewrites the entire JSONL, so a
+    // payload built from a stale this.entries would overwrite a peer's just-
+    // written entry and resurrect a retired fact — the exact invariant this
+    // store exists to enforce. serializeMutations (in-process) wraps the
+    // cross-process lock; the key is unified with append/revoke so they cannot
+    // interleave in-process either.
+    const rebuiltCount = await serializeMutations(`tombstone:${this.filePath}`, () =>
+      this.withWriteLock(async () => {
+        await this.ensureFreshAgainstDisk();
+        // Preserve existing revocations (all namespaces — ids are globally
+        // unique) so a rebuild does not silently un-revoke.
+        const existingRevocations = this.entries.filter((e) => e.kind === "revocation");
+        // Preserve tombstone entries from OTHER namespaces when the backing
+        // file is shared (issue #1579 thread Oc2MJ). rebuild rewrites the
+        // entire file; without preserving foreign entries, rebuilding
+        // namespace A would silently delete namespace B's tombstones, allowing
+        // resurrection in B.
+        const foreignTombstones = this.entries.filter(
+          (e) => e.kind === "tombstone" && e.namespace !== this.namespace,
+        );
+        // Reuse existing tombstone ids for source-equivalent entries so a prior
+        // revocation (which references the tombstone id) survives rebuild —
+        // minting fresh ids would orphan the revocation and silently un-revoke.
+        // Issue #1579 thread Oci-T: key the reuse map by (sourceMemoryId,
+        // supersessionKey). See the append path above for the full rationale.
+        const existingBySource = new Map<string, string>();
+        for (const e of this.entries) {
+          if (e.kind === "tombstone") {
+            existingBySource.set(`${e.sourceMemoryId}\u{0000}${e.supersessionKey ?? ""}`, e.id);
+          }
+        }
+        const rebuilt: TombstoneEntry[] = retiredMemories.map((m) => ({
+          id:
+            existingBySource.get(`${m.memoryId}\u{0000}${m.supersessionKey ?? ""}`) ??
+            newTombstoneId(),
+          kind: "tombstone" as const,
+          reason: m.reason,
+          sourceMemoryId: m.memoryId,
+          contentHash: m.contentHash ?? this.options.hashContent(m.rawContent),
+          normalizedText: this.options.normalizeText(m.rawContent),
+          ...(m.entityRef ? { entityRef: m.entityRef } : {}),
+          ...(m.supersessionKey ? { supersessionKey: m.supersessionKey } : {}),
+          namespace: this.namespace,
+          createdAt: m.createdAt,
+          createdBy: m.createdBy,
+        }));
+        // Sort deterministically (rule 38): createdAt, then id for stability.
+        rebuilt.sort((a, b) =>
+          a.createdAt === b.createdAt
+            ? a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+            : a.createdAt < b.createdAt ? -1 : 1,
+        );
+        const all = [...rebuilt, ...existingRevocations, ...foreignTombstones].sort((a, b) =>
+          a.createdAt === b.createdAt
+            ? a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+            : a.createdAt < b.createdAt ? -1 : 1,
+        );
+        const serialized =
+          all.map((e) => JSON.stringify(e)).join("\n") + (all.length > 0 ? "\n" : "");
+        await this.io.write(this.filePath, serialized);
+        // Update the in-memory index under the same lock so it stays consistent
+        // with the file we just wrote (no window for a lookup to see a stale
+        // index that misses a just-rebuilt entry).
+        this.resetIndex();
+        for (const entry of all) this.indexEntry(entry);
+        this.corruptedLines = 0;
+        this.loaded = true;
+        this.markWritten();
+        return rebuilt.length;
+      }),
     );
-    // Reuse existing tombstone ids for source-equivalent entries so a prior
-    // revocation (which references the tombstone id) survives rebuild — minting
-    // fresh ids would orphan the revocation and silently un-revoke the content.
-    // Issue #1579 thread Oci-T: key the reuse map by (sourceMemoryId,
-    // supersessionKey), not just sourceMemoryId. A retired fact with multiple
-    // structured-attribute keys emits one record per key (see
-    // collectRetiredMemoriesForRebuild); keying only by sourceMemoryId made
-    // every rebuilt record share one id, so a revocation of key A silently
-    // revoked key B (over-revoke) — or, if a prior single-key tombstone was
-    // revoked, the new multi-key records all inherited a revoked id and
-    // silently un-blocked (orphan). Including the supersession-key
-    // discriminator keeps each keyed tombstone's id (and thus its revocation)
-    // independent. Records without a supersession key fall back to a stable
-    // empty-string discriminator so they still reuse by sourceMemoryId alone.
-    const existingBySource = new Map<string, string>();
-    for (const e of this.entries) {
-      if (e.kind === "tombstone") {
-        existingBySource.set(`${e.sourceMemoryId}\u{0000}${e.supersessionKey ?? ""}`, e.id);
-      }
-    }
-    const rebuilt: TombstoneEntry[] = retiredMemories.map((m) => ({
-      id:
-        existingBySource.get(`${m.memoryId}\u{0000}${m.supersessionKey ?? ""}`) ??
-        newTombstoneId(),
-      kind: "tombstone" as const,
-      reason: m.reason,
-      sourceMemoryId: m.memoryId,
-      contentHash: m.contentHash ?? this.options.hashContent(m.rawContent),
-      normalizedText: this.options.normalizeText(m.rawContent),
-      ...(m.entityRef ? { entityRef: m.entityRef } : {}),
-      ...(m.supersessionKey ? { supersessionKey: m.supersessionKey } : {}),
-      namespace: this.namespace,
-      createdAt: m.createdAt,
-      createdBy: m.createdBy,
-    }));
-    // Sort deterministically (rule 38): createdAt, then id for stability.
-    rebuilt.sort((a, b) =>
-      a.createdAt === b.createdAt
-        ? a.id < b.id ? -1 : a.id > b.id ? 1 : 0
-        : a.createdAt < b.createdAt ? -1 : 1,
-    );
-    const all = [...rebuilt, ...existingRevocations, ...foreignTombstones].sort((a, b) =>
-      a.createdAt === b.createdAt
-        ? a.id < b.id ? -1 : a.id > b.id ? 1 : 0
-        : a.createdAt < b.createdAt ? -1 : 1,
-    );
-    const serialized = all.map((e) => JSON.stringify(e)).join("\n") + (all.length > 0 ? "\n" : "");
-    await serializeMutations(`tombstone-rebuild:${this.filePath}`, () =>
-      this.io.write(this.filePath, serialized),
-    );
-    this.resetIndex();
-    for (const entry of all) this.indexEntry(entry);
-    this.corruptedLines = 0;
-    this.loaded = true;
-    this.markWritten();
-    return rebuilt.length;
+    return rebuiltCount;
   }
 }
 

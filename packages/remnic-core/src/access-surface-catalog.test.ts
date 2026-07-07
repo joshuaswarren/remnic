@@ -37,21 +37,10 @@ import {
   type McpToolEntry,
 } from "./access-surface-catalog.js";
 
-// The ratchet baseline. Decrease this constant (and run
-// `node scripts/check-ratchets.mjs --update`) whenever a follow-up PR
-// migrates a handler. It may NEVER increase — an increase means a new handler
-// shipped without going through the boundary. The only exception is a
-// catalog-completeness correction: adding routes that were always live but
-// omitted from the catalog (review-caught). Such a bump MUST be accompanied
-// by the newly-cataloged entries; the higher count is the honest baseline.
-// #1580 Correction Contract adds GET /engram/v1/correction/pending — a read-only
-// list route (namespace/sessionKey query params, no body), so it stays unmigrated
-// alongside the other GET list routes (baseline 80 from #1525 + 1 = 81). Also a
-// catalog-completeness correction: POST /engram/v1/memories (operation memory_store)
-// was always live but omitted from HTTP_ROUTES — it is migrated, so no count change.
-// #1583 remnic chat adds memory_chat — an unmigrated handler dispatched to
-// processChatMessage (carries user input; not a boundary operation) → 81 + 1 = 82.
-const UNMIGRATED_HANDLER_BASELINE = 82;
+// #1668: all remaining MCP tools migrated through the strict-schema boundary
+// (recall, capsule, continuity, work, shared-context, peer, dreams, etc.).
+// memory_chat → chat_message; GET /correction/pending → review_queue_list.
+const UNMIGRATED_HANDLER_BASELINE = 0;
 
 // Keep the import live — `getOperation` is the call surfaces use at dispatch
 // time; referencing it here pins the registry's lookup contract.

@@ -1,26 +1,38 @@
 /**
  * Batch migration of remaining access-surface handlers through the boundary
- * (issue #1525). Each operation routes MCP/HTTP/CLI dispatch through the
- * shared validation + error-mapping layer in access-boundary.ts.
+ * (issue #1525 / #1668). Each operation routes MCP/HTTP/CLI dispatch through
+ * the shared validation + error-mapping layer in access-boundary.ts.
  *
- * Schemas use a null-stripping preprocessor (MCP clients send null for absent
- * optional fields — repo gotcha #2) over a permissive record. Individual
- * schema tightening lands as follow-up PRs; the boundary already centralizes
- * error mapping and enforces "no handler bypasses the boundary."
+ * Strict per-tool Zod schemas replace the earlier permissive looseSchema (#1668).
+ * Each schema validates known field types; .passthrough() tolerates MCP client
+ * context injection (cwd/projectTag/sessionKey) without silent type coercion.
+ * The stripNulls preprocessor handles the OpenAI-schema null-for-absent gotcha.
  */
 
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { defineOperation, type OperationContext } from "./access-boundary.js";
+import type { DreamsPhase, RecallDisclosure, RecallPlanMode } from "./types.js";
+import type { RemnicChatGptMemoryInspectorInput } from "./mcp-memory-inspector-app.js";
+import { defineOperation } from "./access-boundary.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
-import type { RecallPlanMode, RecallDisclosure } from "./types.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { expandTildePath } from "./utils/path.js";
+import { resolvePrincipal } from "./namespaces/principal.js";
+import { validateBriefingFormat } from "./briefing.js";
+import {
+  buildChatGptMemoryInspectorActionRequest,
+  buildChatGptMemoryInspectorResult,
+} from "./mcp-memory-inspector-app.js";
+import { listPairs, isDefaultReviewNamespace } from "./contradiction/contradiction-review.js";
+import { executeResolution, isValidResolutionVerb } from "./contradiction/resolution.js";
+import { runContradictionScan } from "./contradiction/contradiction-scan.js";
+import { runGraphEdgeDecayMaintenanceAcrossNamespaces } from "./maintenance/graph-edge-decay.js";
+import { normalizeDreamsStatusWindowHours } from "./maintenance/dreams-ledger.js";
 
 // ---------------------------------------------------------------------------
-// Shared helpers — type-safe extraction from unknown input (no `any`)
+// Shared helpers
 // ---------------------------------------------------------------------------
 
-/** Strip null values from an object (MCP clients send null for absent optionals). */
 function stripNulls(data: unknown): unknown {
   if (data !== null && typeof data === "object" && !Array.isArray(data)) {
     const obj = data as Record<string, unknown>;
@@ -33,1450 +45,226 @@ function stripNulls(data: unknown): unknown {
   return data;
 }
 
-/** Permissive schema: null-strip then accept any string-keyed record. */
-const looseSchema = z.preprocess(
-  stripNulls,
-  z.record(z.string(), z.unknown()),
-) as z.ZodType<Record<string, unknown>>;
-
-function optStr(v: unknown): string | undefined {
-  return typeof v === "string" ? v : undefined;
+function strictSchema<T extends z.ZodRawShape>(shape: T): z.ZodType<Record<string, unknown>> {
+  return z.preprocess(stripNulls, z.object(shape).passthrough()) as unknown as z.ZodType<Record<string, unknown>>;
 }
+
+function optStr(v: unknown): string | undefined { return typeof v === "string" ? v : undefined; }
 function reqStr(v: unknown, field: string): string {
-  if (typeof v !== "string" || v.length === 0) {
-    throw new EngramAccessInputError(`${field} is required and must be a non-empty string`);
-  }
+  if (typeof v !== "string" || v.length === 0) throw new EngramAccessInputError(field + " is required and must be a non-empty string");
   return v;
 }
-function defStr(v: unknown, d: string): string {
-  return typeof v === "string" ? v : d;
-}
-function optNum(v: unknown): number | undefined {
-  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
-}
-function optBool(v: unknown): boolean | undefined {
-  return typeof v === "boolean" ? v : undefined;
-}
-function optStrArr(v: unknown): string[] | undefined {
-  return Array.isArray(v) && v.every((x) => typeof x === "string") ? v : undefined;
-}
-// ===========================================================================
-// Recall operations
-// ===========================================================================
+function defStr(v: unknown, d: string): string { return typeof v === "string" ? v : d; }
+function optNum(v: unknown): number | undefined { return typeof v === "number" && Number.isFinite(v) ? v : undefined; }
+function optBool(v: unknown): boolean | undefined { return typeof v === "boolean" ? v : undefined; }
+function optStrArr(v: unknown): string[] | undefined { return Array.isArray(v) && v.every((x) => typeof x === "string") ? v : undefined; }
 
-defineOperation({
-  name: "recall",
-  description: "Semantic recall across memories.",
-  schema: looseSchema,
+const S = {
+  str: z.string().optional(),
+  num: z.number().optional(),
+  // Accept numbers and numeric strings (MCP clients sometimes send "7" for 7).
+  flexNum: z.union([z.number(), z.string()]).optional(),
+  bool: z.boolean().optional(),
+  strArr: z.array(z.string()).optional(),
+};
+
+// === RECALL ===
+defineOperation({ name: "recall", description: "Semantic recall.", schema: strictSchema({ query: S.str, sessionKey: S.str, namespace: S.str, topK: S.num, mode: S.str, includeDebug: S.bool, disclosure: S.str, cwd: S.str, projectTag: S.str, asOf: S.str, tags: S.strArr, tagMatch: S.str }),
   handler: async (input, ctx) => {
-    const result = await ctx.service.recall({
-      query: defStr(input.query, ""),
-      sessionKey: optStr(input.sessionKey),
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-      namespace: optStr(input.namespace),
-      topK: optNum(input.topK),
-      mode: optStr(input.mode) as RecallPlanMode | "auto" | undefined,
-      includeDebug: input.includeDebug === true,
-      disclosure: optStr(input.disclosure) as RecallDisclosure | undefined,
-      cwd: optStr(input.cwd),
-      projectTag: optStr(input.projectTag),
-      asOf: optStr(input.asOf),
-      ...(optStrArr(input.tags) !== undefined ? { tags: optStrArr(input.tags)! } : {}),
-      ...(optStr(input.tagMatch) !== undefined ? { tagMatch: optStr(input.tagMatch) as "any" | "all" } : {}),
-    });
+    let disclosure: RecallDisclosure | undefined;
+    if (input.disclosure !== undefined) { if (typeof input.disclosure !== "string") throw new EngramAccessInputError("disclosure must be a string"); disclosure = input.disclosure as RecallDisclosure; }
+    if (input.cwd !== undefined && typeof input.cwd !== "string") throw new EngramAccessInputError("cwd must be a string");
+    if (input.projectTag !== undefined && typeof input.projectTag !== "string") throw new EngramAccessInputError("projectTag must be a string");
+    if (input.asOf !== undefined && typeof input.asOf !== "string") throw new EngramAccessInputError("asOf must be a string");
+    let tags: string[] | undefined;
+    if (input.tags !== undefined) { if (!Array.isArray(input.tags) || !input.tags.every((t) => typeof t === "string")) throw new EngramAccessInputError("tags must be an array of strings"); tags = input.tags; }
+    let tagMatch: "any" | "all" | undefined;
+    if (input.tagMatch !== undefined) { if (input.tagMatch !== "any" && input.tagMatch !== "all") throw new EngramAccessInputError("tagMatch must be one of: any, all"); tagMatch = input.tagMatch; }
+    const result = await ctx.service.recall({ query: typeof input.query === "string" ? input.query : "", sessionKey: optStr(input.sessionKey), authenticatedPrincipal: ctx.authenticatedPrincipal, namespace: optStr(input.namespace), topK: optNum(input.topK), mode: optStr(input.mode) as RecallPlanMode | "auto" | undefined, includeDebug: input.includeDebug === true, disclosure, cwd: optStr(input.cwd), projectTag: optStr(input.projectTag), asOf: optStr(input.asOf), ...(tags ? { tags } : {}), ...(tagMatch ? { tagMatch } : {}) });
     return { result };
   },
 });
-
-defineOperation({
-  name: "recall_explain",
-  description: "Explain the recall plan for the session.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.recallExplain({
-      sessionKey: optStr(input.sessionKey),
-      namespace: optStr(input.namespace),
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "set_coding_context",
-  description: "Set the coding context for a session (issue #569).",
-  schema: looseSchema,
+defineOperation({ name: "recall_explain", description: "Explain recall plan.", schema: strictSchema({ sessionKey: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.recallExplain({ sessionKey: optStr(input.sessionKey), namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "set_coding_context", description: "Set coding context.", schema: z.preprocess((data) => { // Strip null from all fields EXCEPT codingContext (null = clear context).
+    if (data !== null && typeof data === "object" && !Array.isArray(data)) { const o = data as Record<string, unknown>; const c: Record<string, unknown> = {}; for (const [k, v] of Object.entries(o)) { if (v !== null || k === "codingContext") c[k] = v; } return c; } return data; }, z.object({ sessionKey: S.str, codingContext: z.union([z.null(), z.object({ projectId: S.str, branch: z.union([z.string(), z.null()]).optional(), rootPath: S.str, defaultBranch: z.union([z.string(), z.null()]).optional() }).passthrough()]).optional(), projectTag: S.str }).passthrough()) as unknown as z.ZodType<Record<string, unknown>>,
   handler: async (input, ctx) => {
     const sessionKey = defStr(input.sessionKey, "");
     const projectTag = optStr(input.projectTag);
     const hasProjectTag = projectTag !== undefined && projectTag.trim().length > 0;
     const hasCodingContext = "codingContext" in input;
-    if (!hasCodingContext && hasProjectTag) {
-      const tag = projectTag!.trim();
-      const projectId = projectTagProjectId(tag);
-      ctx.service.setCodingContext({
-        sessionKey,
-        codingContext: { projectId, branch: null, rootPath: projectId, defaultBranch: null },
-      });
-      return { result: { ok: true } };
-    }
-    if (!hasCodingContext && !hasProjectTag) {
-      throw new EngramAccessInputError("set_coding_context requires either codingContext or projectTag");
-    }
-    const rawCtx = input.codingContext;
+    if (!hasCodingContext && hasProjectTag) { const tag = projectTag!.trim(); const pid = projectTagProjectId(tag); ctx.service.setCodingContext({ sessionKey, codingContext: { projectId: pid, branch: null, rootPath: pid, defaultBranch: null } }); return { result: { ok: true } }; }
+    if (!hasCodingContext && !hasProjectTag) throw new EngramAccessInputError("set_coding_context requires either codingContext or projectTag");
+    const rawCtx = (input as Record<string, unknown>).codingContext;
     let codingContext: { projectId: string; branch: string | null; rootPath: string; defaultBranch: string | null } | null = null;
-    if (rawCtx !== null) {
-      if (typeof rawCtx !== "object" || rawCtx === undefined) {
-        throw new EngramAccessInputError("codingContext must be an object or null");
-      }
-      const obj = rawCtx as Record<string, unknown>;
-      const projectId = defStr(obj.projectId, "");
-      const rootPath = defStr(obj.rootPath, "");
-      const branch = obj.branch === null ? null : optStr(obj.branch);
-      const defaultBranch = obj.defaultBranch === null ? null : optStr(obj.defaultBranch);
-      if (branch === undefined) throw new EngramAccessInputError("codingContext.branch must be a string or null");
-      if (defaultBranch === undefined) throw new EngramAccessInputError("codingContext.defaultBranch must be a string or null");
-      codingContext = { projectId, branch, rootPath, defaultBranch };
-    }
+    if (rawCtx !== null) { if (typeof rawCtx !== "object") throw new EngramAccessInputError("codingContext must be an object or null"); const o = rawCtx as Record<string, unknown>; const branch = o.branch === null ? null : optStr(o.branch); const dB = o.defaultBranch === null ? null : optStr(o.defaultBranch); if (branch === undefined) throw new EngramAccessInputError("codingContext.branch must be a string or null"); if (dB === undefined) throw new EngramAccessInputError("codingContext.defaultBranch must be a string or null"); codingContext = { projectId: defStr(o.projectId, ""), branch, rootPath: defStr(o.rootPath, ""), defaultBranch: dB }; }
     ctx.service.setCodingContext({ sessionKey, codingContext });
     return { result: { ok: true } };
   },
 });
-
-defineOperation({
-  name: "recall_tier_explain",
-  description: "Explain the recall tier breakdown.",
-  schema: looseSchema,
+defineOperation({ name: "recall_tier_explain", description: "Explain recall tiers.", schema: strictSchema({ sessionKey: S.str, namespace: S.str }), handler: async (input, ctx) => { const sk = optStr(input.sessionKey); const ns = optStr(input.namespace); return { result: await ctx.service.recallTierExplain(sk && sk.length > 0 ? sk : undefined, ns && ns.length > 0 ? ns : undefined, ctx.authenticatedPrincipal) }; } });
+defineOperation({ name: "recall_xray", description: "X-ray recall.", schema: strictSchema({ query: S.str, sessionKey: S.str, namespace: S.str, budget: z.unknown().optional(), disclosure: S.str }),
   handler: async (input, ctx) => {
-    const sessionKey = optStr(input.sessionKey);
-    const namespace = optStr(input.namespace);
-    const result = await ctx.service.recallTierExplain(
-      sessionKey !== undefined && sessionKey.length > 0 ? sessionKey : undefined,
-      namespace !== undefined && namespace.length > 0 ? namespace : undefined,
-      ctx.authenticatedPrincipal,
-    );
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "recall_xray",
-  description: "X-ray the recall pipeline for a query.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const budgetRaw = input.budget;
     let budget: number | undefined;
-    if (budgetRaw !== undefined && budgetRaw !== null) {
-      const parsed = typeof budgetRaw === "number" ? budgetRaw : typeof budgetRaw === "string" ? Number(budgetRaw) : undefined;
-      if (parsed === undefined || !Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
-        throw new EngramAccessInputError("recall_xray: budget expects a positive integer");
-      }
-      budget = parsed;
-    }
-    const disclosureRaw = optStr(input.disclosure);
-    const result = await ctx.service.recallXray({
-      query: defStr(input.query, ""),
-      sessionKey: optStr(input.sessionKey),
-      namespace: optStr(input.namespace),
-      budget,
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-      ...(disclosureRaw !== undefined && disclosureRaw !== "" ? { disclosure: disclosureRaw as RecallDisclosure } : {}),
-    });
-    return { result };
+    if (input.budget !== undefined) { const p = typeof input.budget === "number" ? input.budget : typeof input.budget === "string" ? Number(input.budget) : undefined; if (p === undefined || !Number.isFinite(p) || p <= 0 || !Number.isInteger(p)) throw new EngramAccessInputError("recall_xray: budget expects a positive integer"); budget = p; }
+    const dr = optStr(input.disclosure);
+    return { result: await ctx.service.recallXray({ query: defStr(input.query, ""), sessionKey: optStr(input.sessionKey), namespace: optStr(input.namespace), budget, authenticatedPrincipal: ctx.authenticatedPrincipal, ...(dr && dr !== "" ? { disclosure: dr as RecallDisclosure } : {}) }) };
   },
 });
 
-// ===========================================================================
-// Wearables + transcript operations
-// ===========================================================================
+// === WEARABLES ===
+defineOperation({ name: "wearables_status", description: "Wearables status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.wearablesStatus() }) });
+defineOperation({ name: "wearables_sync", description: "Sync wearables.", schema: strictSchema({ source: S.str, date: S.str, days: S.flexNum, forceMemories: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.wearablesSync({ source: optStr(input.source), date: optStr(input.date), days: typeof input.days === "number" ? input.days : typeof input.days === "string" && Number.isFinite(Number(input.days)) ? Number(input.days) : undefined, forceMemories: optBool(input.forceMemories) }) }) });
+defineOperation({ name: "transcript_day", description: "Transcript for a day.", schema: strictSchema({ date: S.str, source: S.str }), handler: async (input, ctx) => { const d = defStr(input.date, ""); if (d.trim().length === 0) throw new EngramAccessInputError("transcript_day: date is required (YYYY-MM-DD)"); return { result: await ctx.service.wearablesTranscriptDay({ date: d, source: optStr(input.source) }) }; } });
+defineOperation({ name: "transcript_search", description: "Search transcripts.", schema: strictSchema({ query: S.str, source: S.str, from: S.str, to: S.str, limit: S.flexNum }), handler: async (input, ctx) => { const q = defStr(input.query, ""); if (q.trim().length === 0) throw new EngramAccessInputError("transcript_search: query is required"); return { result: await ctx.service.wearablesTranscriptSearch({ query: q, source: optStr(input.source), from: optStr(input.from), to: optStr(input.to), limit: typeof input.limit === "number" ? input.limit : typeof input.limit === "string" && Number.isFinite(Number(input.limit)) ? Number(input.limit) : undefined }) }; } });
+defineOperation({ name: "transcript_memories", description: "Transcript memories.", schema: strictSchema({ source: S.str, date: S.str, limit: S.flexNum }), handler: async (input, ctx) => ({ result: await ctx.service.wearablesTranscriptMemories({ source: optStr(input.source), date: optStr(input.date), limit: typeof input.limit === "number" ? input.limit : typeof input.limit === "string" && Number.isFinite(Number(input.limit)) ? Number(input.limit) : undefined }) }) });
 
-defineOperation({
-  name: "wearables_status",
-  description: "Get wearables sync status.",
-  schema: looseSchema,
-  handler: async (_input, ctx) => ({ result: await ctx.service.wearablesStatus() }),
-});
-
-defineOperation({
-  name: "wearables_sync",
-  description: "Sync wearables data.",
-  schema: looseSchema,
+// === ACTION CONFIDENCE + INSPECTOR + CAPSULE ===
+defineOperation({ name: "action_confidence", description: "Action confidence.", schema: strictSchema({ intendedAction: S.str, confidence: S.num, risk: S.str, contextReadiness: S.str, currentContextScopes: S.strArr, userRules: z.array(z.unknown()).optional(), retrievedMemories: z.array(z.unknown()).optional() }), handler: async (input, ctx) => { const req: Record<string, unknown> = {}; if (input.intendedAction !== undefined) req.intendedAction = optStr(input.intendedAction); if (input.confidence !== undefined) req.confidence = optNum(input.confidence); if (input.risk !== undefined) req.risk = optStr(input.risk) as "low" | "medium" | "high" | "irreversible" | "restricted" | undefined; if (input.contextReadiness !== undefined) req.contextReadiness = optStr(input.contextReadiness) as "none" | "partial" | "sufficient" | undefined; if (input.currentContextScopes !== undefined) req.currentContextScopes = optStrArr(input.currentContextScopes); if (input.userRules !== undefined) req.userRules = input.userRules; if (input.retrievedMemories !== undefined) req.retrievedMemories = input.retrievedMemories; return { result: await ctx.service.actionConfidence(req) }; } });
+defineOperation({ name: "chatgpt_memory_inspector", description: "Memory inspector.", schema: strictSchema({ query: S.str, sessionKey: S.str, namespace: S.str, currentContextScopes: S.strArr, allowUnverifiedPreview: S.bool }),
   handler: async (input, ctx) => {
-    const result = await ctx.service.wearablesSync({
-      source: optStr(input.source),
-      date: optStr(input.date),
-      days: optNum(input.days),
-      forceMemories: optBool(input.forceMemories),
-    });
-    return { result };
+    const q = defStr(input.query, "");
+    if (q.trim().length === 0) throw new EngramAccessInputError("chatgpt_memory_inspector requires a non-empty query string");
+    const ii: RemnicChatGptMemoryInspectorInput = { query: q.trim() };
+    if (typeof input.sessionKey === "string" && input.sessionKey.trim().length > 0) ii.sessionKey = input.sessionKey;
+    if (typeof input.namespace === "string" && input.namespace.trim().length > 0) ii.namespace = input.namespace;
+    if (input.currentContextScopes !== undefined) ii.currentContextScopes = input.currentContextScopes as string[];
+    if (input.allowUnverifiedPreview !== undefined) ii.allowUnverifiedPreview = input.allowUnverifiedPreview as boolean;
+    const rsk = ii.sessionKey ?? (ctx.authenticatedPrincipal ? "remnic:chatgpt-memory-inspector:" + randomUUID() : undefined);
+    const xr = await ctx.service.recallXray({ query: ii.query, sessionKey: rsk, namespace: ii.namespace, currentContextScopes: ii.currentContextScopes, authenticatedPrincipal: ctx.authenticatedPrincipal, mode: "full", disclosure: "chunk", includeRecall: true });
+    const x = xr.snapshotFound === true ? (xr.snapshot ?? null) : null;
+    const r = xr.recall ?? { query: ii.query, namespace: ii.namespace ?? x?.namespace ?? "global", context: "", count: 0, memoryIds: [], results: [], fallbackUsed: false, sourcesUsed: [], disclosure: "chunk" as const };
+    const ac = await ctx.service.actionConfidence(buildChatGptMemoryInspectorActionRequest(ii, r, x));
+    return { result: buildChatGptMemoryInspectorResult(ii, r, x, ac) };
   },
 });
+defineOperation({ name: "day_summary", description: "Day summary.", schema: strictSchema({ memories: S.str, sessionKey: S.str, namespace: S.str, timeZone: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => { const req: Record<string, unknown> = {}; if (input.memories !== undefined) req.memories = optStr(input.memories); if (input.sessionKey !== undefined) req.sessionKey = optStr(input.sessionKey); if (input.namespace !== undefined) req.namespace = optStr(input.namespace); if (input.timeZone !== undefined) req.timeZone = optStr(input.timeZone); return { result: await ctx.service.daySummary(req) }; } });
+defineOperation({ name: "capsule_export", description: "Export capsule.", schema: strictSchema({ name: S.str, namespace: S.str, since: S.str, includeKinds: S.strArr, peerIds: S.strArr, includeTranscripts: S.bool, encrypt: S.bool, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.capsuleExport({ name: optStr(input.name) ?? "", namespace: optStr(input.namespace), since: optStr(input.since), includeKinds: optStrArr(input.includeKinds), peerIds: optStrArr(input.peerIds), includeTranscripts: optBool(input.includeTranscripts as unknown), encrypt: optBool(input.encrypt as unknown), principal: ctx.authenticatedPrincipal } as unknown as Parameters<EngramAccessService["capsuleExport"]>[0]) }) });
+defineOperation({ name: "capsule_import", description: "Import capsule.", schema: strictSchema({ archivePath: S.str, namespace: S.str, mode: S.str, passphrase: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.capsuleImport({ archivePath: expandTildePath(optStr(input.archivePath) ?? ""), namespace: optStr(input.namespace), mode: optStr(input.mode) as "skip" | "overwrite" | "fork" | undefined, passphrase: optStr(input.passphrase), principal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "capsule_list", description: "List capsules.", schema: strictSchema({ namespace: S.str, sessionKey: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => {
+  const rp = ctx.authenticatedPrincipal ?? (typeof input.sessionKey === "string" && input.sessionKey.length > 0 && ctx.service.configRef ? resolvePrincipal(input.sessionKey, ctx.service.configRef) : undefined);
+  return { result: await ctx.service.capsuleList({ namespace: optStr(input.namespace), principal: rp }) };
+} });
 
-defineOperation({
-  name: "transcript_day",
-  description: "Get transcript for a specific day.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const date = defStr(input.date, "");
-    if (date.trim().length === 0) throw new EngramAccessInputError("transcript_day: date is required and must be YYYY-MM-DD");
-    const result = await ctx.service.wearablesTranscriptDay({ date, source: optStr(input.source) });
-    return { result };
-  },
+// === GOVERNANCE ===
+defineOperation({ name: "memory_governance_run", description: "Run governance.", schema: strictSchema({ namespace: S.str, mode: S.str, recentDays: S.num, maxMemories: S.num, batchSize: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.governanceRun({ namespace: optStr(input.namespace), mode: optStr(input.mode) === "apply" ? "apply" : "shadow", recentDays: optNum(input.recentDays), maxMemories: optNum(input.maxMemories), batchSize: optNum(input.batchSize), authenticatedPrincipal: ctx.authenticatedPrincipal }, ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "procedure_mining_run", description: "Run procedure mining.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.procedureMiningRun({ namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }, ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "pattern_reinforcement_run", description: "Run pattern reinforcement.", schema: strictSchema({ namespace: S.str, force: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.patternReinforcementRun({ namespace: optStr(input.namespace), force: input.force === true, authenticatedPrincipal: ctx.authenticatedPrincipal }, ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "procedural_stats", description: "Procedural stats.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.procedureStats({ namespace: optStr(input.namespace) }, ctx.authenticatedPrincipal) }) });
+
+// === MEMORY/ENTITY/OBSERVE/LCM ===
+defineOperation({ name: "memory_timeline", description: "Memory timeline.", schema: strictSchema({ memoryId: S.str, namespace: S.str, limit: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.memoryTimeline(optStr(input.memoryId) ?? "", optStr(input.namespace), optNum(input.limit) ?? 200, ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "suggestion_submit", description: "Submit suggestion.", schema: strictSchema({ schemaVersion: S.num, idempotencyKey: S.str, dryRun: S.bool, sessionKey: S.str, content: S.str, category: S.str, confidence: S.num, namespace: S.str, tags: S.strArr, entityRef: S.str, ttl: S.str, sourceReason: S.str, cwd: S.str, projectTag: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.suggestionSubmit({ schemaVersion: optNum(input.schemaVersion), idempotencyKey: optStr(input.idempotencyKey), dryRun: input.dryRun === true, sessionKey: optStr(input.sessionKey), authenticatedPrincipal: ctx.authenticatedPrincipal, content: optStr(input.content) ?? "", category: optStr(input.category), confidence: optNum(input.confidence), namespace: optStr(input.namespace), tags: optStrArr(input.tags), entityRef: optStr(input.entityRef), ttl: optStr(input.ttl), sourceReason: optStr(input.sourceReason), cwd: optStr(input.cwd), projectTag: optStr(input.projectTag) }) }) });
+defineOperation({ name: "entity_get", description: "Get entity.", schema: strictSchema({ name: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.entityGet(optStr(input.name) ?? "", optStr(input.namespace)) }) });
+defineOperation({ name: "review_queue_list", description: "List review queue.", schema: strictSchema({ runId: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.reviewQueue(optStr(input.runId) ?? "", optStr(input.namespace), ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "observe", description: "Observe messages.", schema: strictSchema({ sessionKey: S.str, messages: z.array(z.object({ role: z.string(), content: z.string(), parts: z.array(z.unknown()).optional(), rawContent: z.unknown().optional(), sourceFormat: z.string().optional() }).passthrough()), skipExtraction: S.bool, idempotencyKey: S.str, namespace: S.str, cwd: S.str, projectTag: S.str }),
+  handler: async (input, ctx) => ({ result: await ctx.service.observe({ sessionKey: defStr(input.sessionKey, ""), messages: (input.messages as unknown[]).map((m: unknown) => { const r = m as Record<string, unknown>; return { role: String(r.role), content: String(r.content), parts: r.parts as unknown[], rawContent: r.rawContent as string | undefined, sourceFormat: r.sourceFormat as string | undefined }; }) as never, skipExtraction: input.skipExtraction === true, idempotencyKey: optStr(input.idempotencyKey), namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal, cwd: optStr(input.cwd), projectTag: optStr(input.projectTag) }, ctx.hooks?.enforceWriteQuota ? { enforceWriteQuota: ctx.hooks.enforceWriteQuota } : undefined) }),
 });
+defineOperation({ name: "lcm_search", description: "Search LCM.", schema: strictSchema({ query: S.str, sessionKey: S.str, sessionPrefix: S.str, namespace: S.str, limit: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.lcmSearch({ query: defStr(input.query, ""), sessionKey: optStr(input.sessionKey), sessionPrefix: optStr(input.sessionPrefix), namespace: optStr(input.namespace), limit: optNum(input.limit), authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "lcm_compaction_flush", description: "Flush LCM compaction.", schema: strictSchema({ sessionKey: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.lcmCompactionFlush({ sessionKey: optStr(input.sessionKey) ?? "", namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "lcm_compaction_record", description: "Record LCM compaction.", schema: strictSchema({ sessionKey: S.str, namespace: S.str, tokensBefore: S.num, tokensAfter: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.lcmCompactionRecord({ sessionKey: optStr(input.sessionKey) ?? "", namespace: optStr(input.namespace), tokensBefore: optNum(input.tokensBefore) ?? 0, tokensAfter: optNum(input.tokensAfter) ?? 0, authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
 
-defineOperation({
-  name: "transcript_search",
-  description: "Search transcripts.",
-  schema: looseSchema,
+// === CONTINUITY/IDENTITY ===
+defineOperation({ name: "continuity_audit_generate", description: "Continuity audit.", schema: strictSchema({ period: S.str, key: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.continuityAuditGenerate({ period: optStr(input.period) === "monthly" ? "monthly" : optStr(input.period) === "weekly" ? "weekly" : undefined, key: optStr(input.key) }) }) });
+defineOperation({ name: "continuity_incident_open", description: "Open incident.", schema: strictSchema({ symptom: S.str, namespace: S.str, triggerWindow: S.str, suspectedCause: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.continuityIncidentOpen({ symptom: optStr(input.symptom) ?? "", namespace: optStr(input.namespace), triggerWindow: optStr(input.triggerWindow), suspectedCause: optStr(input.suspectedCause), principal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "continuity_incident_close", description: "Close incident.", schema: strictSchema({ id: S.str, namespace: S.str, fixApplied: S.str, verificationResult: S.str, preventiveRule: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.continuityIncidentClose({ id: optStr(input.id) ?? "", namespace: optStr(input.namespace), fixApplied: optStr(input.fixApplied) ?? "", verificationResult: optStr(input.verificationResult) ?? "", preventiveRule: optStr(input.preventiveRule), principal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "continuity_incident_list", description: "List incidents.", schema: strictSchema({ state: S.str, namespace: S.str, limit: S.num }), handler: async (input, ctx) => { const st = optStr(input.state); return { result: await ctx.service.continuityIncidentList({ state: st === "closed" ? "closed" : st === "all" ? "all" : st === "open" ? "open" : undefined, namespace: optStr(input.namespace), limit: optNum(input.limit), principal: ctx.authenticatedPrincipal }) }; } });
+defineOperation({ name: "continuity_loop_add_or_update", description: "Add/update loop.", schema: strictSchema({ id: S.str, cadence: S.str, purpose: S.str, status: S.str, killCondition: S.str, namespace: S.str, lastReviewed: S.str, notes: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.continuityLoopAddOrUpdate({ id: optStr(input.id) ?? "", cadence: (optStr(input.cadence) as "daily" | "weekly" | "monthly" | "quarterly") ?? "weekly", purpose: optStr(input.purpose) ?? "", status: (optStr(input.status) as "active" | "paused" | "retired") ?? "active", killCondition: optStr(input.killCondition) ?? "", namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal, lastReviewed: optStr(input.lastReviewed), notes: optStr(input.notes) }) }) });
+defineOperation({ name: "continuity_loop_review", description: "Review loop.", schema: strictSchema({ id: S.str, namespace: S.str, status: S.str, notes: S.str, reviewedAt: S.str }), handler: async (input, ctx) => { const st = optStr(input.status); return { result: await ctx.service.continuityLoopReview({ id: optStr(input.id) ?? "", namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal, status: st === "active" || st === "paused" || st === "retired" ? st as "active" | "paused" | "retired" : undefined, notes: optStr(input.notes), reviewedAt: optStr(input.reviewedAt) }) }; } });
+defineOperation({ name: "identity_anchor_get", description: "Get identity anchor.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.identityAnchorGet({ namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "identity_anchor_update", description: "Update identity anchor.", schema: strictSchema({ namespace: S.str, identityTraits: S.str, communicationPreferences: S.str, operatingPrinciples: S.str, continuityNotes: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.identityAnchorUpdate({ namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal, identityTraits: optStr(input.identityTraits), communicationPreferences: optStr(input.communicationPreferences), operatingPrinciples: optStr(input.operatingPrinciples), continuityNotes: optStr(input.continuityNotes) }) }) });
+defineOperation({ name: "memory_identity", description: "Memory identity.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryIdentity({ namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
+
+// === WORK/SHARED ===
+defineOperation({ name: "work_task", description: "Manage work task.", schema: strictSchema({ action: S.str, id: S.str, title: S.str, description: S.str, status: S.str, priority: S.str, owner: S.str, assignee: S.str, projectId: S.str, tags: S.strArr, dueAt: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.workTask({ action: (optStr(input.action) as "update" | "list" | "get" | "create" | "delete" | "transition") ?? "list", id: optStr(input.id), title: optStr(input.title), description: optStr(input.description), status: optStr(input.status), priority: optStr(input.priority), owner: optStr(input.owner), assignee: optStr(input.assignee), projectId: optStr(input.projectId), tags: optStrArr(input.tags), dueAt: optStr(input.dueAt) }) }) });
+defineOperation({ name: "work_project", description: "Manage work project.", schema: strictSchema({ action: S.str, id: S.str, name: S.str, description: S.str, status: S.str, owner: S.str, tags: S.strArr, taskId: S.str, projectId: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.workProject({ action: (optStr(input.action) as "update" | "list" | "get" | "create" | "delete" | "link_task") ?? "list", id: optStr(input.id), name: optStr(input.name), description: optStr(input.description), status: optStr(input.status), owner: optStr(input.owner), tags: optStrArr(input.tags), taskId: optStr(input.taskId), projectId: optStr(input.projectId) }) }) });
+defineOperation({ name: "work_board", description: "Manage work board.", schema: strictSchema({ action: S.str, projectId: S.str, snapshotJson: S.str, linkToMemory: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.workBoard({ action: (optStr(input.action) as "export_markdown" | "export_snapshot" | "import_snapshot") ?? "export_markdown", projectId: optStr(input.projectId) ?? "", snapshotJson: optStr(input.snapshotJson) ?? "", linkToMemory: input.linkToMemory === true }) }) });
+defineOperation({ name: "shared_context_write_output", description: "Write shared output.", schema: strictSchema({ agentId: S.str, title: S.str, content: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.sharedContextWriteOutput({ agentId: optStr(input.agentId) ?? "", title: optStr(input.title) ?? "", content: optStr(input.content) ?? "" }) }) });
+defineOperation({ name: "shared_feedback_record", description: "Record shared feedback.", schema: strictSchema({ agent: S.str, decision: S.str, reason: S.str, date: S.str, learning: S.str, outcome: S.str, severity: S.str, confidence: S.num, workflow: S.str, tags: S.strArr, evidenceWindowStart: S.str, evidenceWindowEnd: S.str, refs: S.strArr }), handler: async (input, ctx) => { const sv = optStr(input.severity); return { result: await ctx.service.sharedFeedbackRecord({ agent: optStr(input.agent) ?? "", decision: (optStr(input.decision) as "rejected" | "approved" | "approved_with_feedback") ?? "approved", reason: optStr(input.reason) ?? "", date: optStr(input.date), learning: optStr(input.learning), outcome: optStr(input.outcome), severity: sv === "low" || sv === "medium" || sv === "high" ? sv as "low" | "medium" | "high" : undefined, confidence: optNum(input.confidence), workflow: optStr(input.workflow), tags: optStrArr(input.tags), evidenceWindowStart: optStr(input.evidenceWindowStart), evidenceWindowEnd: optStr(input.evidenceWindowEnd), refs: optStrArr(input.refs) }) }; } });
+defineOperation({ name: "shared_priorities_append", description: "Append priorities.", schema: strictSchema({ agentId: S.str, text: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.sharedPrioritiesAppend({ agentId: optStr(input.agentId) ?? "", text: optStr(input.text) ?? "" }) }) });
+defineOperation({ name: "shared_context_cross_signals_run", description: "Run cross signals.", schema: strictSchema({ date: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.sharedContextCrossSignalsRun({ date: optStr(input.date) }) }) });
+defineOperation({ name: "shared_context_curate_daily", description: "Curate daily.", schema: strictSchema({ date: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.sharedContextCurateDaily({ date: optStr(input.date) }) }) });
+defineOperation({ name: "compounding_weekly_synthesize", description: "Weekly synthesize.", schema: strictSchema({ weekId: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.compoundingWeeklySynthesize({ weekId: optStr(input.weekId) }) }) });
+defineOperation({ name: "compounding_promote_candidate", description: "Promote candidate.", schema: strictSchema({ weekId: S.str, candidateId: S.str, dryRun: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.compoundingPromoteCandidate({ weekId: optStr(input.weekId) ?? "", candidateId: optStr(input.candidateId) ?? "", dryRun: input.dryRun === true }) }) });
+defineOperation({ name: "compression_guidelines_optimize", description: "Optimize guidelines.", schema: strictSchema({ dryRun: S.bool, eventLimit: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.compressionGuidelinesOptimize({ dryRun: input.dryRun === true, eventLimit: optNum(input.eventLimit) }) }) });
+defineOperation({ name: "compression_guidelines_activate", description: "Activate guidelines.", schema: strictSchema({ expectedContentHash: S.str, expectedGuidelineVersion: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.compressionGuidelinesActivate({ expectedContentHash: optStr(input.expectedContentHash), expectedGuidelineVersion: optNum(input.expectedGuidelineVersion) }) }) });
+
+// === MEMORY DEBUG/GRAPH/FEEDBACK ===
+defineOperation({ name: "memory_profile", description: "Memory profile.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryProfile(optStr(input.namespace), ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "memory_entities_list", description: "List entities.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryEntitiesList(optStr(input.namespace), ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "memory_questions", description: "Memory questions.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryQuestions(optStr(input.namespace), ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "memory_last_recall", description: "Last recall.", schema: strictSchema({ sessionKey: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.lastRecallSnapshot(optStr(input.sessionKey)) }) });
+defineOperation({ name: "memory_intent_debug", description: "Debug intent.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.intentDebug(optStr(input.namespace)) }) });
+defineOperation({ name: "memory_qmd_debug", description: "Debug QMD.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.qmdDebug(optStr(input.namespace)) }) });
+defineOperation({ name: "memory_graph_explain", description: "Explain graph.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.graphExplainLastRecall(optStr(input.namespace)) }) });
+defineOperation({ name: "graph_snapshot", description: "Graph snapshot.", schema: strictSchema({ namespace: S.str, limit: S.num, since: S.str, focusNodeId: S.str, categories: S.strArr }), handler: async (input, ctx) => ({ result: await ctx.service.graphSnapshot({ namespace: optStr(input.namespace), limit: optNum(input.limit), since: optStr(input.since), focusNodeId: optStr(input.focusNodeId), categories: optStrArr(input.categories) }, ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "memory_feedback", description: "Record feedback.", schema: strictSchema({ memoryId: S.str, vote: S.str, note: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryFeedback({ memoryId: optStr(input.memoryId) ?? "", vote: optStr(input.vote) === "down" ? "down" : "up", note: optStr(input.note) }) }) });
+defineOperation({ name: "memory_promote", description: "Promote memory.", schema: strictSchema({ memoryId: S.str, namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.memoryPromote({ memoryId: optStr(input.memoryId) ?? "", namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey), principal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "memory_outcome", description: "Record outcome.", schema: strictSchema({ memoryId: S.str, outcome: S.str, namespace: S.str, sessionKey: S.str, timestamp: S.str }), handler: async (input, ctx) => { const o = optStr(input.outcome); if (o !== "success" && o !== "failure") throw new EngramAccessInputError("memory_outcome: outcome must be \"success\" or \"failure\"; got " + JSON.stringify(o)); return { result: await ctx.service.memoryOutcome({ memoryId: optStr(input.memoryId) ?? "", outcome: o, namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey), timestamp: optStr(input.timestamp), principal: ctx.authenticatedPrincipal }) }; } });
+defineOperation({ name: "memory_action_apply", description: "Apply action.", schema: strictSchema({ action: S.str, outcome: S.str, reason: S.str, memoryId: S.str, namespace: S.str, sessionKey: S.str, content: S.str, category: S.str, linkTargetId: S.str, linkType: S.str, linkStrength: S.num, artifactType: S.str, execute: S.bool, sourcePrompt: S.str, dryRun: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.memoryActionApply({ action: optStr(input.action) ?? "", outcome: optStr(input.outcome), reason: optStr(input.reason), memoryId: optStr(input.memoryId) ?? "", namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey), content: optStr(input.content), category: optStr(input.category), linkTargetId: optStr(input.linkTargetId), linkType: optStr(input.linkType), linkStrength: optNum(input.linkStrength), artifactType: optStr(input.artifactType), execute: optBool(input.execute), sourcePrompt: optStr(input.sourcePrompt), dryRun: input.dryRun === true, principal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "context_checkpoint", description: "Context checkpoint.", schema: strictSchema({ sessionKey: S.str, context: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.contextCheckpoint({ sessionKey: optStr(input.sessionKey) ?? "", context: optStr(input.context) ?? "", namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "briefing", description: "Daily briefing.", schema: strictSchema({ since: S.str, focus: S.str, namespace: S.str, format: S.str, maxFollowups: S.num }), handler: async (input, ctx) => { const rf = optStr(input.format); const fe = validateBriefingFormat(rf); if (fe) throw new EngramAccessInputError(fe); return { result: await ctx.service.briefing({ since: optStr(input.since), focus: optStr(input.focus), namespace: optStr(input.namespace), format: rf as "json" | "markdown" | undefined, maxFollowups: optNum(input.maxFollowups), principal: ctx.authenticatedPrincipal }) }; } });
+
+// === CONTRADICTION/REVIEW ===
+defineOperation({ name: "review_list", description: "List review pairs.", schema: strictSchema({ filter: S.str, namespace: S.str, limit: S.num }),
   handler: async (input, ctx) => {
-    const query = defStr(input.query, "");
-    if (query.trim().length === 0) throw new EngramAccessInputError("transcript_search: query is required and must be non-empty");
-    const result = await ctx.service.wearablesTranscriptSearch({
-      query,
-      source: optStr(input.source),
-      from: optStr(input.from),
-      to: optStr(input.to),
-      limit: optNum(input.limit),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "transcript_memories",
-  description: "Get transcript memories.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.wearablesTranscriptMemories({
-      source: optStr(input.source),
-      date: optStr(input.date),
-      limit: optNum(input.limit),
-    });
-    return { result };
-  },
-});
-
-// ===========================================================================
-// Action confidence, day summary, capsule operations
-// ===========================================================================
-
-defineOperation({
-  name: "action_confidence",
-  description: "Get action confidence for recent memories.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.actionConfidence({
-      intendedAction: optStr(input.intendedAction),
-      confidence: optNum(input.confidence),
-      risk: optStr(input.risk) as import("./action-confidence.js").ActionConfidenceRiskCategory | undefined,
-      contextReadiness: optStr(input.contextReadiness) as import("./action-confidence.js").ActionConfidenceContextReadiness | undefined,
-      currentContextScopes: optStrArr(input.currentContextScopes),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "chatgpt_memory_inspector",
-  description: "ChatGPT memory inspector (recall xray + action confidence orchestrator).",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const xray = await ctx.service.recallXray({
-      query: defStr(input.query, ""),
-      sessionKey: optStr(input.sessionKey),
-      namespace: optStr(input.namespace),
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-    });
-    const confidence = await ctx.service.actionConfidence({});
-    return { result: { xray, confidence } };
-  },
-});
-
-defineOperation({
-  name: "day_summary",
-  description: "Get a day summary.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.daySummary({
-      memories: optStr(input.memories),
-      sessionKey: optStr(input.sessionKey),
-      namespace: optStr(input.namespace),
-      timeZone: optStr(input.timeZone),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "capsule_export",
-  description: "Export a capsule.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.capsuleExport({
-      name: optStr(input.name) ?? "",
-      namespace: optStr(input.namespace),
-      since: optStr(input.since),
-      includeKinds: optStrArr(input.includeKinds),
-      peerIds: optStrArr(input.peerIds),
-      includeTranscripts: optBool(input.includeTranscripts),
-      encrypt: optBool(input.encrypt),
-      principal: ctx.authenticatedPrincipal,
-    } as Parameters<typeof ctx.service.capsuleExport>[0]);
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "capsule_import",
-  description: "Import a capsule.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.capsuleImport({
-      archivePath: expandTildePath(optStr(input.archivePath) ?? ""),
-      namespace: optStr(input.namespace),
-      mode: optStr(input.mode) as "skip" | "overwrite" | "fork" | undefined,
-      passphrase: optStr(input.passphrase),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "capsule_list",
-  description: "List capsules.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.capsuleList({
-      namespace: optStr(input.namespace),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-// ===========================================================================
-// Governance, maintenance, procedural operations
-// ===========================================================================
-
-defineOperation({
-  name: "memory_governance_run",
-  description: "Run memory governance.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.governanceRun({
-      namespace: optStr(input.namespace),
-      mode: optStr(input.mode) as "shadow" | "apply" | undefined,
-      recentDays: optNum(input.recentDays),
-      maxMemories: optNum(input.maxMemories),
-      batchSize: optNum(input.batchSize),
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "procedure_mining_run",
-  description: "Run procedure mining.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.procedureMiningRun({
-      namespace: optStr(input.namespace),
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "pattern_reinforcement_run",
-  description: "Run pattern reinforcement.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.patternReinforcementRun({
-      namespace: optStr(input.namespace),
-      force: input.force === true,
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "procedural_stats",
-  description: "Get procedural stats.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.procedureStats({ namespace: optStr(input.namespace) }, ctx.authenticatedPrincipal);
-    return { result };
-  },
-});
-
-// ===========================================================================
-// Memory timeline, suggestion, entity, observe, LCM operations
-// ===========================================================================
-
-defineOperation({
-  name: "memory_timeline",
-  description: "Get the timeline for a memory.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.memoryTimeline(
-      optStr(input.memoryId) ?? "",
-      optStr(input.namespace),
-      optNum(input.limit),
-      ctx.authenticatedPrincipal,
-    );
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "suggestion_submit",
-  description: "Submit a memory suggestion.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.suggestionSubmit({
-      schemaVersion: optNum(input.schemaVersion),
-      idempotencyKey: optStr(input.idempotencyKey),
-      dryRun: input.dryRun === true,
-      sessionKey: optStr(input.sessionKey),
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-      content: optStr(input.content) ?? "",
-      category: optStr(input.category),
-      confidence: optNum(input.confidence),
-      namespace: optStr(input.namespace),
-      tags: optStrArr(input.tags),
-      entityRef: optStr(input.entityRef),
-      ttl: optStr(input.ttl),
-      sourceReason: optStr(input.sourceReason),
-      cwd: optStr(input.cwd),
-      projectTag: optStr(input.projectTag),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "entity_get",
-  description: "Get an entity by name.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.entityGet(optStr(input.name) ?? "", optStr(input.namespace));
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "review_queue_list",
-  description: "List the review queue.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.reviewQueue(optStr(input.runId) ?? "", optStr(input.namespace), ctx.authenticatedPrincipal);
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "observe",
-  description: "Observe messages into the memory system.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const messages = input.messages;
-    if (!Array.isArray(messages)) throw new EngramAccessInputError("observe: messages must be an array");
-    const result = await ctx.service.observe({
-      sessionKey: defStr(input.sessionKey, ""),
-      messages: messages as unknown as Parameters<typeof ctx.service.observe>[0]["messages"],
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-      namespace: optStr(input.namespace),
-      skipExtraction: input.skipExtraction === true,
-      cwd: optStr(input.cwd),
-      projectTag: optStr(input.projectTag),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "lcm_search",
-  description: "Search the LCM (long-context memory).",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.lcmSearch({
-      query: defStr(input.query, ""),
-      sessionKey: optStr(input.sessionKey),
-      sessionPrefix: optStr(input.sessionPrefix),
-      namespace: optStr(input.namespace),
-      limit: optNum(input.limit),
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "lcm_compaction_flush",
-  description: "Flush LCM compaction.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.lcmCompactionFlush({
-      sessionKey: optStr(input.sessionKey) ?? "",
-      namespace: optStr(input.namespace),
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "lcm_compaction_record",
-  description: "Record an LCM compaction.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.lcmCompactionRecord({
-      sessionKey: optStr(input.sessionKey) ?? "",
-      namespace: optStr(input.namespace),
-      tokensBefore: optNum(input.tokensBefore) ?? 0,
-      tokensAfter: optNum(input.tokensAfter) ?? 0,
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-// ===========================================================================
-// Continuity, identity operations
-// ===========================================================================
-
-defineOperation({
-  name: "continuity_audit_generate",
-  description: "Generate a continuity audit.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.continuityAuditGenerate({
-      period: optStr(input.period) as "weekly" | "monthly" | undefined,
-      key: optStr(input.key),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "continuity_incident_open",
-  description: "Open a continuity incident.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.continuityIncidentOpen({
-      symptom: optStr(input.symptom) ?? "",
-      namespace: optStr(input.namespace),
-      triggerWindow: optStr(input.triggerWindow),
-      suspectedCause: optStr(input.suspectedCause),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "continuity_incident_close",
-  description: "Close a continuity incident.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.continuityIncidentClose({
-      id: optStr(input.id) ?? "",
-      namespace: optStr(input.namespace),
-      fixApplied: optStr(input.fixApplied) ?? "",
-      verificationResult: optStr(input.verificationResult) ?? "",
-      preventiveRule: optStr(input.preventiveRule),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "continuity_incident_list",
-  description: "List continuity incidents.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.continuityIncidentList({
-      state: optStr(input.state) as "all" | "open" | "closed" | undefined,
-      namespace: optStr(input.namespace),
-      limit: optNum(input.limit),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "continuity_loop_add_or_update",
-  description: "Add or update a continuity loop.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.continuityLoopAddOrUpdate({
-      id: optStr(input.id) ?? "",
-      cadence: optStr(input.cadence) as "daily" | "weekly" | "monthly" | "quarterly",
-      purpose: optStr(input.purpose) ?? "",
-      status: optStr(input.status) as "active" | "paused" | "retired",
-      killCondition: optStr(input.killCondition) ?? "",
-      namespace: optStr(input.namespace),
-      lastReviewed: optStr(input.lastReviewed),
-      notes: optStr(input.notes),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "continuity_loop_review",
-  description: "Review a continuity loop.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.continuityLoopReview({
-      id: optStr(input.id) ?? "",
-      namespace: optStr(input.namespace),
-      status: optStr(input.status) as "active" | "paused" | "retired" | undefined,
-      notes: optStr(input.notes),
-      reviewedAt: optStr(input.reviewedAt),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "identity_anchor_get",
-  description: "Get identity anchor.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.identityAnchorGet({ namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "identity_anchor_update",
-  description: "Update identity anchor.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.identityAnchorUpdate({
-      namespace: optStr(input.namespace),
-      identityTraits: optStr(input.identityTraits) ?? "",
-      communicationPreferences: optStr(input.communicationPreferences) ?? "",
-      operatingPrinciples: optStr(input.operatingPrinciples) ?? "",
-      continuityNotes: optStr(input.continuityNotes) ?? "",
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_identity",
-  description: "Get memory identity.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.memoryIdentity({ namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal });
-    return { result };
-  },
-});
-
-// ===========================================================================
-// Work, shared-context, compounding, compression operations
-// ===========================================================================
-
-defineOperation({
-  name: "work_task",
-  description: "Manage a work task.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.workTask({
-      action: optStr(input.action) as "update" | "list" | "get" | "create" | "delete" | "transition",
-      id: optStr(input.id) ?? "",
-      title: optStr(input.title),
-      description: optStr(input.description),
-      status: optStr(input.status),
-      priority: optStr(input.priority),
-      owner: optStr(input.owner),
-      assignee: optStr(input.assignee),
-      projectId: optStr(input.projectId),
-      tags: optStrArr(input.tags),
-      dueAt: optStr(input.dueAt),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "work_project",
-  description: "Manage a work project.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.workProject({
-      action: optStr(input.action) as "update" | "list" | "get" | "create" | "delete" | "link_task",
-      id: optStr(input.id) ?? "",
-      name: optStr(input.name),
-      description: optStr(input.description),
-      status: optStr(input.status),
-      owner: optStr(input.owner),
-      tags: optStrArr(input.tags),
-      taskId: optStr(input.taskId),
-      projectId: optStr(input.projectId),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "work_board",
-  description: "Manage a work board.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.workBoard({
-      action: optStr(input.action) as "export_markdown" | "export_snapshot" | "import_snapshot",
-      projectId: optStr(input.projectId) ?? "",
-      snapshotJson: optStr(input.snapshotJson) ?? "",
-      linkToMemory: input.linkToMemory === true,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "shared_context_write_output",
-  description: "Write shared context output.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.sharedContextWriteOutput({
-      agentId: optStr(input.agentId) ?? "",
-      title: optStr(input.title) ?? "",
-      content: optStr(input.content) ?? "",
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "shared_feedback_record",
-  description: "Record shared feedback.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.sharedFeedbackRecord({
-      agent: optStr(input.agent) ?? "",
-      decision: optStr(input.decision) as "rejected" | "approved" | "approved_with_feedback",
-      reason: optStr(input.reason) ?? "",
-      date: optStr(input.date) ?? "",
-      learning: optStr(input.learning) ?? "",
-      outcome: optStr(input.outcome) ?? "",
-      severity: optStr(input.severity) as "high" | "low" | "medium" | undefined,
-      confidence: optNum(input.confidence),
-      workflow: optStr(input.workflow),
-      tags: optStrArr(input.tags),
-      evidenceWindowStart: optStr(input.evidenceWindowStart),
-      evidenceWindowEnd: optStr(input.evidenceWindowEnd),
-      refs: optStrArr(input.refs),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "shared_priorities_append",
-  description: "Append to shared priorities.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.sharedPrioritiesAppend({
-      agentId: optStr(input.agentId) ?? "",
-      text: optStr(input.text) ?? "",
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "shared_context_cross_signals_run",
-  description: "Run shared context cross signals.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.sharedContextCrossSignalsRun({ date: optStr(input.date) });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "shared_context_curate_daily",
-  description: "Curate daily shared context.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.sharedContextCurateDaily({ date: optStr(input.date) });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "compounding_weekly_synthesize",
-  description: "Weekly compound synthesis.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.compoundingWeeklySynthesize({ weekId: optStr(input.weekId) });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "compounding_promote_candidate",
-  description: "Promote a compounding candidate.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.compoundingPromoteCandidate({
-      weekId: optStr(input.weekId) ?? "",
-      candidateId: optStr(input.candidateId) ?? "",
-      dryRun: input.dryRun === true,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "compression_guidelines_optimize",
-  description: "Optimize compression guidelines.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.compressionGuidelinesOptimize({
-      dryRun: input.dryRun === true,
-      eventLimit: optNum(input.eventLimit),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "compression_guidelines_activate",
-  description: "Activate compression guidelines.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.compressionGuidelinesActivate({
-      expectedContentHash: optStr(input.expectedContentHash) ?? "",
-      expectedGuidelineVersion: optNum(input.expectedGuidelineVersion),
-    });
-    return { result };
-  },
-});
-
-// ===========================================================================
-// Memory read/debug, graph, feedback, promote, outcome operations
-// ===========================================================================
-
-defineOperation({
-  name: "memory_profile",
-  description: "Get the memory profile.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.memoryProfile(optStr(input.namespace), ctx.authenticatedPrincipal);
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_entities_list",
-  description: "List memory entities.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.memoryEntitiesList(optStr(input.namespace), ctx.authenticatedPrincipal);
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_questions",
-  description: "List memory questions.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.memoryQuestions(optStr(input.namespace), ctx.authenticatedPrincipal);
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_last_recall",
-  description: "Get last recall snapshot.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.lastRecallSnapshot(optStr(input.sessionKey));
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_intent_debug",
-  description: "Debug memory intent.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.intentDebug(optStr(input.namespace));
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_qmd_debug",
-  description: "Debug QMD.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.qmdDebug(optStr(input.namespace));
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_graph_explain",
-  description: "Explain the memory graph.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.graphExplainLastRecall(optStr(input.namespace));
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "graph_snapshot",
-  description: "Get a graph snapshot.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.graphSnapshot({
-      namespace: optStr(input.namespace),
-      limit: optNum(input.limit),
-      since: optStr(input.since),
-      focusNodeId: optStr(input.focusNodeId),
-      categories: optStrArr(input.categories),
-    }, ctx.authenticatedPrincipal);
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_feedback",
-  description: "Record memory feedback.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.memoryFeedback({
-      memoryId: optStr(input.memoryId) ?? "",
-      vote: optStr(input.vote) as "up" | "down",
-      note: optStr(input.note),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_promote",
-  description: "Promote a memory.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.memoryPromote({
-      memoryId: optStr(input.memoryId) ?? "",
-      namespace: optStr(input.namespace),
-      sessionKey: optStr(input.sessionKey),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_outcome",
-  description: "Record a memory outcome.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.memoryOutcome({
-      memoryId: optStr(input.memoryId) ?? "",
-      outcome: optStr(input.outcome) as "success" | "failure",
-      namespace: optStr(input.namespace),
-      sessionKey: optStr(input.sessionKey),
-      timestamp: optStr(input.timestamp),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "memory_action_apply",
-  description: "Apply a memory action.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.memoryActionApply({
-      action: optStr(input.action) ?? "",
-      outcome: optStr(input.outcome),
-      reason: optStr(input.reason),
-      memoryId: optStr(input.memoryId) ?? "",
-      namespace: optStr(input.namespace),
-      sessionKey: optStr(input.sessionKey),
-      content: optStr(input.content),
-      category: optStr(input.category),
-      linkTargetId: optStr(input.linkTargetId),
-      linkType: optStr(input.linkType),
-      linkStrength: optNum(input.linkStrength),
-      artifactType: optStr(input.artifactType),
-      execute: input.execute === true,
-      sourcePrompt: optStr(input.sourcePrompt),
-      dryRun: input.dryRun === true,
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "context_checkpoint",
-  description: "Create a context checkpoint.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.contextCheckpoint({
-      sessionKey: optStr(input.sessionKey) ?? "",
-      context: optStr(input.context) ?? "",
-      namespace: optStr(input.namespace),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "briefing",
-  description: "Get a daily context briefing.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.briefing({
-      since: optStr(input.since),
-      focus: optStr(input.focus),
-      namespace: optStr(input.namespace),
-      format: optStr(input.format) as "json" | "markdown" | undefined,
-      maxFollowups: optNum(input.maxFollowups),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-// ===========================================================================
-// Contradiction review, scan, graph-edge-decay (dynamic-import handlers)
-// ===========================================================================
-
-defineOperation({
-  name: "review_list",
-  description: "List contradiction review pairs.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const { isDefaultReviewNamespace, listPairs } = await import("./contradiction/contradiction-review.js");
-    const VALID_FILTERS = new Set(["all", "unresolved", "contradicts", "independent", "duplicates", "needs-user"]);
-    const rawFilter = optStr(input.filter) ?? "unresolved";
-    if (!VALID_FILTERS.has(rawFilter)) {
-      throw new EngramAccessInputError("Invalid filter '" + rawFilter + "'. Valid: " + [...VALID_FILTERS].join(", "));
-    }
-    const filter = rawFilter as "all" | "unresolved" | "contradicts" | "independent" | "duplicates" | "needs-user";
+    const VF = new Set(["all", "unresolved", "contradicts", "independent", "duplicates", "needs-user"]);
+    const rf = optStr(input.filter) ?? "unresolved";
+    if (!VF.has(rf)) throw new EngramAccessInputError("Invalid filter '" + rf + "'. Valid: " + [...VF].join(", "));
     const ns = optStr(input.namespace);
-    const limit = optNum(input.limit) ?? 50;
     const resolved = await ctx.service.getReadableStorageForNamespace(ns, ctx.authenticatedPrincipal);
-    const reviewNamespace = ctx.service.configRef.namespacesEnabled ? resolved.namespace : undefined;
-    const includeUnscopedForNamespace = Boolean(
-      reviewNamespace && isDefaultReviewNamespace(ctx.service.configRef.defaultNamespace, ns, reviewNamespace),
-    );
-    const result = await listPairs(ctx.service.memoryDir, { filter, namespace: reviewNamespace, includeUnscopedForNamespace, limit });
-    return { result };
+    const rn = ctx.service.configRef.namespacesEnabled ? resolved.namespace : undefined;
+    const iun = Boolean(rn && isDefaultReviewNamespace(ctx.service.configRef.defaultNamespace, ns, rn));
+    return { result: await listPairs(ctx.service.memoryDir, { filter: rf as "all" | "unresolved" | "contradicts" | "independent" | "duplicates" | "needs-user", namespace: rn, includeUnscopedForNamespace: iun, limit: optNum(input.limit) ?? 50 }) };
   },
 });
-
-defineOperation({
-  name: "review_resolve",
-  description: "Resolve a contradiction pair.",
-  schema: looseSchema,
+defineOperation({ name: "review_resolve", description: "Resolve pair.", schema: strictSchema({ pairId: S.str, verb: S.str, mergedMemoryId: S.str, mergedContent: S.str }),
   handler: async (input, ctx) => {
-    const pairId = defStr(input.pairId, "");
-    const verb = defStr(input.verb, "");
-    if (!pairId) throw new EngramAccessInputError("pairId is required");
-    if (!verb) throw new EngramAccessInputError("verb is required");
-    const { isValidResolutionVerb, executeResolution } = await import("./contradiction/resolution.js");
-    if (!isValidResolutionVerb(verb)) throw new EngramAccessInputError("Invalid verb: " + verb + ". Must be one of: keep-a, keep-b, merge, both-valid, needs-more-context");
-    const result = await executeResolution(ctx.service.memoryDir, ctx.service.storageRef, pairId, verb, {
-      mergedMemoryId: optStr(input.mergedMemoryId),
-      mergedContent: optStr(input.mergedContent),
-      storageForNamespace: async (namespace: string | undefined) => {
-        const r = await ctx.service.getWritableStorageForNamespace(namespace, ctx.authenticatedPrincipal);
-        return r.storage;
-      },
-      onMergedMemoryWritten: () => { /* #1522: catalog touch at storage chokepoint */ },
-    });
-    return { result };
+    const pid = defStr(input.pairId, ""); const vb = defStr(input.verb, "");
+    if (!pid) throw new EngramAccessInputError("pairId is required");
+    if (!vb) throw new EngramAccessInputError("verb is required");
+    if (!isValidResolutionVerb(vb)) throw new EngramAccessInputError("Invalid verb: " + vb);
+    return { result: await executeResolution(ctx.service.memoryDir, ctx.service.storageRef, pid, vb, { mergedMemoryId: optStr(input.mergedMemoryId), mergedContent: optStr(input.mergedContent), storageForNamespace: async (namespace) => { const r = await ctx.service.getWritableStorageForNamespace(namespace, ctx.authenticatedPrincipal); return r.storage; }, onMergedMemoryWritten: () => {} }) };
   },
 });
+defineOperation({ name: "contradiction_scan_run", description: "Run scan.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await runContradictionScan({ storage: ctx.service.storageRef, config: ctx.service.configRef, memoryDir: ctx.service.memoryDir, embeddingLookupFactory: ctx.service.embeddingLookupFactoryRef, storageForNamespace: (ns) => ctx.service.getWritableStorageForNamespace(ns ?? undefined, ctx.authenticatedPrincipal), localLlm: ctx.service.localLlmRef, fallbackLlm: ctx.service.fallbackLlmRef, namespace: optStr(input.namespace) }) }) });
+defineOperation({ name: "graph_edge_decay_run", description: "Run edge decay.", schema: strictSchema({ dryRun: S.bool }), handler: async (input, ctx) => { const cfg = ctx.service.configRef; if (!cfg.graphEdgeDecayEnabled) return { result: { ranAt: new Date().toISOString(), disabled: true, reason: "graphEdgeDecayEnabled is false" } }; return { result: { results: await runGraphEdgeDecayMaintenanceAcrossNamespaces(ctx.service.memoryDir, { windowMs: cfg.graphEdgeDecayWindowMs, perWindow: cfg.graphEdgeDecayPerWindow, floor: cfg.graphEdgeDecayFloor, visibilityThreshold: cfg.graphEdgeDecayVisibilityThreshold, dryRun: input.dryRun === true, namespacesEnabled: cfg.namespacesEnabled === true, defaultNamespace: cfg.defaultNamespace }) } }; } });
 
-defineOperation({
-  name: "contradiction_scan_run",
-  description: "Run a contradiction scan.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const { runContradictionScan } = await import("./contradiction/contradiction-scan.js");
-    const result = await runContradictionScan({
-      storage: ctx.service.storageRef,
-      config: ctx.service.configRef,
-      memoryDir: ctx.service.memoryDir,
-      embeddingLookupFactory: ctx.service.embeddingLookupFactoryRef,
-      storageForNamespace: (namespace: string | undefined) =>
-        ctx.service.getWritableStorageForNamespace(namespace ?? undefined, ctx.authenticatedPrincipal),
-      localLlm: ctx.service.localLlmRef,
-      fallbackLlm: ctx.service.fallbackLlmRef,
-      namespace: optStr(input.namespace),
-    });
-    return { result };
-  },
-});
+// === SUMMARIZE/PROFILING/PEERS/CONSOLE/DREAMS ===
+defineOperation({ name: "memory_summarize_hourly", description: "Hourly summarize.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.memorySummarizeHourly() }) });
+defineOperation({ name: "conversation_index_update", description: "Update conv index.", schema: strictSchema({ sessionKey: S.str, hours: S.num, embed: S.bool }), handler: async (input, ctx) => { if (input.sessionKey !== undefined && typeof input.sessionKey !== "string") throw new EngramAccessInputError("sessionKey must be a string when provided"); return { result: await ctx.service.conversationIndexUpdate({ sessionKey: optStr(input.sessionKey), hours: optNum(input.hours), embed: optBool(input.embed) }) }; } });
+defineOperation({ name: "profiling_report", description: "Profiling report.", schema: strictSchema({ format: S.str, limit: S.num }), handler: async (input, ctx) => { if (input.format !== undefined && typeof input.format !== "string") throw new EngramAccessInputError("format must be a string when provided"); if (input.limit !== undefined && typeof input.limit !== "number") throw new EngramAccessInputError("limit must be a number when provided"); return { result: await ctx.service.profilingReport({ format: optStr(input.format), limit: optNum(input.limit) }) }; } });
+defineOperation({ name: "live_connectors_run", description: "Run connectors.", schema: strictSchema({ force: S.bool }), handler: async (input, ctx) => ({ result: await ctx.service.liveConnectorsRun({ authenticatedPrincipal: ctx.authenticatedPrincipal, force: input.force === true }, ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "peer_list", description: "List peers.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.peerList() }) });
+defineOperation({ name: "peer_get", description: "Get peer.", schema: strictSchema({ id: S.str }), handler: async (input, ctx) => { const id = defStr(input.id, ""); if (!id) throw new EngramAccessInputError("peer_get: id is required"); return { result: await ctx.service.peerGet(id) }; } });
+defineOperation({ name: "peer_set", description: "Set peer.", schema: strictSchema({ id: S.str, kind: S.str, displayName: S.str, notes: S.str }), handler: async (input, ctx) => { const id = defStr(input.id, ""); if (!id) throw new EngramAccessInputError("peer_set: id is required"); if (input.kind !== undefined && typeof input.kind !== "string") throw new EngramAccessInputError("peer_set: kind must be a string when provided"); if (input.displayName !== undefined && typeof input.displayName !== "string") throw new EngramAccessInputError("peer_set: displayName must be a string when provided"); if (input.notes !== undefined && typeof input.notes !== "string") throw new EngramAccessInputError("peer_set: notes must be a string when provided"); return { result: await ctx.service.peerSet({ id, kind: optStr(input.kind), displayName: optStr(input.displayName), notes: optStr(input.notes) }) }; } });
+defineOperation({ name: "peer_delete", description: "Delete peer.", schema: strictSchema({ id: S.str }), handler: async (input, ctx) => { const id = defStr(input.id, ""); if (!id) throw new EngramAccessInputError("peer_delete: id is required"); return { result: await ctx.service.peerDelete(id) }; } });
+defineOperation({ name: "peer_profile_get", description: "Get peer profile.", schema: strictSchema({ id: S.str }), handler: async (input, ctx) => { const id = defStr(input.id, ""); if (!id) throw new EngramAccessInputError("peer_profile_get: id is required"); return { result: await ctx.service.peerProfileGet(id) }; } });
+defineOperation({ name: "peer_forget", description: "Forget peer.", schema: strictSchema({ id: S.str, confirm: S.str }), handler: async (input, ctx) => { const id = defStr(input.id, ""); if (!id) throw new EngramAccessInputError("peer_forget: id is required"); const c = optStr(input.confirm) ?? ""; if (c !== "yes") throw new EngramAccessInputError("peer_forget: confirm must be 'yes' to prevent accidental data loss"); return { result: await ctx.service.peerForget(id, { confirm: "yes" }) }; } });
+defineOperation({ name: "console_state", description: "Console state.", schema: strictSchema({ namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.consoleState(optStr(input.namespace), ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "dreams_status", description: "Dreams status.", schema: strictSchema({ windowHours: S.num, namespace: S.str }), handler: async (input, ctx) => { let wh = 24; try { wh = normalizeDreamsStatusWindowHours(input.windowHours); } catch { throw new EngramAccessInputError("dreams_status: windowHours must be a positive integer. Got: " + String(input.windowHours)); } return { result: await ctx.service.dreamsStatus({ windowHours: wh, namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }; } });
+defineOperation({ name: "dreams_run", description: "Run dreams.", schema: strictSchema({ phase: S.str, dryRun: S.bool, namespace: S.str }), handler: async (input, ctx) => { const VP = ["lightSleep", "rem", "deepSleep"]; const ph = optStr(input.phase) ?? ""; if (!ph || !VP.includes(ph)) throw new EngramAccessInputError("dreams_run: phase must be one of: " + VP.join(", ")); if (input.dryRun !== undefined && typeof input.dryRun !== "boolean") throw new EngramAccessInputError("dreams_run: dryRun must be boolean"); return { result: await ctx.service.dreamsRun({ phase: ph as DreamsPhase, dryRun: input.dryRun === true, namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) }; } });
 
-defineOperation({
-  name: "graph_edge_decay_run",
-  description: "Run graph edge decay maintenance.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const cfg = ctx.service.configRef;
-    if (!cfg.graphEdgeDecayEnabled) {
-      return { result: { ranAt: new Date().toISOString(), disabled: true, reason: "graphEdgeDecayEnabled is false" } };
-    }
-    const { runGraphEdgeDecayMaintenanceAcrossNamespaces } = await import("./maintenance/graph-edge-decay.js");
-    const dryRun = input.dryRun === true;
-    const results = await runGraphEdgeDecayMaintenanceAcrossNamespaces(ctx.service.memoryDir, {
-      windowMs: cfg.graphEdgeDecayWindowMs,
-      perWindow: cfg.graphEdgeDecayPerWindow,
-      floor: cfg.graphEdgeDecayFloor,
-      visibilityThreshold: cfg.graphEdgeDecayVisibilityThreshold,
-      dryRun,
-      namespacesEnabled: cfg.namespacesEnabled === true,
-      defaultNamespace: cfg.defaultNamespace,
-    });
-    return { result: { results } };
-  },
-});
+defineOperation({ name: "correction_pending", description: "List pending corrections (HTTP GET).", schema: strictSchema({ namespace: S.str, sessionKey: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.correctionListPending({ namespace: optStr(input.namespace), sessionKey: optStr(input.sessionKey), principal: ctx.authenticatedPrincipal }) }) });
 
-// ===========================================================================
-// Remaining operations: summarize, profiling, connectors, peers, console, dreams
-// ===========================================================================
-
-defineOperation({
-  name: "memory_summarize_hourly",
-  description: "Run hourly memory summarization.",
-  schema: looseSchema,
-  handler: async (_input, ctx) => ({ result: await ctx.service.memorySummarizeHourly() }),
-});
-
-defineOperation({
-  name: "conversation_index_update",
-  description: "Update the conversation index.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.conversationIndexUpdate({
-      sessionKey: optStr(input.sessionKey),
-      hours: optNum(input.hours),
-      embed: optBool(input.embed),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "profiling_report",
-  description: "Get a profiling report.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.profilingReport({
-      format: optStr(input.format),
-      limit: optNum(input.limit),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "live_connectors_run",
-  description: "Run live connectors.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.liveConnectorsRun(
-      { authenticatedPrincipal: ctx.authenticatedPrincipal, force: input.force === true },
-      ctx.authenticatedPrincipal,
-    );
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "peer_list",
-  description: "List peers.",
-  schema: looseSchema,
-  handler: async (_input, ctx) => ({ result: await ctx.service.peerList() }),
-});
-
-defineOperation({
-  name: "peer_get",
-  description: "Get a peer.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.peerGet(defStr(input.id, ""));
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "peer_set",
-  description: "Create or update a peer.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.peerSet({
-      id: optStr(input.id) ?? "",
-      kind: optStr(input.kind),
-      displayName: optStr(input.displayName),
-      notes: optStr(input.notes),
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "peer_delete",
-  description: "Delete a peer.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.peerDelete(defStr(input.id, ""));
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "peer_profile_get",
-  description: "Get a peer profile.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.peerProfileGet(optStr(input.id) ?? "");
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "peer_forget",
-  description: "Forget a peer.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.peerForget(optStr(input.id) ?? "", { confirm: input.confirm === true || optStr(input.confirm) === "yes" ? "yes" : "" });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "console_state",
-  description: "Get console state.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.consoleState(optStr(input.namespace), ctx.authenticatedPrincipal);
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "dreams_status",
-  description: "Get dreams status.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.dreamsStatus({
-      windowHours: optNum(input.windowHours),
-      namespace: optStr(input.namespace),
-      principal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "dreams_run",
-  description: "Run dreams.",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const result = await ctx.service.dreamsRun({
-      phase: optStr(input.phase) as import("./types.js").DreamsPhase,
-      dryRun: input.dryRun === true,
-      namespace: optStr(input.namespace),
-      authenticatedPrincipal: ctx.authenticatedPrincipal,
-    });
-    return { result };
-  },
-});
-
-// ===========================================================================
-// HTTP-only operations (routes with no direct MCP tool equivalent)
-// ===========================================================================
-
-defineOperation({
-  name: "offline_sync_snapshot",
-  description: "Get or create an offline-sync snapshot.",
-  schema: looseSchema,
-  handler: async (_input, ctx) => {
-    const result = await ctx.service.offlineSyncSnapshot();
-    return { result };
-  },
-});
-
-defineOperation({
-  name: "offline_sync_files",
-  description: "List offline-sync files.",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncFiles({ paths: optStrArr(input.paths) ?? [], namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }),
-});
-
-defineOperation({
-  name: "offline_sync_file_content",
-  description: "Read offline-sync file content.",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncFileContent({ path: optStr(input.path) ?? "", namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal, offset: optNum(input.offset), length: optNum(input.length) }) }),
-});
-
-defineOperation({
-  name: "offline_sync_apply_file_content",
-  description: "Apply offline-sync file content.",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncApplyFileContent({ sourceId: optStr(input.sourceId) ?? "", path: optStr(input.path) ?? "", sha256: optStr(input.sha256) ?? "", bytes: optNum(input.bytes) ?? 0, mtimeMs: optNum(input.mtimeMs) ?? 0, offset: optNum(input.offset), baseSha256: optStr(input.baseSha256), content: Buffer.from(defStr(input.content, ""), "base64"), namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }),
-});
-
-defineOperation({
-  name: "offline_sync_apply",
-  description: "Apply an offline-sync snapshot.",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncApply({ changeset: input.changeset, namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }),
-});
-
-defineOperation({
-  name: "lcm_status",
-  description: "Get LCM status.",
-  schema: looseSchema,
-  handler: async (_input, ctx) => ({ result: await ctx.service.lcmStatus() }),
-});
-
-defineOperation({
-  name: "memory_list",
-  description: "Browse/list memories (HTTP GET /memories).",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.memoryBrowse() }),
-});
-
-defineOperation({
-  name: "entity_list",
-  description: "List entities (HTTP GET /entities).",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.entityList() }),
-});
-
-defineOperation({
-  name: "maintenance_status",
-  description: "Get maintenance status (HTTP GET /maintenance).",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.maintenance() }),
-});
-
-defineOperation({
-  name: "quality_status",
-  description: "Get quality status (HTTP GET /quality).",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.quality() }),
-});
-
-defineOperation({
-  name: "trust_zones_status",
-  description: "Get trust-zone status.",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.trustZoneStatus() }),
-});
-
-defineOperation({
-  name: "trust_zones_records",
-  description: "Browse trust-zone records.",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.trustZoneBrowse({ namespace: optStr(input.namespace), limit: optNum(input.limit), offset: optNum(input.offset) }, ctx.authenticatedPrincipal) }),
-});
-
-defineOperation({
-  name: "review_disposition",
-  description: "Apply a review disposition.",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.reviewDisposition({ memoryId: optStr(input.memoryId) ?? "", status: (optStr(input.status) ?? "archived") as import("./access-service.js").EngramAccessReviewDispositionRequest["status"], reasonCode: optStr(input.reasonCode) ?? "", namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) }),
-});
-
-defineOperation({
-  name: "trust_zones_promote",
-  description: "Promote a trust-zone record.",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.trustZonePromote({ recordId: optStr(input.recordId) ?? "", targetZone: (optStr(input.targetZone) ?? "working") as import("./trust-zones.js").TrustZoneName, promotionReason: optStr(input.promotionReason) ?? "", dryRun: input.dryRun === true, namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) }),
-});
-
-defineOperation({
-  name: "trust_zones_demo_seed",
-  description: "Seed demo trust-zone records.",
-  schema: looseSchema,
-  handler: async (input, ctx) => ({ result: await ctx.service.trustZoneDemoSeed({ scenario: optStr(input.scenario), dryRun: input.dryRun === true, namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) }),
-});
-
-defineOperation({
-  name: "citations_observed",
-  description: "Record observed citations (HTTP POST /v1/citations/observed).",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    // The HTTP handler has complex citation-entry parsing; this operation
-    // owns the shape validation boundary. The handler forwards the cleaned
-    // input so the transport-specific entry parsing stays in the surface.
-    return { result: { ok: true } };
-  },
-});
-
-defineOperation({
-  name: "contradiction_detail",
-  description: "Get a single contradiction pair detail (HTTP GET /review/contradictions/:id).",
-  schema: looseSchema,
-  handler: async (input, ctx) => {
-    const { listPairs } = await import("./contradiction/contradiction-review.js");
-    const result = await listPairs(ctx.service.memoryDir, {
-      filter: "all" as const,
-      namespace: optStr(input.namespace),
-      includeUnscopedForNamespace: false,
-      limit: 1,
-    });
-    return { result };
-  },
-});
-
-// ===========================================================================
-// SSE-stream operations (endpoint registration; streaming handled by transport)
-// ===========================================================================
-
-defineOperation({
-  name: "offline_sync_snapshot_stream",
-  description: "Stream offline-sync snapshot updates (SSE).",
-  schema: looseSchema,
-  handler: async (_input, ctx) => ({ result: await ctx.service.offlineSyncSnapshotStream() }),
-});
-
-defineOperation({
-  name: "graph_events",
-  description: "Stream graph mutation events (SSE). Endpoint registration only.",
-  schema: looseSchema,
-  handler: async (_input, _ctx) => ({ result: { stream: "sse" } }),
-});
-
-defineOperation({
-  name: "chat_message",
-  description: "Send a message to Remnic Chat (issue #1583). Endpoint registration only — the handler enforces the chat_disabled gate, message validation, and the confirmation protocol.",
-  schema: looseSchema,
-  handler: async (_input, _ctx) => ({ result: { ok: true } }),
-});
-
-defineOperation({
-  name: "chat_events",
-  description: "Stream chat session transcript events (SSE, issue #1583). Endpoint registration only.",
-  schema: looseSchema,
-  handler: async (_input, _ctx) => ({ result: { stream: "sse" } }),
-});
+// === HTTP-ONLY ===
+defineOperation({ name: "offline_sync_snapshot", description: "Offline sync snapshot.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.offlineSyncSnapshot() }) });
+defineOperation({ name: "offline_sync_files", description: "Offline sync files.", schema: strictSchema({ paths: S.strArr, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncFiles({ paths: optStrArr(input.paths) ?? [], namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "offline_sync_file_content", description: "Read file content.", schema: strictSchema({ path: S.str, namespace: S.str, offset: S.num, length: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncFileContent({ path: optStr(input.path) ?? "", namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal, offset: optNum(input.offset), length: optNum(input.length) }) }) });
+defineOperation({ name: "offline_sync_apply_file_content", description: "Apply file content.", schema: strictSchema({ sourceId: S.str, path: S.str, sha256: S.str, bytes: S.num, mtimeMs: S.num, offset: S.num, baseSha256: S.str, content: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncApplyFileContent({ sourceId: optStr(input.sourceId) ?? "", path: optStr(input.path) ?? "", sha256: optStr(input.sha256) ?? "", bytes: optNum(input.bytes) ?? 0, mtimeMs: optNum(input.mtimeMs) ?? 0, offset: optNum(input.offset), baseSha256: optStr(input.baseSha256), content: Buffer.from(defStr(input.content, ""), "base64"), namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "offline_sync_apply", description: "Apply sync.", schema: strictSchema({ changeset: z.unknown().optional(), namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncApply({ changeset: input.changeset, namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "lcm_status", description: "LCM status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.lcmStatus() }) });
+defineOperation({ name: "memory_list", description: "List memories.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.memoryBrowse() }) });
+defineOperation({ name: "entity_list", description: "List entities.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.entityList() }) });
+defineOperation({ name: "maintenance_status", description: "Maintenance status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.maintenance() }) });
+defineOperation({ name: "quality_status", description: "Quality status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.quality() }) });
+defineOperation({ name: "trust_zones_status", description: "Trust-zone status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.trustZoneStatus() }) });
+defineOperation({ name: "trust_zones_records", description: "Browse trust-zone records.", schema: strictSchema({ namespace: S.str, limit: S.num, offset: S.num }), handler: async (input, ctx) => ({ result: await ctx.service.trustZoneBrowse({ namespace: optStr(input.namespace), limit: optNum(input.limit), offset: optNum(input.offset) }, ctx.authenticatedPrincipal) }) });
+defineOperation({ name: "review_disposition", description: "Review disposition.", schema: strictSchema({ memoryId: S.str, status: S.str, reasonCode: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.reviewDisposition({ memoryId: optStr(input.memoryId) ?? "", status: (optStr(input.status) ?? "archived") as never, reasonCode: optStr(input.reasonCode) ?? "", namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "trust_zones_promote", description: "Promote trust-zone.", schema: strictSchema({ recordId: S.str, targetZone: S.str, promotionReason: S.str, dryRun: S.bool, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.trustZonePromote({ recordId: optStr(input.recordId) ?? "", targetZone: (optStr(input.targetZone) ?? "working") as never, promotionReason: optStr(input.promotionReason) ?? "", dryRun: input.dryRun === true, namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "trust_zones_demo_seed", description: "Demo seed.", schema: strictSchema({ scenario: S.str, dryRun: S.bool, namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.trustZoneDemoSeed({ scenario: optStr(input.scenario), dryRun: input.dryRun === true, namespace: optStr(input.namespace), authenticatedPrincipal: ctx.authenticatedPrincipal }) }) });
+defineOperation({ name: "citations_observed", description: "Record citations.", schema: strictSchema({}), handler: async (_i, _ctx) => ({ result: { ok: true } }) });
+defineOperation({ name: "contradiction_detail", description: "Contradiction detail.", schema: strictSchema({ id: S.str, namespace: S.str }), handler: async (input, ctx) => ({ result: await listPairs(ctx.service.memoryDir, { filter: "all" as const, namespace: optStr(input.namespace), includeUnscopedForNamespace: false, limit: 1 }) }) });
+defineOperation({ name: "offline_sync_snapshot_stream", description: "SSE stream.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.offlineSyncSnapshotStream() }) });
+defineOperation({ name: "graph_events", description: "SSE graph events.", schema: strictSchema({}), handler: async (_i, _ctx) => ({ result: { stream: "sse" } }) });
+defineOperation({ name: "chat_message", description: "Chat message.", schema: strictSchema({ message: S.str, chatSessionId: S.str }), handler: async (_i, _ctx) => ({ result: { ok: true } }) });
+defineOperation({ name: "chat_events", description: "SSE chat events.", schema: strictSchema({}), handler: async (_i, _ctx) => ({ result: { stream: "sse" } }) });

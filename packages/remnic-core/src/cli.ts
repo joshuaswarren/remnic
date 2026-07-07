@@ -4,6 +4,7 @@ import { access, lstat, readFile, readdir, realpath, unlink } from "node:fs/prom
 import { createHash } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import type { Orchestrator } from "./orchestrator.js";
+import { resolveMemoryLifecycleCapabilities } from "./capabilities.js";
 import { ThreadingManager } from "./threading.js";
 import { utcDayRange } from "./transcript.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
@@ -125,6 +126,7 @@ import {
   validateEvalBenchmarkPack,
 } from "./evals.js";
 import { analyzeGraphHealth, type GraphHealthReport } from "./graph.js";
+import { resolveGraphConstructionCapabilities } from "./capabilities.js";
 import {
   getCausalTrajectoryStoreStatus,
   type CausalTrajectoryStoreStatus,
@@ -3727,7 +3729,7 @@ export function registerCli(
           console.log("=== Extraction Judge Verdict Stats ===\n");
           console.log(`Total verdicts: ${stats.total}`);
           if (stats.total === 0) {
-            if (!orchestrator.config.extractionJudgeTelemetryEnabled) {
+            if (!resolveMemoryLifecycleCapabilities(orchestrator.config).extractionJudgeTelemetry) {
               console.log(
                 "\nNote: extractionJudgeTelemetryEnabled is OFF. Enable it in plugin config to collect verdict telemetry.",
               );
@@ -6360,11 +6362,12 @@ export function registerCli(
         .option("--repair-guidance", "Include non-destructive repair guidance")
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
+          const graphCaps = resolveGraphConstructionCapabilities(orchestrator.config);
           const report = await runGraphHealthCliCommand({
             memoryDir: orchestrator.config.memoryDir,
-            entityGraphEnabled: orchestrator.config.entityGraphEnabled,
-            timeGraphEnabled: orchestrator.config.timeGraphEnabled,
-            causalGraphEnabled: orchestrator.config.causalGraphEnabled,
+            entityGraphEnabled: graphCaps.entityGraph,
+            timeGraphEnabled: graphCaps.timeGraph,
+            causalGraphEnabled: graphCaps.causalGraph,
             includeRepairGuidance: options.repairGuidance === true,
           });
           console.log(JSON.stringify(report, null, 2));
@@ -6415,12 +6418,15 @@ export function registerCli(
         .option("--json", "Emit machine-readable JSON only")
         .action(async (...args: unknown[]) => {
           const options = (args[0] ?? {}) as Record<string, unknown>;
+          const repairGraphCaps = resolveGraphConstructionCapabilities(orchestrator.config);
           const report = await runOperatorRepair({
             config: {
               memoryDir: orchestrator.config.memoryDir,
-              entityGraphEnabled: orchestrator.config.entityGraphEnabled,
-              timeGraphEnabled: orchestrator.config.timeGraphEnabled,
-              causalGraphEnabled: orchestrator.config.causalGraphEnabled,
+              entityGraphEnabled: repairGraphCaps.entityGraph,
+              timeGraphEnabled: repairGraphCaps.timeGraph,
+              causalGraphEnabled: repairGraphCaps.causalGraph,
+              multiGraphMemoryEnabled: repairGraphCaps.multiGraphMemory,
+              graphWriteSessionAdjacencyEnabled: repairGraphCaps.graphWriteSessionAdjacency,
             },
             apply: options.apply === true,
             dryRun: options.dryRun === true,
@@ -8536,7 +8542,7 @@ export function registerCli(
             config: orchestrator.config,
             memoryDir: orchestrator.config.memoryDir,
             embeddingLookupFactory: (storage) => {
-              if (!orchestrator.config.embeddingFallbackEnabled) return undefined;
+              if (!resolveMemoryLifecycleCapabilities(orchestrator.config).embeddingFallback) return undefined;
               return async (content: string, limit: number) => {
                 try {
                   return await orchestrator.semanticDedupLookup(content, limit, storage);

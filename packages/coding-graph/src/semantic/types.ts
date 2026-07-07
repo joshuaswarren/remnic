@@ -91,8 +91,15 @@ export interface SimilarCandidate {
 
 /**
  * A confirmed SIMILAR_TO edge (after cosine confirmation when available).
+ *
+ * Carries the content-derived node ids (`nodes.id`) of both endpoints so
+ * the persisted edge resolves unambiguously even when the two symbols share
+ * a qualified name across files (issue #1677). The qualified-name fields
+ * remain for diagnostics / stable-sort tie-breaking.
  */
 export interface SimilarEdge {
+  readonly srcNodeId: string;
+  readonly dstNodeId: string;
   readonly srcQualifiedName: string;
   readonly dstQualifiedName: string;
   readonly confidence: number;

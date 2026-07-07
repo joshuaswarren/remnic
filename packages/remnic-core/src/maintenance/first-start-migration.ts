@@ -18,6 +18,7 @@
 
 import path from "node:path";
 import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { resolveMemoryLifecycleCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import {
@@ -179,6 +180,7 @@ export async function runFirstStartMigration(
     signal,
   } = options;
   const now = (options.now ?? (() => new Date()))();
+  const lifecycleCaps = resolveMemoryLifecycleCapabilities(config);
   const abortedResult = (candidateCount = 0, demotedCount = 0, failureCount = 0): FirstStartMigrationResult => ({
     skipped: candidateCount === 0 && demotedCount === 0 && failureCount === 0,
     skipReason: candidateCount === 0 && demotedCount === 0 && failureCount === 0 ? "aborted" : undefined,
@@ -193,7 +195,7 @@ export async function runFirstStartMigration(
     return abortedResult();
   }
 
-  if (!config.lifecyclePolicyEnabled) {
+  if (!lifecycleCaps.lifecyclePolicy) {
     return {
       skipped: true,
       skipReason: "lifecyclePolicyEnabled is false",

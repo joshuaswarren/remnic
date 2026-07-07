@@ -28,6 +28,7 @@ import type {
   SlotBehaviorConfig,
   SlotMismatchMode,
   TriggerMode,
+  TrustWeights,
 } from "./types.js";
 import { log } from "./logger.js";
 import { cloneDefaultSessionObserverBands } from "./session-observer-bands.js";
@@ -48,6 +49,7 @@ import { parseWearablesConfig } from "./wearables/config.js";
 import { parseProvenanceConfig } from "./provenance.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 import { parseChatConfig } from "./chat/chat-config.js";
+import { parseCorrectionIntentConfig, parseFaithfulnessGateConfig } from "./faithfulness-config.js";
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
   ".openclaw",
@@ -2128,18 +2130,67 @@ export function parseConfig(
       const raw = rawNested !== undefined ? rawNested : cfg.correctionMaxAffected;
       if (raw === undefined || raw === null) return 10;
       const n = coerceNumber(raw);
-      if (n === undefined || !Number.isFinite(n) || n < 1) {
+      // #1678 (thread Oiup6): the error message says "integer" — enforce it
+      // with Number.isInteger so 3.7 is rejected rather than silently floored.
+      if (n === undefined || !Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
         throw new Error(`Invalid correction.maxAffected: expected an integer >= 1, got ${JSON.stringify(raw)}`);
       }
-      return Math.floor(n);
+      return n;
     })(),
     correctionPlanTtlHours: (() => {
       const nested = (cfg.correction as Record<string, unknown> | undefined)?.planTtlHours;
       const fromNested = nested !== undefined ? coerceNumber(nested) : undefined;
-      if (fromNested !== undefined && fromNested > 0) return fromNested;
+      if (fromNested !== undefined && fromNested >= 1) return fromNested;
+      // #1678 (threads Ohtvi/Ohyvf): reject invalid (0/negative/non-numeric)
+      // instead of silently defaulting to 24h — completes the config-reject
+      // class already enforced for enabled/applyRequiresConfirm/maxAffected.
+      if (nested !== undefined && fromNested === undefined) {
+        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(nested)}`);
+      }
+      if (fromNested !== undefined && fromNested < 1) {
+        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(nested)}`);
+      }
       const fromFlat = coerceNumber(cfg.correctionPlanTtlHours);
-      if (fromFlat !== undefined && fromFlat > 0) return fromFlat;
+      if (fromFlat !== undefined && fromFlat >= 1) return fromFlat;
+      if (cfg.correctionPlanTtlHours !== undefined && fromFlat === undefined) {
+        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(cfg.correctionPlanTtlHours)}`);
+      }
+      if (fromFlat !== undefined && fromFlat < 1) {
+        throw new Error(`Invalid correction.planTtlHours: expected a number >= 1, got ${JSON.stringify(cfg.correctionPlanTtlHours)}`);
+      }
       return 24;
+    })(),
+    // Passive correction capture (issue #1581). Parsed from
+    // `correctionCapture.<key>` (nested) or flat legacy keys. Default "off" —
+    // operators opt in (rule 48). Invalid mode → rejected listing options (rule 51).
+    correctionCaptureMode: (() => {
+      const nested = (cfg.correctionCapture as Record<string, unknown> | undefined)?.mode;
+      const raw = nested !== undefined ? nested : cfg.correctionCaptureMode;
+      if (raw === undefined || raw === null) return "off" as const;
+      if (raw === "off" || raw === "queue" || raw === "auto") return raw;
+      throw new Error(
+        `Invalid correctionCapture.mode: expected one of "off", "queue", "auto", got ${JSON.stringify(raw)}`,
+      );
+    })(),
+    correctionCaptureConfidenceFloor: (() => {
+      const nested = (cfg.correctionCapture as Record<string, unknown> | undefined)?.confidenceFloor;
+      const raw = nested !== undefined ? nested : cfg.correctionCaptureConfidenceFloor;
+      if (raw === undefined || raw === null) return 0.85;
+      const n = coerceNumber(raw);
+      if (n === undefined || !Number.isFinite(n) || n < 0 || n > 1) {
+        throw new Error(`Invalid correctionCapture.confidenceFloor: expected a number in [0, 1], got ${JSON.stringify(raw)}`);
+      }
+      return n;
+    })(),
+    correctionCaptureAutoApplyMaxAffected: (() => {
+      const nested = (cfg.correctionCapture as Record<string, unknown> | undefined)?.autoApplyMaxAffected;
+      const raw = nested !== undefined ? nested : cfg.correctionCaptureAutoApplyMaxAffected;
+      if (raw === undefined || raw === null) return 2;
+      const n = coerceNumber(raw);
+      if (n === undefined || !Number.isFinite(n) || n < 1) {
+        throw new Error(`Invalid correctionCapture.autoApplyMaxAffected: expected an integer >= 1, got ${JSON.stringify(raw)}`);
+      }
+      return Math.floor(n);
     })(),
     // Tombstones — non-resurrection invariant (issue #1579). The invariant is
     // the point, so it ships ON by default; `false` restores pre-feature
@@ -2304,6 +2355,27 @@ export function parseConfig(
       const n = coerceNumber(cfg.recallMemoryWorthHalfLifeMs);
       return n !== undefined && n >= 0 ? n : 0;
     })(),
+    // Unified TrustScore recall stage (issue #1577). Default off: the stage
+    // is absent and ranking is byte-identical to the pre-feature pipeline
+    // (rule 39). Flip the master gate via #1574 ablation evidence only.
+    trustScoreEnabled: coerceBool(cfg.trustScoreEnabled) ?? false,
+    // Epistemic rendering ships behind its own gate so scoring can land first.
+    trustScoreEpistemicRendering: coerceBool(cfg.trustScoreEpistemicRendering) ?? false,
+    // Quarantine defaults on (only effective under the master gate); keeps
+    // hard negatives out of injection but visible in X-ray (rule 34).
+    trustScoreQuarantine: coerceBool(cfg.trustScoreQuarantine) ?? true,
+    trustScoreMinMultiplier: (() => {
+      const n = coerceNumber(cfg.trustScoreMinMultiplier);
+      return n !== undefined && n >= 0 && n <= 1 ? n : 0.5;
+    })(),
+    trustScoreMaxMultiplier: (() => {
+      const n = coerceNumber(cfg.trustScoreMaxMultiplier);
+      return n !== undefined && n >= 1 && n <= 4 ? n : 1.25;
+    })(),
+    // Per-component weights. Accept a nested object from config; invalid
+    // entries (non-finite, outside [0,1]) are dropped by resolveTrustWeights,
+    // which falls back to the documented defaults (rule 51).
+    trustScoreWeights: parseTrustScoreWeights(cfg.trustScoreWeights),
     // Memory Linking (Phase 3A)
     memoryLinkingEnabled: cfg.memoryLinkingEnabled === true, // Off by default initially
     // Conversation Threading (Phase 3B)
@@ -2964,36 +3036,14 @@ export function parseConfig(
     collectJudgeTrainingPairs: coerceBool(cfg.collectJudgeTrainingPairs) === true,
     judgeTrainingDir:
       typeof cfg.judgeTrainingDir === "string" ? cfg.judgeTrainingDir : "",
-    // Extraction faithfulness gate (issue #1576). Entailment-verification of
-    // extracted facts against verified source spans (#1575). Default "off"
-    // (rule 39: byte-identical pre-feature pipeline). Invalid values are
-    // rejected listing valid options (rule 51).
-    extractionFaithfulnessGate: (() => {
-      const v = cfg.extractionFaithfulnessGate;
-      if (v === undefined || v === null) return "off";
-      // Present-but-invalid (true/1/{}) must reject, not silently disable the gate (Ob4RQ).
-      const raw = typeof v === "string" ? v.trim().toLowerCase() : v;
-      if (raw === "off" || raw === "shadow" || raw === "enforce") return raw;
-      throw new Error(
-        `extractionFaithfulnessGate must be one of "off" | "shadow" | "enforce" (got ${JSON.stringify(v)})`,
-      );
-    })(),
-    extractionFaithfulnessModel:
-      typeof cfg.extractionFaithfulnessModel === "string"
-        ? cfg.extractionFaithfulnessModel
-        : "",
-    // Issue #1634 (#1576 follow-up): strict-integer validation via
-    // parseIntegerAtLeast — reject non-numeric, <=0, non-integer, NaN,
-    // Infinity, booleans, objects (gotcha #51). Mirrors qmdDaemonTimeoutMs.
-    // Valid CLI-string integers still coerce and clamp to the budget cap.
-    extractionFaithfulnessContextChars: Math.min(
-      parseIntegerAtLeast(cfg.extractionFaithfulnessContextChars, 400, 1, "extractionFaithfulnessContextChars"),
-      4000,
-    ),
-    extractionFaithfulnessTimeoutMs: Math.min(
-      parseIntegerAtLeast(cfg.extractionFaithfulnessTimeoutMs, 8000, 1, "extractionFaithfulnessTimeoutMs"),
-      60_000,
-    ),
+    // Extraction faithfulness gate (issue #1576) + model-lab pointer
+    // `extractionFaithfulnessBaseUrl` (issue #1585), and the correction-intent
+    // model-lab pointer (issue #1581 / #1585). Parsed in faithfulness-config.ts
+    // (extracted from this god file so the block can grow without tripping the
+    // ratchet). Defaults preserve the byte-identical pre-feature pipeline
+    // (rule 39); invalid values reject (rule 51 / #1634).
+    ...parseFaithfulnessGateConfig(cfg),
+    ...parseCorrectionIntentConfig(cfg),
     // Inline source attribution (issue #369). Opt-in to preserve
     // backwards compatibility with existing downstream consumers.
     inlineSourceAttributionEnabled: cfg.inlineSourceAttributionEnabled === true,
@@ -4606,4 +4656,33 @@ function buildRecallPipelineConfig(cfg: Record<string, unknown>): RecallPipeline
     : buildDefaultRecallPipeline(cfg);
 
   return { recallBudgetChars, pipeline };
+}
+
+/**
+ * Parse the `trustScoreWeights` config value into a {@link TrustWeights}
+ * object. Accepts a plain object of per-component numbers; non-finite or
+ * out-of-`[0,1]` entries are dropped (the scorer falls back to defaults via
+ * `resolveTrustWeights`). A non-object value yields `{}` → all defaults.
+ * Rule 51: invalid weight rejected, never silently clamped to an extreme.
+ */
+function parseTrustScoreWeights(value: unknown): TrustWeights {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const src = value as Record<string, unknown>;
+  const out: TrustWeights = {};
+  const keys: Array<keyof TrustWeights> = [
+    "memoryWorth",
+    "provenance",
+    "faithfulness",
+    "corroboration",
+    "contradiction",
+    "domainCalibration",
+    "feedback",
+    "recency",
+  ];
+  for (const key of keys) {
+    const raw = src[key as string];
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0 || raw > 1) continue;
+    (out as Record<string, number>)[key as string] = raw;
+  }
+  return out;
 }

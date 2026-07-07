@@ -21,10 +21,14 @@
  */
 
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import type { Orchestrator } from "../orchestrator.js";
 import type { MemoryFile, MemoryStatus, PluginConfig } from "../types.js";
 import { stripAttributesSuffix } from "../structured-attributes.js";
+import { supersessionKeysForFact } from "../temporal-supersession.js";
+import { computeContentHash } from "../content-hash.js";
+import { sanitizeMemoryContent } from "../sanitize.js";
 import {
   CorrectionContractError,
   validateCorrectionAction,
@@ -168,7 +172,7 @@ async function searchMemories(
     const storage = await wiring.orchestrator.getStorage(ns);
     const all = await storage.readAllMemories();
     for (const m of all) {
-      if (m.frontmatter.status && m.frontmatter.status !== "active") continue;
+      if (!isEligibleCorrectionCandidate(m)) continue;
       const hay = `${m.content} ${m.frontmatter.tags?.join(" ") ?? ""}`.toLowerCase();
       let hits = 0;
       for (const tok of tokens) {
@@ -265,7 +269,7 @@ async function expandEntityNeighbors(
     for (const m of all) {
       if (out.length >= limit) break;
       if (seen.has(m.frontmatter.id)) continue;
-      if (m.frontmatter.status && m.frontmatter.status !== "active") continue;
+      if (!isEligibleCorrectionCandidate(m)) continue;
       if (m.frontmatter.entityRef && seedRefs.has(m.frontmatter.entityRef)) {
         out.push(toCandidate(m, ns, 0.5));
         seen.add(m.frontmatter.id);
@@ -427,9 +431,22 @@ async function applyEditMemory(
   // The StorageManager's writeMemoryFrontmatter snapshots the prior version
   // internally when page-versioning is configured (issue #371), so every edit
   // is revertable without the correction layer forking versioning logic.
+  //
+  // #1672 item 3: recompute the contentHash from the patched body so the
+  // dedup index + tombstone exact tier match the NEW content. writeMemory
+  // computes this at write time, but writeMemoryFrontmatter preserves the
+  // prior frontmatter hash — without this the hash no longer matches the
+  // patched body and a later re-extraction of the same fact dedup-misses.
+  const contentHashForPatch =
+    existing.frontmatter.category === "fact"
+      ? computeContentHash(sanitizeMemoryContent(patch).text)
+      : undefined;
   await storage.writeMemoryFrontmatter(
     { ...existing, content: patch },
-    { updated: new Date().toISOString() },
+    {
+      updated: new Date().toISOString(),
+      ...(contentHashForPatch ? { contentHash: contentHashForPatch } : {}),
+    },
   );
   return memoryId;
 }
@@ -535,6 +552,8 @@ async function appendTombstoneFn(
     rawContent: string;
     entityRef?: string;
     supersessionKey?: string;
+    supersessionKeys?: string[];
+    contentHash?: string;
   },
 ): Promise<string | null> {
   const storage = await wiring.orchestrator.getStorage(namespace);
@@ -550,20 +569,46 @@ async function appendTombstoneFn(
     typeof storage.isTombstonesEnabled === "function"
       ? storage.isTombstonesEnabled()
       : true;
-  const result = await storage.appendTombstone({
-    reason: input.reason,
-    createdBy: "user_correction",
-    sourceMemoryId: input.sourceMemoryId,
-    rawContent: input.rawContent,
-    ...(input.entityRef ? { entityRef: input.entityRef } : {}),
-    ...(input.supersessionKey ? { supersessionKey: input.supersessionKey } : {}),
-  });
-  if (result === null && enabled) {
-    throw new CorrectionContractError(
-      `tombstone persistence failed for memory ${input.sourceMemoryId} (tombstones enabled but store returned null — I/O error swallowed)`,
-    );
+  // #1672 item 4: emit one tombstone per derived supersession key (mirrors
+  // temporal-supersession / forget / pattern-reinforcement) so a paraphrased
+  // re-observation placing the attribute at a different key position is still
+  // blocked at the keyed tier. When no keys are derived, emit a single
+  // content-only tombstone. Each carries the canonical contentHash so the
+  // exact tier also matches re-extraction.
+  const keys =
+    input.supersessionKeys && input.supersessionKeys.length > 0
+      ? input.supersessionKeys
+      : input.supersessionKey
+        ? [input.supersessionKey]
+        : [undefined];
+  const writtenIds: string[] = [];
+  let firstId: string | null = null;
+  for (const key of keys) {
+    const result = await storage.appendTombstone({
+      reason: input.reason,
+      createdBy: "user_correction",
+      sourceMemoryId: input.sourceMemoryId,
+      rawContent: input.rawContent,
+      ...(input.entityRef ? { entityRef: input.entityRef } : {}),
+      ...(key ? { supersessionKey: key } : {}),
+      ...(input.contentHash ? { contentHash: input.contentHash } : {}),
+    });
+    if (result === null && enabled) {
+      // Rollback already-written tombstones so a partial multi-key failure
+      // does not leave incomplete resurrection blocking for the still-active
+      // memory (review thread #1). Best-effort — a dangling tombstone is the
+      // safer failure mode (false-positive block vs. false-negative leak).
+      for (const id of writtenIds) {
+        try { await storage.revokeTombstone(id, "user_correction"); } catch { /* best-effort */ }
+      }
+      throw new CorrectionContractError(
+        `tombstone persistence failed for memory ${input.sourceMemoryId} (tombstones enabled but store returned null — I/O error swallowed)`,
+      );
+    }
+    if (firstId === null) firstId = result;
+    if (result) writtenIds.push(result);
   }
-  return result;
+  return firstId;
 }
 
 async function registerRedactionRuleFn(
@@ -576,9 +621,14 @@ async function registerRedactionRuleFn(
   const storage = await wiring.orchestrator.getStorage(namespace);
   const dir = path.join(storage.dir, "state", "corrections", "redaction-rules");
   await mkdir(dir, { recursive: true });
-  // Idempotent: filename is a slug of the pattern so re-registering the same
-  // pattern overwrites rather than duplicates.
-  const slug = pattern.replace(/[^a-zA-Z0-9]+/g, "-").slice(0, 64) || "rule";
+  // Idempotent: filename is a slug + short hash of the full pattern so
+  // re-registering the same pattern overwrites rather than duplicates, while
+  // distinct patterns that slug identically (e.g. "abc+def" vs "abc.def" →
+  // "abc-def") no longer collide and silently remove each other's enforcement
+  // (review thread P1).
+  const slugBase = pattern.replace(/[^a-zA-Z0-9]+/g, "-").slice(0, 48) || "rule";
+  const patternHash = createHash("sha256").update(pattern).digest("hex").slice(0, 16);
+  const slug = `${slugBase}-${patternHash}`;
   await writeFile(
     path.join(dir, `${slug}.json`),
     `${JSON.stringify({ pattern, namespace, createdAt: new Date().toISOString() })}\n`,
@@ -686,6 +736,22 @@ function toCandidate(m: MemoryFile, namespace: string, score: number): PlannerCa
   } satisfies PlannerCandidate & { namespace?: string };
 }
 
+/**
+ * Lifecycle-aware eligibility for a correction candidate (#1672 item 2). A
+ * memory is eligible only when it is `status: "active"` AND not archived.
+ * Planning a correction against a memory that was archived via the
+ * `archivedAt`/archive path but still marked active would surface stale
+ * content the user already set aside — and apply would reject the rescope
+ * (non-active source) or supersede a fact the user intended gone. Both the
+ * status flip and the archive timestamp are checked so the candidate set
+ * stays consistent with the rescope/retire apply-time guards.
+ */
+function isEligibleCorrectionCandidate(m: MemoryFile): boolean {
+  if (m.frontmatter.status && m.frontmatter.status !== "active") return false;
+  if (typeof m.frontmatter.archivedAt === "string" && m.frontmatter.archivedAt.length > 0) return false;
+  return true;
+}
+
 function toExecutorMemory(m: MemoryFile): ExecutorMemory {
   const fm = m.frontmatter;
   // The tombstone hash must use the ORIGINAL unsuffixed body: writeMemory
@@ -693,12 +759,27 @@ function toExecutorMemory(m: MemoryFile): ExecutorMemory {
   // hashing m.content would never match the pre-suffix content hash (thread
   // OhX2N, rule 23). Strip the suffix when attributes are present.
   const rawBody = fm.structuredAttributes ? stripAttributesSuffix(m.content) : m.content;
+  // #1672 item 4: derive the full supersession-key set from the memory's
+  // structuredAttributes so the tombstone's keyed tier blocks paraphrased
+  // re-observations that place the attribute at a different key position
+  // (mirrors temporal-supersession's per-key emission). Also forward the
+  // canonical contentHash so the exact tier matches re-extraction without
+  // recomputing from a citation-annotated body.
+  const supersessionKeys = supersessionKeysForFact({
+    entityRef: fm.entityRef,
+    structuredAttributes: fm.structuredAttributes,
+  });
   return {
     memoryId: fm.id,
     content: m.content,
     category: fm.category,
     rawContent: rawBody,
     ...(fm.entityRef ? { entityRef: fm.entityRef } : {}),
+    ...(supersessionKeys.length > 0 ? { supersessionKeys } : {}),
+    ...(supersessionKeys.length > 0 ? { supersessionKey: supersessionKeys[0] } : {}),
+    ...(typeof fm.contentHash === "string" && fm.contentHash.length > 0
+      ? { contentHash: fm.contentHash }
+      : {}),
   } satisfies ExecutorMemory;
 }
 
@@ -884,4 +965,8 @@ export {
   buildClassifyPrompt,
   CLASSIFY_SYSTEM_PROMPT,
   parseClassifyResponse,
+  // #1672: exported for focused storage-integration regression tests.
+  isEligibleCorrectionCandidate,
+  applyEditMemory,
+  appendTombstoneFn,
 };

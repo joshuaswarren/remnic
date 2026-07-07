@@ -77,7 +77,7 @@ describe("readAllEdges", () => {
     try {
       await appendEdge(dir, { from: "a.md", to: "b.md", type: "entity", weight: 1.0, label: "e", ts: new Date().toISOString() });
       await appendEdge(dir, { from: "c.md", to: "d.md", type: "time", weight: 1.0, label: "t1", ts: new Date().toISOString() });
-      const edges = await readAllEdges(dir, { entityGraphEnabled: true, timeGraphEnabled: true, causalGraphEnabled: false });
+      const edges = await readAllEdges(dir, { entityGraph: true, timeGraph: true, causalGraph: false });
       assert.equal(edges.length, 2);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -165,7 +165,7 @@ describe("GraphIndex.onMemoryWritten", () => {
         entitySiblings: ["facts/old.md"],
         causalPredecessor: "facts/prev.md",
       });
-      const edges = await readAllEdges(dir, { entityGraphEnabled: true, timeGraphEnabled: true, causalGraphEnabled: true });
+      const edges = await readAllEdges(dir, { entityGraph: true, timeGraph: true, causalGraph: true });
       assert.deepEqual(edges, []);
     } finally {
       await rm(dir, { recursive: true, force: true });

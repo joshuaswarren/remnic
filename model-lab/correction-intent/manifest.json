@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": [
+    "Correction-intent reproducibility manifest (issue #1585 PR3).",
+    "This file is the SCHEMA EXAMPLE only: every eval/weight/training-stack",
+    "field is null/pending because no model has been trained yet. The exact",
+    "lib versions a real run used are captured into trainingStack at train",
+    "time; the pin source is model-lab/requirements.txt. Rule 55 (#1520):",
+    "no fabricated numbers — the eval block is explicitly empty until a real",
+    "GPU run produces it. The committed manifest is the ONLY artifact in git;",
+    "datasets, weights, and LLM traces are gitignored."
+  ],
+  "task": "correction-intent",
+  "schemaVersion": 1,
+  "status": "pending-training",
+  "contract": {
+    "inputFields": ["turns"],
+    "outputShape": "corrections[]: {targetHint, correctedAssertion, polarity, confidence} or []",
+    "source": "PassiveCorrection + PassiveCorrectionPolarity (issue #1581)"
+  },
+  "baseModel": null,
+  "dataRecipe": {
+    "generatorPath": "model-lab/correction-intent/generate-data.py",
+    "generatorGitSha": null,
+    "seed": 1337,
+    "sources": ["synthetic-morphology"],
+    "counts": {
+      "correction": null,
+      "none": null,
+      "total": null
+    },
+    "datasetSha256": null,
+    "$comment": "Counts/hash are filled by the GPU-run follow-up from a real generate-data run; PR3 leaves them null because no canonical training dataset is committed (data is gitignored)."
+  },
+  "trainingStack": {
+    "python": null,
+    "libs": {
+      "torch": null,
+      "transformers": null,
+      "trl": null,
+      "peft": null,
+      "datasets": null,
+      "huggingface-hub": null,
+      "accelerate": null,
+      "bitsandbytes": null
+    },
+    "pipFreezeSha256": null,
+    "capturedAt": null,
+    "$comment": "SCHEMA EXAMPLE. Exact interpreter + lib versions a real run used; captured by common.training_stack.capture_training_stack() at train time. Pin source: model-lab/requirements.txt (the correction-intent causal-LM stack). Filled in the #1585 GPU-run follow-up (rule 55)."
+  },
+  "hyperparams": null,
+  "trainedAt": null,
+  "hardware": null,
+  "eval": {
+    "heldOut": null,
+    "downstream": null,
+    "$comment": "NOT YET RUN. The GPU-run follow-up fills heldOut (detection F1 + mean span overlap + held-out p95 latency); the downstream number comes from the MemCorrect (#1584) false_apply / uptake@next ablation. Rule 55 forbids fabricating either."
+  },
+  "artifact": {
+    "hfRepo": null,
+    "revision": null,
+    "quantizations": null,
+    "$comment": "Weights publish to the operator's HF account in the GPU-run follow-up (common/hf_push.py); git carries recipes and hashes, never blobs."
+  },
+  "policyCompliance": {
+    "targetMaxParamsB": 4,
+    "actualParamsB": null,
+    "escapeHatchUsed": false,
+    "$comment": "Issue #1585 policy: target models <=4B for correction-intent (structured extraction, not generation). 8B LoRA is an escape hatch requiring written justification here. Default base: Qwen/Qwen2.5-3B-Instruct."
+  }
+}

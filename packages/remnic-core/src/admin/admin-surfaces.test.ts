@@ -13,6 +13,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { NamespaceCatalog } from "../namespaces/catalog.js";
+import { resolveScopeProfilePlan } from "../namespaces/scope-profiles.js";
 import { parseConfig } from "../config.js";
 import {
   AdminPromotionError,
@@ -455,4 +456,292 @@ test("promoteMemory throws source_not_found when the source memory is absent", a
       }),
     (err: unknown) => err instanceof AdminPromotionError && err.code === "source_not_found",
   );
+});
+
+// ---------------------------------------------------------------------------
+// gatherMaintenanceHealth — honest QMD state classification (issue #1658 thread 1)
+// ---------------------------------------------------------------------------
+
+/** Build a QMD health snapshot fixture for the provider. */
+function qmdFixture(namespace: string, overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    namespace,
+    collection: `col-${namespace}`,
+    available: true,
+    collectionState: "present",
+    debugStatus: "ok",
+    installedVersion: "1.0.0",
+    supportedVersion: "1.0.0",
+    supported: true,
+    upgradeAvailable: false,
+    daemonMode: false,
+    ...overrides,
+  };
+}
+
+test("gatherMaintenanceHealth classifies a present QMD collection as healthy (issue #1658 thread 1)", async () => {
+  const memoryDir = await makeTempDir();
+  try {
+    const config = makeConfig({ memoryDir });
+    const catalog = new NamespaceCatalog(config);
+    await catalog.registerConfiguredNamespaces();
+    const report = await gatherMaintenanceHealth({
+      catalog,
+      qmdHealthProvider: async (ns) => qmdFixture(ns, { collectionState: "present" }),
+    });
+    assert.equal(report.degradedMode, false);
+    const entry = report.perNamespace.find((e) => e.namespace === "default");
+    assert.ok(entry, "default namespace entry must exist");
+    assert.equal(entry!.qmdState, "healthy");
+    assert.equal(entry!.qmdDegraded, false);
+    assert.match(entry!.qmdStateReason, /ready/i);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("gatherMaintenanceHealth classifies an unknown collection state distinctly from missing (issue #1658 thread 1)", async () => {
+  const memoryDir = await makeTempDir();
+  try {
+    const config = makeConfig({ memoryDir });
+    const catalog = new NamespaceCatalog(config);
+    await catalog.registerConfiguredNamespaces();
+    const report = await gatherMaintenanceHealth({
+      catalog,
+      qmdHealthProvider: async (ns) => qmdFixture(ns, { collectionState: "unknown" }),
+    });
+    // "unknown" is still counted degraded (matches the router health path) so
+    // aggregate alerting is unchanged, but it is now RENDERED honestly as a
+    // distinct state rather than collapsed into "missing".
+    assert.equal(report.degradedMode, true);
+    const entry = report.perNamespace.find((e) => e.namespace === "default");
+    assert.ok(entry);
+    assert.equal(entry!.qmdState, "unknown");
+    assert.equal(entry!.qmdDegraded, true);
+    assert.match(entry!.qmdStateReason, /transient/i);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("gatherMaintenanceHealth classifies a missing collection as an actionable state (issue #1658 thread 1)", async () => {
+  const memoryDir = await makeTempDir();
+  try {
+    const config = makeConfig({ memoryDir });
+    const catalog = new NamespaceCatalog(config);
+    await catalog.registerConfiguredNamespaces();
+    const report = await gatherMaintenanceHealth({
+      catalog,
+      qmdHealthProvider: async (ns) => qmdFixture(ns, { collectionState: "missing" }),
+    });
+    const entry = report.perNamespace.find((e) => e.namespace === "default");
+    assert.ok(entry);
+    assert.equal(entry!.qmdState, "missing");
+    assert.equal(entry!.qmdDegraded, true);
+    assert.match(entry!.qmdStateReason, /not built|index/i);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("gatherMaintenanceHealth classifies an unavailable backend distinctly (issue #1658 thread 1)", async () => {
+  const memoryDir = await makeTempDir();
+  try {
+    const config = makeConfig({ memoryDir });
+    const catalog = new NamespaceCatalog(config);
+    await catalog.registerConfiguredNamespaces();
+    const report = await gatherMaintenanceHealth({
+      catalog,
+      qmdHealthProvider: async (ns) => qmdFixture(ns, { available: false, collectionState: "unknown" }),
+    });
+    const entry = report.perNamespace.find((e) => e.namespace === "default");
+    assert.ok(entry);
+    assert.equal(entry!.qmdState, "unavailable");
+    assert.equal(entry!.qmdDegraded, true);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("gatherMaintenanceHealth reports not_probed when no provider is supplied (issue #1658 thread 1)", async () => {
+  const memoryDir = await makeTempDir();
+  try {
+    const config = makeConfig({ memoryDir });
+    const catalog = new NamespaceCatalog(config);
+    await catalog.registerConfiguredNamespaces();
+    const report = await gatherMaintenanceHealth({ catalog });
+    const entry = report.perNamespace.find((e) => e.namespace === "default");
+    assert.ok(entry);
+    assert.equal(entry!.qmdState, "not_probed");
+    assert.equal(entry!.qmdDegraded, false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// promoteMemory — honest project-context promotion reasons (issue #1658 thread 2)
+// ---------------------------------------------------------------------------
+
+test("promoteMemory reports an honest 'no active scope profile' reason for a project target without a profile (issue #1658 thread 2)", async () => {
+  const config = makeConfig();
+  const storage = makeMemoryStorageProvider();
+  const result = await promoteMemory({
+    config,
+    sourceMemoryId: "mem-1",
+    sourceNamespace: "default",
+    principal: "alice",
+    targets: [{ kind: "userProject" }],
+    reason: "promote project fact",
+    actor: "alice",
+    storage,
+    // scopeProfilePlan omitted → no active profile.
+  });
+  assert.equal(result.ok, false);
+  const target = result.targets[0]!;
+  assert.equal(target.authorized, false);
+  assert.equal(target.namespace, "");
+  assert.match(target.reason, /no active scope profile/);
+  assert.match(target.reason, /coding context/i);
+  assert.equal(storage.written.length, 0);
+});
+
+test("promoteMemory reports an honest 'no active scope profile' reason for a non-project target without a profile (issue #1658 thread 2)", async () => {
+  const config = makeConfig();
+  const storage = makeMemoryStorageProvider();
+  const result = await promoteMemory({
+    config,
+    sourceMemoryId: "mem-1",
+    sourceNamespace: "default",
+    principal: "alice",
+    targets: [{ kind: "serverShared" }],
+    reason: "promote shared fact",
+    actor: "alice",
+    storage,
+  });
+  assert.equal(result.ok, false);
+  const target = result.targets[0]!;
+  assert.match(target.reason, /no active scope profile/);
+  // Non-project targets must NOT mention coding context.
+  assert.doesNotMatch(target.reason, /coding context/i);
+});
+
+test("promoteMemory surfaces the profile layer's 'missing project context' reason when a project target is configured but unresolvable (issue #1658 thread 2)", async () => {
+  const config = makeConfig({
+    defaultScopeProfile: "team",
+    scopeProfiles: {
+      team: {
+        readOrder: ["userGlobal"],
+        writeDefault: "userGlobal",
+        promotionTargets: ["userProject"],
+        autoPromote: { enabled: false, targets: [], categories: ["fact"], minConfidenceTier: "speculative" },
+      },
+    },
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+    namespacePolicies: [{ name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] }],
+  });
+  // No coding context → the userProject layer resolves "missing project context".
+  const scopeProfilePlan = resolveScopeProfilePlan({
+    config,
+    principal: "alice",
+    codingContext: null,
+    codingOverlay: null,
+  });
+  assert.ok(scopeProfilePlan, "scope profile must be active for this config");
+  const storage = makeMemoryStorageProvider();
+  const result = await promoteMemory({
+    config,
+    sourceMemoryId: "mem-1",
+    sourceNamespace: "alice",
+    principal: "alice",
+    targets: [{ kind: "userProject" }],
+    reason: "promote project fact",
+    actor: "alice",
+    storage,
+    scopeProfilePlan,
+  });
+  assert.equal(result.ok, false);
+  const target = result.targets[0]!;
+  assert.equal(target.authorized, false);
+  assert.match(target.reason, /missing project context/i);
+});
+
+// ---------------------------------------------------------------------------
+// inspectScope — read-only override honest warning (issue #1658 thread 6)
+// ---------------------------------------------------------------------------
+
+test("inspectScope warns when an explicit override is readable but not writable (issue #1658 thread 6)", () => {
+  const config = makeConfig({
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+    namespacePolicies: [
+      // alice can READ "audit-log" but cannot WRITE it.
+      { name: "audit-log", readPrincipals: ["alice", "bob"], writePrincipals: ["bob"] },
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+  });
+  const inspection = inspectScope({
+    config,
+    sessionKey: "alice:bot:x:1",
+    namespace: "audit-log",
+  });
+  // The override is readable → it becomes the effective write namespace...
+  assert.equal(inspection.namespaceOverride, "audit-log");
+  assert.equal(inspection.writeNamespace, "audit-log");
+  // ...but alice cannot write it → an honest warning must surface the mismatch.
+  assert.ok(
+    inspection.warnings.some(
+      (w) => w.includes("audit-log") && w.includes("not writable") && w.includes("writes will be rejected"),
+    ),
+    "expected a read-only-override warning; got: " + JSON.stringify(inspection.warnings),
+  );
+});
+
+test("inspectScope does not warn when an explicit override is writable (issue #1658 thread 6)", () => {
+  const config = makeConfig({
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "alice:", principal: "alice" }],
+    namespacePolicies: [
+      { name: "shared", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+      { name: "alice", readPrincipals: ["alice"], writePrincipals: ["alice"] },
+    ],
+  });
+  const inspection = inspectScope({
+    config,
+    sessionKey: "alice:bot:x:1",
+    namespace: "shared",
+  });
+  assert.equal(inspection.namespaceOverride, "shared");
+  assert.ok(
+    !inspection.warnings.some((w) => w.includes("not writable")),
+    "no read-only-override warning expected for a writable override",
+  );
+});
+
+test("gatherMaintenanceHealth preserves the original qmdDegraded invariant for an unrecognized collectionState (issue #1658 thread 1)", async () => {
+  // The original degraded formula was: !available || "missing" || "unknown".
+  // An available backend with any OTHER collectionState (present/skipped/and any
+  // unrecognized value) was NOT degraded. The classified qmdState surfaces the
+  // unrecognized value honestly, but the degraded bit must stay false so the
+  // aggregate alerting invariant is byte-for-byte unchanged.
+  const memoryDir = await makeTempDir();
+  try {
+    const config = makeConfig({ memoryDir });
+    const catalog = new NamespaceCatalog(config);
+    await catalog.registerConfiguredNamespaces();
+    const report = await gatherMaintenanceHealth({
+      catalog,
+      qmdHealthProvider: async (ns) =>
+        qmdFixture(ns, { collectionState: "future-state" }),
+    });
+    const entry = report.perNamespace.find((e) => e.namespace === "default");
+    assert.ok(entry);
+    assert.equal(entry!.qmdDegraded, false, "unrecognized collectionState must not flip degraded (unchanged semantics)");
+    assert.equal(entry!.qmdState, "unknown");
+    assert.match(entry!.qmdStateReason, /unrecognized collection state 'future-state'/);
+    assert.equal(report.degradedMode, false);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
 });
