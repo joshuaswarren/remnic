@@ -27,6 +27,7 @@ import {
   kindFromCapture,
   type DefKind,
 } from "./extractors.js";
+import { buildUtf16ToByteOffsetMap, utf16ToByte } from "./utf16-offsets.js";
 
 // ---------------------------------------------------------------------------
 // Content hashing — SHA-256 of the raw bytes (rule 23).
@@ -251,14 +252,46 @@ function extractExports(root: TSNode, language: Language, lang: CodingGraphLangu
   const query = new Query(language, extractor.exportsQuery);
   try {
     const captures = query.captures(root);
+    // Dedup a CommonJS pair overlap (#1659 review): a pair
+    // `{ key: value }` whose value is an identifier is matched by BOTH
+    // the value-identifier pattern (captures the real symbol) AND the
+    // non-identifier fallback (captures the key). The fallback's
+    // #not-match? regex is ASCII-only, so a Unicode identifier value
+    // (e.g. Universität) defeats it and both patterns fire on the same
+    // pair, duplicating the export. web-tree-sitter's query regex
+    // engine does not support \p{L}, so dedup here: if a pair already
+    // exported its value identifier, drop the spurious key capture.
+    const valueExportedPairs = new Set<number>();
+    const pairOf = (node: TSNode): TSNode | null => {
+      let cur: TSNode | null = node;
+      for (let i = 0; i < 5 && cur; i++) {
+        if (cur.type === "pair") return cur;
+        cur = cur.parent;
+      }
+      return null;
+    };
+    for (const cap of captures) {
+      if (cap.name !== "export.name") continue;
+      const pair = pairOf(cap.node);
+      if (pair && cap.node.type === "identifier") {
+        valueExportedPairs.add(pair.id);
+      }
+    }
     const exports: ExportIR[] = [];
     for (const cap of captures) {
-      if (cap.name === "export.name") {
-        exports.push({
-          name: cap.node.text,
-          span: { startByte: cap.node.startIndex, endByte: cap.node.endIndex },
-        });
+      if (cap.name !== "export.name") continue;
+      const pair = pairOf(cap.node);
+      if (
+        pair &&
+        cap.node.type === "property_identifier" &&
+        valueExportedPairs.has(pair.id)
+      ) {
+        continue; // value identifier is the real export; drop the alias key
       }
+      exports.push({
+        name: cap.node.text,
+        span: { startByte: cap.node.startIndex, endByte: cap.node.endIndex },
+      });
     }
     return exports.sort(
       (a, b) => a.span.startByte - b.span.startByte || a.name.localeCompare(b.name),
@@ -300,6 +333,15 @@ function extractCallSites(root: TSNode, language: Language, lang: CodingGraphLan
 // Route extraction (Express/Fastify/Flask/etc.).
 // ---------------------------------------------------------------------------
 
+
+// Common HTTP client variable names that should NOT produce routes.
+// These objects have methods named get/post/etc. that match the route
+// verb pattern but are client-side calls, not server route registrations.
+// Without this exclusion, httpClient.get("/api", opts, cb) would produce
+// a spurious route with handler=cb, marking cb as is_route_handler and
+// hiding it from dead-code detection (chatgpt-codex-connector #1688 P2).
+const HTTP_CLIENT_OBJECT_PATTERNS = /^(http|https|client|httpClient|axios|fetch|request|req|res|\$|superagent|got)$/;
+
 function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLanguage): RouteIR[] {
   const extractor = EXTRACTORS[lang];
   if (!extractor.routesQuery) return [];
@@ -313,23 +355,58 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
       let handler = "";
       let startByte = 0;
       let endByte = 0;
+      let argsNode: TSNode | null = null;
+      let routeObject = "";
       for (const cap of match.captures) {
         if (cap.name === "route.verb") {
           verb = cap.node.text.toUpperCase();
           startByte = cap.node.parent?.startIndex ?? cap.node.startIndex;
+          // Extract the receiver object name for the HTTP-client exclusion.
+          const memberExpr = cap.node.parent;
+          const objectNode = memberExpr?.childForFieldName("object");
+          if (objectNode) {
+            // Normalize nested receivers to their tail property so a call
+            // like this.client.get("/api", opts, cb) is caught by the HTTP-
+            // client exclusion. objectNode.text for `this.client` is
+            // "this.client", which misses the ^client$ pattern; descend to
+            // the rightmost property (chatgpt-codex-connector #1688 P2:
+            // 'Normalize receiver names before client-route filtering').
+            let receiver = objectNode;
+            for (
+              let prop = receiver.childForFieldName("property");
+              prop;
+              prop = receiver.childForFieldName("property")
+            ) {
+              receiver = prop;
+            }
+            routeObject = receiver.text;
+          }
         } else if (cap.name === "route.path") {
           pathTemplate = cleanModuleSpecifier(cap.node.text);
         } else if (cap.name === "route.handler") {
-          // Identifier handlers (Python function names, JS named route
-          // handlers like app.get("/x", handler)) carry the name directly.
-          // Function/arrow expression handlers need name extraction.
+          // Python route handlers (function names) and legacy JS patterns.
           handler = cap.node.type === "identifier"
             ? cap.node.text
             : (findHandlerName(cap.node) ?? "anonymous");
           endByte = cap.node.endIndex;
+        } else if (cap.name === "route.args") {
+          argsNode = cap.node;
+          endByte = cap.node.endIndex;
         }
       }
-      if (verb && pathTemplate) {
+      // Extract handler from the last argument when we captured the args
+      // node (JS routes). Handles middleware: handler is the LAST arg (#1659 #5).
+      if (argsNode) {
+        handler = extractHandlerFromArgs(argsNode);
+      }
+      // Guards: (1) path-prefix — routes start with "/" or "*";
+      // (2) HTTP-client exclusion — objects named http/client/axios/etc.
+      // are clients, not routers. Together these filter the most common
+      // non-route call expressions that match the verb+string-arg pattern
+      // (chatgpt-codex-connector #1688 P2: 'Reject client callbacks').
+      const isRoutePath = pathTemplate.startsWith("/") || pathTemplate.startsWith("*");
+      const isHttpClient = HTTP_CLIENT_OBJECT_PATTERNS.test(routeObject);
+      if (verb && pathTemplate && handler && isRoutePath && !isHttpClient) {
         routes.push({
           verb,
           pathTemplate,
@@ -344,6 +421,41 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
   } finally {
     query.delete();
   }
+}
+
+/**
+ * Extract the route handler name from the LAST argument of an arguments
+ * node. Handles middleware: app.get("/path", requireAuth, getUsers) →
+ * handler=getUsers (the last arg), not requireAuth (issue #1659 #5).
+ */
+function extractHandlerFromArgs(argsNode: TSNode): string {
+  // Collect the real (non-comment) named args, skipping trailing inline/
+  // block comments. tree-sitter treats comments as named children, so
+  // `app.get("/users", getUsers /* auth */)` would otherwise select the
+  // comment as the last arg, miss the real handler, and leave it
+  // un-protected by the route-handler exclusion (a false dead-code hit).
+  // (chatgpt-codex-connector #1659 review: 'Skip comments when selecting
+  // route handler'.)
+  const realArgs: TSNode[] = [];
+  for (let i = 0; i < argsNode.namedChildCount; i++) {
+    const child = argsNode.namedChild(i);
+    if (child && child.type !== "comment") realArgs.push(child);
+  }
+  if (realArgs.length < 2) return "";
+  const lastArg = realArgs[realArgs.length - 1]!;
+  if (lastArg.type === "identifier") {
+    return lastArg.text;
+  }
+  if (lastArg.type === "function_expression") {
+    return findHandlerName(lastArg) ?? "anonymous";
+  }
+  if (lastArg.type === "arrow_function") {
+    return "anonymous";
+  }
+  // Non-handler last arg (object, number, call expression, etc.) —
+  // not a route handler. Return empty so the caller skips the route
+  // (cursor Bugbot: 'Spurious routes from client calls').
+  return "";
 }
 
 /**
@@ -370,6 +482,13 @@ function findHandlerName(node: TSNode): string | null {
 /**
  * Assemble a FileIR from a parsed tree. All collections are sorted for
  * deterministic output (rule 38).
+ *
+ * `contentStr` is the UTF-8 string that was passed to the parser. It is used
+ * to build a UTF-16→byte offset map so all spans are converted from UTF-16
+ * code-unit offsets (what web-tree-sitter returns) to UTF-8 byte offsets
+ * (what on-disk files use). For ASCII-only content the two are identical;
+ * multibyte content (comments, strings, identifiers) needs the conversion
+ * (issue #1659 item 3).
  */
 export function emitFileIR(
   filePath: string,
@@ -377,20 +496,61 @@ export function emitFileIR(
   content: Uint8Array,
   root: TSNode,
   language: Language,
+  contentStr: string,
 ): FileIR {
   const symbols = extractSymbols(root, language, lang);
   const imports = extractImports(root, language, lang);
   const exports = extractExports(root, language, lang);
   const callSites = extractCallSites(root, language, lang);
   const routes = extractRoutes(root, language, lang);
+
+  // Convert UTF-16 code-unit offsets → UTF-8 byte offsets (issue #1659 #3).
+  // Spans are readonly, so rebuild each object with converted offsets.
+  const offsetMap = buildUtf16ToByteOffsetMap(contentStr);
+  const convSymbols = symbols.map((s) => ({
+    ...s,
+    span: {
+      startByte: utf16ToByte(offsetMap, s.span.startByte),
+      endByte: utf16ToByte(offsetMap, s.span.endByte),
+    },
+  }));
+  const convImports = imports.map((i) => ({
+    ...i,
+    span: {
+      startByte: utf16ToByte(offsetMap, i.span.startByte),
+      endByte: utf16ToByte(offsetMap, i.span.endByte),
+    },
+  }));
+  const convExports = exports.map((e) => ({
+    ...e,
+    span: {
+      startByte: utf16ToByte(offsetMap, e.span.startByte),
+      endByte: utf16ToByte(offsetMap, e.span.endByte),
+    },
+  }));
+  const convCallSites = callSites.map((c) => ({
+    ...c,
+    span: {
+      startByte: utf16ToByte(offsetMap, c.span.startByte),
+      endByte: utf16ToByte(offsetMap, c.span.endByte),
+    },
+  }));
+  const convRoutes = routes.map((r) => ({
+    ...r,
+    span: {
+      startByte: utf16ToByte(offsetMap, r.span.startByte),
+      endByte: utf16ToByte(offsetMap, r.span.endByte),
+    },
+  }));
+
   return {
     path: filePath,
     language: lang,
     contentHash: hashContent(content),
-    symbols,
-    imports,
-    exports,
-    callSites,
-    routes,
+    symbols: convSymbols,
+    imports: convImports,
+    exports: convExports,
+    callSites: convCallSites,
+    routes: convRoutes,
   };
 }

@@ -226,6 +226,10 @@ export function resolveSemanticConfig(
     // out-of-range confidence gate.
     similarToThreshold: Math.min(1, Math.max(0, similarToThreshold)),
     maxSymbolsPerRun: Math.max(0, Math.floor(maxSymbolsPerRun)),
-    canonicalBodyLines: Math.max(0, Math.floor(canonicalBodyLines)),
+    // canonicalBodyLines: a negative/zero value must NOT clamp to 0 because
+    // extractBodyText treats <= 0 as unlimited — sending full symbol bodies to
+    // the embedding provider instead of the bounded excerpt (defeats the
+    // privacy/cost cap). Fall back to the default instead (#1680).
+    canonicalBodyLines: canonicalBodyLines >= 1 ? Math.floor(canonicalBodyLines) : DEFAULT_CANONICAL_BODY_LINES,
   };
 }

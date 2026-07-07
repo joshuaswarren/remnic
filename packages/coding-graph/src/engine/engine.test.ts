@@ -18,6 +18,7 @@ import { FIXTURES } from "./fixtures.js";
 import { hashContent } from "./emit.js";
 import { hashContent as hashContentFromReindex } from "../reindex.js";
 import { sniffLanguage } from "./language-sniff.js";
+import { buildUtf16ToByteOffsetMap } from "./utf16-offsets.js";
 import { WasmTreeSitterBackend } from "./parser-backend.js";
 
 // ---------------------------------------------------------------------------
@@ -1050,3 +1051,367 @@ test("lifecycle: double dispose is safe", async () => {
   await engine.dispose();
   await engine.dispose(); // should not throw
 });
+
+// ===========================================================================
+// Issue #1659: export-capture edge cases (default exports, CJS alias,
+// UTF-16 offsets, C++ qualified methods, Express middleware, Python relative).
+// ===========================================================================
+
+test("1659-1: export default App (bare identifier) captured as export", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function App() { return null; }",
+    "export default App;",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/app.tsx", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const exportNames = result.ir.exports.map((e) => e.name);
+  assert.ok(exportNames.includes("App"), `TSX: export default App should be exported, got: ${exportNames.join(", ")}`);
+  await engine.dispose();
+});
+
+test("1659-1b: export default App in JS captured as export", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "const App = () => {}",
+    "export default App;",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/app.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const exportNames = result.ir.exports.map((e) => e.name);
+  assert.ok(exportNames.includes("App"), `JS: export default App should be exported, got: ${exportNames.join(", ")}`);
+  await engine.dispose();
+});
+
+test("1659-2: CJS alias target captures value identifier, not key", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function createRouter() { return {}; }",
+    "module.exports = { publicName: createRouter };",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/router.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const exportNames = result.ir.exports.map((e) => e.name);
+  assert.ok(
+    exportNames.includes("createRouter"),
+    `CJS: module.exports = { publicName: createRouter } should export createRouter (the value), got: ${exportNames.join(", ")}`,
+  );
+  await engine.dispose();
+});
+
+
+test("1659-2b: CJS pair with a Unicode identifier value exports the value once (no alias-key duplicate)", async () => {
+  // The non-identifier fallback's #not-match? regex is ASCII-only, so a
+  // Unicode identifier value (Universität) defeats it and BOTH the
+  // value-identifier pattern and the fallback fire on the same pair.
+  // extractExports dedups by pair so only the real value symbol is kept
+  // (cursor #1659 review: 'CJS export fallback duplicates Unicode').
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function Universität() { return 1; }",
+    "module.exports = { alias: Universität };",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/u.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const exportNames = result.ir.exports.map((e) => e.name);
+  assert.ok(
+    exportNames.includes("Universität"),
+    `CJS Unicode value should export Universität, got: ${exportNames.join(", ")}`,
+  );
+  assert.ok(
+    !exportNames.includes("alias"),
+    `CJS Unicode value must NOT also export the alias key, got: ${exportNames.join(", ")}`,
+  );
+  await engine.dispose();
+});
+
+test("1659-3: UTF-16 offsets produce correct byte spans for multibyte content", async () => {
+  const engine = createCodingGraphEngine();
+  // Leading comment with multibyte chars so UTF-16 and byte offsets diverge.
+  // "café" = 4 UTF-16 code units but 5 UTF-8 bytes (é = 2 bytes).
+  const code = "// café comment\nfunction hello() { return 1; }\n";
+  const buf = Buffer.from(code, "utf-8");
+  const result = await engine.parseFile({ path: "src/multibyte.ts", content: buf });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const fn = result.ir.symbols.find((s) => s.name === "hello");
+  assert.ok(fn, "should find hello function");
+  if (!fn) return;
+  // The function keyword starts after "// café comment\n".
+  // "// " = 3 bytes, "café" = 5 bytes, " comment" = 8 bytes, "\n" = 1 byte = 17 bytes total prefix.
+  // So "function hello..." starts at byte offset 17.
+  assert.equal(
+    fn.span.startByte, 17,
+    `hello startByte should be 17 (byte offset), got ${fn.span.startByte}`,
+  );
+  // Verify we can slice the correct text from the byte buffer.
+  const sliced = buf.subarray(fn.span.startByte, fn.span.endByte).toString("utf-8");
+  assert.ok(sliced.startsWith("function hello"), `byte-offset slice should start with 'function hello', got: ${sliced}`);
+  await engine.dispose();
+});
+
+test("1659-3b: buildUtf16ToByteOffsetMap maps BOTH surrogate code units to the pair's start byte", () => {
+  // "𝕏" (U+1D54F) is one astral code point: 2 UTF-16 code units (a surrogate
+  // pair), 4 UTF-8 bytes. Before the fix the low surrogate's map entry pointed
+  // PAST the pair, so a span starting on the low code unit got an inflated
+  // startByte (cursor #1659 review: 'Surrogate UTF-16 index maps wrong').
+  const content = "a𝕏b"; // idx 0='a', 1=high surrogate, 2=low surrogate, 3='b'
+  const map = buildUtf16ToByteOffsetMap(content);
+  // byte layout: 'a'=1B, '𝕏'=4B, 'b'=1B → 0,1,5,6
+  assert.equal(map[0], 0, "'a' starts at byte 0");
+  assert.equal(map[1], 1, "high surrogate (pair start) at byte 1");
+  assert.equal(map[2], 1, "low surrogate must map to the PAIR start (byte 1), not past it");
+  assert.equal(map[3], 5, "'b' starts at byte 5 (1 + 4 for the pair)");
+  assert.equal(map[content.length], 6, "total byte length is 6");
+});
+
+test("1659-4: C++ out-of-class method A::start captured as method", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "class Engine {",
+    "public:",
+    "  void start();",
+    "};",
+    "void Engine::start() { /* impl */ }",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/engine.cpp", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  // The qualified_identifier pattern captures "Engine::start" as the name.
+  const method = result.ir.symbols.find((s) => s.kind === "method");
+  assert.ok(method, "should find a method symbol for Engine::start");
+  await engine.dispose();
+});
+
+test("1659-5: Express middleware route captures handler, not middleware", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function requireAuth(req, res, next) { next(); }",
+    "function getUsers(req, res) { res.json([]); }",
+    "app.get(\"/users\", requireAuth, getUsers);",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/server.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should have a /users route");
+  if (!usersRoute) return;
+  assert.equal(
+    usersRoute.handlerQualifiedName, "getUsers",
+    `middleware route handler should be 'getUsers' (the handler), not 'requireAuth' (the middleware), got: ${usersRoute.handlerQualifiedName}`,
+  );
+  await engine.dispose();
+});
+
+
+test("1659-5b: route handler after a trailing comment is still captured (not 'anonymous')", async () => {
+  // tree-sitter treats the inline comment as a named child of the
+  // arguments node; without skipping it the comment becomes the "last
+  // arg" and the real handler is missed (chatgpt-codex-connector #1659
+  // review: 'Skip comments when selecting route handler').
+  const engine = createCodingGraphEngine();
+  const code = [
+    "function getUsers(req, res) { res.json([]); }",
+    'app.get("/users", getUsers /* auth middleware */);',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/server.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes;
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should have a /users route");
+  if (!usersRoute) return;
+  assert.equal(
+    usersRoute.handlerQualifiedName, "getUsers",
+    `route with trailing comment should still capture 'getUsers', got: ${usersRoute.handlerQualifiedName}`,
+  );
+  await engine.dispose();
+});
+test("1688-route: cache.get('user') does NOT produce a route (empty-handler skip)", async () => {
+  // The unified route matcher captures any call_expression where the method
+  // name matches a verb (get/post/...) and the first arg is a string. Without
+  // the empty-handler skip, ordinary code like cache.get("user") matches and
+  // emits a route with handlerQualifiedName: "", which GraphStore rejects
+  // (chatgpt-codex-connector #1688 review: 'Require a handler before
+  // matching JS routes'). Routes without a real handler are now skipped.
+  const engine = createCodingGraphEngine();
+  const code = [
+    "const cache = new Map();",
+    'cache.get("user");',
+    'cache.delete("session");',
+    'cache.set("key", "value");',
+    "",
+    "function getUsers(req, res) { res.json([]); }",
+    'app.get("/users", getUsers);',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/app.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  // The real route must still be captured.
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should still capture the real /users route");
+  // Non-route calls must NOT produce routes.
+  const cacheRoutes = routes.filter((r) => r.pathTemplate === "user" || r.pathTemplate === "session" || r.pathTemplate === "key");
+  assert.equal(cacheRoutes.length, 0, "cache.get/delete/set must NOT produce routes");
+  await engine.dispose();
+});
+test("1688-route-2: HTTP client calls with options object do NOT produce spurious routes", async () => {
+  // The cursor Bugbot thread @14:47: the unified route matcher treats any
+  // call whose method name is an HTTP verb and first arg is a string as a
+  // route when there are >= 2 args. extractHandlerFromArgs previously
+  // returned "anonymous" for non-handler last args (objects, numbers),
+  // producing spurious routes from client calls like httpClient.get(url, opts).
+  // Now non-handler last args return "" so the route is skipped.
+  const engine = createCodingGraphEngine();
+  const code = [
+    'const httpClient = { get: (url, opts) => {} };',
+    'httpClient.get("https://api.example.com", { headers: { auth: "token" } });',
+    'httpClient.delete("https://api.example.com/resource", { method: "DELETE" });',
+    'httpClient.put("https://api.example.com/data", 42);',
+    "",
+    "function getUsers(req, res) { res.json([]); }",
+    'app.get("/users", getUsers);',
+    'app.post("/items", (req, res) => {});',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/client.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  // Real routes must still be captured.
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should still capture the real /users route");
+  const itemsRoute = routes.find((r) => r.pathTemplate === "/items");
+  assert.ok(itemsRoute, "should still capture the real /items route with arrow fn handler");
+  // HTTP client calls must NOT produce routes.
+  const clientRoutes = routes.filter((r) =>
+    r.pathTemplate.startsWith("https://") || r.pathTemplate.includes("api.example.com"),
+  );
+  assert.equal(clientRoutes.length, 0, "httpClient.get/delete/put must NOT produce spurious routes");
+  await engine.dispose();
+});
+test("1688-route-3: full-URL client calls do NOT produce routes (path-prefix guard)", async () => {
+  // Route paths always start with "/" or "*". HTTP client calls with full
+  // URLs (httpClient.get("https://api.example.com", opts, cb)) are filtered
+  // by the path-prefix guard (chatgpt-codex-connector #1688 P2).
+  const engine = createCodingGraphEngine();
+  const code = [
+    'const http = require("http");',
+    'http.get("https://api.example.com/data", (res) => {});',
+    'http.request("http://localhost:3000/api", { method: "POST" }, (res) => {});',
+    "",
+    "function listUsers(req, res) { res.json([]); }",
+    'app.get("/users", listUsers);',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/client2.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  // Real route must still be captured.
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should still capture the real /users route");
+  // Full-URL client calls must NOT produce routes.
+  const urlRoutes = routes.filter((r) => r.pathTemplate.startsWith("http"));
+  assert.equal(urlRoutes.length, 0, "full-URL http.get/request calls must NOT produce routes");
+  await engine.dispose();
+});
+
+test("1688-route-4: HTTP client objects (http/client/axios) do NOT produce routes", async () => {
+  const engine = createCodingGraphEngine();
+  const code = [
+    "const httpClient = { get: (url, opts, cb) => {} };",
+    'httpClient.get("/api/users", { headers: {} }, cb);',
+    "const client = { post: (url, data, cb) => {} };",
+    'client.post("/api/data", { id: 1 }, handler);',
+    "const axios = { delete: (url) => {} };",
+    'axios.delete("/api/item/1");',
+    "",
+    "function getUsers(req, res) { res.json([]); }",
+    'app.get("/users", getUsers);',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/client3.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should still capture the real app.get /users route");
+  const clientRoutes = routes.filter((r) => r.pathTemplate.startsWith("/api"));
+  assert.equal(clientRoutes.length, 0, "httpClient/client/axios calls must NOT produce routes");
+  await engine.dispose();
+});
+
+test("1688-route-5: nested HTTP client receivers (this.client) do NOT produce routes", async () => {
+  // A nested receiver keeps its full expression in objectNode.text
+  // ("this.client"), which missed the ^client$ pattern and let
+  // this.client.get("/api", opts, cb) emit a spurious route (marking cb as
+  // a route handler). The receiver is now normalized to its tail property
+  // (chatgpt-codex-connector #1688 P2: 'Normalize receiver names').
+  const engine = createCodingGraphEngine();
+  const code = [
+    'this.client.get("/api/users", { headers: {} }, cb);',
+    'svc.httpClient.post("/api/data", { id: 1 }, handler);',
+    'foo.bar.client.put("/api/item", 42);',
+    "",
+    "function getUsers(req, res) { res.json([]); }",
+    'app.get("/users", getUsers);',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/client-nested.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should still capture the real app.get /users route");
+  const clientRoutes = routes.filter((r) => r.pathTemplate.startsWith("/api"));
+  assert.equal(
+    clientRoutes.length,
+    0,
+    "nested-receiver client calls (this.client / svc.httpClient / foo.bar.client) must NOT produce routes",
+  );
+  await engine.dispose();
+});
+
+
+
+
+
+test("1659-6: Python relative import from .models captures module", async () => {
+  const engine = createCodingGraphEngine();
+  const code = "from .models import User\n";
+  const result = await engine.parseFile({ path: "src/app.py", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const modules = result.ir.imports.map((i) => i.module);
+  assert.ok(
+    modules.some((m) => m.includes("models")),
+    `Python: from .models import User should capture 'models' module, got: ${modules.join(", ")}`,
+  );
+  await engine.dispose();
+});
+
+test("1688-import: Python relative imports preserve prefix dots (..parent not parent)", async () => {
+  // tree-sitter-python wraps the module inside a relative_import node.
+  // Capturing only the inner dotted_name drops the prefix dots, collapsing
+  // different relative levels (..parent vs .parent) to the same module name.
+  // Now the relative_import node is captured directly, preserving the dots
+  // (chatgpt-codex-connector #1688 P2: "Preserve dots in Python relative imports").
+  const engine = createCodingGraphEngine();
+  const code = [
+    "from .models import User",
+    "from ..parent import X",
+    "from ...grandparent import Y",
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/app2.py", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const modules = result.ir.imports.map((i) => i.module);
+  assert.ok(modules.includes(".models"), "expected .models in " + JSON.stringify(modules));
+  assert.ok(modules.includes("..parent"), "expected ..parent in " + JSON.stringify(modules));
+  assert.ok(modules.includes("...grandparent"), "expected ...grandparent in " + JSON.stringify(modules));
+  await engine.dispose();
+});
+

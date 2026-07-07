@@ -34,7 +34,8 @@ export interface ParserBackend {
   /**
    * Parse `content` (a UTF-8 string) using the grammar for `lang`. Returns the
    * tree-sitter Tree on success, or `null` if the grammar is not loaded / the
-   * parser cannot produce a tree.
+   * parser cannot produce a tree. Node offsets are UTF-16 code-unit offsets;
+   * callers must convert to UTF-8 byte offsets for multibyte content (#1659).
    */
   parse(lang: CodingGraphLanguage, content: string): TSTree | null;
   /** Return the loaded Language for `lang`, or null if not loaded. */
@@ -151,7 +152,6 @@ export class WasmTreeSitterBackend implements ParserBackend {
     if (!this.parser) return null;
     const language = this.languages.get(lang);
     if (!language) return null;
-    // setLanguage is cheap (just sets a pointer); safe to call per-parse.
     this.parser.setLanguage(language);
     return this.parser.parse(content);
   }

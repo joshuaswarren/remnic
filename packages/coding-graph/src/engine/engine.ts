@@ -107,9 +107,11 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
       };
     }
 
-    // Convert raw bytes to UTF-8 string for parsing.
-    const content = Buffer.from(input.content).toString("utf-8");
-    const tree = this.backend.parse(lang, content);
+    // web-tree-sitter parses UTF-16 internally, so node offsets are UTF-16
+    // code-unit offsets. We convert to UTF-8 byte offsets after extraction
+    // (issue #1659 item 3 — multibyte span accuracy).
+    const contentStr = Buffer.from(input.content).toString("utf-8");
+    const tree = this.backend.parse(lang, contentStr);
     if (!tree) {
       return {
         ok: false,
@@ -137,6 +139,7 @@ class CodingGraphEngineImpl implements CodingGraphEngine {
         input.content,
         root,
         language,
+        contentStr,
       );
       return { ok: true, ir };
     } catch (err) {

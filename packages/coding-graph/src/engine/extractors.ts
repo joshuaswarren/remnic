@@ -82,6 +82,9 @@ const TS_EXPORTS = `
 (export_statement declaration: (enum_declaration name: (identifier) @export.name))
 (export_statement declaration: (interface_declaration name: (type_identifier) @export.name))
 (export_statement (export_clause (export_specifier name: (identifier) @export.name)))
+
+; export default App; (bare identifier re-export)
+(export_statement (identifier) @export.name)
 `.trim();
 
 // JavaScript exports — class names use identifier (no type_identifier in JS grammar).
@@ -93,16 +96,27 @@ const JS_EXPORTS = `
 (export_statement (lexical_declaration (variable_declarator name: (identifier) @export.name)))
 (export_statement (export_clause (export_specifier name: (identifier) @export.name)))
 
+; export default App; (bare identifier re-export)
+(export_statement (identifier) @export.name)
+
 ; CommonJS: module.exports = { App, createRouter }
 (assignment_expression
   left: (member_expression object: (identifier) @__cjs.mod property: (property_identifier) @__cjs.exp)
   right: (object (shorthand_property_identifier) @export.name)
   (#eq? @__cjs.mod "module") (#eq? @__cjs.exp "exports"))
-; CommonJS: module.exports = { foo: bar }
+; CommonJS: module.exports = { publicName: createRouter }
+; Capture the VALUE identifier (the actual symbol), not the key (public alias).
 (assignment_expression
   left: (member_expression object: (identifier) @__cjs.mod2 property: (property_identifier) @__cjs.exp2)
-  right: (object (pair key: (property_identifier) @export.name))
+  right: (object (pair key: (property_identifier) @__cjs.key2 value: (identifier) @export.name))
   (#eq? @__cjs.mod2 "module") (#eq? @__cjs.exp2 "exports"))
+; Fallback: { foo: <non-identifier-value> } — capture the key as the public name
+; when the value is not a named symbol (arrow fn, literal, etc).
+(assignment_expression
+  left: (member_expression object: (identifier) @__cjs.mod2b property: (property_identifier) @__cjs.exp2b)
+  right: (object (pair key: (property_identifier) @export.name value: (_) @__cjs.nonId))
+  (#eq? @__cjs.mod2b "module") (#eq? @__cjs.exp2b "exports")
+  (#not-match? @__cjs.nonId "^[A-Za-z_$][A-Za-z0-9_$]*$"))
 ; CommonJS: module.exports = App
 (assignment_expression
   left: (member_expression object: (identifier) @__cjs.mod3 property: (property_identifier) @__cjs.exp3)
@@ -120,26 +134,17 @@ const JS_CALLS = `
 `.trim();
 
 const JS_ROUTES = `
-; The HTTP app/router object can be a bare identifier (app.get) or a
-; member expression (this.router.get, app.router.get). Using (_) matches
-; both without restricting to one shape.
+; Unified route pattern: captures verb + path + the arguments node.
+; emit.ts extracts the handler from the LAST argument (identifier,
+; arrow_function, or function_expression), correctly handling middleware:
+;   app.get("/users", requireAuth, getUsers) → handler=getUsers
 (call_expression
   function: (member_expression
     object: (_) @__route.app
     property: (property_identifier) @route.verb)
-  arguments: (arguments . (string (string_fragment) @route.path) . (arrow_function) @route.handler)
-  (#match? @route.verb "^(get|post|put|patch|delete|head|options|all|use)$"))
-(call_expression
-  function: (member_expression
-    object: (_) @__route.app
-    property: (property_identifier) @route.verb)
-  arguments: (arguments . (string (string_fragment) @route.path) . (function_expression) @route.handler)
-  (#match? @route.verb "^(get|post|put|patch|delete|head|options|all|use)$"))
-(call_expression
-  function: (member_expression
-    object: (_) @__route.app
-    property: (property_identifier) @route.verb)
-  arguments: (arguments . (string (string_fragment) @route.path) . (identifier) @route.handler)
+  arguments: (arguments
+    . (string (string_fragment) @route.path)
+  ) @route.args
   (#match? @route.verb "^(get|post|put|patch|delete|head|options|all|use)$"))
 `.trim();
 
@@ -182,6 +187,13 @@ const PYTHON_EXTRACTOR: LanguageExtractor = {
   importsQuery: `
 (import_statement (dotted_name) @import.module) @__import.stmt
 (import_from_statement module_name: (dotted_name) @import.module) @__import.stmt
+; Python relative imports: from .models import User / from ..parent import X
+; tree-sitter-python wraps the module inside a relative_import node, so the
+; module_name field is NOT set. Capture the relative_import node itself so
+; the prefix dots are preserved (..parent, not just parent) — different
+; relative levels must not collapse to the same module name
+; (chatgpt-codex-connector #1688 P2: 'Preserve dots in Python relative imports').
+(import_from_statement (relative_import) @import.module) @__import.stmt
 `.trim(),
   exportsQuery: ``,
   callSitesQuery: `
@@ -304,6 +316,9 @@ const CPP_EXTRACTOR: LanguageExtractor = {
   definitionsQuery: `
 (function_definition declarator: (function_declarator declarator: (identifier) @name)) @def.function
 (function_definition declarator: (function_declarator declarator: (field_identifier) @name)) @def.method
+; C++ out-of-class method definitions: void A::start() {}
+; The qualified_identifier (A::start) encodes the full qualified name.
+(function_definition declarator: (function_declarator declarator: (qualified_identifier) @name)) @def.method
 (class_specifier name: (type_identifier) @name) @def.class
 (struct_specifier name: (type_identifier) @name) @def.class
 (enum_specifier name: (type_identifier) @name) @def.enum
