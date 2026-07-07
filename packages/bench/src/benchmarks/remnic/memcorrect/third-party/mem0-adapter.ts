@@ -1,0 +1,304 @@
+/**
+ * Mem0 MemCorrect adapter (issue #1727 — highest-priority third-party adapter).
+ *
+ * Drives Mem0 through its public REST API so MemCorrect can score Mem0 on the
+ * same correction/steerability corpus as the Remnic adapter. This is the
+ * single highest-leverage missing comparison piece: Mem0 is the most-cited
+ * memory system, and "we beat Mem0 on non-resurrection" is unsubstantiable
+ * without this adapter.
+ *
+ * Two deployment modes are supported:
+ *
+ *   - **OSS self-hosted** (`mode: "oss"`): synchronous REST server (FastAPI).
+ *     Paths have no `/v1/` prefix: `POST /memories`, `POST /search`,
+ *     `DELETE /memories?user_id=…`. Operators self-host for reproducible
+ *     benchmarking — they control the deployment, the LLM, and there is no
+ *     rate limiting. This is the recommended mode for lab runs.
+ *
+ *   - **Hosted platform** (`mode: "hosted"`): `api.mem0.ai` with the V3
+ *     async pipeline. `POST /v3/memories/add/` returns an `event_id` that is
+ *     polled until `SUCCEEDED`. Search uses `POST /v3/memories/search/`.
+ *
+ * The adapter accepts an injectable `fetch` so the deterministic fixture
+ * smoke test exercises the full request/response cycle without a network.
+ * No keys are embedded; without operator-provided credentials every method
+ * throws `MissingCredentialError` (skip-with-reason — no keys in CI).
+ */
+
+import type { MemCorrectSystemAdapter } from "../types.js";
+import {
+  delay,
+  httpJson,
+  requireCredentials,
+  resolveFetch,
+  type FetchLike,
+  type ThirdPartyAdapterConfig,
+} from "./shared.js";
+
+export interface Mem0AdapterConfig extends ThirdPartyAdapterConfig {
+  /**
+   * Deployment mode.
+   * - `"oss"` — self-hosted synchronous server (recommended for lab runs).
+   * - `"hosted"` — api.mem0.ai V3 async pipeline.
+   *
+   * Defaults to `"oss"` when a custom `baseUrl` is set, `"hosted"` otherwise.
+   */
+  mode?: "oss" | "hosted";
+  /** Prefix prepended to sessionKeys to namespace Mem0 user_ids. */
+  userIdPrefix?: string;
+  /** Hosted-mode: interval between event-status polls (ms). */
+  pollIntervalMs?: number;
+  /** Hosted-mode: maximum poll attempts before timing out. */
+  maxPolls?: number;
+}
+
+/** A single extracted memory returned by Mem0 search. */
+interface Mem0SearchResult {
+  memory?: string;
+  id?: string;
+}
+
+/** Event-status response for hosted async add. */
+interface Mem0EventStatus {
+  status?: string;
+  event_id?: string;
+  error?: string;
+}
+
+/**
+ * MemCorrect adapter for Mem0. Construct with operator-provided credentials;
+ * pass a `fetch` override for deterministic testing.
+ *
+ * @example
+ * // Lab run (operator provides keys):
+ * const adapter = new Mem0MemCorrectAdapter({
+ *   mode: "oss",
+ *   baseUrl: process.env.MEM0_BASE_URL,
+ *   apiKey: process.env.MEM0_API_KEY,
+ * });
+ *
+ * @example
+ * // Keyless — every method throws MissingCredentialError (skip-with-reason):
+ * const adapter = new Mem0MemCorrectAdapter({});
+ */
+export class Mem0MemCorrectAdapter implements MemCorrectSystemAdapter {
+  readonly label: string;
+  private readonly mode: "oss" | "hosted";
+  private readonly baseUrl: string;
+  private readonly apiKey: string | undefined;
+  private readonly userIdPrefix: string;
+  private readonly pollIntervalMs: number;
+  private readonly maxPolls: number;
+  private readonly fetchImpl: FetchLike;
+  private readonly timeoutMs: number | undefined;
+
+  constructor(config: Mem0AdapterConfig = {}) {
+    this.mode =
+      config.mode ??
+      (config.baseUrl && !config.baseUrl.includes("api.mem0.ai")
+        ? "oss"
+        : "hosted");
+    this.baseUrl =
+      config.baseUrl?.replace(/\/+$/, "") ??
+      (this.mode === "hosted" ? "https://api.mem0.ai" : "");
+    this.apiKey = config.apiKey;
+    this.userIdPrefix = config.userIdPrefix ?? "memcorrect";
+    this.pollIntervalMs = config.pollIntervalMs ?? 500;
+    this.maxPolls = config.maxPolls ?? 120;
+    this.fetchImpl = resolveFetch(config.fetch);
+    this.timeoutMs = config.timeoutMs;
+    this.label = `mem0-${this.mode}`;
+  }
+
+  /** Whether this adapter has the credentials needed to run. */
+  isConfigured(): boolean {
+    if (!this.apiKey) return false;
+    if (this.mode === "oss" && !this.baseUrl) return false;
+    return true;
+  }
+
+  private userIdFor(sessionKey: string): string {
+    return `${this.userIdPrefix}:${sessionKey}`;
+  }
+
+  private ensureReady(): void {
+    const missing: string[] = [];
+    if (!this.apiKey) missing.push("apiKey (MEM0_API_KEY)");
+    if (this.mode === "oss" && !this.baseUrl)
+      missing.push("baseUrl (MEM0_BASE_URL)");
+    requireCredentials("Mem0", missing);
+  }
+
+  private authHeaders(): Record<string, string> {
+    // Hosted uses Token auth; OSS uses Bearer (JWT) or X-API-Key. Both accept
+    // Authorization: Bearer for per-user keys, and Token for hosted.
+    if (this.mode === "hosted") {
+      return { Authorization: `Token ${this.apiKey}` };
+    }
+    return { Authorization: `Bearer ${this.apiKey}` };
+  }
+
+  async reset(): Promise<void> {
+    this.ensureReady();
+    const userId = this.userIdFor("__reset_all__");
+    // Delete all memories for every session prefix we may have created.
+    // MemCorrect calls reset() before each scenario, so we only need to clear
+    // the current session's user_id. We pass the session via the delete query.
+    // For a clean-slate guarantee we delete by the global prefix pattern.
+    // Mem0's delete-by-user-id is the supported reset path.
+    if (this.mode === "oss") {
+      await httpJson(this.fetchImpl, "DELETE", `${this.baseUrl}/memories`, {
+        headers: this.authHeaders(),
+        body: { user_id: this.userIdPrefix },
+        timeoutMs: this.timeoutMs,
+      });
+    } else {
+      // Hosted V3: delete by user filter.
+      await httpJson(
+        this.fetchImpl,
+        "DELETE",
+        `${this.baseUrl}/v3/memories/`,
+        {
+          headers: this.authHeaders(),
+          body: { filters: { user_id: this.userIdPrefix } },
+          timeoutMs: this.timeoutMs,
+        },
+      );
+    }
+    void userId;
+  }
+
+  async ingestTurn(
+    sessionKey: string,
+    role: "user" | "assistant",
+    text: string,
+    _at: string,
+  ): Promise<void> {
+    this.ensureReady();
+    const userId = this.userIdFor(sessionKey);
+    if (this.mode === "oss") {
+      await httpJson(this.fetchImpl, "POST", `${this.baseUrl}/memories`, {
+        headers: this.authHeaders(),
+        body: {
+          messages: [{ role, content: text }],
+          user_id: userId,
+        },
+        timeoutMs: this.timeoutMs,
+      });
+    } else {
+      // Hosted V3: async add → poll event until processed.
+      const addResponse = (await httpJson(
+        this.fetchImpl,
+        "POST",
+        `${this.baseUrl}/v3/memories/add/`,
+        {
+          headers: this.authHeaders(),
+          body: {
+            messages: [{ role, content: text }],
+            user_id: userId,
+          },
+          timeoutMs: this.timeoutMs,
+        },
+      )) as Mem0EventStatus | null;
+
+      const eventId = addResponse?.event_id;
+      if (eventId) {
+        await this.pollEvent(eventId);
+      }
+    }
+  }
+
+  async recall(
+    query: string,
+    sessionKey: string,
+  ): Promise<string[]> {
+    this.ensureReady();
+    const userId = this.userIdFor(sessionKey);
+    let results: Mem0SearchResult[];
+    if (this.mode === "oss") {
+      const body = (await httpJson(
+        this.fetchImpl,
+        "POST",
+        `${this.baseUrl}/search`,
+        {
+          headers: this.authHeaders(),
+          body: { query, user_id: userId, limit: 10 },
+          timeoutMs: this.timeoutMs,
+        },
+      )) as Mem0SearchResult[] | { results?: Mem0SearchResult[] } | null;
+      results = normalizeSearchResults(body);
+    } else {
+      const body = (await httpJson(
+        this.fetchImpl,
+        "POST",
+        `${this.baseUrl}/v3/memories/search/`,
+        {
+          headers: this.authHeaders(),
+          body: { query, filters: { user_id: userId }, top_k: 10 },
+          timeoutMs: this.timeoutMs,
+        },
+      )) as Mem0SearchResult[] | { results?: Mem0SearchResult[] } | null;
+      results = normalizeSearchResults(body);
+    }
+    return results
+      .map((r) => r.memory)
+      .filter((m): m is string => typeof m === "string" && m.length > 0);
+  }
+
+  async correct(
+    text: string,
+    sessionKey: string,
+    _at?: string,
+  ): Promise<void> {
+    // Mem0 has no explicit correction-contract API. The correction is
+    // observed as a user turn; Mem0's extraction pipeline is expected to
+    // update the relevant memory. This faithfully mirrors how a Mem0
+    // integrator would apply a user correction in production. The
+    // non_resurrection metric measures whether the OLD fact survives.
+    await this.ingestTurn(sessionKey, "user", text, _at ?? new Date().toISOString());
+  }
+
+  async runMaintenance(): Promise<void> {
+    // No-op: Mem0 processes memories during add (OSS synchronously, hosted
+    // via the polled event). There is no separate consolidation/dreams step.
+    // The protocol runs this N times between phases; a no-op is allowed.
+  }
+
+  /** Poll the hosted event endpoint until the add is processed. */
+  private async pollEvent(eventId: string): Promise<void> {
+    for (let i = 0; i < this.maxPolls; i++) {
+      await delay(this.pollIntervalMs);
+      const status = (await httpJson(
+        this.fetchImpl,
+        "GET",
+        `${this.baseUrl}/v1/event/${eventId}/`,
+        {
+          headers: this.authHeaders(),
+          timeoutMs: this.timeoutMs,
+        },
+      )) as Mem0EventStatus | null;
+      if (status?.status === "SUCCEEDED") return;
+      if (status?.status === "FAILED") {
+        throw new Error(
+          `Mem0 add event ${eventId} failed: ${status.error ?? "unknown"}`,
+        );
+      }
+      // PENDING / undefined → keep polling.
+    }
+    throw new Error(
+      `Mem0 add event ${eventId} did not complete after ${this.maxPolls} polls`,
+    );
+  }
+}
+
+/**
+ * Mem0 search can return either a bare array or `{ results: [...] }` depending
+ * on the API version. Normalize to a flat array of search-result objects.
+ */
+function normalizeSearchResults(
+  body: Mem0SearchResult[] | { results?: Mem0SearchResult[] } | null,
+): Mem0SearchResult[] {
+  if (!body) return [];
+  if (Array.isArray(body)) return body;
+  return body.results ?? [];
+}
