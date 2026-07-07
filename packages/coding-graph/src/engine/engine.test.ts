@@ -1295,6 +1295,32 @@ test("1688-route-2: HTTP client calls with options object do NOT produce spuriou
   assert.equal(clientRoutes.length, 0, "httpClient.get/delete/put must NOT produce spurious routes");
   await engine.dispose();
 });
+test("1688-route-3: full-URL client calls do NOT produce routes (path-prefix guard)", async () => {
+  // Route paths always start with "/" or "*". HTTP client calls with full
+  // URLs (httpClient.get("https://api.example.com", opts, cb)) are filtered
+  // by the path-prefix guard (chatgpt-codex-connector #1688 P2).
+  const engine = createCodingGraphEngine();
+  const code = [
+    'const http = require("http");',
+    'http.get("https://api.example.com/data", (res) => {});',
+    'http.request("http://localhost:3000/api", { method: "POST" }, (res) => {});',
+    "",
+    "function listUsers(req, res) { res.json([]); }",
+    'app.get("/users", listUsers);',
+  ].join("\n");
+  const result = await engine.parseFile({ path: "src/client2.js", content: Buffer.from(code, "utf-8") });
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  const routes = result.ir.routes ?? [];
+  // Real route must still be captured.
+  const usersRoute = routes.find((r) => r.pathTemplate === "/users");
+  assert.ok(usersRoute, "should still capture the real /users route");
+  // Full-URL client calls must NOT produce routes.
+  const urlRoutes = routes.filter((r) => r.pathTemplate.startsWith("http"));
+  assert.equal(urlRoutes.length, 0, "full-URL http.get/request calls must NOT produce routes");
+  await engine.dispose();
+});
+
 
 
 

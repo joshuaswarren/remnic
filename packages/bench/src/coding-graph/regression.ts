@@ -162,15 +162,28 @@ export function checkCodingGraphRegression(
   // JSON). extractMetrics dereferences these fields; without this guard
   // it throws an uncaught TypeError instead of a structured gate failure
   // (cursor #1688 review: 'v2 report crashes regression gate').
-  if (report.incrementalModifiedUpdate == null || report.incrementalUpdate == null) {
+  // Field-presence guard: a corrupt/partial v2 report may carry
+  // schemaVersion 2 yet lack a required metric field OR a nested sub-field
+  // (a hand-edited or truncated JSON). extractMetrics dereferences both the
+  // top-level field and its nested p50/p95; without this guard a missing
+  // nested field produces undefined in the metric map, and the comparison
+  // loop silently skips it (passed: true) — letting corrupt artifacts pass
+  // (chatgpt-codex-connector #1688 P2: 'Validate nested metric fields').
+  const missingFields: string[] = [];
+  if (report.incrementalUpdate == null) missingFields.push("incrementalUpdate");
+  if (report.incrementalModifiedUpdate == null) missingFields.push("incrementalModifiedUpdate");
+  if (report.incrementalUpdate?.p95 == null) missingFields.push("incrementalUpdate.p95");
+  if (report.incrementalModifiedUpdate?.p95 == null) missingFields.push("incrementalModifiedUpdate.p95");
+  if (report.tracePath?.p95 == null) missingFields.push("tracePath.p95");
+  if (report.searchGraph?.p95 == null) missingFields.push("searchGraph.p95");
+  if (missingFields.length > 0) {
     return {
       passed: false,
       regressions: [],
       summary:
         "Report claims schemaVersion " + report.schemaVersion +
-        " but is missing a required metric field (incrementalUpdate or " +
-        "incrementalModifiedUpdate) — the report is incomplete or corrupt. " +
-        "Regenerate it (#1688).",
+        " but is missing required metric field(s): " + missingFields.join(", ") +
+        " — the report is incomplete or corrupt. Regenerate it (#1688).",
     };
   }
 

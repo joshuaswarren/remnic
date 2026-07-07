@@ -852,4 +852,23 @@ test("guard ordering: corrupt v2 report on a DIFFERENT machine fails before the 
   assert.equal(result.skipped, undefined, "must NOT reach the machine skip — corrupt-report guard runs first");
   assert.ok(result.summary.includes("missing"), "summary must explain the missing field, not the machine mismatch");
 });
+test("guard ordering: corrupt v2 report with truncated nested metric field fails", () => {
+  // schemaVersion matches (both 2) and the top-level field exists, but a
+  // nested sub-field is missing (e.g. incrementalModifiedUpdate: { p50: 1 }
+  // with no p95). Before the deepened guard, extractMetrics produced
+  // undefined for the missing p95 and the comparison loop silently skipped
+  // it — letting corrupt artifacts pass as passed:true.
+  // (chatgpt-codex-connector #1688 P2: 'Validate nested metric fields'.)
+  const report = reportWithMachine(SAME_MACHINE);
+  const baseline = baselineWithMachine(SAME_MACHINE);
+  const truncatedReport: CodingGraphBenchReport = {
+    ...report,
+    incrementalModifiedUpdate: { p50: 1, p95: undefined as unknown as number, iterations: 20, samplesMs: [] },
+  };
+  const result = checkCodingGraphRegression(truncatedReport, baseline, 30);
+  assert.equal(result.passed, false, "truncated nested field must fail the gate");
+  assert.equal(result.skipped, undefined);
+  assert.ok(result.summary.includes("incrementalModifiedUpdate.p95"), "summary must name the missing nested field");
+});
+
 

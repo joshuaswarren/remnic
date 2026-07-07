@@ -369,7 +369,15 @@ function extractRoutes(root: TSNode, language: Language, lang: CodingGraphLangua
       if (argsNode) {
         handler = extractHandlerFromArgs(argsNode);
       }
-      if (verb && pathTemplate && handler) {
+      // Path-prefix guard: real route paths always start with "/" or "*"
+      // (Express/Fastify/etc.). This filters non-route call expressions
+      // whose "path" is a full URL (httpClient.get("https://...", opts, cb)).
+      // Relative-path client calls (httpClient.get("/api", opts, cb)) are a
+      // semantic ambiguity that needs type inference to fully resolve —
+      // documented here as a known limitation (chatgpt-codex-connector #1688
+      // P2: 'Reject client callbacks as route handlers').
+      const isRoutePath = pathTemplate.startsWith("/") || pathTemplate.startsWith("*");
+      if (verb && pathTemplate && handler && isRoutePath) {
         routes.push({
           verb,
           pathTemplate,
