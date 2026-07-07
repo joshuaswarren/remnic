@@ -209,11 +209,11 @@ export async function appendTranscriptEntry(
   };
   // Atomic resurrection guard (codex P2): open with O_APPEND but WITHOUT
   // O_CREAT so a session already unlinked by a concurrent TTL sweep fails at
-  // open-time (ENOENT) — there is no stat->appendFile TOCTOU. If the sweep
-  // unlinks after open, writes land on the orphaned inode (the directory
-  // entry is already gone) so the session stays deleted rather than being
-  // recreated headerless. A headerless recreation would load with no
-  // principal binding and be treated as public by sessionBelongsToPrincipal.
+  // open-time (ENOENT) — there is no stat->appendFile TOCTOU. A headerless
+  // recreation would load with no principal binding and be treated as public
+  // by sessionBelongsToPrincipal. A concurrent unlink during the append is
+  // caught by the post-append re-stat below so the turn fails visibly rather
+  // than writing to an orphaned inode and returning 200.
   let fh;
   try {
     fh = await open(filePath, fsConstants.O_APPEND | fsConstants.O_WRONLY);
@@ -224,6 +224,17 @@ export async function appendTranscriptEntry(
     await fh.appendFile(JSON.stringify(full) + "\n", "utf8");
   } finally {
     await fh.close();
+  }
+  // Post-append re-check (codex P2): if a concurrent TTL sweep unlinked the
+  // session between open() and here, the append landed on the orphaned inode
+  // and the directory no longer references it. Re-stat the PATH (not the fd)
+  // so the turn fails with chat_session_expired instead of returning 200 with
+  // a reply the client cannot resume. A later sweep unlinking an over-TTL
+  // session is a legitimate TTL action, not a silent loss.
+  try {
+    await stat(filePath);
+  } catch {
+    throw new Error("chat_session_expired");
   }
   notifyTranscriptListeners(memoryDir, chatSessionId, full);
   return full;
