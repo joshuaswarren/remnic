@@ -67,20 +67,38 @@ test(
   { skip: skipReason },
   () => {
     const r = runEvalProbe(`
+# Stub the GPU gate so the test is independent of whether torch/transformers
+# are installed on this host (codex P2 PRRT_kwDORJXyws6O7vG1). The offline
+# --predictions path must NOT call require_eval_deps at all; the stub records
+# any call and raises SystemExit(99) so a regression is observable even on a
+# GPU box where the real gate returns normally.
+gate_calls = []
+_orig_gate = m.require_eval_deps
+def _stub_gate():
+    gate_calls.append(1)
+    raise SystemExit(99)
+m.require_eval_deps = _stub_gate
 with contextlib.redirect_stdout(open(os.devnull, "w")):
     try:
         rc = m.main(["--held-out", str(gold), "--predictions", str(preds)])
         result["offline_rc"] = rc
     except SystemExit as e:
         result["offline_systemexit"] = e.code
+    finally:
+        m.require_eval_deps = _orig_gate
+result["gate_called"] = len(gate_calls)
 `);
+    assert.equal(
+      r.gate_called,
+      0,
+      "offline scoring (--predictions) must NOT call require_eval_deps (no GPU-stack dependency)",
+    );
     assert.equal(
       r.offline_systemexit,
       undefined,
-      "offline scoring must NOT call require_eval_deps (no SystemExit); " +
-        "got SystemExit — the GPU gate leaked onto the offline path",
+      "offline scoring must not raise SystemExit (the GPU gate must not run)",
     );
-    assert.equal(r.offline_rc, 0, "offline scoring must return 0 (success) on a CPU-only host");
+    assert.equal(r.offline_rc, 0, "offline scoring must return 0 (success)");
   },
 );
 

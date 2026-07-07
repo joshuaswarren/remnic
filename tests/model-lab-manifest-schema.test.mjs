@@ -323,6 +323,29 @@ test(
 );
 
 test(
+  "manifest schema: strict mode REJECTS a task-required lib pinned to a BLANK string (codex P2 PRRT_kwDORJXyws6O7vGo)",
+  { skip: skipReason },
+  () => {
+    // A blank/whitespace version pin is as useless as a null one for
+    // reproducibility, but check_libs used to reject only pending/non-string
+    // values, letting "" / "  " slip through.
+    const m = makeValidTrainedManifest();
+    m.trainingStack.libs.accelerate = "   ";
+    const tmp = path.join(os.tmpdir(), `remnic-ci-blank-lib-${process.pid}.json`);
+    fs.writeFileSync(tmp, JSON.stringify(m));
+    try {
+      const { errors } = validateManifest(tmp, false);
+      assert.ok(
+        errors.some((e) => e.includes("trainingStack.libs.accelerate")),
+        `strict mode must reject a blank lib pin, got: ${JSON.stringify(errors)}`,
+      );
+    } finally {
+      fs.unlinkSync(tmp);
+    }
+  },
+);
+
+test(
   "manifest schema: strict mode REJECTS a correction-intent manifest that OMITS a task-required lib (#1700 nit #2)",
   { skip: skipReason },
   () => {

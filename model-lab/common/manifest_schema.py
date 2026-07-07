@@ -260,7 +260,10 @@ def _validate_training_stack(
         check_libs = dict.fromkeys(("torch", "transformers", *task_libs, *libs.keys()))
         for lib in check_libs:
             ver = libs.get(lib)
-            if _is_pending(ver) or not isinstance(ver, str):
+            # A blank/whitespace version is as useless as a pending/null one for
+            # reproducibility, so reject it too (codex P2 PRRT_kwDORJXyws6O7vGo:
+            # previously only pending/non-string values were rejected).
+            if _is_pending(ver) or not isinstance(ver, str) or not ver.strip():
                 errors.append(f"trainingStack.libs.{lib} must pin an exact version for a real run")
     return errors
 
