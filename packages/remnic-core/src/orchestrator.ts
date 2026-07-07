@@ -3474,6 +3474,31 @@ export class Orchestrator {
         // never break initialization (rule #13, #40).
         await this.namespaceCatalog.registerConfiguredNamespaces().catch(() => undefined);
       }
+      // #1713 Item 2: recover stale `applying` correction plans left behind
+      // by a process that died mid-apply. Best-effort — a failure here must
+      // never block initialization (rule 13). Runs for every configured
+      // namespace since correction plans can exist in any of them.
+      try {
+        // #1713 Item 2 + P2 (cursor): sweep ALL known namespaces — configured
+        // + catalog-discovered — so stale applying plans in derived namespaces
+        // (coding-scoped, session-derived) are also recovered.
+        const correctionNamespaces = new Set(this.configuredNamespaceList());
+        if (this.namespaceCatalog.enabled) {
+          try {
+            for (const rec of await this.namespaceCatalog.listNamespaces()) {
+              correctionNamespaces.add(rec.namespace);
+            }
+          } catch { /* best-effort */ }
+        }
+        const recovered = await this.passiveCorrectionService().recoverStaleApplyingPlans(
+          [...correctionNamespaces],
+        );
+        if (recovered > 0) {
+          log.info(`correction: recovered ${recovered} stale applying plan(s) on startup`);
+        }
+      } catch (staleErr) {
+        log.debug(`correction: stale-plan recovery skipped: ${staleErr instanceof Error ? staleErr.message : String(staleErr)}`);
+      }
       await this.relevance.load();
       await this.negatives.load();
       await this.lastRecall.load();
@@ -14179,6 +14204,10 @@ export class Orchestrator {
           sharedProfileLayer.writable &&
           sharedPromotionTarget?.authorized,
       );
+    // #1713: hoist namespaces-enabled once for the scope-routing mirrors
+    // (pre-judge + write-loop) so no new scattered config.*Enabled read is
+    // introduced (ratchet scatteredConfigFlagReads; see #1523).
+    const namespacesEnabled = this.config.namespacesEnabled;
     const profileAutoPromotionAllows = (
       category: string,
       confidence: number,
@@ -14949,6 +14978,10 @@ export class Orchestrator {
     // these pre-computed results so routing is evaluated exactly once per
     // fact (no duplicated logic).
     const preRoutedCategories: Array<string | undefined> = new Array(facts.length);
+    // #1713 Item 1: collect routed target namespaces so the pre-judge redaction
+    // filter can consult rules from cross-namespace targets, not just the source.
+    // #1713 P2 (cursor): track per-fact routed namespace for per-fact pre-judge rules
+    const preRoutedNamespaceByFact: Array<string | undefined> = new Array(facts.length);
     if (routeRules.length > 0) {
       for (let fi = 0; fi < facts.length; fi++) {
         const f = facts[fi];
@@ -14967,6 +15000,9 @@ export class Orchestrator {
           const selected = selectRouteRule(routeText, routeRules, routeOptions);
           if (selected?.target.category) {
             preRoutedCategories[fi] = selected.target.category;
+          }
+          if (selected?.target.namespace) {
+            preRoutedNamespaceByFact[fi] = selected.target.namespace;
           }
         } catch {
           // Fail-open: routing errors fall through to the extracted category.
@@ -14990,10 +15026,18 @@ export class Orchestrator {
     // into the caller's buffer-retention decision.
     this.lastPersistExtractionDeferredCount = 0;
     if (lifecycleCaps.extractionJudge) {
-      // #1669 P1: pre-filter redacted facts from judge candidates so never-store
-      // content is not persisted as judge training data.
+      // #1669 P1 + #1713 Item 1: pre-filter redacted facts from judge candidates
+      // so never-store content is not persisted as judge training data.
+      // Consult source + shared + routed target namespace rules so a
+      // never-store pattern registered under a cross-namespace target is
+      // caught at the batch pre-filter point, not just at the persist gate.
       let preJudgeRedactionRules: CompiledRedactionRule[] = [];
-      try { preJudgeRedactionRules = await redactionRulesFor(storage.dir); } catch { /* fail open */ }
+      try {
+        // #1713: base rules are source-only. Per-fact routed target rules
+        // (including shared when a fact is routed there) are checked in the
+        // fact loop, matching the write-time gate's per-fact scoping exactly.
+        preJudgeRedactionRules = await redactionRulesFor(storage.dir);
+      } catch { /* fail open */ }
       try {
         const judgeCandidates: JudgeCandidate[] = [];
         const candidateToFactIndex: number[] = [];
@@ -15034,10 +15078,42 @@ export class Orchestrator {
           ) {
             continue;
           }
-          if (preJudgeRedactionRules.length > 0) {
+          // #1713 P2 (cursor): per-fact rules — load this fact's routed target
+          // namespace rules FIRST, then check. This catches target-only rules
+          // even when the base (source+shared) rules are empty (threads acc58c42
+          // + PBJEe/PBKAj).
+          let factRedactionRules = preJudgeRedactionRules;
+          let factNs = preRoutedNamespaceByFact[fi];
+          // #1713 (codex PRRT_kwDORJXyws6PBj5X): scope classification can route
+          // a scope=global fact to the shared namespace independent of routing
+          // rules. If so, the pre-judge filter must consult the shared
+          // namespace's rules too, or a never-store pattern under shared is
+          // missed at pre-judge and only caught at the write gate — letting the
+          // content reach the extraction judge/training path. Mirror the write
+          // loop's scope-routing conditions exactly.
+          if (
+            !factNs &&
+            lifecycleCaps.extractionScopeClassification &&
+            namespacesEnabled &&
+            f.scope === "global" &&
+            profileAllowsSharedWrites &&
+            this.storageDirNamespace(storage.dir) !== this.config.sharedNamespace
+          ) {
+            factNs = this.config.sharedNamespace;
+          }
+          if (factNs) {
+            try {
+              const factDir = (await this.storageRouter.storageFor(factNs)).dir;
+              if (factDir !== storage.dir) {
+                const targetRules = await redactionRulesFor(factDir);
+                if (targetRules.length) factRedactionRules = [...preJudgeRedactionRules, ...targetRules];
+              }
+            } catch { /* fail open */ }
+          }
+          if (factRedactionRules.length > 0) {
             const rc = f.content + (f.structuredAttributes ? " " + JSON.stringify(f.structuredAttributes) : "")
               + (f.procedureSteps ? " " + f.procedureSteps.map((s) => `${s.intent} ${s.expectedOutcome ?? ""} ${s.toolCall ? `${s.toolCall.kind} ${s.toolCall.signature}` : ""}`.trim()).join(" ") : "");
-            if (contentMatchesRedactionRules(rc, preJudgeRedactionRules)) continue;
+            if (contentMatchesRedactionRules(rc, factRedactionRules)) continue;
           }
           judgeCandidates.push({
             text: f.content,
@@ -15267,7 +15343,7 @@ export class Orchestrator {
       // extractionScopeClassificationEnabled.
       if (
         lifecycleCaps.extractionScopeClassification &&
-        this.config.namespacesEnabled &&
+        namespacesEnabled &&
         fact.scope === "global" &&
         !routedNamespaceExplicit
       ) {

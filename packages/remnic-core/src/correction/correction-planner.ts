@@ -478,6 +478,15 @@ export class CorrectionPlanner {
       const plan = parsePlan(raw);
       if (!plan) return;
       plan.status = status;
+      // #1713 Item 2: stamp applyingAt when entering the applying state so
+      // startup recovery can detect plans stuck mid-apply (process death).
+      // Cleared on terminal transitions; harmless residue on non-applying
+      // plans is ignored by the recovery scan.
+      if (status === "applying") {
+        plan.applyingAt = this.deps.now().toISOString();
+      } else {
+        delete plan.applyingAt;
+      }
       // #1669 thread P1: scrub redaction_rule patterns from consumed plans so
       // a never-store pattern does not persist on disk after apply/discard.
       // The executor reloads via loadPlan only between "applying" (step 1) and
@@ -507,6 +516,70 @@ export class CorrectionPlanner {
         throw err;
       }
     });
+  }
+
+  /**
+   * Stale-applying TTL: a plan in `applying` state longer than this is
+   * assumed to be from a crashed process and is recovered on startup
+   * (#1713 Item 2). 10 minutes is generous for an apply that normally
+   * completes in seconds, yet short enough to avoid leaving stale state.
+   */
+  static readonly STALE_APPLYING_TTL_MS = 10 * 60 * 1000;
+
+  /**
+   * Recover stale `applying` plans past the stale-applying TTL (#1713 Item 2).
+   *
+   * A plan stuck in `applying` means the process died mid-apply. Re-applying
+   * wholesale would duplicate succeeded actions (replacements, tombstones,
+   * audits), so recovery discards + scrubs the plan instead. The operator
+   * inspects the outcome and files a NEW plan for any actions that did not
+   * complete. Plans without `applyingAt` (predating this fix) are recovered
+   * when they are past their `expiresAt` timestamp.
+   *
+   * @returns the ids of recovered (discarded) plans.
+   */
+  async recoverStaleApplyingPlans(
+    namespace: string,
+    opts?: { ttlMs?: number; now?: Date },
+  ): Promise<string[]> {
+    const ttl = opts?.ttlMs ?? CorrectionPlanner.STALE_APPLYING_TTL_MS;
+    const now = (opts?.now ?? this.deps.now()).getTime();
+    const dir = await this.pendingDir(namespace);
+    let files: string[];
+    try {
+      files = await readdir(dir);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code === "ENOENT") return [];
+      throw err;
+    }
+    const recovered: string[] = [];
+    for (const f of files) {
+      if (!f.endsWith(".json")) continue;
+      const planId = f.replace(/\.json$/, "");
+      let plan: CorrectionPlan | null;
+      try {
+        plan = await this.loadPlan(namespace, planId);
+      } catch {
+        continue; // malformed — skip (rule 34).
+      }
+      if (!plan || plan.status !== "applying") continue;
+      // Post-fix plans (with applyingAt): stale if the applying timestamp is
+      // past the TTL (process died mid-apply). Pre-fix plans (no applyingAt):
+      // stale as soon as they have expired — no additional TTL wait, since the
+      // plan is already past its intended lifetime (review thread ff034716).
+      const stale = plan.applyingAt
+        ? now - new Date(plan.applyingAt).getTime() >= ttl
+        : now >= new Date(plan.expiresAt).getTime();
+      if (!stale) continue;
+      try {
+        await this.markConsumed(namespace, planId, "discarded");
+        recovered.push(planId);
+      } catch {
+        // Best-effort: a single failed discard must not abort the scan.
+      }
+    }
+    return recovered;
   }
 }
 

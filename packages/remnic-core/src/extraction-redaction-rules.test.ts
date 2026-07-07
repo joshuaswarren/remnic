@@ -16,6 +16,7 @@ import {
   compileRedactionPattern,
   contentMatchesRedactionRules,
   loadRedactionRules,
+  type CompiledRedactionRule,
 } from "./extraction-redaction-rules.js";
 import { validateRedactionPattern } from "./correction/correction-contract.js";
 
@@ -210,4 +211,175 @@ test("#1669 P2: compileRedactionPattern empty body never matches", () => {
   const rule = compileRedactionPattern("//");
   assert.equal(rule.matcher("anything"), false);
   assert.equal(rule.matcher(""), false);
+});
+
+// ---------------------------------------------------------------------------
+// #1713 Item 1: pre-judge redaction filter consults target namespace rules.
+// The orchestrator's pre-judge filter builds a combined rule set from source +
+// shared + routed target namespace dirs. This test verifies that loadRedactionRules
+// correctly returns rules from each dir and that contentMatchesRedactionRules
+// catches patterns from ANY of the combined dirs (not just the source).
+// ---------------------------------------------------------------------------
+
+test("#1713 Item 1: combined rules from source + target dirs catch cross-namespace patterns", async () => {
+  await withTempDir(async (sourceDir) => {
+    await withTempDir(async (targetDir) => {
+      // Source namespace has a rule for "source-secret"
+      await writeRule(sourceDir, "source-secret");
+      // Target namespace has a rule for "target-secret"
+      await writeRule(targetDir, "target-confidential");
+
+      // Simulate what the orchestrator's redactionRulesFor(...dirs) does:
+      // load from each dir and combine.
+      const sourceRules = await loadRedactionRules(sourceDir);
+      const targetRules = await loadRedactionRules(targetDir);
+      const combined = [...sourceRules, ...targetRules];
+
+      assert.equal(combined.length, 2);
+      // Source-namespace rule catches source content
+      assert.ok(
+        contentMatchesRedactionRules("leaked source-secret here", combined),
+        "source-namespace rule must catch matching content",
+      );
+      // Target-namespace rule catches target content (the #1713 fix)
+      assert.ok(
+        contentMatchesRedactionRules("leaked target-confidential here", combined),
+        "target-namespace rule must catch matching content when dirs are combined",
+      );
+      // Clean content passes
+      assert.ok(
+        !contentMatchesRedactionRules("clean content", combined),
+        "non-matching content must not be redacted",
+      );
+    });
+  });
+});
+
+test("#1713 Item 1: source-only rules miss target-namespace patterns (the bug this fixes)", async () => {
+  await withTempDir(async (sourceDir) => {
+    await withTempDir(async (targetDir) => {
+      // Only the TARGET namespace has the redaction rule
+      await writeRule(targetDir, "cross-ns-secret");
+
+      // The OLD behavior (pre-fix): only source rules loaded at pre-judge point
+      const sourceOnlyRules = await loadRedactionRules(sourceDir);
+      assert.equal(sourceOnlyRules.length, 0);
+      assert.ok(
+        !contentMatchesRedactionRules("cross-ns-secret in content", sourceOnlyRules),
+        "source-only rules miss the target-namespace pattern (the pre-fix gap)",
+      );
+
+      // The NEW behavior: source + target rules combined
+      const combined = [
+        ...(await loadRedactionRules(sourceDir)),
+        ...(await loadRedactionRules(targetDir)),
+      ];
+      assert.equal(combined.length, 1);
+      assert.ok(
+        contentMatchesRedactionRules("cross-ns-secret in content", combined),
+        "combined rules catch the target-namespace pattern (the fix)",
+      );
+    });
+  });
+});
+
+test("#1713 (codex PRRT_kwDORJXyws6PBj5X): scope-classification routed shared target rules consulted at pre-judge", async () => {
+  // Scope classification routes a scope=global fact to the shared namespace
+  // independent of routing rules. The pre-judge redaction filter must consult
+  // the SHARED namespace's rules for such a fact, or a never-store pattern
+  // registered only under shared is missed until the write gate and the content
+  // reaches the extraction judge/training path. This test mirrors the
+  // orchestrator's per-fact scope-routing decision + rule combining.
+  await withTempDir(async (sourceDir) => {
+    await withTempDir(async (sharedDir) => {
+      // Only the SHARED namespace carries the never-store rule.
+      await writeRule(sharedDir, "shared-only-secret");
+
+      // A scope=global fact the orchestrator will route to shared.
+      const fact = { scope: "global" as string, content: "leaked shared-only-secret here" };
+      const sharedNamespace: string = "shared";
+      const sourceNamespace: string = "default"; // source !== shared
+
+      // Mirror of the orchestrator's scope-routing condition (persistExtraction
+      // pre-judge per-fact block): a fact is scope-routed to shared when no
+      // routing rule set an explicit namespace, scope classification is on, the
+      // fact is global, shared writes are allowed, and the source is not already
+      // shared.
+      const preRoutedNamespaceByFact: string | undefined = undefined;
+      const scopeClassificationEnabled = true;
+      const namespacesEnabled = true;
+      const profileAllowsSharedWrites = true;
+      let factNs: string | undefined = preRoutedNamespaceByFact;
+      if (
+        !factNs &&
+        scopeClassificationEnabled &&
+        namespacesEnabled &&
+        fact.scope === "global" &&
+        profileAllowsSharedWrites &&
+        sourceNamespace !== sharedNamespace
+      ) {
+        factNs = sharedNamespace;
+      }
+      assert.equal(factNs, sharedNamespace, "global fact must be scope-routed to shared");
+
+      // Base (source-only) rules + routed target (shared) rules combined — what
+      // the orchestrator builds for this fact.
+      const baseRules: CompiledRedactionRule[] = await loadRedactionRules(sourceDir);
+      const targetRules: CompiledRedactionRule[] =
+        factNs === sharedNamespace ? await loadRedactionRules(sharedDir) : [];
+      const factRedactionRules: CompiledRedactionRule[] = [...baseRules, ...targetRules];
+
+      assert.equal(baseRules.length, 0, "source namespace has no rules");
+      assert.equal(targetRules.length, 1, "shared namespace carries the never-store rule");
+
+      // Pre-fix (source-only) behavior: the shared-only pattern is missed at
+      // pre-judge — the gap the codex thread flags.
+      assert.ok(
+        !contentMatchesRedactionRules(fact.content, baseRules),
+        "source-only rules miss the shared-namespace never-store pattern (the gap)",
+      );
+      // Post-fix: combined source+shared rules catch it before the judge.
+      assert.ok(
+        contentMatchesRedactionRules(fact.content, factRedactionRules),
+        "combined source+shared rules catch the shared never-store at pre-judge (the fix)",
+      );
+    });
+  });
+});
+
+test("#1713 (codex): non-global fact is NOT scope-routed to shared", async () => {
+  // A scope-local fact must not consult shared rules at pre-judge — only
+  // routing-rule targets and scope=global facts do. Guards against over-redacting
+  // unrelated facts with shared-only never-store patterns (codex sibling threads).
+  await withTempDir(async (sourceDir) => {
+    await withTempDir(async (sharedDir) => {
+      await writeRule(sharedDir, "shared-only-secret");
+
+      const fact = { scope: "local" as string, content: "leaked shared-only-secret here" };
+      const sharedNamespace: string = "shared";
+      const sourceNamespace: string = "default";
+
+      const preRoutedNamespaceByFact: string | undefined = undefined;
+      const scopeClassificationEnabled = true;
+      const namespacesEnabled = true;
+      const profileAllowsSharedWrites = true;
+      let factNs: string | undefined = preRoutedNamespaceByFact;
+      if (
+        !factNs &&
+        scopeClassificationEnabled &&
+        namespacesEnabled &&
+        fact.scope === "global" &&
+        profileAllowsSharedWrites &&
+        sourceNamespace !== sharedNamespace
+      ) {
+        factNs = sharedNamespace;
+      }
+      assert.equal(factNs, undefined, "non-global fact must not be scope-routed to shared");
+
+      const baseRules: CompiledRedactionRule[] = await loadRedactionRules(sourceDir);
+      const targetRules: CompiledRedactionRule[] = [];
+      const factRedactionRules: CompiledRedactionRule[] = [...baseRules, ...targetRules];
+      assert.equal(factRedactionRules.length, 0, "no rules consulted for a scope-local fact");
+    });
+  });
 });

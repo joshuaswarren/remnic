@@ -170,6 +170,35 @@ export class CorrectionService {
     await this.planner.deletePlan(namespace, planId);
   }
 
+  /**
+   * Recover stale `applying` plans across the given namespaces (#1713 Item 2).
+   *
+   * Startup maintenance: scans each namespace for plans stuck in `applying`
+   * past the stale-applying TTL (process died mid-apply) and discards+scrubs
+   * them. Unlike plan/apply/listPending, this is NOT a per-caller request —
+   * it operates on all supplied namespaces directly because it is an
+   * internal maintenance operation invoked by the orchestrator at init.
+   *
+   * @returns the total count of recovered plans across all namespaces.
+   */
+  async recoverStaleApplyingPlans(namespaces: readonly string[]): Promise<number> {
+    // Intentionally NOT gated on isEnabled(): stale-applying recovery is a
+    // maintenance/cleanup operation, not a user-facing correction. Plans left
+    // in 'applying' after a mid-apply crash hold unscrubbed redaction_rule
+    // patterns on disk; they must be discarded+scrubbed even if the correction
+    // feature is currently disabled (review thread 9e1f07f0).
+    let recovered = 0;
+    for (const namespace of namespaces) {
+      try {
+        const ids = await this.planner.recoverStaleApplyingPlans(namespace);
+        recovered += ids.length;
+      } catch {
+        // Best-effort: a single namespace failure must not abort the sweep.
+      }
+    }
+    return recovered;
+  }
+
   private requireEnabled(): void {
     if (!this.deps.isEnabled()) {
       throw new CorrectionContractError(

@@ -168,6 +168,13 @@ export interface CorrectionPlan {
    * never be re-applied wholesale (it would duplicate succeeded actions).
    */
   status?: "pending" | "applying" | "applied" | "discarded" | "partial";
+  /**
+   * ISO timestamp recorded when the plan transitioned to `applying` (#1713
+   * Item 2). Startup recovery uses this to detect plans stuck in `applying`
+   * past the stale-applying TTL (process died mid-apply) and discard+scrub
+   * them. Absent on plans that never entered `applying`.
+   */
+  applyingAt?: string;
 }
 
 /**
