@@ -675,7 +675,7 @@ test("extractMetrics: throws on a report missing incrementalModifiedUpdate (guar
   const staleReport = {
     ...report,
     incrementalModifiedUpdate: undefined,
-  } as CodingGraphBenchReport;
+  } as unknown as CodingGraphBenchReport;
   assert.throws(() => extractMetrics(staleReport));
 });
 
@@ -735,7 +735,7 @@ test("modified-loop restore: full-fixture re-ingest restores cascade-deleted cro
         const hasIncoming = storeFiles.some(
           (f, j) =>
             j !== i &&
-            f.edges.some((e) => symSet.has(e.dstQualifiedName)),
+            (f.edges ?? []).some((e) => symSet.has(e.dstQualifiedName)),
         );
         if (hasIncoming) {
           targetIdx = i;
