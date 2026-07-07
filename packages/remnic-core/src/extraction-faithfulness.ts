@@ -220,6 +220,27 @@ export function parseFaithfulnessResponse(
   return null;
 }
 
+/**
+ * True when `map` contains an entry for every integer index in
+ * [0, expectedCount). The local parse-fallback gate uses this to accept a
+ * local model-lab response only when it is COMPLETE: size alone is
+ * insufficient because a malformed response with duplicate/fractional indexes
+ * can yield expectedCount distinct map keys without covering index 0..N-1
+ * (codex P2 PRRT_kwDORJXyws6O7PfY). parseEntries now rejects non-integer
+ * indexes so the two checks agree, but the explicit coverage loop documents
+ * the invariant and stays robust to any future parser relaxation.
+ */
+function coversAllIndexes(
+  map: Map<number, ParsedFaithfulnessEntry>,
+  expectedCount: number,
+): boolean {
+  if (map.size < expectedCount) return false;
+  for (let i = 0; i < expectedCount; i++) {
+    if (!map.has(i)) return false;
+  }
+  return true;
+}
+
 function parseEntries(
   data: unknown,
   expectedCount: number,
@@ -243,7 +264,7 @@ function parseEntries(
     if (!entry || typeof entry !== "object") continue;
     const obj = entry as Record<string, unknown>;
     const idx = typeof obj.index === "number" ? obj.index : undefined;
-    if (idx === undefined || idx < 0 || idx >= expectedCount) continue;
+    if (idx === undefined || !Number.isInteger(idx) || idx < 0 || idx >= expectedCount) continue;
     const verdictRaw = typeof obj.verdict === "string" ? obj.verdict : undefined;
     if (!verdictRaw || !VALID_VERDICTS.has(verdictRaw)) continue;
     const rationale =
@@ -339,7 +360,7 @@ async function callFaithfulnessLlm(
         return { content: result.content, modelUsed: result.modelUsed };
       }
       const parsedLocal = parseFaithfulnessResponse(result.content, expectedCount);
-      if (parsedLocal && parsedLocal.size === expectedCount) {
+      if (parsedLocal && coversAllIndexes(parsedLocal, expectedCount)) {
         return { content: result.content, modelUsed: result.modelUsed };
       }
       log.debug(

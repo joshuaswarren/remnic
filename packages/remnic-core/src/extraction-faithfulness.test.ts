@@ -1602,6 +1602,55 @@ test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls bac
   assert.equal(result.results[1]?.ok && result.results[1].verdict, "unsupported");
 });
 
+test("checkFaithfulnessBatch: extractionFaithfulnessLocalParseFallback falls back when local indexes are fractional/non-contiguous (codex P2 PRRT_kwDORJXyws6O7PfY)", async () => {
+  // Flag ON: a malformed local response with expectedCount distinct but
+  // NON-INTEGER indexes (e.g. 0 and 0.5 for a two-item batch) must NOT be
+  // accepted. parseFaithfulnessResponse used to admit any numeric index, so a
+  // size-only check passed while index 1 stayed missing -> malformed_output.
+  // parseEntries now rejects non-integer indexes, and the gate requires every
+  // integer key 0..N-1 before accepting the local response.
+  const inputs = [
+    { factText: "Fact A", quote: "Quote A" },
+    { factText: "Fact B", quote: "Quote B" },
+  ];
+  const config = parseConfig({
+    extractionFaithfulnessModel: "remnic-faithfulness-gate-v1",
+    extractionFaithfulnessBaseUrl: "http://localhost:11434/v1",
+    extractionFaithfulnessTimeoutMs: 5000,
+    extractionFaithfulnessLocalParseFallback: true,
+  });
+  const fallbackCalls: Array<{ messages: unknown; options: unknown }> = [];
+  // Local endpoint returns indexes 0 and 0.5 -- two distinct keys, but index 1
+  // is missing (fractional index is invalid).
+  const { fetch: fracFetch } = fakeFetchFor("http://localhost:11434/v1", () => ({
+    model: "remnic-faithfulness-gate-v1",
+    choices: [{ message: { content: JSON.stringify([
+      { index: 0, verdict: "contradicted" },
+      { index: 0.5, verdict: "entailed" },
+    ]) } }],
+  }));
+  const result = await checkFaithfulnessBatch(
+    inputs,
+    config,
+    null,
+    stubFallbackLlm(
+      JSON.stringify([
+        { index: 0, verdict: "entailed" },
+        { index: 1, verdict: "unsupported" },
+      ]),
+      fallbackCalls,
+    ),
+    fracFetch,
+  );
+  assert.equal(
+    fallbackCalls.length,
+    1,
+    "a fractional/non-contiguous local response must fall through to the chain",
+  );
+  assert.equal(result.results[0]?.ok && result.results[0].verdict, "entailed");
+  assert.equal(result.results[1]?.ok && result.results[1].verdict, "unsupported");
+});
+
 test('parseConfig: extractionFaithfulnessLocalParseFallback coerces CLI string "true" (#1700 review — coerceBool parity)', () => {
   // A CLI override reaches the parser as the string "true"; === true would
   // silently leave the flag disabled. coerceBool must turn it on (gotcha 36).
