@@ -45,6 +45,7 @@ import {
   type BenchmarkArtifactHardware,
   type BenchmarkArtifactTier,
   type BenchmarkResult,
+  type PublishedBenchmarkId,
   type ResolvedBenchRuntimeProfile,
   SINGLE_FLAG_ABLATION_MATRIX,
   type SingleFlagAblationCell,
@@ -266,6 +267,30 @@ async function main(): Promise<number> {
   return failures === 0 ? 0 : 1;
 }
 
+/**
+ * Derive the true run window from the runner's end-stamp and summed task
+ * latency. Mirrors build-artifact-from-result.ts so the artifact's
+ * startedAt/finishedAt match the promotion path exactly.
+ */
+function deriveRunWindow(metaTimestamp: string, totalLatencyMs: number): { startedAt: string; finishedAt: string } {
+  const finishedMs = Date.parse(metaTimestamp);
+  if (!Number.isFinite(finishedMs)) {
+    throw new Error(`meta.timestamp "${metaTimestamp}" is not a valid ISO-8601 timestamp.`);
+  }
+  const duration = Number.isFinite(totalLatencyMs) && totalLatencyMs > 0 ? totalLatencyMs : 0;
+  return {
+    startedAt: new Date(finishedMs - duration).toISOString(),
+    finishedAt: new Date(finishedMs).toISOString(),
+  };
+}
+
+/** Default dataset-version tag per published benchmark (matches the promotion path). */
+function defaultDatasetVersion(benchmarkId: PublishedBenchmarkId): string {
+  if (benchmarkId === "locomo") return "locomo-10";
+  if (benchmarkId === "longmemeval") return "longmemeval-oracle";
+  return `${benchmarkId}-v1`;
+}
+
 async function runOneCell(
   args: ParsedArgs,
   resolved: ResolvedBenchRuntimeProfile,
@@ -316,9 +341,22 @@ async function runOneCell(
   // actually ran, including the ablation override.
   result.config.remnicConfig = mergedConfigOverrides;
 
-  const tier: BenchmarkArtifactTier = "local";
-  const artifact = buildBenchmarkArtifact(result, {
-    tier,
+  // Build the artifact via the public promotion contract (same shape as
+  // build-artifact-from-result.ts): derive benchmarkId/model/seed/run-window
+  // from the live result so the artifact is self-describing + reproducible.
+  const benchmarkId = result.meta.benchmark as PublishedBenchmarkId;
+  const model = result.config.systemProvider?.model ?? "unknown";
+  const seed = result.meta.seeds[0] ?? 1;
+  const { startedAt, finishedAt } = deriveRunWindow(result.meta.timestamp, result.cost?.totalLatencyMs ?? 0);
+  const artifact = buildBenchmarkArtifact({
+    result,
+    benchmarkId,
+    datasetVersion: defaultDatasetVersion(benchmarkId),
+    model,
+    seed,
+    startedAt,
+    finishedAt,
+    tier: "local",
     hardware: args.hardware,
     note,
   });
