@@ -1071,7 +1071,7 @@ export function buildBenchRuntimeProfileRequest(
     systemCodexReasoningEffort:
       runtimeProfile === "openclaw-chain"
         ? undefined
-        : parsed.systemCodexReasoningEffort,
+        : (parsed.systemCodexReasoningEffort ?? parsed.systemClaudeReasoningEffort),
     systemResponderContextBudgetChars:
       runtimeProfile === "openclaw-chain"
         ? undefined
@@ -1084,13 +1084,13 @@ export function buildBenchRuntimeProfileRequest(
     judgeModel: parsed.judgeModel,
     judgeBaseUrl: parsed.judgeBaseUrl,
     judgeApiKey: parsed.judgeApiKey,
-    judgeCodexReasoningEffort: parsed.judgeCodexReasoningEffort,
+    judgeCodexReasoningEffort: (parsed.judgeCodexReasoningEffort ?? parsed.judgeClaudeReasoningEffort),
     internalProvider: parsed.internalProvider,
     internalModel: parsed.internalModel,
     internalBaseUrl: parsed.internalBaseUrl,
     internalApiKey: parsed.internalApiKey,
     internalDisableThinking: parsed.internalDisableThinking,
-    internalCodexReasoningEffort: parsed.internalCodexReasoningEffort,
+    internalCodexReasoningEffort: (parsed.internalCodexReasoningEffort ?? parsed.internalClaudeReasoningEffort),
     requestTimeout: parsed.requestTimeout,
     drainTimeout: parsed.drainTimeout,
     max429WaitMs: parsed.max429WaitMs,

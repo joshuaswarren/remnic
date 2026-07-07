@@ -53,6 +53,7 @@ export interface ParsedBenchArgs {
   systemBaseUrl?: string;
   systemApiKey?: string;
   systemCodexReasoningEffort?: BenchCodexReasoningEffort;
+  systemClaudeReasoningEffort?: BenchCodexReasoningEffort;
   systemResponderContextBudgetChars?: number;
   systemResponderPromptBudgetChars?: number;
   judgeProvider?: BuiltInProvider;
@@ -60,12 +61,14 @@ export interface ParsedBenchArgs {
   judgeBaseUrl?: string;
   judgeApiKey?: string;
   judgeCodexReasoningEffort?: BenchCodexReasoningEffort;
+  judgeClaudeReasoningEffort?: BenchCodexReasoningEffort;
   internalProvider?: BuiltInProvider;
   internalModel?: string;
   internalBaseUrl?: string;
   internalApiKey?: string;
   internalDisableThinking?: boolean;
   internalCodexReasoningEffort?: BenchCodexReasoningEffort;
+  internalClaudeReasoningEffort?: BenchCodexReasoningEffort;
   threshold?: number;
   baselineAction?: BenchBaselineAction;
   datasetAction?: BenchDatasetAction;
@@ -240,6 +243,7 @@ const BENCH_PROVIDER_ALLOWED: readonly BuiltInProvider[] = Object.freeze([
   "litellm",
   "local-llm",
   "codex-cli",
+  "claude-cli",
 ]);
 
 function isBuiltInProvider(value: string): value is BuiltInProvider {
@@ -249,7 +253,7 @@ function isBuiltInProvider(value: string): value is BuiltInProvider {
 function parseBenchProvider(raw: string, flag: string): BuiltInProvider {
   if (!isBuiltInProvider(raw)) {
     throw new Error(
-      `ERROR: ${flag} must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli".`,
+      `ERROR: ${flag} must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli".`,
     );
   }
   return raw;
@@ -298,6 +302,7 @@ const BENCH_VALUE_FLAGS = Object.freeze([
   "--system-base-url",
   "--system-api-key",
   "--system-codex-reasoning-effort",
+  "--system-claude-reasoning-effort",
   "--system-responder-context-budget-chars",
   "--system-responder-prompt-budget-chars",
   "--judge-provider",
@@ -305,12 +310,14 @@ const BENCH_VALUE_FLAGS = Object.freeze([
   "--judge-base-url",
   "--judge-api-key",
   "--judge-codex-reasoning-effort",
+  "--judge-claude-reasoning-effort",
   "--judge-cache-dir",
   "--internal-provider",
   "--internal-model",
   "--internal-base-url",
   "--internal-api-key",
   "--internal-codex-reasoning-effort",
+  "--internal-claude-reasoning-effort",
   "--threshold",
   "--custom",
   "--format",
@@ -385,6 +392,7 @@ const RUN_VALUE_FLAGS = Object.freeze([
   "--system-base-url",
   "--system-api-key",
   "--system-codex-reasoning-effort",
+  "--system-claude-reasoning-effort",
   "--system-responder-context-budget-chars",
   "--system-responder-prompt-budget-chars",
   "--judge-provider",
@@ -392,12 +400,14 @@ const RUN_VALUE_FLAGS = Object.freeze([
   "--judge-base-url",
   "--judge-api-key",
   "--judge-codex-reasoning-effort",
+  "--judge-claude-reasoning-effort",
   "--judge-cache-dir",
   "--internal-provider",
   "--internal-model",
   "--internal-base-url",
   "--internal-api-key",
   "--internal-codex-reasoning-effort",
+  "--internal-claude-reasoning-effort",
   "--custom",
   "--dataset",
   "--model",
@@ -712,6 +722,10 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     args,
     "--system-codex-reasoning-effort",
   );
+  const systemClaudeReasoningEffortRaw = readBenchOptionValue(
+    args,
+    "--system-claude-reasoning-effort",
+  );
   const systemResponderContextBudgetRaw = readBenchOptionValue(
     args,
     "--system-responder-context-budget-chars",
@@ -728,6 +742,10 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     args,
     "--judge-codex-reasoning-effort",
   );
+  const judgeClaudeReasoningEffortRaw = readBenchOptionValue(
+    args,
+    "--judge-claude-reasoning-effort",
+  );
   const internalProviderRaw = readBenchOptionValue(args, "--internal-provider");
   const internalModel = readBenchOptionValue(args, "--internal-model");
   const internalBaseUrl = readBenchOptionValue(args, "--internal-base-url");
@@ -735,6 +753,10 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const internalCodexReasoningEffortRaw = readBenchOptionValue(
     args,
     "--internal-codex-reasoning-effort",
+  );
+  const internalClaudeReasoningEffortRaw = readBenchOptionValue(
+    args,
+    "--internal-claude-reasoning-effort",
   );
   const thresholdRaw = readBenchOptionValue(args, "--threshold");
   const customRaw = readBenchOptionValue(args, "--custom");
@@ -806,11 +828,23 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       systemCodexReasoningEffortRaw,
       "--system-codex-reasoning-effort",
     );
+  const systemClaudeReasoningEffort = systemClaudeReasoningEffortRaw === undefined
+    ? undefined
+    : parseCodexReasoningEffort(
+      systemClaudeReasoningEffortRaw,
+      "--system-claude-reasoning-effort",
+    );
   const judgeCodexReasoningEffort = judgeCodexReasoningEffortRaw === undefined
     ? undefined
     : parseCodexReasoningEffort(
       judgeCodexReasoningEffortRaw,
       "--judge-codex-reasoning-effort",
+    );
+  const judgeClaudeReasoningEffort = judgeClaudeReasoningEffortRaw === undefined
+    ? undefined
+    : parseCodexReasoningEffort(
+      judgeClaudeReasoningEffortRaw,
+      "--judge-claude-reasoning-effort",
     );
 
   let internalProvider: BuiltInProvider | undefined;
@@ -823,6 +857,12 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     : parseCodexReasoningEffort(
       internalCodexReasoningEffortRaw,
       "--internal-codex-reasoning-effort",
+    );
+  const internalClaudeReasoningEffort = internalClaudeReasoningEffortRaw === undefined
+    ? undefined
+    : parseCodexReasoningEffort(
+      internalClaudeReasoningEffortRaw,
+      "--internal-claude-reasoning-effort",
     );
 
   let amaBenchJudgeProtocol: AmaBenchJudgeProtocol | undefined;
@@ -1176,6 +1216,14 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     );
   }
   if (
+    systemClaudeReasoningEffort !== undefined &&
+    effectiveSystemProvider !== "claude-cli"
+  ) {
+    throw new Error(
+      "ERROR: --system-claude-reasoning-effort requires --system-provider claude-cli (or --provider claude-cli).",
+    );
+  }
+  if (
     systemResponderContextBudgetChars !== undefined &&
     effectiveSystemProvider === undefined
   ) {
@@ -1199,6 +1247,14 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
       "ERROR: --judge-codex-reasoning-effort requires --judge-provider codex-cli.",
     );
   }
+  if (
+    judgeClaudeReasoningEffort !== undefined &&
+    judgeProvider !== "claude-cli"
+  ) {
+    throw new Error(
+      "ERROR: --judge-claude-reasoning-effort requires --judge-provider claude-cli.",
+    );
+  }
   if (internalProvider === "local-llm" && !internalBaseUrl) {
     throw new Error(
       "ERROR: --internal-provider local-llm requires --internal-base-url. " +
@@ -1212,6 +1268,14 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   ) {
     throw new Error(
       "ERROR: --internal-codex-reasoning-effort requires --internal-provider codex-cli.",
+    );
+  }
+  if (
+    internalClaudeReasoningEffort !== undefined &&
+    internalProvider !== "claude-cli"
+  ) {
+    throw new Error(
+      "ERROR: --internal-claude-reasoning-effort requires --internal-provider claude-cli.",
     );
   }
   const effectiveAmaBenchCrossJudgeProvider =
@@ -1277,6 +1341,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     systemBaseUrl: effectiveSystemBaseUrl,
     systemApiKey,
     systemCodexReasoningEffort,
+    systemClaudeReasoningEffort,
     systemResponderContextBudgetChars,
     systemResponderPromptBudgetChars,
     judgeProvider,
@@ -1284,12 +1349,14 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     judgeBaseUrl,
     judgeApiKey,
     judgeCodexReasoningEffort,
+    judgeClaudeReasoningEffort,
     internalProvider,
     internalModel,
     internalBaseUrl,
     internalApiKey,
     internalDisableThinking: args.includes("--internal-disable-thinking"),
     internalCodexReasoningEffort,
+    internalClaudeReasoningEffort,
     threshold,
     custom: customRaw ? path.resolve(expandTilde(customRaw)) : undefined,
     baselineAction,

@@ -745,6 +745,117 @@ test("parseBenchArgs rejects internal Codex reasoning effort for non-Codex provi
   );
 });
 
+test("parseBenchArgs accepts claude-cli as a system and judge provider with reasoning effort", () => {
+  const parsed = parseBenchArgs([
+    "run",
+    "longmemeval",
+    "--system-provider",
+    "claude-cli",
+    "--system-model",
+    "opus",
+    "--system-claude-reasoning-effort",
+    "high",
+    "--judge-provider",
+    "claude-cli",
+    "--judge-model",
+    "opus",
+    "--judge-claude-reasoning-effort",
+    "medium",
+  ]);
+
+  assert.equal(parsed.systemProvider, "claude-cli");
+  assert.equal(parsed.systemModel, "opus");
+  assert.equal(parsed.systemClaudeReasoningEffort, "high");
+  assert.equal(parsed.judgeProvider, "claude-cli");
+  assert.equal(parsed.judgeModel, "opus");
+  assert.equal(parsed.judgeClaudeReasoningEffort, "medium");
+});
+
+test("parseBenchArgs accepts claude-cli internal provider with reasoning effort", () => {
+  const parsed = parseBenchArgs([
+    "run",
+    "ama-bench",
+    "--internal-provider",
+    "claude-cli",
+    "--internal-model",
+    "opus",
+    "--internal-claude-reasoning-effort",
+    "xhigh",
+  ]);
+
+  assert.equal(parsed.internalProvider, "claude-cli");
+  assert.equal(parsed.internalModel, "opus");
+  assert.equal(parsed.internalClaudeReasoningEffort, "xhigh");
+});
+
+test("parseBenchArgs rejects system Claude reasoning effort for non-claude-cli providers", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--system-provider",
+        "openai",
+        "--system-model",
+        "gpt-5.5",
+        "--system-claude-reasoning-effort",
+        "xhigh",
+      ]),
+    /--system-claude-reasoning-effort requires --system-provider claude-cli/,
+  );
+});
+
+test("parseBenchArgs rejects judge Claude reasoning effort for non-claude-cli providers", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--judge-provider",
+        "openai",
+        "--judge-model",
+        "gpt-5.5",
+        "--judge-claude-reasoning-effort",
+        "medium",
+      ]),
+    /--judge-claude-reasoning-effort requires --judge-provider claude-cli/,
+  );
+});
+
+test("parseBenchArgs rejects internal Claude reasoning effort for non-claude-cli providers", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "ama-bench",
+        "--internal-provider",
+        "ollama",
+        "--internal-model",
+        "gemma4:31b-cloud",
+        "--internal-claude-reasoning-effort",
+        "xhigh",
+      ]),
+    /--internal-claude-reasoning-effort requires --internal-provider claude-cli/,
+  );
+});
+
+test("parseBenchArgs rejects invalid Claude reasoning effort values", () => {
+  assert.throws(
+    () =>
+      parseBenchArgs([
+        "run",
+        "longmemeval",
+        "--system-provider",
+        "claude-cli",
+        "--system-model",
+        "opus",
+        "--system-claude-reasoning-effort",
+        "ultra",
+      ]),
+    /--system-claude-reasoning-effort must be "low", "medium", "high", or "xhigh"/,
+  );
+});
+
 test("parseBenchArgs accepts AMA-Bench recommended judge and cross-judge flags", () => {
   const parsed = parseBenchArgs([
     "run",
@@ -845,7 +956,7 @@ test("parseBenchArgs rejects unknown --provider", () => {
         "--provider",
         "not-a-provider",
       ]),
-    /--provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", or "codex-cli"/,
+    /--provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"/,
   );
 });
 

@@ -42,6 +42,7 @@ export function findUnsupportedFallbackBenchOptions(parsed: ParsedBenchArgs): st
   add(parsed.systemBaseUrl !== undefined, "--system-base-url/--base-url");
   add(parsed.systemApiKey !== undefined, "--system-api-key");
   add(parsed.systemCodexReasoningEffort !== undefined, "--system-codex-reasoning-effort");
+  add(parsed.systemClaudeReasoningEffort !== undefined, "--system-claude-reasoning-effort");
   add(parsed.systemResponderContextBudgetChars !== undefined, "--system-responder-context-budget-chars");
   add(parsed.systemResponderPromptBudgetChars !== undefined, "--system-responder-prompt-budget-chars");
   add(parsed.judgeProvider !== undefined, "--judge-provider");
@@ -49,12 +50,14 @@ export function findUnsupportedFallbackBenchOptions(parsed: ParsedBenchArgs): st
   add(parsed.judgeBaseUrl !== undefined, "--judge-base-url");
   add(parsed.judgeApiKey !== undefined, "--judge-api-key");
   add(parsed.judgeCodexReasoningEffort !== undefined, "--judge-codex-reasoning-effort");
+  add(parsed.judgeClaudeReasoningEffort !== undefined, "--judge-claude-reasoning-effort");
   add(parsed.internalProvider !== undefined, "--internal-provider");
   add(parsed.internalModel !== undefined, "--internal-model");
   add(parsed.internalBaseUrl !== undefined, "--internal-base-url");
   add(parsed.internalApiKey !== undefined, "--internal-api-key");
   add(parsed.internalDisableThinking === true, "--internal-disable-thinking");
   add(parsed.internalCodexReasoningEffort !== undefined, "--internal-codex-reasoning-effort");
+  add(parsed.internalClaudeReasoningEffort !== undefined, "--internal-claude-reasoning-effort");
   add(parsed.amaBenchJudgeProtocol !== undefined, "--ama-bench-judge-protocol");
   add(parsed.amaBenchCrossJudgeProvider !== undefined, "--ama-bench-cross-judge-provider");
   add(parsed.amaBenchCrossJudgeModel !== undefined, "--ama-bench-cross-judge-model");
