@@ -99,6 +99,7 @@ import {
 } from "./fallback-llm.js";
 import { MaintenanceScheduler } from "./orchestration/maintenance.js";
 import { TierMigrationCoordinator } from "./orchestration/tier-migration-coordinator.js";
+import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
 import {
   runLiveConnectorsOnce,
   type LiveConnectorsRunSummary,
@@ -171,7 +172,6 @@ import {
 import { SessionObserverState } from "./session-observer-state.js";
 import {
   abortError as sharedAbortError,
-  isAbortError,
   throwIfAborted as sharedThrowIfAborted,
 } from "./abort-error.js";
 import { CODEX_THREAD_KEY_PREFIX } from "./thread-key.js";
@@ -2021,10 +2021,14 @@ export class Orchestrator {
     suppressedReasonCounts: Record<string, number>;
   } = { detected: 0, queued: 0, autoApplied: 0, suppressedReasonCounts: {} };
 
-  // Background serial queue for extractions (agent_end optimization)
-  // Queue stores promises that resolve when extraction should run
-  private extractionQueue: Array<() => Promise<void>> = [];
-  private queueProcessing = false;
+  /**
+   * Background serial extraction queue coordinator (issue #1526 — moved
+   * from inline `extractionQueue`/`queueProcessing` fields). Owns queue
+   * state + scheduling + the serial drain + failure classification; the
+   * orchestrator builds each task closure in `queueBufferedExtraction` and
+   * hands it to `enqueue`.
+   */
+  readonly extractionQueueCoordinator: ExtractionQueueCoordinator;
   private heartbeatObserverChains = new Map<string, Promise<void>>();
   private recentExtractionFingerprints = new Map<string, number>();
   private readonly consolidationObservers = new Set<
@@ -2991,6 +2995,8 @@ export class Orchestrator {
       namespaceSearchRouter: this.namespaceSearchRouter,
       namespaceCatalog: this.namespaceCatalog,
     });
+    // Issue #1526: background extraction queue lives on its own coordinator.
+    this.extractionQueueCoordinator = new ExtractionQueueCoordinator();
     const conversationIndexRuntime = createConversationIndexRuntime(config, {
       getQmd: () => this.conversationQmd,
       getFaiss: () => this.conversationFaiss,
@@ -4720,15 +4726,8 @@ export class Orchestrator {
   }
 
   async waitForExtractionIdle(timeoutMs: number = 60_000): Promise<boolean> {
-    const started = Date.now();
-    while (this.queueProcessing || this.extractionQueue.length > 0) {
-      if (Date.now() - started > timeoutMs) {
-        log.warn(`waitForExtractionIdle timed out after ${timeoutMs}ms`);
-        return false;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    return true;
+    // Issue #1526: queue state + idle wait moved to ExtractionQueueCoordinator.
+    return this.extractionQueueCoordinator.waitForIdle(timeoutMs);
   }
 
   async waitForConsolidationIdle(timeoutMs: number = 60_000): Promise<boolean> {
@@ -13165,7 +13164,7 @@ export class Orchestrator {
       }, remainingMs);
     }
 
-    this.extractionQueue.push(async () => {
+    this.extractionQueueCoordinator.enqueue(async () => {
       if (settled) return;
       if (
         typeof extractionDeadlineMs === "number" &&
@@ -13196,13 +13195,6 @@ export class Orchestrator {
       }
     });
 
-    if (!this.queueProcessing) {
-      this.queueProcessing = true;
-      this.processQueue().catch((err) => {
-        this.logExtractionQueueFailure(err, "processor");
-        this.queueProcessing = false;
-      });
-    }
     log.debug(`queued extraction from ${reason}`);
   }
 
@@ -13268,62 +13260,6 @@ export class Orchestrator {
     }
 
     return true;
-  }
-
-  /**
-   * Background serial queue processor.
-   * Processes extractions one at a time to avoid race conditions.
-   * Called automatically when items are queued.
-   */
-  private async processQueue(): Promise<void> {
-    while (this.extractionQueue.length > 0) {
-      const task = this.extractionQueue.shift();
-      if (task) {
-        try {
-          await task();
-        } catch (err) {
-          this.logExtractionQueueFailure(err, "task");
-        }
-      }
-    }
-
-    this.queueProcessing = false;
-  }
-
-  /**
-   * Classify + log a failure from either the per-task catch inside
-   * `processQueue()` or the outer `processQueue().catch(...)` in
-   * `queueBufferedExtraction()`.  Issue #549: `throwIfRecallAborted`
-   * (used throughout `runExtraction`) raises an Error whose `name` is
-   * `"AbortError"`.  That path fires when `before_reset` aborts a
-   * queued task to avoid duplicate extraction — it is intentional
-   * cancellation, not a failure.  Downgrading the log to debug
-   * prevents spurious `error`-level lines that routinely appear
-   * right next to a successful `persisted: N facts, M entities` log
-   * and that confuse operators into thinking extraction is broken.
-   * Genuine extraction failures (network, parse, I/O) still log at
-   * `error`.
-   *
-   * Source differentiates the two call sites so the log message
-   * names the right layer (`task` vs `processor`).
-   */
-  private logExtractionQueueFailure(
-    err: unknown,
-    source: "task" | "processor",
-  ): void {
-    const aborted =
-      source === "task"
-        ? "background extraction task aborted (session transition)"
-        : "background extraction queue processor aborted (session transition)";
-    const failed =
-      source === "task"
-        ? "background extraction task failed"
-        : "background extraction queue processor failed";
-    if (isAbortError(err)) {
-      log.debug(aborted);
-    } else {
-      log.error(failed, err);
-    }
   }
 
   /**

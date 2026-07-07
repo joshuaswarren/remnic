@@ -7,6 +7,7 @@ import {
   BulkImportBatchPartialFailureError,
   Orchestrator,
 } from "./orchestrator.js";
+import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
 import { parseConfig } from "./config.js";
 import { stableHash } from "./coding/git-context.js";
 import type { BufferTurn } from "./types.js";
@@ -117,8 +118,7 @@ test("flushSession waits for queued extraction task completion", async () => {
       return [makeTurn("thread-a", "remember alpha")];
     },
   };
-  orchestrator.extractionQueue = [];
-  orchestrator.queueProcessing = false;
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
   orchestrator.runExtraction = async () => {
     extractionStarted = true;
     await new Promise<void>((resolve) => {
@@ -147,8 +147,8 @@ test("flushSession waits for queued extraction task completion", async () => {
 test("ingestBulkImportBatch rejects when the extraction deadline expires in the queue", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = parseConfig({});
-  orchestrator.extractionQueue = [];
-  orchestrator.queueProcessing = true;
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
+  orchestrator.extractionQueueCoordinator.setProcessingForTest(true);
   let runExtractionCalls = 0;
   orchestrator.runExtraction = async () => {
     runExtractionCalls += 1;
@@ -185,7 +185,7 @@ test("ingestBulkImportBatch rejects when the extraction deadline expires in the 
   );
   assert.equal(runExtractionCalls, 0);
 
-  const queuedTask = orchestrator.extractionQueue.shift();
+  const queuedTask = orchestrator.extractionQueueCoordinator.shift();
   assert.ok(queuedTask);
   await queuedTask();
   assert.equal(
@@ -198,8 +198,7 @@ test("ingestBulkImportBatch rejects when the extraction deadline expires in the 
 test("ingestBulkImportBatch does not report queue wait timeout after extraction starts", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = parseConfig({});
-  orchestrator.extractionQueue = [];
-  orchestrator.queueProcessing = false;
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
   let runExtractionCalls = 0;
   orchestrator.runExtraction = async () => {
     runExtractionCalls += 1;
@@ -234,8 +233,7 @@ test("ingestBulkImportBatch does not report queue wait timeout after extraction 
 test("ingestBulkImportBatch reports post-persist metadata failures separately", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = parseConfig({});
-  orchestrator.extractionQueue = [];
-  orchestrator.queueProcessing = false;
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
   orchestrator.runExtraction = async () => ({
     status: "completed",
     persistedCount: 1,
@@ -267,8 +265,7 @@ test("ingestBulkImportBatch reports post-persist metadata failures separately", 
 test("ingestBulkImportBatch can disable source-valid-at replay context", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = parseConfig({});
-  orchestrator.extractionQueue = [];
-  orchestrator.queueProcessing = false;
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
   const capturedSlices: BufferTurn[][] = [];
   orchestrator.runExtraction = async (turns: BufferTurn[]) => {
     capturedSlices.push(turns);
@@ -321,8 +318,7 @@ test("ingestBulkImportBatch can disable source-valid-at replay context", async (
 test("ingestBulkImportBatch preserves partial metadata failure before a later slice rejects", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = parseConfig({});
-  orchestrator.extractionQueue = [];
-  orchestrator.queueProcessing = false;
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
   let runExtractionCalls = 0;
   orchestrator.runExtraction = async () => {
     runExtractionCalls += 1;
@@ -384,8 +380,7 @@ test("ingestBulkImportBatch preserves partial metadata failure before a later sl
 test("ingestBulkImportBatch stops after the first failed source-valid-at slice", async () => {
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = parseConfig({});
-  orchestrator.extractionQueue = [];
-  orchestrator.queueProcessing = false;
+  orchestrator.extractionQueueCoordinator = new ExtractionQueueCoordinator();
   let runExtractionCalls = 0;
   orchestrator.runExtraction = async () => {
     runExtractionCalls += 1;
