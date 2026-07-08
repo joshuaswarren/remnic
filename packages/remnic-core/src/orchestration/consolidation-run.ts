@@ -239,7 +239,9 @@ export class ConsolidationRunCoordinator {
         : [];
       await storage.writeEntity(entity.name, entity.type, safeFacts, {
         source: "consolidation",
-        structuredSections: entity.structuredSections,
+        structuredSections: Array.isArray(entity.structuredSections)
+          ? entity.structuredSections
+          : undefined,
       });
     }
 
