@@ -3067,7 +3067,7 @@ export class Orchestrator {
     this.semanticConsolidationCoordinator = new SemanticConsolidationCoordinator({
       config,
       getStorage: () => this.storage,
-      fastLlm: this.fastLlm,
+      getFastLlm: () => this.fastLlm,
       embeddingFallback: this.embeddingFallback,
       removeContentHashForMemory: (targetStorage, memory, context) =>
         this.removeContentHashForMemory(targetStorage, memory, context),

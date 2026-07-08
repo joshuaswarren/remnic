@@ -56,9 +56,11 @@ export interface SemanticConsolidationCoordinatorDeps {
   config: PluginConfig;
   /** Live accessor: the orchestrator's storage manager (stable post-ctor). */
   getStorage: () => StorageManager;
-  /** The fast-tier local LLM client (falls back to main local LLM when
-   *  localLlmFastEnabled is false — orchestrator ctor handles this). */
-  fastLlm: LocalLlmClient;
+  /** Live accessor for the fast-tier local LLM client (falls back to main
+   *  local LLM when localLlmFastEnabled is false — orchestrator ctor handles
+   *  this). Injected as an accessor so tests that overwrite orchestrator.fastLlm
+   *  after construction still take effect. */
+  getFastLlm: () => LocalLlmClient;
   /** The embedding-fallback manager used for index cleanup on archival. */
   embeddingFallback: EmbeddingFallback;
   /** Remove a memory's content-hash entry from the storage-scoped index.
@@ -142,7 +144,7 @@ export class SemanticConsolidationCoordinator {
     // Honor semanticConsolidationModel: "auto" = primary, "fast" = local fast, or specific model
     const useGateway = this.config.modelSource === "gateway";
     const modelSetting = this.config.semanticConsolidationModel;
-    if (modelSetting === "fast" && this.deps.fastLlm && !useGateway) {
+    if (modelSetting === "fast" && this.deps.getFastLlm() && !useGateway) {
       log.info("[semantic-consolidation] using fast local LLM for synthesis");
     }
     // Gateway routing: an explicit "fast" setting keeps the fast persona chain
@@ -163,7 +165,7 @@ export class SemanticConsolidationCoordinator {
       this.config.gatewayConfig,
       fallbackLlmRuntimeContextFromConfig(this.config),
     );
-    if (!llm.isAvailable(gatewayChainOptions) && !(modelSetting === "fast" && this.deps.fastLlm && !useGateway)) {
+    if (!llm.isAvailable(gatewayChainOptions) && !(modelSetting === "fast" && this.deps.getFastLlm() && !useGateway)) {
       log.warn(
         "[semantic-consolidation] no LLM available — skipping synthesis",
       );
@@ -214,8 +216,8 @@ export class SemanticConsolidationCoordinator {
         if (useGateway) {
           // Gateway model source — use the appropriate agent chain
           response = await llm.chatCompletion(messages, { ...llmOpts, ...gatewayChainOptions });
-        } else if (modelSetting === "fast" && this.deps.fastLlm) {
-          const fastResult = await this.deps.fastLlm.chatCompletion(messages, {
+        } else if (modelSetting === "fast" && this.deps.getFastLlm()) {
+          const fastResult = await this.deps.getFastLlm().chatCompletion(messages, {
             operation: "semantic-consolidation",
             maxTokens: llmOpts.maxTokens,
             temperature: llmOpts.temperature,
