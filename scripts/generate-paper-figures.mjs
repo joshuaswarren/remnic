@@ -47,26 +47,40 @@ const TRUST_SCORE_SRC = join(
 );
 
 /**
- * Git-tracked artifact basenames under the committed results dir.
+ * Which artifact files under docs/benchmarks/results/ are COMMITTED (and thus
+ * safe to plot). The dir is gitignored (root .gitignore line 44), so the
+ * self-hosted CI runner accumulates UNTRACKED leftover artifacts there; a
+ * newest-by-finishedAt sort would otherwise grab one and the byte-identical
+ * regeneration test would fail in CI only.
  *
- * The self-hosted CI runner accumulates UNTRACKED benchmark artifacts in
- * docs/benchmarks/results/ (the dir is gitignored), so a newest-by-finishedAt
- * sort would otherwise grab an untracked leftover and the byte-identical
- * regeneration test would fail in CI only. We therefore consider ONLY
- * git-tracked artifacts when reading the committed repo dir.
+ * Source of truth: the committed manifest at docs/benchmarks/artifact-manifest.json
+ * (a non-gitignored file listing tracked basenames). It is git-INDEPENDENT, so it
+ * works in the CI test subprocess where `git ls-files` is not reliably callable.
+ * `refreshArtifactManifest()` rewrites it from `git ls-files` when git is
+ * available (local dev), keeping it self-maintaining.
  *
- * Returns `null` (no filtering) when the results dir has been env-overridden
- * to a temp dir (the test seam) — a temp dir lives outside the worktree and is
- * never tracked, so every file in it is a deliberate fixture. Also `null` when
- * git is unavailable or reports nothing tracked (defensive: treat as
- * unmanaged).
+ * Returns `null` (no filtering) for a temp results dir (the test seam) or when
+ * neither the manifest nor git yields anything (defensive: treat as unmanaged).
  */
-function trackedResultsNames() {
-  if (process.env.REMNIC_FIGURES_RESULTS_DIR) return null;
+const ARTIFACT_MANIFEST = join(REPO_ROOT, "docs", "benchmarks", "artifact-manifest.json");
+
+function readManifestNames() {
   try {
-    // -c safe.directory=* dodges the "dubious ownership" fatal that self-hosted
-    // runners can raise (which would make this throw, the catch return null, and
-    // the filter silently no-op — exactly the CI contamination this guards).
+    const m = JSON.parse(readFileSync(ARTIFACT_MANIFEST, "utf8"));
+    const arr = Array.isArray(m?.trackedArtifacts)
+      ? m.trackedArtifacts.filter((x) => typeof x === "string")
+      : [];
+    return arr.length > 0 ? new Set(arr) : null;
+  } catch {
+    return null;
+  }
+}
+
+function trackedResultsNamesFromGit() {
+  try {
+    // -c safe.directory=* dodges the "dubious ownership" fatal self-hosted
+    // runners can raise. Only used to (re)generate the manifest locally; the CI
+    // read path goes through the committed manifest, not git.
     const out = execFileSync("git", ["-c", "safe.directory=*", "ls-files", "docs/benchmarks/results"], {
       cwd: REPO_ROOT,
       encoding: "utf8",
@@ -77,7 +91,25 @@ function trackedResultsNames() {
     return null;
   }
 }
+
+function trackedResultsNames() {
+  if (process.env.REMNIC_FIGURES_RESULTS_DIR) return null; // temp seam: fixtures are deliberate
+  return readManifestNames() ?? trackedResultsNamesFromGit();
+}
 const TRACKED_RESULTS_NAMES = trackedResultsNames();
+
+// Keep the committed manifest in sync with git when git is available (local dev).
+// No-op in CI (git not reliably callable there) — the committed manifest is the
+// source of truth. Idempotent: writes only when the tracked set changed.
+function refreshArtifactManifest() {
+  if (process.env.REMNIC_FIGURES_RESULTS_DIR) return;
+  const fromGit = trackedResultsNamesFromGit();
+  if (!fromGit) return;
+  const tracked = [...fromGit].sort();
+  const cur = readManifestNames();
+  if (cur && JSON.stringify([...cur].sort()) === JSON.stringify(tracked)) return;
+  writeFileSync(ARTIFACT_MANIFEST, JSON.stringify({ trackedArtifacts: tracked }, null, 2) + "\n");
+}
 
 // ─── Sources ──────────────────────────────────────────────────────────────
 
@@ -834,6 +866,9 @@ function writeFigure(filename, svg) {
 
 function main() {
   mkdirSync(FIGURES_DIR, { recursive: true });
+  // Self-heal the committed manifest from git when git is available (local
+  // dev); no-op in CI where the committed manifest is the source of truth.
+  refreshArtifactManifest();
 
   const f1 = figure1();
   const f2 = figure2();
@@ -858,7 +893,17 @@ function main() {
   console.log(`  fig1 longmemeval Tier-L: ${longmemeval ? "REAL" : "PENDING"}`);
   console.log(`  fig1 locomo Tier-F: ${locomoF ? "REAL" : "PENDING (#1728)"}`);
   console.log(`  fig1 longmemeval Tier-F: ${longmemevalF ? "REAL" : "PENDING (#1728)"}`);
-  console.log(`  fig1 third-party (Mem0/Zep/Letta): PENDING (#1747)`);
+  const thirdPartyReal = THIRD_PARTY.filter((tp) =>
+    findArtifact({ benchmarkId: "locomo", tier: "local", systemName: tp.key }) ||
+    findArtifact({ benchmarkId: "longmemeval", tier: "local", systemName: tp.key }),
+  );
+  console.log(
+    `  fig1 third-party (Mem0/Zep/Letta): ${
+      thirdPartyReal.length
+        ? `REAL (${thirdPartyReal.map((t) => t.label).join(", ")})`
+        : "PENDING (#1747)"
+    }`,
+  );
   console.log(`  fig2 MemCorrect adapters: ${memcorrect.length ? `REAL (${memcorrect.map((m) => m.adapter).join(", ")})` : "PENDING (#1584 + #1747)"}`);
   console.log(`  fig3 TrustScore components: REAL (source-extracted)`);
 }

@@ -58,12 +58,29 @@ function loadJson(p) {
 
 // ─── Helpers: find the real (non-mock) committed artifacts ────────────────
 
-// Basenames git-tracked under the committed results dir. The self-hosted CI
-// runner accumulates UNTRACKED artifacts there (the dir is gitignored); both
-// the generator and these assertions must ignore them or the byte-identical
-// regeneration test fails in CI only. `null` means git unavailable / nothing
-// tracked → no filtering (defensive).
-function trackedResultsNames() {
+// Which artifacts under docs/benchmarks/results/ are COMMITTED (safe to plot
+// or to seed a regeneration from). The dir is gitignored (root .gitignore line
+// 44), so the self-hosted CI runner accumulates UNTRACKED leftovers there; this
+// helper must ignore them or the byte-identical regeneration test fails in CI
+// only.
+//
+// Source of truth: the committed manifest at docs/benchmarks/artifact-manifest.json
+// (git-INDEPENDENT — works in the CI subprocess where `git ls-files` is not
+// reliably callable). Falls back to `git ls-files` for local dev. `null` means
+// nothing tracked → no filtering (defensive).
+const ARTIFACT_MANIFEST = join(REPO_ROOT, "docs", "benchmarks", "artifact-manifest.json");
+function readManifestNames() {
+  try {
+    const m = JSON.parse(readFileSync(ARTIFACT_MANIFEST, "utf8"));
+    const arr = Array.isArray(m?.trackedArtifacts)
+      ? m.trackedArtifacts.filter((x) => typeof x === "string")
+      : [];
+    return arr.length > 0 ? new Set(arr) : null;
+  } catch {
+    return null;
+  }
+}
+function trackedResultsNamesFromGit() {
   try {
     const res = spawnSync("git", ["-c", "safe.directory=*", "ls-files", "docs/benchmarks/results"], {
       cwd: REPO_ROOT,
@@ -77,6 +94,9 @@ function trackedResultsNames() {
   } catch {
     return null;
   }
+}
+function trackedResultsNames() {
+  return readManifestNames() ?? trackedResultsNamesFromGit();
 }
 const TRACKED_RESULTS_NAMES = trackedResultsNames();
 function isTrackedResult(name) {
@@ -98,15 +118,20 @@ function copyTrackedResults(dest) {
 }
 
 function findRealArtifact(benchmarkId, tier) {
-  for (const name of readdirSync(RESULTS_DIR).sort()) {
+  // Match the generator: among committed (manifest-tracked), non-mock
+  // artifacts for this benchmark+tier, return the NEWEST by finishedAt — not
+  // the first filename sort (cursor thread: picks wrong benchmark artifact).
+  const matches = [];
+  for (const name of readdirSync(RESULTS_DIR)) {
     if (!name.endsWith(".json") || name.includes("mock000")) continue;
     if (!isTrackedResult(name)) continue;
     const doc = loadJson(join(RESULTS_DIR, name));
     if (doc.benchmarkId === benchmarkId && (!tier || doc.tier === tier)) {
-      return { name, doc };
+      matches.push({ name, doc });
     }
   }
-  return null;
+  matches.sort((a, b) => String(b.doc.finishedAt).localeCompare(String(a.doc.finishedAt)));
+  return matches[0] ?? null;
 }
 
 // ─── 1. Committed SVGs exist + are the generator's output ─────────────────
@@ -344,12 +369,10 @@ test("Figure 2 auto-upgrades: a committed memcorrect artifact yields real bars",
   const tmpResults = mkdtempSync(join(tmpdir(), "fig-results-"));
   const tmpOut = mkdtempSync(join(tmpdir(), "fig-out-"));
   try {
-    // Carry the real locomo/longmemeval artifacts so fig1 still resolves.
-    for (const name of readdirSync(RESULTS_DIR)) {
-      if (name.endsWith(".json")) {
-        writeFileSync(join(tmpResults, name), readFileSync(join(RESULTS_DIR, name)));
-      }
-    }
+    // Carry the real locomo/longmemeval artifacts so fig1 still resolves. Use
+    // the filtered copy so UNTRACKED CI leftovers in the gitignored results
+    // dir never seed the temp dir (cursor thread: auto-upgrade copies CI junk).
+    copyTrackedResults(tmpResults);
     // Synthetic memcorrect-v1 artifact in the MemCorrectLeaderboardRow schema.
     const memcorrect = {
       benchmarkId: "memcorrect-v1",
