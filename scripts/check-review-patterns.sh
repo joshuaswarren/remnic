@@ -5,6 +5,7 @@
 # Updated: 2026-04-12 (added checks 7-10 from iteration 2, 11-14 from iteration 3, 15-17 from iteration 4, 18-21 from iteration 5, 22-23 from iteration 7, 24-26 from iteration 8, 27-29 from iteration 10, 30-34 from iteration 12).
 # 2026-07-07: graduated rules 17 (→check #7), 18 (→check #9), 32 (→check #16), 35 (→check #18), 38 (→check #20), 41 (→check #23), 45 (→check #25), 50 (→check #29), 51 (→#1525 boundary + check #30), 52 (→check #31). CLAUDE.md 45→35 rules.
 # 2026-07-07: graduated rules 39 (→capabilities.test.ts), 42 (→scope-plan.test.ts), 47 (→check #27), 48 (→check #28), 54 (→check #33), 55 (→check-docs-parity.mjs + check #34). CLAUDE.md 51→45 rules.
+# 2026-07-08: batch 6 (final) — graduated rules 9 (→check #40 NEW), 14 (→#1525 boundary registry + check #30), 24 (→check #38 NEW), 57 (→check #39 NEW, BLOCKING). CLAUDE.md 22→18 rules (target <20 met).
 # 2026-07-06: added check 37 (rule 53 ad-hoc status exclusion, WARN). Graduated rules 36 (→check #19), 46 (→check #26), 53 (→check #37).
 # 2026-07-05: check 15 graduated to BLOCKING + added codex-* prefix + maxdepth-1 scope (rule 31, PR #TBD).
 set -euo pipefail
@@ -942,6 +943,93 @@ if [[ -n "$ADHOC_STATUS_FILES" ]]; then
   done <<< "$ADHOC_STATUS_FILES"
 fi
 
+
+
+# ---- 38. existsSync on directory-typed args without isDirectory (CLAUDE.md rule 24) ----
+echo "[check] existsSync on directory paths without isDirectory() check..."
+
+# Rule 24: existsSync() returns true for files. When a directory is expected
+# (an argument whose name contains Dir/Folder/memoryDir), guard with
+# statSync().isDirectory(). Accepting a file as memoryDir produces a broken
+# install that only fails later. WARN-level.
+EXISTSYNC_DIR=$(grep -rnE 'existsSync\(\s*\w*(Dir|Folder|memoryDir)\w*' \
+  --include="*.ts" \
+  packages/remnic-core/src/ packages/remnic-cli/src/ packages/remnic-server/src/ \
+  2>/dev/null \
+  | grep -v node_modules \
+  | grep -v dist \
+  | grep -v ".test." \
+  | grep -v "// " \
+  | grep -v "isDirectory" \
+  || true)
+
+if [[ -n "$EXISTSYNC_DIR" ]]; then
+  EC=$(echo "$EXISTSYNC_DIR" | wc -l | tr -d ' ')
+  warn "$EC site(s) call existsSync() on a *Dir/*Folder variable without an isDirectory() guard (rule 24). Use statSync().isDirectory() when a directory is expected."
+  echo "$EXISTSYNC_DIR" | head -10 | sed 's/^/    /'
+fi
+
+# ---- 39. Optional packages bundled into a base install (CLAUDE.md rule 57) ----
+echo "[check] Optional packages in base dependencies/noExternal..."
+
+# Rule 57: optional companion packages must stay à-la-carte — loaded via
+# computed-specifier dynamic imports, never listed in a base package's runtime
+# dependencies or tsup noExternal. BLOCKING — a regression silently forces every
+# user to install optional weight they did not ask for.
+for base in remnic-core remnic-cli remnic-server; do
+  pj="packages/$base/package.json"
+  [[ -f "$pj" ]] || continue
+  DEP_BODY=$(awk '/"dependencies"[[:space:]]*:[[:space:]]*\{/{f=1;next} f&&/^[[:space:]]*\}/{f=0} f' "$pj" 2>/dev/null || true)
+  for opt in "@remnic/bench" "@remnic/export-weclone" "@remnic/import-weclone"; do
+    if echo "$DEP_BODY" | grep -qF "$opt"; then
+      fail "$pj lists $opt in dependencies (rule 57). Keep optional via peerDependenciesMeta + computed-specifier dynamic import."
+    fi
+  done
+done
+# tsup: optional pkgs must NOT be in noExternal. Listing them in the
+# `external` array is CORRECT (keeps them unbundled) and must not be flagged.
+for tcfg in packages/remnic-core/tsup.config.* packages/remnic-cli/tsup.config.* packages/remnic-server/tsup.config.*; do
+  [[ -f "$tcfg" ]] || continue
+  NOEXT_BODY=$(awk '/noExternal[[:space:]]*:[[:space:]]*\[/{f=1;next} f&&/\]/{f=0} f' "$tcfg" 2>/dev/null || true)
+  if [[ -n "$NOEXT_BODY" ]]; then
+    for opt in "@remnic/bench" "@remnic/export-weclone" "@remnic/import-weclone"; do
+      if echo "$NOEXT_BODY" | grep -qF "$opt"; then
+        fail "$tcfg lists $opt in noExternal (rule 57). Optional packages must stay external/omitted, never bundled."
+      fi
+    done
+  fi
+done
+
+# ---- 40. ENGRAM_ env var read without REMNIC_ fallback (CLAUDE.md rule 9) ----
+echo "[check] ENGRAM_ env reads missing REMNIC_ fallback..."
+
+# Rule 9: always try REMNIC_* first, then fall back to ENGRAM_*. An ENGRAM_
+# read without a REMNIC_ partner on the same or preceding 2 lines is the
+# legacy-fallback anti-pattern. WARN-level — zero current violations; guards
+# against regressions when new env-var plumbing is added.
+ENGRA_READS=$(grep -rnE 'process\.env\.ENGRAM_' \
+  --include="*.ts" --include="*.cjs" --include="*.mjs" \
+  packages/ \
+  2>/dev/null \
+  | grep -v node_modules \
+  | grep -v dist \
+  | grep -v ".test." \
+  | grep -v "// " \
+  || true)
+ENGRA_VIOLS=""
+if [[ -n "$ENGRA_READS" ]]; then
+  while IFS=: read -r ef en erest; do
+    [[ -n "$ef" ]] || continue
+    ectxa=$(awk -v n="$en" 'NR>=n-2 && NR<=n' "$ef" 2>/dev/null)
+    if ! echo "$ectxa" | grep -q "REMNIC_"; then
+      ENGRA_VIOLS="${ENGRA_VIOLS}${ef}:${en} ${erest}\n"
+    fi
+  done <<< "$ENGRA_READS"
+fi
+if [[ -n "$(printf '%s' "$ENGRA_VIOLS" | tr -d '[:space:]')" ]]; then
+  warn "ENGRAM_ env read(s) without a REMNIC_ fallback within 2 lines (rule 9):"
+  printf '%b' "$ENGRA_VIOLS" | awk 'NF' | head -10 | sed 's/^/    /'
+fi
 
 if [[ $ERRORS -gt 0 ]]; then
   echo "[check] FAILED — $ERRORS issue(s) found. Fix before pushing."
