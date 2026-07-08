@@ -25,6 +25,7 @@ import {
   type TierRoutingPolicy,
   type TierTransitionDecision,
 } from "../tier-routing.js";
+import { resolveQmdCapabilities } from "../capabilities.js";
 import {
   applyUtilityPromotionRuntimePolicy,
   loadUtilityRuntimeValues,
@@ -82,7 +83,7 @@ async function tierRoutingPolicyFromConfig(
   config: PluginConfig,
 ): Promise<TierRoutingPolicy> {
   const basePolicy: TierRoutingPolicy = {
-    enabled: config.qmdTierMigrationEnabled,
+    enabled: resolveQmdCapabilities(config).qmdTierMigration,
     demotionMinAgeDays: config.qmdTierDemotionMinAgeDays,
     demotionValueThreshold: config.qmdTierDemotionValueThreshold,
     promotionValueThreshold: config.qmdTierPromotionValueThreshold,

@@ -38,7 +38,10 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
-import { resolveMemoryLifecycleCapabilities } from "./capabilities.js";
+import {
+  resolveMemoryLifecycleCapabilities,
+  resolveLocalLlmCapabilities,
+} from "./capabilities.js";
 
 type ExtractionQuestion = ExtractionResult["questions"][number];
 type ExtractedFactResult = ExtractionResult["facts"][number];
@@ -152,7 +155,7 @@ export class ExtractionEngine {
    * Disabled when gateway model source is active (gateway chain replaces local).
    */
   private get shouldUseLocalLlm(): boolean {
-    return this.config.localLlmEnabled && !this.useGatewayModelSource;
+    return resolveLocalLlmCapabilities(this.config).localLlm && !this.useGatewayModelSource;
   }
 
   /**
@@ -1114,7 +1117,7 @@ export class ExtractionEngine {
     // --- profiling instrumentation ---
     const extractionTraceId = this.profiler.startTrace("extraction", undefined, {
       model: this.config.model,
-      localLlm: this.config.localLlmEnabled,
+      localLlm: resolveLocalLlmCapabilities(this.config).localLlm,
     });
     this.profiler.startSpan("total", extractionTraceId);
 

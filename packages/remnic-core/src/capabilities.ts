@@ -515,8 +515,9 @@ export type QmdConfigProjection = Pick<
 /**
  * Resolve the {@link QmdCapabilitySet} from parsed config.
  *
- * Call this ONCE at operation entry and thread the result down. All twelve
- * flags are non-optional booleans so the projection is pure pass-through.
+ * Call this ONCE at operation entry and thread the result down. Eleven flags
+ * are non-optional booleans (pure pass-through); `qmdColdTierEnabled` is
+ * optional and coerced with `=== true` (matching the pre-migration call sites).
  */
 export function resolveQmdCapabilities(config: QmdConfigProjection): QmdCapabilitySet {
   return Object.freeze({
@@ -525,7 +526,7 @@ export function resolveQmdCapabilities(config: QmdConfigProjection): QmdCapabili
     qmdTierAutoBackfill: config.qmdTierAutoBackfillEnabled,
     qmdAutoEmbed: config.qmdAutoEmbedEnabled,
     qmdMaintenance: config.qmdMaintenanceEnabled,
-    qmdColdTier: config.qmdColdTierEnabled,
+    qmdColdTier: config.qmdColdTierEnabled === true,
     qmdDaemon: config.qmdDaemonEnabled,
     qmdTierParityGraph: config.qmdTierParityGraphEnabled,
     qmdQueryRerank: config.qmdQueryRerankEnabled,

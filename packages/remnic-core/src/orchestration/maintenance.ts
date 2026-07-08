@@ -19,7 +19,10 @@
  * `orchestrator.requestQmdMaintenance` etc. continue to work.
  */
 
-import { resolveNamespaceCapabilities } from "../capabilities.js";
+import {
+  resolveNamespaceCapabilities,
+  resolveQmdCapabilities,
+} from "../capabilities.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
@@ -404,7 +407,7 @@ export class MaintenanceScheduler {
   /** Internal: queue a debounced QMD maintenance pass. */
   private requestQmdMaintenance(): void {
     if (!this.deps.getQmd().isAvailable()) return;
-    if (!this.deps.config.qmdMaintenanceEnabled) return;
+    if (!resolveQmdCapabilities(this.deps.config).qmdMaintenance) return;
 
     this.qmdMaintenancePending = true;
     if (this.qmdMaintenanceTimer) return;
@@ -447,7 +450,7 @@ export class MaintenanceScheduler {
         const now = Date.now();
         const lastEmbedAtByNamespace = this.lastQmdEmbedAtMsByNamespace;
         const dueEmbedNamespaces = (namespaces: string[]): string[] => {
-          if (!this.deps.config.qmdAutoEmbedEnabled) return [];
+          if (!resolveQmdCapabilities(this.deps.config).qmdAutoEmbed) return [];
           return namespaces.filter(
             (namespace) =>
               now - (lastEmbedAtByNamespace.get(namespace) ?? 0) >=
@@ -515,7 +518,7 @@ export class MaintenanceScheduler {
         await this.deps.getQmd().update();
         const now = Date.now();
         if (
-          this.deps.config.qmdAutoEmbedEnabled &&
+          resolveQmdCapabilities(this.deps.config).qmdAutoEmbed &&
           now - this.lastQmdEmbedAtMs >= this.deps.config.qmdEmbedMinIntervalMs
         ) {
           await this.deps.getQmd().embed();
