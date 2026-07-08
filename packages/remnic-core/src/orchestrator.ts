@@ -275,7 +275,11 @@ import { resolveNamespaceCapabilities,
   resolveQmdCapabilities,
   resolveIdentityContinuityCapabilities,
   resolveLocalLlmCapabilities,
-  resolveSecurityCapabilities, resolveEvalCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolvePresentationCapabilities, resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
+  resolveSecurityCapabilities, resolveEvalCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolvePresentationCapabilities, resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities ,
+  resolveRecallEnhancementCapabilities,
+  resolvePipelineProcessingCapabilities,
+  resolveConversationContextCapabilities,
+} from "./capabilities.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/index.js";
 import {
   searchHarmonicRetrieval,
@@ -2767,7 +2771,7 @@ export class Orchestrator {
   constructor(config: PluginConfig) {
     this.config = config;
     this.profiler = new ProfilingCollector({
-      enabled: config.profilingEnabled,
+      enabled: resolvePipelineProcessingCapabilities(this.config).profiling,
       storageDir: config.profilingStorageDir || path.join(config.memoryDir, "profiling"),
       maxTraces: config.profilingMaxTraces,
     });
@@ -2856,7 +2860,7 @@ export class Orchestrator {
     this.conversationQmd = conversationIndexRuntime.qmd;
     this.conversationFaiss = conversationIndexRuntime.faiss;
     this.conversationIndexBackend = conversationIndexRuntime.backend;
-    this.sharedContext = config.sharedContextEnabled
+    this.sharedContext = resolveConversationContextCapabilities(this.config).sharedContext
       ? new SharedContextManager(config)
       : undefined;
     this.compounding = resolveConsolidationCapabilities(config).compounding
@@ -2934,7 +2938,7 @@ export class Orchestrator {
     // timeout.  Operators can set `localLlmDisableThinking: false`
     // when they want thinking enabled for narrative paths.
     this.localLlm.disableThinking = config.localLlmDisableThinking;
-    this.fastLlm = config.localLlmFastEnabled
+    this.fastLlm = resolvePipelineProcessingCapabilities(this.config).localLlmFast
       ? (() => {
           const client = new LocalLlmClient(
             {
@@ -3007,7 +3011,7 @@ export class Orchestrator {
     });
 
     // Lossless Context Management (LCM) — proactive session archive + DAG summarization
-    if (config.lcmEnabled) {
+    if (resolvePipelineProcessingCapabilities(this.config).lcm) {
       const summarizeFn = async (
         text: string,
         targetTokens: number,
@@ -3064,7 +3068,7 @@ export class Orchestrator {
         dir,
         new BoxBuilder(dir, {
           memoryBoxesEnabled: resolvePresentationCapabilities(this.config).memoryBoxes,
-          traceWeaverEnabled: this.config.traceWeaverEnabled,
+          traceWeaverEnabled: resolvePipelineProcessingCapabilities(this.config).traceWeaver,
           boxTopicShiftThreshold: this.config.boxTopicShiftThreshold,
           boxTimeGapMs: this.config.boxTimeGapMs,
           boxMaxMemories: this.config.boxMaxMemories,
@@ -3157,7 +3161,7 @@ export class Orchestrator {
   }
 
   private async loadRoutingRules(): Promise<RouteRule[]> {
-    if (!this.config.routingRulesEnabled) return [];
+    if (!resolvePipelineProcessingCapabilities(this.config).routingRules) return [];
     try {
       return await this.getRoutingRulesStore().read(this.routeEngineOptions());
     } catch (err) {
@@ -6872,7 +6876,7 @@ export class Orchestrator {
             signal: options.abortSignal,
           });
     if (
-      this.config.recallPlannerTelemetryEnabled &&
+      resolveRecallEnhancementCapabilities(this.config).recallPlannerTelemetry &&
       recallDecision.plannerSource &&
       recallDecision.plannerSource !== "heuristic"
     ) {
@@ -7406,7 +7410,7 @@ export class Orchestrator {
       if (
         !this.isRecallSectionEnabled(
           "shared-context",
-          this.config.sharedContextEnabled === true,
+          resolveConversationContextCapabilities(this.config).sharedContext === true,
         )
       )
         return null;
@@ -7530,7 +7534,7 @@ export class Orchestrator {
       | null
       | undefined = undefined;
     const peerProfileRecallPromise = (async (): Promise<string | null> => {
-      if (!this.config.peerProfileRecallEnabled) return null;
+      if (!resolveRecallEnhancementCapabilities(this.config).peerProfileRecall) return null;
       if (this.config.peerProfileRecallMaxFields <= 0) return null;
       const peerId = this.getPeerIdForSession(sessionKey);
       if (!peerId) return null;
@@ -7937,11 +7941,11 @@ export class Orchestrator {
     const causalTrajectoryPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.causalTrajectoryMemoryEnabled ||
-        !this.config.causalTrajectoryRecallEnabled ||
+        !resolveRecallEnhancementCapabilities(this.config).causalTrajectoryMemory ||
+        !resolveRecallEnhancementCapabilities(this.config).causalTrajectoryRecall ||
         !this.isRecallSectionEnabled(
           "causal-trajectories",
-          this.config.causalTrajectoryRecallEnabled === true,
+          resolveRecallEnhancementCapabilities(this.config).causalTrajectoryRecall === true,
         )
       ) {
         recordRecallSectionMetric({
@@ -7994,10 +7998,10 @@ export class Orchestrator {
     const cmcRetrievalPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.cmcRetrievalEnabled ||
+        !resolveRecallEnhancementCapabilities(this.config).cmcRetrieval ||
         !this.isRecallSectionEnabled(
           "cmc-causal-chains",
-          this.config.cmcRetrievalEnabled === true,
+          resolveRecallEnhancementCapabilities(this.config).cmcRetrieval === true,
         )
       ) {
         recordRecallSectionMetric({
@@ -8995,7 +8999,7 @@ export class Orchestrator {
       let section: string | null = null;
       // Try checkpoint first (post-compaction recovery)
       let checkpointInjected = false;
-      if (this.config.checkpointEnabled) {
+      if (resolvePipelineProcessingCapabilities(this.config).checkpoint) {
         const checkpoint = await this.transcript.loadCheckpoint(sessionKey);
         log.debug(
           `recall: checkpoint loaded, turns=${checkpoint?.turns?.length ?? 0}`,
@@ -9128,7 +9132,7 @@ export class Orchestrator {
     const summariesPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.hourlySummariesEnabled ||
+        !resolvePipelineProcessingCapabilities(this.config).hourlySummaries ||
         !sessionKey ||
         !this.isRecallSectionEnabled("summaries", true)
       ) {
@@ -9358,7 +9362,7 @@ export class Orchestrator {
         const t0 = Date.now();
         if (
           !this.compounding ||
-          !this.config.compoundingInjectEnabled ||
+          !resolveRecallEnhancementCapabilities(this.config).compoundingInject ||
           !this.isRecallSectionEnabled("compounding", true)
         ) {
           recordRecallSectionMetric({
@@ -9699,7 +9703,7 @@ export class Orchestrator {
       this.getRecallSectionMaxChars("explicit-cue") ??
       this.config.explicitCueRecallMaxChars;
     if (
-      this.config.explicitCueRecallEnabled &&
+      resolveRecallEnhancementCapabilities(this.config).explicitCueRecall &&
       this.isRecallSectionEnabled("explicit-cue") &&
       explicitCueMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
@@ -9742,7 +9746,7 @@ export class Orchestrator {
     if (
       this.isSpecializedRecallSectionEnabled(
         "targeted-facts",
-        this.config.targetedFactRecallEnabled,
+        resolveRecallEnhancementCapabilities(this.config).targetedFactRecall,
       ) &&
       targetedFactMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
@@ -9791,7 +9795,7 @@ export class Orchestrator {
     if (
       this.isSpecializedRecallSectionEnabled(
         "focused-list",
-        this.config.focusedListRecallEnabled,
+        resolveRecallEnhancementCapabilities(this.config).focusedListRecall,
       ) &&
       focusedListMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
@@ -9845,7 +9849,7 @@ export class Orchestrator {
     if (
       this.isSpecializedRecallSectionEnabled(
         "response-guidance",
-        this.config.responseGuidanceRecallEnabled,
+        resolveRecallEnhancementCapabilities(this.config).responseGuidanceRecall,
       ) &&
       responseGuidanceMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
@@ -9894,7 +9898,7 @@ export class Orchestrator {
     if (
       this.isSpecializedRecallSectionEnabled(
         "event-order",
-        this.config.eventOrderRecallEnabled,
+        resolveRecallEnhancementCapabilities(this.config).eventOrderRecall,
       ) &&
       eventOrderMaxChars !== 0 &&
       this.lcmEngine?.enabled &&
@@ -10320,7 +10324,7 @@ export class Orchestrator {
         recallMode === "graph_mode" || isFullModeGraphAssist;
       const graphShadowEvalEnabled =
         isFullModeGraphAssist &&
-        this.config.graphAssistShadowEvalEnabled === true;
+        resolveRecallEnhancementCapabilities(this.config).graphAssistShadowEval === true;
       if (shouldRunGraphExpansion) {
         shouldPersistGraphSnapshot = true;
         graphDecisionShadowMode = graphShadowEvalEnabled;
@@ -10584,7 +10588,7 @@ export class Orchestrator {
       );
 
       // E-Mem-inspired memory reconstruction: fill gaps for referenced entities
-      if (this.config.memoryReconstructionEnabled && memoryResults.length > 0) {
+      if (resolveRecallEnhancementCapabilities(this.config).memoryReconstruction && memoryResults.length > 0) {
         try {
           const snippets = memoryResults.map((r) => r.snippet);
           // Extract entity paths already present in recall results to avoid duplicates
@@ -12248,7 +12252,7 @@ export class Orchestrator {
     sessionKey: string,
     options: { bufferKey?: string } = {},
   ): Promise<void> {
-    if (this.config.sessionObserverEnabled !== true) return;
+    if (resolvePipelineProcessingCapabilities(this.config).sessionObserver !== true) return;
     if (!sessionKey || sessionKey.length === 0) return;
 
     const bufferKey =
@@ -13272,7 +13276,7 @@ export class Orchestrator {
     // the citation survives hostile memory text, copy/paste, and LLM quoting.
     // The helper is a no-op when the feature flag is off, so legacy pipelines
     // see zero behavioral change.
-    const citationEnabled = this.config.inlineSourceAttributionEnabled === true;
+    const citationEnabled = resolvePipelineProcessingCapabilities(this.config).inlineSourceAttribution === true;
     const citationTemplate = this.config.inlineSourceAttributionFormat;
     // The stable fields (agent, session) are computed once; `ts` is intentionally
     // omitted here and added fresh per invocation so each fact in a large batch
@@ -13431,7 +13435,7 @@ export class Orchestrator {
         const actualTier = confidenceTier(confidence);
         const actualRank = confidenceTierOrder.indexOf(actualTier);
         if (actualRank === -1) return false;
-        if (!this.config.autoPromoteToSharedEnabled) return false;
+        if (!resolveRecallEnhancementCapabilities(this.config).autoPromoteToShared) return false;
         if (!this.config.autoPromoteToSharedCategories.includes(category as any))
           return false;
         const minimumRank = confidenceTierOrder.indexOf(
@@ -14831,7 +14835,7 @@ export class Orchestrator {
       // a high-similarity update/correction is linked as a superseding
       // contradiction rather than silently dropped.
       let pendingSemanticSkip: (SemanticDedupDecision & { action: "skip" }) | null = null;
-      if (this.config.semanticDedupEnabled) {
+      if (resolvePipelineProcessingCapabilities(this.config).semanticDedup) {
         let semanticDecision: SemanticDedupDecision;
         // UUI2: skip embedding lookup for the rest of this batch once we know
         // the backend is unavailable. The flag is reset per-batch (set to false
@@ -14876,7 +14880,7 @@ export class Orchestrator {
         }
       }
 
-      const inferredIntent = this.config.intentRoutingEnabled
+      const inferredIntent = resolveConversationContextCapabilities(this.config).intentRouting
         ? inferIntentFromText(
             `${writeCategory} ${fact.tags.join(" ")} ${fact.content}`,
           )
@@ -14916,7 +14920,7 @@ export class Orchestrator {
       // for a pending_review fact — an unfaithful extraction in the review queue
       // must not trigger auto-resolve and retire an existing active memory.
       if (
-        this.config.contradictionDetectionEnabled &&
+        resolveRecallEnhancementCapabilities(this.config).contradictionDetection &&
         this.qmd.isAvailable() &&
         faithfulnessEnforceStatus !== "pending_review"
       ) {
@@ -15001,10 +15005,10 @@ export class Orchestrator {
       // When semanticChunkingEnabled is true, prefer the embedding-based
       // semantic chunker which produces more coherent topic-aligned segments.
       // Falls back to the recursive sentence-boundary chunker on failure.
-      if (this.config.chunkingEnabled && writeCategory !== "procedure") {
+      if (resolvePipelineProcessingCapabilities(this.config).chunking && writeCategory !== "procedure") {
         let chunkResult: { chunked: boolean; chunks: { content: string; index: number; tokenCount: number }[] };
 
-        if (this.config.semanticChunkingEnabled) {
+        if (resolvePipelineProcessingCapabilities(this.config).semanticChunking) {
           try {
             const embedFn = this.embeddingFallback.embedTexts.bind(this.embeddingFallback);
             const semanticResult: SemanticChunkResult = await semanticChunkContent(
@@ -15371,7 +15375,7 @@ export class Orchestrator {
       }
 
       // Suggest links for this memory (Phase 3A)
-      if (this.config.memoryLinkingEnabled && this.qmd.isAvailable()) {
+      if (resolveRecallEnhancementCapabilities(this.config).memoryLinking && this.qmd.isAvailable()) {
         const targetNamespace = this.storageDirNamespace(targetStorage.dir);
         const suggestedLinks = await this.suggestLinksForMemory(
           fact.content,
@@ -15691,7 +15695,7 @@ export class Orchestrator {
 
     // Persist entity relationships (v7.0)
     if (
-      this.config.entityRelationshipsEnabled &&
+      resolveRecallEnhancementCapabilities(this.config).entityRelationships &&
       Array.isArray(result.relationships)
     ) {
       for (const rel of result.relationships.slice(0, 5)) {
@@ -15715,7 +15719,7 @@ export class Orchestrator {
     }
 
     // Persist entity activity (v7.0)
-    if (this.config.entityActivityLogEnabled) {
+    if (resolveRecallEnhancementCapabilities(this.config).entityActivityLog) {
       const today = new Date().toISOString().slice(0, 10);
       for (const entity of entities) {
         const name = (entity as any)?.name;
@@ -15753,7 +15757,7 @@ export class Orchestrator {
     // counts as a durable non-fact write for the catalog touch below (NIIly).
     // Only count it when the write actually succeeds (best-effort write); the
     // touch is recorded AFTER this so a rolled-back/failed write never touches.
-    if (this.config.identityEnabled && result.identityReflection) {
+    if (resolveRecallEnhancementCapabilities(this.config).identity && result.identityReflection) {
       try {
         await storage.appendIdentityReflection(result.identityReflection);
         recordDurableNonFactWrite();
@@ -16320,7 +16324,7 @@ export class Orchestrator {
       allMemories = await this.storage.readAllMemories();
 
       // Fact archival pass (v6.0) — move old, low-importance, rarely-accessed facts to archive/
-      if (this.config.factArchivalEnabled) {
+      if (resolveRecallEnhancementCapabilities(this.config).factArchival) {
         const archived = await this.runFactArchival(allMemories);
         if (archived > 0) {
           memoryItemMutated = true;
@@ -16418,7 +16422,7 @@ export class Orchestrator {
     }
 
     // Auto-consolidate IDENTITY.md if it's getting large
-    if (this.config.identityEnabled) {
+    if (resolveRecallEnhancementCapabilities(this.config).identity) {
       await this.autoConsolidateIdentity();
     }
 
@@ -16458,12 +16462,12 @@ export class Orchestrator {
     }
 
     // Memory Summarization (Phase 4A)
-    if (this.config.summarizationEnabled) {
+    if (resolvePipelineProcessingCapabilities(this.config).summarization) {
       await this.runSummarization(allMemories);
     }
 
     // Topic Extraction (Phase 4B)
-    if (this.config.topicExtractionEnabled) {
+    if (resolvePipelineProcessingCapabilities(this.config).topicExtraction) {
       await this.runTopicExtraction(allMemories);
     }
 
@@ -17876,7 +17880,7 @@ export class Orchestrator {
    * Updates are batched in memory and flushed during consolidation.
    */
   trackMemoryAccess(memoryIds: string[]): void {
-    if (!this.config.accessTrackingEnabled) return;
+    if (!resolveRecallEnhancementCapabilities(this.config).accessTracking) return;
 
     const now = new Date().toISOString();
     for (const id of memoryIds) {
@@ -18311,7 +18315,7 @@ export class Orchestrator {
     ]);
 
     const queryIntent =
-      this.config.intentRoutingEnabled && prompt
+      resolveConversationContextCapabilities(this.config).intentRouting && prompt
         ? inferIntentFromText(prompt)
         : null;
 
@@ -18379,7 +18383,7 @@ export class Orchestrator {
         }
 
         // Feedback bias (v2.2): apply small user-provided up/down vote adjustments.
-        if (this.config.feedbackEnabled) {
+        if (resolveRecallEnhancementCapabilities(this.config).feedback) {
           const match = memory.path.match(/([^/]+)\.md$/);
           const memoryId = match ? match[1] : null;
           if (memoryId) {
@@ -18393,7 +18397,7 @@ export class Orchestrator {
         }
 
         // Negative examples (v2.2): apply a small penalty for memories repeatedly marked "not useful".
-        if (this.config.negativeExamplesEnabled) {
+        if (resolvePipelineProcessingCapabilities(this.config).negativeExamples) {
           const match = memory.path.match(/([^/]+)\.md$/);
           const memoryId = match ? match[1] : null;
           if (memoryId) {
@@ -18465,7 +18469,7 @@ export class Orchestrator {
         // Gated by reinforcementRecallBoostEnabled (default false).
         let reinforcementBoost = 0;
         if (
-          this.config.reinforcementRecallBoostEnabled &&
+          resolveRecallEnhancementCapabilities(this.config).reinforcementRecallBoost &&
           typeof memory.frontmatter.reinforcement_count === "number" &&
           memory.frontmatter.reinforcement_count > 0
         ) {

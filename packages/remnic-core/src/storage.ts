@@ -2373,7 +2373,7 @@ export class StorageManager {
    * When true, the secure-store is configured as required — writes
    * MUST be encrypted and a locked store MUST reject writes rather
    * than silently falling back to plaintext.  Set by the orchestrator
-   * from `config.secureStoreEnabled`.
+   * from `resolveRecallAuxiliaryCapabilities(config).secureStore`.
    */
   private _secureStoreRequired = false;
 

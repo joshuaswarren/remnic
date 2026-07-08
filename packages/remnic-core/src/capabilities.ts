@@ -1016,3 +1016,270 @@ export function resolveRecallAuxiliaryCapabilities(config: RecallAuxiliaryConfig
     cronRecallPolicy: config.cronRecallPolicyEnabled,
   });
 }
+
+// ---------------------------------------------------------------------------
+// RecallEnhancement capability set (issue #1523 batch 9).
+//
+// These 24 flags gate recall enrichment, memory reconstruction, entity
+// relationships, causal trajectory recall, CMC retrieval, and related
+// enhancement paths. Read sites span orchestrator, access-service, graph-recall,
+// and CLI research-status commands. All flags are non-optional booleans on
+// PluginConfig (defaults resolved at the parse boundary), so the projection
+// is a pure pass-through.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of recall-enhancement feature gates (issue #1523 batch 9).
+ */
+export interface RecallEnhancementCapabilitySet {
+  readonly explicitCueRecall: boolean;
+  readonly targetedFactRecall: boolean;
+  readonly focusedListRecall: boolean;
+  readonly responseGuidanceRecall: boolean;
+  readonly eventOrderRecall: boolean;
+  readonly reinforcementRecallBoost: boolean;
+  readonly recallPlannerTelemetry: boolean;
+  readonly peerProfileRecall: boolean;
+  readonly graphAssistShadowEval: boolean;
+  readonly memoryReconstruction: boolean;
+  readonly memoryLinking: boolean;
+  readonly causalTrajectoryRecall: boolean;
+  readonly causalTrajectoryMemory: boolean;
+  readonly cmcRetrieval: boolean;
+  readonly contradictionDetection: boolean;
+  readonly factArchival: boolean;
+  readonly entityRelationships: boolean;
+  readonly entityActivityLog: boolean;
+  readonly compoundingInject: boolean;
+  readonly accessTracking: boolean;
+  readonly autoPromoteToShared: boolean;
+  readonly recallGraph: boolean;
+  readonly feedback: boolean;
+  readonly identity: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveRecallEnhancementCapabilities}.
+ */
+export type RecallEnhancementConfigProjection = Pick<
+  PluginConfig,
+  | "explicitCueRecallEnabled"
+  | "targetedFactRecallEnabled"
+  | "focusedListRecallEnabled"
+  | "responseGuidanceRecallEnabled"
+  | "eventOrderRecallEnabled"
+  | "reinforcementRecallBoostEnabled"
+  | "recallPlannerTelemetryEnabled"
+  | "peerProfileRecallEnabled"
+  | "graphAssistShadowEvalEnabled"
+  | "memoryReconstructionEnabled"
+  | "memoryLinkingEnabled"
+  | "causalTrajectoryRecallEnabled"
+  | "causalTrajectoryMemoryEnabled"
+  | "cmcRetrievalEnabled"
+  | "contradictionDetectionEnabled"
+  | "factArchivalEnabled"
+  | "entityRelationshipsEnabled"
+  | "entityActivityLogEnabled"
+  | "compoundingInjectEnabled"
+  | "accessTrackingEnabled"
+  | "autoPromoteToSharedEnabled"
+  | "recallGraphEnabled"
+  | "feedbackEnabled"
+  | "identityEnabled"
+>;
+
+/**
+ * Resolve the {@link RecallEnhancementCapabilitySet} from parsed config.
+ */
+export function resolveRecallEnhancementCapabilities(config: RecallEnhancementConfigProjection): RecallEnhancementCapabilitySet {
+  return Object.freeze({
+    explicitCueRecall: config.explicitCueRecallEnabled,
+    targetedFactRecall: config.targetedFactRecallEnabled,
+    focusedListRecall: config.focusedListRecallEnabled,
+    responseGuidanceRecall: config.responseGuidanceRecallEnabled,
+    eventOrderRecall: config.eventOrderRecallEnabled,
+    reinforcementRecallBoost: config.reinforcementRecallBoostEnabled,
+    recallPlannerTelemetry: config.recallPlannerTelemetryEnabled,
+    peerProfileRecall: config.peerProfileRecallEnabled,
+    graphAssistShadowEval: config.graphAssistShadowEvalEnabled === true,
+    memoryReconstruction: config.memoryReconstructionEnabled,
+    memoryLinking: config.memoryLinkingEnabled,
+    causalTrajectoryRecall: config.causalTrajectoryRecallEnabled,
+    causalTrajectoryMemory: config.causalTrajectoryMemoryEnabled,
+    cmcRetrieval: config.cmcRetrievalEnabled,
+    contradictionDetection: config.contradictionDetectionEnabled,
+    factArchival: config.factArchivalEnabled,
+    entityRelationships: config.entityRelationshipsEnabled,
+    entityActivityLog: config.entityActivityLogEnabled,
+    compoundingInject: config.compoundingInjectEnabled,
+    accessTracking: config.accessTrackingEnabled,
+    autoPromoteToShared: config.autoPromoteToSharedEnabled,
+    recallGraph: config.recallGraphEnabled,
+    feedback: config.feedbackEnabled,
+    identity: config.identityEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// PipelineProcessing capability set (issue #1523 batch 9).
+//
+// These 22 flags gate the extraction/chunking/summarization pipeline and LLM
+// infrastructure. Read sites span orchestrator, extraction, summarizer,
+// embedding-fallback, local-llm, search, day-summary, and semantic-consolidation.
+// All flags are non-optional booleans on PluginConfig (defaults resolved at
+// the parse boundary), so the projection is a pure pass-through.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of pipeline-processing feature gates (issue #1523 batch 9).
+ */
+export interface PipelineProcessingCapabilitySet {
+  readonly chunking: boolean;
+  readonly semanticChunking: boolean;
+  readonly semanticDedup: boolean;
+  readonly summarization: boolean;
+  readonly topicExtraction: boolean;
+  readonly sessionObserver: boolean;
+  readonly profiling: boolean;
+  readonly checkpoint: boolean;
+  readonly traceWeaver: boolean;
+  readonly routingRules: boolean;
+  readonly inlineSourceAttribution: boolean;
+  readonly negativeExamples: boolean;
+  readonly hourlySummaries: boolean;
+  readonly lcm: boolean;
+  readonly localLlmFast: boolean;
+  readonly proactiveExtraction: boolean;
+  readonly delinearize: boolean;
+  readonly slowLog: boolean;
+  readonly hostEmbeddingProvider: boolean;
+  readonly memoryExtensions: boolean;
+  readonly hourlySummariesExtended: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolvePipelineProcessingCapabilities}.
+ */
+export type PipelineProcessingConfigProjection = Pick<
+  PluginConfig,
+  | "chunkingEnabled"
+  | "semanticChunkingEnabled"
+  | "semanticDedupEnabled"
+  | "summarizationEnabled"
+  | "topicExtractionEnabled"
+  | "sessionObserverEnabled"
+  | "profilingEnabled"
+  | "checkpointEnabled"
+  | "traceWeaverEnabled"
+  | "routingRulesEnabled"
+  | "inlineSourceAttributionEnabled"
+  | "negativeExamplesEnabled"
+  | "hourlySummariesEnabled"
+  | "lcmEnabled"
+  | "localLlmFastEnabled"
+  | "proactiveExtractionEnabled"
+  | "delinearizeEnabled"
+  | "slowLogEnabled"
+  | "hostEmbeddingProviderEnabled"
+  | "memoryExtensionsEnabled"
+  | "hourlySummariesExtendedEnabled"
+>;
+
+/**
+ * Resolve the {@link PipelineProcessingCapabilitySet} from parsed config.
+ */
+export function resolvePipelineProcessingCapabilities(config: PipelineProcessingConfigProjection): PipelineProcessingCapabilitySet {
+  return Object.freeze({
+    chunking: config.chunkingEnabled,
+    semanticChunking: config.semanticChunkingEnabled,
+    semanticDedup: config.semanticDedupEnabled,
+    summarization: config.summarizationEnabled,
+    topicExtraction: config.topicExtractionEnabled,
+    sessionObserver: config.sessionObserverEnabled === true,
+    profiling: config.profilingEnabled,
+    checkpoint: config.checkpointEnabled,
+    traceWeaver: config.traceWeaverEnabled,
+    routingRules: config.routingRulesEnabled,
+    inlineSourceAttribution: config.inlineSourceAttributionEnabled,
+    negativeExamples: config.negativeExamplesEnabled,
+    hourlySummaries: config.hourlySummariesEnabled,
+    lcm: config.lcmEnabled,
+    localLlmFast: config.localLlmFastEnabled,
+    proactiveExtraction: config.proactiveExtractionEnabled,
+    delinearize: config.delinearizeEnabled,
+    slowLog: config.slowLogEnabled,
+    hostEmbeddingProvider: config.hostEmbeddingProviderEnabled,
+    memoryExtensions: config.memoryExtensionsEnabled,
+    hourlySummariesExtended: config.hourlySummariesExtendedEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// ConversationContext capability set (issue #1523 batch 9).
+//
+// These 12 flags gate conversation context, shared signals, intent routing,
+// operator-aware consolidation, CMC consolidation, maintenance fanout, CLI
+// presentation, and code connectors. Read sites span orchestrator, CLI,
+// shared-context/manager, semantic-consolidation-coordinator, compounding/engine,
+// maintenance modules, procedural stats, connectors, and wearables. All flags
+// are non-optional booleans on PluginConfig (defaults resolved at the parse
+// boundary), so the projection is a pure pass-through.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of conversation/context feature gates (issue #1523 batch 9).
+ */
+export interface ConversationContextCapabilitySet {
+  readonly sharedContext: boolean;
+  readonly intentRouting: boolean;
+  readonly crossSignalsSemantic: boolean;
+  readonly sharedCrossSignalSemantic: boolean;
+  readonly operatorAwareConsolidation: boolean;
+  readonly peerProfileReasoner: boolean;
+  readonly cmcConsolidation: boolean;
+  readonly maintenanceNamespaceFanout: boolean;
+  readonly citations: boolean;
+  readonly behaviorLoopAutoTune: boolean;
+  readonly semanticRulePromotion: boolean;
+  readonly codexMarketplace: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveConversationContextCapabilities}.
+ */
+export type ConversationContextConfigProjection = Pick<
+  PluginConfig,
+  | "sharedContextEnabled"
+  | "intentRoutingEnabled"
+  | "crossSignalsSemanticEnabled"
+  | "sharedCrossSignalSemanticEnabled"
+  | "operatorAwareConsolidationEnabled"
+  | "peerProfileReasonerEnabled"
+  | "cmcConsolidationEnabled"
+  | "maintenanceNamespaceFanoutEnabled"
+  | "citationsEnabled"
+  | "behaviorLoopAutoTuneEnabled"
+  | "semanticRulePromotionEnabled"
+  | "codexMarketplaceEnabled"
+>;
+
+/**
+ * Resolve the {@link ConversationContextCapabilitySet} from parsed config.
+ */
+export function resolveConversationContextCapabilities(config: ConversationContextConfigProjection): ConversationContextCapabilitySet {
+  return Object.freeze({
+    sharedContext: config.sharedContextEnabled,
+    intentRouting: config.intentRoutingEnabled,
+    crossSignalsSemantic: config.crossSignalsSemanticEnabled,
+    sharedCrossSignalSemantic: config.sharedCrossSignalSemanticEnabled === true,
+    operatorAwareConsolidation: config.operatorAwareConsolidationEnabled,
+    peerProfileReasoner: config.peerProfileReasonerEnabled,
+    cmcConsolidation: config.cmcConsolidationEnabled,
+    maintenanceNamespaceFanout: config.maintenanceNamespaceFanoutEnabled,
+    citations: config.citationsEnabled,
+    behaviorLoopAutoTune: config.behaviorLoopAutoTuneEnabled,
+    semanticRulePromotion: config.semanticRulePromotionEnabled,
+    codexMarketplace: config.codexMarketplaceEnabled,
+  });
+}

@@ -15,6 +15,7 @@ import {
 } from "./storage-paths.js";
 import { sessionStoragePaths } from "./session-identity.js";
 import { resolveLocalLlmCapabilities } from "./capabilities.js";
+import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 
 // Schema for LLM summary output
 const HourlySummarySchema = z.object({
@@ -130,7 +131,7 @@ export class HourlySummarizer {
       .map((e) => `[${e.role}] ${e.content}`)
       .join("\n\n");
 
-    if (this.config.hourlySummariesExtendedEnabled) {
+    if (resolvePipelineProcessingCapabilities(this.config).hourlySummariesExtended) {
       const extended = await this.generateExtended(sessionKey, hourStart, conversation, entries);
       if (!extended) return null;
       const meta: HourlySummaryExtendedMeta = {
@@ -468,7 +469,7 @@ Respond with valid JSON matching this schema:
     const meta = (summary as any)._extendedMeta as HourlySummaryExtendedMeta | undefined;
     const lines: string[] = [hourHeader, ""];
 
-    if (this.config.hourlySummariesExtendedEnabled && ext) {
+    if (resolvePipelineProcessingCapabilities(this.config).hourlySummariesExtended && ext) {
       lines.push("### Topics Discussed");
       for (const t of ext.topics) lines.push(`- ${t}`);
       lines.push("");

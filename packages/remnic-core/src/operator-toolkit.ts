@@ -56,6 +56,7 @@ import { reportBufferSurpriseDistribution } from "./buffer-surprise-report.js";
 import { readJudgeVerdictStats } from "./extraction-judge-telemetry.js";
 import { resolveIndexingCapabilities } from "./capabilities.js";
 
+
 const OPENCLAW_REMNIC_PLUGIN_IDS = ["openclaw-remnic", "openclaw-engram"] as const;
 
 function getOpenClawPluginEntries(raw: Record<string, unknown>): Record<string, unknown> | undefined {

@@ -6,6 +6,7 @@ import {
 import type { PluginConfig } from "../types.js";
 import { isAbortError } from "../abort-error.js";
 import { withTimeoutSignal } from "./abort.js";
+import { resolvePipelineProcessingCapabilities } from "../capabilities.js";
 import {
   getHostEmbeddingProvider,
   type HostEmbeddingProvider,
@@ -217,7 +218,7 @@ export class EmbedHelper {
 
     if (
       options.includeHost !== false &&
-      this.config.hostEmbeddingProviderEnabled !== false
+      resolvePipelineProcessingCapabilities(this.config).hostEmbeddingProvider !== false
     ) {
       const hostProvider = this.resolveHostEmbeddingProvider();
       if (hostProvider) {

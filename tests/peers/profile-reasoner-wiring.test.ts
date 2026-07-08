@@ -33,8 +33,8 @@ test("orchestrator REM phase invokes the peer profile reasoner gated on the conf
   // the reasoner is impossible.
   assert.match(
     src,
-    /if \(this\.config\.peerProfileReasonerEnabled\)/,
-    "coordinator must gate the reasoner on `peerProfileReasonerEnabled`",
+    /resolveConversationContextCapabilities\(this\.config\)\.peerProfileReasoner/,
+    "coordinator must gate the reasoner on `peerProfileReasonerEnabled` (via ConversationContextCapabilitySet)",
   );
   // Static import (coordinator module uses static imports per repo rules).
   assert.match(

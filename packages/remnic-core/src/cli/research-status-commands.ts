@@ -21,6 +21,7 @@ import type { Orchestrator } from "../orchestrator.js";
 import { resolveCapabilities, resolveSecurityCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities, resolveConsolidationCapabilities } from "../capabilities.js";
 import type { CliCommand } from "../cli.js";
 import type { UtilityTelemetryEvent } from "../utility-telemetry.js";
+import { resolveRecallEnhancementCapabilities } from "../capabilities.js";
 import {
   runObjectiveStateStatusCliCommand,
   runCausalTrajectoryStatusCliCommand,
@@ -67,7 +68,7 @@ cmd
     const status = await runCausalTrajectoryStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       causalTrajectoryStoreDir: orchestrator.config.causalTrajectoryStoreDir,
-      causalTrajectoryMemoryEnabled: orchestrator.config.causalTrajectoryMemoryEnabled,
+      causalTrajectoryMemoryEnabled: resolveRecallEnhancementCapabilities(orchestrator.config).causalTrajectoryMemory,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");

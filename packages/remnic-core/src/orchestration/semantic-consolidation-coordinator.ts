@@ -49,6 +49,7 @@ import type { LocalLlmClient } from "../local-llm.js";
 import type { EmbeddingFallback } from "../embedding-fallback.js";
 import type { PluginConfig, MemoryFile, AgentPersonaModelConfig } from "../types.js";
 import { log } from "../logger.js";
+import { resolveConversationContextCapabilities } from "../capabilities.js";
 
 /** Dependencies injected by the orchestrator. All stable references or
  *  live accessors. */
@@ -193,7 +194,7 @@ export class SemanticConsolidationCoordinator {
         // `semanticConsolidationEnabled` follow the same convention,
         // while `!== false` is reserved for default-on flags.
         const operatorAwareEnabled =
-          this.config.operatorAwareConsolidationEnabled === true;
+          resolveConversationContextCapabilities(this.config).operatorAwareConsolidation === true;
         let prompt = operatorAwareEnabled
           ? buildOperatorAwareConsolidationPrompt(cluster)
           : buildConsolidationPrompt(cluster);
@@ -418,7 +419,7 @@ export class SemanticConsolidationCoordinator {
     // in a try/catch because reasoner I/O (LLM call, peer-profile
     // writes) must never abort the consolidation result. The reasoner
     // itself also defends against partial failure — see profile-reasoner.ts.
-    if (this.config.peerProfileReasonerEnabled) {
+    if (resolveConversationContextCapabilities(this.config).peerProfileReasoner) {
       try {
         const peerLlm = new FallbackLlmClient(
           this.config.gatewayConfig,

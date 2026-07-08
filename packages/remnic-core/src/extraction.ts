@@ -38,6 +38,7 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
+import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 import { resolveMemoryLifecycleCapabilities,
   resolveLocalLlmCapabilities,resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 
@@ -199,7 +200,7 @@ export class ExtractionEngine {
         }
         let content = sanitized.text;
         // De-linearize: resolve coreferences + anchor temporal expressions
-        if (this.config.delinearizeEnabled) {
+        if (resolvePipelineProcessingCapabilities(this.config).delinearize) {
           content = delinearize(content, result.entities, ts);
         }
         return { ...fact, content };
@@ -578,7 +579,7 @@ export class ExtractionEngine {
     conversation: string,
     base: ExtractionResult,
   ): Promise<ExtractionResult> {
-    if (!this.config.proactiveExtractionEnabled) return base;
+    if (!resolvePipelineProcessingCapabilities(this.config).proactiveExtraction) return base;
     const maxAdditional = Math.max(0, Math.floor(this.config.maxProactiveQuestionsPerExtraction));
     if (maxAdditional === 0) return base;
     if (this.config.proactiveExtractionTimeoutMs === 0) return base;
