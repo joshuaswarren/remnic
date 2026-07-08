@@ -128,6 +128,12 @@ Both used `--runtime-profile baseline --system-provider claude-cli
 - `docs/benchmarks/results/2026-07-08-longmemeval-opus-via-claude-code-trial50-798fe8a.json`
   (sha256 `56dafb93…`)
 
+Note on artifact fields: the runner records `meta.mode: "full"` (full-mode
+scoring pipeline) with `config.benchmarkOptions.trialLimit` bounding the
+task count — the "(trial)" labels above and the `trial100`/`trial50`
+filename segments carry the partial-coverage signal; these artifacts are
+pipeline-validation evidence, not publishable leaderboard numbers.
+
 A small number of tasks (9/100 locomo, 3/50 longmemeval) hit intermittent
 `claude -p` subprocess failures (exit 1) and scored 0 on those metrics;
 the provider's retry logic absorbed transient errors but not these.
@@ -136,21 +142,21 @@ LCM chunking/extraction stack without a separate internal LLM gateway.
 
 ### Full-run cost estimate (not yet executed)
 
-Based on the measured per-task wall times (~7.5 s locomo, ~9.6 s
-longmemeval):
+Based on the measured per-task wall times (965 s / 100 = ~9.7 s locomo,
+580 s / 50 = ~11.6 s longmemeval — wall time includes ingestion, recall,
+responder, and judge; mean responder query latency alone was 7.5 s / 9.6 s):
 
 | Run | Tasks | Estimated wall time |
 |---|---|---|
-| LoCoMo full | 1986 | ~4.1 h |
-| LongMemEval full | 500 | ~1.3 h |
-| **Total** | **2486** | **~5.5 h** |
+| LoCoMo full | 1986 | ~5.3 h |
+| LongMemEval full | 500 | ~1.6 h |
+| **Total** | **2486** | **~6.9 h** |
 
-This is within an 8-hour budget but would consume a significant fraction
+This fits an 8-hour budget but would consume a significant fraction
 of the operator's weekly Claude Max Opus quota. The full run is an
 **explicitly user-approved follow-up**: the bounded slices above prove
 the pipeline is correct; the full Tier F pass (or the raw-API headline
 number) awaits quota authorization.
-
 
 To build a publishable artifact from a finished run's stored result, see
 `scripts/bench/build-artifact-from-result.ts` (bridges `BenchmarkResult` →
