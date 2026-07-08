@@ -698,10 +698,12 @@ test("graph expansion resolves cold collection seeds from active recall namespac
       ? runtimeStorage
       : originalStorageFor(namespace);
 
+  // #1526 seam 11: readQmdResultMemory moved to QmdResultResolver coordinator.
+  const resolver = orchestrator.qmdResultResolver;
   const originalReadQmdResultMemory =
-    orchestrator.readQmdResultMemory.bind(orchestrator);
+    resolver.readQmdResultMemory.bind(resolver);
   let qmdMemoryReads = 0;
-  orchestrator.readQmdResultMemory = async (...args: unknown[]) => {
+  resolver.readQmdResultMemory = async (...args: unknown[]) => {
     qmdMemoryReads += 1;
     return originalReadQmdResultMemory(...args);
   };

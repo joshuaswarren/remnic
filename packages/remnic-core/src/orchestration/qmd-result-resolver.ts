@@ -92,6 +92,18 @@ export function qmdResultPathCandidates(
 }
 
 /**
+ * Extract a non-empty `dir` from a storage, returning `null` when the
+ * property is absent or not a non-empty string at runtime. Proxy-backed
+ * fake storages used in recall paths may not provide a real `dir`, so
+ * every caller must handle the null case (skip or fall back to a direct
+ * `readMemoryByPath`).
+ */
+function storageDirOrNull(storage: StorageManager): string | null {
+  const dir = storage.dir;
+  return typeof dir === "string" && dir.length > 0 ? dir : null;
+}
+
+/**
  * Coordinator for resolving QMD search-result paths to concrete memory
  * files and their owning namespace/storage.
  */
@@ -127,21 +139,26 @@ export class QmdResultResolver {
     recallNamespaces: readonly string[] = [],
   ): Promise<MemoryFile | null> {
     const parts = qmdCollectionPathParts(resultPath);
-    const fallbackStorageDir = fallbackStorage.dir;
+    const fallbackStorageDir = storageDirOrNull(fallbackStorage);
     const config = this.getConfig();
     const coldCollection = config.qmdColdCollection ?? "openclaw-engram-cold";
     if (parts && parts.collection === coldCollection) {
       const storages: StorageManager[] = [];
       const seenStorageDirs = new Set<string>();
       const addStorage = (storage: StorageManager): void => {
-        const storageDir = storage.dir;
-        const storageKey = path.resolve(storageDir);
+        const storageDir = storageDirOrNull(storage);
+        const storageKey = storageDir
+          ? path.resolve(storageDir)
+          : `storage-without-dir-${storages.length}`;
         if (seenStorageDirs.has(storageKey)) return;
         seenStorageDirs.add(storageKey);
         storages.push(storage);
       };
 
-      const fallbackNamespace = this.storageDirNamespace(fallbackStorageDir);
+      const fallbackNamespace =
+        fallbackStorageDir !== null
+          ? this.storageDirNamespace(fallbackStorageDir)
+          : config.defaultNamespace;
       if (
         recallNamespaces.length === 0 ||
         !resolveNamespaceCapabilities(config).namespaces ||
@@ -165,7 +182,12 @@ export class QmdResultResolver {
       }
 
       for (const storage of storages) {
-        const storageDir = storage.dir;
+        const storageDir = storageDirOrNull(storage);
+        if (!storageDir) {
+          const memory = await storage.readMemoryByPath(resultPath);
+          if (memory) return memory;
+          continue;
+        }
         try {
           const coldRoot = path.join(storageDir, "cold");
           for (const candidate of qmdResultPathCandidates(
@@ -213,6 +235,9 @@ export class QmdResultResolver {
     }
 
     if (path.isAbsolute(resultPath)) {
+      if (!fallbackStorageDir) {
+        return await fallbackStorage.readMemoryByPath(resultPath);
+      }
       const ownerStorage = await this.storageForAbsoluteQmdResultPath(
         resultPath,
         fallbackStorage,
@@ -229,6 +254,9 @@ export class QmdResultResolver {
       return null;
     }
 
+    if (!fallbackStorageDir) {
+      return await fallbackStorage.readMemoryByPath(resultPath);
+    }
     for (const candidate of qmdResultPathCandidates(
       fallbackStorageDir,
       resultPath,
@@ -289,12 +317,13 @@ export class QmdResultResolver {
     const config = this.getConfig();
     const memoryRoot = path.resolve(config.memoryDir);
     const namespacesRoot = path.join(memoryRoot, "namespaces");
-    const fallbackStorageDir = fallbackStorage.dir;
+    const fallbackStorageDir = storageDirOrNull(fallbackStorage);
     const matches: Array<{ storage: StorageManager; dir: string; namespace: string }> = [];
     const seenDirs = new Set<string>();
 
     const maybeAddStorage = (storage: StorageManager, namespace: string) => {
-      const storageDir = storage.dir;
+      const storageDir = storageDirOrNull(storage);
+      if (!storageDir) return;
       const candidateRoot = path.resolve(storageDir);
       if (seenDirs.has(candidateRoot)) return;
       if (!isPathInsideStorageRoot(candidateRoot, resolvedPath)) return;
@@ -308,7 +337,10 @@ export class QmdResultResolver {
       matches.push({ storage, dir: candidateRoot, namespace });
     };
 
-    const fallbackNamespace = this.storageDirNamespace(fallbackStorageDir);
+    const fallbackNamespace =
+      fallbackStorageDir !== null
+        ? this.storageDirNamespace(fallbackStorageDir)
+        : config.defaultNamespace;
     maybeAddStorage(fallbackStorage, fallbackNamespace);
 
     const candidateNamespaces = new Set<string>();
