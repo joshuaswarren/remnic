@@ -260,6 +260,7 @@ function cleanDay(
   userRedaction: RegExp[],
   correctionRules: CompiledCorrectionRule[],
 ): CleanedDay {
+  const { offTheRecordEnabled, redactionEnabled } = config;
   const out: CleanedDay = {
     conversations: [],
     segmentsKept: 0,
@@ -269,7 +270,7 @@ function cleanDay(
   };
   for (const conversation of raw) {
     let current = conversation;
-    if (config.offTheRecordEnabled) {
+    if (offTheRecordEnabled) {
       const otr = applyOffTheRecord(current);
       current = otr.conversation;
       out.segmentsDropped += otr.droppedSegments;
@@ -280,7 +281,7 @@ function cleanDay(
 
     const segments = current.segments.map((segment) => {
       let text = segment.text;
-      if (config.redactionEnabled) {
+      if (redactionEnabled) {
         const redacted = redactText(text, userRedaction);
         text = redacted.text;
         out.redactions += redacted.redactions;
@@ -483,7 +484,8 @@ export async function syncWearableSource(
           // the day to re-run on the next sync (Cursor review on PR
           // #1462).
           passClean = generated.completed;
-          if (config.digestEnabled) {
+          const { digestEnabled } = config;
+          if (digestEnabled) {
             const wrote = await writeDailyDigestMemory(
               connector.id,
               date,

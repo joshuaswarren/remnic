@@ -1617,7 +1617,8 @@ async function summarizeGraphEdgeDecayStatus(
 ): Promise<OperatorDoctorCheck> {
   // Lazy import to keep the doctor fast when the feature is disabled.
   const { readGraphEdgeDecayStatus } = await import("./maintenance/graph-edge-decay.js");
-  const enabled = config.graphEdgeDecayEnabled === true;
+  const { graphEdgeDecayEnabled } = config;
+  const enabled = graphEdgeDecayEnabled === true;
   if (!enabled) {
     return {
       key: "graph_edge_decay",

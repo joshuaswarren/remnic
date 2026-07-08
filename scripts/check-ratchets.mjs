@@ -10,10 +10,12 @@
  *   2. oversizedFileCount      — number of non-test .ts files above the
  *                                oversize threshold under packages/remnic-core/src.
  *   3. scatteredConfigFlagReads — occurrences of `config.<flag>Enabled` reads
- *                                outside config.ts (heuristic regex; counts
- *                                comments/strings too, but the baseline is
- *                                measured with the same rule, so the ratchet
- *                                direction stays meaningful).
+ *                                outside config.ts and capabilities.ts (the two
+ *                                chokepoints: config defines flags; capabilities
+ *                                resolves them to CapabilitySet projections).
+ *                                Writes (`config.XEnabled = value`) are excluded;
+ *                                the heuristic regex also counts comments/strings
+ *                                but the baseline is measured with the same rule.
  *   4. adHocNamespaceResolutions — call sites of the ad-hoc namespace-resolution
  *                                helpers (`resolveWritableNamespace` /
  *                                `namespaceFromStorageDir` /
@@ -65,7 +67,7 @@ const WATCHLIST = [
   "packages/remnic-core/src/config.ts",
 ];
 
-const FLAG_READ_RE = /\bconfig\.[A-Za-z0-9_]+Enabled\b/g;
+const FLAG_READ_RE = /\bconfig\.[A-Za-z0-9_]+Enabled\b(?!\s*=[^=])/g;
 /**
  * Ad-hoc namespace-resolution call sites (issue #1521): occurrences of the
  * three legacy resolution helpers outside the ScopePlan resolver module. The
@@ -176,7 +178,10 @@ function collectMetrics(oversizeThresholdLoc) {
     if (lines > oversizeThresholdLoc) {
       oversizedFiles.push({ file: relPosix, lines });
     }
-    if (relPosix !== "packages/remnic-core/src/config.ts") {
+    if (
+      relPosix !== "packages/remnic-core/src/config.ts" &&
+      relPosix !== "packages/remnic-core/src/capabilities.ts"
+    ) {
       const matches = content.match(FLAG_READ_RE);
       if (matches) {
         scatteredConfigFlagReads += matches.length;

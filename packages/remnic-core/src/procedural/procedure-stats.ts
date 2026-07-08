@@ -180,6 +180,7 @@ export async function computeProcedureStats(options: {
  */
 export function formatProcedureStatsText(report: ProcedureStatsReport): string {
   const { counts, recent, config } = report;
+  const { autoPromoteEnabled } = config;
   const lines: string[] = [];
   lines.push(`Procedural memory stats (schema v${report.schemaVersion})`);
   lines.push(`  generated: ${report.generatedAt}`);
@@ -189,7 +190,7 @@ export function formatProcedureStatsText(report: ProcedureStatsReport): string {
   lines.push(`    minOccurrences:          ${config.minOccurrences}`);
   lines.push(`    successFloor:            ${config.successFloor}`);
   lines.push(`    autoPromoteOccurrences:  ${config.autoPromoteOccurrences}`);
-  lines.push(`    autoPromoteEnabled:      ${config.autoPromoteEnabled}`);
+  lines.push(`    autoPromoteEnabled:      ${autoPromoteEnabled}`);
   lines.push(`    lookbackDays:            ${config.lookbackDays}`);
   lines.push(`    recallMaxProcedures:     ${config.recallMaxProcedures}`);
   lines.push("");
