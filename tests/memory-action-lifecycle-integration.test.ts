@@ -69,7 +69,7 @@ test("memory-action priors influence lifecycle scores without circular amplifica
       },
     ]);
 
-    const priors = await orchestrator.buildLifecycleActionPriors();
+    const priors = await orchestrator.lifecyclePolicyCoordinator.buildLifecycleActionPriors();
     assert.ok((priors.get(penalizedId) ?? 0) < 0);
     assert.ok((priors.get(boostedId) ?? 0) > 0);
 
@@ -134,7 +134,7 @@ test("lifecycle action prior cap keeps newest per-memory events", async () => {
     });
     await storage.appendMemoryActionEvents(events);
 
-    const priors = await orchestrator.buildLifecycleActionPriors();
+    const priors = await orchestrator.lifecyclePolicyCoordinator.buildLifecycleActionPriors();
     assert.ok((priors.get(memoryId) ?? 0) < 0);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });

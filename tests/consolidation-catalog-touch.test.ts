@@ -13,6 +13,7 @@ import path from "node:path";
 import { mkdtemp, rm } from "node:fs/promises";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import { LifecyclePolicyCoordinator } from "../packages/remnic-core/src/orchestration/lifecycle-policy-coordinator.js";
 
 test("consolidation with only an INVALIDATE memory-item action records a catalog write touch", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-consolidate-catalog-"));
@@ -182,6 +183,20 @@ test("summarization records the catalog write touch after source memories are ar
       }),
     };
     orchestrator.storageDirNamespace = () => config.defaultNamespace;
+    // #1526 seam 6: runSummarization delegates to LifecyclePolicyCoordinator.
+    orchestrator.lifecyclePolicyCoordinator = new LifecyclePolicyCoordinator({
+      config,
+      getStorage: () => orchestrator.storage,
+      extraction: orchestrator.extraction,
+      embeddingFallback: orchestrator.embeddingFallback ?? { removeFromIndex: async () => {} },
+      getEffectiveLifecycleThresholds: () => orchestrator.effectiveLifecycleThresholds?.() ?? {
+        promoteHeatThreshold: 70,
+        staleDecayThreshold: 50,
+        archiveDecayThreshold: 80,
+      },
+      removeContentHashForMemory: async () => {},
+      saveContentHashIndexes: async () => {},
+    });
     // #1522: the catalog touch now fires at the storage chokepoint via the
     // StorageManager's onCatalogWrite hook. Simulate that on the mock storage
     // so the test verifies the touch fires during the storage writes.
