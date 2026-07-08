@@ -217,7 +217,10 @@ test("summarization records the catalog write touch after source memories are ar
       },
     }));
 
-    await orchestrator.runSummarization(memories);
+    // #1526 seam 17: runSummarization moved into ConsolidationRunCoordinator;
+    // the test now exercises its real home — the LifecyclePolicyCoordinator it
+    // already constructs above — preserving the catalog-touch-ordering property.
+    await orchestrator.lifecyclePolicyCoordinator.runSummarization(memories);
 
     // #1522: with the storage chokepoint, each write fires its own catalog
     // touch. The touch from archiveMemories fires at the end of that operation
