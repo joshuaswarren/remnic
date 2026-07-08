@@ -102,6 +102,7 @@ import { TierMigrationCoordinator } from "./orchestration/tier-migration-coordin
 import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
 import { CompressionGuidelineCoordinator } from "./orchestration/compression-guideline-coordinator.js";
 import { SemanticConsolidationCoordinator } from "./orchestration/semantic-consolidation-coordinator.js";
+import { LifecyclePolicyCoordinator } from "./orchestration/lifecycle-policy-coordinator.js";
 import {
   runLiveConnectorsOnce,
   type LiveConnectorsRunSummary,
@@ -1899,6 +1900,7 @@ export class Orchestrator {
   readonly tierMigrationCoordinator: TierMigrationCoordinator;
   readonly compressionGuidelineCoordinator: CompressionGuidelineCoordinator;
   readonly semanticConsolidationCoordinator: SemanticConsolidationCoordinator;
+  readonly lifecyclePolicyCoordinator: LifecyclePolicyCoordinator;
   /**
    * In-memory X-ray snapshot from the most recent `recall()` call that
    * was invoked with `xrayCapture: true` (issue #570 PR 1).  Scope is
@@ -3095,6 +3097,16 @@ export class Orchestrator {
       config.gatewayConfig,
       this.modelRegistry,
     );
+    this.lifecyclePolicyCoordinator = new LifecyclePolicyCoordinator({
+      config,
+      getStorage: () => this.storage,
+      extraction: this.extraction,
+      embeddingFallback: this.embeddingFallback,
+      getEffectiveLifecycleThresholds: () => this.effectiveLifecycleThresholds(),
+      removeContentHashForMemory: (targetStorage, memory, context) =>
+        this.removeContentHashForMemory(targetStorage, memory, context),
+      saveContentHashIndexes: () => this.saveContentHashIndexes(),
+    });
     this.threading = new ThreadingManager(
       path.join(config.memoryDir, "threads"),
       config.threadingGapMinutes,
@@ -17014,81 +17026,6 @@ export class Orchestrator {
     return this.compressionGuidelineCoordinator.buildCompressionGuidelineRecallSection();
   }
 
-  private actionOutcomePriorDelta(event: MemoryActionEvent): number {
-    if (event.outcome === "failed") return -0.3;
-    if (event.policyDecision === "deny") return -0.22;
-    if (event.policyDecision === "defer") return -0.14;
-    if (event.outcome === "skipped") return -0.1;
-
-    if (event.outcome !== "applied") return 0;
-    switch (event.action) {
-      case "store_episode":
-      case "store_note":
-      case "update_note":
-        return 0.08;
-      case "create_artifact":
-      case "summarize_node":
-      case "link_graph":
-        return 0.04;
-      case "discard":
-        return -0.03;
-      default:
-        return 0;
-    }
-  }
-
-  private async buildLifecycleActionPriors(
-    storage: StorageManager = this.storage,
-  ): Promise<Map<string, number>> {
-    const events = await storage.readMemoryActionEvents(1200);
-    if (events.length === 0) return new Map<string, number>();
-
-    const nowMs = Date.now();
-    const windowMs = 14 * 24 * 60 * 60 * 1000;
-    const byMemory = new Map<
-      string,
-      Array<{ weightedDelta: number; weight: number }>
-    >();
-
-    for (const event of events) {
-      if (
-        typeof event.memoryId !== "string" ||
-        event.memoryId.trim().length === 0
-      )
-        continue;
-      const ts = Date.parse(event.timestamp);
-      if (!Number.isFinite(ts)) continue;
-      const ageMs = nowMs - ts;
-      if (ageMs < 0 || ageMs > windowMs) continue;
-
-      const delta = this.actionOutcomePriorDelta(event);
-      if (delta === 0) continue;
-
-      const recencyWeight = Math.max(0.2, 1 - ageMs / windowMs);
-      const list = byMemory.get(event.memoryId) ?? [];
-      if (list.length >= 8) list.shift();
-      list.push({
-        weightedDelta: delta * recencyWeight,
-        weight: recencyWeight,
-      });
-      byMemory.set(event.memoryId, list);
-    }
-
-    const out = new Map<string, number>();
-    for (const [memoryId, deltas] of byMemory.entries()) {
-      if (deltas.length === 0) continue;
-      const weightedSum = deltas.reduce(
-        (sum, item) => sum + item.weightedDelta,
-        0,
-      );
-      const weightTotal = deltas.reduce((sum, item) => sum + item.weight, 0);
-      if (weightTotal <= 0) continue;
-      const score = weightedSum / weightTotal;
-      out.set(memoryId, Math.max(-0.25, Math.min(0.15, score)));
-    }
-    return out;
-  }
-
   private async recordScheduledDreamsPhaseRun(
     phase: "lightSleep" | "rem" | "deepSleep",
     itemsProcessed: number,
@@ -17123,315 +17060,23 @@ export class Orchestrator {
     allMemories: MemoryFile[],
     storage: StorageManager = this.storage,
   ): Promise<number> {
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const countsByState: Record<LifecycleState, number> = {
-      candidate: 0,
-      validated: 0,
-      active: 0,
-      stale: 0,
-      archived: 0,
-    };
-    const transitionCounts: Record<string, number> = {};
-    let updatedCount = 0;
-    let disputedCount = 0;
-    let evaluatedCount = 0;
-    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
-
-    const thresholds = this.effectiveLifecycleThresholds();
-    const policy = {
-      promoteHeatThreshold: thresholds.promoteHeatThreshold,
-      staleDecayThreshold: thresholds.staleDecayThreshold,
-      archiveDecayThreshold: thresholds.archiveDecayThreshold,
-      protectedCategories: this.config.lifecycleProtectedCategories,
-    };
-    const actionPriors = await this.buildLifecycleActionPriors(storage);
-
-    for (const memory of allMemories) {
-      if (
-        memory.frontmatter.status === "superseded" ||
-        memory.frontmatter.status === "forgotten"
-      ) {
-        continue;
-      }
-      evaluatedCount += 1;
-      const currentState = resolveLifecycleState(memory.frontmatter);
-      const actionPriorScore = actionPriors.get(memory.frontmatter.id);
-      const signals: LifecycleSignals | undefined =
-        typeof actionPriorScore === "number" &&
-        Number.isFinite(actionPriorScore)
-          ? { actionPriorScore }
-          : undefined;
-      const decision = decideLifecycleTransition(memory, policy, now, signals);
-      const nextState: LifecycleState =
-        memory.frontmatter.status === "archived"
-          ? "archived"
-          : decision.nextState;
-
-      countsByState[nextState] += 1;
-      if (memory.frontmatter.verificationState === "disputed") {
-        disputedCount += 1;
-      }
-      if (nextState !== currentState) {
-        const key = `${currentState}->${nextState}`;
-        transitionCounts[key] = (transitionCounts[key] ?? 0) + 1;
-      }
-
-      const prevHeat = memory.frontmatter.heatScore;
-      const prevDecay = memory.frontmatter.decayScore;
-      const scoreDelta =
-        Math.abs((prevHeat ?? -1) - decision.heatScore) +
-        Math.abs((prevDecay ?? -1) - decision.decayScore);
-      const shouldPersist =
-        memory.frontmatter.lifecycleState !== nextState ||
-        memory.frontmatter.heatScore === undefined ||
-        memory.frontmatter.decayScore === undefined ||
-        memory.frontmatter.lastValidatedAt === undefined ||
-        scoreDelta >= 0.01;
-
-      if (!shouldPersist) continue;
-
-      const wrote = await storage.writeMemoryFrontmatter(memory, {
-        lifecycleState: nextState,
-        heatScore: decision.heatScore,
-        decayScore: decision.decayScore,
-        lastValidatedAt: nowIso,
-      });
-      if (wrote) updatedCount += 1;
-    }
-
-    // Report how many memories had frontmatter rewritten so callers can record a
-    // catalog write touch for lifecycle-only passes (codex NR-tS).
-    if (!lifecycleCaps.lifecycleMetrics) return updatedCount;
-
-    const total = evaluatedCount;
-    const metrics = {
-      generatedAt: nowIso,
-      memoriesEvaluated: total,
-      memoriesUpdated: updatedCount,
-      countsByLifecycleState: countsByState,
-      transitionCounts,
-      staleRatio: total > 0 ? countsByState.stale / total : 0,
-      disputedRatio: total > 0 ? disputedCount / total : 0,
-      policy: {
-        promoteHeatThreshold: thresholds.promoteHeatThreshold,
-        staleDecayThreshold: thresholds.staleDecayThreshold,
-        archiveDecayThreshold: thresholds.archiveDecayThreshold,
-        protectedCategories: this.config.lifecycleProtectedCategories,
-      },
-    };
-    const metricsPath = path.join(
-      storage.dir,
-      "state",
-      "lifecycle-metrics.json",
-    );
-    await mkdir(path.dirname(metricsPath), { recursive: true });
-    await writeFile(metricsPath, JSON.stringify(metrics, null, 2), "utf-8");
-    return updatedCount;
+    return this.lifecyclePolicyCoordinator.runLifecyclePolicyPass(allMemories, storage);
   }
-
-  /**
-   * Archive old, low-importance, rarely-accessed facts (v6.0).
-   * Moves eligible facts from facts/ to archive/YYYY-MM-DD/.
-   * Returns the number of archived facts.
-   */
   private async runFactArchival(
     allMemories: import("./types.js").MemoryFile[],
   ): Promise<number> {
-    const now = Date.now();
-    const ageCutoffMs = this.config.factArchivalAgeDays * 24 * 60 * 60 * 1000;
-    const protectedCategories = new Set(
-      this.config.factArchivalProtectedCategories,
-    );
-    let archivedCount = 0;
-
-    for (const memory of allMemories) {
-      const fm = memory.frontmatter;
-
-      // Skip already-archived or superseded
-      if (fm.status && fm.status !== "active") continue;
-
-      // Skip protected categories
-      if (protectedCategories.has(fm.category)) continue;
-
-      // Skip corrections (always keep)
-      if (fm.category === "correction") continue;
-
-      // Check age requirement
-      const createdMs = new Date(fm.created).getTime();
-      if (now - createdMs < ageCutoffMs) continue;
-
-      // Check importance (only archive low-importance facts)
-      const importanceScore = fm.importance?.score ?? 0.5;
-      if (importanceScore >= this.config.factArchivalMaxImportance) continue;
-
-      // Check access count
-      const accessCount = fm.accessCount ?? 0;
-      if (accessCount > this.config.factArchivalMaxAccessCount) continue;
-
-      // All criteria met — archive
-      const result = await this.storage.archiveMemory(memory);
-      if (result) {
-        // Remove from the same storage-scoped content-hash index since it is
-        // no longer in hot search.
-        await this.removeContentHashForMemory(
-          this.storage,
-          memory,
-          "fact-archival",
-        );
-        await this.embeddingFallback.removeFromIndex(memory.frontmatter.id);
-        if (
-          resolveIndexingCapabilities(this.config).queryAwareIndexing &&
-          memory.path &&
-          memory.frontmatter?.created
-        ) {
-          deindexMemory(
-            this.config.memoryDir,
-            memory.path,
-            memory.frontmatter.created,
-            memory.frontmatter.tags ?? [],
-          );
-        }
-        archivedCount++;
-      }
-    }
-
-    // Save hash indexes if we removed any entries.
-    if (archivedCount > 0) {
-      await this.saveContentHashIndexes().catch((err) =>
-        log.warn(`content-hash index save failed during archival: ${err}`),
-      );
-    }
-
-    return archivedCount;
+    return this.lifecyclePolicyCoordinator.runFactArchival(allMemories);
   }
-
-  /**
-   * Run memory summarization if memory count exceeds threshold (Phase 4A).
-   */
   private async runSummarization(
     allMemories: import("./types.js").MemoryFile[],
   ): Promise<void> {
-    // Only active memories count toward the threshold
-    const activeMemories = allMemories.filter(
-      (m) => isActiveMemoryStatus(m.frontmatter.status),
-    );
-
-    if (activeMemories.length < this.config.summarizationTriggerCount) {
-      return;
-    }
-
-    log.info(
-      `memory count (${activeMemories.length}) exceeds threshold (${this.config.summarizationTriggerCount}) — running summarization`,
-    );
-
-    // Sort by creation date, oldest first
-    const sorted = activeMemories.sort(
-      (a, b) =>
-        new Date(a.frontmatter.created).getTime() -
-        new Date(b.frontmatter.created).getTime(),
-    );
-
-    // Keep recent memories, with explicit zero handling so `slice(-0)` does not
-    // accidentally keep every memory out of the summarization candidate set.
-    const recentToKeep = Math.max(0, this.config.summarizationRecentToKeep);
-    const toSummarize = recentToKeep > 0 ? sorted.slice(0, -recentToKeep) : sorted;
-
-    // Filter candidates for summarization
-    const candidates = toSummarize.filter((m) => {
-      // Skip if protected by entity reference
-      if (m.frontmatter.entityRef) return false;
-
-      // Skip if protected by tag
-      const protectedTags = this.config.summarizationProtectedTags;
-      if (m.frontmatter.tags.some((t) => protectedTags.includes(t)))
-        return false;
-
-      // Skip if importance is above threshold
-      const importance = m.frontmatter.importance?.score ?? 0.5;
-      if (importance >= this.config.summarizationImportanceThreshold)
-        return false;
-
-      return true;
-    });
-
-    if (candidates.length < 50) {
-      log.debug(
-        `only ${candidates.length} candidates for summarization — skipping`,
-      );
-      return;
-    }
-
-    // Summarize in batches of 50
-    const batchSize = 50;
-    for (let i = 0; i < candidates.length; i += batchSize) {
-      const batch = candidates.slice(i, i + batchSize);
-      const batchData = batch.map((m) => ({
-        id: m.frontmatter.id,
-        content: m.content,
-        category: m.frontmatter.category,
-        created: m.frontmatter.created,
-      }));
-
-      const result = await this.extraction.summarizeMemories(batchData);
-      if (!result) continue;
-
-      // Create summary
-      const summary: MemorySummary = {
-        id: `summary-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        createdAt: new Date().toISOString(),
-        timeRangeStart: batch[0].frontmatter.created,
-        timeRangeEnd: batch[batch.length - 1].frontmatter.created,
-        summaryText: result.summaryText,
-        keyFacts: result.keyFacts,
-        keyEntities: result.keyEntities,
-        sourceEpisodeIds: batch.map((m) => m.frontmatter.id),
-      };
-
-      await this.storage.writeSummary(summary);
-
-      // Archive source memories
-      const archived = await this.storage.archiveMemories(
-        batch.map((m) => m.frontmatter.id),
-        summary.id,
-      );
-
-      // Catalog write touch (issue #1499 sweep): summarization writes a durable
-      // summary and then rewrites source-memory archive status, bypassing the
-      // extraction write path. Record the touch after both mutations complete so
-      // `lastWriteAt` covers the final archived-state write.
-      // #1522: catalog touch handled at the storage chokepoint.
-
-      log.info(
-        `created summary ${summary.id} from ${batch.length} memories, archived ${archived}`,
-      );
-    }
+    return this.lifecyclePolicyCoordinator.runSummarization(allMemories);
   }
-
-  /**
-   * Run topic extraction on all memories (Phase 4B).
-   */
   private async runTopicExtraction(
     allMemories: import("./types.js").MemoryFile[],
   ): Promise<void> {
-    // Only extract from active memories
-    const activeMemories = allMemories.filter(
-      (m) => isActiveMemoryStatus(m.frontmatter.status),
-    );
-
-    if (activeMemories.length === 0) return;
-
-    const topics = extractTopics(
-      activeMemories,
-      this.config.topicExtractionTopN,
-    );
-    await this.storage.saveTopics(topics);
-
-    log.debug(
-      `extracted ${topics.length} topics from ${activeMemories.length} memories`,
-    );
+    return this.lifecyclePolicyCoordinator.runTopicExtraction(allMemories);
   }
-
   /** Threshold (bytes) at which IDENTITY.md reflections get auto-consolidated */
   private static readonly IDENTITY_CONSOLIDATE_THRESHOLD = 8_000;
 
