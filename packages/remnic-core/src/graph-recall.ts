@@ -110,7 +110,8 @@ export function runGraphRecall(
   config: GraphRecallConfig,
   options: GraphRecallOptions,
 ): GraphRecallRun {
-  if (!config.recallGraphEnabled) {
+  const { recallGraphEnabled } = config;
+  if (!recallGraphEnabled) {
     return {
       ran: false,
       results: [],
