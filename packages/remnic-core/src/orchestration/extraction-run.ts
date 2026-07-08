@@ -213,7 +213,7 @@ export class ExtractionRunCoordinator {
   // Extraction dedupe fingerprint helpers
   // -------------------------------------------------------------------------
 
-  private normalizeExtractionFingerprintTurns(turns: BufferTurn[]): string[] {
+  normalizeExtractionFingerprintTurns(turns: BufferTurn[]): string[] {
     if (!Array.isArray(turns) || turns.length === 0) return [];
     return turns
       .filter((turn) => turn.role === "user" || turn.role === "assistant")
@@ -230,7 +230,7 @@ export class ExtractionRunCoordinator {
   }
 
 
-  private buildExtractionFingerprint(
+  buildExtractionFingerprint(
     turns: BufferTurn[],
     bufferKey: string,
   ): string | null {
@@ -285,7 +285,7 @@ export class ExtractionRunCoordinator {
   // Processed-fingerprint recording
   // -------------------------------------------------------------------------
 
-  private async recordProcessedExtractionFingerprint(
+  async recordProcessedExtractionFingerprint(
     storage: StorageManager,
     fingerprint: string,
     preloadedMeta?: Awaited<ReturnType<StorageManager["loadMeta"]>>,

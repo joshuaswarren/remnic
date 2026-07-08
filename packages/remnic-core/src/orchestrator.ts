@@ -107,6 +107,7 @@ import { RecallRerankCoordinator } from "./orchestration/recall-rerank-coordinat
 import { RecallSectionCoordinator } from "./orchestration/recall-section-coordinator.js";
 import { QmdResultResolver, qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 import { ContradictionLinkingCoordinator } from "./orchestration/contradiction-linking-coordinator.js";
+import { ExtractionRunCoordinator, type ExtractionRunResult } from "./orchestration/extraction-run.js";
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
 import {
   runLiveConnectorsOnce,
@@ -479,13 +480,8 @@ export class BulkImportBatchPartialFailureError extends Error {
   }
 }
 
-interface ExtractionRunResult {
-  status: "completed" | "skipped";
-  reason?: string;
-  persistedCount: number;
-  durableOutputCount: number;
-  postPersistMetadataFailed?: boolean;
-}
+// Issue #1526 seam 15: ExtractionRunResult moved to orchestration/extraction-run.ts.
+export type { ExtractionRunResult } from "./orchestration/extraction-run.js";
 
 export interface GraphRecallSnapshot {
   recordedAt: string;
@@ -919,20 +915,6 @@ export function sanitizeSessionKeyForFilename(sessionKey: string): string {
   return `${readable}-${hash}`;
 }
 
-function latestSourceValidAtFromTurns(turns: readonly BufferTurn[]): string | undefined {
-  let latestMs: number | null = null;
-  for (const turn of turns) {
-    if (turn.extractionContextOnly === true) continue;
-    if (typeof turn.sourceValidAt !== "string") continue;
-    const parsed = parseFlexibleIsoTimestamp(turn.sourceValidAt.trim());
-    if (parsed === null) continue;
-    if (latestMs === null || parsed > latestMs) {
-      latestMs = parsed;
-    }
-  }
-  return latestMs === null ? undefined : new Date(latestMs).toISOString();
-}
-
 function sourceValidAtMs(turn: BufferTurn): number | null {
   if (typeof turn.sourceValidAt !== "string") return null;
   return parseFlexibleIsoTimestamp(turn.sourceValidAt.trim());
@@ -1049,24 +1031,8 @@ function splitTurnsBySourceValidAt(
 export function isArtifactMemoryPath(filePath: string): boolean {
   return /(?:^|[\\/])artifacts(?:[\\/]|$)/i.test(filePath);
 }
-
-export function deriveTopicsFromExtraction(result: ExtractionResult): string[] {
-  const topics = new Set<string>();
-  for (const fact of result.facts ?? []) {
-    for (const tag of fact.tags ?? []) {
-      if (tag && tag.length >= 2) topics.add(tag.toLowerCase());
-    }
-    if (fact.entityRef) topics.add(fact.entityRef.toLowerCase());
-    if (fact.category) topics.add(fact.category);
-  }
-  for (const entity of (result as any).entities ?? []) {
-    if (typeof entity.name === "string" && entity.name.length >= 2) {
-      topics.add(entity.name.toLowerCase());
-    }
-  }
-  return [...topics].slice(0, 16);
-}
-
+// Issue #1526 seam 15: deriveTopicsFromExtraction moved to orchestration/extraction-run.ts.
+export { deriveTopicsFromExtraction } from "./orchestration/extraction-run.js";
 export function buildCompressionGuidelinesMarkdown(
   events: MemoryActionEvent[],
   generatedAtIso: string = new Date().toISOString(),
@@ -1831,6 +1797,12 @@ export class Orchestrator {
    * hands it to `enqueue`.
    */
   readonly extractionQueueCoordinator: ExtractionQueueCoordinator;
+  /**
+   * Extraction-run pipeline coordinator (issue #1526 seam 15). Owns
+   * `runExtraction` + dedupe fingerprint helpers + processed-fingerprint
+   * recording. The orchestrator delegates and injects its own methods.
+   */
+  private extractionRunCoordinator: ExtractionRunCoordinator;
   /**
    * Issue #1526: recall result formatting + identity continuity section moved
    * to RecallResultFormatter.
@@ -2812,6 +2784,26 @@ export class Orchestrator {
     });
     // Issue #1526: background extraction queue lives on its own coordinator.
     this.extractionQueueCoordinator = new ExtractionQueueCoordinator();
+    // Issue #1526 seam 15: extraction run pipeline moved to ExtractionRunCoordinator.
+    this.extractionRunCoordinator = new ExtractionRunCoordinator({
+      config,
+      getBuffer: () => this.buffer,
+      getExtraction: () => this.extraction,
+      getStorageRouter: () => this.storageRouter,
+      getThreading: () => this.threading,
+      persistExtraction: (result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps) =>
+        this.persistExtraction(result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps),
+      maybeCapturePassiveCorrections: (turns, opts) => this.maybeCapturePassiveCorrections(turns, opts),
+      resolveSelfNamespace: (sessionKey) => this.resolveSelfNamespace(sessionKey),
+      getCodingContextForSession: (sessionKey) => this.getCodingContextForSession(sessionKey),
+      applyCodingNamespaceOverlay: (sessionKey, namespace) => this.applyCodingNamespaceOverlay(sessionKey, namespace),
+      boxBuilderFor: (storage) => this.boxBuilderFor(storage),
+      appendPersistedThreadEpisodes: (threadId, ids) => this.appendPersistedThreadEpisodes(threadId, ids),
+      maybeScheduleConsolidation: (nonZero) => this.maybeScheduleConsolidation(nonZero),
+      requestQmdMaintenance: () => this.requestQmdMaintenance(),
+      runTierMigrationCycle: (storage, trigger, options) => this.runTierMigrationCycle(storage, trigger, options),
+      getLastPersistExtractionDeferredCount: () => this.lastPersistExtractionDeferredCount,
+    });
     this.recallResultFormatter = new RecallResultFormatter(this.config);
     const conversationIndexRuntime = createConversationIndexRuntime(config, {
       getQmd: () => this.conversationQmd,
@@ -12254,67 +12246,18 @@ export class Orchestrator {
   }
 
   private normalizeExtractionFingerprintTurns(turns: BufferTurn[]): string[] {
-    if (!Array.isArray(turns) || turns.length === 0) return [];
-    return turns
-      .filter((turn) => turn.role === "user" || turn.role === "assistant")
-      .map((turn) => {
-        if (
-          typeof turn.turnFingerprint === "string" &&
-          turn.turnFingerprint.length > 0
-        ) {
-          return `fp:${turn.turnFingerprint}`;
-        }
-        return `${turn.role}:${(turn.content ?? "").replace(/\s+/g, " ").trim().slice(0, this.config.extractionMaxTurnChars)}`;
-      })
-      .filter((value) => value.length > 0);
+    return this.extractionRunCoordinator.normalizeExtractionFingerprintTurns(turns);
   }
 
-  private buildExtractionFingerprint(
-    turns: BufferTurn[],
-    bufferKey: string,
-  ): string | null {
-    const normalized = this.normalizeExtractionFingerprintTurns(turns).join("\n");
-    if (!normalized) return null;
-    return createHash("sha256")
-      .update(`${bufferKey}\n${normalized}`)
-      .digest("hex");
+  private buildExtractionFingerprint(turns: BufferTurn[], bufferKey: string): string | null {
+    return this.extractionRunCoordinator.buildExtractionFingerprint(turns, bufferKey);
   }
 
   private shouldQueueExtraction(
     turns: BufferTurn[],
     options: { commit?: boolean; bufferKey?: string } = {},
   ): boolean {
-    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
-    if (!lifecycleCaps.extractionDedupe) return true;
-    if (!Array.isArray(turns) || turns.length === 0) return false;
-
-    const bufferKey = options.bufferKey ?? turns[0]?.sessionKey ?? "default";
-    const fingerprint = this.buildExtractionFingerprint(turns, bufferKey);
-    if (!fingerprint) return false;
-    const now = Date.now();
-    const seenAt = this.recentExtractionFingerprints.get(fingerprint);
-    if (seenAt && now - seenAt < this.config.extractionDedupeWindowMs) {
-      log.debug("extraction dedupe: skipped duplicate buffered turn set");
-      return false;
-    }
-
-    if (options.commit !== false) {
-      this.recentExtractionFingerprints.set(fingerprint, now);
-    }
-    // Keep this cache bounded to avoid unbounded growth.
-    if (
-      options.commit !== false &&
-      this.recentExtractionFingerprints.size > 200
-    ) {
-      const entries = Array.from(
-        this.recentExtractionFingerprints.entries(),
-      ).sort((a, b) => a[1] - b[1]);
-      for (const [key] of entries.slice(0, entries.length - 200)) {
-        this.recentExtractionFingerprints.delete(key);
-      }
-    }
-
-    return true;
+    return this.extractionRunCoordinator.shouldQueueExtraction(turns, options);
   }
 
   /**
@@ -12450,563 +12393,10 @@ export class Orchestrator {
     return this._passiveCorrectionService;
   }
 
-  private async runExtraction(
-    turns: BufferTurn[],
-    options: {
-      clearBufferAfterExtraction?: boolean;
-      skipCharThreshold?: boolean;
-      skipUserTurnThreshold?: boolean;
-      deadlineMs?: number;
-      bufferKey?: string;
-      abortSignal?: AbortSignal;
-      failOnExtractionFailure?: boolean;
-      /**
-       * Explicit namespace override for the write path (#460).  When set,
-       * extraction writes go to this namespace instead of the one derived
-       * from `defaultNamespaceForPrincipal(resolvePrincipal(sessionKey))`.
-       * The resolved `principal` is still threaded into memory metadata
-       * for provenance; only the storage target is overridden.
-       */
-      writeNamespaceOverride?: string;
-      /**
-       * Pin the provenance principal instead of deriving it from
-       * `resolvePrincipal(sessionKey)` (#1495 thread 1). When set, this is the
-       * identity an access surface already authenticated; used so observed-turn
-       * provenance is correct even though `turn.sessionKey` is the ORIGINAL
-       * (un-prefixed) key and storage is pinned via `writeNamespaceOverride`.
-       */
-      principalOverride?: string;
-    } = {},
+  async runExtraction(
+    ...args: Parameters<ExtractionRunCoordinator["runExtraction"]>
   ): Promise<ExtractionRunResult> {
-    log.debug(`running extraction on ${turns.length} turns`);
-    const clearBufferAfterExtraction =
-      options.clearBufferAfterExtraction ?? true;
-    const skipCharThreshold = options.skipCharThreshold ?? false;
-    const skipUserTurnThreshold = options.skipUserTurnThreshold ?? false;
-    const deadlineMs =
-      typeof options.deadlineMs === "number" &&
-      Number.isFinite(options.deadlineMs)
-        ? options.deadlineMs
-        : undefined;
-    const bufferKey = options.bufferKey ?? turns[0]?.sessionKey ?? "default";
-    const throwIfDeadlineExceeded = (stage: string): void => {
-      if (typeof deadlineMs === "number" && Date.now() > deadlineMs) {
-        throw new Error(`replay extraction deadline exceeded (${stage})`);
-      }
-    };
-    const throwIfAborted = (stage: string): void => {
-      throwIfRecallAborted(options.abortSignal, `extraction aborted (${stage})`);
-    };
-    const clearBuffer = async (options?: { ignoreAbort?: boolean }) => {
-      if (options?.ignoreAbort !== true) {
-        throwIfAborted("before_clear_buffer");
-      }
-      if (clearBufferAfterExtraction) {
-        await this.buffer.clearAfterExtraction(bufferKey, turns);
-      }
-    };
-
-    // Skip extraction for cron job sessions - these are system operations, not user conversations
-    const sessionKey = turns[0]?.sessionKey ?? "";
-    if (sessionKey.includes(":cron:")) {
-      log.debug(`skipping extraction for cron session: ${sessionKey}`);
-      await clearBuffer();
-      return {
-        status: "skipped",
-        reason: "cron_session",
-        persistedCount: 0,
-        durableOutputCount: 0,
-      };
-    }
-
-    const normalizedTurns = turns
-      .filter(
-        (t) =>
-          (t.role === "user" || t.role === "assistant") &&
-          typeof t.content === "string",
-      )
-      .map((t) => ({
-        ...t,
-        content: t.content.trim().slice(0, this.config.extractionMaxTurnChars),
-      }))
-      .filter((t) => t.content.length > 0);
-    const targetTurns = normalizedTurns.filter(
-      (turn) => turn.extractionContextOnly !== true,
-    );
-    if (targetTurns.length === 0) {
-      log.debug("skipping extraction: no non-context turns after normalization");
-      // Context-only turns may still contain corrections (review: "context-only
-      // turns skip capture"). Scan normalizedTurns before clearing the buffer.
-      if (normalizedTurns.length > 0) {
-        await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], { sessionKey, principal: resolvePrincipal(sessionKey, this.config), namespace: this.resolveSelfNamespace(sessionKey), bufferKey, isLiveSession: clearBufferAfterExtraction });
-      }
-      await clearBuffer();
-      return { status: "skipped", reason: "empty_normalized_turns", persistedCount: 0, durableOutputCount: 0 };
-    }
-    const sourceValidAt = latestSourceValidAtFromTurns(targetTurns);
-    throwIfDeadlineExceeded("before_extract");
-    throwIfAborted("before_extract");
-
-    const userTurns = targetTurns.filter((t) => t.role === "user");
-    const totalChars = targetTurns.reduce(
-      (sum, t) => sum + t.content.length,
-      0,
-    );
-    const belowCharThreshold = totalChars < this.config.extractionMinChars;
-    const belowUserTurnThreshold =
-      !skipUserTurnThreshold &&
-      userTurns.length < this.config.extractionMinUserTurns;
-    if ((!skipCharThreshold && belowCharThreshold) || belowUserTurnThreshold) {
-      log.debug(
-        `skipping extraction: below threshold (totalChars=${totalChars}, userTurns=${userTurns.length})`,
-      );
-      await clearBuffer();
-      // Passive correction capture runs even when extraction is skipped for
-      // being below the char/user-turn threshold (review: "skipped extraction
-      // skips capture"). A short correction like "stop using Vim" is under
-      // extractionMinChars but is exactly the high-value case this feature
-      // exists for. The write namespace resolves through the SAME scope-profile
-      // plan as the full extraction path so corrections target the active
-      // profile's write layer, not just resolveSelfNamespace (review:
-      // "below-threshold wrong namespace"). The ACL in passiveCorrectionService
-      // authorizes the actual plan/apply.
-      {
-        const capturePrincipal =
-          typeof options.principalOverride === "string" && options.principalOverride.length > 0
-            ? options.principalOverride
-            : resolvePrincipal(sessionKey, this.config);
-        const captureWO = typeof options.writeNamespaceOverride === "string" && options.writeNamespaceOverride.length > 0
-          ? options.writeNamespaceOverride : undefined;
-        const captureCodingCtx = sessionKey ? this.getCodingContextForSession(sessionKey) : null;
-        const captureCodingOv = resolveCodingNamespaceOverlay(captureCodingCtx, this.config.codingMode, this.config.defaultNamespace);
-        const captureScopePlan = resolveScopeProfilePlan({ config: this.config, principal: capturePrincipal, codingContext: captureCodingCtx, codingOverlay: captureCodingOv });
-        const captureNamespace = captureWO ?? captureScopePlan?.writeNamespace ?? this.resolveSelfNamespace(sessionKey);
-        await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
-          sessionKey, principal: capturePrincipal, namespace: captureNamespace, bufferKey, isLiveSession: clearBufferAfterExtraction,
-        });
-      }
-      return {
-        status: "skipped",
-        reason: "below_threshold",
-        persistedCount: 0,
-        durableOutputCount: 0,
-      };
-    }
-
-    // Provenance principal honours the access-surface override (#1495 thread 1,
-    // mirroring the recall path's `principalOverride`, issue #570 PR 4). Access
-    // surfaces that authenticated the caller at the transport layer pass their
-    // resolved principal so provenance uses the SAME identity the surface
-    // authorized, instead of `resolvePrincipal(sessionKey)` — which on a
-    // namespace-prefixed key would collapse to `default`. The ORIGINAL,
-    // un-prefixed session key still drives threading.
-    const principal =
-      typeof options.principalOverride === "string" &&
-      options.principalOverride.length > 0
-        ? options.principalOverride
-        : resolvePrincipal(sessionKey, this.config);
-    // Write path — explicit callers still win. Otherwise, an active hosted
-    // scope profile owns the extraction write target so hook-captured turns land
-    // in the same layer that profile recall searches. Without a profile, preserve
-    // the existing coding-agent overlay behavior (issue #569).
-    const explicitWriteNamespace =
-      typeof options.writeNamespaceOverride === "string" &&
-      options.writeNamespaceOverride.length > 0
-        ? options.writeNamespaceOverride
-        : undefined;
-    const codingContextForWrite = sessionKey
-      ? this.getCodingContextForSession(sessionKey)
-      : null;
-    const codingOverlayForWrite = resolveCodingNamespaceOverlay(
-      codingContextForWrite,
-      this.config.codingMode,
-      this.config.defaultNamespace,
-    );
-    const scopeProfileGatePlan = resolveScopeProfilePlan({
-      config: this.config,
-      principal,
-      codingContext: codingContextForWrite,
-      codingOverlay: codingOverlayForWrite,
-    });
-    const scopeProfileWritePlan = explicitWriteNamespace ? null : scopeProfileGatePlan;
-    if (scopeProfileWritePlan) {
-      const selectedLayer = scopeProfileWritePlan.layers.find(
-        (layer) => layer.id === scopeProfileWritePlan.writeLayer,
-      );
-      const writeNamespaceReadable = scopeProfileWritePlan.readNamespaces.includes(
-        scopeProfileWritePlan.writeNamespace,
-      );
-      if (!selectedLayer?.writable || !writeNamespaceReadable) {
-        log.warn(
-          `runExtraction: skipping scope profile ${scopeProfileWritePlan.profileId} because write layer ${scopeProfileWritePlan.writeLayer} is not writable inside the profile read stack`,
-        );
-        await clearBuffer();
-        return {
-          status: "skipped",
-          reason: "scope_profile_no_writable_layer",
-          persistedCount: 0,
-          durableOutputCount: 0,
-        };
-      }
-    }
-    const selfNamespace =
-      explicitWriteNamespace ??
-      scopeProfileWritePlan?.writeNamespace ??
-      this.applyCodingNamespaceOverlay(
-        sessionKey,
-        defaultNamespaceForPrincipal(principal, this.config),
-      );
-    const storage = await this.storageRouter.storageFor(selfNamespace);
-    const shouldPersistProcessedFingerprint = targetTurns.some(
-      (turn) => turn.persistProcessedFingerprint === true,
-    );
-    const extractionFingerprint = this.buildExtractionFingerprint(
-      targetTurns,
-      bufferKey,
-    );
-    let meta =
-      extractionFingerprint && shouldPersistProcessedFingerprint
-        ? await storage.loadMeta()
-        : null;
-    if (
-      extractionFingerprint &&
-      shouldPersistProcessedFingerprint &&
-      (meta?.processedExtractionFingerprints ?? []).some(
-        (entry) => entry.fingerprint === extractionFingerprint,
-      )
-    ) {
-      log.debug(
-        `runExtraction: skipping already-processed extraction fingerprint for ${bufferKey}`,
-      );
-      await clearBuffer();
-      return {
-        status: "skipped",
-        reason: "processed_fingerprint",
-        persistedCount: 0,
-        durableOutputCount: 0,
-      };
-    }
-
-    // Pass existing entity names so the LLM can reuse them instead of inventing variants
-    const existingEntities = await storage.listEntityNames();
-    const result = await raceRecallAbort(
-      this.extraction.extract(
-        normalizedTurns,
-        existingEntities,
-      ),
-      options.abortSignal,
-      "extraction aborted (during_extract)",
-    );
-    throwIfDeadlineExceeded("before_persist");
-    throwIfAborted("before_persist");
-
-    // Defensive: validate extraction result before processing. Explicit
-    // fail-closed callers, such as flush-plan import, must not observe
-    // malformed extractor output as a successful skip.
-    if (!result) {
-      log.warn("runExtraction: extraction returned null/undefined");
-      if (options.failOnExtractionFailure) {
-        throw new Error("extraction failed: invalid_extraction_result");
-      }
-      await clearBuffer();
-      return {
-        status: "skipped",
-        reason: "invalid_extraction_result",
-        persistedCount: 0,
-        durableOutputCount: 0,
-      };
-    }
-    const invalidExtractionResultFields = [
-      ["facts", result.facts],
-      ["entities", result.entities],
-      ["questions", result.questions],
-      ["profileUpdates", result.profileUpdates],
-    ]
-      .filter(([, value]) => !Array.isArray(value))
-      .map(([field]) => field);
-    if (invalidExtractionResultFields.length > 0) {
-      log.warn(
-        "runExtraction: extraction returned invalid collection fields",
-        {
-          invalidFields: invalidExtractionResultFields,
-          resultKeys:
-            typeof result === "object" && result !== null
-              ? Object.keys(result)
-              : [],
-        },
-      );
-      if (options.failOnExtractionFailure) {
-        throw new Error("extraction failed: invalid_extraction_result");
-      }
-      await clearBuffer();
-      return {
-        status: "skipped",
-        reason: "invalid_extraction_result",
-        persistedCount: 0,
-        durableOutputCount: 0,
-      };
-    }
-    const extractionFailure =
-      typeof result.extractionFailure === "string" &&
-      result.extractionFailure.trim().length > 0
-        ? result.extractionFailure
-        : undefined;
-    if (options.failOnExtractionFailure && extractionFailure) {
-      throw new Error(`extraction failed: ${extractionFailure}`);
-    }
-    if (
-      result.facts.length === 0 &&
-      result.entities.length === 0 &&
-      result.questions.length === 0 &&
-      result.profileUpdates.length === 0
-    ) {
-      log.debug(
-        "runExtraction: extraction produced no durable outputs; skipping persistence",
-      );
-      if (extractionFailure) {
-        log.warn(
-          "runExtraction: extraction reported failure with no durable outputs; not marking fingerprint processed",
-          { extractionFailure },
-        );
-      }
-      if (
-        extractionFingerprint &&
-        shouldPersistProcessedFingerprint &&
-        !extractionFailure
-      ) {
-        meta ??= await storage.loadMeta();
-        await this.recordProcessedExtractionFingerprint(
-          storage,
-          extractionFingerprint,
-          meta,
-        );
-        meta.extractionCount += 1;
-        meta.lastExtractionAt = new Date().toISOString();
-        await storage.saveMeta(meta);
-      }
-      // Correction-only turns that meet char/user-turn thresholds but yield
-      // zero facts still need passive capture (review: "empty extraction skips
-      // capture"). selfNamespace/principal already resolved above.
-      await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], { sessionKey, principal, namespace: selfNamespace, bufferKey, isLiveSession: clearBufferAfterExtraction });
-      await clearBuffer();
-      return { status: "skipped", reason: "empty_extraction_result", persistedCount: 0, durableOutputCount: 0 };
-    }
-
-    let threadIdForExtraction: string | null = null;
-    if (resolvePresentationCapabilities(this.config).threading && turns.length > 0) {
-      const lastTurn = turns[turns.length - 1];
-      try {
-        threadIdForExtraction = await this.threading.processTurn(lastTurn, []);
-      } catch (err) {
-        // Fail-open: threading errors must not block memory persistence.
-        log.warn(
-          "[threading] processTurn failed before persistence (non-fatal)",
-          err,
-        );
-      }
-    }
-
-    const persistedIds = await this.persistExtraction(
-      result,
-      storage,
-      threadIdForExtraction,
-      { sessionKey, principal, validAt: sourceValidAt },
-      // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
-      // real namespace rather than a guess decoded from the storage dir.
-      selfNamespace,
-      scopeProfileGatePlan,
-      // Verbatim source turns for the faithfulness gate (#1576) so it can
-      // locate a quote per fact when #1575 spans are absent.
-      normalizedTurns.map((t) => t.content).join("\n\n"),
-    );
-    let postPersistMetadataFailed = false;
-    meta ??= await storage.loadMeta();
-    if (extractionFingerprint && shouldPersistProcessedFingerprint) {
-      try {
-        await this.recordProcessedExtractionFingerprint(
-          storage,
-          extractionFingerprint,
-          meta,
-        );
-      } catch (error) {
-        log.warn(
-          "runExtraction: failed to persist processed extraction fingerprint; continuing with buffer clear",
-          error,
-        );
-        postPersistMetadataFailed = true;
-      }
-    }
-    // Persist extraction counters and processed fingerprints before running
-    // follow-on helpers so replay dedupe survives any later non-essential
-    // failure. If this aggregate meta write fails, still clear the buffer:
-    // the durable memories are already written and replaying the same turns
-    // would duplicate them.
-    meta.extractionCount += 1;
-    meta.lastExtractionAt = new Date().toISOString();
-    meta.totalMemories += Array.isArray(result?.facts)
-      ? result.facts.length
-      : 0;
-    meta.totalEntities += Array.isArray(result?.entities)
-      ? result.entities.length
-      : 0;
-    try {
-      await storage.saveMeta(meta);
-    } catch (error) {
-      log.warn(
-        "runExtraction: failed to save extraction metadata after durable persistence; continuing with buffer clear",
-        error,
-      );
-      postPersistMetadataFailed = true;
-    }
-
-    const durableOutputCount =
-      result.facts.length +
-      result.entities.length +
-      result.questions.length +
-      result.profileUpdates.length;
-
-    // Buffer retention for defer verdicts (issue #562, PR 2). When the judge
-    // deferred at least one candidate, retain the tail of the current turn
-    // window so the next extraction pass has the surrounding context that
-    // may disambiguate the deferred fact. Non-defer runs clear the slot.
-    //
-    // Gated on:
-    //   - `clearBufferAfterExtraction` — replay / bulk-import paths call
-    //     `runExtraction` with this false and do not operate on live buffer
-    //     state. Writing retention there would create synthetic buffer
-    //     entries and cross-contaminate future live extractions.
-    //   - NOT `extractionJudgeShadow` — in shadow mode the judge is only
-    //     advisory; facts are still persisted regardless of verdict, so
-    //     retaining the turn window on top of a persisted write would both
-    //     waste buffer space and cause the same facts to re-enter the
-    //     pipeline on the next pass.
-    try {
-      if (
-        clearBufferAfterExtraction &&
-        !this.config.extractionJudgeShadow
-      ) {
-        const deferredCount = this.lastPersistExtractionDeferredCount;
-        if (deferredCount > 0 && normalizedTurns.length > 0) {
-          await this.buffer.retainDeferredTurns(
-            bufferKey,
-            normalizedTurns as BufferTurn[],
-            10,
-          );
-        } else {
-          await this.buffer.retainDeferredTurns(bufferKey, [], 0);
-        }
-      }
-    } catch (err) {
-      // Fail-open: retention is a nice-to-have. If it fails the judge will
-      // still cap deferrals and convert to reject on the next pass.
-      log.debug(
-        `extraction-judge: defer retention failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-
-    await clearBuffer({ ignoreAbort: true });
-
-    // Passive correction capture (issue #1581) — detect corrections expressed
-    // passively in the extracted turns and route to the Correction Contract.
-    // Runs AFTER persistence + buffer clear so a capture failure never blocks
-    // the extraction return. `clearBufferAfterExtraction` gates live-session
-    // auto-apply (replay/import → queue-only).
-    await this.maybeCapturePassiveCorrections(normalizedTurns as BufferTurn[], {
-      sessionKey,
-      principal,
-      namespace: selfNamespace,
-      bufferKey,
-      isLiveSession: clearBufferAfterExtraction,
-    });
-
-    // Build memory box from this extraction (v8.0 Phase 2A)
-    // Topics are derived from the current extraction's facts and entities only —
-    // not from readAllMemories() — so box topics accurately reflect the current
-    // session window and the call is free of expensive full-corpus I/O.
-    if (resolvePresentationCapabilities(this.config).memoryBoxes && persistedIds.length > 0) {
-      const extractionTopics = deriveTopicsFromExtraction(result);
-      // Derive episodic metadata from buffer turns (REMem-inspired)
-      const firstUserTurn = turns.find((t) => t.role === "user");
-      const boxGoal =
-        firstUserTurn?.content?.slice(0, 100)?.trim() || undefined;
-      await this.boxBuilderFor(storage)
-        .onExtraction({
-          topics: extractionTopics,
-          memoryIds: persistedIds,
-          timestamp: new Date().toISOString(),
-          goal: boxGoal,
-        })
-        .catch((err) =>
-          log.warn("[boxes] onExtraction failed (non-fatal)", err),
-        );
-    }
-
-    // Batch-append persisted IDs so non-fact memories (entities/questions) are
-    // always attached to the thread. The helper excludes pending_review ids (#1635).
-    if (
-      resolvePresentationCapabilities(this.config).threading &&
-      threadIdForExtraction &&
-      persistedIds.length > 0
-    ) {
-      await this.appendPersistedThreadEpisodes(
-        threadIdForExtraction,
-        persistedIds,
-      );
-    }
-
-    // Thread title update for the already-established thread context.
-    if (resolvePresentationCapabilities(this.config).threading && threadIdForExtraction) {
-      const conversationContent = turns.map((t) => t.content).join(" ");
-      try {
-        await this.threading.updateThreadTitle(
-          threadIdForExtraction,
-          conversationContent,
-        );
-      } catch (err) {
-        log.warn(
-          "[threading] updateThreadTitle failed after persistence (non-fatal)",
-          err,
-        );
-      }
-    }
-
-    // Check if consolidation is needed (debounced + non-zero gated).
-    const nonZeroExtraction = durableOutputCount > 0;
-    try {
-      // The increment of nonZeroExtractionsSinceConsolidation moved into
-      // the scheduler with the rest of the cadence state (issue #1526 PR1).
-      this.maybeScheduleConsolidation(nonZeroExtraction);
-    } catch (err) {
-      log.warn(
-        "runExtraction: consolidation scheduling failed after persistence (non-fatal)",
-        err,
-      );
-    }
-
-    try {
-      this.requestQmdMaintenance();
-    } catch (err) {
-      log.warn(
-        "runExtraction: QMD maintenance scheduling failed after persistence (non-fatal)",
-        err,
-      );
-    }
-
-    try {
-      await this.runTierMigrationCycle(storage, "extraction");
-    } catch (err) {
-      log.warn(
-        "runExtraction: tier migration failed after persistence (non-fatal)",
-        err,
-      );
-    }
-
-    return {
-      status: "completed",
-      persistedCount: persistedIds.length,
-      durableOutputCount,
-      postPersistMetadataFailed,
-    };
+    return this.extractionRunCoordinator.runExtraction(...args);
   }
 
   private async recordProcessedExtractionFingerprint(
@@ -13014,22 +12404,9 @@ export class Orchestrator {
     fingerprint: string,
     preloadedMeta?: Awaited<ReturnType<StorageManager["loadMeta"]>>,
   ): Promise<void> {
-    const meta = preloadedMeta ?? (await storage.loadMeta());
-    const observedAt = new Date().toISOString();
-    const seen = new Map(
-      (meta.processedExtractionFingerprints ?? []).map((entry) => [
-        entry.fingerprint,
-        entry.observedAt,
-      ]),
+    return this.extractionRunCoordinator.recordProcessedExtractionFingerprint(
+      storage, fingerprint, preloadedMeta,
     );
-    seen.set(fingerprint, observedAt);
-    meta.processedExtractionFingerprints = Array.from(seen.entries())
-      .map(([value, at]) => ({ fingerprint: value, observedAt: at }))
-      .sort((left, right) => left.observedAt.localeCompare(right.observedAt))
-      .slice(-500);
-    if (!preloadedMeta) {
-      await storage.saveMeta(meta);
-    }
   }
 
   private async runTierMigrationCycle(
