@@ -104,6 +104,7 @@ import { EntitySynthesisCoordinator } from "./orchestration/entity-synthesis-coo
 import { RecallResultFormatter } from "./orchestration/recall-result-formatter.js";
 import { ConversationIndexCoordinator } from "./orchestration/conversation-index-coordinator.js";
 import { RecallRerankCoordinator } from "./orchestration/recall-rerank-coordinator.js";
+import { RecallSectionCoordinator } from "./orchestration/recall-section-coordinator.js";
 import { QmdResultResolver, qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 import { ContradictionLinkingCoordinator } from "./orchestration/contradiction-linking-coordinator.js";
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
@@ -1841,6 +1842,7 @@ export class Orchestrator {
    */
   readonly conversationIndexCoordinator: ConversationIndexCoordinator;
   readonly recallRerankCoordinator: RecallRerankCoordinator;
+  readonly recallSectionCoordinator: RecallSectionCoordinator;
   readonly qmdResultResolver: QmdResultResolver;
   readonly contradictionLinkingCoordinator: ContradictionLinkingCoordinator;
   private heartbeatObserverChains = new Map<string, Promise<void>>();
@@ -2842,6 +2844,10 @@ export class Orchestrator {
       getStorage: (namespace) => this.getStorage(namespace),
       readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces) =>
         this.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces),
+    });
+    this.recallSectionCoordinator = new RecallSectionCoordinator({
+      getConfig: () => this.config,
+      resolveSectionEnabled: (id, def) => this.isRecallSectionEnabled(id, def),
     });
     this.contradictionLinkingCoordinator = new ContradictionLinkingCoordinator({
       getConfig: () => this.config,
@@ -6388,52 +6394,46 @@ export class Orchestrator {
     }));
   }
 
+  // Issue #1526 (seam 13): recall section budgeting/assembly moved to
+  // RecallSectionCoordinator. Thin delegation keeps the orchestrator's
+  // recallInternal call sites stable.
   private getRecallSectionEntry(
     sectionId: string,
   ): RecallSectionConfig | undefined {
-    const pipeline = Array.isArray(this.config.recallPipeline)
-      ? this.config.recallPipeline
-      : [];
-    return pipeline.find((entry) => entry.id === sectionId);
+    return this.recallSectionCoordinator.getRecallSectionEntry(sectionId);
   }
 
   private isRecallSectionEnabled(
     sectionId: string,
     defaultEnabled: boolean = true,
   ): boolean {
-    const entry = this.getRecallSectionEntry(sectionId);
-    if (!entry) return defaultEnabled;
-    return entry.enabled !== false;
+    return this.recallSectionCoordinator.isRecallSectionEnabled(
+      sectionId,
+      defaultEnabled,
+    );
   }
 
   private isSpecializedRecallSectionEnabled(
     sectionId: string,
     topLevelEnabled: boolean,
   ): boolean {
-    const entry = this.getRecallSectionEntry(sectionId);
-    if (!entry) return topLevelEnabled;
-    return entry.enabled === true || (topLevelEnabled && entry.enabled !== false);
+    return this.recallSectionCoordinator.isSpecializedRecallSectionEnabled(
+      sectionId,
+      topLevelEnabled,
+    );
   }
 
   private getRecallSectionMaxChars(
     sectionId: string,
   ): number | null | undefined {
-    const entry = this.getRecallSectionEntry(sectionId);
-    if (!entry) return undefined;
-    if (entry.maxChars === null) return null;
-    if (typeof entry.maxChars !== "number") return undefined;
-    return Math.max(0, Math.floor(entry.maxChars));
+    return this.recallSectionCoordinator.getRecallSectionMaxChars(sectionId);
   }
 
   private getRecallSectionNumber(
     sectionId: string,
     key: keyof RecallSectionConfig,
   ): number | undefined {
-    const entry = this.getRecallSectionEntry(sectionId);
-    if (!entry) return undefined;
-    const value = entry[key];
-    if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-    return Math.max(0, Math.floor(value));
+    return this.recallSectionCoordinator.getRecallSectionNumber(sectionId, key);
   }
 
   private appendRecallSection(
@@ -6441,104 +6441,25 @@ export class Orchestrator {
     sectionId: string,
     content: string,
   ): boolean {
-    // Returns true when the section was actually appended to sectionBuckets,
-    // false when it was dropped (disabled, empty, or maxChars===0). Callers
-    // that need to know whether injection occurred (e.g. xray annotation for
-    // peer-profile) must gate on this return value rather than on whether the
-    // section text was computed (Codex P2 finding, PR #764).
-    if (!this.isRecallSectionEnabled(sectionId)) return false;
-    const trimmed = content.trim();
-    if (trimmed.length === 0) return false;
-
-    const maxChars = this.getRecallSectionMaxChars(sectionId);
-    let finalContent = trimmed;
-    if (maxChars === 0) return false;
-    if (typeof maxChars === "number" && finalContent.length > maxChars) {
-      finalContent = `${finalContent.slice(0, maxChars)}\n\n...(trimmed)\n`;
-    }
-
-    const existing = sectionBuckets.get(sectionId) ?? [];
-    existing.push(finalContent);
-    sectionBuckets.set(sectionId, existing);
-    return true;
+    return this.recallSectionCoordinator.appendRecallSection(
+      sectionBuckets,
+      sectionId,
+      content,
+    );
   }
 
   private truncateRecallSectionToBudget(
     content: string,
     maxChars: number,
   ): string {
-    if (maxChars <= 0) return "";
-    if (content.length <= maxChars) return content;
-    const suffix = "\n\n...(memory context trimmed)";
-    if (maxChars <= suffix.length) {
-      return content.slice(0, maxChars);
-    }
-    return `${content.slice(0, maxChars - suffix.length)}${suffix}`;
-  }
-
-  private protectedRecallSectionIds(
-    sectionBuckets: Map<string, string[]>,
-  ): Set<string> {
-    const protectedIds = new Set<string>();
-    if ((sectionBuckets.get("memories")?.length ?? 0) > 0) {
-      protectedIds.add("memories");
-    }
-    return protectedIds;
-  }
-
-  private protectedRecallReservationChars(content: string): number {
-    const headingBoundary = content.indexOf("\n\n");
-    const headingChars =
-      headingBoundary >= 0 ? headingBoundary + 2 : Math.min(content.length, 24);
-    return Math.min(content.length, Math.max(headingChars, 24));
-  }
-
-  private estimateReservedRecallBudget(
-    entries: Array<{ id: string; content: string }>,
-    startIndex: number,
-    protectedIds: Set<string>,
-    alreadyIncludedCount: number,
-  ): number {
-    const separatorLength = "\n\n---\n\n".length;
-    let reserved = 0;
-    let simulatedIncluded = alreadyIncludedCount;
-    for (let i = startIndex; i < entries.length; i += 1) {
-      const entry = entries[i];
-      if (!entry || !protectedIds.has(entry.id)) continue;
-      if (simulatedIncluded > 0) {
-        reserved += separatorLength;
-      }
-      reserved += this.protectedRecallReservationChars(entry.content);
-      simulatedIncluded += 1;
-    }
-    return reserved;
+    return this.recallSectionCoordinator.truncateRecallSectionToBudget(
+      content,
+      maxChars,
+    );
   }
 
   private getRecallBudgetChars(override?: number): number {
-    if (
-      typeof override === "number" &&
-      Number.isFinite(override) &&
-      override >= 0
-    ) {
-      return Math.floor(override);
-    }
-    const configuredBudget = this.config.recallBudgetChars;
-    if (
-      typeof configuredBudget === "number" &&
-      Number.isFinite(configuredBudget) &&
-      configuredBudget >= 0
-    ) {
-      return Math.floor(configuredBudget);
-    }
-    const tokenBudget = this.config.maxMemoryTokens;
-    if (
-      typeof tokenBudget === "number" &&
-      Number.isFinite(tokenBudget) &&
-      tokenBudget >= 0
-    ) {
-      return Math.floor(tokenBudget * 4);
-    }
-    return 0;
+    return this.recallSectionCoordinator.getRecallBudgetChars(override);
   }
 
   private assembleRecallSections(
@@ -6551,89 +6472,13 @@ export class Orchestrator {
     truncated: boolean;
     finalChars: number;
   } {
-    const orderedEntries: Array<{ id: string; content: string }> = [];
-    const pipeline = Array.isArray(this.config.recallPipeline)
-      ? this.config.recallPipeline
-      : [];
-    const orderedIds = pipeline
-      .filter((entry) => entry.enabled !== false)
-      .map((entry) => entry.id);
-    const seen = new Set<string>();
-
-    for (const id of orderedIds) {
-      const chunks = sectionBuckets.get(id);
-      if (!chunks || chunks.length === 0) continue;
-      orderedEntries.push({ id, content: chunks.join("\n\n") });
-      seen.add(id);
-    }
-
-    for (const [id, chunks] of sectionBuckets.entries()) {
-      if (seen.has(id)) continue;
-      if (chunks.length === 0) continue;
-      orderedEntries.push({ id, content: chunks.join("\n\n") });
-    }
-
-    const budget = this.getRecallBudgetChars(budgetOverride);
-    if (budget === 0) {
-      return {
-        sections: [],
-        includedIds: [],
-        omittedIds: orderedEntries.map((entry) => entry.id),
-        truncated: orderedEntries.length > 0,
-        finalChars: 0,
-      };
-    }
-
-    const separator = "\n\n---\n\n";
-    const protectedIds = this.protectedRecallSectionIds(sectionBuckets);
-    const sections: string[] = [];
-    const includedIds: string[] = [];
-    const omittedIds: string[] = [];
-    let usedChars = 0;
-    let truncated = false;
-
-    for (let index = 0; index < orderedEntries.length; index += 1) {
-      const entry = orderedEntries[index]!;
-      const separatorChars = sections.length > 0 ? separator.length : 0;
-      const reserve = protectedIds.has(entry.id)
-        ? 0
-        : this.estimateReservedRecallBudget(
-            orderedEntries,
-            index + 1,
-            protectedIds,
-            sections.length + 1,
-          );
-      const availableForEntry = budget - usedChars - separatorChars - reserve;
-      if (availableForEntry <= 0) {
-        omittedIds.push(entry.id);
-        truncated = true;
-        continue;
-      }
-      const finalContent = this.truncateRecallSectionToBudget(
-        entry.content,
-        availableForEntry,
-      );
-      if (!finalContent) {
-        omittedIds.push(entry.id);
-        truncated = true;
-        continue;
-      }
-      if (finalContent.length < entry.content.length) {
-        truncated = true;
-      }
-      sections.push(finalContent);
-      includedIds.push(entry.id);
-      usedChars += separatorChars + finalContent.length;
-    }
-
-    return {
-      sections,
-      includedIds,
-      omittedIds,
-      truncated,
-      finalChars: usedChars,
-    };
+    return this.recallSectionCoordinator.assembleRecallSections(
+      sectionBuckets,
+      budgetOverride,
+    );
   }
+
+
 
   /**
    * Clock source for the shared post-retrieval assembly/enrichment budget. The
@@ -16957,18 +16802,7 @@ export class Orchestrator {
     includedSections?: string[];
     omittedSections?: string[];
   }): LastRecallBudgetSummary {
-    return {
-      requestedTopK: options.requestedTopK,
-      appliedTopK: options.recallResultLimit,
-      recallBudgetChars: this.getRecallBudgetChars(),
-      maxMemoryTokens: this.config.maxMemoryTokens,
-      qmdFetchLimit: options.qmdFetchLimit,
-      qmdHybridFetchLimit: options.qmdHybridFetchLimit,
-      finalContextChars: options.finalContextChars,
-      truncated: options.truncated,
-      includedSections: [...(options.includedSections ?? [])],
-      omittedSections: [...(options.omittedSections ?? [])],
-    };
+    return this.recallSectionCoordinator.buildLastRecallBudgetSummary(options);
   }
 
   private collectLastRecallSources(
@@ -16980,16 +16814,10 @@ export class Orchestrator {
       | "cold_fallback"
       | "recent_scan",
   ): string[] {
-    const used = new Set<string>();
-    if (recallSource !== "none") {
-      used.add(recallSource);
-    }
-    for (const [sectionId, chunks] of sectionBuckets.entries()) {
-      if (chunks.length > 0) {
-        used.add(sectionId);
-      }
-    }
-    return [...used];
+    return this.recallSectionCoordinator.collectLastRecallSources(
+      sectionBuckets,
+      recallSource,
+    );
   }
 
   /**
