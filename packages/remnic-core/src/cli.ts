@@ -2430,9 +2430,10 @@ export async function runPolicyStatusCliCommand(
   const defaultWindowMs = Math.max(0, orchestrator.config.behaviorLoopLearningWindowDays) * 24 * 60 * 60 * 1000;
   const cutoffIso = defaultWindowMs > 0 ? new Date(now.getTime() - defaultWindowMs).toISOString() : undefined;
 
+  const { behaviorLoopAutoTuneEnabled } = orchestrator.config;
   return {
     generatedAt: now.toISOString(),
-    autoTuneEnabled: orchestrator.config.behaviorLoopAutoTuneEnabled,
+    autoTuneEnabled: behaviorLoopAutoTuneEnabled,
     current: current
       ? {
         ...current,
