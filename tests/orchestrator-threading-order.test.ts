@@ -36,7 +36,7 @@ test("runExtraction batch-appends persisted IDs after persistExtraction", () => 
 
   assert.match(
     source,
-    /if\s*\(\s*this\.config\.threadingEnabled\s*&&\s*threadIdForExtraction\s*&&\s*persistedIds\.length > 0\s*\)\s*\{[\s\S]*?await this\.appendPersistedThreadEpisodes\(\s*threadIdForExtraction,\s*persistedIds,?\s*\);/m,
+    /if\s*\(\s*resolvePresentationCapabilities\(this\.config\)\.threading\s*&&\s*threadIdForExtraction\s*&&\s*persistedIds\.length > 0\s*\)\s*\{[\s\S]*?await this\.appendPersistedThreadEpisodes\(\s*threadIdForExtraction,\s*persistedIds,?\s*\);/m,
     "runExtraction should batch-append persisted IDs after persistence for thread completeness",
   );
 });

@@ -41,7 +41,7 @@ import {
   fallbackLlmRuntimeContextFromConfig,
   gatewayTaskChainOptions,
 } from "../fallback-llm.js";
-import { resolveIndexingCapabilities } from "../capabilities.js";
+import { resolveIndexingCapabilities, resolveConsolidationCapabilities } from "../capabilities.js";
 import { deindexMemory } from "../temporal-index.js";
 import { runPeerProfileReasoner } from "../peers/index.js";
 import type { StorageManager } from "../index.js";
@@ -101,7 +101,7 @@ export class SemanticConsolidationCoordinator {
       clusters: [],
     };
 
-    if (!this.config.semanticConsolidationEnabled && !options?.force) {
+    if (!resolveConsolidationCapabilities(this.config).semanticConsolidation && !options?.force) {
       log.debug("[semantic-consolidation] disabled in config");
       return result;
     }

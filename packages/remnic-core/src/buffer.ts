@@ -9,6 +9,7 @@ import type {
   PluginConfig,
   SignalLevel,
 } from "./types.js";
+import { resolvePresentationCapabilities } from "./capabilities.js";
 
 export type TriggerDecision = "extract_now" | "extract_batch" | "keep_buffering";
 
@@ -286,7 +287,7 @@ export class SmartBuffer {
     // *reduce* extraction frequency.
     if (
       decision === "keep_buffering" &&
-      this.config.bufferSurpriseTriggerEnabled &&
+      resolvePresentationCapabilities(this.config).bufferSurpriseTrigger &&
       this.surpriseProbe !== null &&
       // Matching the existing "smart" branch: surprise is a lower-tier
       // novelty signal that should not second-guess a high-signal hit

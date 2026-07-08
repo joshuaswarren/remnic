@@ -18,7 +18,7 @@
  */
 
 import type { Orchestrator } from "../orchestrator.js";
-import { resolveCapabilities, resolveSecurityCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities} from "../capabilities.js";
+import { resolveCapabilities, resolveSecurityCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities, resolveConsolidationCapabilities } from "../capabilities.js";
 import type { CliCommand } from "../cli.js";
 import type { UtilityTelemetryEvent } from "../utility-telemetry.js";
 import {
@@ -116,7 +116,7 @@ cmd
       memoryDir: orchestrator.config.memoryDir,
       abstractionNodeStoreDir: orchestrator.config.abstractionNodeStoreDir,
       harmonicRetrievalEnabled: caps.harmonicRetrieval,
-      abstractionAnchorsEnabled: orchestrator.config.abstractionAnchorsEnabled,
+      abstractionAnchorsEnabled: resolveConsolidationCapabilities(orchestrator.config).abstractionAnchors,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -130,7 +130,7 @@ cmd
       memoryDir: orchestrator.config.memoryDir,
       abstractionNodeStoreDir: orchestrator.config.abstractionNodeStoreDir,
       harmonicRetrievalEnabled: caps.harmonicRetrieval,
-      abstractionAnchorsEnabled: orchestrator.config.abstractionAnchorsEnabled,
+      abstractionAnchorsEnabled: resolveConsolidationCapabilities(orchestrator.config).abstractionAnchors,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -152,7 +152,7 @@ cmd
       memoryDir: orchestrator.config.memoryDir,
       abstractionNodeStoreDir: orchestrator.config.abstractionNodeStoreDir,
       harmonicRetrievalEnabled: caps.harmonicRetrieval,
-      abstractionAnchorsEnabled: orchestrator.config.abstractionAnchorsEnabled,
+      abstractionAnchorsEnabled: resolveConsolidationCapabilities(orchestrator.config).abstractionAnchors,
       query,
       maxResults: Number.isFinite(maxResults) ? maxResults : 3,
       sessionKey: typeof options.sessionKey === "string" ? options.sessionKey : undefined,

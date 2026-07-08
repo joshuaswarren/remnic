@@ -36,6 +36,7 @@ import type {
   PluginConfig,
 } from "../types.js";
 import { log } from "../logger.js";
+import { resolvePresentationCapabilities } from "../capabilities.js";
 
 // ---------------------------------------------------------------------------
 // Evidence helpers (moved verbatim from orchestrator.ts module scope)
@@ -172,7 +173,7 @@ export class EntitySynthesisCoordinator {
   ): Promise<number> {
     const { config } = this.deps;
     if (
-      !config.entitySummaryEnabled
+      !resolvePresentationCapabilities(config).entitySummary
       || maxEntities <= 0
       || config.entitySynthesisMaxTokens <= 0
     ) return 0;

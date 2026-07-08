@@ -43,6 +43,7 @@ import {
 } from "./correction-planner.js";
 import { type ExecutorDeps, type ExecutorMemory } from "./correction-executor.js";
 import { CorrectionService, type CorrectionServiceDeps } from "./correction-service.js";
+import { resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 
 // ---------------------------------------------------------------------------
 // Public entry: build a fully-wired CorrectionService
@@ -810,11 +811,11 @@ function toExecutorMemory(m: MemoryFile): ExecutorMemory {
  * Nested wins when present; both default to `true` (plan is read-only, safe on).
  */
 export function isCorrectionFeatureEnabled(config: PluginConfig): boolean {
-  // parseConfig now resolves this into `config.correctionEnabled` (review
+  // parseConfig now resolves this into `resolveRecallAuxiliaryCapabilities(config).correction` (review
   // thread Txp) — prefer the parsed boolean so operator config actually takes
   // effect. The loose nested/flat read stays as a fallback for PluginConfig-
   // shaped objects built without parseConfig (unit tests).
-  if (typeof config.correctionEnabled === "boolean") return config.correctionEnabled;
+  if (typeof resolveRecallAuxiliaryCapabilities(config).correction === "boolean") return resolveRecallAuxiliaryCapabilities(config).correction;
   const nested = (config as unknown as Record<string, unknown>).correction as
     | Record<string, unknown>
     | undefined;
