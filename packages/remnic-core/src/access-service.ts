@@ -6,7 +6,11 @@ import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import {
-  resolveNamespaceCapabilities, resolveMemoryLifecycleCapabilities } from "./capabilities.js";
+  resolveNamespaceCapabilities,
+  resolveMemoryLifecycleCapabilities,
+  resolveQmdCapabilities,
+  resolveIdentityContinuityCapabilities,
+} from "./capabilities.js";
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
@@ -2703,7 +2707,7 @@ export class EngramAccessService {
     const resolvedNamespace = this.resolveNamespace(namespace);
     const storage = await this.orchestrator.getStorage(resolvedNamespace);
     const searchBackend = this.orchestrator.config.searchBackend ?? "qmd";
-    const qmdEnabled = this.orchestrator.config.qmdEnabled === true;
+    const qmdEnabled = resolveQmdCapabilities(this.orchestrator.config).qmd === true;
     let projectionAvailable = false;
     try {
       await stat(getMemoryProjectionPath(storage.dir));
@@ -6825,7 +6829,7 @@ export class EngramAccessService {
     period?: "weekly" | "monthly";
     key?: string;
   }): Promise<{ enabled: boolean; reason?: string; period?: string; key?: string; reportPath?: string }> {
-    if (!this.orchestrator.config.identityContinuityEnabled) {
+    if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled. Enable `identityContinuityEnabled: true`." };
     }
     if (!this.orchestrator.config.continuityAuditEnabled) {
@@ -6847,7 +6851,7 @@ export class EngramAccessService {
     triggerWindow?: string;
     suspectedCause?: string;
   }): Promise<unknown> {
-    if (!this.orchestrator.config.identityContinuityEnabled) {
+    if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled. Enable `identityContinuityEnabled: true`." };
     }
     if (!this.orchestrator.config.continuityIncidentLoggingEnabled) {
@@ -6873,7 +6877,7 @@ export class EngramAccessService {
     verificationResult: string;
     preventiveRule?: string;
   }): Promise<unknown> {
-    if (!this.orchestrator.config.identityContinuityEnabled) {
+    if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled." };
     }
     if (!this.orchestrator.config.continuityIncidentLoggingEnabled) {
@@ -6902,7 +6906,7 @@ export class EngramAccessService {
     principal?: string;
     limit?: number;
   }): Promise<unknown> {
-    if (!this.orchestrator.config.identityContinuityEnabled) {
+    if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled." };
     }
     const state = request.state === "closed" || request.state === "all" ? request.state : "open";
@@ -6924,7 +6928,7 @@ export class EngramAccessService {
     lastReviewed?: string;
     notes?: string;
   }): Promise<unknown> {
-    if (!this.orchestrator.config.identityContinuityEnabled) {
+    if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled." };
     }
     const resolvedNs = this.writableNamespaceFor(request.namespace, undefined, request.principal);
@@ -6949,7 +6953,7 @@ export class EngramAccessService {
     notes?: string;
     reviewedAt?: string;
   }): Promise<unknown> {
-    if (!this.orchestrator.config.identityContinuityEnabled) {
+    if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled." };
     }
     const id = request.id?.trim();
@@ -6969,7 +6973,7 @@ export class EngramAccessService {
     namespace?: string;
     principal?: string;
   }): Promise<unknown> {
-    if (!this.orchestrator.config.identityContinuityEnabled) {
+    if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled." };
     }
     const resolvedNs = this.resolveReadableNamespace(request.namespace, request.principal);
@@ -6995,7 +6999,7 @@ export class EngramAccessService {
     operatingPrinciples?: string;
     continuityNotes?: string;
   }): Promise<unknown> {
-    if (!this.orchestrator.config.identityContinuityEnabled) {
+    if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled." };
     }
 

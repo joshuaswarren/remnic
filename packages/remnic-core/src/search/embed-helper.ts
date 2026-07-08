@@ -1,5 +1,8 @@
 import { log } from "../logger.js";
-import { resolveMemoryLifecycleCapabilities } from "../capabilities.js";
+import {
+  resolveMemoryLifecycleCapabilities,
+  resolveLocalLlmCapabilities,
+} from "../capabilities.js";
 import type { PluginConfig } from "../types.js";
 import { isAbortError } from "../abort-error.js";
 import { withTimeoutSignal } from "./abort.js";
@@ -277,7 +280,7 @@ export class EmbedHelper {
   }
 
   private createLocalProvider(): ProviderConfig | null {
-    if (!this.config.localLlmEnabled || !this.config.localLlmUrl) return null;
+    if (!resolveLocalLlmCapabilities(this.config).localLlm || !this.config.localLlmUrl) return null;
     const base = this.config.localLlmUrl.replace(/\/$/, "");
     const endpoint = /\/v1$/i.test(base) ? `${base}/embeddings` : `${base}/v1/embeddings`;
     const headers: Record<string, string> = {

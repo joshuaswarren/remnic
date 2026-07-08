@@ -7,6 +7,7 @@ import { StorageManager } from "../storage.js";
 import type { ContinuityIncidentRecord, PluginConfig } from "../types.js";
 import { resolveSharedContextDir, SharedFeedbackEntrySchema, type SharedFeedbackEntry } from "../shared-context/manager.js";
 import { parseContinuityImprovementLoops } from "../identity-continuity.js";
+import { resolveQmdCapabilities, type QmdConfigProjection } from "../capabilities.js";
 
 type MistakesFile = {
   version?: number;
@@ -369,7 +370,7 @@ export interface TierMigrationCycleBudget {
 }
 
 export function defaultTierMigrationCycleBudget(
-  config: Pick<PluginConfig, "qmdTierAutoBackfillEnabled">,
+  config: QmdConfigProjection,
   trigger: TierMigrationCycleTrigger,
 ): TierMigrationCycleBudget {
   if (trigger === "extraction") {
@@ -380,11 +381,11 @@ export function defaultTierMigrationCycleBudget(
       minIntervalMs: 60_000,
     };
   }
-  const limit = config.qmdTierAutoBackfillEnabled ? 200 : 50;
+  const limit = resolveQmdCapabilities(config).qmdTierAutoBackfill ? 200 : 50;
   return {
     limit,
     scanLimit: limit * 4,
-    minIntervalMs: config.qmdTierAutoBackfillEnabled ? 120_000 : 300_000,
+    minIntervalMs: resolveQmdCapabilities(config).qmdTierAutoBackfill ? 120_000 : 300_000,
   };
 }
 

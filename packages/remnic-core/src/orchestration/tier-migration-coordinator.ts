@@ -42,6 +42,7 @@ import {
 } from "../utility-runtime.js";
 import type { PluginConfig, MemoryFile } from "../types.js";
 import { log } from "../logger.js";
+import { resolveQmdCapabilities } from "../capabilities.js";
 
 /** Dependencies injected by the orchestrator. All stable references or live
  *  accessors (the orchestrator reassigns `qmd` to NoopSearchBackend and
@@ -97,7 +98,7 @@ export class TierMigrationCoordinator {
     const { config, tierMigrationStatus } = this.deps;
     const dryRun = options?.dryRun === true;
     const persistSkipped = options?.force === true || trigger === "manual";
-    if (!config.qmdTierMigrationEnabled && options?.force !== true) {
+    if (!resolveQmdCapabilities(config).qmdTierMigration && options?.force !== true) {
       const skipped: TierMigrationCycleSummary = {
         trigger,
         scanned: 0,
@@ -113,7 +114,7 @@ export class TierMigrationCoordinator {
     }
     if (
       trigger === "maintenance" &&
-      !config.qmdTierAutoBackfillEnabled &&
+      !resolveQmdCapabilities(config).qmdTierAutoBackfill &&
       options?.force !== true
     ) {
       const skipped: TierMigrationCycleSummary = {
@@ -173,7 +174,7 @@ export class TierMigrationCoordinator {
 
     const policy = applyUtilityPromotionRuntimePolicy(
       {
-        enabled: config.qmdTierMigrationEnabled,
+        enabled: resolveQmdCapabilities(config).qmdTierMigration,
         demotionMinAgeDays: config.qmdTierDemotionMinAgeDays,
         demotionValueThreshold: config.qmdTierDemotionValueThreshold,
         promotionValueThreshold: config.qmdTierPromotionValueThreshold,
@@ -218,7 +219,7 @@ export class TierMigrationCoordinator {
         hotCollection: config.qmdCollection,
         coldCollection:
           config.qmdColdCollection ?? `${config.qmdCollection}-cold`,
-        autoEmbed: config.qmdAutoEmbedEnabled,
+        autoEmbed: resolveQmdCapabilities(config).qmdAutoEmbed,
       });
 
       let migrated = 0;

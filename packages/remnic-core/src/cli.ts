@@ -5,7 +5,10 @@ import { createHash } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import type { Orchestrator } from "./orchestrator.js";
 import {
-  resolveNamespaceCapabilities, resolveMemoryLifecycleCapabilities } from "./capabilities.js";
+  resolveNamespaceCapabilities,
+  resolveMemoryLifecycleCapabilities,
+  resolveIdentityContinuityCapabilities,
+} from "./capabilities.js";
 import { ThreadingManager } from "./threading.js";
 import { utcDayRange } from "./transcript.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
@@ -7859,7 +7862,7 @@ export function registerCli(
         .option("--state <state>", "Filter by state: open|closed|all", "open")
         .option("--limit <number>", "Maximum incidents to list", "25")
         .action(async (...args: unknown[]) => {
-          if (!orchestrator.config.identityContinuityEnabled) {
+          if (!resolveIdentityContinuityCapabilities(orchestrator.config).identityContinuity) {
             console.log("Identity continuity is disabled.");
             return;
           }
@@ -7887,7 +7890,7 @@ export function registerCli(
         .option("--trigger-window <window>", "Optional incident trigger window")
         .option("--suspected-cause <text>", "Optional suspected cause")
         .action(async (...args: unknown[]) => {
-          if (!orchestrator.config.identityContinuityEnabled) {
+          if (!resolveIdentityContinuityCapabilities(orchestrator.config).identityContinuity) {
             console.log("Identity continuity is disabled.");
             return;
           }
@@ -7918,7 +7921,7 @@ export function registerCli(
         .option("--verification-result <text>", "Required verification result")
         .option("--preventive-rule <text>", "Optional preventive rule")
         .action(async (...args: unknown[]) => {
-          if (!orchestrator.config.identityContinuityEnabled) {
+          if (!resolveIdentityContinuityCapabilities(orchestrator.config).identityContinuity) {
             console.log("Identity continuity is disabled.");
             return;
           }

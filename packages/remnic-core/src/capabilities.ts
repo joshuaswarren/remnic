@@ -447,3 +447,157 @@ export function resolveNamespaceCapabilities(
     namespaces: config.namespacesEnabled,
   });
 }
+
+// ---------------------------------------------------------------------------
+// QMD capability set (issue #1523 batch 6).
+//
+// The twelve QMD (query-managed database) flags are the largest remaining
+// scattered cluster after batch 5. They gate every aspect of the tiered
+// memory system: master switch, tier migration, cold tier, daemon, auto-embed,
+// maintenance, query rerank, intent hints, explain, auto-upgrade, and parity
+// graph. Read sites span orchestrator, operator-toolkit, access-service, and
+// search/factory. All flags are non-optional booleans on PluginConfig (defaults
+// resolved at the parse boundary), so the projection is pure pass-through.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of QMD feature gates (issue #1523 batch 6).
+ *
+ * Every field is `readonly boolean`. Composition lives ONLY in
+ * {@link resolveQmdCapabilities}.
+ */
+export interface QmdCapabilitySet {
+  /** `qmdEnabled` — QMD tiered-memory master switch. */
+  readonly qmd: boolean;
+  /** `qmdTierMigrationEnabled` — automatic tier promotion/demotion. */
+  readonly qmdTierMigration: boolean;
+  /** `qmdTierAutoBackfillEnabled` — backfill stale tier entries. */
+  readonly qmdTierAutoBackfill: boolean;
+  /** `qmdAutoEmbedEnabled` — auto-embed documents on write. */
+  readonly qmdAutoEmbed: boolean;
+  /** `qmdMaintenanceEnabled` — QMD maintenance pass runner. */
+  readonly qmdMaintenance: boolean;
+  /** `qmdColdTierEnabled` — cold-tier storage. */
+  readonly qmdColdTier: boolean;
+  /** `qmdDaemonEnabled` — background QMD daemon. */
+  readonly qmdDaemon: boolean;
+  /** `qmdTierParityGraphEnabled` — tier parity graph. */
+  readonly qmdTierParityGraph: boolean;
+  /** `qmdQueryRerankEnabled` — QMD query reranking. */
+  readonly qmdQueryRerank: boolean;
+  /** `qmdIntentHintsEnabled` — QMD intent hint extraction. */
+  readonly qmdIntentHints: boolean;
+  /** `qmdExplainEnabled` — QMD explain output. */
+  readonly qmdExplain: boolean;
+  /** `qmdAutoUpgradeEnabled` — QMD auto-upgrade tiers. */
+  readonly qmdAutoUpgrade: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveQmdCapabilities}.
+ */
+export type QmdConfigProjection = Pick<
+  PluginConfig,
+  | "qmdEnabled"
+  | "qmdTierMigrationEnabled"
+  | "qmdTierAutoBackfillEnabled"
+  | "qmdAutoEmbedEnabled"
+  | "qmdMaintenanceEnabled"
+  | "qmdColdTierEnabled"
+  | "qmdDaemonEnabled"
+  | "qmdTierParityGraphEnabled"
+  | "qmdQueryRerankEnabled"
+  | "qmdIntentHintsEnabled"
+  | "qmdExplainEnabled"
+  | "qmdAutoUpgradeEnabled"
+>;
+
+/**
+ * Resolve the {@link QmdCapabilitySet} from parsed config.
+ *
+ * Call this ONCE at operation entry and thread the result down. Eleven flags
+ * are non-optional booleans (pure pass-through); `qmdColdTierEnabled` is
+ * optional and coerced with `=== true` (matching the pre-migration call sites).
+ */
+export function resolveQmdCapabilities(config: QmdConfigProjection): QmdCapabilitySet {
+  return Object.freeze({
+    qmd: config.qmdEnabled,
+    qmdTierMigration: config.qmdTierMigrationEnabled,
+    qmdTierAutoBackfill: config.qmdTierAutoBackfillEnabled,
+    qmdAutoEmbed: config.qmdAutoEmbedEnabled,
+    qmdMaintenance: config.qmdMaintenanceEnabled,
+    qmdColdTier: config.qmdColdTierEnabled === true,
+    qmdDaemon: config.qmdDaemonEnabled,
+    qmdTierParityGraph: config.qmdTierParityGraphEnabled,
+    qmdQueryRerank: config.qmdQueryRerankEnabled,
+    qmdIntentHints: config.qmdIntentHintsEnabled,
+    qmdExplain: config.qmdExplainEnabled,
+    qmdAutoUpgrade: config.qmdAutoUpgradeEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Identity-continuity capability set (issue #1523 batch 6).
+//
+// `identityContinuityEnabled` gates the identity/continuity system (agent
+// identity tracking, continuity incident logging). Its 13 read sites span
+// orchestrator, access-service, and CLI. The flag is a non-optional boolean
+// on PluginConfig, so the projection is a pure pass-through.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of identity-continuity feature gates (issue #1523 batch 6).
+ */
+export interface IdentityContinuityCapabilitySet {
+  /** `identityContinuityEnabled` — identity-continuity master switch. */
+  readonly identityContinuity: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveIdentityContinuityCapabilities}.
+ */
+export type IdentityContinuityConfigProjection = Pick<PluginConfig, "identityContinuityEnabled">;
+
+/**
+ * Resolve the {@link IdentityContinuityCapabilitySet} from parsed config.
+ */
+export function resolveIdentityContinuityCapabilities(
+  config: IdentityContinuityConfigProjection,
+): IdentityContinuityCapabilitySet {
+  return Object.freeze({
+    identityContinuity: config.identityContinuityEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Local-LLM capability set (issue #1523 batch 6).
+//
+// `localLlmEnabled` gates whether a local (on-device) LLM is used for
+// summarization, embedding fallback, extraction, and search. Its 11 read
+// sites span orchestrator, extraction, embedding-fallback, local-llm,
+// search/embed-helper, and summarizer. The flag is a non-optional boolean.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of local-LLM feature gates (issue #1523 batch 6).
+ */
+export interface LocalLlmCapabilitySet {
+  /** `localLlmEnabled` — local (on-device) LLM master switch. */
+  readonly localLlm: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveLocalLlmCapabilities}.
+ */
+export type LocalLlmConfigProjection = Pick<PluginConfig, "localLlmEnabled">;
+
+/**
+ * Resolve the {@link LocalLlmCapabilitySet} from parsed config.
+ */
+export function resolveLocalLlmCapabilities(
+  config: LocalLlmConfigProjection,
+): LocalLlmCapabilitySet {
+  return Object.freeze({
+    localLlm: config.localLlmEnabled,
+  });
+}

@@ -5,6 +5,7 @@ import os from "node:os";
 import type { ModelRegistry } from "./model-registry.js";
 import { launchProcessSync } from "./runtime/child-process.js";
 import { mergeEnv, readEnvVar } from "./runtime/env.js";
+import { resolveLocalLlmCapabilities } from "./capabilities.js";
 
 /** Trim trailing slash characters without backtracking regex. */
 function trimTrailingSlashes(s: string): string {
@@ -934,7 +935,7 @@ export class LocalLlmClient {
     queueMeta?: { priority: LocalLlmRequestPriority; enqueuedAtMs: number },
   ): Promise<LocalLlmChatCompletionResult | null> {
     log.debug(
-      `local LLM chatCompletion: localLlmEnabled=${this.config.localLlmEnabled}, model=${this.config.localLlmModel}`,
+      `local LLM chatCompletion: localLlmEnabled=${resolveLocalLlmCapabilities(this.config).localLlm}, model=${this.config.localLlmModel}`,
     );
 
     const operation = options.operation ?? "unspecified";
@@ -1389,7 +1390,7 @@ export class LocalLlmClient {
     messages: Array<{ role: string; content: string }>,
     options: LocalLlmChatCompletionOptions = {},
   ): Promise<LocalLlmChatCompletionResult | null> {
-    if (!this.config.localLlmEnabled) {
+    if (!resolveLocalLlmCapabilities(this.config).localLlm) {
       log.debug("local LLM: disabled, returning null");
       return null;
     }
@@ -1444,7 +1445,7 @@ export class LocalLlmClient {
     operationName: string
   ): Promise<T> {
     // Try local LLM first if enabled
-    if (this.config.localLlmEnabled) {
+    if (resolveLocalLlmCapabilities(this.config).localLlm) {
       const localResult = await localOperation();
       if (localResult !== null) {
         log.debug(`${operationName}: used local LLM`);
