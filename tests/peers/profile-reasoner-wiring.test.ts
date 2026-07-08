@@ -24,8 +24,9 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..", "..");
 
 test("orchestrator REM phase invokes the peer profile reasoner gated on the config flag", () => {
+  // Issue #1526 seam 5: semantic consolidation moved to SemanticConsolidationCoordinator.
   const src = readFileSync(
-    path.join(repoRoot, "packages/remnic-core/src/orchestrator.ts"),
+    path.join(repoRoot, "packages/remnic-core/src/orchestration/semantic-consolidation-coordinator.ts"),
     "utf-8",
   );
   // Gate must exist verbatim so a typo on the flag silently disabling
@@ -33,28 +34,28 @@ test("orchestrator REM phase invokes the peer profile reasoner gated on the conf
   assert.match(
     src,
     /if \(this\.config\.peerProfileReasonerEnabled\)/,
-    "orchestrator must gate the reasoner on `peerProfileReasonerEnabled`",
+    "coordinator must gate the reasoner on `peerProfileReasonerEnabled`",
   );
-  // Dynamic import keeps the reasoner out of the cold-path bundle when
-  // the flag is off.
+  // Static import (coordinator module uses static imports per repo rules).
   assert.match(
     src,
-    /await import\("\.\/peers\/index\.js"\)/,
-    "orchestrator must lazily import the peers barrel",
+    /from "\.\.\/peers\/index\.js"/,
+    "coordinator must statically import the peers barrel",
   );
   assert.match(
     src,
     /runPeerProfileReasoner\(/,
-    "orchestrator must call runPeerProfileReasoner",
+    "coordinator must call runPeerProfileReasoner",
   );
 });
 
 test("orchestrator runs the peer profile reasoner AFTER the materialize post-hook", () => {
+  // Issue #1526 seam 5: semantic consolidation moved to SemanticConsolidationCoordinator.
   const src = readFileSync(
-    path.join(repoRoot, "packages/remnic-core/src/orchestrator.ts"),
+    path.join(repoRoot, "packages/remnic-core/src/orchestration/semantic-consolidation-coordinator.ts"),
     "utf-8",
   );
-  const materializeIdx = src.indexOf("materializeAfterSemanticConsolidation(");
+  const materializeIdx = src.indexOf("await materializeAfterSemanticConsolidation(");
   const reasonerIdx = src.indexOf("runPeerProfileReasoner(");
   assert.ok(materializeIdx > 0, "materialize call must exist");
   assert.ok(reasonerIdx > 0, "reasoner call must exist");

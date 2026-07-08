@@ -25,8 +25,9 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
 
 test("orchestrator semantic-consolidation loop snapshots sources before the canonical write", () => {
+  // Issue #1526 seam 5: semantic consolidation moved to SemanticConsolidationCoordinator.
   const src = readFileSync(
-    path.join(repoRoot, "packages/remnic-core/src/orchestrator.ts"),
+    path.join(repoRoot, "packages/remnic-core/src/orchestration/semantic-consolidation-coordinator.ts"),
     "utf-8",
   );
   // The consolidation block must call snapshotForProvenance on each
@@ -36,7 +37,7 @@ test("orchestrator semantic-consolidation loop snapshots sources before the cano
   assert.match(
     src,
     /snapshotForProvenance\(m\.path\)/u,
-    "orchestrator must call storage.snapshotForProvenance(m.path) inside the consolidation loop",
+    "coordinator must call storage.snapshotForProvenance(m.path) inside the consolidation loop",
   );
 
   // The derivedFrom + derivedVia options must be passed to writeMemory in
@@ -44,7 +45,7 @@ test("orchestrator semantic-consolidation loop snapshots sources before the cano
   // source tag to avoid matching unrelated call sites (e.g. future PRs
   // that wire supersession or dedup paths).
   const sourceAnchor = src.indexOf('source: "semantic-consolidation"');
-  assert.ok(sourceAnchor >= 0, "consolidation writeMemory call must survive");
+  assert.ok(sourceAnchor >= 0, "coordinator consolidation writeMemory call must survive");
   const window = src.slice(Math.max(0, sourceAnchor - 2000), sourceAnchor + 2000);
   assert.match(
     window,
