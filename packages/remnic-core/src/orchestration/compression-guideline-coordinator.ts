@@ -24,6 +24,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { resolveCompressionCapabilities } from "../capabilities.js";
 
 // StorageManager type comes from the package barrel (type-only) so this
 // module does not add a direct storage.ts import (#1533 ratchet).
@@ -103,7 +104,7 @@ export class CompressionGuidelineCoordinator {
         ? draftState
         : activeState;
 
-    if (!this.config.compressionGuidelineLearningEnabled) {
+    if (!resolveCompressionCapabilities(this.config).compressionGuidelineLearning) {
       return {
         enabled: false,
         dryRun,
@@ -152,7 +153,7 @@ export class CompressionGuidelineCoordinator {
     }
     const refinedCandidate =
       await refineCompressionGuidelineCandidateSemantically(candidate, {
-        enabled: this.config.compressionGuidelineSemanticRefinementEnabled,
+        enabled: resolveCompressionCapabilities(this.config).compressionGuidelineSemanticRefinement,
         timeoutMs: this.config.compressionGuidelineSemanticTimeoutMs,
         runRefinement: async (baseline) => {
           const prompt = [
@@ -241,7 +242,7 @@ export class CompressionGuidelineCoordinator {
       | "guideline_version_mismatch"
       | "draft_changed";
   }> {
-    if (!this.config.compressionGuidelineLearningEnabled) {
+    if (!resolveCompressionCapabilities(this.config).compressionGuidelineLearning) {
       return {
         enabled: false,
         activated: false,
@@ -312,7 +313,7 @@ export class CompressionGuidelineCoordinator {
 
   /** Consolidation-time hook: recompute the draft from recent events. */
   async runCompressionGuidelineLearningPass(): Promise<void> {
-    if (!this.config.compressionGuidelineLearningEnabled) return;
+    if (!resolveCompressionCapabilities(this.config).compressionGuidelineLearning) return;
     try {
       const result = await this.optimizeCompressionGuidelines({
         dryRun: false,
@@ -328,8 +329,8 @@ export class CompressionGuidelineCoordinator {
 
   /** Recall-time hook: surface active guidelines as a recall section. */
   async buildCompressionGuidelineRecallSection(): Promise<string | null> {
-    if (!this.config.contextCompressionActionsEnabled) return null;
-    if (!this.config.compressionGuidelineLearningEnabled) return null;
+    if (!resolveCompressionCapabilities(this.config).contextCompressionActions) return null;
+    if (!resolveCompressionCapabilities(this.config).compressionGuidelineLearning) return null;
 
     const state = await this.storage
       .readCompressionGuidelineOptimizerState()

@@ -281,7 +281,7 @@ import {
   resolveQmdCapabilities,
   resolveIdentityContinuityCapabilities,
   resolveLocalLlmCapabilities,
-} from "./capabilities.js";
+  resolveSecurityCapabilities, resolveEvalCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities} from "./capabilities.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/index.js";
 import {
   searchHarmonicRetrieval,
@@ -3510,8 +3510,8 @@ export class Orchestrator {
       this.runtimePolicyValues = await this.policyRuntime.loadRuntimeValues();
       this.utilityRuntimeValues = await loadUtilityRuntimeValues({
         memoryDir: this.config.memoryDir,
-        memoryUtilityLearningEnabled: this.config.memoryUtilityLearningEnabled,
-        promotionByOutcomeEnabled: this.config.promotionByOutcomeEnabled,
+        memoryUtilityLearningEnabled: resolveUtilityLearningCapabilities(this.config).memoryUtilityLearning,
+        promotionByOutcomeEnabled: resolveUtilityLearningCapabilities(this.config).promotionByOutcome,
       });
 
       // Initialize content-hash dedup index
@@ -4805,7 +4805,7 @@ export class Orchestrator {
       action: event.action,
       eligibility,
       options: {
-        actionsEnabled: this.config.contextCompressionActionsEnabled,
+        actionsEnabled: resolveCompressionCapabilities(this.config).contextCompressionActions,
         maxCompressionTokensPerHour: this.config.maxCompressionTokensPerHour,
       },
     });
@@ -8305,11 +8305,11 @@ export class Orchestrator {
     const objectiveStatePromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.objectiveStateMemoryEnabled ||
-        !this.config.objectiveStateRecallEnabled ||
+        !resolveObjectiveStateCapabilities(this.config).objectiveStateMemory ||
+        !resolveObjectiveStateCapabilities(this.config).objectiveStateRecall ||
         !this.isRecallSectionEnabled(
           "objective-state",
-          this.config.objectiveStateRecallEnabled === true,
+          resolveObjectiveStateCapabilities(this.config).objectiveStateRecall === true,
         )
       ) {
         recordRecallSectionMetric({
@@ -8562,11 +8562,11 @@ export class Orchestrator {
     const trustZonePromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.trustZonesEnabled ||
-        !this.config.trustZoneRecallEnabled ||
+        !resolveSecurityCapabilities(this.config).trustZones ||
+        !resolveSecurityCapabilities(this.config).trustZoneRecall ||
         !this.isRecallSectionEnabled(
           "trust-zones",
-          this.config.trustZoneRecallEnabled === true,
+          resolveSecurityCapabilities(this.config).trustZoneRecall === true,
         )
       ) {
         recordRecallSectionMetric({
@@ -11735,7 +11735,7 @@ export class Orchestrator {
     if (
       this.isRecallSectionEnabled(
         "compression-guidelines",
-        this.config.compressionGuidelineLearningEnabled === true,
+        resolveCompressionCapabilities(this.config).compressionGuidelineLearning === true,
       )
     ) {
       const compressionGuidelineSection =
@@ -17888,7 +17888,7 @@ export class Orchestrator {
   private queueEvalShadowRecall(
     record: Omit<EvalShadowRecallRecord, "schemaVersion">,
   ): void {
-    if (!this.config.evalHarnessEnabled || !this.config.evalShadowModeEnabled)
+    if (!resolveEvalCapabilities(this.config).evalHarness || !resolveEvalCapabilities(this.config).evalShadowMode)
       return;
     this.evalShadowWriteChain = this.evalShadowWriteChain
       .catch(() => undefined)

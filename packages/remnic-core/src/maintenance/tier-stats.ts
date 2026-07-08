@@ -25,7 +25,7 @@ import {
   type TierRoutingPolicy,
   type TierTransitionDecision,
 } from "../tier-routing.js";
-import { resolveQmdCapabilities } from "../capabilities.js";
+import { resolveQmdCapabilities, resolveUtilityLearningCapabilities} from "../capabilities.js";
 import {
   applyUtilityPromotionRuntimePolicy,
   loadUtilityRuntimeValues,
@@ -90,8 +90,8 @@ async function tierRoutingPolicyFromConfig(
   };
   const runtime = await loadUtilityRuntimeValues({
     memoryDir: config.memoryDir,
-    memoryUtilityLearningEnabled: config.memoryUtilityLearningEnabled,
-    promotionByOutcomeEnabled: config.promotionByOutcomeEnabled,
+    memoryUtilityLearningEnabled: resolveUtilityLearningCapabilities(config).memoryUtilityLearning,
+    promotionByOutcomeEnabled: resolveUtilityLearningCapabilities(config).promotionByOutcome,
   });
   return applyUtilityPromotionRuntimePolicy(basePolicy, runtime);
 }

@@ -18,7 +18,7 @@
  */
 
 import type { Orchestrator } from "../orchestrator.js";
-import { resolveCapabilities } from "../capabilities.js";
+import { resolveCapabilities, resolveSecurityCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities} from "../capabilities.js";
 import type { CliCommand } from "../cli.js";
 import type { UtilityTelemetryEvent } from "../utility-telemetry.js";
 import {
@@ -53,8 +53,8 @@ cmd
     const status = await runObjectiveStateStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       objectiveStateStoreDir: orchestrator.config.objectiveStateStoreDir,
-      objectiveStateMemoryEnabled: orchestrator.config.objectiveStateMemoryEnabled,
-      objectiveStateSnapshotWritesEnabled: orchestrator.config.objectiveStateSnapshotWritesEnabled,
+      objectiveStateMemoryEnabled: resolveObjectiveStateCapabilities(orchestrator.config).objectiveStateMemory,
+      objectiveStateSnapshotWritesEnabled: resolveObjectiveStateCapabilities(orchestrator.config).objectiveStateSnapshotWrites,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -80,9 +80,9 @@ cmd
     const status = await runTrustZoneStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       trustZoneStoreDir: orchestrator.config.trustZoneStoreDir,
-      trustZonesEnabled: orchestrator.config.trustZonesEnabled,
-      quarantinePromotionEnabled: orchestrator.config.quarantinePromotionEnabled,
-      memoryPoisoningDefenseEnabled: orchestrator.config.memoryPoisoningDefenseEnabled,
+      trustZonesEnabled: resolveSecurityCapabilities(orchestrator.config).trustZones,
+      quarantinePromotionEnabled: resolveSecurityCapabilities(orchestrator.config).quarantinePromotion,
+      memoryPoisoningDefenseEnabled: resolveSecurityCapabilities(orchestrator.config).memoryPoisoningDefense,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -99,7 +99,7 @@ cmd
     const result = await runTrustZoneDemoSeedCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       trustZoneStoreDir: orchestrator.config.trustZoneStoreDir,
-      trustZonesEnabled: orchestrator.config.trustZonesEnabled,
+      trustZonesEnabled: resolveSecurityCapabilities(orchestrator.config).trustZones,
       scenario: typeof options.scenario === "string" ? options.scenario : undefined,
       recordedAt: typeof options.recordedAt === "string" ? options.recordedAt : undefined,
       dryRun: options.dryRun === true,
@@ -167,8 +167,8 @@ cmd
   .action(async () => {
     const status = await runUtilityTelemetryStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
-      memoryUtilityLearningEnabled: orchestrator.config.memoryUtilityLearningEnabled,
-      promotionByOutcomeEnabled: orchestrator.config.promotionByOutcomeEnabled,
+      memoryUtilityLearningEnabled: resolveUtilityLearningCapabilities(orchestrator.config).memoryUtilityLearning,
+      promotionByOutcomeEnabled: resolveUtilityLearningCapabilities(orchestrator.config).promotionByOutcome,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -196,7 +196,7 @@ cmd
       : Number.NaN;
     const filePath = await runUtilityTelemetryRecordCliCommand({
       memoryDir: orchestrator.config.memoryDir,
-      memoryUtilityLearningEnabled: orchestrator.config.memoryUtilityLearningEnabled,
+      memoryUtilityLearningEnabled: resolveUtilityLearningCapabilities(orchestrator.config).memoryUtilityLearning,
       event: {
         schemaVersion: 1,
         eventId: String(options.eventId ?? ""),
@@ -223,8 +223,8 @@ cmd
   .action(async () => {
     const status = await runUtilityLearningStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
-      memoryUtilityLearningEnabled: orchestrator.config.memoryUtilityLearningEnabled,
-      promotionByOutcomeEnabled: orchestrator.config.promotionByOutcomeEnabled,
+      memoryUtilityLearningEnabled: resolveUtilityLearningCapabilities(orchestrator.config).memoryUtilityLearning,
+      promotionByOutcomeEnabled: resolveUtilityLearningCapabilities(orchestrator.config).promotionByOutcome,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -249,7 +249,7 @@ cmd
       : 0.35;
     const result = await runUtilityLearningCliCommand({
       memoryDir: orchestrator.config.memoryDir,
-      memoryUtilityLearningEnabled: orchestrator.config.memoryUtilityLearningEnabled,
+      memoryUtilityLearningEnabled: resolveUtilityLearningCapabilities(orchestrator.config).memoryUtilityLearning,
       learningWindowDays,
       minEventCount,
       maxWeightMagnitude,

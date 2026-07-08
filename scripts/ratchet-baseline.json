@@ -11,7 +11,7 @@
       "packages/remnic-core/src/config.ts": 4689
     },
     "oversizedFileCount": 10,
-    "scatteredConfigFlagReads": 305,
+    "scatteredConfigFlagReads": 245,
     "adHocNamespaceResolutions": 0,
     "unmigratedHandlerCount": 0,
     "directStorageImports": 41

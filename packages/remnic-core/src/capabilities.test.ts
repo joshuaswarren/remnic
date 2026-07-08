@@ -9,12 +9,22 @@ import {
   resolveQmdCapabilities,
   resolveIdentityContinuityCapabilities,
   resolveLocalLlmCapabilities,
+  resolveSecurityCapabilities,
+  resolveEvalCapabilities,
+  resolveUtilityLearningCapabilities,
+  resolveObjectiveStateCapabilities,
+  resolveCompressionCapabilities,
   type CapabilitySet,
   type AccessSetupCapabilitySet,
   type NamespaceCapabilitySet,
   type QmdCapabilitySet,
   type IdentityContinuityCapabilitySet,
   type LocalLlmCapabilitySet,
+  type SecurityCapabilitySet,
+  type EvalCapabilitySet,
+  type UtilityLearningCapabilitySet,
+  type ObjectiveStateCapabilitySet,
+  type CompressionCapabilitySet,
 } from "./capabilities.js";
 
 /**
@@ -823,4 +833,191 @@ test("resolveLocalLlmCapabilities: result is frozen", () => {
   const config = parseConfig({ localLlmEnabled: true });
   const caps = resolveLocalLlmCapabilities(config);
   assert.ok(Object.isFrozen(caps), "LocalLlmCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// SecurityCapabilitySet — gate-parity tests (issue #1523 batch 7).
+// ---------------------------------------------------------------------------
+
+const SECURITY_FIELD_TO_FLAG: Record<keyof SecurityCapabilitySet, string> = {
+  trustZones: "trustZonesEnabled",
+  quarantinePromotion: "quarantinePromotionEnabled",
+  memoryPoisoningDefense: "memoryPoisoningDefenseEnabled",
+  trustZoneRecall: "trustZoneRecallEnabled",
+};
+
+const SECURITY_FIELDS = Object.keys(SECURITY_FIELD_TO_FLAG) as Array<keyof SecurityCapabilitySet>;
+
+test("resolveSecurityCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(SECURITY_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveSecurityCapabilities(config);
+  for (const field of SECURITY_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolveSecurityCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(SECURITY_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveSecurityCapabilities(config);
+  for (const field of SECURITY_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolveSecurityCapabilities returns a frozen object", () => {
+  const caps = resolveSecurityCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "SecurityCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// EvalCapabilitySet — gate-parity tests (issue #1523 batch 7).
+// ---------------------------------------------------------------------------
+
+const EVAL_FIELD_TO_FLAG: Record<keyof EvalCapabilitySet, string> = {
+  evalHarness: "evalHarnessEnabled",
+  evalShadowMode: "evalShadowModeEnabled",
+  benchmarkBaselineSnapshots: "benchmarkBaselineSnapshotsEnabled",
+  benchmarkDeltaReporter: "benchmarkDeltaReporterEnabled",
+  memoryRedTeamBench: "memoryRedTeamBenchEnabled",
+};
+
+const EVAL_FIELDS = Object.keys(EVAL_FIELD_TO_FLAG) as Array<keyof EvalCapabilitySet>;
+
+test("resolveEvalCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(EVAL_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveEvalCapabilities(config);
+  for (const field of EVAL_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolveEvalCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(EVAL_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveEvalCapabilities(config);
+  for (const field of EVAL_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolveEvalCapabilities returns a frozen object", () => {
+  const caps = resolveEvalCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "EvalCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// UtilityLearningCapabilitySet — gate-parity tests (issue #1523 batch 7).
+// ---------------------------------------------------------------------------
+
+const UTILITY_FIELD_TO_FLAG: Record<keyof UtilityLearningCapabilitySet, string> = {
+  memoryUtilityLearning: "memoryUtilityLearningEnabled",
+  promotionByOutcome: "promotionByOutcomeEnabled",
+};
+
+const UTILITY_FIELDS = Object.keys(UTILITY_FIELD_TO_FLAG) as Array<keyof UtilityLearningCapabilitySet>;
+
+test("resolveUtilityLearningCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(UTILITY_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveUtilityLearningCapabilities(config);
+  for (const field of UTILITY_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolveUtilityLearningCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(UTILITY_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveUtilityLearningCapabilities(config);
+  for (const field of UTILITY_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolveUtilityLearningCapabilities returns a frozen object", () => {
+  const caps = resolveUtilityLearningCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "UtilityLearningCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// ObjectiveStateCapabilitySet — gate-parity tests (issue #1523 batch 7).
+// ---------------------------------------------------------------------------
+
+const OBJECTIVE_FIELD_TO_FLAG: Record<keyof ObjectiveStateCapabilitySet, string> = {
+  objectiveStateMemory: "objectiveStateMemoryEnabled",
+  objectiveStateSnapshotWrites: "objectiveStateSnapshotWritesEnabled",
+  objectiveStateRecall: "objectiveStateRecallEnabled",
+};
+
+const OBJECTIVE_FIELDS = Object.keys(OBJECTIVE_FIELD_TO_FLAG) as Array<keyof ObjectiveStateCapabilitySet>;
+
+test("resolveObjectiveStateCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(OBJECTIVE_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveObjectiveStateCapabilities(config);
+  for (const field of OBJECTIVE_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolveObjectiveStateCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(OBJECTIVE_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveObjectiveStateCapabilities(config);
+  for (const field of OBJECTIVE_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolveObjectiveStateCapabilities returns a frozen object", () => {
+  const caps = resolveObjectiveStateCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "ObjectiveStateCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// CompressionCapabilitySet — gate-parity tests (issue #1523 batch 7).
+// ---------------------------------------------------------------------------
+
+const COMPRESSION_FIELD_TO_FLAG: Record<keyof CompressionCapabilitySet, string> = {
+  compressionGuidelineLearning: "compressionGuidelineLearningEnabled",
+  compressionGuidelineSemanticRefinement: "compressionGuidelineSemanticRefinementEnabled",
+  contextCompressionActions: "contextCompressionActionsEnabled",
+};
+
+const COMPRESSION_FIELDS = Object.keys(COMPRESSION_FIELD_TO_FLAG) as Array<keyof CompressionCapabilitySet>;
+
+test("resolveCompressionCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(COMPRESSION_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveCompressionCapabilities(config);
+  for (const field of COMPRESSION_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolveCompressionCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(COMPRESSION_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveCompressionCapabilities(config);
+  for (const field of COMPRESSION_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolveCompressionCapabilities returns a frozen object", () => {
+  const caps = resolveCompressionCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "CompressionCapabilitySet must be frozen");
 });
