@@ -1,6 +1,6 @@
 {
   "name": "@remnic/cli",
-  "version": "9.3.735",
+  "version": "9.3.736",
   "description": "CLI for Remnic memory — init, query, doctor, daemon management",
   "type": "module",
   "main": "dist/index.js",
@@ -39,18 +39,18 @@
     "yaml": "^2.4.2"
   },
   "peerDependencies": {
-    "@remnic/bench": "^9.3.735",
-    "@remnic/export-weclone": "^9.3.735",
-    "@remnic/import-weclone": "^9.3.735",
-    "@remnic/import-chatgpt": "^9.3.735",
-    "@remnic/import-claude": "^9.3.735",
-    "@remnic/import-gemini": "^9.3.735",
-    "@remnic/import-lossless-claw": "^9.3.735",
-    "@remnic/import-mem0": "^9.3.735",
-    "@remnic/import-supermemory": "^9.3.735",
-    "@remnic/connector-limitless": "^9.3.735",
-    "@remnic/connector-bee": "^9.3.735",
-    "@remnic/connector-omi": "^9.3.735"
+    "@remnic/bench": "^9.3.736",
+    "@remnic/export-weclone": "^9.3.736",
+    "@remnic/import-weclone": "^9.3.736",
+    "@remnic/import-chatgpt": "^9.3.736",
+    "@remnic/import-claude": "^9.3.736",
+    "@remnic/import-gemini": "^9.3.736",
+    "@remnic/import-lossless-claw": "^9.3.736",
+    "@remnic/import-mem0": "^9.3.736",
+    "@remnic/import-supermemory": "^9.3.736",
+    "@remnic/connector-limitless": "^9.3.736",
+    "@remnic/connector-bee": "^9.3.736",
+    "@remnic/connector-omi": "^9.3.736"
   },
   "peerDependenciesMeta": {
     "@remnic/bench": {
