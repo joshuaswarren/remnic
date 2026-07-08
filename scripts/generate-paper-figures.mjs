@@ -64,7 +64,10 @@ const TRUST_SCORE_SRC = join(
 function trackedResultsNames() {
   if (process.env.REMNIC_FIGURES_RESULTS_DIR) return null;
   try {
-    const out = execFileSync("git", ["ls-files", "docs/benchmarks/results"], {
+    // -c safe.directory=* dodges the "dubious ownership" fatal that self-hosted
+    // runners can raise (which would make this throw, the catch return null, and
+    // the filter silently no-op — exactly the CI contamination this guards).
+    const out = execFileSync("git", ["-c", "safe.directory=*", "ls-files", "docs/benchmarks/results"], {
       cwd: REPO_ROOT,
       encoding: "utf8",
     });
@@ -137,7 +140,12 @@ function findArtifact({ benchmarkId, tier, model, systemName = "remnic" }) {
  */
 function findMemCorrectArtifacts() {
   if (!existsSync(RESULTS_DIR)) return [];
-  const out = [];
+  // Keep only the NEWEST artifact per adapter (by finishedAt), mirroring
+  // findArtifact. Without this, figure2's adapter map kept whichever file
+  // sorted last in readdirSync, so multiple committed seeds for one adapter
+  // could plot stale metrics and mislabel the legend "real" (cursor thread:
+  // MemCorrect map picks arbitrary run).
+  const byAdapter = new Map();
   for (const name of readdirSync(RESULTS_DIR).sort()) {
     if (!name.endsWith(".json") || name.includes("mock000")) continue;
     if (TRACKED_RESULTS_NAMES && !TRACKED_RESULTS_NAMES.has(name)) continue;
@@ -156,7 +164,7 @@ function findMemCorrectArtifacts() {
     if (!agg) continue;
     const adapter =
       typeof doc?.config?.adapterMode === "string" ? doc.config.adapterMode : "unknown";
-    out.push({
+    const entry = {
       adapter,
       tier: doc?.meta?.benchmarkTier ?? doc?.tier ?? "local",
       seed: doc?.meta?.seeds?.[0] ?? doc?.seed ?? 0,
@@ -172,9 +180,17 @@ function findMemCorrectArtifacts() {
         provenance_fidelity:
           typeof agg.provenance_fidelity === "number" ? agg.provenance_fidelity : null,
       },
-    });
+    };
+    const key = String(adapter).toLowerCase();
+    // finishedAt lives at doc.finishedAt (published) or meta.timestamp (nested
+    // BenchmarkResult); both are ISO-8601 so lexicographic compare orders them.
+    const finishedAt = String(doc?.finishedAt ?? doc?.meta?.timestamp ?? "");
+    const prev = byAdapter.get(key);
+    if (!prev || String(prev.finishedAt).localeCompare(finishedAt) < 0) {
+      byAdapter.set(key, { entry, finishedAt });
+    }
   }
-  return out;
+  return [...byAdapter.values()].map((x) => x.entry);
 }
 
 function num(v) {

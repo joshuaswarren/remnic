@@ -65,7 +65,7 @@ function loadJson(p) {
 // tracked → no filtering (defensive).
 function trackedResultsNames() {
   try {
-    const res = spawnSync("git", ["ls-files", "docs/benchmarks/results"], {
+    const res = spawnSync("git", ["-c", "safe.directory=*", "ls-files", "docs/benchmarks/results"], {
       cwd: REPO_ROOT,
       encoding: "utf8",
     });
@@ -81,6 +81,20 @@ function trackedResultsNames() {
 const TRACKED_RESULTS_NAMES = trackedResultsNames();
 function isTrackedResult(name) {
   return !TRACKED_RESULTS_NAMES || TRACKED_RESULTS_NAMES.has(name);
+}
+
+// Copy only git-tracked artifacts into dest so a regeneration is hermetic to
+// the UNTRACKED leftovers the self-hosted CI runner accumulates in the
+// gitignored results dir. Returns the copied basenames.
+function copyTrackedResults(dest) {
+  const copied = [];
+  for (const name of readdirSync(RESULTS_DIR)) {
+    if (!name.endsWith(".json")) continue;
+    if (!isTrackedResult(name)) continue;
+    writeFileSync(join(dest, name), readFileSync(join(RESULTS_DIR, name)));
+    copied.push(name);
+  }
+  return copied;
 }
 
 function findRealArtifact(benchmarkId, tier) {
@@ -135,20 +149,33 @@ test("generator runs clean and exits 0 (into a temp dir — never mutates commit
 test("committed figures are in sync with the generator (regeneration is byte-identical)", () => {
   // Catches stale committed figures: if someone edits an artifact or the
   // generator and forgets to re-run `pnpm run figures:paper`, this fails.
-  const tmp = mkdtempSync(join(tmpdir(), "fig-sync-"));
+  //
+  // Regenerate from a HERMETIC copy of only the git-tracked artifacts. The
+  // self-hosted CI runner accumulates UNTRACKED artifacts in the gitignored
+  // results dir; regenerating from the live dir would let the generator pick
+  // a leftover (newest finishedAt) and fail this test in CI only. The
+  // generator's own git-tracked filter covers `pnpm run figures:paper`; this
+  // env-override seam makes the assertion itself immune to CI leftovers.
+  const tmpResults = mkdtempSync(join(tmpdir(), "fig-sync-results-"));
+  const tmpOut = mkdtempSync(join(tmpdir(), "fig-sync-out-"));
   try {
-    runGenerator({ REMNIC_FIGURES_OUT_DIR: tmp });
+    assert.ok(
+      copyTrackedResults(tmpResults).length > 0,
+      "git-tracked artifacts must exist to regenerate from",
+    );
+    runGenerator({ REMNIC_FIGURES_RESULTS_DIR: tmpResults, REMNIC_FIGURES_OUT_DIR: tmpOut });
     for (const f of [
       "fig1-locomo-longmemeval.svg",
       "fig2-memcorrect-metrics.svg",
       "fig3-trustscore-components.svg",
     ]) {
-      const fresh = readFileSync(join(tmp, f), "utf8");
+      const fresh = readFileSync(join(tmpOut, f), "utf8");
       const committed = readFigure(f);
       assert.equal(fresh, committed, `committed ${f} is stale — run \`pnpm run figures:paper\``);
     }
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
+    rmSync(tmpResults, { recursive: true, force: true });
+    rmSync(tmpOut, { recursive: true, force: true });
   }
 });
 
