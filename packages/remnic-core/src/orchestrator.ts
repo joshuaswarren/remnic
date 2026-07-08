@@ -2847,6 +2847,7 @@ export class Orchestrator {
     });
     this.recallSectionCoordinator = new RecallSectionCoordinator({
       getConfig: () => this.config,
+    });
     this.contradictionLinkingCoordinator = new ContradictionLinkingCoordinator({
       getConfig: () => this.config,
       isSearchAvailable: () => this.isSearchAvailableForNamespaceRouting(),
