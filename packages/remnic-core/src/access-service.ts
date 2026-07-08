@@ -10,7 +10,7 @@ import {
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
   resolveIdentityContinuityCapabilities,
-} from "./capabilities.js";
+  resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities} from "./capabilities.js";
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
@@ -1823,8 +1823,8 @@ export class EngramAccessService {
       // are off the self base collapses to config.defaultNamespace, so this is a
       // no-op for single-store deployments either way.
       const willWriteObjectiveState =
-        this.orchestrator.config.objectiveStateMemoryEnabled === true &&
-        this.orchestrator.config.objectiveStateSnapshotWritesEnabled === true;
+        resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateMemory === true &&
+        resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateSnapshotWrites === true;
       if (
         willWriteObjectiveState &&
         resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true &&
@@ -5578,9 +5578,9 @@ export class EngramAccessService {
       status: await getTrustZoneStoreStatus({
         memoryDir: storage.dir,
         trustZoneStoreDir: this.orchestrator.config.trustZoneStoreDir,
-        enabled: this.orchestrator.config.trustZonesEnabled === true,
-        promotionEnabled: this.orchestrator.config.quarantinePromotionEnabled === true,
-        poisoningDefenseEnabled: this.orchestrator.config.memoryPoisoningDefenseEnabled === true,
+        enabled: resolveSecurityCapabilities(this.orchestrator.config).trustZones === true,
+        promotionEnabled: resolveSecurityCapabilities(this.orchestrator.config).quarantinePromotion === true,
+        poisoningDefenseEnabled: resolveSecurityCapabilities(this.orchestrator.config).memoryPoisoningDefense === true,
       }),
     };
   }
@@ -5612,9 +5612,9 @@ export class EngramAccessService {
           entry.record,
           entry.filePath,
           result.allRecords,
-          this.orchestrator.config.memoryPoisoningDefenseEnabled === true,
-          this.orchestrator.config.trustZonesEnabled === true,
-          this.orchestrator.config.quarantinePromotionEnabled === true,
+          resolveSecurityCapabilities(this.orchestrator.config).memoryPoisoningDefense === true,
+          resolveSecurityCapabilities(this.orchestrator.config).trustZones === true,
+          resolveSecurityCapabilities(this.orchestrator.config).quarantinePromotion === true,
         )),
     };
   }
@@ -5636,9 +5636,9 @@ export class EngramAccessService {
       result = await promoteTrustZoneRecord({
         memoryDir: storage.dir,
         trustZoneStoreDir: this.orchestrator.config.trustZoneStoreDir,
-        enabled: this.orchestrator.config.trustZonesEnabled === true,
-        promotionEnabled: this.orchestrator.config.quarantinePromotionEnabled === true,
-        poisoningDefenseEnabled: this.orchestrator.config.memoryPoisoningDefenseEnabled === true,
+        enabled: resolveSecurityCapabilities(this.orchestrator.config).trustZones === true,
+        promotionEnabled: resolveSecurityCapabilities(this.orchestrator.config).quarantinePromotion === true,
+        poisoningDefenseEnabled: resolveSecurityCapabilities(this.orchestrator.config).memoryPoisoningDefense === true,
         sourceRecordId: request.recordId,
         targetZone: request.targetZone,
         recordedAt: request.recordedAt ?? new Date().toISOString(),
@@ -5670,7 +5670,7 @@ export class EngramAccessService {
       result = await seedTrustZoneDemoDataset({
         memoryDir: storage.dir,
         trustZoneStoreDir: this.orchestrator.config.trustZoneStoreDir,
-        enabled: this.orchestrator.config.trustZonesEnabled === true,
+        enabled: resolveSecurityCapabilities(this.orchestrator.config).trustZones === true,
         scenario: request.scenario,
         recordedAt: request.recordedAt,
         dryRun: request.dryRun === true,
@@ -5879,8 +5879,8 @@ export class EngramAccessService {
     // overlay-compatible base namespace for those writes.
     const namespace = this.legacyResponseNamespaceForScope(scope);
     const shouldWriteObjectiveState =
-      this.orchestrator.config.objectiveStateMemoryEnabled === true &&
-      this.orchestrator.config.objectiveStateSnapshotWritesEnabled === true;
+      resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateMemory === true &&
+      resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateSnapshotWrites === true;
 
     // 2. Auto-resolve coding context from cwd/projectTag so a LATER bare recall
     //    on the same session is project-scoped (rule 42: same namespace layer as
@@ -5919,9 +5919,9 @@ export class EngramAccessService {
         await recordObjectiveStateSnapshotsFromObservedMessages({
           memoryDir: objectiveStateLocation.memoryDir,
           objectiveStateStoreDir: objectiveStateLocation.objectiveStateStoreDir,
-          objectiveStateMemoryEnabled: this.orchestrator.config.objectiveStateMemoryEnabled,
+          objectiveStateMemoryEnabled: resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateMemory,
           objectiveStateSnapshotWritesEnabled:
-            this.orchestrator.config.objectiveStateSnapshotWritesEnabled,
+            resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateSnapshotWrites,
           sessionKey: request.sessionKey,
           recordedAt: new Date().toISOString(),
           messages: request.messages,
@@ -7342,7 +7342,7 @@ export class EngramAccessService {
     dryRun?: boolean;
     eventLimit?: number;
   }): Promise<unknown> {
-    if (!this.orchestrator.config.compressionGuidelineLearningEnabled) {
+    if (!resolveCompressionCapabilities(this.orchestrator.config).compressionGuidelineLearning) {
       return { enabled: false, reason: "Compression guideline learning is disabled. Enable `compressionGuidelineLearningEnabled: true`." };
     }
     return await this.orchestrator.optimizeCompressionGuidelines({
@@ -7355,7 +7355,7 @@ export class EngramAccessService {
     expectedContentHash?: string;
     expectedGuidelineVersion?: number;
   }): Promise<unknown> {
-    if (!this.orchestrator.config.compressionGuidelineLearningEnabled) {
+    if (!resolveCompressionCapabilities(this.orchestrator.config).compressionGuidelineLearning) {
       return { enabled: false, reason: "Compression guideline learning is disabled." };
     }
     return await this.orchestrator.activateCompressionGuidelineDraft({
@@ -7749,7 +7749,7 @@ export class EngramAccessService {
       );
     }
 
-    if (this.orchestrator.config.contextCompressionActionsEnabled !== true) {
+    if (resolveCompressionCapabilities(this.orchestrator.config).contextCompressionActions !== true) {
       throw new EngramAccessInputError(
         "memory_action_apply is disabled; enable contextCompressionActionsEnabled to use this tool",
       );

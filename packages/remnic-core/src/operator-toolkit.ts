@@ -29,7 +29,7 @@ import {
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
   resolveQmdCapabilities,
-} from "./capabilities.js";
+  resolveEvalCapabilities} from "./capabilities.js";
 import {
   analyzeSessionIntegrity,
   applySessionRepair,
@@ -2263,17 +2263,17 @@ export async function runBenchmarkRecall(options: BenchmarkRecallOptions): Promi
   const status = await getEvalHarnessStatus({
     memoryDir: options.config.memoryDir,
     evalStoreDir: options.config.evalStoreDir,
-    enabled: options.config.evalHarnessEnabled,
-    shadowModeEnabled: options.config.evalShadowModeEnabled,
-    baselineSnapshotsEnabled: options.config.benchmarkBaselineSnapshotsEnabled,
-    memoryRedTeamBenchEnabled: options.config.memoryRedTeamBenchEnabled,
+    enabled: resolveEvalCapabilities(options.config).evalHarness,
+    shadowModeEnabled: resolveEvalCapabilities(options.config).evalShadowMode,
+    baselineSnapshotsEnabled: resolveEvalCapabilities(options.config).benchmarkBaselineSnapshots,
+    memoryRedTeamBenchEnabled: resolveEvalCapabilities(options.config).memoryRedTeamBench,
   });
 
   if (options.createSnapshot && options.snapshotId) {
     const snapshot = await createEvalBaselineSnapshot({
       memoryDir: options.config.memoryDir,
       evalStoreDir: options.config.evalStoreDir,
-      baselineSnapshotsEnabled: options.config.benchmarkBaselineSnapshotsEnabled,
+      baselineSnapshotsEnabled: resolveEvalCapabilities(options.config).benchmarkBaselineSnapshots,
       snapshotId: options.snapshotId,
       notes: options.snapshotNotes,
       gitRef: options.gitRef,
@@ -2309,7 +2309,7 @@ export async function runBenchmarkRecall(options: BenchmarkRecallOptions): Promi
     const baselineReport = await runEvalBaselineDeltaReport({
       memoryDir: options.config.memoryDir,
       evalStoreDir: options.config.evalStoreDir,
-      benchmarkDeltaReporterEnabled: options.config.benchmarkDeltaReporterEnabled,
+      benchmarkDeltaReporterEnabled: resolveEvalCapabilities(options.config).benchmarkDeltaReporter,
       snapshotId: options.snapshotId,
     });
     return {
@@ -2323,7 +2323,7 @@ export async function runBenchmarkRecall(options: BenchmarkRecallOptions): Promi
 
   if (options.validatePath) {
     const validate = await validateEvalBenchmarkPack(options.validatePath, {
-      memoryRedTeamBenchEnabled: options.config.memoryRedTeamBenchEnabled,
+      memoryRedTeamBenchEnabled: resolveEvalCapabilities(options.config).memoryRedTeamBench,
     });
     return {
       schemaVersion: 1,

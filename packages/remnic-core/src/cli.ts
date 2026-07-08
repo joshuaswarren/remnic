@@ -8,7 +8,7 @@ import {
   resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveIdentityContinuityCapabilities,
-} from "./capabilities.js";
+  resolveSecurityCapabilities, resolveEvalCapabilities} from "./capabilities.js";
 import { ThreadingManager } from "./threading.js";
 import { utcDayRange } from "./transcript.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
@@ -5384,10 +5384,10 @@ export function registerCli(
           const status = await runBenchmarkStatusCliCommand({
             memoryDir: orchestrator.config.memoryDir,
             evalStoreDir: orchestrator.config.evalStoreDir,
-            evalHarnessEnabled: orchestrator.config.evalHarnessEnabled,
-            evalShadowModeEnabled: orchestrator.config.evalShadowModeEnabled,
-            benchmarkBaselineSnapshotsEnabled: orchestrator.config.benchmarkBaselineSnapshotsEnabled,
-            memoryRedTeamBenchEnabled: orchestrator.config.memoryRedTeamBenchEnabled,
+            evalHarnessEnabled: resolveEvalCapabilities(orchestrator.config).evalHarness,
+            evalShadowModeEnabled: resolveEvalCapabilities(orchestrator.config).evalShadowMode,
+            benchmarkBaselineSnapshotsEnabled: resolveEvalCapabilities(orchestrator.config).benchmarkBaselineSnapshots,
+            memoryRedTeamBenchEnabled: resolveEvalCapabilities(orchestrator.config).memoryRedTeamBench,
           });
           console.log(JSON.stringify(status, null, 2));
           console.log("OK");
@@ -5415,11 +5415,11 @@ export function registerCli(
             config: {
               memoryDir: orchestrator.config.memoryDir,
               evalStoreDir: orchestrator.config.evalStoreDir,
-              evalHarnessEnabled: orchestrator.config.evalHarnessEnabled,
-              evalShadowModeEnabled: orchestrator.config.evalShadowModeEnabled,
-              benchmarkBaselineSnapshotsEnabled: orchestrator.config.benchmarkBaselineSnapshotsEnabled,
-              benchmarkDeltaReporterEnabled: orchestrator.config.benchmarkDeltaReporterEnabled,
-              memoryRedTeamBenchEnabled: orchestrator.config.memoryRedTeamBenchEnabled,
+              evalHarnessEnabled: resolveEvalCapabilities(orchestrator.config).evalHarness,
+              evalShadowModeEnabled: resolveEvalCapabilities(orchestrator.config).evalShadowMode,
+              benchmarkBaselineSnapshotsEnabled: resolveEvalCapabilities(orchestrator.config).benchmarkBaselineSnapshots,
+              benchmarkDeltaReporterEnabled: resolveEvalCapabilities(orchestrator.config).benchmarkDeltaReporter,
+              memoryRedTeamBenchEnabled: resolveEvalCapabilities(orchestrator.config).memoryRedTeamBench,
             },
             validatePath: typeof options.validate === "string" ? options.validate : undefined,
             baseEvalStoreDir: typeof options.base === "string" ? options.base : undefined,
@@ -6128,7 +6128,7 @@ export function registerCli(
           const inputPath = args[0];
           const summary = await runBenchmarkValidateCliCommand({
             path: typeof inputPath === "string" ? inputPath : "",
-            memoryRedTeamBenchEnabled: orchestrator.config.memoryRedTeamBenchEnabled,
+            memoryRedTeamBenchEnabled: resolveEvalCapabilities(orchestrator.config).memoryRedTeamBench,
           });
           console.log(JSON.stringify(summary, null, 2));
           console.log("OK");
@@ -6146,7 +6146,7 @@ export function registerCli(
           const summary = await runBenchmarkBaselineSnapshotCliCommand({
             memoryDir: orchestrator.config.memoryDir,
             evalStoreDir: orchestrator.config.evalStoreDir,
-            benchmarkBaselineSnapshotsEnabled: orchestrator.config.benchmarkBaselineSnapshotsEnabled,
+            benchmarkBaselineSnapshotsEnabled: resolveEvalCapabilities(orchestrator.config).benchmarkBaselineSnapshots,
             snapshotId: typeof options.snapshotId === "string" ? options.snapshotId : "",
             createdAt: typeof options.createdAt === "string" ? options.createdAt : undefined,
             gitRef: typeof options.gitRef === "string" ? options.gitRef : undefined,
@@ -6169,7 +6169,7 @@ export function registerCli(
             memoryDir: orchestrator.config.memoryDir,
             evalStoreDir: orchestrator.config.evalStoreDir,
             force: options.force === true,
-            memoryRedTeamBenchEnabled: orchestrator.config.memoryRedTeamBenchEnabled,
+            memoryRedTeamBenchEnabled: resolveEvalCapabilities(orchestrator.config).memoryRedTeamBench,
           });
           console.log(JSON.stringify(summary, null, 2));
           console.log("OK");
@@ -6202,7 +6202,7 @@ export function registerCli(
           const summary = await runBenchmarkBaselineReportCliCommand({
             memoryDir: orchestrator.config.memoryDir,
             evalStoreDir: orchestrator.config.evalStoreDir,
-            benchmarkDeltaReporterEnabled: orchestrator.config.benchmarkDeltaReporterEnabled,
+            benchmarkDeltaReporterEnabled: resolveEvalCapabilities(orchestrator.config).benchmarkDeltaReporter,
             snapshotId: typeof options.snapshotId === "string" ? options.snapshotId : "",
           });
           const { markdownReport, ...jsonSummary } = summary;
@@ -6232,9 +6232,9 @@ export function registerCli(
           const result = await runTrustZonePromoteCliCommand({
             memoryDir: orchestrator.config.memoryDir,
             trustZoneStoreDir: orchestrator.config.trustZoneStoreDir,
-            trustZonesEnabled: orchestrator.config.trustZonesEnabled,
-            quarantinePromotionEnabled: orchestrator.config.quarantinePromotionEnabled,
-            memoryPoisoningDefenseEnabled: orchestrator.config.memoryPoisoningDefenseEnabled,
+            trustZonesEnabled: resolveSecurityCapabilities(orchestrator.config).trustZones,
+            quarantinePromotionEnabled: resolveSecurityCapabilities(orchestrator.config).quarantinePromotion,
+            memoryPoisoningDefenseEnabled: resolveSecurityCapabilities(orchestrator.config).memoryPoisoningDefense,
             sourceRecordId: String(options.recordId ?? ""),
             targetZone: String(options.targetZone ?? "") as TrustZoneName,
             promotionReason: String(options.reason ?? ""),

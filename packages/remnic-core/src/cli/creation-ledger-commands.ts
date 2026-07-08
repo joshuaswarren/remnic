@@ -20,7 +20,7 @@ import type { CliCommand } from "../cli.js";
 import type { CommitmentLedgerEntry } from "../commitment-ledger.js";
 import type { WorkProductLedgerEntry } from "../work-product-ledger.js";
 import type { ResumeBundle } from "../resume-bundles.js";
-import { resolveCreationMemoryCapabilities } from "../capabilities.js";
+import { resolveCreationMemoryCapabilities, resolveObjectiveStateCapabilities} from "../capabilities.js";
 import {
   runResumeBundleStatusCliCommand,
   runResumeBundleRecordCliCommand,
@@ -131,7 +131,7 @@ cmd
       creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
       resumeBundlesEnabled: resolveCreationMemoryCapabilities(orchestrator.config).resumeBundles,
       transcriptEnabled: orchestrator.config.transcriptEnabled,
-      objectiveStateMemoryEnabled: orchestrator.config.objectiveStateMemoryEnabled,
+      objectiveStateMemoryEnabled: resolveObjectiveStateCapabilities(orchestrator.config).objectiveStateMemory,
       commitmentLedgerEnabled: resolveCreationMemoryCapabilities(orchestrator.config).commitmentLedger,
       bundleId: String(options.bundleId ?? ""),
       recordedAt: String(options.recordedAt ?? ""),

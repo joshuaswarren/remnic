@@ -21,7 +21,7 @@ import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import {
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
-} from "../capabilities.js";
+  resolveUtilityLearningCapabilities} from "../capabilities.js";
 import type { StorageManager } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import {
@@ -145,8 +145,8 @@ async function buildTierRoutingPolicy(config: PluginConfig): Promise<TierRouting
   };
   const runtime = await loadUtilityRuntimeValues({
     memoryDir: config.memoryDir,
-    memoryUtilityLearningEnabled: config.memoryUtilityLearningEnabled,
-    promotionByOutcomeEnabled: config.promotionByOutcomeEnabled,
+    memoryUtilityLearningEnabled: resolveUtilityLearningCapabilities(config).memoryUtilityLearning,
+    promotionByOutcomeEnabled: resolveUtilityLearningCapabilities(config).promotionByOutcome,
   });
   return applyUtilityPromotionRuntimePolicy(basePolicy, runtime);
 }

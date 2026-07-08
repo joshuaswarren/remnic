@@ -601,3 +601,209 @@ export function resolveLocalLlmCapabilities(
     localLlm: config.localLlmEnabled,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Security capability set (issue #1523 batch 7).
+//
+// The four security/trust-zone flags gate quarantine promotion, poisoning
+// defense, and trust-zone recall. Read sites span orchestrator, access-service,
+// CLI, and research-status commands. All flags are non-optional booleans on
+// PluginConfig (defaults resolved at the parse boundary), so the projection is
+// a pure pass-through.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of security/trust-zone feature gates (issue #1523 batch 7).
+ */
+export interface SecurityCapabilitySet {
+  /** `trustZonesEnabled` — master switch for trust-zone enforcement. */
+  readonly trustZones: boolean;
+  /** `quarantinePromotionEnabled` — promote quarantined memories after review. */
+  readonly quarantinePromotion: boolean;
+  /** `memoryPoisoningDefenseEnabled` — detect and defend against memory poisoning. */
+  readonly memoryPoisoningDefense: boolean;
+  /** `trustZoneRecallEnabled` — restrict recall to trusted zones. */
+  readonly trustZoneRecall: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveSecurityCapabilities}.
+ */
+export type SecurityConfigProjection = Pick<
+  PluginConfig,
+  "trustZonesEnabled" | "quarantinePromotionEnabled" | "memoryPoisoningDefenseEnabled" | "trustZoneRecallEnabled"
+>;
+
+/**
+ * Resolve the {@link SecurityCapabilitySet} from parsed config.
+ */
+export function resolveSecurityCapabilities(config: SecurityConfigProjection): SecurityCapabilitySet {
+  return Object.freeze({
+    trustZones: config.trustZonesEnabled,
+    quarantinePromotion: config.quarantinePromotionEnabled,
+    memoryPoisoningDefense: config.memoryPoisoningDefenseEnabled,
+    trustZoneRecall: config.trustZoneRecallEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Eval/benchmark capability set (issue #1523 batch 7).
+//
+// The five eval/benchmark flags gate the evaluation harness, shadow mode,
+// baseline snapshot management, delta reporting, and red-team benchmarking.
+// Read sites span orchestrator, CLI, and operator-toolkit. All flags are
+// non-optional booleans on PluginConfig.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of eval/benchmark feature gates (issue #1523 batch 7).
+ */
+export interface EvalCapabilitySet {
+  /** `evalHarnessEnabled` — master switch for the eval harness. */
+  readonly evalHarness: boolean;
+  /** `evalShadowModeEnabled` — run evaluations in shadow mode. */
+  readonly evalShadowMode: boolean;
+  /** `benchmarkBaselineSnapshotsEnabled` — manage baseline snapshots. */
+  readonly benchmarkBaselineSnapshots: boolean;
+  /** `benchmarkDeltaReporterEnabled` — report benchmark deltas. */
+  readonly benchmarkDeltaReporter: boolean;
+  /** `memoryRedTeamBenchEnabled` — red-team benchmarking of memory. */
+  readonly memoryRedTeamBench: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveEvalCapabilities}.
+ */
+export type EvalConfigProjection = Pick<
+  PluginConfig,
+  "evalHarnessEnabled" | "evalShadowModeEnabled" | "benchmarkBaselineSnapshotsEnabled" | "benchmarkDeltaReporterEnabled" | "memoryRedTeamBenchEnabled"
+>;
+
+/**
+ * Resolve the {@link EvalCapabilitySet} from parsed config.
+ */
+export function resolveEvalCapabilities(config: EvalConfigProjection): EvalCapabilitySet {
+  return Object.freeze({
+    evalHarness: config.evalHarnessEnabled,
+    evalShadowMode: config.evalShadowModeEnabled,
+    benchmarkBaselineSnapshots: config.benchmarkBaselineSnapshotsEnabled,
+    benchmarkDeltaReporter: config.benchmarkDeltaReporterEnabled,
+    memoryRedTeamBench: config.memoryRedTeamBenchEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Utility-learning capability set (issue #1523 batch 7).
+//
+// The two utility-learning flags gate memory utility learning and
+// promotion-by-outcome. Read sites span orchestrator, CLI research-status
+// commands, and maintenance files. Both flags are non-optional booleans.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of utility-learning feature gates (issue #1523 batch 7).
+ */
+export interface UtilityLearningCapabilitySet {
+  /** `memoryUtilityLearningEnabled` — learn memory utility weights from outcomes. */
+  readonly memoryUtilityLearning: boolean;
+  /** `promotionByOutcomeEnabled` — promote memories by outcome tracking. */
+  readonly promotionByOutcome: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveUtilityLearningCapabilities}.
+ */
+export type UtilityLearningConfigProjection = Pick<
+  PluginConfig,
+  "memoryUtilityLearningEnabled" | "promotionByOutcomeEnabled"
+>;
+
+/**
+ * Resolve the {@link UtilityLearningCapabilitySet} from parsed config.
+ */
+export function resolveUtilityLearningCapabilities(config: UtilityLearningConfigProjection): UtilityLearningCapabilitySet {
+  return Object.freeze({
+    memoryUtilityLearning: config.memoryUtilityLearningEnabled,
+    promotionByOutcome: config.promotionByOutcomeEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Objective-state capability set (issue #1523 batch 7).
+//
+// The three objective-state flags gate objective-state memory, snapshot
+// writes, and recall. Read sites span orchestrator, access-service, CLI
+// creation-ledger commands, and research-status commands. All flags are
+// non-optional booleans.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of objective-state feature gates (issue #1523 batch 7).
+ */
+export interface ObjectiveStateCapabilitySet {
+  /** `objectiveStateMemoryEnabled` — store objective-state memories. */
+  readonly objectiveStateMemory: boolean;
+  /** `objectiveStateSnapshotWritesEnabled` — write objective-state snapshots. */
+  readonly objectiveStateSnapshotWrites: boolean;
+  /** `objectiveStateRecallEnabled` — recall objective-state memories. */
+  readonly objectiveStateRecall: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveObjectiveStateCapabilities}.
+ */
+export type ObjectiveStateConfigProjection = Pick<
+  PluginConfig,
+  "objectiveStateMemoryEnabled" | "objectiveStateSnapshotWritesEnabled" | "objectiveStateRecallEnabled"
+>;
+
+/**
+ * Resolve the {@link ObjectiveStateCapabilitySet} from parsed config.
+ */
+export function resolveObjectiveStateCapabilities(config: ObjectiveStateConfigProjection): ObjectiveStateCapabilitySet {
+  return Object.freeze({
+    objectiveStateMemory: config.objectiveStateMemoryEnabled,
+    objectiveStateSnapshotWrites: config.objectiveStateSnapshotWritesEnabled,
+    objectiveStateRecall: config.objectiveStateRecallEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Compression capability set (issue #1523 batch 7).
+//
+// The three compression flags gate guideline learning, semantic refinement,
+// and context-compression actions. Read sites span orchestrator,
+// access-service, and the compression-guideline coordinator. All flags are
+// non-optional booleans.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of compression feature gates (issue #1523 batch 7).
+ */
+export interface CompressionCapabilitySet {
+  /** `compressionGuidelineLearningEnabled` — learn compression guidelines. */
+  readonly compressionGuidelineLearning: boolean;
+  /** `compressionGuidelineSemanticRefinementEnabled` — semantically refine guidelines. */
+  readonly compressionGuidelineSemanticRefinement: boolean;
+  /** `contextCompressionActionsEnabled` — apply context-compression actions. */
+  readonly contextCompressionActions: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveCompressionCapabilities}.
+ */
+export type CompressionConfigProjection = Pick<
+  PluginConfig,
+  "compressionGuidelineLearningEnabled" | "compressionGuidelineSemanticRefinementEnabled" | "contextCompressionActionsEnabled"
+>;
+
+/**
+ * Resolve the {@link CompressionCapabilitySet} from parsed config.
+ */
+export function resolveCompressionCapabilities(config: CompressionConfigProjection): CompressionCapabilitySet {
+  return Object.freeze({
+    compressionGuidelineLearning: config.compressionGuidelineLearningEnabled,
+    compressionGuidelineSemanticRefinement: config.compressionGuidelineSemanticRefinementEnabled,
+    contextCompressionActions: config.contextCompressionActionsEnabled,
+  });
+}
