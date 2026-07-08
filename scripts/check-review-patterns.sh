@@ -972,32 +972,48 @@ fi
 # ---- 39. Optional packages bundled into a base install (CLAUDE.md rule 57) ----
 echo "[check] Optional packages in base dependencies/noExternal..."
 
-# Rule 57: optional companion packages must stay à-la-carte — loaded via
-# computed-specifier dynamic imports, never listed in a base package's runtime
-# dependencies or tsup noExternal. BLOCKING — a regression silently forces every
-# user to install optional weight they did not ask for.
+# Rule 57: every package declared optional in peerDependenciesMeta must stay
+# à-la-carte — loaded via computed-specifier dynamic imports, never listed in a
+# base package's runtime dependencies or tsup noExternal. Driven by each
+# package's OWN peerDependenciesMeta so every optional peer is covered
+# automatically (bench, weclone, all @remnic/import-*, connectors, coding-graph,
+# plugins…), not a hardcoded subset. BLOCKING — a regression silently forces
+# every user to install optional weight they did not ask for.
 for base in remnic-core remnic-cli remnic-server; do
   pj="packages/$base/package.json"
   [[ -f "$pj" ]] || continue
-  DEP_BODY=$(awk '/"dependencies"[[:space:]]*:[[:space:]]*\{/{f=1;next} f&&/^[[:space:]]*\}/{f=0} f' "$pj" 2>/dev/null || true)
-  for opt in "@remnic/bench" "@remnic/export-weclone" "@remnic/import-weclone"; do
-    if echo "$DEP_BODY" | grep -qF "$opt"; then
-      fail "$pj lists $opt in dependencies (rule 57). Keep optional via peerDependenciesMeta + computed-specifier dynamic import."
-    fi
-  done
+  OPT_IN_DEPS=$(node -e '
+    const fs = require("fs");
+    const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const deps = Object.keys(p.dependencies || {});
+    const opt = Object.entries(p.peerDependenciesMeta || {})
+      .filter(([, v]) => v && v.optional).map(([k]) => k);
+    for (const k of opt) if (deps.includes(k)) console.log(k);
+  ' "$pj" 2>/dev/null || true)
+  if [[ -n "$OPT_IN_DEPS" ]]; then
+    fail "$pj lists optional peer(s) in dependencies (rule 57): $OPT_IN_DEPS — keep them optional via peerDependenciesMeta + computed-specifier dynamic import."
+  fi
 done
-# tsup: optional pkgs must NOT be in noExternal. Listing them in the
-# `external` array is CORRECT (keeps them unbundled) and must not be flagged.
+# tsup: optional peers (from peerDependenciesMeta) must NOT be in noExternal.
+# Listing them in the `external` array is CORRECT (keeps them unbundled) and is
+# explicitly exempt — only the noExternal array is checked.
 for tcfg in packages/remnic-core/tsup.config.* packages/remnic-cli/tsup.config.* packages/remnic-server/tsup.config.*; do
   [[ -f "$tcfg" ]] || continue
+  tpj="$(dirname "$tcfg")/package.json"
+  [[ -f "$tpj" ]] || continue
+  OPT_LIST=$(node -e '
+    const fs = require("fs");
+    const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    process.stdout.write(Object.entries(p.peerDependenciesMeta || {}).filter(([,v])=>v&&v.optional).map(([k])=>k).join(" "));
+  ' "$tpj" 2>/dev/null || true)
+  [[ -n "$OPT_LIST" ]] || continue
   NOEXT_BODY=$(awk '/noExternal[[:space:]]*:[[:space:]]*\[/{f=1;next} f&&/\]/{f=0} f' "$tcfg" 2>/dev/null || true)
-  if [[ -n "$NOEXT_BODY" ]]; then
-    for opt in "@remnic/bench" "@remnic/export-weclone" "@remnic/import-weclone"; do
-      if echo "$NOEXT_BODY" | grep -qF "$opt"; then
-        fail "$tcfg lists $opt in noExternal (rule 57). Optional packages must stay external/omitted, never bundled."
-      fi
-    done
-  fi
+  [[ -n "$NOEXT_BODY" ]] || continue
+  for opt in $OPT_LIST; do
+    if echo "$NOEXT_BODY" | grep -qF "$opt"; then
+      fail "$tcfg lists $opt in noExternal (rule 57). Optional peers must stay external/omitted, never bundled."
+    fi
+  done
 done
 
 # ---- 40. ENGRAM_ env var read without REMNIC_ fallback (CLAUDE.md rule 9) ----
