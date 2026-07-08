@@ -5,12 +5,12 @@ import { resolve } from "node:path";
 
 test("runExtraction establishes thread context before persistExtraction", () => {
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "extraction-run.ts"),
     "utf-8",
   );
 
-  const processTurnIdx = source.indexOf("await this.threading.processTurn(lastTurn");
-  const persistIdx = source.indexOf("const persistedIds = await this.persistExtraction(");
+  const processTurnIdx = source.indexOf("await this.deps.getThreading().processTurn(lastTurn");
+  const persistIdx = source.indexOf("const persistedIds = await this.deps.persistExtraction(");
 
   assert.notEqual(
     processTurnIdx,
@@ -30,13 +30,13 @@ test("runExtraction establishes thread context before persistExtraction", () => 
 
 test("runExtraction batch-appends persisted IDs after persistExtraction", () => {
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "extraction-run.ts"),
     "utf-8",
   );
 
   assert.match(
     source,
-    /if\s*\(\s*resolvePresentationCapabilities\(this\.config\)\.threading\s*&&\s*threadIdForExtraction\s*&&\s*persistedIds\.length > 0\s*\)\s*\{[\s\S]*?await this\.appendPersistedThreadEpisodes\(\s*threadIdForExtraction,\s*persistedIds,?\s*\);/m,
+    /if\s*\(\s*resolvePresentationCapabilities\(this\.config\)\.threading\s*&&\s*threadIdForExtraction\s*&&\s*persistedIds\.length > 0\s*\)\s*\{[\s\S]*?await this\.deps\.appendPersistedThreadEpisodes\(\s*threadIdForExtraction,\s*persistedIds,?\s*\);/m,
     "runExtraction should batch-append persisted IDs after persistence for thread completeness",
   );
 });

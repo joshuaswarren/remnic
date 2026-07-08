@@ -5,13 +5,13 @@ import { resolve } from "node:path";
 
 test("runExtraction handles pre-persist threading errors fail-open", () => {
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "extraction-run.ts"),
     "utf-8",
   );
 
   assert.match(
     source,
-    /try\s*\{\s*threadIdForExtraction\s*=\s*await\s*this\.threading\.processTurn\(lastTurn,\s*\[\]\);\s*\}\s*catch\s*\(err\)\s*\{[\s\S]*?non-fatal/m,
+    /try\s*\{\s*threadIdForExtraction\s*=\s*await\s*this\.deps\.getThreading\(\)\.processTurn\(lastTurn,\s*\[\]\);\s*\}\s*catch\s*\(err\)\s*\{[\s\S]*?non-fatal/m,
     "threading.processTurn before persistence should be wrapped in fail-open try/catch",
   );
 });

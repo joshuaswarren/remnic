@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Orchestrator } from "../src/orchestrator.ts";
+import { ExtractionRunCoordinator } from "../packages/remnic-core/src/orchestration/extraction-run.ts";
 import type { BufferTurn } from "../src/types.js";
 
 test("observeSessionHeartbeat queues buffered extraction when observer threshold triggers", async () => {
@@ -374,10 +375,10 @@ test("shouldQueueExtraction supports non-committing dedupe prechecks", async () 
     },
     recentExtractionFingerprints: new Map<string, number>(),
     normalizeExtractionFingerprintTurns:
-      (Orchestrator.prototype as any).normalizeExtractionFingerprintTurns,
+      (ExtractionRunCoordinator.prototype as any).normalizeExtractionFingerprintTurns,
     buildExtractionFingerprint:
-      (Orchestrator.prototype as any).buildExtractionFingerprint,
-    shouldQueueExtraction: (Orchestrator.prototype as any).shouldQueueExtraction,
+      (ExtractionRunCoordinator.prototype as any).buildExtractionFingerprint,
+    shouldQueueExtraction: (ExtractionRunCoordinator.prototype as any).shouldQueueExtraction,
   };
 
   const precheck = fake.shouldQueueExtraction.call(fake, turns, {
@@ -401,9 +402,9 @@ test("buildExtractionFingerprint prefixes turn fingerprints consistently with in
       extractionMaxTurnChars: 10_000,
     },
     normalizeExtractionFingerprintTurns:
-      (Orchestrator.prototype as any).normalizeExtractionFingerprintTurns,
+      (ExtractionRunCoordinator.prototype as any).normalizeExtractionFingerprintTurns,
     buildExtractionFingerprint:
-      (Orchestrator.prototype as any).buildExtractionFingerprint,
+      (ExtractionRunCoordinator.prototype as any).buildExtractionFingerprint,
   };
 
   const turns: BufferTurn[] = [
@@ -448,10 +449,10 @@ test("shouldQueueExtraction dedupes within a buffer key but not across sessions"
     },
     recentExtractionFingerprints: new Map<string, number>(),
     normalizeExtractionFingerprintTurns:
-      (Orchestrator.prototype as any).normalizeExtractionFingerprintTurns,
+      (ExtractionRunCoordinator.prototype as any).normalizeExtractionFingerprintTurns,
     buildExtractionFingerprint:
-      (Orchestrator.prototype as any).buildExtractionFingerprint,
-    shouldQueueExtraction: (Orchestrator.prototype as any).shouldQueueExtraction,
+      (ExtractionRunCoordinator.prototype as any).buildExtractionFingerprint,
+    shouldQueueExtraction: (ExtractionRunCoordinator.prototype as any).shouldQueueExtraction,
   };
 
   assert.equal(
