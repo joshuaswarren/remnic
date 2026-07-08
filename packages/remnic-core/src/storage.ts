@@ -1227,7 +1227,6 @@ export class ContentHashIndex {
 // (snapshotBeforeWrite, snapshotForProvenance) resolve, and re-exported to
 // keep the public storage API stable for existing callers (wearables, dist).
 import { stripAttributesSuffix } from "./structured-attributes.js";
-import { resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 export { stripAttributesSuffix };
 
 export function normalizeAttributePairs(pairs: Record<string, string>): string {
