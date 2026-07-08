@@ -208,12 +208,6 @@ export class ExtractionRunCoordinator {
   }
 
 
-  private sourceValidAtMs(turn: BufferTurn): number | null {
-    if (typeof turn.sourceValidAt !== "string") return null;
-    return parseFlexibleIsoTimestamp(turn.sourceValidAt.trim());
-  }
-
-
   // -------------------------------------------------------------------------
   // Extraction dedupe fingerprint helpers
   // -------------------------------------------------------------------------
