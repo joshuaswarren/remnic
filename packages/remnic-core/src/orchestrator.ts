@@ -106,6 +106,7 @@ import { ConversationIndexCoordinator } from "./orchestration/conversation-index
 import { RecallRerankCoordinator } from "./orchestration/recall-rerank-coordinator.js";
 import { RecallSectionCoordinator } from "./orchestration/recall-section-coordinator.js";
 import { QmdResultResolver, qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
+import { ContradictionLinkingCoordinator } from "./orchestration/contradiction-linking-coordinator.js";
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
 import {
   runLiveConnectorsOnce,
@@ -1843,6 +1844,7 @@ export class Orchestrator {
   readonly recallRerankCoordinator: RecallRerankCoordinator;
   readonly recallSectionCoordinator: RecallSectionCoordinator;
   readonly qmdResultResolver: QmdResultResolver;
+  readonly contradictionLinkingCoordinator: ContradictionLinkingCoordinator;
   private heartbeatObserverChains = new Map<string, Promise<void>>();
   private recentExtractionFingerprints = new Map<string, number>();
   private readonly consolidationObservers = new Set<
@@ -2845,6 +2847,14 @@ export class Orchestrator {
     });
     this.recallSectionCoordinator = new RecallSectionCoordinator({
       getConfig: () => this.config,
+    this.contradictionLinkingCoordinator = new ContradictionLinkingCoordinator({
+      getConfig: () => this.config,
+      isSearchAvailable: () => this.isSearchAvailableForNamespaceRouting(),
+      searchAcrossNamespaces: (options) => this.searchAcrossNamespaces(options),
+      extractMemoryIdsFromResults: (results) => this.extractMemoryIdsFromResults(results),
+      namespaceFromPath: (p) => this.namespaceFromPath(p),
+      storageForNamespace: (namespace) => this.storageRouter.storageFor(namespace),
+      getExtraction: () => this.extraction,
     });
     this.modelRegistry = new ModelRegistry(config.memoryDir);
     this.relevance = new RelevanceStore(config.memoryDir);
@@ -18165,99 +18175,11 @@ export class Orchestrator {
     supersededCreated: string;
     supersededTags: string[];
   } | null> {
-    if (!this.isSearchAvailableForNamespaceRouting()) return null;
-
-    // Search for similar memories
-    const results = await this.searchAcrossNamespaces({
-      query: content,
-      namespaces: [namespaceScope],
-      maxResults: 5,
-      mode: "search",
-    });
-
-    for (const result of results) {
-      // Check similarity threshold
-      if (result.score < this.config.contradictionSimilarityThreshold) {
-        continue;
-      }
-
-      // Get the existing memory
-      const memoryId = this.extractMemoryIdsFromResults([result])[0];
-      if (!memoryId) continue;
-
-      const resultNamespace = this.namespaceFromPath(result.path);
-      if (resultNamespace !== namespaceScope) continue;
-      const resultStorage =
-        await this.storageRouter.storageFor(resultNamespace);
-      const existingMemory = await resultStorage.getMemoryById(memoryId);
-      if (!existingMemory) continue;
-
-      // Skip memories already resolved or explicitly forgotten. Other
-      // non-active statuses remain valid contradiction candidates.
-      if (
-        existingMemory.frontmatter.status === "superseded" ||
-        existingMemory.frontmatter.status === "forgotten"
-      ) {
-        continue;
-      }
-
-      // Verify contradiction with LLM
-      const verification = await this.extraction.verifyContradiction(
-        { content, category },
-        {
-          id: existingMemory.frontmatter.id,
-          content: existingMemory.content,
-          category: existingMemory.frontmatter.category,
-          created: existingMemory.frontmatter.created,
-        },
-      );
-
-      if (!verification) continue;
-
-      // Check if it's a real contradiction with high confidence
-      if (
-        verification.isContradiction &&
-        verification.confidence >= this.config.contradictionMinConfidence
-      ) {
-        // When the LLM says the existing memory is newer (whichIsNewer ===
-        // "first") the incoming fact is the stale one in both resolve modes —
-        // log and continue so the caller never marks contradictionDetected and
-        // the semantic-skip gate can discard the outdated write normally.
-        if (verification.whichIsNewer === "first") {
-          log.info(
-            `detected contradiction (confidence: ${verification.confidence}): ${existingMemory.frontmatter.id} vs new memory — existing is newer, incoming fact is stale`,
-          );
-          continue;
-        }
-
-        // The new fact is newer than the existing one. When auto-resolve is
-        // enabled, the caller retires the old memory AFTER the new write lands
-        // and its tombstone status is known (#1645: defer auto-resolve until
-        // tombstone status is known — a tombstone-blocked new write must not
-        // retire the only active copy, leaving neither memory active). When
-        // disabled, the old memory stays active for manual review. The
-        // contradiction info is returned in both cases so the caller can apply
-        // the deferred retire post-write.
-
-        // Return the contradiction info regardless of auto-resolve setting.
-        // The caller uses this to set `contradictionDetected=true` which
-        // prevents the semantic-skip guard from silently dropping a
-        // legitimately contradictory update (the regression this fixes).
-        log.info(
-          `detected contradiction (confidence: ${verification.confidence}): ${existingMemory.frontmatter.id} vs new memory${this.config.contradictionAutoResolve ? " (auto-resolved)" : " (queued for manual review)"}`,
-        );
-        return {
-          supersededId: existingMemory.frontmatter.id,
-          confidence: verification.confidence,
-          reason: verification.reasoning,
-          supersededPath: existingMemory.path,
-          supersededCreated: existingMemory.frontmatter.created,
-          supersededTags: existingMemory.frontmatter.tags ?? [],
-        };
-      }
-    }
-
-    return null;
+    return this.contradictionLinkingCoordinator.checkForContradiction(
+      content,
+      category,
+      namespaceScope,
+    );
   }
 
   /**
@@ -18280,49 +18202,12 @@ export class Orchestrator {
     newMemoryId: string,
     postWriteGuard: boolean,
   ): Promise<void> {
-    // #1645 yG2: clear the pre-write `supersedes` link from a blocked row so
-    // it doesn't claim to supersede a still-active memory (best-effort).
-    if (postWriteGuard && contradiction && this.config.contradictionAutoResolve) {
-      try {
-        const blockedRow = await storage.getMemoryById(newMemoryId);
-        if (blockedRow?.frontmatter?.supersedes) {
-          await storage.writeMemoryFrontmatter(blockedRow, { supersedes: undefined });
-        }
-      } catch (err) {
-        log.warn(
-          `contradiction auto-resolve supersedes clear failed for blocked ${newMemoryId}: ${err}`,
-        );
-      }
-    }
-    if (
-      !contradiction ||
-      !this.config.contradictionAutoResolve ||
-      postWriteGuard
-    ) {
-      return;
-    }
-    try {
-      await storage.supersedeMemory(
-        contradiction.supersededId,
-        newMemoryId,
-        contradiction.reason,
-      );
-      if (
-        resolveIndexingCapabilities(this.config).queryAwareIndexing &&
-        contradiction.supersededPath
-      ) {
-        deindexMemory(
-          this.config.memoryDir,
-          contradiction.supersededPath,
-          contradiction.supersededCreated,
-          contradiction.supersededTags,
-        );
-      }
-    } catch (err) {
-      log.warn(
-        `contradiction auto-resolve supersede failed for ${contradiction.supersededId}: ${err}`,
-      );
-    }
+    return this.contradictionLinkingCoordinator.applyDeferredContradictionResolve(
+      contradiction,
+      storage,
+      newMemoryId,
+      postWriteGuard,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -18337,60 +18222,13 @@ export class Orchestrator {
     category: string,
     namespaceScope: string,
   ): Promise<MemoryLink[]> {
-    if (!this.isSearchAvailableForNamespaceRouting()) return [];
-
-    // Search for related memories
-    const results = await this.searchAcrossNamespaces({
-      query: content,
-      namespaces: [namespaceScope],
-      maxResults: 5,
-      mode: "search",
-    });
-    if (results.length === 0) return [];
-
-    // Get full memory details for candidates
-    const candidates: Array<{ id: string; content: string; category: string }> =
-      [];
-    for (const result of results) {
-      const memoryId = this.extractMemoryIdsFromResults([result])[0];
-      if (!memoryId) continue;
-
-      const resultNamespace = this.namespaceFromPath(result.path);
-      if (resultNamespace !== namespaceScope) continue;
-      const resultStorage =
-        await this.storageRouter.storageFor(resultNamespace);
-      const memory = await resultStorage.getMemoryById(memoryId);
-      if (
-        memory &&
-        memory.frontmatter.status !== "superseded" &&
-        memory.frontmatter.status !== "forgotten"
-      ) {
-        candidates.push({
-          id: memory.frontmatter.id,
-          content: memory.content,
-          category: memory.frontmatter.category,
-        });
-      }
-    }
-
-    if (candidates.length === 0) return [];
-
-    // Ask LLM for link suggestions
-    const suggestions = await this.extraction.suggestLinks(
-      { content, category },
-      candidates,
+    return this.contradictionLinkingCoordinator.suggestLinksForMemory(
+      content,
+      category,
+      namespaceScope,
     );
-
-    if (!suggestions || suggestions.links.length === 0) return [];
-
-    // Convert to MemoryLink format
-    return suggestions.links.map((link) => ({
-      targetId: link.targetId,
-      linkType: link.linkType,
-      strength: link.strength,
-      reason: link.reason || undefined,
-    }));
   }
+
 
   private async graphSeedPathRelativeToStorage(
     storage: StorageManager,

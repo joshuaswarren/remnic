@@ -19,6 +19,13 @@
  * This is plumbing, not a feature — there is deliberately NO `enabled` gate for
  * the CapabilitySet itself (rule 30 governs behavior changes; resolving and
  * threading a capability projection must stay behavior-preserving).
+ *
+ * Flag-retirement audit (#1780, 2026-07-08): all projected fields across 18
+ * capability sets were verified for live consumers. Two dead projections found
+ * and removed: recallGraph (RecallEnhancementCapabilitySet — production reads
+ * recallGraphEnabled directly via graph-recall.ts) and behaviorLoopAutoTune
+ * (ConversationContextCapabilitySet — production reads behaviorLoopAutoTuneEnabled
+ * directly via cli.ts). The flags themselves remain alive.
  */
 
 import type { PluginConfig } from "./types.js";
@@ -1053,7 +1060,6 @@ export interface RecallEnhancementCapabilitySet {
   readonly compoundingInject: boolean;
   readonly accessTracking: boolean;
   readonly autoPromoteToShared: boolean;
-  readonly recallGraph: boolean;
   readonly feedback: boolean;
   readonly identity: boolean;
 }
@@ -1084,7 +1090,6 @@ export type RecallEnhancementConfigProjection = Pick<
   | "compoundingInjectEnabled"
   | "accessTrackingEnabled"
   | "autoPromoteToSharedEnabled"
-  | "recallGraphEnabled"
   | "feedbackEnabled"
   | "identityEnabled"
 >;
@@ -1115,7 +1120,6 @@ export function resolveRecallEnhancementCapabilities(config: RecallEnhancementCo
     compoundingInject: config.compoundingInjectEnabled,
     accessTracking: config.accessTrackingEnabled,
     autoPromoteToShared: config.autoPromoteToSharedEnabled,
-    recallGraph: config.recallGraphEnabled,
     feedback: config.feedbackEnabled,
     identity: config.identityEnabled,
   });
@@ -1240,7 +1244,6 @@ export interface ConversationContextCapabilitySet {
   readonly cmcConsolidation: boolean;
   readonly maintenanceNamespaceFanout: boolean;
   readonly citations: boolean;
-  readonly behaviorLoopAutoTune: boolean;
   readonly semanticRulePromotion: boolean;
   readonly codexMarketplace: boolean;
 }
@@ -1259,7 +1262,6 @@ export type ConversationContextConfigProjection = Pick<
   | "cmcConsolidationEnabled"
   | "maintenanceNamespaceFanoutEnabled"
   | "citationsEnabled"
-  | "behaviorLoopAutoTuneEnabled"
   | "semanticRulePromotionEnabled"
   | "codexMarketplaceEnabled"
 >;
@@ -1278,7 +1280,6 @@ export function resolveConversationContextCapabilities(config: ConversationConte
     cmcConsolidation: config.cmcConsolidationEnabled,
     maintenanceNamespaceFanout: config.maintenanceNamespaceFanoutEnabled,
     citations: config.citationsEnabled,
-    behaviorLoopAutoTune: config.behaviorLoopAutoTuneEnabled,
     semanticRulePromotion: config.semanticRulePromotionEnabled,
     codexMarketplace: config.codexMarketplaceEnabled,
   });
