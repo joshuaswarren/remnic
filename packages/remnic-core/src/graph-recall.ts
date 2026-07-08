@@ -1,4 +1,3 @@
-import { resolveRecallEnhancementCapabilities } from "./capabilities.js";
 /**
  * Graph-based retrieval integration (issue #559 PR 4 of 5).
  *
