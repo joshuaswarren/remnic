@@ -96,6 +96,12 @@ function trackedResultsNames() {
   if (process.env.REMNIC_FIGURES_RESULTS_DIR) return null; // temp seam: fixtures are deliberate
   return readManifestNames() ?? trackedResultsNamesFromGit();
 }
+// Refresh the manifest from git BEFORE reading it into the filter cache, so a
+// newly-tracked artifact is reflected in THIS run (cursor thread: manifest
+// refresh stale filter cache). No-op when git is unavailable (CI) — the
+// committed manifest is the source of truth. Function declarations below are
+// hoisted, so this call is safe above their definition.
+refreshArtifactManifest();
 const TRACKED_RESULTS_NAMES = trackedResultsNames();
 
 // Keep the committed manifest in sync with git when git is available (local dev).
@@ -389,7 +395,7 @@ const LONGMEMEVAL_AXIS_METRICS = [
   { key: "judge_accuracy", label: "judge_accuracy", dir: "higher" },
 ];
 
-function renderComparisonPanel({ x, y, w, h, title, metrics, benchmarkId, artifact, tierF }) {
+function renderComparisonPanel({ x, y, w, h, title, metrics, artifact, tierF }) {
   // Panel geometry
   const padL = 46;
   const padR = 16;
@@ -411,10 +417,16 @@ function renderComparisonPanel({ x, y, w, h, title, metrics, benchmarkId, artifa
     ...THIRD_PARTY.map((tp) => ({
       ...tp,
       label: `${tp.label}\n(#${tp.blocksOn.replace("#", "")})`,
-      // Auto-upgrade: when a #1747 recall-adapter run lands an artifact whose
-      // system.name matches the adapter, real bars render here. Until then the
-      // column stays an explicit DATA-PENDING placeholder (thread #2).
-      source: findArtifact({ benchmarkId, tier: "local", systemName: tp.key }),
+      // DATA-PENDING by design. buildBenchmarkArtifact hardcodes system.name =
+      // "remnic" for EVERY published artifact, so a third-party adapter run
+      // cannot be told apart from the Remnic anchor by system.name — and worse,
+      // wiring findArtifact({systemName: tp.key}) here can never match while an
+      // adapter artifact (also "remnic") could displace the anchor (cursor
+      // thread: third-party system.name mismatch). Auto-upgrade needs a real
+      // adapter discriminator field from #1747; until then the column stays an
+      // explicit placeholder. The Remnic anchor is unambiguous today: only
+      // Remnic artifacts are committed (see artifact-manifest.json).
+      source: null,
     })),
   ];
   const groupW = plotW / metrics.length;
@@ -543,7 +555,6 @@ function figure1() {
     h: panelH,
     title: "LoCoMo (locomo-10, 1986 QA)",
     metrics: LOCOMO_AXIS_METRICS,
-    benchmarkId: "locomo",
     artifact: locomo,
     tierF: locomoF,
   });
@@ -554,7 +565,6 @@ function figure1() {
     h: panelH,
     title: "LongMemEval (oracle, 500 Q)",
     metrics: LONGMEMEVAL_AXIS_METRICS,
-    benchmarkId: "longmemeval",
     artifact: longmemeval,
     tierF: longmemevalF,
   });
@@ -870,9 +880,6 @@ function writeFigure(filename, svg) {
 
 function main() {
   mkdirSync(FIGURES_DIR, { recursive: true });
-  // Self-heal the committed manifest from git when git is available (local
-  // dev); no-op in CI where the committed manifest is the source of truth.
-  refreshArtifactManifest();
 
   const f1 = figure1();
   const f2 = figure2();
@@ -897,17 +904,10 @@ function main() {
   console.log(`  fig1 longmemeval Tier-L: ${longmemeval ? "REAL" : "PENDING"}`);
   console.log(`  fig1 locomo Tier-F: ${locomoF ? "REAL" : "PENDING (#1728)"}`);
   console.log(`  fig1 longmemeval Tier-F: ${longmemevalF ? "REAL" : "PENDING (#1728)"}`);
-  const thirdPartyReal = THIRD_PARTY.filter((tp) =>
-    findArtifact({ benchmarkId: "locomo", tier: "local", systemName: tp.key }) ||
-    findArtifact({ benchmarkId: "longmemeval", tier: "local", systemName: tp.key }),
-  );
-  console.log(
-    `  fig1 third-party (Mem0/Zep/Letta): ${
-      thirdPartyReal.length
-        ? `REAL (${thirdPartyReal.map((t) => t.label).join(", ")})`
-        : "PENDING (#1747)"
-    }`,
-  );
+  // Third-party columns stay pending until #1747 introduces an adapter
+  // discriminator — buildBenchmarkArtifact hardcodes system.name = "remnic", so
+  // there is no field today to match a Mem0/Zep/Letta run against.
+  console.log(`  fig1 third-party (Mem0/Zep/Letta): PENDING (#1747 — adapter discriminator needed)`);
   console.log(`  fig2 MemCorrect adapters: ${memcorrect.length ? `REAL (${memcorrect.map((m) => m.adapter).join(", ")})` : "PENDING (#1584 + #1747)"}`);
   console.log(`  fig3 TrustScore components: REAL (source-extracted)`);
 }
