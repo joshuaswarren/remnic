@@ -104,6 +104,7 @@ import { EntitySynthesisCoordinator } from "./orchestration/entity-synthesis-coo
 import { RecallResultFormatter } from "./orchestration/recall-result-formatter.js";
 import { ConversationIndexCoordinator } from "./orchestration/conversation-index-coordinator.js";
 import { RecallRerankCoordinator } from "./orchestration/recall-rerank-coordinator.js";
+import { QmdResultResolver, qmdCollectionPathParts, qmdResultPathCandidates } from "./orchestration/qmd-result-resolver.js";
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
 import {
   runLiveConnectorsOnce,
@@ -736,52 +737,6 @@ async function raceRecallAbort<T>(
       signal.removeEventListener("abort", onAbort);
     }
   }
-}
-
-function qmdCollectionPathParts(resultPath: string): {
-  collection: string;
-  relativePath: string;
-} | null {
-  if (!resultPath || path.isAbsolute(resultPath)) return null;
-  const normalized = resultPath.replace(/\\/g, "/").replace(/^\/+/, "");
-  const slashIndex = normalized.indexOf("/");
-  if (slashIndex <= 0 || slashIndex >= normalized.length - 1) return null;
-  const collection = normalized.slice(0, slashIndex);
-  if (/^\d{4}-\d{2}-\d{2}$/.test(collection)) return null;
-  return {
-    collection,
-    relativePath: normalized.slice(slashIndex + 1),
-  };
-}
-
-function qmdResultPathCandidates(
-  storageDir: string,
-  resultPath: string,
-): string[] {
-  const candidates = new Set<string>();
-  const storageRoot = path.resolve(storageDir);
-  const addCandidate = (candidate: string) => {
-    const resolved = path.resolve(candidate);
-    if (isPathInsideStorageRoot(storageRoot, resolved)) {
-      candidates.add(resolved);
-    }
-  };
-  const addRelativeCandidates = (relativePath: string) => {
-    const normalized = relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
-    if (!normalized) return;
-    addCandidate(path.join(storageRoot, normalized));
-    if (/^\d{4}-\d{2}-\d{2}\//.test(normalized)) {
-      addCandidate(path.join(storageRoot, "facts", normalized));
-    }
-  };
-
-  if (path.isAbsolute(resultPath)) {
-    addCandidate(resultPath);
-  } else {
-    addRelativeCandidates(resultPath);
-  }
-
-  return [...candidates];
 }
 
 /** Maximum age (ms) before a compaction-reset signal file is considered stale and removed. */
@@ -1885,6 +1840,7 @@ export class Orchestrator {
    */
   readonly conversationIndexCoordinator: ConversationIndexCoordinator;
   readonly recallRerankCoordinator: RecallRerankCoordinator;
+  readonly qmdResultResolver: QmdResultResolver;
   private heartbeatObserverChains = new Map<string, Promise<void>>();
   private recentExtractionFingerprints = new Map<string, number>();
   private readonly consolidationObservers = new Set<
@@ -2912,6 +2868,13 @@ export class Orchestrator {
       getStorage: (namespace) => this.getStorage(namespace),
       fastChatCompletion: (messages, options) =>
         this.fastChatCompletion(messages, options),
+    });
+    this.qmdResultResolver = new QmdResultResolver({
+      getConfig: () => this.config,
+      storageFor: (namespace) => this.storageRouter.storageFor(namespace),
+      storageDirNamespace: (storageDir) => this.storageDirNamespace(storageDir),
+      qmdCollectionNamespaceFromPrefix: (prefix) => this.qmdCollectionNamespaceFromPrefix(prefix),
+      namespaceFromPath: (p) => this.namespaceFromPath(p),
     });
 
     this.sessionObserver = new SessionObserverState({
@@ -16898,143 +16861,14 @@ export class Orchestrator {
     return null;
   }
 
+  // Issue #1526 seam 11: QMD result-resolution methods moved to QmdResultResolver.
+  // Thin delegation keeps the private API stable for callers + tests.
   private async readQmdResultMemory(
     resultPath: string,
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[] = [],
   ): Promise<MemoryFile | null> {
-    const parts = qmdCollectionPathParts(resultPath);
-    const storageDirFor = (storage: StorageManager): string | null =>
-      typeof (storage as { dir?: unknown }).dir === "string" &&
-      (storage as { dir?: string }).dir
-        ? (storage as { dir: string }).dir
-        : null;
-    const fallbackStorageDir = storageDirFor(fallbackStorage);
-    const coldCollection = this.config.qmdColdCollection ?? "openclaw-engram-cold";
-    if (parts && parts.collection === coldCollection) {
-      const storages: StorageManager[] = [];
-      const seenStorageDirs = new Set<string>();
-      const addStorage = (storage: StorageManager): void => {
-        const storageDir = storageDirFor(storage);
-        const storageKey = storageDir
-          ? path.resolve(storageDir)
-          : `storage-without-dir-${storages.length}`;
-        if (seenStorageDirs.has(storageKey)) return;
-        seenStorageDirs.add(storageKey);
-        storages.push(storage);
-      };
-
-      const fallbackNamespace =
-        fallbackStorageDir !== null
-          ? this.storageDirNamespace(fallbackStorageDir)
-          : this.config.defaultNamespace;
-      if (
-        recallNamespaces.length === 0 ||
-        !resolveNamespaceCapabilities(this.config).namespaces ||
-        recallNamespaces.includes(fallbackNamespace)
-      ) {
-        addStorage(fallbackStorage);
-      }
-
-      if (recallNamespaces.length > 0) {
-        for (const namespace of recallNamespaces) {
-          try {
-            addStorage(await this.storageRouter.storageFor(namespace));
-          } catch (err) {
-            log.debug("qmd cold result namespace storage lookup skipped", {
-              path: resultPath,
-              namespace,
-              error: (err as Error).message,
-            });
-          }
-        }
-      }
-
-      for (const storage of storages) {
-        const storageDir = storageDirFor(storage);
-        if (!storageDir) {
-          const memory = await storage.readMemoryByPath(resultPath);
-          if (memory) return memory;
-          continue;
-        }
-        try {
-          const coldRoot = path.join(storageDir, "cold");
-          for (const candidate of qmdResultPathCandidates(
-            coldRoot,
-            parts.relativePath,
-          )) {
-            const memory = await storage.readMemoryByPath(candidate);
-            if (memory) return memory;
-          }
-        } catch (err) {
-          if (err instanceof SecureStoreLockedError) throw err;
-          log.debug("qmd cold result path lookup failed open", {
-            path: resultPath,
-            collection: coldCollection,
-            error: (err as Error).message,
-          });
-        }
-      }
-      return null;
-    }
-    const collectionNamespace = parts
-      ? this.qmdCollectionNamespaceFromPrefix(parts.collection)
-      : null;
-
-    if (parts && collectionNamespace) {
-      try {
-        const collectionStorage =
-          await this.storageRouter.storageFor(collectionNamespace);
-        for (const candidate of qmdResultPathCandidates(
-          collectionStorage.dir,
-          parts.relativePath,
-        )) {
-          const memory = await collectionStorage.readMemoryByPath(candidate);
-          if (memory) return memory;
-        }
-        return null;
-      } catch (err) {
-        if (err instanceof SecureStoreLockedError) throw err;
-        log.debug("qmd result namespace path lookup failed open", {
-          path: resultPath,
-          namespace: collectionNamespace,
-          error: (err as Error).message,
-        });
-        return null;
-      }
-    }
-
-    if (path.isAbsolute(resultPath)) {
-      if (!fallbackStorageDir) {
-        return await fallbackStorage.readMemoryByPath(resultPath);
-      }
-      const ownerStorage = await this.storageForAbsoluteQmdResultPath(
-        resultPath,
-        fallbackStorage,
-        recallNamespaces,
-      );
-      if (!ownerStorage) return null;
-      for (const candidate of qmdResultPathCandidates(
-        ownerStorage.dir,
-        resultPath,
-      )) {
-        const memory = await ownerStorage.storage.readMemoryByPath(candidate);
-        if (memory) return memory;
-      }
-      return null;
-    }
-
-    if (!fallbackStorageDir) {
-      return await fallbackStorage.readMemoryByPath(resultPath);
-    }
-    for (const candidate of qmdResultPathCandidates(
-      fallbackStorageDir,
-      resultPath,
-    )) {
-      const memory = await fallbackStorage.readMemoryByPath(candidate);
-      if (memory) return memory;
-    }
-    return null;
+    return this.qmdResultResolver.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces);
   }
 
   private async resolveColdQmdResultForRecall(
@@ -17042,40 +16876,7 @@ export class Orchestrator {
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[] = [],
   ): Promise<{ namespace: string; result: QmdSearchResult } | null> {
-    const memory = await this.readQmdResultMemory(
-      result.path,
-      fallbackStorage,
-      recallNamespaces,
-    );
-    if (!memory) return null;
-
-    let ownerNamespace: string | null = null;
-    if (path.isAbsolute(memory.path)) {
-      const ownerStorage = await this.storageForAbsoluteQmdResultPath(
-        memory.path,
-        fallbackStorage,
-        recallNamespaces,
-      );
-      ownerNamespace = ownerStorage?.namespace ?? null;
-      if (!ownerNamespace && resolveNamespaceCapabilities(this.config).namespaces) return null;
-    }
-    ownerNamespace ??= this.namespaceFromPath(memory.path);
-    if (
-      recallNamespaces.length > 0 &&
-      !recallNamespaces.includes(ownerNamespace)
-    ) {
-      return null;
-    }
-
-    return {
-      namespace: ownerNamespace,
-      result: {
-        ...result,
-        docid: result.docid || memory.frontmatter.id,
-        path: memory.path,
-        snippet: result.snippet || memory.content.slice(0, 400),
-      },
-    };
+    return this.qmdResultResolver.resolveColdQmdResultForRecall(result, fallbackStorage, recallNamespaces);
   }
 
   private async storageForAbsoluteQmdResultPath(
@@ -17083,73 +16884,7 @@ export class Orchestrator {
     fallbackStorage: StorageManager,
     recallNamespaces: readonly string[] = [],
   ): Promise<{ storage: StorageManager; dir: string; namespace: string } | null> {
-    const resolvedPath = path.resolve(resultPath);
-    const memoryRoot = path.resolve(this.config.memoryDir);
-    const namespacesRoot = path.join(memoryRoot, "namespaces");
-    const fallbackStorageDir =
-      typeof (fallbackStorage as { dir?: unknown }).dir === "string" &&
-      (fallbackStorage as { dir?: string }).dir
-        ? (fallbackStorage as { dir: string }).dir
-        : null;
-    const matches: Array<{ storage: StorageManager; dir: string; namespace: string }> = [];
-    const seenDirs = new Set<string>();
-
-    const maybeAddStorage = (storage: StorageManager, namespace: string) => {
-      const storageDir =
-        typeof (storage as { dir?: unknown }).dir === "string" &&
-        (storage as { dir?: string }).dir
-          ? (storage as { dir: string }).dir
-          : null;
-      if (!storageDir) return;
-      const candidateRoot = path.resolve(storageDir);
-      if (seenDirs.has(candidateRoot)) return;
-      if (!isPathInsideStorageRoot(candidateRoot, resolvedPath)) return;
-      if (
-        candidateRoot === memoryRoot &&
-        isPathInsideStorageRoot(namespacesRoot, resolvedPath)
-      ) {
-        return;
-      }
-      seenDirs.add(candidateRoot);
-      matches.push({ storage, dir: candidateRoot, namespace });
-    };
-
-    const fallbackNamespace =
-      fallbackStorageDir !== null
-        ? this.storageDirNamespace(fallbackStorageDir)
-        : this.config.defaultNamespace;
-    maybeAddStorage(fallbackStorage, fallbackNamespace);
-
-    const candidateNamespaces = new Set<string>();
-    candidateNamespaces.add(this.config.defaultNamespace);
-    candidateNamespaces.add(this.config.sharedNamespace);
-    for (const ns of recallNamespaces) {
-      candidateNamespaces.add(ns);
-    }
-    if (isPathInsideStorageRoot(namespacesRoot, resolvedPath)) {
-      const relativeToNamespaces = path.relative(namespacesRoot, resolvedPath);
-      const [namespaceSegment] = relativeToNamespaces.split(/[\\/]/);
-      if (namespaceSegment) {
-        candidateNamespaces.add(
-          namespaceIdentityFromToken(namespaceSegment) ?? namespaceSegment,
-        );
-      }
-    }
-    for (const policy of this.config.namespacePolicies ?? []) {
-      candidateNamespaces.add(policy.name);
-    }
-
-    for (const ns of candidateNamespaces) {
-      if (!ns) continue;
-      try {
-        maybeAddStorage(await this.storageRouter.storageFor(ns), ns);
-      } catch {
-        continue;
-      }
-    }
-
-    matches.sort((a, b) => b.dir.length - a.dir.length);
-    return matches[0] ?? null;
+    return this.qmdResultResolver.storageForAbsoluteQmdResultPath(resultPath, fallbackStorage, recallNamespaces);
   }
 
   // Issue #1526: recall-rerank methods moved to RecallRerankCoordinator.
