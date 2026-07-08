@@ -153,8 +153,9 @@ export class LcmSummarizer {
     text: string,
     targetTokens: number,
   ): Promise<{ text: string; escalation: number }> {
+    const { telemetryPrefilterEnabled } = this.config;
     if (
-      this.config.telemetryPrefilterEnabled &&
+      telemetryPrefilterEnabled &&
       looksLikeMechanicalTelemetryTranscript(text)
     ) {
       return {

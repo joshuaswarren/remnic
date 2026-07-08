@@ -117,6 +117,7 @@ export class LcmEngine {
     const db = openLcmDatabase(this.memoryDir);
     const archive = new LcmArchive(db);
     const dag = new LcmDag(db);
+    const { telemetryPrefilterEnabled } = this.config;
     const summarizer = new LcmSummarizer(
       archive,
       dag,
@@ -126,7 +127,7 @@ export class LcmEngine {
         rollupFanIn: this.config.rollupFanIn,
         maxDepth: this.config.maxDepth,
         deterministicMaxTokens: this.config.deterministicMaxTokens,
-        telemetryPrefilterEnabled: this.config.telemetryPrefilterEnabled,
+        telemetryPrefilterEnabled,
       },
     );
     const observeQueue = new LcmWorkQueue({
@@ -229,17 +230,18 @@ export class LcmEngine {
     if (messages.length === 0) return;
 
     const currentMax = this.archive.getMaxTurnIndex(sessionId);
+    const { messagePartsEnabled } = this.config;
     const newMessages = messages.map((m, i) => ({
       turnIndex: currentMax + 1 + i,
       role: m.role,
       content: m.content,
-      parts: this.config.messagePartsEnabled ? m.parts : undefined,
-      rawContent: this.config.messagePartsEnabled ? m.rawContent : undefined,
-      sourceFormat: this.config.messagePartsEnabled ? m.sourceFormat : undefined,
+      parts: messagePartsEnabled ? m.parts : undefined,
+      rawContent: messagePartsEnabled ? m.rawContent : undefined,
+      sourceFormat: messagePartsEnabled ? m.sourceFormat : undefined,
     }));
 
     this.archive.appendMessages(sessionId, newMessages, {
-      messagePartsEnabled: this.config.messagePartsEnabled,
+      messagePartsEnabled,
     });
 
     // Trigger incremental summarization inside the worker, after append.
@@ -346,7 +348,8 @@ export class LcmEngine {
     query: string,
     limit = this.config.messagePartsRecallMaxResults,
   ): Promise<LcmStructuredRecallMatch[]> {
-    if (!this.config.enabled || !this.config.messagePartsEnabled) return [];
+    const { messagePartsEnabled } = this.config;
+    if (!this.config.enabled || !messagePartsEnabled) return [];
     const normalizedSessionId = normalizeLcmSessionId(sessionId);
     if (!normalizedSessionId) return [];
     await this.ensureInitialized();
