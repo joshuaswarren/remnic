@@ -112,8 +112,8 @@ test("orchestrator gates peer profile injection on peerProfileRecallEnabled", ()
   );
   assert.match(
     src,
-    /this\.config\.peerProfileRecallEnabled/,
-    "orchestrator must reference peerProfileRecallEnabled",
+    /resolveRecallEnhancementCapabilities\(this\.config\)\.peerProfileRecall/,
+    "orchestrator must reference peerProfileRecallEnabled (via RecallEnhancementCapabilitySet)",
   );
   assert.match(
     src,
