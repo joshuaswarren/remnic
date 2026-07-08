@@ -1192,7 +1192,6 @@ const RECALL_ENH_FIELD_TO_FLAG: Record<keyof RecallEnhancementCapabilitySet, str
   compoundingInject: "compoundingInjectEnabled",
   accessTracking: "accessTrackingEnabled",
   autoPromoteToShared: "autoPromoteToSharedEnabled",
-  recallGraph: "recallGraphEnabled",
   feedback: "feedbackEnabled",
   identity: "identityEnabled",
 };
@@ -1293,7 +1292,6 @@ const CONV_CTX_FIELD_TO_FLAG: Record<keyof ConversationContextCapabilitySet, str
   cmcConsolidation: "cmcConsolidationEnabled",
   maintenanceNamespaceFanout: "maintenanceNamespaceFanoutEnabled",
   citations: "citationsEnabled",
-  behaviorLoopAutoTune: "behaviorLoopAutoTuneEnabled",
   semanticRulePromotion: "semanticRulePromotionEnabled",
   codexMarketplace: "codexMarketplaceEnabled",
 };
