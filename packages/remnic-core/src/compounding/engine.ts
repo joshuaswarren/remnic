@@ -7,7 +7,7 @@ import { StorageManager } from "../storage.js";
 import type { ContinuityIncidentRecord, PluginConfig } from "../types.js";
 import { resolveSharedContextDir, SharedFeedbackEntrySchema, type SharedFeedbackEntry } from "../shared-context/manager.js";
 import { parseContinuityImprovementLoops } from "../identity-continuity.js";
-import { resolveQmdCapabilities, type QmdConfigProjection } from "../capabilities.js";
+import { resolveQmdCapabilities, type QmdConfigProjection, resolveConsolidationCapabilities } from "../capabilities.js";
 
 type MistakesFile = {
   version?: number;
@@ -493,7 +493,7 @@ export class CompoundingEngine {
     const previousMistakes = await this.readMistakes();
     const mistakes = this.buildMistakes(entries, actionPatterns, weekId, previousMistakes?.registry ?? []);
     const rubrics = this.buildRubricSnapshot(entries, outcomeSummary);
-    let promotionCandidates = this.config.compoundingSemanticEnabled
+    let promotionCandidates = resolveConsolidationCapabilities(this.config).compoundingSemantic
       ? this.derivePromotionCandidates(outcomeSummary, mistakes.registry, rubrics)
       : [];
     if (this.config.cmcConsolidationEnabled) {
@@ -540,7 +540,7 @@ export class CompoundingEngine {
       }
     }
     // PEDC: Run calibration consolidation during weekly synthesis
-    if (this.config.calibrationEnabled) {
+    if (resolveConsolidationCapabilities(this.config).calibration) {
       try {
         const { runCalibrationConsolidation } = await import("../calibration.js");
         const calRules = await runCalibrationConsolidation({
@@ -555,7 +555,7 @@ export class CompoundingEngine {
         log.warn(`[calibration] weekly consolidation failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    const continuity = this.config.continuityAuditEnabled
+    const continuity = resolveConsolidationCapabilities(this.config).continuityAudit
       ? await this.readContinuityAuditReferences(weekId)
       : { monthId: monthIdFromIsoWeek(weekId), weeklyPath: null, monthlyPath: null };
 
@@ -641,7 +641,7 @@ export class CompoundingEngine {
     storage?: StorageManager;
   }): Promise<CompoundingPromotionReport> {
     const report: CompoundingPromotionReport = {
-      enabled: this.config.compoundingEnabled === true && this.config.compoundingSemanticEnabled === true,
+      enabled: resolveConsolidationCapabilities(this.config).compounding === true && resolveConsolidationCapabilities(this.config).compoundingSemantic === true,
       dryRun: opts.dryRun === true,
       weekId: opts.weekId,
       promoted: [],
@@ -1384,7 +1384,7 @@ export class CompoundingEngine {
     }
     lines.push("");
 
-    if (this.config.compoundingSemanticEnabled) {
+    if (resolveConsolidationCapabilities(this.config).compoundingSemantic) {
       lines.push("## Promotion Candidates (Advisory)");
       if (promotionCandidates.length === 0) {
         lines.push("- (no advisory promotion candidates this week)");
@@ -1403,7 +1403,7 @@ export class CompoundingEngine {
       lines.push("");
     }
 
-    if (this.config.continuityAuditEnabled) {
+    if (resolveConsolidationCapabilities(this.config).continuityAudit) {
       lines.push("## Continuity Audits");
       if (continuity.weeklyPath) {
         lines.push(`- weekly: ${continuity.weeklyPath}`);

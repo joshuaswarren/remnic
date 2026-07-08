@@ -38,10 +38,8 @@ import { normalizeProcedureSteps } from "./procedural/procedure-types.js";
 import { normalizeReasoningTrace } from "./reasoning-trace-types.js";
 import { looksLikeMechanicalTelemetryTranscript } from "./telemetry-transcript.js";
 import { buildFactProvenance, type ProvenanceTurnInput } from "./provenance.js";
-import {
-  resolveMemoryLifecycleCapabilities,
-  resolveLocalLlmCapabilities,
-} from "./capabilities.js";
+import { resolveMemoryLifecycleCapabilities,
+  resolveLocalLlmCapabilities,resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 
 type ExtractionQuestion = ExtractionResult["questions"][number];
 type ExtractedFactResult = ExtractionResult["facts"][number];
@@ -1664,7 +1662,7 @@ Memory categories:
 - principle: Durable rules, values, or operating beliefs (e.g., "never use Chat Completions API")
 - commitment: Promises, obligations, or deadlines (e.g., "deploy by Friday", "call accountant Monday")
 - moment: Emotionally significant events or milestones (e.g., "first successful deployment of engram")
-- skill: Capabilities the user or agent has demonstrated (e.g., "user is proficient with Kubernetes")${this.config.causalRuleExtractionEnabled ? `
+- skill: Capabilities the user or agent has demonstrated (e.g., "user is proficient with Kubernetes")${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? `
 - rule: Causal rules discovered through experience (format: "IF <condition> THEN <action/outcome>", e.g., "IF Shopify API returns 401 THEN the admin token is missing read_products scope")` : ""}
 - procedure: A reusable workflow the user wants remembered the same way across sessions. Set category to "procedure". Use "content" for a short title that includes explicit trigger phrasing (e.g. "When you deploy to production…", "Whenever you ship a release…"). Add "procedureSteps": an array of at least two objects {"order": number, "intent": "concrete step description"} in execution order. Optional per-step "toolCall": {"kind": "…", "signature": "…"}, "expectedOutcome", "optional": true.
 - reasoning_trace: A stored solution chain / chain-of-thought the user walked through to solve a problem (e.g. "Here's how I debugged the latency spike: first I checked…, then I…, finally I…"). Set category to "reasoning_trace". Use "content" for a short title summarising the problem (e.g. "How I debugged the staging latency spike"). Add "reasoningTrace": {"steps": [{"order": number, "description": "what happened at this step"}, …], "finalAnswer": "the conclusion or answer", "observedOutcome": "optional confirmation of how it played out"}. Require at least two ordered steps AND a finalAnswer. Use this category only when the user explicitly narrates their reasoning — not for ordinary decisions (use "decision") or reusable workflows (use "procedure").
@@ -1672,7 +1670,7 @@ Memory categories:
 Rules:
 - Only extract genuinely NEW information worth remembering across sessions
 - Skip transient task details (file paths being edited, current errors, etc.)
-- Priority: corrections > principles${this.config.causalRuleExtractionEnabled ? " > rules" : ""} > preferences > commitments > decisions > relationships > entities > moments > skills > facts
+- Priority: corrections > principles${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? " > rules" : ""} > preferences > commitments > decisions > relationships > entities > moments > skills > facts
 - Corrections (user saying "actually, don't do X" or "I prefer Y") get highest confidence
 - Each fact should be a standalone, self-contained statement
 - Lines labelled [context user] or [context assistant] are reference context only. Use them to resolve pronouns and adjacent question/answer pairs, but do not extract a memory stated only in context lines unless a normal [user] or [assistant] line confirms or completes it.
@@ -1800,7 +1798,7 @@ Actions:
 
 Also:
 - Suggest profile updates based on patterns across memories
-- Identify entity updates for entity tracking${this.config.causalRuleExtractionEnabled ? `
+- Identify entity updates for entity tracking${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? `
 - When merging or updating memories, look for IF→THEN causal patterns. If a memory describes "X failed/succeeded because Y" or "doing X led to Y", rewrite its content to make the causal rule explicit in the form "IF <condition> THEN <action/outcome>".` : ""}`,
         },
         {
@@ -1846,7 +1844,7 @@ Actions:
 
 Also:
 - Suggest profile updates based on patterns across memories
-- Identify entity updates for entity tracking${this.config.causalRuleExtractionEnabled ? `
+- Identify entity updates for entity tracking${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? `
 - When merging or updating memories, look for IF→THEN causal patterns. If a memory describes "X failed/succeeded because Y" or "doing X led to Y", rewrite its content to make the causal rule explicit in the form "IF <condition> THEN <action/outcome>".` : ""}
 
 Current behavioral profile:
@@ -1944,7 +1942,7 @@ Actions:
 
 Also:
 - Suggest profile updates based on patterns across memories
-- Identify entity updates for entity tracking${this.config.causalRuleExtractionEnabled ? `
+- Identify entity updates for entity tracking${resolveRecallAuxiliaryCapabilities(this.config).causalRuleExtraction ? `
 - When merging or updating memories, look for IF→THEN causal patterns. If a memory describes "X failed/succeeded because Y" or "doing X led to Y", rewrite its content to make the causal rule explicit in the form "IF <condition> THEN <action/outcome>".` : ""}
 
 Current behavioral profile:
@@ -2689,7 +2687,7 @@ Respond with valid JSON matching this schema:
   }
 
   async generateDaySummary(memories: string | MemoryFile[]): Promise<DaySummaryResultShape | null> {
-    if (!this.config.daySummaryEnabled) {
+    if (!resolveRecallAuxiliaryCapabilities(this.config).daySummary) {
       log.warn("day summary skipped — disabled by config");
       return null;
     }

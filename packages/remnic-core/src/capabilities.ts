@@ -807,3 +807,212 @@ export function resolveCompressionCapabilities(config: CompressionConfigProjecti
     contextCompressionActions: config.contextCompressionActionsEnabled,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Presentation capability set (issue #1523 batch 8).
+//
+// These flags gate output formatting and presentation across the orchestrator, extraction
+// pipeline, consolidation engine, and related modules. Resolved ONCE per
+// operation entry rather than re-derived from raw config at each read site.
+// All flags are non-optional booleans on PluginConfig (defaults applied at
+// the parse boundary), so the projection is a pure pass-through.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of output formatting and presentation feature gates (issue #1523 batch 8).
+ */
+export interface PresentationCapabilitySet {
+  /** `verbatimArtifactsEnabled` — verbatim-artifact rendering in recall output. */
+  readonly verbatimArtifacts: boolean;
+  /** `memoryBoxesEnabled` — memory-box rendering in recall output. */
+  readonly memoryBoxes: boolean;
+  /** `bufferSurpriseTriggerEnabled` — buffer surprise-detection trigger. */
+  readonly bufferSurpriseTrigger: boolean;
+  /** `threadingEnabled` — conversation threading in output. */
+  readonly threading: boolean;
+  /** `episodeNoteModeEnabled` — episode note-mode formatting. */
+  readonly episodeNoteMode: boolean;
+  /** `transcriptEnabled` — transcript-mode output. */
+  readonly transcript: boolean;
+  /** `entitySummaryEnabled` — entity summary generation. */
+  readonly entitySummary: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolvePresentationCapabilities}.
+ */
+export type PresentationConfigProjection = Pick<
+  PluginConfig,
+  "verbatimArtifactsEnabled" |
+  "memoryBoxesEnabled" |
+  "bufferSurpriseTriggerEnabled" |
+  "threadingEnabled" |
+  "episodeNoteModeEnabled" |
+  "transcriptEnabled" |
+  "entitySummaryEnabled"
+>;
+
+/**
+ * Resolve the {@link PresentationCapabilitySet} from parsed config.
+ */
+export function resolvePresentationCapabilities(config: PresentationConfigProjection): PresentationCapabilitySet {
+  return Object.freeze({
+    verbatimArtifacts: config.verbatimArtifactsEnabled,
+    memoryBoxes: config.memoryBoxesEnabled,
+    bufferSurpriseTrigger: config.bufferSurpriseTriggerEnabled,
+    threading: config.threadingEnabled,
+    episodeNoteMode: config.episodeNoteModeEnabled,
+    transcript: config.transcriptEnabled,
+    entitySummary: config.entitySummaryEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Consolidation capability set (issue #1523 batch 8).
+//
+// These flags gate memory consolidation, compounding, and abstraction across the orchestrator, extraction
+// pipeline, consolidation engine, and related modules. Resolved ONCE per
+// operation entry rather than re-derived from raw config at each read site.
+// All flags are non-optional booleans on PluginConfig (defaults applied at
+// the parse boundary), so the projection is a pure pass-through.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of memory consolidation, compounding, and abstraction feature gates (issue #1523 batch 8).
+ */
+export interface ConsolidationCapabilitySet {
+  /** `compoundingSemanticEnabled` — semantic compounding of memories. */
+  readonly compoundingSemantic: boolean;
+  /** `abstractionAnchorsEnabled` — abstraction-anchor extraction. */
+  readonly abstractionAnchors: boolean;
+  /** `compoundingEnabled` — master compounding switch. */
+  readonly compounding: boolean;
+  /** `calibrationEnabled` — memory calibration pass. */
+  readonly calibration: boolean;
+  /** `semanticConsolidationEnabled` — semantic consolidation pass. */
+  readonly semanticConsolidation: boolean;
+  /** `patternReinforcementEnabled` — pattern reinforcement in consolidation. */
+  readonly patternReinforcement: boolean;
+  /** `continuityAuditEnabled` — continuity audit during consolidation. */
+  readonly continuityAudit: boolean;
+  /** `graphEdgeDecayEnabled` — graph edge decay in maintenance. */
+  readonly graphEdgeDecay: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveConsolidationCapabilities}.
+ */
+export type ConsolidationConfigProjection = Pick<
+  PluginConfig,
+  "compoundingSemanticEnabled" |
+  "abstractionAnchorsEnabled" |
+  "compoundingEnabled" |
+  "calibrationEnabled" |
+  "semanticConsolidationEnabled" |
+  "patternReinforcementEnabled" |
+  "continuityAuditEnabled" |
+  "graphEdgeDecayEnabled"
+>;
+
+/**
+ * Resolve the {@link ConsolidationCapabilitySet} from parsed config.
+ */
+export function resolveConsolidationCapabilities(config: ConsolidationConfigProjection): ConsolidationCapabilitySet {
+  return Object.freeze({
+    compoundingSemantic: config.compoundingSemanticEnabled,
+    abstractionAnchors: config.abstractionAnchorsEnabled,
+    compounding: config.compoundingEnabled,
+    calibration: config.calibrationEnabled,
+    semanticConsolidation: config.semanticConsolidationEnabled,
+    patternReinforcement: config.patternReinforcementEnabled,
+    continuityAudit: config.continuityAuditEnabled,
+    graphEdgeDecay: config.graphEdgeDecayEnabled,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// RecallAuxiliary capability set (issue #1523 batch 8).
+//
+// These flags gate extraction pipeline details and auxiliary recall enrichment across the orchestrator, extraction
+// pipeline, consolidation engine, and related modules. Resolved ONCE per
+// operation entry rather than re-derived from raw config at each read site.
+// All flags are non-optional booleans on PluginConfig (defaults applied at
+// the parse boundary), so the projection is a pure pass-through.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of extraction pipeline details and auxiliary recall enrichment feature gates (issue #1523 batch 8).
+ */
+export interface RecallAuxiliaryCapabilitySet {
+  /** `causalRuleExtractionEnabled` — causal-rule extraction in pipeline. */
+  readonly causalRuleExtraction: boolean;
+  /** `correctionEnabled` — memory correction subsystem. */
+  readonly correction: boolean;
+  /** `continuityIncidentLoggingEnabled` — continuity incident logging. */
+  readonly continuityIncidentLogging: boolean;
+  /** `daySummaryEnabled` — day-summary generation. */
+  readonly daySummary: boolean;
+  /** `versioningEnabled` — memory versioning. */
+  readonly versioning: boolean;
+  /** `verifiedRecallEnabled` — verified-recall tier. */
+  readonly verifiedRecall: boolean;
+  /** `semanticRuleVerificationEnabled` — semantic-rule verification. */
+  readonly semanticRuleVerification: boolean;
+  /** `workProductRecallEnabled` — work-product recall tier. */
+  readonly workProductRecall: boolean;
+  /** `secureStoreEnabled` — secure storage mode. */
+  readonly secureStore: boolean;
+  /** `knowledgeIndexEnabled` — knowledge index in recall. */
+  readonly knowledgeIndex: boolean;
+  /** `factDeduplicationEnabled` — fact deduplication in recall. */
+  readonly factDeduplication: boolean;
+  /** `compactionResetEnabled` — compaction reset on re-ingest. */
+  readonly compactionReset: boolean;
+  /** `entityRetrievalEnabled` — entity retrieval tier. */
+  readonly entityRetrieval: boolean;
+  /** `cronRecallPolicyEnabled` — cron-based recall policy. */
+  readonly cronRecallPolicy: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveRecallAuxiliaryCapabilities}.
+ */
+export type RecallAuxiliaryConfigProjection = Pick<
+  PluginConfig,
+  "causalRuleExtractionEnabled" |
+  "correctionEnabled" |
+  "continuityIncidentLoggingEnabled" |
+  "daySummaryEnabled" |
+  "versioningEnabled" |
+  "verifiedRecallEnabled" |
+  "semanticRuleVerificationEnabled" |
+  "workProductRecallEnabled" |
+  "secureStoreEnabled" |
+  "knowledgeIndexEnabled" |
+  "factDeduplicationEnabled" |
+  "compactionResetEnabled" |
+  "entityRetrievalEnabled" |
+  "cronRecallPolicyEnabled"
+>;
+
+/**
+ * Resolve the {@link RecallAuxiliaryCapabilitySet} from parsed config.
+ */
+export function resolveRecallAuxiliaryCapabilities(config: RecallAuxiliaryConfigProjection): RecallAuxiliaryCapabilitySet {
+  return Object.freeze({
+    causalRuleExtraction: config.causalRuleExtractionEnabled,
+    correction: config.correctionEnabled,
+    continuityIncidentLogging: config.continuityIncidentLoggingEnabled,
+    daySummary: config.daySummaryEnabled,
+    versioning: config.versioningEnabled,
+    verifiedRecall: config.verifiedRecallEnabled,
+    semanticRuleVerification: config.semanticRuleVerificationEnabled,
+    workProductRecall: config.workProductRecallEnabled,
+    secureStore: config.secureStoreEnabled,
+    knowledgeIndex: config.knowledgeIndexEnabled,
+    factDeduplication: config.factDeduplicationEnabled,
+    compactionReset: config.compactionResetEnabled,
+    entityRetrieval: config.entityRetrievalEnabled,
+    cronRecallPolicy: config.cronRecallPolicyEnabled,
+  });
+}

@@ -20,7 +20,7 @@ import type { CliCommand } from "../cli.js";
 import type { CommitmentLedgerEntry } from "../commitment-ledger.js";
 import type { WorkProductLedgerEntry } from "../work-product-ledger.js";
 import type { ResumeBundle } from "../resume-bundles.js";
-import { resolveCreationMemoryCapabilities, resolveObjectiveStateCapabilities} from "../capabilities.js";
+import { resolveCreationMemoryCapabilities, resolveObjectiveStateCapabilities, resolvePresentationCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import {
   runResumeBundleStatusCliCommand,
   runResumeBundleRecordCliCommand,
@@ -130,7 +130,7 @@ cmd
       commitmentLedgerDir: orchestrator.config.commitmentLedgerDir,
       creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
       resumeBundlesEnabled: resolveCreationMemoryCapabilities(orchestrator.config).resumeBundles,
-      transcriptEnabled: orchestrator.config.transcriptEnabled,
+      transcriptEnabled: resolvePresentationCapabilities(orchestrator.config).transcript,
       objectiveStateMemoryEnabled: resolveObjectiveStateCapabilities(orchestrator.config).objectiveStateMemory,
       commitmentLedgerEnabled: resolveCreationMemoryCapabilities(orchestrator.config).commitmentLedger,
       bundleId: String(options.bundleId ?? ""),
@@ -336,7 +336,7 @@ cmd
       memoryDir: orchestrator.config.memoryDir,
       workProductLedgerDir: orchestrator.config.workProductLedgerDir,
       creationMemoryEnabled: resolveCreationMemoryCapabilities(orchestrator.config).creationMemory,
-      workProductRecallEnabled: orchestrator.config.workProductRecallEnabled,
+      workProductRecallEnabled: resolveRecallAuxiliaryCapabilities(orchestrator.config).workProductRecall,
       query,
       maxResults: Number.isFinite(maxResults) ? maxResults : 3,
       sessionKey: typeof options.sessionKey === "string" ? options.sessionKey : undefined,

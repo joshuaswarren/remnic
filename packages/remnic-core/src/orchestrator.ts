@@ -265,8 +265,7 @@ import {
   type TrustZoneSearchResult,
 } from "./trust-zones.js";
 import { tryDirectAnswer, type DirectAnswerSources } from "./direct-answer-wiring.js";
-import {
-  resolveNamespaceCapabilities,
+import { resolveNamespaceCapabilities,
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
   resolveMemoryLifecycleCapabilities,
@@ -280,7 +279,7 @@ import {
   resolveQmdCapabilities,
   resolveIdentityContinuityCapabilities,
   resolveLocalLlmCapabilities,
-  resolveSecurityCapabilities, resolveEvalCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities} from "./capabilities.js";
+  resolveSecurityCapabilities, resolveEvalCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities, resolvePresentationCapabilities, resolveConsolidationCapabilities, resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/index.js";
 import {
   searchHarmonicRetrieval,
@@ -2583,7 +2582,7 @@ export class Orchestrator {
   private async contentHashIndexForStorage(
     targetStorage: StorageManager,
   ): Promise<ContentHashIndex | null> {
-    if (!this.config.factDeduplicationEnabled) return null;
+    if (!resolveRecallAuxiliaryCapabilities(this.config).factDeduplication) return null;
 
     if (targetStorage.dir === this.storage.dir) {
       if (!this.contentHashIndex) {
@@ -2846,7 +2845,7 @@ export class Orchestrator {
     if (config.defaultNamespace) this.storageRouter.bindCatalogWriteHook(this.storage, config.defaultNamespace);
     // Wire page-level versioning (issue #371)
     this.storage.setVersioningConfig({
-      enabled: config.versioningEnabled,
+      enabled: resolveRecallAuxiliaryCapabilities(config).versioning,
       maxVersionsPerPage: config.versioningMaxPerPage,
       sidecarDir: config.versioningSidecarDir,
     });
@@ -2869,7 +2868,7 @@ export class Orchestrator {
     // Wire at-rest encryption (issue #690 PR 3/4).
     // If secureStoreEnabled, check whether the keyring already holds a key
     // for this memory dir (e.g. operator unlocked before daemon restart).
-    if (config.secureStoreEnabled) {
+    if (resolveRecallAuxiliaryCapabilities(config).secureStore) {
       // Mark the store as required so writes throw SecureStoreLockedError
       // instead of silently falling back to plaintext when locked (P1 finding
       // from Cursor review of PR #767).
@@ -2906,7 +2905,7 @@ export class Orchestrator {
     this.sharedContext = config.sharedContextEnabled
       ? new SharedContextManager(config)
       : undefined;
-    this.compounding = config.compoundingEnabled
+    this.compounding = resolveConsolidationCapabilities(config).compounding
       ? new CompoundingEngine(config, this.storage)
       : undefined;
     this.buffer = new SmartBuffer(config, this.storage);
@@ -3098,7 +3097,7 @@ export class Orchestrator {
       this.boxBuilders.set(
         dir,
         new BoxBuilder(dir, {
-          memoryBoxesEnabled: this.config.memoryBoxesEnabled,
+          memoryBoxesEnabled: resolvePresentationCapabilities(this.config).memoryBoxes,
           traceWeaverEnabled: this.config.traceWeaverEnabled,
           boxTopicShiftThreshold: this.config.boxTopicShiftThreshold,
           boxTimeGapMs: this.config.boxTimeGapMs,
@@ -3444,7 +3443,7 @@ export class Orchestrator {
       });
 
       // Initialize content-hash dedup index
-      if (this.config.factDeduplicationEnabled) {
+      if (resolveRecallAuxiliaryCapabilities(this.config).factDeduplication) {
         this.contentHashIndex = this.storage.createContentHashIndex();
         await this.contentHashIndex.load();
         log.info(
@@ -3470,7 +3469,7 @@ export class Orchestrator {
         );
         this.buffer.resetToEmpty();
       }
-      if (this.config.compactionResetEnabled) {
+      if (resolveRecallAuxiliaryCapabilities(this.config).compactionReset) {
         try {
           const wsDir = this.config.workspaceDir || defaultWorkspaceDir();
           const files = await readdir(wsDir).catch(() => [] as string[]);
@@ -3694,7 +3693,7 @@ export class Orchestrator {
     // Awaited so callers of `deferredReady` can rely on warmups being complete
     // and shutdown sequencing does not race with in-flight cache builds.
     const cacheWarmups: Promise<void>[] = [];
-    if (this.config.knowledgeIndexEnabled) {
+    if (resolveRecallAuxiliaryCapabilities(this.config).knowledgeIndex) {
       cacheWarmups.push(
         (async () => {
           try {
@@ -4013,7 +4012,7 @@ export class Orchestrator {
     const cadenceKey = options.namespace ?? "";
     // Master switch: a disabled feature is never bypassed, even with
     // force=true.  `force` only relaxes the cadence floor below.
-    if (!this.config.patternReinforcementEnabled) {
+    if (!resolveConsolidationCapabilities(this.config).patternReinforcement) {
       return { ran: false, skippedReason: "disabled", namespace: cadenceKey };
     }
     const cadence = this.config.patternReinforcementCadenceMs;
@@ -4072,7 +4071,7 @@ export class Orchestrator {
           ? { itemCount: result.result.clustersFound }
           : { itemCount: 0 };
       },
-      { enabled: this.config.patternReinforcementEnabled },
+      { enabled: resolveConsolidationCapabilities(this.config).patternReinforcement },
     );
   }
 
@@ -4116,7 +4115,7 @@ export class Orchestrator {
         });
         return { itemCount: result.clustersFound };
       },
-      { enabled: this.config.semanticConsolidationEnabled },
+      { enabled: resolveConsolidationCapabilities(this.config).semanticConsolidation },
     );
   }
 
@@ -5447,7 +5446,7 @@ export class Orchestrator {
     // memory directory, reject recall with a clear human-readable error
     // rather than surfacing a cryptic SecureStoreLockedError from deep
     // inside the storage layer.
-    if (this.config.secureStoreEnabled && !this.storage.isSecureStoreUnlocked()) {
+    if (resolveRecallAuxiliaryCapabilities(this.config).secureStore && !this.storage.isSecureStoreUnlocked()) {
       const lockedMsg =
         "[secure-store locked] Memory store is encrypted and locked. " +
         "Unlock the secure-store inside this daemon process, or restart the daemon through a secure-store aware launcher that installs the key.";
@@ -5585,7 +5584,7 @@ export class Orchestrator {
     });
     const observationNamespaces = observationScopePlan.readNamespaces;
     const observationQueryPolicy = buildRecallQueryPolicy(prompt, sessionKey, {
-      cronRecallPolicyEnabled: this.config.cronRecallPolicyEnabled,
+      cronRecallPolicyEnabled: resolveRecallAuxiliaryCapabilities(this.config).cronRecallPolicy,
       cronRecallNormalizedQueryMaxChars:
         this.config.cronRecallNormalizedQueryMaxChars,
       cronRecallInstructionHeavyTokenCap:
@@ -7011,7 +7010,7 @@ export class Orchestrator {
     // recall searches, incl. coding `readFallbacks`). See the
     // `lcmReadSessionIds` derivation after `recallNamespaces` is built.
     const queryPolicy = buildRecallQueryPolicy(prompt, sessionKey, {
-      cronRecallPolicyEnabled: this.config.cronRecallPolicyEnabled,
+      cronRecallPolicyEnabled: resolveRecallAuxiliaryCapabilities(this.config).cronRecallPolicy,
       cronRecallNormalizedQueryMaxChars:
         this.config.cronRecallNormalizedQueryMaxChars,
       cronRecallInstructionHeavyTokenCap:
@@ -7174,7 +7173,7 @@ export class Orchestrator {
           return limit;
         })()
       : 0;
-    const recallHeadroom = this.config.verbatimArtifactsEnabled
+    const recallHeadroom = resolvePresentationCapabilities(this.config).verbatimArtifacts
       ? Math.max(12, this.config.verbatimArtifactsMaxRecall * 4)
       : 12;
     const computedFetchLimit =
@@ -7187,7 +7186,7 @@ export class Orchestrator {
     const qmdFetchLimit = computedFetchLimit;
     const qmdHybridFetchLimit = computeQmdHybridFetchLimit(
       qmdFetchLimit,
-      this.config.verbatimArtifactsEnabled,
+      resolvePresentationCapabilities(this.config).verbatimArtifacts,
       this.config.verbatimArtifactsMaxRecall,
     );
     const embeddingFetchLimit = computedFetchLimit;
@@ -7879,11 +7878,11 @@ export class Orchestrator {
       if (
         !this.isRecallSectionEnabled(
           "entity-retrieval",
-          this.config.entityRetrievalEnabled,
+          resolveRecallAuxiliaryCapabilities(this.config).entityRetrieval,
         )
       )
         return null;
-      if (!this.config.entityRetrievalEnabled) return null;
+      if (!resolveRecallAuxiliaryCapabilities(this.config).entityRetrieval) return null;
       const maxChars =
         this.getRecallSectionMaxChars("entity-retrieval") ??
         this.config.entityRetrievalMaxChars;
@@ -7956,11 +7955,11 @@ export class Orchestrator {
       if (
         !this.isRecallSectionEnabled(
           "knowledge-index",
-          this.config.knowledgeIndexEnabled,
+          resolveRecallAuxiliaryCapabilities(this.config).knowledgeIndex,
         )
       )
         return null;
-      if (!this.config.knowledgeIndexEnabled) return null;
+      if (!resolveRecallAuxiliaryCapabilities(this.config).knowledgeIndex) return null;
       const t0 = Date.now();
       try {
         const knowledgeIndexMaxChars =
@@ -8051,11 +8050,11 @@ export class Orchestrator {
       if (
         !this.isRecallSectionEnabled(
           "verbatim-artifacts",
-          this.config.verbatimArtifactsEnabled === true,
+          resolvePresentationCapabilities(this.config).verbatimArtifacts === true,
         )
       )
         return [];
-      if (!this.config.verbatimArtifactsEnabled) return [];
+      if (!resolvePresentationCapabilities(this.config).verbatimArtifacts) return [];
       const t0 = Date.now();
       const targetCount = computeArtifactRecallLimit(
         recallMode,
@@ -8286,10 +8285,10 @@ export class Orchestrator {
     const calibrationPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.calibrationEnabled ||
+        !resolveConsolidationCapabilities(this.config).calibration ||
         !this.isRecallSectionEnabled(
           "calibration-rules",
-          this.config.calibrationEnabled === true,
+          resolveConsolidationCapabilities(this.config).calibration === true,
         )
       ) {
         recordRecallSectionMetric({
@@ -8451,7 +8450,7 @@ export class Orchestrator {
               query: retrievalQuery,
               maxResults,
               sessionKey,
-              anchorsEnabled: this.config.abstractionAnchorsEnabled,
+              anchorsEnabled: resolveConsolidationCapabilities(this.config).abstractionAnchors,
               abortSignal: harmonicRetrievalAbort.signal,
             }),
           ),
@@ -8498,10 +8497,10 @@ export class Orchestrator {
     const verifiedRecallPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.verifiedRecallEnabled ||
+        !resolveRecallAuxiliaryCapabilities(this.config).verifiedRecall ||
         !this.isRecallSectionEnabled(
           "verified-episodes",
-          this.config.verifiedRecallEnabled === true,
+          resolveRecallAuxiliaryCapabilities(this.config).verifiedRecall === true,
         )
       ) {
         recordRecallSectionMetric({
@@ -8587,10 +8586,10 @@ export class Orchestrator {
     const verifiedRulesPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.semanticRuleVerificationEnabled ||
+        !resolveRecallAuxiliaryCapabilities(this.config).semanticRuleVerification ||
         !this.isRecallSectionEnabled(
           "verified-rules",
-          this.config.semanticRuleVerificationEnabled === true,
+          resolveRecallAuxiliaryCapabilities(this.config).semanticRuleVerification === true,
         )
       ) {
         recordRecallSectionMetric({
@@ -8676,10 +8675,10 @@ export class Orchestrator {
       const t0 = Date.now();
       if (
         !resolveCreationMemoryCapabilities(this.config).creationMemory ||
-        !this.config.workProductRecallEnabled ||
+        !resolveRecallAuxiliaryCapabilities(this.config).workProductRecall ||
         !this.isRecallSectionEnabled(
           "work-products",
-          this.config.workProductRecallEnabled === true,
+          resolveRecallAuxiliaryCapabilities(this.config).workProductRecall === true,
         )
       ) {
         recordRecallSectionMetric({
@@ -9187,7 +9186,7 @@ export class Orchestrator {
     const transcriptPromise = (async (): Promise<string | null> => {
       const t0 = Date.now();
       if (
-        !this.config.transcriptEnabled ||
+        !resolvePresentationCapabilities(this.config).transcript ||
         !this.isRecallSectionEnabled("transcript", true)
       ) {
         recordRecallSectionMetric({
@@ -9293,7 +9292,7 @@ export class Orchestrator {
         this._recallWorkspaceOverrides.get(effectiveSessionKey);
       this._recallWorkspaceOverrides.delete(effectiveSessionKey);
 
-      if (!this.config.compactionResetEnabled) return null;
+      if (!resolveRecallAuxiliaryCapabilities(this.config).compactionReset) return null;
 
       const workspaceDir =
         compactionWorkspaceDir ||
@@ -9646,9 +9645,9 @@ export class Orchestrator {
     const recentBoxesPromise = observeEnrichmentPromise(
       this.isRecallSectionEnabled(
         "memory-boxes",
-        this.config.memoryBoxesEnabled === true,
+        resolvePresentationCapabilities(this.config).memoryBoxes === true,
       ) &&
-        this.config.memoryBoxesEnabled &&
+        resolvePresentationCapabilities(this.config).memoryBoxes &&
         this.config.boxRecallDays > 0
         ? Promise.all(
             profileStorages.map((storage) =>
@@ -12751,7 +12750,7 @@ export class Orchestrator {
   ): Promise<void> {
     const mode = this.config.correctionCaptureMode;
     if (mode === "off") return;
-    if (!this.config.correctionEnabled) return;
+    if (!resolveRecallAuxiliaryCapabilities(this.config).correction) return;
 
     try {
       const corrections = detectPassiveCorrections(
@@ -12771,7 +12770,7 @@ export class Orchestrator {
       const result = await capturePassiveCorrections(
         corrections,
         {
-          correctionEnabled: this.config.correctionEnabled,
+          correctionEnabled: resolveRecallAuxiliaryCapabilities(this.config).correction,
           isLiveSession: opts.isLiveSession,
           bufferKey: opts.bufferKey,
           sessionKey: opts.sessionKey,
@@ -13205,7 +13204,7 @@ export class Orchestrator {
     }
 
     let threadIdForExtraction: string | null = null;
-    if (this.config.threadingEnabled && turns.length > 0) {
+    if (resolvePresentationCapabilities(this.config).threading && turns.length > 0) {
       const lastTurn = turns[turns.length - 1];
       try {
         threadIdForExtraction = await this.threading.processTurn(lastTurn, []);
@@ -13335,7 +13334,7 @@ export class Orchestrator {
     // Topics are derived from the current extraction's facts and entities only —
     // not from readAllMemories() — so box topics accurately reflect the current
     // session window and the call is free of expensive full-corpus I/O.
-    if (this.config.memoryBoxesEnabled && persistedIds.length > 0) {
+    if (resolvePresentationCapabilities(this.config).memoryBoxes && persistedIds.length > 0) {
       const extractionTopics = deriveTopicsFromExtraction(result);
       // Derive episodic metadata from buffer turns (REMem-inspired)
       const firstUserTurn = turns.find((t) => t.role === "user");
@@ -13356,7 +13355,7 @@ export class Orchestrator {
     // Batch-append persisted IDs so non-fact memories (entities/questions) are
     // always attached to the thread. The helper excludes pending_review ids (#1635).
     if (
-      this.config.threadingEnabled &&
+      resolvePresentationCapabilities(this.config).threading &&
       threadIdForExtraction &&
       persistedIds.length > 0
     ) {
@@ -13367,7 +13366,7 @@ export class Orchestrator {
     }
 
     // Thread title update for the already-established thread context.
-    if (this.config.threadingEnabled && threadIdForExtraction) {
+    if (resolvePresentationCapabilities(this.config).threading && threadIdForExtraction) {
       const conversationContent = turns.map((t) => t.content).join(" ");
       try {
         await this.threading.updateThreadTitle(
@@ -15268,7 +15267,7 @@ export class Orchestrator {
 
         if (chunkResult.chunked && chunkResult.chunks.length > 1) {
           // Classify memory kind (v8.0 Phase 2B: HiMem episode/note dual store)
-          const memoryKind = this.config.episodeNoteModeEnabled
+          const memoryKind = resolvePresentationCapabilities(this.config).episodeNoteMode
             ? classifyMemoryKind(fact.content, fact.tags ?? [], writeCategory)
             : undefined;
 
@@ -15525,7 +15524,7 @@ export class Orchestrator {
           }
           try {
             if (
-              this.config.verbatimArtifactsEnabled &&
+              resolvePresentationCapabilities(this.config).verbatimArtifacts &&
               this.config.verbatimArtifactCategories.includes(writeCategory) &&
               fact.confidence >= this.config.verbatimArtifactsMinConfidence &&
               !postWriteGuard
@@ -15622,7 +15621,7 @@ export class Orchestrator {
       const memoryKind =
         writeCategory === "procedure"
           ? undefined
-          : this.config.episodeNoteModeEnabled
+          : resolvePresentationCapabilities(this.config).episodeNoteMode
             ? classifyMemoryKind(fact.content, fact.tags ?? [], writeCategory)
             : undefined;
 
@@ -15822,7 +15821,7 @@ export class Orchestrator {
           }
         }
         if (
-          this.config.verbatimArtifactsEnabled &&
+          resolvePresentationCapabilities(this.config).verbatimArtifacts &&
           this.config.verbatimArtifactCategories.includes(writeCategory) &&
           fact.confidence >= this.config.verbatimArtifactsMinConfidence &&
           !postWriteGuard
@@ -16438,7 +16437,7 @@ export class Orchestrator {
       log.info(`merged ${entitiesMerged} fragmented entity files`);
     }
 
-    if (this.config.entitySummaryEnabled) {
+    if (resolvePresentationCapabilities(this.config).entitySummary) {
       try {
         const synthesized = await this.processEntitySynthesisQueue(
           this.config.defaultNamespace,
@@ -16582,7 +16581,7 @@ export class Orchestrator {
     }
 
     // Semantic consolidation pass — find similar memories, synthesize canonical versions
-    if (this.config.semanticConsolidationEnabled) {
+    if (resolveConsolidationCapabilities(this.config).semanticConsolidation) {
       try {
         const stateFilePath = path.join(
           this.config.memoryDir,

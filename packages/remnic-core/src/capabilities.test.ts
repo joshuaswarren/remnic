@@ -14,6 +14,9 @@ import {
   resolveUtilityLearningCapabilities,
   resolveObjectiveStateCapabilities,
   resolveCompressionCapabilities,
+  resolvePresentationCapabilities,
+  resolveConsolidationCapabilities,
+  resolveRecallAuxiliaryCapabilities,
   type CapabilitySet,
   type AccessSetupCapabilitySet,
   type NamespaceCapabilitySet,
@@ -25,6 +28,9 @@ import {
   type UtilityLearningCapabilitySet,
   type ObjectiveStateCapabilitySet,
   type CompressionCapabilitySet,
+  type PresentationCapabilitySet,
+  type ConsolidationCapabilitySet,
+  type RecallAuxiliaryCapabilitySet,
 } from "./capabilities.js";
 
 /**
@@ -1020,4 +1026,135 @@ test("resolveCompressionCapabilities projects every field from its flag (false v
 test("resolveCompressionCapabilities returns a frozen object", () => {
   const caps = resolveCompressionCapabilities(parseConfig({}));
   assert.equal(Object.isFrozen(caps), true, "CompressionCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// PresentationCapabilitySet — gate-parity tests (issue #1523 batch 8).
+// ---------------------------------------------------------------------------
+
+const PRESENTATION_FIELD_TO_FLAG: Record<keyof PresentationCapabilitySet, string> = {
+  verbatimArtifacts: "verbatimArtifactsEnabled",
+  memoryBoxes: "memoryBoxesEnabled",
+  bufferSurpriseTrigger: "bufferSurpriseTriggerEnabled",
+  threading: "threadingEnabled",
+  episodeNoteMode: "episodeNoteModeEnabled",
+  transcript: "transcriptEnabled",
+  entitySummary: "entitySummaryEnabled",
+};
+
+const PRESENTATION_FIELDS = Object.keys(PRESENTATION_FIELD_TO_FLAG) as Array<keyof PresentationCapabilitySet>;
+
+test("resolvePresentationCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(PRESENTATION_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolvePresentationCapabilities(config);
+  for (const field of PRESENTATION_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolvePresentationCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(PRESENTATION_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolvePresentationCapabilities(config);
+  for (const field of PRESENTATION_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolvePresentationCapabilities returns a frozen object", () => {
+  const caps = resolvePresentationCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "PresentationCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// ConsolidationCapabilitySet — gate-parity tests (issue #1523 batch 8).
+// ---------------------------------------------------------------------------
+
+const CONSOLIDATION_FIELD_TO_FLAG: Record<keyof ConsolidationCapabilitySet, string> = {
+  compoundingSemantic: "compoundingSemanticEnabled",
+  abstractionAnchors: "abstractionAnchorsEnabled",
+  compounding: "compoundingEnabled",
+  calibration: "calibrationEnabled",
+  semanticConsolidation: "semanticConsolidationEnabled",
+  patternReinforcement: "patternReinforcementEnabled",
+  continuityAudit: "continuityAuditEnabled",
+  graphEdgeDecay: "graphEdgeDecayEnabled",
+};
+
+const CONSOLIDATION_FIELDS = Object.keys(CONSOLIDATION_FIELD_TO_FLAG) as Array<keyof ConsolidationCapabilitySet>;
+
+test("resolveConsolidationCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(CONSOLIDATION_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveConsolidationCapabilities(config);
+  for (const field of CONSOLIDATION_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolveConsolidationCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(CONSOLIDATION_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveConsolidationCapabilities(config);
+  for (const field of CONSOLIDATION_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolveConsolidationCapabilities returns a frozen object", () => {
+  const caps = resolveConsolidationCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "ConsolidationCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// RecallAuxiliaryCapabilitySet — gate-parity tests (issue #1523 batch 8).
+// ---------------------------------------------------------------------------
+
+const RECALL_AUX_FIELD_TO_FLAG: Record<keyof RecallAuxiliaryCapabilitySet, string> = {
+  causalRuleExtraction: "causalRuleExtractionEnabled",
+  correction: "correctionEnabled",
+  continuityIncidentLogging: "continuityIncidentLoggingEnabled",
+  daySummary: "daySummaryEnabled",
+  versioning: "versioningEnabled",
+  verifiedRecall: "verifiedRecallEnabled",
+  semanticRuleVerification: "semanticRuleVerificationEnabled",
+  workProductRecall: "workProductRecallEnabled",
+  secureStore: "secureStoreEnabled",
+  knowledgeIndex: "knowledgeIndexEnabled",
+  factDeduplication: "factDeduplicationEnabled",
+  compactionReset: "compactionResetEnabled",
+  entityRetrieval: "entityRetrievalEnabled",
+  cronRecallPolicy: "cronRecallPolicyEnabled",
+};
+
+const RECALL_AUX_FIELDS = Object.keys(RECALL_AUX_FIELD_TO_FLAG) as Array<keyof RecallAuxiliaryCapabilitySet>;
+
+test("resolveRecallAuxiliaryCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(RECALL_AUX_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveRecallAuxiliaryCapabilities(config);
+  for (const field of RECALL_AUX_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolveRecallAuxiliaryCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(RECALL_AUX_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveRecallAuxiliaryCapabilities(config);
+  for (const field of RECALL_AUX_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolveRecallAuxiliaryCapabilities returns a frozen object", () => {
+  const caps = resolveRecallAuxiliaryCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "RecallAuxiliaryCapabilitySet must be frozen");
 });
