@@ -22,7 +22,7 @@
  */
 
 import { createHash } from "node:crypto";
-import type { StorageManager } from "../storage.js";
+import type { StorageManager } from "../index.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import type { ExtractionEngine } from "../extraction.js";
 import type { SmartBuffer } from "../buffer.js";
