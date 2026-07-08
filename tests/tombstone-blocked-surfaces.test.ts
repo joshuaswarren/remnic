@@ -14,7 +14,7 @@ import { registerTools } from "../src/tools.js";
  */
 
 const orchestratorSource = readFileSync(
-  resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+  resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "extraction-persist.ts"),
   "utf-8",
 );
 
@@ -29,7 +29,7 @@ const orchestratorSource = readFileSync(
 test("#1645 TV6: profile-target promotion skips indexing/tracking when tombstone-blocked", () => {
   assert.match(
     orchestratorSource,
-    /if \(\s*!targetPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(targetStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,?\s*\}\);\s*await this\.indexPersistedMemory\(targetStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*targetStorage,[\s\S]*?namespace:\s*target\.namespace,[\s\S]*?\);\s*\}/m,
+    /if \(\s*!targetPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(targetStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,?\s*\}\);\s*await this\.deps\.indexPersistedMemory\(targetStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*targetStorage,[\s\S]*?namespace:\s*target\.namespace,[\s\S]*?\);\s*\}/m,
     "profile-target promotion must gate catalog/index/behavior behind !targetPromotion.tombstoneBlocked",
   );
 });
@@ -37,7 +37,7 @@ test("#1645 TV6: profile-target promotion skips indexing/tracking when tombstone
 test("#1645 TV6: shared promotion skips indexing/tracking when tombstone-blocked", () => {
   assert.match(
     orchestratorSource,
-    /if \(\s*!sharedPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(sharedStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,\s*\}\);\s*await this\.indexPersistedMemory\(sharedStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*sharedStorage,[\s\S]*?namespace:\s*this\.config\.sharedNamespace,[\s\S]*?\);\s*\}/m,
+    /if \(\s*!sharedPromotion\.tombstoneBlocked\s*\)\s*\{\s*trackPersistedId\(sharedStorage,\s*promotedId,\s*\{\s*includeReturnedIds:\s*false,\s*\}\);\s*await this\.deps\.indexPersistedMemory\(sharedStorage,\s*promotedId\);\s*trackBehaviorSignals\(\s*sharedStorage,[\s\S]*?namespace:\s*this\.deps\.config\.sharedNamespace,[\s\S]*?\);\s*\}/m,
     "shared promotion must gate catalog/index/behavior behind !sharedPromotion.tombstoneBlocked",
   );
 });
@@ -283,7 +283,7 @@ test("#1645 yG-: persistExplicitCapture surfaces tombstoneBlocked in its result"
 test("#1645 P-J: non-chunked extraction gates indexPersistedMemory on postWriteGuard", () => {
   assert.match(
     orchestratorSource,
-    /if \(!postWriteGuard\) \{\s*await this\.indexPersistedMemory\(targetStorage, memoryId\);\s*\}/m,
+    /if \(!postWriteGuard\) \{\s*await this\.deps\.indexPersistedMemory\(targetStorage, memoryId\);\s*\}/m,
     "non-chunked extraction must gate indexPersistedMemory(targetStorage, memoryId) behind !postWriteGuard so a blocked fact never enters the embedding-fallback index",
   );
 });
@@ -291,7 +291,7 @@ test("#1645 P-J: non-chunked extraction gates indexPersistedMemory on postWriteG
 test("#1645 P-J: chunked extraction gates indexPersistedMemory on postWriteGuard", () => {
   assert.match(
     orchestratorSource,
-    /if \(!postWriteGuard\) \{\s*await this\.indexPersistedMemory\(targetStorage, parentId\);\s*\}/m,
+    /if \(!postWriteGuard\) \{\s*await this\.deps\.indexPersistedMemory\(targetStorage, parentId\);\s*\}/m,
     "chunked extraction must gate indexPersistedMemory(targetStorage, parentId) behind !postWriteGuard",
   );
 });
@@ -299,7 +299,7 @@ test("#1645 P-J: chunked extraction gates indexPersistedMemory on postWriteGuard
 test("#1645 P-J: chunk-id embedding sync is gated on postWriteGuard", () => {
   assert.match(
     orchestratorSource,
-    /if \(!postWriteGuard\) \{\s*await this\.indexPersistedMemory\(targetStorage, chunkId\);\s*\}/m,
+    /if \(!postWriteGuard\) \{\s*await this\.deps\.indexPersistedMemory\(targetStorage, chunkId\);\s*\}/m,
     "chunk-id embedding-fallback sync must be gated behind !postWriteGuard (chunks inherit pending_review)",
   );
 });
