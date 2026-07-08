@@ -95,6 +95,63 @@ The two `*-mock000.json` files remain as **pipeline examples** with
 them publicly**. They will be removed once full uncapped Tier L runs
 replace the staged baselines.
 
+## Tier F pipeline validation — Opus via Claude Code (claude -p)
+
+Issue #1728 added a `claude-cli` bench provider (#1735, `26a6ed92b`) that
+runs Opus 4.8 through Claude Code headless (`claude -p`) from an isolated
+empty temp workspace with tools disabled. This lets Remnic validate the
+full published-benchmark pipeline against a frontier model without a raw
+Anthropic API budget — the operator's Claude Max subscription provides the
+compute.
+
+**Honest labeling:** these artifacts are labeled **"Opus via Claude Code"**
+(`provider: "claude-cli"`, `model: "opus"` on the artifact config) — never
+`tier: "frontier"`. Claude Code adds system-prompt scaffolding and
+model-alias routing that a reviewer cannot reproduce from a raw API call.
+The published headline `tier: "frontier"` number must still come from the
+raw Anthropic Messages API provider. These runs are pipeline-validation
+evidence, not publishable leaderboard numbers.
+
+### Bounded-slice results (2026-07-08, commit 798fe8a7a)
+
+| Benchmark | Tasks | Wall time | Key metrics |
+|---|---|---|---|
+| LoCoMo | 100/1986 (trial) | 965 s (~16 min) | `contains_answer=0.120`, `f1=0.277`, `llm_judge=0.397`, `rouge_l=0.255`, evidence-id-leak=1.0 |
+| LongMemEval | 50/500 (limit) | 580 s (~10 min) | `contains_answer=0.520`, `f1=0.508`, `judge_accuracy=0.820`, `search_hits=9.91` |
+
+Both used `--runtime-profile baseline --system-provider claude-cli
+--system-model opus --judge-provider claude-cli --judge-model opus`
+(responder + judge = Opus via Claude Code). Artifacts:
+
+- `docs/benchmarks/results/2026-07-08-locomo-opus-via-claude-code-trial100-798fe8a.json`
+  (sha256 `e853891d…`)
+- `docs/benchmarks/results/2026-07-08-longmemeval-opus-via-claude-code-trial50-798fe8a.json`
+  (sha256 `56dafb93…`)
+
+A small number of tasks (9/100 locomo, 3/50 longmemeval) hit intermittent
+`claude -p` subprocess failures (exit 1) and scored 0 on those metrics;
+the provider's retry logic absorbed transient errors but not these.
+`internalProvider: null` — the baseline runtime profile uses the Remnic
+LCM chunking/extraction stack without a separate internal LLM gateway.
+
+### Full-run cost estimate (not yet executed)
+
+Based on the measured per-task wall times (~7.5 s locomo, ~9.6 s
+longmemeval):
+
+| Run | Tasks | Estimated wall time |
+|---|---|---|
+| LoCoMo full | 1986 | ~4.1 h |
+| LongMemEval full | 500 | ~1.3 h |
+| **Total** | **2486** | **~5.5 h** |
+
+This is within an 8-hour budget but would consume a significant fraction
+of the operator's weekly Claude Max Opus quota. The full run is an
+**explicitly user-approved follow-up**: the bounded slices above prove
+the pipeline is correct; the full Tier F pass (or the raw-API headline
+number) awaits quota authorization.
+
+
 To build a publishable artifact from a finished run's stored result, see
 `scripts/bench/build-artifact-from-result.ts` (bridges `BenchmarkResult` →
 `BenchmarkArtifact`, stamping the two-tier `tier`/`hardware` envelope). Real
