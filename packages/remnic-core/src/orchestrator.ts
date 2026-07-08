@@ -266,6 +266,7 @@ import {
 } from "./trust-zones.js";
 import { tryDirectAnswer, type DirectAnswerSources } from "./direct-answer-wiring.js";
 import {
+  resolveNamespaceCapabilities,
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
   resolveMemoryLifecycleCapabilities,
@@ -2251,7 +2252,7 @@ export class Orchestrator {
    * @internal
    */
   applyCodingNamespaceOverlay(sessionKey: string | undefined, baseNamespace: string): string {
-    if (!this.config.namespacesEnabled) return baseNamespace;
+    if (!resolveNamespaceCapabilities(this.config).namespaces) return baseNamespace;
     const codingContext = this.getCodingContextForSession(sessionKey);
     const overlay = resolveCodingNamespaceOverlay(codingContext, this.config.codingMode, this.config.defaultNamespace);
     if (!overlay) return baseNamespace;
@@ -2331,7 +2332,7 @@ export class Orchestrator {
    * @internal
    */
   applyCodingRecallOverlay(sessionKey: string | undefined): { namespace: string; readFallbacks: string[] } | null {
-    if (!this.config.namespacesEnabled) return null;
+    if (!resolveNamespaceCapabilities(this.config).namespaces) return null;
     const codingContext = this.getCodingContextForSession(sessionKey);
     const overlay = resolveCodingNamespaceOverlay(codingContext, this.config.codingMode, this.config.defaultNamespace);
     if (!overlay) return null;
@@ -2354,7 +2355,7 @@ export class Orchestrator {
   }
 
   private rememberNamespaceStorageDirHint(namespace: string, storageDir?: string): void {
-    if (!this.config.namespacesEnabled || !storageDir) return;
+    if (!resolveNamespaceCapabilities(this.config).namespaces || !storageDir) return;
     const ns = normalizeNamespaceIdentity(namespace);
     if (!ns) return;
     const defaultNs = normalizeNamespaceIdentity(this.config.defaultNamespace);
@@ -2581,13 +2582,13 @@ export class Orchestrator {
     execution?: SearchExecutionOptions;
   }): Promise<QmdSearchResult[]> {
     if (
-      this.config.namespacesEnabled &&
+      resolveNamespaceCapabilities(this.config).namespaces &&
       options.namespaces !== undefined &&
       options.namespaces.length === 0
     ) {
       return [];
     }
-    const namespaces = this.config.namespacesEnabled
+    const namespaces = resolveNamespaceCapabilities(this.config).namespaces
       ? Array.from(
           new Set(
             (options.namespaces?.length
@@ -2600,7 +2601,7 @@ export class Orchestrator {
         )
       : [this.config.defaultNamespace];
 
-    if (!this.config.namespacesEnabled) {
+    if (!resolveNamespaceCapabilities(this.config).namespaces) {
       switch (options.mode) {
         case "hybrid":
           return await this.qmd.hybridSearch(
@@ -2652,7 +2653,7 @@ export class Orchestrator {
   }
 
   private isSearchAvailableForNamespaceRouting(): boolean {
-    if (this.config.namespacesEnabled) return true;
+    if (resolveNamespaceCapabilities(this.config).namespaces) return true;
     return this.qmd.isAvailable();
   }
 
@@ -3224,7 +3225,7 @@ export class Orchestrator {
   }
 
   private routeEngineOptions(): RoutingEngineOptions {
-    const allowedNamespaces = this.config.namespacesEnabled
+    const allowedNamespaces = resolveNamespaceCapabilities(this.config).namespaces
       ? Array.from(
           new Set([
             this.config.defaultNamespace,
@@ -3440,7 +3441,7 @@ export class Orchestrator {
       });
       await this.storage.ensureDirectories();
       await this.storage.loadAliases();
-      if (this.config.namespacesEnabled) {
+      if (resolveNamespaceCapabilities(this.config).namespaces) {
         const namespaces = new Set<string>([
           this.config.defaultNamespace,
           this.config.sharedNamespace,
@@ -3560,14 +3561,14 @@ export class Orchestrator {
           // after a restart. `registerConfiguredNamespaces()` already seeded the
           // catalog above, so `maintenanceNamespaces()` is readable here; it falls
           // back to the configured set on any catalog read failure.
-          const namespaces = this.config.namespacesEnabled
+          const namespaces = resolveNamespaceCapabilities(this.config).namespaces
             ? await this.maintenanceNamespaces()
             : [this.config.defaultNamespace];
           const states = await Promise.all(
             namespaces.map(async (namespace) => {
               const collectionCheckAbort = new AbortController();
               const state = await qmdStartupCollectionCheckWithTimeout(
-                this.config.namespacesEnabled
+                resolveNamespaceCapabilities(this.config).namespaces
                   ? this.namespaceSearchRouter.ensureNamespaceCollection(
                       namespace,
                       { signal: collectionCheckAbort.signal },
@@ -3684,7 +3685,7 @@ export class Orchestrator {
     if (this.qmd.isAvailable() && this.config.qmdMaintenanceEnabled) {
       try {
         log.info("QMD startup sync: updating index to match current disk state");
-        if (this.config.namespacesEnabled) {
+        if (resolveNamespaceCapabilities(this.config).namespaces) {
           // Cover cataloged dynamic namespaces at startup too (NHZEV, codex P2):
           // a dynamic namespace written before a daemon restart must be synced on
           // boot, not only by the debounced runQmdMaintenance() path. Same union +
@@ -3918,7 +3919,7 @@ export class Orchestrator {
     log.info(`startupSearchSync: backend now available ${this.qmd.debugStatus()}`);
 
     // Clear namespace router cache so re-probe picks up newly available backends
-    if (this.config.namespacesEnabled) {
+    if (resolveNamespaceCapabilities(this.config).namespaces) {
       this.namespaceSearchRouter.clearCache();
     }
 
@@ -3930,14 +3931,14 @@ export class Orchestrator {
     // re-synced here too, otherwise after a backend-was-unavailable-at-boot
     // recovery its collection stays stale. Falls back to the configured set on any
     // catalog read failure.
-    const namespaces = this.config.namespacesEnabled
+    const namespaces = resolveNamespaceCapabilities(this.config).namespaces
       ? await this.maintenanceNamespaces()
       : [this.config.defaultNamespace];
 
     const states = await Promise.all(
       namespaces.map(async (namespace) => ({
         namespace,
-        state: this.config.namespacesEnabled
+        state: resolveNamespaceCapabilities(this.config).namespaces
           ? await this.namespaceSearchRouter.ensureNamespaceCollection(namespace, { signal })
           : await this.qmd.ensureCollection(this.config.memoryDir, this.config.qmdCollection, { signal }),
       })),
@@ -3983,7 +3984,7 @@ export class Orchestrator {
         }
         log.info("startupSearchSync: updating index to match current disk state");
         let namespacesUpdated = 0;
-        if (this.config.namespacesEnabled) {
+        if (resolveNamespaceCapabilities(this.config).namespaces) {
           namespacesUpdated = await this.namespaceSearchRouter.updateNamespaces(
             namespaces,
             { signal },
@@ -4005,7 +4006,7 @@ export class Orchestrator {
           log.warn("startupSearchSync: update silently failed (detected via fail timestamp)");
           return false;
         }
-        if (this.config.namespacesEnabled) {
+        if (resolveNamespaceCapabilities(this.config).namespaces) {
           if (namespacesUpdated === 0) {
             log.warn("startupSearchSync: no namespace backends were eligible for update (all unavailable or collections missing)");
             return false;
@@ -5950,7 +5951,7 @@ export class Orchestrator {
       options.principalOverride.length > 0
         ? options.principalOverride
         : resolvePrincipal(sessionKey, this.config);
-    const namespacesEnabled = this.config.namespacesEnabled;
+    const namespacesEnabled = resolveNamespaceCapabilities(this.config).namespaces;
     if (namespacesEnabled && !principal) {
       throw new Error("authentication required: namespaces are enabled and no principal was supplied");
     }
@@ -6419,7 +6420,7 @@ export class Orchestrator {
     for (const memoryPath of paths) {
       if (!memoryPath || isArtifactMemoryPath(memoryPath)) continue;
       if (
-        this.config.namespacesEnabled &&
+        resolveNamespaceCapabilities(this.config).namespaces &&
         !recallNamespaces.includes(this.namespaceFromPath(memoryPath))
       ) {
         continue;
@@ -6536,7 +6537,7 @@ export class Orchestrator {
     const memories = (
       await Promise.all(
         Array.from(candidatePaths).map(async (memoryPath) => {
-          const namespace = this.config.namespacesEnabled
+          const namespace = resolveNamespaceCapabilities(this.config).namespaces
             ? this.namespaceFromPath(memoryPath)
             : this.config.defaultNamespace;
           const storage = await this.storageRouter.storageFor(namespace);
@@ -7160,7 +7161,7 @@ export class Orchestrator {
   private async resolveStateDirForNamespace(
     namespace: string,
   ): Promise<string> {
-    if (!this.config.namespacesEnabled) {
+    if (!resolveNamespaceCapabilities(this.config).namespaces) {
       return path.join(this.config.memoryDir, "state");
     }
     if (namespace !== this.config.defaultNamespace) {
@@ -7753,7 +7754,7 @@ export class Orchestrator {
         && options.principalOverride.length > 0
         ? options.principalOverride
         : resolvePrincipal(sessionKey, this.config);
-    const namespacesEnabled = this.config.namespacesEnabled;
+    const namespacesEnabled = resolveNamespaceCapabilities(this.config).namespaces;
     if (namespacesEnabled && !principal) {
       throw new Error("authentication required: namespaces are enabled and no principal was supplied");
     }
@@ -8679,17 +8680,17 @@ export class Orchestrator {
 
       const objectiveStateSearches = await Promise.all(
         recallNamespaces.map(async (namespace) => {
-          const storage = this.config.namespacesEnabled
+          const storage = resolveNamespaceCapabilities(this.config).namespaces
             ? await this.getStorage(namespace)
             : null;
           return searchObjectiveStateSnapshots({
-            memoryDir: this.config.namespacesEnabled
+            memoryDir: resolveNamespaceCapabilities(this.config).namespaces
               ? storage!.dir
               : this.config.memoryDir,
             objectiveStateStoreDir: objectiveStateStoreOverrideForNamespace({
               memoryDir: this.config.memoryDir,
               configuredStoreDir: this.config.objectiveStateStoreDir,
-              namespacesEnabled: this.config.namespacesEnabled,
+              namespacesEnabled: resolveNamespaceCapabilities(this.config).namespaces,
               namespace,
             }),
             query: retrievalQuery,
@@ -9593,7 +9594,7 @@ export class Orchestrator {
               qmdFetchLimit,
               qmdHybridFetchLimit,
               {
-                namespacesEnabled: this.config.namespacesEnabled,
+                namespacesEnabled: resolveNamespaceCapabilities(this.config).namespaces,
                 recallNamespaces,
                 resolveNamespace: (p) => this.namespaceFromPath(p),
                 queryAwarePrefilter,
@@ -10011,7 +10012,7 @@ export class Orchestrator {
           workspaceDir: this.config.workspaceDir,
           memoryDir: this.config.memoryDir,
           config: this.config.nativeKnowledge,
-          recallNamespaces: this.config.namespacesEnabled
+          recallNamespaces: resolveNamespaceCapabilities(this.config).namespaces
             ? recallNamespaces
             : undefined,
           defaultNamespace: this.config.defaultNamespace,
@@ -11085,7 +11086,7 @@ export class Orchestrator {
       let memoryResults = memoryResultsRaw;
 
       // Enforce namespace read policies by filtering paths.
-      if (this.config.namespacesEnabled) {
+      if (resolveNamespaceCapabilities(this.config).namespaces) {
         memoryResults = memoryResults.filter((r) =>
           recallNamespaces.includes(this.namespaceFromPath(r.path)),
         );
@@ -11459,7 +11460,7 @@ export class Orchestrator {
             const scopedCandidates = filterRecallCandidates(
               prefilteredEmbeddingResults,
               {
-                namespacesEnabled: this.config.namespacesEnabled,
+                namespacesEnabled: resolveNamespaceCapabilities(this.config).namespaces,
                 recallNamespaces,
                 resolveNamespace: (p) => this.namespaceFromPath(p),
                 limit: embeddingFetchLimit,
@@ -11638,7 +11639,7 @@ export class Orchestrator {
             const scopedCandidates = filterRecallCandidates(
               prefilteredEmbeddingResults,
               {
-                namespacesEnabled: this.config.namespacesEnabled,
+                namespacesEnabled: resolveNamespaceCapabilities(this.config).namespaces,
                 recallNamespaces,
                 resolveNamespace: (p) => this.namespaceFromPath(p),
                 limit: embeddingFetchLimit,
@@ -14193,7 +14194,7 @@ export class Orchestrator {
     // #1713: hoist namespaces-enabled once for the scope-routing mirrors
     // (pre-judge + write-loop) so no new scattered config.*Enabled read is
     // introduced (ratchet scatteredConfigFlagReads; see #1523).
-    const namespacesEnabled = this.config.namespacesEnabled;
+    const namespacesEnabled = resolveNamespaceCapabilities(this.config).namespaces;
     const profileAutoPromotionAllows = (
       category: string,
       confidence: number,
@@ -14235,7 +14236,7 @@ export class Orchestrator {
       confidence: number,
     ): boolean => {
       if (
-        !this.config.namespacesEnabled ||
+        !resolveNamespaceCapabilities(this.config).namespaces ||
         !profileAllowsSharedWrites ||
         !sharedAutoPromotionAllows(category, confidence)
       )
@@ -16769,7 +16770,7 @@ export class Orchestrator {
       // On full rebuild with namespaces enabled, span all configured namespaces so
       // memories written to other namespaces before the index existed are also captured.
       const allMemories =
-        needsFullRebuild && this.config.namespacesEnabled
+        needsFullRebuild && resolveNamespaceCapabilities(this.config).namespaces
           ? await this.readAllMemoriesForNamespaces(
               Array.from(
                 new Set<string>([
@@ -17782,14 +17783,14 @@ export class Orchestrator {
     // namespace that accumulated IDENTITY.md reflections must also be eligible for
     // auto-consolidation, otherwise its identity file grows unbounded and is never
     // consolidated. Falls back to the configured set on any catalog read failure.
-    const namespaces = this.config.namespacesEnabled
+    const namespaces = resolveNamespaceCapabilities(this.config).namespaces
       ? await this.maintenanceNamespaces()
       : [this.config.defaultNamespace];
 
     for (const namespace of namespaces) {
       const storage = await this.storageRouter.storageFor(namespace);
       const identityNamespace =
-        this.config.namespacesEnabled &&
+        resolveNamespaceCapabilities(this.config).namespaces &&
         namespace !== this.config.defaultNamespace
           ? namespace
           : undefined;
@@ -18344,7 +18345,7 @@ export class Orchestrator {
           : this.config.defaultNamespace;
       if (
         recallNamespaces.length === 0 ||
-        !this.config.namespacesEnabled ||
+        !resolveNamespaceCapabilities(this.config).namespaces ||
         recallNamespaces.includes(fallbackNamespace)
       ) {
         addStorage(fallbackStorage);
@@ -18471,7 +18472,7 @@ export class Orchestrator {
         recallNamespaces,
       );
       ownerNamespace = ownerStorage?.namespace ?? null;
-      if (!ownerNamespace && this.config.namespacesEnabled) return null;
+      if (!ownerNamespace && resolveNamespaceCapabilities(this.config).namespaces) return null;
     }
     ownerNamespace ??= this.namespaceFromPath(memory.path);
     if (
@@ -19030,7 +19031,7 @@ export class Orchestrator {
     pathPrefix?: string;
     pathExcludePrefixes?: readonly string[];
   } {
-    if (!this.config.namespacesEnabled) return {};
+    if (!resolveNamespaceCapabilities(this.config).namespaces) return {};
     const memoryDir = path.resolve(this.config.memoryDir);
     const storageDir = path.resolve(targetStorage.dir);
     if (storageDir === memoryDir) {
@@ -19312,7 +19313,7 @@ export class Orchestrator {
               coldFetchLimit,
               coldHybridLimit,
               {
-                namespacesEnabled: this.config.namespacesEnabled,
+                namespacesEnabled: resolveNamespaceCapabilities(this.config).namespaces,
                 recallNamespaces: options.recallNamespaces,
                 resolveNamespace: (p) => this.namespaceFromPath(p),
                 collection: coldCollection,
@@ -19359,7 +19360,7 @@ export class Orchestrator {
     if (longTerm.length === 0) return [];
 
     let results = longTerm;
-    if (this.config.namespacesEnabled) {
+    if (resolveNamespaceCapabilities(this.config).namespaces) {
       const recallRoots: string[] = [];
       const seenRecallRoots = new Set<string>();
       for (const namespace of options.recallNamespaces) {
@@ -19620,7 +19621,7 @@ export class Orchestrator {
 
     // Build entries from buffer, merging with existing counts
     const entries: AccessTrackingEntry[] = [];
-    const namespaces = this.config.namespacesEnabled
+    const namespaces = resolveNamespaceCapabilities(this.config).namespaces
       ? Array.from(
           new Set<string>([
             this.config.defaultNamespace,
@@ -20580,7 +20581,7 @@ export class Orchestrator {
   }
 
   private namespaceFromPath(p: string): string {
-    if (!this.config.namespacesEnabled) return this.config.defaultNamespace;
+    if (!resolveNamespaceCapabilities(this.config).namespaces) return this.config.defaultNamespace;
     const parts = qmdCollectionPathParts(p);
     const collectionNamespace = parts
       ? this.qmdCollectionNamespaceFromPrefix(parts.collection)

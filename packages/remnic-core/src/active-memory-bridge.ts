@@ -1,3 +1,4 @@
+import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { canReadNamespace, defaultNamespaceForPrincipal, resolvePrincipal } from "./namespaces/principal.js";
 import type { MemoryFile, PluginConfig } from "./types.js";
 import { collapseWhitespace, truncateCodePointSafe } from "./whitespace.js";
@@ -106,7 +107,7 @@ function resolveActiveMemoryNamespace(
     typeof orchestrator.resolvePrincipal === "function"
       ? orchestrator.resolvePrincipal(sessionKey)
       : resolvePrincipal(sessionKey, config);
-  if (config.namespacesEnabled && !principal) {
+  if (resolveNamespaceCapabilities(config).namespaces && !principal) {
     throw new Error("authentication required: namespaces are enabled and no principal was supplied");
   }
   if (explicitNamespace) {

@@ -1,3 +1,4 @@
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import type { PluginConfig } from "../types.js";
 import { isLikelyUnsafeRegex } from "../routing/engine.js";
 
@@ -13,7 +14,7 @@ function compileSafePrincipalRegex(pattern: string): RegExp | null {
 }
 
 export function resolvePrincipal(sessionKey: string | undefined, config: PluginConfig): string | undefined {
-  if (!config.namespacesEnabled) return "default";
+  if (!resolveNamespaceCapabilities(config).namespaces) return "default";
   const sk = typeof sessionKey === "string" && sessionKey.trim().length > 0
     ? sessionKey
     : "";
@@ -51,7 +52,7 @@ export function resolvePrincipal(sessionKey: string | undefined, config: PluginC
 }
 
 export function canReadNamespace(principal: string | undefined, namespace: string, config: PluginConfig): boolean {
-  if (!config.namespacesEnabled) return true;
+  if (!resolveNamespaceCapabilities(config).namespaces) return true;
   if (!principal) return false;
   const policy = config.namespacePolicies.find((p) => p.name === namespace);
   if (!policy) return namespace === config.defaultNamespace || namespace === config.sharedNamespace;
@@ -59,7 +60,7 @@ export function canReadNamespace(principal: string | undefined, namespace: strin
 }
 
 export function canWriteNamespace(principal: string | undefined, namespace: string, config: PluginConfig): boolean {
-  if (!config.namespacesEnabled) return true;
+  if (!resolveNamespaceCapabilities(config).namespaces) return true;
   if (!principal) return false;
   const policy = config.namespacePolicies.find((p) => p.name === namespace);
   if (!policy) return namespace === config.defaultNamespace;
@@ -74,7 +75,7 @@ export function canWriteNamespace(principal: string | undefined, namespace: stri
  * - Otherwise use config.defaultNamespace.
  */
 export function defaultNamespaceForPrincipal(principal: string | undefined, config: PluginConfig): string {
-  if (!config.namespacesEnabled) return config.defaultNamespace;
+  if (!resolveNamespaceCapabilities(config).namespaces) return config.defaultNamespace;
   if (!principal) return config.defaultNamespace;
   const exists = config.namespacePolicies.some((p) => p.name === principal);
   return exists ? principal : config.defaultNamespace;
@@ -82,7 +83,7 @@ export function defaultNamespaceForPrincipal(principal: string | undefined, conf
 
 export function recallNamespacesForPrincipal(principal: string | undefined, config: PluginConfig): string[] {
   const out: string[] = [];
-  if (!config.namespacesEnabled) return [config.defaultNamespace];
+  if (!resolveNamespaceCapabilities(config).namespaces) return [config.defaultNamespace];
   if (!principal) return out;
 
   const selfNs = defaultNamespaceForPrincipal(principal, config);

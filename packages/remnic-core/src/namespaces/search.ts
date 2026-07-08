@@ -1,3 +1,4 @@
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import path from "node:path";
 import type { PluginConfig, QmdSearchResult } from "../types.js";
 import type {
@@ -350,7 +351,7 @@ export class NamespaceSearchRouter {
     const useLegacyDefaultCollection =
       key === this.config.defaultNamespace && storage.dir === this.config.memoryDir;
     const filtersNestedNamespaces =
-      this.config.namespacesEnabled === true && useLegacyDefaultCollection;
+      resolveNamespaceCapabilities(this.config).namespaces === true && useLegacyDefaultCollection;
     const rootHostEmbeddingScope =
       (this.config as NamespaceScopedSearchConfig).hostEmbeddingProviderScope ??
       this.config.memoryDir;

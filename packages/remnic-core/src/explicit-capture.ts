@@ -1,3 +1,4 @@
+import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { randomUUID } from "node:crypto";
 import type { Orchestrator } from "./orchestrator.js";
 import { isSafeRouteNamespace } from "./routing/engine.js";
@@ -175,7 +176,7 @@ function resolveExplicitCaptureNamespace(
 ): string | undefined {
   const normalized = asTrimmed(namespace);
   if (!normalized) return undefined;
-  if (!orchestrator.config.namespacesEnabled) {
+  if (!resolveNamespaceCapabilities(orchestrator.config).namespaces) {
     if (normalized !== orchestrator.config.defaultNamespace) {
       throw new Error(`unsupported namespace: ${normalized}`);
     }

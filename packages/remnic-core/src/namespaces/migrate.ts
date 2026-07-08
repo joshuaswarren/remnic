@@ -1,3 +1,4 @@
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import path from "node:path";
 import { access, lstat, mkdir, readdir, realpath, rename, rmdir } from "node:fs/promises";
 import type { PluginConfig } from "../types.js";
@@ -146,7 +147,7 @@ export async function runNamespaceMigration(options: {
   dryRun?: boolean;
   renameFn?: typeof rename;
 }): Promise<NamespaceMigrationReport> {
-  if (!options.config.namespacesEnabled) {
+  if (!resolveNamespaceCapabilities(options.config).namespaces) {
     throw new Error("Namespaces are disabled.");
   }
 

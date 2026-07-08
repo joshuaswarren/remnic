@@ -1,3 +1,4 @@
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, utimes, writeFile } from "node:fs/promises";
@@ -211,7 +212,7 @@ export async function planNamespaceMaintenance(
   // policies) would make a mutating maintenance job process the SAME corpus
   // once per configured name. The #1500 contract is "namespaces disabled:
   // maintain the current default storage only," so collapse to the default.
-  const configured = config.namespacesEnabled
+  const configured = resolveNamespaceCapabilities(config).namespaces
     ? getConfiguredNamespaces(config)
     : [config.defaultNamespace.trim()].filter(Boolean);
   const byNamespace = new Map<string, NamespaceMaintenanceCandidate>();
@@ -226,7 +227,7 @@ export async function planNamespaceMaintenance(
     });
   }
 
-  if (config.namespacesEnabled && config.maintenanceNamespaceFanoutEnabled !== false) {
+  if (resolveNamespaceCapabilities(config).namespaces && config.maintenanceNamespaceFanoutEnabled !== false) {
     const configuredSet = new Set(configured);
     try {
       const records = options.catalog?.enabled ? await options.catalog.listNamespaces() : [];
@@ -267,7 +268,7 @@ export async function planNamespaceMaintenance(
         detail: error instanceof Error ? error.message : String(error),
       });
     }
-  } else if (config.namespacesEnabled) {
+  } else if (resolveNamespaceCapabilities(config).namespaces) {
     skipped.push({
       namespace: "*",
       reason: "fanout_disabled",
