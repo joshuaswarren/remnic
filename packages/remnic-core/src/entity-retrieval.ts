@@ -1,3 +1,4 @@
+import { resolveNamespaceCapabilities } from "./capabilities.js";
 import { createHash } from "node:crypto";
 import { sanitizeMemoryContent } from "./sanitize.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -329,7 +330,7 @@ async function readNativeChunks(
     workspaceDir: config.workspaceDir,
     memoryDir: config.memoryDir,
     config: config.nativeKnowledge,
-    recallNamespaces: config.namespacesEnabled ? recallNamespaces : undefined,
+    recallNamespaces: resolveNamespaceCapabilities(config).namespaces ? recallNamespaces : undefined,
     defaultNamespace: config.defaultNamespace,
   }).catch(() => []);
 }
@@ -341,7 +342,7 @@ async function resolveEntityIndexStorages(
   namespaceStorage?: (namespace: string) => Promise<StorageManager>,
 ): Promise<StorageManager[]> {
   if (
-    !config.namespacesEnabled ||
+    !resolveNamespaceCapabilities(config).namespaces ||
     !namespaceStorage ||
     !recallNamespaces ||
     recallNamespaces.length === 0

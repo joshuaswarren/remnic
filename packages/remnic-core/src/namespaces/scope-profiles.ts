@@ -1,3 +1,4 @@
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import { createHash } from "node:crypto";
 
 import { combineNamespaces, type CodingNamespaceOverlay } from "../coding/coding-namespace.js";
@@ -326,7 +327,7 @@ export function resolveScopeProfilePlan(
   options: ResolveScopeProfilePlanOptions,
 ): ResolvedScopeProfilePlan | null {
   const active = activeScopeProfile(options.config);
-  if (!active || !options.config.namespacesEnabled) return null;
+  if (!active || !resolveNamespaceCapabilities(options.config).namespaces) return null;
 
   const baseNamespace = scopeProfileSelfNamespace(options.principal, options.config);
   const layerIds = Array.from(

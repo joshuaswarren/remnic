@@ -4,7 +4,8 @@ import { access, lstat, readFile, readdir, realpath, unlink } from "node:fs/prom
 import { createHash } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import type { Orchestrator } from "./orchestrator.js";
-import { resolveMemoryLifecycleCapabilities } from "./capabilities.js";
+import {
+  resolveNamespaceCapabilities, resolveMemoryLifecycleCapabilities } from "./capabilities.js";
 import { ThreadingManager } from "./threading.js";
 import { utcDayRange } from "./transcript.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
@@ -2361,7 +2362,7 @@ export function hasDestructivePurgeFailures(
 
 function resolvePolicySignalNamespaces(orchestrator: PolicyTuningCliOrchestrator): string[] {
   const names = new Set<string>([orchestrator.config.defaultNamespace]);
-  if (orchestrator.config.namespacesEnabled) {
+  if (resolveNamespaceCapabilities(orchestrator.config).namespaces) {
     names.add(orchestrator.config.sharedNamespace);
     for (const policy of orchestrator.config.namespacePolicies) {
       if (policy?.name) names.add(policy.name);
@@ -2520,7 +2521,7 @@ function resolveAuditNamespaces(
   }
 
   const names = new Set<string>([orchestrator.config.defaultNamespace]);
-  if (orchestrator.config.namespacesEnabled) {
+  if (resolveNamespaceCapabilities(orchestrator.config).namespaces) {
     names.add(orchestrator.config.sharedNamespace);
     for (const policy of orchestrator.config.namespacePolicies) {
       if (policy?.name) names.add(policy.name);
@@ -3319,7 +3320,7 @@ export async function resolveMemoryDirForNamespace(
   const ns = (namespace ?? "").trim();
   if (!ns) return orchestrator.config.memoryDir;
   assertSafeNamespaceSegment(ns);
-  if (!orchestrator.config.namespacesEnabled) {
+  if (!resolveNamespaceCapabilities(orchestrator.config).namespaces) {
     if (options?.rejectUnsupportedOverride && ns !== orchestrator.config.defaultNamespace) {
       throw new Error(`namespaces are disabled; cannot target namespace: ${ns}`);
     }
@@ -8507,7 +8508,7 @@ export function registerCli(
             mergedContent: cmdOpts.mergedContent,
             storageForNamespace: (namespace) => {
               const requested = namespace?.trim();
-              if (!orchestrator.config.namespacesEnabled) {
+              if (!resolveNamespaceCapabilities(orchestrator.config).namespaces) {
                 if (requested && requested !== orchestrator.config.defaultNamespace) {
                   throw new Error(`unsupported namespace: ${requested}`);
                 }
@@ -8554,7 +8555,7 @@ export function registerCli(
             storageForNamespace: async (namespace) => {
               const resolvedNamespace =
                 namespace?.trim() ||
-                (orchestrator.config.namespacesEnabled ? orchestrator.config.defaultNamespace : undefined);
+                (resolveNamespaceCapabilities(orchestrator.config).namespaces ? orchestrator.config.defaultNamespace : undefined);
               const storage = await orchestrator.getStorageForNamespace(resolvedNamespace);
               return { storage, namespace: resolvedNamespace };
             },

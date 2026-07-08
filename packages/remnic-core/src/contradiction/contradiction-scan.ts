@@ -14,6 +14,7 @@
  *   4. Cap per-run work at maxPairsPerRun.
  */
 
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import type { StorageManager } from "../storage.js";
 import type { PluginConfig, MemoryFile, MemoryStatus } from "../types.js";
 import type { SemanticDedupLookup } from "../dedup/semantic.js";
@@ -107,7 +108,7 @@ export async function runContradictionScan(deps: ScanDependencies): Promise<Scan
   }
 
   const { storage: scanStorage, namespace } = await resolveScanStorage(deps, requestedNamespace);
-  if (config.namespacesEnabled && namespace !== undefined && isDefaultNamespaceScan(config, requestedNamespace, namespace)) {
+  if (resolveNamespaceCapabilities(config).namespaces && namespace !== undefined && isDefaultNamespaceScan(config, requestedNamespace, namespace)) {
     const migrated = migrateUnscopedPairsToNamespace(memoryDir, namespace, { cooldownDays: scanConfig.cooldownDays });
     if (migrated > 0) {
       log.info("[contradiction-scan] migrated %d legacy unscoped review pairs to namespace %s", migrated, namespace);
@@ -382,7 +383,7 @@ async function resolveScanStorage(
   deps: ScanDependencies,
   namespace: string | undefined,
 ): Promise<ScanStorageResolution> {
-  if (!deps.config.namespacesEnabled) {
+  if (!resolveNamespaceCapabilities(deps.config).namespaces) {
     const defaultNamespace = normalizeScanNamespace(deps.config.defaultNamespace);
     if (namespace && namespace !== defaultNamespace) {
       throw new Error(`unsupported namespace: ${namespace}`);
@@ -427,7 +428,7 @@ function isStorageManagerLike(value: unknown): value is StorageManager {
 
 function fallbackResolvedNamespace(deps: ScanDependencies, namespace: string | undefined): string | undefined {
   if (namespace) return namespace;
-  return deps.config.namespacesEnabled ? deps.config.defaultNamespace : undefined;
+  return resolveNamespaceCapabilities(deps.config).namespaces ? deps.config.defaultNamespace : undefined;
 }
 
 function isDefaultNamespaceScan(
