@@ -1,6 +1,6 @@
 {
   "name": "@remnic/server",
-  "version": "9.3.742",
+  "version": "9.3.743",
   "description": "Standalone Remnic memory server — HTTP + MCP without OpenClaw",
   "type": "module",
   "main": "dist/index.js",

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import { RecallSectionCoordinator } from "../src/orchestration/recall-section-coordinator.js";
 
 test("parseConfig sets recall pipeline defaults", () => {
   const cfg = parseConfig({ openaiApiKey: "sk-test" });
@@ -280,6 +281,7 @@ test("orchestrator honors top-level specialized recall gates with custom pipelin
   });
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = cfg;
+  orchestrator.recallSectionCoordinator = new RecallSectionCoordinator({ getConfig: () => orchestrator.config });
 
   assert.equal(
     orchestrator.isSpecializedRecallSectionEnabled(
@@ -325,6 +327,7 @@ test("orchestrator honors top-level specialized recall enables missing from cust
   });
   const orchestrator = Object.create(Orchestrator.prototype) as any;
   orchestrator.config = cfg;
+  orchestrator.recallSectionCoordinator = new RecallSectionCoordinator({ getConfig: () => orchestrator.config });
 
   assert.equal(
     orchestrator.isSpecializedRecallSectionEnabled(
