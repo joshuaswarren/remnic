@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { log } from "./logger.js";
 import type { MemoryFile, PluginConfig } from "./types.js";
 import { discoverMemoryExtensions, renderExtensionsFooter, resolveExtensionsRoot } from "./memory-extension-host/index.js";
+import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 
 const PROMPT_RELATIVE_PATH = path.join("prompts", "day_summary.prompt.md");
 
@@ -114,7 +115,7 @@ export function formatDaySummaryMemories(memories: string | MemoryFile[]): strin
 export async function buildExtensionsFooterForSummary(
   config: PluginConfig,
 ): Promise<string> {
-  if (!config.memoryExtensionsEnabled) return "";
+  if (!resolvePipelineProcessingCapabilities(config).memoryExtensions) return "";
   const root = resolveExtensionsRoot(config);
   const extensions = await discoverMemoryExtensions(root, log);
   if (extensions.length === 0) return "";

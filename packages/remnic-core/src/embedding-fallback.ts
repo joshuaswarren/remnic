@@ -7,6 +7,7 @@ import {
 } from "./capabilities.js";
 import { readEnvVar } from "./runtime/env.js";
 import type { PluginConfig } from "./types.js";
+import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 import {
   getHostEmbeddingProvider,
   type HostEmbeddingProvider,
@@ -405,7 +406,7 @@ export class EmbeddingFallback {
 
     if (
       options.includeHost !== false &&
-      this.config.hostEmbeddingProviderEnabled !== false
+      resolvePipelineProcessingCapabilities(this.config).hostEmbeddingProvider !== false
     ) {
       const hostProvider = getHostEmbeddingProvider(this.config.memoryDir);
       if (hostProvider) {

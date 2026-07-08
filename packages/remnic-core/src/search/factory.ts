@@ -10,6 +10,7 @@ import { EmbedHelper } from "./embed-helper.js";
 import { QmdClient, type QmdClientOptions } from "../qmd.js";
 import { log } from "../logger.js";
 import { FaissConversationIndexAdapter } from "../conversation-index/faiss-adapter.js";
+import { resolvePipelineProcessingCapabilities } from "../capabilities.js";
 import {
   resolveIndexingCapabilities,
   resolveQmdCapabilities,
@@ -88,7 +89,7 @@ function resolveNonQmdBackend(config: PluginConfig): SearchBackend | undefined {
 function qmdOptions(config: PluginConfig): QmdClientOptions {
   return {
     slowLog: {
-      enabled: config.slowLogEnabled,
+      enabled: resolvePipelineProcessingCapabilities(config).slowLog,
       thresholdMs: config.slowLogThresholdMs,
     },
     updateTimeoutMs: config.qmdUpdateTimeoutMs,

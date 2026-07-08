@@ -11,6 +11,7 @@ import { resolveNamespaceStorageRoot } from "../namespaces/storage.js";
 import { displayErrorDetail } from "../runtime/better-sqlite.js";
 import type { PluginConfig } from "../types.js";
 import { getConfiguredNamespaces } from "../scopes/scope-plan.js";
+import { resolveConversationContextCapabilities } from "../capabilities.js";
 
 export type NamespaceMaintenanceJobName = string;
 
@@ -227,7 +228,7 @@ export async function planNamespaceMaintenance(
     });
   }
 
-  if (resolveNamespaceCapabilities(config).namespaces && config.maintenanceNamespaceFanoutEnabled !== false) {
+  if (resolveNamespaceCapabilities(config).namespaces && resolveConversationContextCapabilities(config).maintenanceNamespaceFanout !== false) {
     const configuredSet = new Set(configured);
     try {
       const records = options.catalog?.enabled ? await options.catalog.listNamespaces() : [];

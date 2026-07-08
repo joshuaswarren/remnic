@@ -17,6 +17,9 @@ import {
   resolvePresentationCapabilities,
   resolveConsolidationCapabilities,
   resolveRecallAuxiliaryCapabilities,
+  resolveRecallEnhancementCapabilities,
+  resolvePipelineProcessingCapabilities,
+  resolveConversationContextCapabilities,
   type CapabilitySet,
   type AccessSetupCapabilitySet,
   type NamespaceCapabilitySet,
@@ -31,6 +34,9 @@ import {
   type PresentationCapabilitySet,
   type ConsolidationCapabilitySet,
   type RecallAuxiliaryCapabilitySet,
+  type RecallEnhancementCapabilitySet,
+  type PipelineProcessingCapabilitySet,
+  type ConversationContextCapabilitySet,
 } from "./capabilities.js";
 
 /**
@@ -1157,4 +1163,164 @@ test("resolveRecallAuxiliaryCapabilities projects every field from its flag (fal
 test("resolveRecallAuxiliaryCapabilities returns a frozen object", () => {
   const caps = resolveRecallAuxiliaryCapabilities(parseConfig({}));
   assert.equal(Object.isFrozen(caps), true, "RecallAuxiliaryCapabilitySet must be frozen");
+});
+
+
+// ---------------------------------------------------------------------------
+// RecallEnhancementCapabilitySet — gate-parity tests (issue #1523 batch 9).
+// ---------------------------------------------------------------------------
+
+const RECALL_ENH_FIELD_TO_FLAG: Record<keyof RecallEnhancementCapabilitySet, string> = {
+  explicitCueRecall: "explicitCueRecallEnabled",
+  targetedFactRecall: "targetedFactRecallEnabled",
+  focusedListRecall: "focusedListRecallEnabled",
+  responseGuidanceRecall: "responseGuidanceRecallEnabled",
+  eventOrderRecall: "eventOrderRecallEnabled",
+  reinforcementRecallBoost: "reinforcementRecallBoostEnabled",
+  recallPlannerTelemetry: "recallPlannerTelemetryEnabled",
+  peerProfileRecall: "peerProfileRecallEnabled",
+  graphAssistShadowEval: "graphAssistShadowEvalEnabled",
+  memoryReconstruction: "memoryReconstructionEnabled",
+  memoryLinking: "memoryLinkingEnabled",
+  causalTrajectoryRecall: "causalTrajectoryRecallEnabled",
+  causalTrajectoryMemory: "causalTrajectoryMemoryEnabled",
+  cmcRetrieval: "cmcRetrievalEnabled",
+  contradictionDetection: "contradictionDetectionEnabled",
+  factArchival: "factArchivalEnabled",
+  entityRelationships: "entityRelationshipsEnabled",
+  entityActivityLog: "entityActivityLogEnabled",
+  compoundingInject: "compoundingInjectEnabled",
+  accessTracking: "accessTrackingEnabled",
+  autoPromoteToShared: "autoPromoteToSharedEnabled",
+  recallGraph: "recallGraphEnabled",
+  feedback: "feedbackEnabled",
+  identity: "identityEnabled",
+};
+
+const RECALL_ENH_FIELDS = Object.keys(RECALL_ENH_FIELD_TO_FLAG) as Array<keyof RecallEnhancementCapabilitySet>;
+
+test("resolveRecallEnhancementCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(RECALL_ENH_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveRecallEnhancementCapabilities(config);
+  for (const field of RECALL_ENH_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolveRecallEnhancementCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(RECALL_ENH_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveRecallEnhancementCapabilities(config);
+  for (const field of RECALL_ENH_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolveRecallEnhancementCapabilities returns a frozen object", () => {
+  const caps = resolveRecallEnhancementCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "RecallEnhancementCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// PipelineProcessingCapabilitySet — gate-parity tests (issue #1523 batch 9).
+// ---------------------------------------------------------------------------
+
+const PIPELINE_FIELD_TO_FLAG: Record<keyof PipelineProcessingCapabilitySet, string> = {
+  chunking: "chunkingEnabled",
+  semanticChunking: "semanticChunkingEnabled",
+  semanticDedup: "semanticDedupEnabled",
+  summarization: "summarizationEnabled",
+  topicExtraction: "topicExtractionEnabled",
+  sessionObserver: "sessionObserverEnabled",
+  profiling: "profilingEnabled",
+  checkpoint: "checkpointEnabled",
+  traceWeaver: "traceWeaverEnabled",
+  routingRules: "routingRulesEnabled",
+  inlineSourceAttribution: "inlineSourceAttributionEnabled",
+  negativeExamples: "negativeExamplesEnabled",
+  hourlySummaries: "hourlySummariesEnabled",
+  lcm: "lcmEnabled",
+  localLlmFast: "localLlmFastEnabled",
+  proactiveExtraction: "proactiveExtractionEnabled",
+  delinearize: "delinearizeEnabled",
+  slowLog: "slowLogEnabled",
+  hostEmbeddingProvider: "hostEmbeddingProviderEnabled",
+  memoryExtensions: "memoryExtensionsEnabled",
+  hourlySummariesExtended: "hourlySummariesExtendedEnabled",
+};
+
+const PIPELINE_FIELDS = Object.keys(PIPELINE_FIELD_TO_FLAG) as Array<keyof PipelineProcessingCapabilitySet>;
+
+test("resolvePipelineProcessingCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(PIPELINE_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolvePipelineProcessingCapabilities(config);
+  for (const field of PIPELINE_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolvePipelineProcessingCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(PIPELINE_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolvePipelineProcessingCapabilities(config);
+  for (const field of PIPELINE_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolvePipelineProcessingCapabilities returns a frozen object", () => {
+  const caps = resolvePipelineProcessingCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "PipelineProcessingCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// ConversationContextCapabilitySet — gate-parity tests (issue #1523 batch 9).
+// ---------------------------------------------------------------------------
+
+const CONV_CTX_FIELD_TO_FLAG: Record<keyof ConversationContextCapabilitySet, string> = {
+  sharedContext: "sharedContextEnabled",
+  intentRouting: "intentRoutingEnabled",
+  crossSignalsSemantic: "crossSignalsSemanticEnabled",
+  sharedCrossSignalSemantic: "sharedCrossSignalSemanticEnabled",
+  operatorAwareConsolidation: "operatorAwareConsolidationEnabled",
+  peerProfileReasoner: "peerProfileReasonerEnabled",
+  cmcConsolidation: "cmcConsolidationEnabled",
+  maintenanceNamespaceFanout: "maintenanceNamespaceFanoutEnabled",
+  citations: "citationsEnabled",
+  behaviorLoopAutoTune: "behaviorLoopAutoTuneEnabled",
+  semanticRulePromotion: "semanticRulePromotionEnabled",
+  codexMarketplace: "codexMarketplaceEnabled",
+};
+
+const CONV_CTX_FIELDS = Object.keys(CONV_CTX_FIELD_TO_FLAG) as Array<keyof ConversationContextCapabilitySet>;
+
+test("resolveConversationContextCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(CONV_CTX_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveConversationContextCapabilities(config);
+  for (const field of CONV_CTX_FIELDS) {
+    assert.equal(caps[field], true, `${field} must be true`);
+  }
+});
+
+test("resolveConversationContextCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(CONV_CTX_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveConversationContextCapabilities(config);
+  for (const field of CONV_CTX_FIELDS) {
+    assert.equal(caps[field], false, `${field} must be false`);
+  }
+});
+
+test("resolveConversationContextCapabilities returns a frozen object", () => {
+  const caps = resolveConversationContextCapabilities(parseConfig({}));
+  assert.equal(Object.isFrozen(caps), true, "ConversationContextCapabilitySet must be frozen");
 });

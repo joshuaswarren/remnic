@@ -249,6 +249,7 @@ import {
 } from "./action-confidence.js";
 import { formatProfileTraceAscii } from "./profiling.js";
 import { resolveAccessSetupCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities } from "./capabilities.js";
+import { resolveRecallEnhancementCapabilities } from "./capabilities.js";
 
 export class EngramAccessInputError extends Error {}
 
@@ -7639,7 +7640,7 @@ export class EngramAccessService {
     vote: "up" | "down";
     note?: string;
   }): Promise<{ recorded: boolean; enabled?: boolean; reason?: string }> {
-    if (!this.orchestrator.config.feedbackEnabled) {
+    if (!resolveRecallEnhancementCapabilities(this.orchestrator.config).feedback) {
       return {
         recorded: false,
         enabled: false,

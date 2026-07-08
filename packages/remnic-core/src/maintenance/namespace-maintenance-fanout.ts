@@ -27,6 +27,7 @@
 import { resolveNamespaceCapabilities } from "../capabilities.js";
 import type { NamespaceCatalog } from "../namespaces/catalog.js";
 import type { PluginConfig } from "../types.js";
+import { resolveConversationContextCapabilities } from "../capabilities.js";
 import {
   planNamespaceMaintenance,
   readNamespaceMaintenanceLastRanStatuses,
@@ -262,7 +263,7 @@ export async function summarizeNamespaceMaintenanceHealth(
 
   return {
     generatedAt,
-    fanoutEnabled: config.maintenanceNamespaceFanoutEnabled !== false,
+    fanoutEnabled: resolveConversationContextCapabilities(config).maintenanceNamespaceFanout !== false,
     namespacesEnabled: resolveNamespaceCapabilities(config).namespaces,
     maxNamespacesPerCycle: config.maintenanceMaxNamespacesPerCycle,
     jobs,

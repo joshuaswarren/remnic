@@ -5,6 +5,7 @@ import { z } from "zod";
 import { log } from "../logger.js";
 import type { PluginConfig } from "../types.js";
 import { expandTildePath } from "../utils/path.js";
+import { resolveConversationContextCapabilities } from "../capabilities.js";
 
 export const SharedFeedbackEntrySchema = z.object({
   agent: z.string().min(1),
@@ -713,8 +714,8 @@ export class SharedContextManager {
       .sort((a, b) => b.agentCount - a.agentCount || a.token.localeCompare(b.token));
 
     const semanticEnabled =
-      this.config.sharedCrossSignalSemanticEnabled === true
-      || this.config.crossSignalsSemanticEnabled === true;
+      resolveConversationContextCapabilities(this.config).sharedCrossSignalSemantic === true
+      || resolveConversationContextCapabilities(this.config).crossSignalsSemantic === true;
     const semanticTimeoutMs =
       this.config.sharedCrossSignalSemanticTimeoutMs
       ?? this.config.crossSignalsSemanticTimeoutMs

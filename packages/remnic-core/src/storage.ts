@@ -1227,6 +1227,7 @@ export class ContentHashIndex {
 // (snapshotBeforeWrite, snapshotForProvenance) resolve, and re-exported to
 // keep the public storage API stable for existing callers (wearables, dist).
 import { stripAttributesSuffix } from "./structured-attributes.js";
+import { resolveRecallAuxiliaryCapabilities } from "./capabilities.js";
 export { stripAttributesSuffix };
 
 export function normalizeAttributePairs(pairs: Record<string, string>): string {
@@ -2373,7 +2374,7 @@ export class StorageManager {
    * When true, the secure-store is configured as required — writes
    * MUST be encrypted and a locked store MUST reject writes rather
    * than silently falling back to plaintext.  Set by the orchestrator
-   * from `config.secureStoreEnabled`.
+   * from `resolveRecallAuxiliaryCapabilities(config).secureStore`.
    */
   private _secureStoreRequired = false;
 

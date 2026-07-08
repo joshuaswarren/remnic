@@ -12,6 +12,7 @@ import { runPostConsolidationMaterialize } from "./connectors/codex-materialize-
 import type { MaterializeResult, RolloutSummaryInput } from "./connectors/codex-materialize.js";
 import { discoverMemoryExtensions, renderExtensionsBlock, resolveExtensionsRoot } from "./memory-extension-host/index.js";
 import { log } from "./logger.js";
+import { resolvePipelineProcessingCapabilities } from "./capabilities.js";
 
 // Re-export resolveExtensionsRoot for backward compatibility — existing
 // consumers that import from semantic-consolidation.ts continue to work.
@@ -404,7 +405,7 @@ void _CONSOLIDATION_OPERATORS;
 export async function buildExtensionsBlockForConsolidation(
   config: PluginConfig,
 ): Promise<string> {
-  if (!config.memoryExtensionsEnabled) return "";
+  if (!resolvePipelineProcessingCapabilities(config).memoryExtensions) return "";
   const root = resolveExtensionsRoot(config);
   const extensions = await discoverMemoryExtensions(root, log);
   if (extensions.length === 0) return "";

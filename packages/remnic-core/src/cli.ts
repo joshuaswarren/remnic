@@ -232,6 +232,7 @@ import { getTrainingExportAdapter, listTrainingExportAdapters } from "./training
 import { renderRecallExplain, parseRecallExplainFormat } from "./recall-explain-renderer.js";
 import { renderXray } from "./recall-xray-renderer.js";
 import { parseXrayCliOptions } from "./recall-xray-cli.js";
+import { resolveConversationContextCapabilities } from "./capabilities.js";
 import {
   collectPatternMemories,
   explainPatternMemory,
@@ -6276,7 +6277,7 @@ export function registerCli(
           const options = (args[0] ?? {}) as Record<string, unknown>;
           const result = await runSemanticRulePromoteCliCommand({
             memoryDir: orchestrator.config.memoryDir,
-            semanticRulePromotionEnabled: orchestrator.config.semanticRulePromotionEnabled,
+            semanticRulePromotionEnabled: resolveConversationContextCapabilities(orchestrator.config).semanticRulePromotion,
             sourceMemoryId: String(options.memoryId ?? ""),
             dryRun: options.dryRun === true,
           });
@@ -6802,7 +6803,7 @@ export function registerCli(
             principal: resolveAccessPrincipalOverride(options.principal, orchestrator.config.agentAccessHttp.principal),
             maxBodyBytes: Number.isFinite(maxBodyBytesRaw) ? maxBodyBytesRaw : 131072,
             trustPrincipalHeader: options.trustPrincipalHeader === true,
-            citationsEnabled: orchestrator.config.citationsEnabled,
+            citationsEnabled: resolveConversationContextCapabilities(orchestrator.config).citations,
             citationsAutoDetect: orchestrator.config.citationsAutoDetect,
             emitLegacyTools: orchestrator.config.emitLegacyTools,
           });

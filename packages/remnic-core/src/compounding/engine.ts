@@ -8,6 +8,7 @@ import type { ContinuityIncidentRecord, PluginConfig } from "../types.js";
 import { resolveSharedContextDir, SharedFeedbackEntrySchema, type SharedFeedbackEntry } from "../shared-context/manager.js";
 import { parseContinuityImprovementLoops } from "../identity-continuity.js";
 import { resolveQmdCapabilities, type QmdConfigProjection, resolveConsolidationCapabilities } from "../capabilities.js";
+import { resolveConversationContextCapabilities } from "../capabilities.js";
 
 type MistakesFile = {
   version?: number;
@@ -496,7 +497,7 @@ export class CompoundingEngine {
     let promotionCandidates = resolveConsolidationCapabilities(this.config).compoundingSemantic
       ? this.derivePromotionCandidates(outcomeSummary, mistakes.registry, rubrics)
       : [];
-    if (this.config.cmcConsolidationEnabled) {
+    if (resolveConversationContextCapabilities(this.config).cmcConsolidation) {
       try {
         const { deriveCausalPromotionCandidates, materializeAfterCausalConsolidation } = await import("../causal-consolidation.js");
         const causalCandidates = await deriveCausalPromotionCandidates({
