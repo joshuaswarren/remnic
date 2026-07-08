@@ -1802,7 +1802,39 @@ export class Orchestrator {
    * `runExtraction` + dedupe fingerprint helpers + processed-fingerprint
    * recording. The orchestrator delegates and injects its own methods.
    */
-  private extractionRunCoordinator: ExtractionRunCoordinator;
+  private _extractionRunCoordinator: ExtractionRunCoordinator | undefined;
+
+  /**
+   * Lazy getter: creates the ExtractionRunCoordinator on first access using
+   * the orchestrator's live field references. Supports Object.create(prototype)
+   * tests that set fields post-construction without invoking the constructor.
+   */
+  private get extractionRunCoordinator(): ExtractionRunCoordinator {
+    if (!this._extractionRunCoordinator) {
+      this._extractionRunCoordinator = new ExtractionRunCoordinator({
+        config: this.config,
+        getBuffer: () => this.buffer,
+        getExtraction: () => this.extraction,
+        getStorageRouter: () => this.storageRouter,
+        getThreading: () => this.threading,
+        persistExtraction: (result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps) =>
+          this.persistExtraction(result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps),
+        maybeCapturePassiveCorrections: (turns, opts) => this.maybeCapturePassiveCorrections(turns, opts),
+        resolveSelfNamespace: (sessionKey) => this.resolveSelfNamespace(sessionKey),
+        getCodingContextForSession: (sessionKey) => this.getCodingContextForSession(sessionKey),
+        applyCodingNamespaceOverlay: (sessionKey, namespace) => this.applyCodingNamespaceOverlay(sessionKey, namespace),
+        boxBuilderFor: (storage) => this.boxBuilderFor(storage),
+        appendPersistedThreadEpisodes: (threadId, ids) => this.appendPersistedThreadEpisodes(threadId, ids),
+        maybeScheduleConsolidation: (nonZero) => this.maybeScheduleConsolidation(nonZero),
+        requestQmdMaintenance: () => this.requestQmdMaintenance(),
+        runTierMigrationCycle: (storage, trigger, options) => this.runTierMigrationCycle(storage, trigger, options),
+        getLastPersistExtractionDeferredCount: () => this.lastPersistExtractionDeferredCount,
+        recordProcessedExtractionFingerprint: (storage, fingerprint, preloadedMeta) =>
+          this.recordProcessedExtractionFingerprint(storage, fingerprint, preloadedMeta),
+      });
+    }
+    return this._extractionRunCoordinator;
+  }
   /**
    * Issue #1526: recall result formatting + identity continuity section moved
    * to RecallResultFormatter.
@@ -2784,26 +2816,7 @@ export class Orchestrator {
     });
     // Issue #1526: background extraction queue lives on its own coordinator.
     this.extractionQueueCoordinator = new ExtractionQueueCoordinator();
-    // Issue #1526 seam 15: extraction run pipeline moved to ExtractionRunCoordinator.
-    this.extractionRunCoordinator = new ExtractionRunCoordinator({
-      config,
-      getBuffer: () => this.buffer,
-      getExtraction: () => this.extraction,
-      getStorageRouter: () => this.storageRouter,
-      getThreading: () => this.threading,
-      persistExtraction: (result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps) =>
-        this.persistExtraction(result, storage, threadId, sourceContext, baseNamespace, scopeProfileWritePlan, sourceText, graphCaps, lifecycleCaps),
-      maybeCapturePassiveCorrections: (turns, opts) => this.maybeCapturePassiveCorrections(turns, opts),
-      resolveSelfNamespace: (sessionKey) => this.resolveSelfNamespace(sessionKey),
-      getCodingContextForSession: (sessionKey) => this.getCodingContextForSession(sessionKey),
-      applyCodingNamespaceOverlay: (sessionKey, namespace) => this.applyCodingNamespaceOverlay(sessionKey, namespace),
-      boxBuilderFor: (storage) => this.boxBuilderFor(storage),
-      appendPersistedThreadEpisodes: (threadId, ids) => this.appendPersistedThreadEpisodes(threadId, ids),
-      maybeScheduleConsolidation: (nonZero) => this.maybeScheduleConsolidation(nonZero),
-      requestQmdMaintenance: () => this.requestQmdMaintenance(),
-      runTierMigrationCycle: (storage, trigger, options) => this.runTierMigrationCycle(storage, trigger, options),
-      getLastPersistExtractionDeferredCount: () => this.lastPersistExtractionDeferredCount,
-    });
+
     this.recallResultFormatter = new RecallResultFormatter(this.config);
     const conversationIndexRuntime = createConversationIndexRuntime(config, {
       getQmd: () => this.conversationQmd,

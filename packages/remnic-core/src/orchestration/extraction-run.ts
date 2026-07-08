@@ -115,6 +115,11 @@ export interface ExtractionRunCoordinatorDeps {
     },
   ) => Promise<TierMigrationCycleSummary>;
   getLastPersistExtractionDeferredCount: () => number;
+  recordProcessedExtractionFingerprint: (
+    storage: StorageManager,
+    fingerprint: string,
+    preloadedMeta?: Awaited<ReturnType<StorageManager["loadMeta"]>>,
+  ) => Promise<void>;
 }
 
 // Recall/extraction-specific abort helpers. Thin wrappers over the shared
@@ -638,7 +643,7 @@ export class ExtractionRunCoordinator {
         !extractionFailure
       ) {
         meta ??= await storage.loadMeta();
-        await this.recordProcessedExtractionFingerprint(
+        await this.deps.recordProcessedExtractionFingerprint(
           storage,
           extractionFingerprint,
           meta,
@@ -686,7 +691,7 @@ export class ExtractionRunCoordinator {
     meta ??= await storage.loadMeta();
     if (extractionFingerprint && shouldPersistProcessedFingerprint) {
       try {
-        await this.recordProcessedExtractionFingerprint(
+        await this.deps.recordProcessedExtractionFingerprint(
           storage,
           extractionFingerprint,
           meta,
