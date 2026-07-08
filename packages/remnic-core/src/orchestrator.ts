@@ -102,6 +102,7 @@ import { SemanticConsolidationCoordinator } from "./orchestration/semantic-conso
 import { LifecyclePolicyCoordinator } from "./orchestration/lifecycle-policy-coordinator.js";
 import { EntitySynthesisCoordinator } from "./orchestration/entity-synthesis-coordinator.js";
 import { RecallResultFormatter } from "./orchestration/recall-result-formatter.js";
+import { ConversationIndexCoordinator } from "./orchestration/conversation-index-coordinator.js";
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
 import {
   runLiveConnectorsOnce,
@@ -330,9 +331,6 @@ import {
   type SemanticConsolidationLlmOperator,
   type SemanticConsolidationResult,
 } from "./semantic-consolidation.js";
-import { chunkTranscriptEntries } from "./conversation-index/chunker.js";
-import { writeConversationChunks } from "./conversation-index/indexer.js";
-import { cleanupConversationChunks } from "./conversation-index/cleanup.js";
 import {
   type ConversationIndexBackend,
   type ConversationIndexBackendInspection,
@@ -1909,6 +1907,11 @@ export class Orchestrator {
    * to RecallResultFormatter.
    */
   readonly recallResultFormatter: RecallResultFormatter;
+  /**
+   * Issue #1526: conversation-index subsystem moved to
+   * ConversationIndexCoordinator.
+   */
+  readonly conversationIndexCoordinator: ConversationIndexCoordinator;
   private heartbeatObserverChains = new Map<string, Promise<void>>();
   private recentExtractionFingerprints = new Map<string, number>();
   private readonly consolidationObservers = new Set<
@@ -1917,7 +1920,6 @@ export class Orchestrator {
   private wearablesServiceInstance: WearablesService | null = null;
   private wearablesAutoSyncHandle: { stop(): Promise<void> } | null = null;
   private lastQmdReprobeAtMs = 0;
-  private readonly conversationIndexLastUpdateAtMs = new Map<string, number>();
   private lastFileHygieneRunAtMs = 0;
   // Pattern-reinforcement cadence gate (issue #687 PR 2/4).  Tracks the
   // last successful run so `runPatternReinforcement` can short-circuit
@@ -2898,6 +2900,12 @@ export class Orchestrator {
       "conversation-index",
       "chunks",
     );
+    this.conversationIndexCoordinator = new ConversationIndexCoordinator({
+      config,
+      transcript: this.transcript,
+      backend: this.conversationIndexBackend,
+      indexDir: this.conversationIndexDir,
+    });
     this.modelRegistry = new ModelRegistry(config.memoryDir);
     this.relevance = new RelevanceStore(config.memoryDir);
     this.negatives = new NegativeExampleStore(config.memoryDir);
@@ -5006,63 +5014,21 @@ export class Orchestrator {
     retrievalQuery: string,
     topK: number,
   ): Promise<Array<{ path: string; snippet: string; score: number }>> {
-    if (this.conversationIndexBackend) {
-      return this.conversationIndexBackend.search(retrievalQuery, topK);
-    }
-    return [];
+    return this.conversationIndexCoordinator.search(retrievalQuery, topK);
   }
 
   private formatConversationRecallSection(
     results: Array<{ path: string; snippet: string; score: number }>,
     maxChars: number,
   ): string | null {
-    if (!Array.isArray(results) || results.length === 0) return null;
-    const lines: string[] = ["## Semantic Recall (Past Conversations)", ""];
-    let used = 0;
-    for (const r of results) {
-      if (!r?.snippet) continue;
-      const chunk =
-        `### ${r.path}\n` +
-        `Score: ${r.score.toFixed(3)}\n\n` +
-        `${r.snippet.trim()}\n`;
-      if (used + chunk.length > maxChars) break;
-      lines.push(chunk);
-      used += chunk.length;
-    }
-    return used > 0 ? lines.join("\n") : null;
+    return this.conversationIndexCoordinator.formatRecallSection(
+      results,
+      maxChars,
+    );
   }
 
-  private async countConversationChunkDocs(dir: string): Promise<number> {
-    try {
-      const entries = await readdir(dir, { withFileTypes: true });
-      let total = 0;
-      for (const entry of entries) {
-        const fullPath = path.join(dir, entry.name);
-        if (entry.isDirectory()) {
-          total += await this.countConversationChunkDocs(fullPath);
-          continue;
-        }
-        if (entry.isFile() && entry.name.endsWith(".md")) {
-          total += 1;
-        }
-      }
-      return total;
-    } catch {
-      return 0;
-    }
-  }
-
-  private async buildConversationIndexChunks(
-    sessionKey?: string,
-    hours: number = 24,
-  ): Promise<ReturnType<typeof chunkTranscriptEntries>> {
-    const entries = await this.transcript.readRecent(hours, sessionKey);
-    const effectiveSessionKey = sessionKey ?? "all-sessions";
-    return chunkTranscriptEntries(effectiveSessionKey, entries, {
-      maxChars: this.config.conversationRecallMaxChars * 2,
-      maxTurns: Math.max(10, this.config.hourlySummariesMaxTurnsPerRun),
-    });
-  }
+  // Issue #1526: countConversationChunkDocs / buildConversationIndexChunks moved
+  // to ConversationIndexCoordinator (internal helpers, no orchestrator callers).
 
   async getConversationIndexHealth(): Promise<{
     enabled: boolean;
@@ -5087,37 +5053,7 @@ export class Orchestrator {
       };
     };
   }> {
-    const chunkDocCount = await this.countConversationChunkDocs(
-      this.conversationIndexDir,
-    );
-    const lastUpdateAtMs = Math.max(
-      0,
-      ...this.conversationIndexLastUpdateAtMs.values(),
-    );
-    const lastUpdateAt =
-      lastUpdateAtMs > 0 ? new Date(lastUpdateAtMs).toISOString() : null;
-
-    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
-      return {
-        enabled: false,
-        backend: this.config.conversationIndexBackend,
-        status: "disabled",
-        chunkDocCount,
-        lastUpdateAt,
-      };
-    }
-    const backendHealth = this.conversationIndexBackend
-      ? await this.conversationIndexBackend.health()
-      : {
-          backend: this.config.conversationIndexBackend,
-          status: "degraded" as const,
-        };
-    return {
-      enabled: true,
-      chunkDocCount,
-      lastUpdateAt,
-      ...backendHealth,
-    };
+    return this.conversationIndexCoordinator.getHealth();
   }
 
   async inspectConversationIndex(): Promise<
@@ -5127,53 +5063,7 @@ export class Orchestrator {
       lastUpdateAt: string | null;
     }
   > {
-    const chunkDocCount = await this.countConversationChunkDocs(
-      this.conversationIndexDir,
-    );
-    const lastUpdateAtMs = Math.max(
-      0,
-      ...this.conversationIndexLastUpdateAtMs.values(),
-    );
-    const lastUpdateAt =
-      lastUpdateAtMs > 0 ? new Date(lastUpdateAtMs).toISOString() : null;
-
-    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
-      return {
-        enabled: false,
-        backend: this.config.conversationIndexBackend,
-        status: "disabled",
-        available: false,
-        indexPath: this.conversationIndexDir,
-        supportsIncrementalUpdate: true,
-        message: "Conversation index disabled by config",
-        metadata: {
-          chunkCount: chunkDocCount,
-        },
-        chunkDocCount,
-        lastUpdateAt,
-      };
-    }
-
-    const inspection = this.conversationIndexBackend
-      ? await this.conversationIndexBackend.inspect()
-      : {
-          backend: this.config.conversationIndexBackend,
-          status: "degraded" as const,
-          available: false,
-          indexPath: this.conversationIndexDir,
-          supportsIncrementalUpdate: true,
-          message: "Conversation index backend unavailable",
-          metadata: {
-            chunkCount: chunkDocCount,
-          },
-        };
-
-    return {
-      enabled: true,
-      chunkDocCount,
-      lastUpdateAt,
-      ...inspection,
-    };
+    return this.conversationIndexCoordinator.inspect();
   }
 
   async getRecoverySummary(sessionKey?: string): Promise<{
@@ -5199,54 +5089,7 @@ export class Orchestrator {
     retryAfterMs?: number;
     embedded?: boolean;
   }> {
-    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
-      return { chunks: 0, skipped: true, reason: "disabled", embedded: false };
-    }
-    const enforceMinInterval = opts?.enforceMinInterval !== false;
-    if (enforceMinInterval) {
-      const minIntervalMs = Math.max(
-        0,
-        this.config.conversationIndexMinUpdateIntervalMs,
-      );
-      const now = Date.now();
-      const last = this.conversationIndexLastUpdateAtMs.get(sessionKey) ?? 0;
-      const elapsed = now - last;
-      if (minIntervalMs > 0 && elapsed < minIntervalMs) {
-        return {
-          chunks: 0,
-          skipped: true,
-          reason: "min_interval",
-          retryAfterMs: minIntervalMs - elapsed,
-          embedded: false,
-        };
-      }
-    }
-    const chunks = await this.buildConversationIndexChunks(sessionKey, hours);
-    await writeConversationChunks(this.conversationIndexDir, chunks);
-    const retentionCutoffMs =
-      Number.isFinite(this.config.conversationIndexRetentionDays) &&
-      this.config.conversationIndexRetentionDays > 0
-        ? Date.now() -
-          this.config.conversationIndexRetentionDays * 24 * 60 * 60 * 1000
-        : undefined;
-    await cleanupConversationChunks(
-      this.conversationIndexDir,
-      this.config.conversationIndexRetentionDays,
-    );
-    const shouldEmbed =
-      opts?.embed ?? this.config.conversationIndexEmbedOnUpdate;
-    let embedded = false;
-
-    if (this.conversationIndexBackend) {
-      const result = await this.conversationIndexBackend.update(chunks, {
-        embed: shouldEmbed,
-        ...(retentionCutoffMs !== undefined ? { retentionCutoffMs } : {}),
-      });
-      embedded = result.embedded;
-    }
-
-    this.conversationIndexLastUpdateAtMs.set(sessionKey, Date.now());
-    return { chunks: chunks.length, skipped: false, embedded };
+    return this.conversationIndexCoordinator.update(sessionKey, hours, opts);
   }
 
   async rebuildConversationIndex(
@@ -5260,42 +5103,7 @@ export class Orchestrator {
     embedded?: boolean;
     rebuilt?: boolean;
   }> {
-    if (!resolveIndexingCapabilities(this.config).conversationIndex) {
-      return {
-        chunks: 0,
-        skipped: true,
-        reason: "disabled",
-        embedded: false,
-        rebuilt: false,
-      };
-    }
-
-    const chunks = await this.buildConversationIndexChunks(sessionKey, hours);
-    await writeConversationChunks(this.conversationIndexDir, chunks);
-    await cleanupConversationChunks(
-      this.conversationIndexDir,
-      this.config.conversationIndexRetentionDays,
-    );
-
-    const shouldEmbed =
-      opts?.embed ?? this.config.conversationIndexEmbedOnUpdate;
-    let embedded = false;
-    let rebuilt = false;
-    if (this.conversationIndexBackend) {
-      const result = await this.conversationIndexBackend.rebuild(chunks, {
-        embed: shouldEmbed,
-      });
-      embedded = result.embedded;
-      rebuilt = result.rebuilt;
-    }
-
-    const stamp = Date.now();
-    if (sessionKey) {
-      this.conversationIndexLastUpdateAtMs.set(sessionKey, stamp);
-    } else {
-      this.conversationIndexLastUpdateAtMs.set("__rebuild__", stamp);
-    }
-    return { chunks: chunks.length, skipped: false, embedded, rebuilt };
+    return this.conversationIndexCoordinator.rebuild(sessionKey, hours, opts);
   }
 
   /**
