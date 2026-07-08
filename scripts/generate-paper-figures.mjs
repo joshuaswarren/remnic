@@ -487,9 +487,16 @@ function renderComparisonPanel({ x, y, w, h, title, metrics, artifact, tierF }) 
       ? `<rect x="${lx}" y="${ly - 8}" width="12" height="10" fill="${sys.color}"/>`
       : `<rect x="${lx}" y="${ly - 8}" width="12" height="10" fill="url(#pendingHatch1)" stroke="${COLORS.pendingStroke}" stroke-width="1" stroke-dasharray="2 2"/>`;
     body += swatch + "\n";
-    const lab = sys.label.split("\n")[0];
-    body += text(lx + 16, ly, lab, { size: 9.5, fill: COLORS.subink }) + "\n";
-    lx += 16 + lab.length * 5.6 + 14;
+    // Render BOTH lines of the system label so Tier-L / Tier-F (and
+    // third-party issue refs) stay distinguishable in the legend (cursor
+    // thread: Figure one legend hides tier).
+    const lines = sys.label.split("\n");
+    body += text(lx + 16, ly, lines[0], { size: 9.5, fill: COLORS.subink }) + "\n";
+    if (lines[1]) {
+      body += text(lx + 16, ly + 11, lines[1], { size: 8, fill: COLORS.faint }) + "\n";
+    }
+    const widest = Math.max(...lines.map((l) => l.length));
+    lx += 16 + widest * 5.6 + 14;
   }
 
   // Footnote: non-axis metrics from the real artifact (honest, separate scale)
