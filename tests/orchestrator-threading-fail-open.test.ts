@@ -18,13 +18,13 @@ test("runExtraction handles pre-persist threading errors fail-open", () => {
 
 test("persistExtraction updates in-memory thread episode IDs before graph edge construction", () => {
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "extraction-persist.ts"),
     "utf-8",
   );
 
   const appendIdx = source.indexOf("threadEpisodeIdsForGraph.push(memoryId);");
   const buildIdx = source.search(
-    /await this\.buildGraphEdge\(\s*(?:targetStorage|storage),\s*memoryRelPath,\s*entityRef,\s*memoryId/m,
+    /await this\.deps\.buildGraphEdge\(\s*(?:targetStorage|storage),\s*memoryRelPath,\s*entityRef,\s*memoryId/m,
   );
 
   assert.notEqual(
@@ -45,25 +45,25 @@ test("persistExtraction updates in-memory thread episode IDs before graph edge c
 
 test("persistExtraction avoids per-memory thread file writes", () => {
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "extraction-persist.ts"),
     "utf-8",
   );
 
   assert.doesNotMatch(
     source,
-    /await this\.threading\.appendEpisodeIds\(threadIdForExtraction,\s*\[memoryId\]\);/,
+    /await this\.deps\.getThreading\(\)\.appendEpisodeIds\(threadIdForExtraction,\s*\[memoryId\]\);/,
     "non-chunked writes should not perform per-fact thread file writes",
   );
   assert.doesNotMatch(
     source,
-    /await this\.threading\.appendEpisodeIds\(threadIdForExtraction,\s*\[parentId\]\);/,
+    /await this\.deps\.getThreading\(\)\.appendEpisodeIds\(threadIdForExtraction,\s*\[parentId\]\);/,
     "chunked parent writes should not perform per-fact thread file writes",
   );
 });
 
 test("in-memory thread episode context updates for chunked and non-chunked writes", () => {
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "extraction-persist.ts"),
     "utf-8",
   );
   assert.match(
@@ -129,7 +129,7 @@ test("persisted path resolution does not call getMemoryById in per-fact write fl
 
 test("persisted path resolution is not short-circuited by set-before-resolve", () => {
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "extraction-persist.ts"),
     "utf-8",
   );
   assert.doesNotMatch(
@@ -153,7 +153,7 @@ test("buildGraphEdge forwards fallback causal predecessor when thread context is
 
 test("persistExtraction includes written question IDs in persistedIds", () => {
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "extraction-persist.ts"),
     "utf-8",
   );
   // The question loop tracks each written id via trackPersistedId so the thread
