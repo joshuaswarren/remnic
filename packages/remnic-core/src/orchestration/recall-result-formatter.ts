@@ -1,0 +1,438 @@
+/**
+ * Recall result formatter — extracted from the orchestrator (issue #1526).
+ *
+ * Owns the formatting of recall search results into display sections, plus the
+ * identity-continuity section assembly:
+ *   - QMD result formatting (with memory handles + epistemic hedge rendering)
+ *   - Specialized recall result formatters (objective-state, causal-trajectory,
+ *     trust-zone, harmonic-retrieval, work-product, verified-episode,
+ *     verified-semantic-rule)
+ *   - Identity continuity helpers (summarizeIdentityText, formatOpenIncidentLine,
+ *     trimIdentitySection) and the full buildIdentityContinuitySection builder
+ *   - Module-level helpers hasIdentityRecoveryIntent and
+ *     resolveEffectiveIdentityInjectionMode (only consumed here)
+ *
+ * Behavior-preserving move from orchestrator.ts. No logic changes — the
+ * orchestrator constructs one instance and keeps thin delegating methods so
+ * existing call sites and tests that exercise the private API continue to work.
+ */
+
+import { buildHandleIndexForResults } from "../recall-handles.js";
+import { renderEpistemicHedge } from "../trust-score.js";
+import { resolveIdentityContinuityCapabilities } from "../capabilities.js";
+import type { StorageManager } from "../index.js";
+import type { ObjectiveStateSearchResult } from "../objective-state.js";
+import type { CausalTrajectorySearchResult } from "../causal-trajectory.js";
+import type { TrustZoneSearchResult } from "../trust-zones.js";
+import type { HarmonicRetrievalResult } from "../harmonic-retrieval.js";
+import type { VerifiedEpisodeResult } from "../verified-recall.js";
+import type { VerifiedSemanticRuleResult } from "../semantic-rule-verifier.js";
+import type { WorkProductLedgerSearchResult } from "../work-product-ledger.js";
+import type { TrustStageResultItem } from "../trust-score-stage.js";
+import type {
+  ContinuityIncidentRecord,
+  IdentityInjectionMode,
+  PluginConfig,
+  QmdSearchResult,
+  RecallPlanMode,
+} from "../types.js";
+
+// ---------------------------------------------------------------------------
+// Identity injection mode helpers (moved verbatim from orchestrator.ts)
+// ---------------------------------------------------------------------------
+
+export function hasIdentityRecoveryIntent(prompt: string): boolean {
+  const text = typeof prompt === "string" ? prompt.toLowerCase() : "";
+  if (!text) return false;
+  return /\b(identity|continuity|recover(?:y|ing|ed)?|incident|drift|restore|regress(?:ion|ed|ing)?)\b/i.test(
+    text,
+  );
+}
+
+export function resolveEffectiveIdentityInjectionMode(options: {
+  configuredMode: IdentityInjectionMode;
+  recallMode: RecallPlanMode;
+  prompt: string;
+}): { mode: IdentityInjectionMode; shouldInject: boolean } {
+  if (
+    options.configuredMode === "recovery_only" &&
+    !hasIdentityRecoveryIntent(options.prompt)
+  ) {
+    return { mode: "recovery_only", shouldInject: false };
+  }
+  if (options.recallMode === "minimal" && options.configuredMode === "full") {
+    return { mode: "minimal", shouldInject: true };
+  }
+  return { mode: options.configuredMode, shouldInject: true };
+}
+
+// ---------------------------------------------------------------------------
+// Coordinator
+// ---------------------------------------------------------------------------
+
+/**
+ * Formats recall search results into display sections and assembles the
+ * identity-continuity section. Holds a reference to config for feature-gated
+ * rendering (memory handles, epistemic hedges, identity injection mode).
+ */
+export class RecallResultFormatter {
+  constructor(private readonly config: PluginConfig) {}
+
+  // ── QMD results (memory handles + epistemic hedge) ──────────────────────
+
+  formatQmdResults(
+    title: string,
+    results: QmdSearchResult[],
+    sessionKey?: string,
+    trustByPath?: Map<string, TrustStageResultItem> | null,
+  ): string {
+    // Issue #1582 — handles are only rendered when a session key is available:
+    // resolution requires the handle history to have been recorded for this
+    // session, which only happens when sessionKey is present. Rendering handles
+    // without recording would show tokens a user can never resolve (cursor
+    // review). The rendering logic itself lives in the pure handles module.
+    const handleByIndex = buildHandleIndexForResults(
+      results,
+      this.config.recallMemoryHandles === true && sessionKey != null,
+    );
+    // Issue #1577 — epistemic hedge. Append a deterministic, component-derived
+    // suffix so the downstream model knows each memory's trust status (the
+    // cheap lever against confident-stale-answer failures). Gated separately
+    // from scoring so rendering can ship after the stage is stable. High-band
+    // and neutral items get no suffix (don't waste tokens on the common case).
+    const renderHedge = this.config.trustScoreEpistemicRendering && trustByPath !== null && trustByPath !== undefined;
+    const hedgeMap = renderHedge ? trustByPath : null;
+    const lines = results.map((r, i) => {
+      const snippet = r.snippet
+        ? r.snippet.slice(0, 500).replace(/\n/g, " ")
+        : "(no preview)";
+      const source = typeof r.line === "number" ? `${r.path}:${r.line}` : r.path;
+      const head = `[${i + 1}] ${source} (score: ${r.score.toFixed(3)})\n${snippet}`;
+      const handle = handleByIndex.get(i);
+      const hedged = head.replace(/\s+$/, "");
+      const withHandle = handle ? `${hedged} ${handle}` : hedged;
+      if (hedgeMap) {
+        const item = hedgeMap.get(r.path);
+        if (item) {
+          const hedge = renderEpistemicHedge(item.trust);
+          if (hedge.length > 0) return `${withHandle} ${hedge}`;
+        }
+      }
+      return withHandle;
+    });
+    return `## ${title}\n\n${lines.join("\n\n")}`;
+  }
+
+  // ── Specialized recall result formatters ────────────────────────────────
+
+  formatObjectiveStateResults(
+    results: ObjectiveStateSearchResult[],
+  ): string {
+    const lines = results.map(({ snapshot }, index) => {
+      const parts = [
+        snapshot.recordedAt.replace("T", " ").slice(0, 16),
+        `${snapshot.kind}/${snapshot.changeKind}`,
+      ];
+      if (snapshot.outcome) parts.push(snapshot.outcome);
+      const header = `[${index + 1}] ${parts.join(" | ")} | ${snapshot.scope}`;
+      const detailParts = [snapshot.summary];
+      if (snapshot.command) detailParts.push(`command: ${snapshot.command}`);
+      else if (snapshot.toolName)
+        detailParts.push(`tool: ${snapshot.toolName}`);
+      return `${header}\n${detailParts.join(" | ")}`;
+    });
+    return `## Objective State\n\n${lines.join("\n\n")}`;
+  }
+
+  formatCausalTrajectoryResults(
+    results: CausalTrajectorySearchResult[],
+  ): string {
+    const lines = results.map(({ record, matchedFields }, index) => {
+      const header = [
+        `[${index + 1}] ${record.recordedAt.replace("T", " ").slice(0, 16)}`,
+        record.outcomeKind,
+      ].join(" | ");
+      const details = [
+        `goal: ${record.goal}`,
+        `action: ${record.actionSummary}`,
+        `observation: ${record.observationSummary}`,
+        `outcome: ${record.outcomeSummary}`,
+      ];
+      if (record.followUpSummary)
+        details.push(`follow-up: ${record.followUpSummary}`);
+      if (matchedFields.length > 0)
+        details.push(`matched: ${matchedFields.join(", ")}`);
+      return `${header}\n${details.join("\n")}`;
+    });
+
+    return `## Causal Trajectories\n\n${lines.join("\n\n")}`;
+  }
+
+  formatTrustZoneResults(results: TrustZoneSearchResult[]): string {
+    const lines = results.map(({ record, matchedFields }, index) => {
+      const header = [
+        `[${index + 1}] ${record.recordedAt.replace("T", " ").slice(0, 16)}`,
+        record.zone,
+        record.kind,
+      ].join(" | ");
+      const details = [
+        record.summary,
+        `provenance: ${record.provenance.sourceClass}`,
+      ];
+      if (record.entityRefs && record.entityRefs.length > 0) {
+        details.push(`entities: ${record.entityRefs.join(", ")}`);
+      }
+      if (record.tags && record.tags.length > 0) {
+        details.push(`tags: ${record.tags.join(", ")}`);
+      }
+      if (matchedFields.length > 0) {
+        details.push(`matched: ${matchedFields.join(", ")}`);
+      }
+      return `${header}\n${details.join("\n")}`;
+    });
+
+    return `## Trust Zones\n\n${lines.join("\n\n")}`;
+  }
+
+  formatHarmonicRetrievalResults(
+    results: HarmonicRetrievalResult[],
+  ): string {
+    const lines = results.map(
+      (
+        { node, matchedAnchors, matchedFields, nodeScore, anchorScore },
+        index,
+      ) => {
+        const header = [
+          `[${index + 1}] ${node.recordedAt.replace("T", " ").slice(0, 16)}`,
+          `${node.kind}/${node.abstractionLevel}`,
+          node.sessionKey,
+        ].join(" | ");
+        const details = [
+          node.title,
+          node.summary,
+          `scores: node=${nodeScore.toFixed(1)} anchor=${anchorScore.toFixed(1)}`,
+        ];
+        if (matchedAnchors.length > 0) {
+          details.push(
+            `anchors: ${matchedAnchors.map((anchor) => `${anchor.anchorType}:${anchor.anchorValue}`).join("; ")}`,
+          );
+        }
+        if (matchedFields.length > 0) {
+          details.push(`matched: ${matchedFields.join(", ")}`);
+        }
+        return `${header}\n${details.join("\n")}`;
+      },
+    );
+
+    return `## Harmonic Retrieval\n\n${lines.join("\n\n")}`;
+  }
+
+  formatWorkProductResults(
+    results: WorkProductLedgerSearchResult[],
+  ): string {
+    const lines = results.map(({ entry, matchedFields }, index) => {
+      const header = [
+        `[${index + 1}] ${entry.recordedAt.replace("T", " ").slice(0, 16)}`,
+        `${entry.kind}/${entry.action}`,
+        entry.sessionKey,
+      ].join(" | ");
+      const details = [entry.summary, `scope: ${entry.scope}`];
+      if (entry.artifactPath) details.push(`artifact: ${entry.artifactPath}`);
+      if (entry.tags && entry.tags.length > 0)
+        details.push(`tags: ${entry.tags.join(", ")}`);
+      if (matchedFields.length > 0)
+        details.push(`matched: ${matchedFields.join(", ")}`);
+      return `${header}\n${details.join("\n")}`;
+    });
+
+    return `## Work Products\n\n${lines.join("\n\n")}`;
+  }
+
+  formatVerifiedEpisodeResults(
+    results: VerifiedEpisodeResult[],
+  ): string {
+    const lines = results.map(
+      ({ box, verifiedEpisodeCount, matchedFields }, index) => {
+        const header = [
+          `[${index + 1}] ${box.sealedAt.replace("T", " ").slice(0, 16)}`,
+          box.traceId ? `trace:${box.traceId.slice(0, 12)}` : "trace:none",
+        ].join(" | ");
+        const details = [
+          box.goal ?? `topics: ${box.topics.join(", ")}`,
+          `verified episodes: ${verifiedEpisodeCount}`,
+        ];
+        if (box.toolsUsed && box.toolsUsed.length > 0) {
+          details.push(`tools: ${box.toolsUsed.join(", ")}`);
+        }
+        if (matchedFields.length > 0) {
+          details.push(`matched: ${matchedFields.join(", ")}`);
+        }
+        return `${header}\n${details.join("\n")}`;
+      },
+    );
+
+    return `## Verified Episodes\n\n${lines.join("\n\n")}`;
+  }
+
+  formatVerifiedSemanticRuleResults(
+    results: VerifiedSemanticRuleResult[],
+  ): string {
+    const lines = results.map(
+      (
+        {
+          rule,
+          sourceMemoryId,
+          verificationStatus,
+          effectiveConfidence,
+          matchedFields,
+        },
+        index,
+      ) => {
+        const header = [
+          `[${index + 1}] ${rule.frontmatter.updated.replace("T", " ").slice(0, 16)}`,
+          verificationStatus,
+          `confidence:${effectiveConfidence.toFixed(2)}`,
+        ].join(" | ");
+        const details = [rule.content, `source memory: ${sourceMemoryId}`];
+        if (matchedFields.length > 0) {
+          details.push(`matched: ${matchedFields.join(", ")}`);
+        }
+        return `${header}\n${details.join("\n")}`;
+      },
+    );
+
+    return `## Verified Rules\n\n${lines.join("\n\n")}`;
+  }
+
+  // ── Identity continuity helpers ─────────────────────────────────────────
+
+  summarizeIdentityText(
+    raw: string,
+    maxLines: number,
+    maxChars: number,
+  ): string {
+    const lines = raw
+      .replace(/\r/g, "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !line.startsWith("#"));
+    const compact = lines.slice(0, Math.max(1, maxLines)).join(" ");
+    if (compact.length <= maxChars) return compact;
+    return `${compact.slice(0, Math.max(0, maxChars - 1))}…`;
+  }
+
+  formatOpenIncidentLine(
+    incident: ContinuityIncidentRecord,
+    includeDetails: boolean,
+  ): string {
+    const base = `[${incident.id}] ${incident.symptom.trim()}`;
+    if (!includeDetails) return `- ${base}`;
+    const parts = [base];
+    if (incident.suspectedCause)
+      parts.push(`cause: ${incident.suspectedCause.trim()}`);
+    if (incident.triggerWindow)
+      parts.push(`window: ${incident.triggerWindow.trim()}`);
+    return `- ${parts.join(" | ")}`;
+  }
+
+  trimIdentitySection(
+    content: string,
+    maxChars: number,
+  ): { text: string; truncated: boolean } {
+    if (maxChars <= 0) return { text: "", truncated: false };
+    if (content.length <= maxChars) return { text: content, truncated: false };
+    const suffix = "\n\n...(identity continuity trimmed)";
+    if (maxChars <= suffix.length) {
+      return { text: content.slice(0, maxChars), truncated: true };
+    }
+    const headroom = Math.max(0, maxChars - suffix.length);
+    return { text: `${content.slice(0, headroom)}${suffix}`, truncated: true };
+  }
+
+  async buildIdentityContinuitySection(options: {
+    storage: StorageManager;
+    recallMode: RecallPlanMode;
+    prompt: string;
+  }): Promise<{
+    section: string;
+    mode: IdentityInjectionMode;
+    injectedChars: number;
+    truncated: boolean;
+  } | null> {
+    if (!resolveIdentityContinuityCapabilities(this.config).identityContinuity) return null;
+    if (this.config.identityMaxInjectChars <= 0) return null;
+
+    const resolved = resolveEffectiveIdentityInjectionMode({
+      configuredMode: this.config.identityInjectionMode,
+      recallMode: options.recallMode,
+      prompt: options.prompt,
+    });
+    if (!resolved.shouldInject) return null;
+
+    const [anchorRaw, loopsRaw, incidents] = await Promise.all([
+      options.storage.readIdentityAnchor(),
+      options.storage.readIdentityImprovementLoops(),
+      options.storage.readContinuityIncidents(200),
+    ]);
+    const openIncidents = incidents.filter(
+      (incident) => incident.state === "open",
+    );
+
+    const lines: string[] = [];
+    if (resolved.mode === "full") {
+      lines.push("## Identity Continuity");
+      if (anchorRaw && anchorRaw.trim().length > 0) {
+        lines.push("", "### Anchor", "", anchorRaw.trim());
+      }
+      if (loopsRaw && loopsRaw.trim().length > 0) {
+        lines.push("", "### Improvement Loops", "", loopsRaw.trim());
+      }
+      lines.push("", "### Open Incidents", "");
+      if (openIncidents.length === 0) {
+        lines.push("- none");
+      } else {
+        lines.push(
+          ...openIncidents
+            .slice(0, 5)
+            .map((incident) => this.formatOpenIncidentLine(incident, true)),
+        );
+      }
+    } else {
+      const anchorSummary = anchorRaw
+        ? this.summarizeIdentityText(anchorRaw, 3, 320)
+        : "";
+      const loopsSummary = loopsRaw
+        ? this.summarizeIdentityText(loopsRaw, 2, 240)
+        : "";
+      lines.push("## Identity Continuity Signals", "");
+      if (anchorSummary) lines.push(`- anchor: ${anchorSummary}`);
+      if (loopsSummary) lines.push(`- loops: ${loopsSummary}`);
+      if (openIncidents.length === 0) {
+        lines.push("- incidents: 0 open");
+      } else {
+        lines.push(`- incidents: ${openIncidents.length} open`);
+        lines.push(
+          ...openIncidents
+            .slice(0, 2)
+            .map((incident) => this.formatOpenIncidentLine(incident, false)),
+        );
+      }
+    }
+
+    const body = lines.join("\n").trim();
+    if (!body) return null;
+
+    const { text, truncated } = this.trimIdentitySection(
+      body,
+      this.config.identityMaxInjectChars,
+    );
+    if (!text) return null;
+
+    return {
+      section: text,
+      mode: resolved.mode,
+      injectedChars: text.length,
+      truncated,
+    };
+  }
+}
