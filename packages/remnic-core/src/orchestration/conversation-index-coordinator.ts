@@ -8,6 +8,12 @@
  * changes; the orchestrator constructs one instance and keeps thin
  * delegating methods so existing call sites and tests that exercise the
  * private API continue to work.
+ *
+ * The backend and transcript are read through getters (not captured at
+ * construction) so that post-construction reassignment of the orchestrator's
+ * live fields — exercised by the conversation-index integration tests and by
+ * backend swap-in at deferred-init time — is honored. This mirrors the
+ * TierMigrationCoordinator accessor pattern.
  */
 
 import { readdir } from "node:fs/promises";
@@ -36,20 +42,20 @@ import type { PluginConfig } from "../types.js";
  */
 export class ConversationIndexCoordinator {
   private readonly config: PluginConfig;
-  private readonly transcript: TranscriptManager;
-  private readonly backend: ConversationIndexBackend | undefined;
+  private readonly getTranscript: () => TranscriptManager;
+  private readonly getBackend: () => ConversationIndexBackend | undefined;
   private readonly indexDir: string;
   private readonly lastUpdateAtMs = new Map<string, number>();
 
   constructor(options: {
     config: PluginConfig;
-    transcript: TranscriptManager;
-    backend: ConversationIndexBackend | undefined;
+    getTranscript: () => TranscriptManager;
+    getBackend: () => ConversationIndexBackend | undefined;
     indexDir: string;
   }) {
     this.config = options.config;
-    this.transcript = options.transcript;
-    this.backend = options.backend;
+    this.getTranscript = options.getTranscript;
+    this.getBackend = options.getBackend;
     this.indexDir = options.indexDir;
   }
 
@@ -58,8 +64,9 @@ export class ConversationIndexCoordinator {
     retrievalQuery: string,
     topK: number,
   ): Promise<ConversationSearchResult[]> {
-    if (this.backend) {
-      return this.backend.search(retrievalQuery, topK);
+    const backend = this.getBackend();
+    if (backend) {
+      return backend.search(retrievalQuery, topK);
     }
     return [];
   }
@@ -111,7 +118,7 @@ export class ConversationIndexCoordinator {
     sessionKey?: string,
     hours: number = 24,
   ): Promise<ConversationChunk[]> {
-    const entries = await this.transcript.readRecent(hours, sessionKey);
+    const entries = await this.getTranscript().readRecent(hours, sessionKey);
     const effectiveSessionKey = sessionKey ?? "all-sessions";
     return chunkTranscriptEntries(effectiveSessionKey, entries, {
       maxChars: this.config.conversationRecallMaxChars * 2,
@@ -156,8 +163,9 @@ export class ConversationIndexCoordinator {
         lastUpdateAt,
       };
     }
-    const backendHealth: ConversationIndexBackendHealth = this.backend
-      ? await this.backend.health()
+    const backend = this.getBackend();
+    const backendHealth: ConversationIndexBackendHealth = backend
+      ? await backend.health()
       : {
           backend: this.config.conversationIndexBackend,
           status: "degraded" as const,
@@ -199,8 +207,9 @@ export class ConversationIndexCoordinator {
       };
     }
 
-    const inspection: ConversationIndexBackendInspection = this.backend
-      ? await this.backend.inspect()
+    const backend = this.getBackend();
+    const inspection: ConversationIndexBackendInspection = backend
+      ? await backend.inspect()
       : {
           backend: this.config.conversationIndexBackend,
           status: "degraded" as const,
@@ -270,8 +279,9 @@ export class ConversationIndexCoordinator {
       opts?.embed ?? this.config.conversationIndexEmbedOnUpdate;
     let embedded = false;
 
-    if (this.backend) {
-      const result = await this.backend.update(chunks, {
+    const backend = this.getBackend();
+    if (backend) {
+      const result = await backend.update(chunks, {
         embed: shouldEmbed,
         ...(retentionCutoffMs !== undefined ? { retentionCutoffMs } : {}),
       });
@@ -314,8 +324,9 @@ export class ConversationIndexCoordinator {
       opts?.embed ?? this.config.conversationIndexEmbedOnUpdate;
     let embedded = false;
     let rebuilt = false;
-    if (this.backend) {
-      const result = await this.backend.rebuild(chunks, {
+    const backend = this.getBackend();
+    if (backend) {
+      const result = await backend.rebuild(chunks, {
         embed: shouldEmbed,
       });
       embedded = result.embedded;

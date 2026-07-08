@@ -2902,8 +2902,8 @@ export class Orchestrator {
     );
     this.conversationIndexCoordinator = new ConversationIndexCoordinator({
       config,
-      transcript: this.transcript,
-      backend: this.conversationIndexBackend,
+      getTranscript: () => this.transcript,
+      getBackend: () => this.conversationIndexBackend,
       indexDir: this.conversationIndexDir,
     });
     this.modelRegistry = new ModelRegistry(config.memoryDir);
