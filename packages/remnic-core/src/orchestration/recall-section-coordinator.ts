@@ -30,9 +30,29 @@ import type { LastRecallBudgetSummary } from "../recall-state.js";
  */
 export class RecallSectionCoordinator {
   private readonly getConfig: () => PluginConfig;
+  private readonly resolveSectionEnabled: (
+    sectionId: string,
+    defaultEnabled: boolean,
+  ) => boolean;
 
-  constructor(options: { getConfig: () => PluginConfig }) {
+  constructor(options: {
+    getConfig: () => PluginConfig;
+    resolveSectionEnabled?: (
+      sectionId: string,
+      defaultEnabled: boolean,
+    ) => boolean;
+  }) {
     this.getConfig = options.getConfig;
+    // Default to the coordinator's own config-based check so standalone usage
+    // (e.g. config-recall-pipeline tests) keeps self-gating. The orchestrator
+    // injects its own resolver so appendRecallSection flows through the same
+    // overridable isRecallSectionEnabled that the recallInternal computation
+    // gates use — keeping compute-side and append-side enablement coherent
+    // (seam 13). This preserves the recall-hardening test seam where tests
+    // override orchestrator.isRecallSectionEnabled to isolate sections.
+    this.resolveSectionEnabled =
+      options.resolveSectionEnabled ??
+      ((id, def) => this.isRecallSectionEnabled(id, def));
   }
 
   getRecallSectionEntry(
@@ -93,7 +113,7 @@ export class RecallSectionCoordinator {
     // that need to know whether injection occurred (e.g. xray annotation for
     // peer-profile) must gate on this return value rather than on whether the
     // section text was computed (Codex P2 finding, PR #764).
-    if (!this.isRecallSectionEnabled(sectionId)) return false;
+    if (!this.resolveSectionEnabled(sectionId, true)) return false;
     const trimmed = content.trim();
     if (trimmed.length === 0) return false;
 

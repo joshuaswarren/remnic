@@ -2847,6 +2847,7 @@ export class Orchestrator {
     });
     this.recallSectionCoordinator = new RecallSectionCoordinator({
       getConfig: () => this.config,
+      resolveSectionEnabled: (id, def) => this.isRecallSectionEnabled(id, def),
     });
     this.contradictionLinkingCoordinator = new ContradictionLinkingCoordinator({
       getConfig: () => this.config,
