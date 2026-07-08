@@ -172,14 +172,35 @@ export async function runCodingGraphBenchmark(
   try {
     const store = await GraphStore.open({ dbPath });
     try {
-      // ── Metric 1: full-index wall time ──
-      const fullIndex = await timeAsync(() => store.upsertFileBatch(storeFiles));
-      if (!fullIndex.result.ok) {
-        throw new Error(`full-index failed: ${fullIndex.result.code}`);
+      // ── Metric 1: full-index wall time (warmed median over fresh DBs) ──
+      // A single cold shot of a small index is dominated by JIT/SQLite
+      // warm-up and swings >50% on shared CI runners, false-positiving the
+      // regression gate (#1557). upsertFileBatch is idempotent on an
+      // already-indexed store, so warmed samples need fresh DBs. Sample
+      // FULL_INDEX_SAMPLES runs — the first absorbs cold-start overhead —
+      // and take the median so the metric reflects steady-state cost.
+      const FULL_INDEX_SAMPLES = 3;
+      const fullIndexSamples: number[] = [];
+      for (let s = 0; s < FULL_INDEX_SAMPLES; s++) {
+        const sampleStore =
+          s === 0
+            ? store
+            : await GraphStore.open({ dbPath: path.join(dir, `bench-warm-${s}.sqlite`) });
+        const fi = await timeAsync(() => sampleStore.upsertFileBatch(storeFiles));
+        if (!fi.result.ok) {
+          if (sampleStore !== store) await sampleStore.close();
+          throw new Error(`full-index failed: ${fi.result.code}`);
+        }
+        fullIndexSamples.push(fi.ms);
+        if (sampleStore !== store) await sampleStore.close();
       }
+      const fullIndexMsValue = percentile(
+        [...fullIndexSamples].sort((a, b) => a - b),
+        50,
+      );
 
       const locsPerSecond =
-        fullIndex.ms > 0 ? repo.approximateLoc / (fullIndex.ms / 1000) : 0;
+        fullIndexMsValue > 0 ? repo.approximateLoc / (fullIndexMsValue / 1000) : 0;
 
       sampleRss();
 
@@ -343,7 +364,7 @@ export async function runCodingGraphBenchmark(
           symbolCount: repo.files.reduce((sum, f) => sum + f.symbols.length, 0),
           edgeCount: repo.files.reduce((sum, f) => sum + f.edges.length, 0),
         },
-        fullIndexMs: { ms: fullIndex.ms },
+        fullIndexMs: { ms: fullIndexMsValue },
         fullIndexLocsPerSecond: Math.round(locsPerSecond),
         incrementalUpdate: computeMicroMetric(incrementalSamples),
         incrementalModifiedUpdate: computeMicroMetric(
