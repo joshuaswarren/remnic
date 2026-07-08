@@ -25,15 +25,16 @@ const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, "..");
 
 test("orchestrator.runSemanticConsolidation invokes materializeAfterSemanticConsolidation", () => {
+  // Issue #1526 seam 5: semantic consolidation moved to SemanticConsolidationCoordinator.
   const src = readFileSync(
-    path.join(repoRoot, "packages/remnic-core/src/orchestrator.ts"),
+    path.join(repoRoot, "packages/remnic-core/src/orchestration/semantic-consolidation-coordinator.ts"),
     "utf-8",
   );
   // The import line must exist…
   assert.match(
     src,
     /materializeAfterSemanticConsolidation/u,
-    "orchestrator.ts must import materializeAfterSemanticConsolidation",
+    "semantic-consolidation-coordinator must import materializeAfterSemanticConsolidation",
   );
   // …and there must be at least one call site after the semantic-consolidation
   // completion log line. We check by locating the log and asserting a call
@@ -42,7 +43,7 @@ test("orchestrator.runSemanticConsolidation invokes materializeAfterSemanticCons
   const awaitIdx = src.indexOf("await materializeAfterSemanticConsolidation");
   assert.ok(
     awaitIdx >= 0,
-    "orchestrator.ts must await materializeAfterSemanticConsolidation at runtime",
+    "semantic-consolidation-coordinator must await materializeAfterSemanticConsolidation at runtime",
   );
 
   // Sanity: the call is inside a try/catch so a materialize failure never
