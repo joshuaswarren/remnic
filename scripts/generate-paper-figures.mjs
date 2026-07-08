@@ -520,9 +520,13 @@ function figure1() {
     size: 17,
     weight: 700,
   }) + "\n";
-  const tierFPresent = Boolean(locomoF || longmemevalF);
-  const tierFLine = tierFPresent
-    ? "Real: Remnic Tier-L anchor + Tier-F head-to-head. Pending: third-party recall adapters (#1747)."
+  // Header line names exactly which Tier-F benchmarks resolved, so a single
+  // Tier-F panel never reads as a full "head-to-head" (kilo thread).
+  const tierFWhich = [locomoF && "LoCoMo", longmemevalF && "LongMemEval"]
+    .filter(Boolean)
+    .join(" + ");
+  const tierFLine = tierFWhich
+    ? `Real: Remnic Tier-L anchor + Tier-F (${tierFWhich}) head-to-head. Pending: third-party recall adapters (#1747).`
     : "Real: Remnic Tier-L reproducibility anchor (RTX 3090, qwen2.5-7b Q4_K_M). Pending: Tier-F run (#1728) + third-party recall adapters (#1747).";
   body +=
     text(
