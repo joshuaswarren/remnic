@@ -404,3 +404,46 @@ export function resolveCreationMemoryCapabilities(
     commitmentLifecycle: config.commitmentLifecycleEnabled,
   });
 }
+
+// ---------------------------------------------------------------------------
+// Namespace capability set (issue #1523 batch 5).
+//
+// `namespacesEnabled` is the single most-scattered config flag in the codebase
+// (101 read sites outside config.ts across 18 files — orchestrator, access-service,
+// namespace modules, maintenance, CLI, admin). It gates whether the multi-namespace
+// system is active at all: every namespace resolution, storage path, recall budget,
+// and maintenance fanout checks it. Like the other projections above it gets its own
+// resolver invoked ONCE per operation entry rather than re-derived at each site.
+//
+// The field is a non-optional boolean in PluginConfig, so no coercion is needed.
+// ---------------------------------------------------------------------------
+
+/**
+ * Frozen projection of namespace feature gates (issue #1523 batch 5).
+ *
+ * Every field is `readonly boolean`. Composition lives ONLY in
+ * {@link resolveNamespaceCapabilities}.
+ */
+export interface NamespaceCapabilitySet {
+  /** `namespacesEnabled` — multi-namespace system master switch. */
+  readonly namespaces: boolean;
+}
+
+/**
+ * Config projection consumed by {@link resolveNamespaceCapabilities}.
+ */
+export type NamespaceConfigProjection = Pick<PluginConfig, "namespacesEnabled">;
+
+/**
+ * Resolve the {@link NamespaceCapabilitySet} from parsed config.
+ *
+ * Call this ONCE at operation entry and thread the result down. The flag is a
+ * non-optional boolean so the projection is a pure pass-through.
+ */
+export function resolveNamespaceCapabilities(
+  config: NamespaceConfigProjection,
+): NamespaceCapabilitySet {
+  return Object.freeze({
+    namespaces: config.namespacesEnabled,
+  });
+}

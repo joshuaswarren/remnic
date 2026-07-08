@@ -23,6 +23,7 @@
  * NamespaceSearchRouter health. No new scope-resolution or namespace-listing
  * logic is introduced.
  */
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import path from "node:path";
 import type { NamespaceCatalog, NamespaceRecord } from "../namespaces/catalog.js";
 import { canReadNamespace, canWriteNamespace } from "../namespaces/principal.js";
@@ -190,7 +191,7 @@ export function inspectScope(options: InspectScopeOptions): ScopeInspection {
   const { config } = options;
   // Honour the pre-read flag when the caller supplied one (avoids a scattered
   // read here); fall back to the config flag for direct callers (tests/CLI).
-  const namespacesEnabled = options.namespacesEnabled ?? config.namespacesEnabled === true;
+  const namespacesEnabled = options.namespacesEnabled ?? resolveNamespaceCapabilities(config).namespaces === true;
 
   const plan = resolveScopePlan({
     config,

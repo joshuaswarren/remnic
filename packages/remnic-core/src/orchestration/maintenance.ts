@@ -19,6 +19,7 @@
  * `orchestrator.requestQmdMaintenance` etc. continue to work.
  */
 
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
@@ -437,7 +438,7 @@ export class MaintenanceScheduler {
     this.qmdMaintenancePending = false;
 
     try {
-      if (this.deps.config.namespacesEnabled) {
+      if (resolveNamespaceCapabilities(this.deps.config).namespaces) {
         // Include cataloged dynamic namespaces, not just the configured set
         // (NGnei), but run through the namespace-aware maintenance planner so
         // each namespace is budgeted, lock-protected, and status-recorded

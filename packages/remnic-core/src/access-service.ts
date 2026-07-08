@@ -5,7 +5,8 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
-import { resolveMemoryLifecycleCapabilities } from "./capabilities.js";
+import {
+  resolveNamespaceCapabilities, resolveMemoryLifecycleCapabilities } from "./capabilities.js";
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
@@ -1339,7 +1340,7 @@ export class EngramAccessService {
   private resolveNamespace(namespace?: string): string {
     const requested = namespace?.trim();
     if (!requested) return this.orchestrator.config.defaultNamespace;
-    if (!this.orchestrator.config.namespacesEnabled && requested !== this.orchestrator.config.defaultNamespace) {
+    if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces && requested !== this.orchestrator.config.defaultNamespace) {
       throw new EngramAccessInputError(`unsupported namespace: ${requested}`);
     }
     return requested;
@@ -1458,14 +1459,14 @@ export class EngramAccessService {
       typeof request.sessionKey === "string" && request.sessionKey.length > 0;
     const codingContext =
       hasSession &&
-      this.orchestrator.config.namespacesEnabled &&
+      resolveNamespaceCapabilities(this.orchestrator.config).namespaces &&
       this.orchestrator.config.codingMode?.projectScope
         ? this.orchestrator.getCodingContextForSession(request.sessionKey) ??
           (await this.resolveCodingContextFromOptions(request))
         : null;
     const overlay =
       hasSession &&
-      this.orchestrator.config.namespacesEnabled &&
+      resolveNamespaceCapabilities(this.orchestrator.config).namespaces &&
       this.orchestrator.config.codingMode?.projectScope
         ? resolveCodingNamespaceOverlay(
             codingContext,
@@ -1686,7 +1687,7 @@ export class EngramAccessService {
       typeof request.sessionKey === "string" && request.sessionKey.length > 0;
     const overlayEligible =
       hasSession &&
-      this.orchestrator.config.namespacesEnabled === true &&
+      resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true &&
       this.orchestrator.config.codingMode?.projectScope === true;
 
     // Resolve the coding context the overlay must use: the session's ATTACHED
@@ -1822,7 +1823,7 @@ export class EngramAccessService {
         this.orchestrator.config.objectiveStateSnapshotWritesEnabled === true;
       if (
         willWriteObjectiveState &&
-        this.orchestrator.config.namespacesEnabled === true &&
+        resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true &&
         !canWriteNamespace(principal, baseNamespace, this.orchestrator.config)
       ) {
         clearSeededContext();
@@ -1897,7 +1898,7 @@ export class EngramAccessService {
     memoryDir: string;
     objectiveStateStoreDir?: string;
   }> {
-    if (!this.orchestrator.config.namespacesEnabled) {
+    if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces) {
       return {
         memoryDir: this.orchestrator.config.memoryDir,
         objectiveStateStoreDir: this.orchestrator.config.objectiveStateStoreDir,
@@ -1909,7 +1910,7 @@ export class EngramAccessService {
       objectiveStateStoreDir: objectiveStateStoreOverrideForNamespace({
         memoryDir: this.orchestrator.config.memoryDir,
         configuredStoreDir: this.orchestrator.config.objectiveStateStoreDir,
-        namespacesEnabled: this.orchestrator.config.namespacesEnabled,
+        namespacesEnabled: resolveNamespaceCapabilities(this.orchestrator.config).namespaces,
         namespace,
       }),
     };
@@ -1917,7 +1918,7 @@ export class EngramAccessService {
 
   private resolveReadableNamespace(namespace: string | undefined, principal?: string): string {
     const resolved = this.resolveNamespace(namespace);
-    const namespacesEnabled = this.orchestrator.config.namespacesEnabled;
+    const namespacesEnabled = resolveNamespaceCapabilities(this.orchestrator.config).namespaces;
 
     if (!namespacesEnabled) {
       // Namespaces are disabled globally — no ACL needed for any caller.
@@ -1946,7 +1947,7 @@ export class EngramAccessService {
       return [this.resolveReadableNamespace(requested, principal)];
     }
 
-    if (!this.orchestrator.config.namespacesEnabled) {
+    if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces) {
       return [this.resolveNamespace(undefined)];
     }
 
@@ -1998,7 +1999,7 @@ export class EngramAccessService {
     namespaces: string[],
     collectionPrincipal?: string,
   ): string[] {
-    if (!this.orchestrator.config.namespacesEnabled) {
+    if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces) {
       return namespaces;
     }
 
@@ -2714,7 +2715,7 @@ export class EngramAccessService {
     return {
       ok: true,
       memoryDir: storage.dir,
-      namespacesEnabled: this.orchestrator.config.namespacesEnabled === true,
+      namespacesEnabled: resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true,
       defaultNamespace: this.orchestrator.config.defaultNamespace,
       searchBackend,
       qmdEnabled,
@@ -2730,7 +2731,7 @@ export class EngramAccessService {
   }
 
   private qmdCollectionForHealth(namespace: string, storageDir: string): string {
-    if (this.orchestrator.config.namespacesEnabled !== true) {
+    if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces !== true) {
       return this.orchestrator.config.qmdCollection;
     }
 
@@ -2766,7 +2767,7 @@ export class EngramAccessService {
       };
     }
 
-    if (this.orchestrator.config.namespacesEnabled === true) {
+    if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true) {
       const namespaceHealth = await this.namespaceQmdHealth(searchBackend, qmdEnabled, namespace, collection);
       if (namespaceHealth) return namespaceHealth;
     }
@@ -3224,7 +3225,7 @@ export class EngramAccessService {
     const normalizedRequest = { ...request, query };
     const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
     const principal = this.resolveRequestPrincipal(request.sessionKey, authenticatedPrincipal);
-    if (this.orchestrator.config.namespacesEnabled && !principal) {
+    if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces && !principal) {
       throw new EngramAccessInputError(
         "authentication required: namespaces are enabled and no principal was supplied",
       );
@@ -3307,7 +3308,7 @@ export class EngramAccessService {
     // accounting (Codex P1: budget recorded before mode validation).
     const mode = this.normalizeRecallMode(request.mode);
     const maybePrincipal = this.resolveRequestPrincipal(request.sessionKey, authenticatedPrincipal);
-    if (this.orchestrator.config.namespacesEnabled && !maybePrincipal) {
+    if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces && !maybePrincipal) {
       throw new EngramAccessInputError(
         "authentication required: namespaces are enabled and no principal was supplied",
       );
@@ -3321,7 +3322,7 @@ export class EngramAccessService {
     const profileCodingOverlay =
       !namespaceOverride &&
       profileCodingContext &&
-      this.orchestrator.config.namespacesEnabled &&
+      resolveNamespaceCapabilities(this.orchestrator.config).namespaces &&
       this.orchestrator.config.codingMode?.projectScope
         ? resolveCodingNamespaceOverlay(
             profileCodingContext,
@@ -3725,7 +3726,7 @@ export class EngramAccessService {
         return { found: false };
       }
     } else if (
-      this.orchestrator.config.namespacesEnabled
+      resolveNamespaceCapabilities(this.orchestrator.config).namespaces
       && !principal
     ) {
       return { found: false };
@@ -3744,7 +3745,7 @@ export class EngramAccessService {
         return candidate.namespace === requestedNamespace ? candidate : null;
       })();
     const readableSnapshot = (() => {
-      if (!snapshot || !this.orchestrator.config.namespacesEnabled) return snapshot;
+      if (!snapshot || !resolveNamespaceCapabilities(this.orchestrator.config).namespaces) return snapshot;
       const snapshotNamespace = snapshot.namespace ?? this.orchestrator.config.defaultNamespace;
       return canReadNamespace(principal, snapshotNamespace, this.orchestrator.config)
         ? snapshot
@@ -3754,7 +3755,7 @@ export class EngramAccessService {
       if (requestedNamespace) return requestedNamespace;
       if (readableSnapshot?.namespace) return readableSnapshot.namespace;
       const fallbackNamespace = this.orchestrator.config.defaultNamespace;
-      if (!this.orchestrator.config.namespacesEnabled) return fallbackNamespace;
+      if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces) return fallbackNamespace;
       return canReadNamespace(principal, fallbackNamespace, this.orchestrator.config)
         ? fallbackNamespace
         : null;
@@ -3773,7 +3774,7 @@ export class EngramAccessService {
     namespace?: string,
     authenticatedPrincipal?: string,
   ) {
-    const namespacesEnabled = this.orchestrator.config.namespacesEnabled;
+    const namespacesEnabled = resolveNamespaceCapabilities(this.orchestrator.config).namespaces;
     const requestedNamespace = namespace?.trim()
       ? this.resolveNamespace(namespace)
       : undefined;
@@ -3882,7 +3883,7 @@ export class EngramAccessService {
       );
     }
 
-    const namespacesEnabled = this.orchestrator.config.namespacesEnabled;
+    const namespacesEnabled = resolveNamespaceCapabilities(this.orchestrator.config).namespaces;
     const requestedNamespace = request.namespace?.trim()
       ? this.resolveNamespace(request.namespace)
       : undefined;
@@ -5983,7 +5984,7 @@ export class EngramAccessService {
       // namespace to one store, so leaving the override undefined preserves the
       // existing single-store routing byte-for-byte.
       const writeNamespaceOverride =
-        this.orchestrator.config.namespacesEnabled === true
+        resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true
           ? writeNamespace
           : undefined;
       // Pin provenance PRINCIPAL to the scope plan's resolved principal (#1505
@@ -6188,7 +6189,7 @@ export class EngramAccessService {
       (typeof request.sessionKey === "string" &&
         request.sessionKey.length > 0) ||
       lcmSessionPrefixes.some((prefix) => typeof prefix === "string" && prefix.length > 0);
-    if (!hasScopedSession && this.orchestrator.config.namespacesEnabled === true) {
+    if (!hasScopedSession && resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true) {
       return {
         query: request.query,
         namespace,
@@ -6483,7 +6484,7 @@ export class EngramAccessService {
     principal: string | undefined,
   ): string | undefined {
     const config = this.orchestrator.config;
-    if (!config.namespacesEnabled) return config.defaultNamespace;
+    if (!resolveNamespaceCapabilities(config).namespaces) return config.defaultNamespace;
     // PROCEED when `default` is readable (single-store / readable-default flows)
     // — the LCM prefix resolves to the overlay when self-authorized, else the
     // default raw key.
@@ -7419,7 +7420,7 @@ export class EngramAccessService {
     }
 
     let results: Array<{ path: string; score: number; snippet?: string }>;
-    if (!this.orchestrator.config.namespacesEnabled) {
+    if (!resolveNamespaceCapabilities(this.orchestrator.config).namespaces) {
       this.resolveReadableNamespace(namespace, principal);
       results = collection === "global"
         ? await this.orchestrator.qmd.searchGlobal(query, maxResults)
@@ -8162,7 +8163,7 @@ export class EngramAccessService {
     namespace: string;
     storage: StorageManager;
   }> {
-    if (this.orchestrator.config.namespacesEnabled && !principal?.trim()) {
+    if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces && !principal?.trim()) {
       throw new EngramAccessInputError(
         "authentication required: namespaces are enabled and no principal was supplied",
       );
@@ -8902,7 +8903,7 @@ export class EngramAccessService {
     actor?: never; // ignored — actor is derived from the authenticated principal
   }) {
     const config = this.orchestrator.config;
-    const namespacesEnabled = config.namespacesEnabled === true;
+    const namespacesEnabled = resolveNamespaceCapabilities(config).namespaces === true;
     // Fix OdCl3: when no namespace is supplied, resolve the source via the
     // scope plan (principal self / scope-profile write layer / coding overlay)
     // instead of falling through to config.defaultNamespace. This matches the

@@ -5,8 +5,10 @@ import { parseConfig } from "./config.js";
 import {
   resolveCapabilities,
   resolveAccessSetupCapabilities,
+  resolveNamespaceCapabilities,
   type CapabilitySet,
   type AccessSetupCapabilitySet,
+  type NamespaceCapabilitySet,
 } from "./capabilities.js";
 
 /**
@@ -645,4 +647,35 @@ test("resolveCreationMemoryCapabilities matches pre-migration config reads (pari
       );
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// Namespace capability set parity tests (issue #1523 batch 5).
+//
+// Guard: resolveNamespaceCapabilities(config).namespaces must always equal
+// config.namespacesEnabled. The flag is a non-optional boolean so no default
+// coercion is needed.
+// ---------------------------------------------------------------------------
+
+test("resolveNamespaceCapabilities: namespaces === config.namespacesEnabled (parity)", () => {
+  const cases = [
+    { label: "on", overrides: { namespacesEnabled: true } },
+    { label: "off", overrides: { namespacesEnabled: false } },
+  ];
+
+  for (const { label, overrides } of cases) {
+    const config = parseConfig(overrides);
+    const caps = resolveNamespaceCapabilities(config);
+    assert.equal(
+      caps.namespaces,
+      config.namespacesEnabled,
+      `[${label}] caps.namespaces must equal config.namespacesEnabled`,
+    );
+  }
+});
+
+test("resolveNamespaceCapabilities: result is frozen", () => {
+  const config = parseConfig({ namespacesEnabled: true });
+  const caps = resolveNamespaceCapabilities(config);
+  assert.ok(Object.isFrozen(caps), "NamespaceCapabilitySet must be frozen");
 });

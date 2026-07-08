@@ -31,6 +31,7 @@
  *    search stays suppressed when `namespacesEnabled`.
  */
 
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import {
   canReadNamespace,
   canWriteNamespace,
@@ -396,7 +397,7 @@ export function resolveNamespaceFromStorageDir(
   options: ResolveNamespaceFromStorageDirOptions,
 ): string {
   const { config } = options;
-  if (!config.namespacesEnabled) return config.defaultNamespace;
+  if (!resolveNamespaceCapabilities(config).namespaces) return config.defaultNamespace;
   const resolvedStorageDir = path.resolve(storageDir);
   const resolvedMemoryDir = path.resolve(config.memoryDir);
   if (resolvedStorageDir === resolvedMemoryDir) return config.defaultNamespace;
@@ -462,7 +463,7 @@ export function resolveWritableNamespaceValue(
   if (!requested) {
     resolved = config.defaultNamespace;
   } else if (
-    !config.namespacesEnabled &&
+    !resolveNamespaceCapabilities(config).namespaces &&
     requested !== config.defaultNamespace
   ) {
     return { ok: false, reason: "unsupported", namespace: requested };

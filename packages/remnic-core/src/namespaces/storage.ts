@@ -1,3 +1,4 @@
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import path from "node:path";
 import { access, lstat, readdir } from "node:fs/promises";
 import { isSafeRouteNamespace } from "../routing/engine.js";
@@ -139,7 +140,7 @@ export interface NamespaceStorageRouterHooks {
  * the default migrate into that tokenized/legacy-named dir.
  */
 export async function resolveDefaultNamespaceRoot(config: PluginConfig): Promise<string> {
-  if (!config.namespacesEnabled) {
+  if (!resolveNamespaceCapabilities(config).namespaces) {
     return config.memoryDir;
   }
 
@@ -183,7 +184,7 @@ export async function resolveNamespaceStorageRoot(
   config: PluginConfig,
   namespace: string,
 ): Promise<string> {
-  if (!config.namespacesEnabled) return config.memoryDir;
+  if (!resolveNamespaceCapabilities(config).namespaces) return config.memoryDir;
   // Compare on NORMALIZED identity so a whitespace-padded configured default name
   // still routes to the default root rather than a tokenized non-default dir
   // (NH-FH). The catalog keys records by the same normalized identity.
@@ -257,7 +258,7 @@ export class NamespaceStorageRouter {
 
   private async namespaceRoot(namespace: string): Promise<string> {
     // NOTE: only used after defaultNamespaceRoot() resolution.
-    if (!this.config.namespacesEnabled) return this.config.memoryDir;
+    if (!resolveNamespaceCapabilities(this.config).namespaces) return this.config.memoryDir;
     if (normalizeNamespaceIdentity(namespace) === this.defaultNamespaceIdentity) {
       return this.defaultNsRootResolved ?? this.config.memoryDir;
     }

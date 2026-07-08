@@ -1,3 +1,4 @@
+import { resolveNamespaceCapabilities } from "../capabilities.js";
 import path from "node:path";
 import type { Dirent } from "node:fs";
 import {
@@ -181,7 +182,7 @@ const MEMORY_DATA_CHILDREN = [
 function isCatalogEnabled(config: PluginConfig): boolean {
   // Inert unless namespaces are enabled. namespaceCatalogEnabled defaults to
   // true (undefined => enabled) but is only honored when namespacesEnabled.
-  if (config.namespacesEnabled !== true) return false;
+  if (resolveNamespaceCapabilities(config).namespaces !== true) return false;
   return (config as { namespaceCatalogEnabled?: boolean }).namespaceCatalogEnabled !== false;
 }
 
