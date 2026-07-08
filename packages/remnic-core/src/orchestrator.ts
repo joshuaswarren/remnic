@@ -99,11 +99,8 @@ import { TierMigrationCoordinator } from "./orchestration/tier-migration-coordin
 import { ExtractionQueueCoordinator } from "./orchestration/extraction-queue-coordinator.js";
 import { CompressionGuidelineCoordinator } from "./orchestration/compression-guideline-coordinator.js";
 import { SemanticConsolidationCoordinator } from "./orchestration/semantic-consolidation-coordinator.js";
-<<<<<<< HEAD
 import { LifecyclePolicyCoordinator } from "./orchestration/lifecycle-policy-coordinator.js";
-=======
 import { EntitySynthesisCoordinator } from "./orchestration/entity-synthesis-coordinator.js";
->>>>>>> 86bef363d (refactor(#1526): extract entity-synthesis coordinator (seam 7))
 import {
   runLiveConnectorsOnce,
   type LiveConnectorsRunSummary,
@@ -1816,11 +1813,8 @@ export class Orchestrator {
   readonly tierMigrationCoordinator: TierMigrationCoordinator;
   readonly compressionGuidelineCoordinator: CompressionGuidelineCoordinator;
   readonly semanticConsolidationCoordinator: SemanticConsolidationCoordinator;
-<<<<<<< HEAD
   readonly lifecyclePolicyCoordinator: LifecyclePolicyCoordinator;
-=======
   readonly entitySynthesisCoordinator: EntitySynthesisCoordinator;
->>>>>>> 86bef363d (refactor(#1526): extract entity-synthesis coordinator (seam 7))
   /**
    * In-memory X-ray snapshot from the most recent `recall()` call that
    * was invoked with `xrayCapture: true` (issue #570 PR 1).  Scope is
