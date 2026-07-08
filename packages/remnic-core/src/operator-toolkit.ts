@@ -28,6 +28,7 @@ import {
   resolveAccessSetupCapabilities,
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
+  resolveQmdCapabilities,
 } from "./capabilities.js";
 import {
   analyzeSessionIntegrity,
@@ -742,7 +743,7 @@ export async function runOperatorSetup(options: OperatorSetupOptions): Promise<O
   await mkdir(options.orchestrator.config.workspaceDir, { recursive: true });
 
   const qmdAvailable = await options.orchestrator.qmd.probe();
-  const collectionState = options.orchestrator.config.qmdEnabled
+  const collectionState = resolveQmdCapabilities(options.orchestrator.config).qmd
     ? await options.orchestrator.qmd.ensureCollection(
         options.orchestrator.config.memoryDir,
         options.orchestrator.config.qmdCollection,
@@ -813,7 +814,7 @@ export async function runOperatorSetup(options: OperatorSetupOptions): Promise<O
     workspaceDir: options.orchestrator.config.workspaceDir,
     directories,
     qmd: {
-      enabled: options.orchestrator.config.qmdEnabled,
+      enabled: resolveQmdCapabilities(options.orchestrator.config).qmd,
       available: qmdAvailable,
       collectionState,
       debugStatus: options.orchestrator.qmd.debugStatus(),
@@ -949,12 +950,12 @@ async function buildOperatorConfigReviewReport(input: {
     }));
   }
 
-  if (config.qmdEnabled && config.qmdDaemonEnabled === false) {
+  if (resolveQmdCapabilities(config).qmd && resolveQmdCapabilities(config).qmdDaemon === false) {
     findings.push(buildConfigReviewFinding({
       key: "qmd_daemon",
       status: "recommend",
       setting: "qmdDaemonEnabled",
-      currentValue: config.qmdDaemonEnabled,
+      currentValue: resolveQmdCapabilities(config).qmdDaemon,
       defaultValue: true,
       recommendedValue: true,
       summary: "Enable the QMD daemon path when QMD powers recall.",
@@ -991,12 +992,12 @@ async function buildOperatorConfigReviewReport(input: {
     }));
   }
 
-  if (searchBackend === "qmd" && config.qmdEnabled === false) {
+  if (searchBackend === "qmd" && resolveQmdCapabilities(config).qmd === false) {
     findings.push(buildConfigReviewFinding({
       key: "qmd_search_backend_disabled",
       status: "problem",
       setting: "qmdEnabled",
-      currentValue: config.qmdEnabled,
+      currentValue: resolveQmdCapabilities(config).qmd,
       defaultValue: true,
       recommendedValue: true,
       summary: "QMD search is selected but QMD is disabled.",
@@ -1005,12 +1006,12 @@ async function buildOperatorConfigReviewReport(input: {
     }));
   }
 
-  if (config.qmdColdTierEnabled === true && config.qmdEnabled === false) {
+  if (resolveQmdCapabilities(config).qmdColdTier === true && resolveQmdCapabilities(config).qmd === false) {
     findings.push(buildConfigReviewFinding({
       key: "qmd_cold_tier_requires_qmd",
       status: "problem",
       setting: "qmdEnabled",
-      currentValue: config.qmdEnabled,
+      currentValue: resolveQmdCapabilities(config).qmd,
       defaultValue: true,
       recommendedValue: true,
       summary: "Cold-tier QMD recall is enabled while QMD itself is disabled.",
@@ -1019,12 +1020,12 @@ async function buildOperatorConfigReviewReport(input: {
     }));
   }
 
-  if (config.qmdTierMigrationEnabled && config.qmdColdTierEnabled !== true) {
+  if (resolveQmdCapabilities(config).qmdTierMigration && resolveQmdCapabilities(config).qmdColdTier !== true) {
     findings.push(buildConfigReviewFinding({
       key: "qmd_tier_migration_requires_cold_tier",
       status: "problem",
       setting: "qmdColdTierEnabled",
-      currentValue: config.qmdColdTierEnabled,
+      currentValue: resolveQmdCapabilities(config).qmdColdTier,
       defaultValue: false,
       recommendedValue: true,
       summary: "Hot/cold tier migration is enabled without the cold tier itself.",
@@ -1033,12 +1034,12 @@ async function buildOperatorConfigReviewReport(input: {
     }));
   }
 
-  if (resolveIndexingCapabilities(config).conversationIndex && config.conversationIndexBackend === "qmd" && config.qmdEnabled === false) {
+  if (resolveIndexingCapabilities(config).conversationIndex && config.conversationIndexBackend === "qmd" && resolveQmdCapabilities(config).qmd === false) {
     findings.push(buildConfigReviewFinding({
       key: "conversation_index_qmd_requires_qmd",
       status: "problem",
       setting: "qmdEnabled",
-      currentValue: config.qmdEnabled,
+      currentValue: resolveQmdCapabilities(config).qmd,
       defaultValue: true,
       recommendedValue: true,
       summary: "The conversation index is configured for QMD while QMD is disabled.",
@@ -1063,8 +1064,8 @@ async function buildOperatorConfigReviewReport(input: {
     profile: {
       memoryOsPreset: config.memoryOsPreset,
       searchBackend,
-      qmdEnabled: config.qmdEnabled,
-      qmdDaemonEnabled: config.qmdDaemonEnabled,
+      qmdEnabled: resolveQmdCapabilities(config).qmd,
+      qmdDaemonEnabled: resolveQmdCapabilities(config).qmdDaemon,
       nativeKnowledgeEnabled: config.nativeKnowledge?.enabled === true,
       fileHygieneEnabled: config.fileHygiene?.enabled === true,
       conversationIndexEnabled: resolveIndexingCapabilities(config).conversationIndex,
@@ -1145,12 +1146,12 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
   });
 
   const qmdAvailable = await options.orchestrator.qmd.probe();
-  const collectionState = config.qmdEnabled
+  const collectionState = resolveQmdCapabilities(config).qmd
     ? await options.orchestrator.qmd.ensureCollection(config.memoryDir, config.qmdCollection)
     : "skipped";
   checks.push({
     key: "qmd",
-    status: !config.qmdEnabled
+    status: !resolveQmdCapabilities(config).qmd
       ? "warn"
       : !qmdAvailable
       ? "error"
@@ -1159,12 +1160,12 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
       : collectionState === "missing"
       ? "error"
       : "warn",
-    summary: !config.qmdEnabled
+    summary: !resolveQmdCapabilities(config).qmd
       ? "QMD is disabled in config."
       : qmdAvailable
       ? `QMD is reachable (${collectionState}).`
       : "QMD is not currently reachable.",
-    remediation: !config.qmdEnabled
+    remediation: !resolveQmdCapabilities(config).qmd
       ? "Enable `qmdEnabled` if you expect hybrid search."
       : !qmdAvailable
       ? "Ensure the `qmd` binary is installed and on PATH, or set `qmdPath`."

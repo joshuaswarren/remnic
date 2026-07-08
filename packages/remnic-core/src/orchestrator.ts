@@ -278,6 +278,9 @@ import {
   type MemoryLifecycleCapabilitySet,
   type IndexingCapabilitySet,
   type CreationMemoryCapabilitySet,
+  resolveQmdCapabilities,
+  resolveIdentityContinuityCapabilities,
+  resolveLocalLlmCapabilities,
 } from "./capabilities.js";
 import { DEFAULT_TAXONOMY } from "./taxonomy/index.js";
 import {
@@ -2561,10 +2564,10 @@ export class Orchestrator {
   private buildConfiguredQmdSearchOptions(
     queryText: string,
   ): SearchQueryOptions | undefined {
-    const intentHint = this.config.qmdIntentHintsEnabled
+    const intentHint = resolveQmdCapabilities(this.config).qmdIntentHints
       ? buildQmdIntentHint(inferIntentFromText(queryText))
       : undefined;
-    const explain = this.config.qmdExplainEnabled === true;
+    const explain = resolveQmdCapabilities(this.config).qmdExplain === true;
     const searchOptions: SearchQueryOptions = {};
     if (intentHint) {
       searchOptions.intent = intentHint;
@@ -3431,7 +3434,7 @@ export class Orchestrator {
         ? this._fastGatewayLlm?.isAvailable(
             this.config.fastGatewayAgentId || this.config.gatewayAgentId || undefined,
           ) === true
-        : this.config.localLlmEnabled;
+        : resolveLocalLlmCapabilities(this.config).localLlm;
     if (!chainAvailable) return undefined;
     return buildChainFollowupGenerator(this.fastLlmForRerank);
   }
@@ -3694,7 +3697,7 @@ export class Orchestrator {
     // triggered update — which can be days ago if the daemon restarted without
     // new extractions. This is the root cause of "0 memories" recall results
     // despite thousands of facts on disk.
-    if (this.qmd.isAvailable() && this.config.qmdMaintenanceEnabled) {
+    if (this.qmd.isAvailable() && resolveQmdCapabilities(this.config).qmdMaintenance) {
       try {
         log.info("QMD startup sync: updating index to match current disk state");
         if (resolveNamespaceCapabilities(this.config).namespaces) {
@@ -3801,7 +3804,7 @@ export class Orchestrator {
 
     if (signal.aborted) return;
 
-    if (this.config.localLlmEnabled) {
+    if (resolveLocalLlmCapabilities(this.config).localLlm) {
       try {
         await this.validateLocalLlmModel();
       } catch (err) {
@@ -3826,7 +3829,7 @@ export class Orchestrator {
     // sweep (capped at 50 demotions) so the hot tier isn't flooded on the
     // first real cron pass. Non-fatal — a failure here must not break init.
     if (signal.aborted) return;
-    if (lifecycleCaps.lifecyclePolicy && this.config.qmdTierMigrationEnabled) {
+    if (lifecycleCaps.lifecyclePolicy && resolveQmdCapabilities(this.config).qmdTierMigration) {
       try {
         const { runFirstStartMigration } = await import(
           "./maintenance/first-start-migration.js"
@@ -3985,7 +3988,7 @@ export class Orchestrator {
     // and didn't fail silently.
     // The abort signal is forwarded into the QMD subprocess call so the
     // long-running `qmd update` process is killed promptly on shutdown.
-    if (this.config.qmdMaintenanceEnabled) {
+    if (resolveQmdCapabilities(this.config).qmdMaintenance) {
       try {
         const failTsBefore = "lastUpdateFailedAtMs" in this.qmd
           ? (this.qmd as any).lastUpdateFailedAtMs as number | null
@@ -7138,7 +7141,7 @@ export class Orchestrator {
     }
     const timings: Record<string, string> = {};
     const profileTraceId = this.profiler.startTrace("recall", sessionKey, {
-      qmdEnabled: this.config.qmdEnabled,
+      qmdEnabled: resolveQmdCapabilities(this.config).qmd,
       rerankEnabled: caps.rerank,
       parallelRetrieval: caps.parallelRetrieval,
     });
@@ -7656,7 +7659,7 @@ export class Orchestrator {
         retrievalQueryLength: retrievalQuery.length,
         recallMode,
         recallResultLimit,
-        qmdEnabled: this.config.qmdEnabled,
+        qmdEnabled: resolveQmdCapabilities(this.config).qmd,
         qmdAvailable: this.qmd.isAvailable(),
         recallNamespaces: [],
         source: recallSource,
@@ -8062,7 +8065,7 @@ export class Orchestrator {
       if (
         !this.isRecallSectionEnabled(
           "identity-continuity",
-          this.config.identityContinuityEnabled === true,
+          resolveIdentityContinuityCapabilities(this.config).identityContinuity === true,
         )
       )
         return null;
@@ -12134,7 +12137,7 @@ export class Orchestrator {
       retrievalQueryLength: retrievalQuery.length,
       recallMode,
       recallResultLimit,
-      qmdEnabled: this.config.qmdEnabled,
+      qmdEnabled: resolveQmdCapabilities(this.config).qmd,
       qmdAvailable: this.qmd.isAvailable(),
       recallNamespaces,
       source: recallSource,
@@ -17796,7 +17799,7 @@ export class Orchestrator {
     injectedChars: number;
     truncated: boolean;
   } | null> {
-    if (!this.config.identityContinuityEnabled) return null;
+    if (!resolveIdentityContinuityCapabilities(this.config).identityContinuity) return null;
     if (this.config.identityMaxInjectChars <= 0) return null;
 
     const resolved = resolveEffectiveIdentityInjectionMode({
@@ -18925,7 +18928,7 @@ export class Orchestrator {
       }
     };
 
-    const coldQmdEnabled = this.config.qmdColdTierEnabled === true;
+    const coldQmdEnabled = resolveQmdCapabilities(this.config).qmdColdTier === true;
     const coldCollection =
       this.config.qmdColdCollection ?? "openclaw-engram-cold";
     const coldMaxResults =
@@ -19075,13 +19078,13 @@ export class Orchestrator {
     if (results.length === 0) return [];
 
     const isFullModeGraphAssist =
-      this.config.qmdTierParityGraphEnabled &&
+      resolveQmdCapabilities(this.config).qmdTierParityGraph &&
       graphCaps.multiGraphMemory &&
       caps.graphAssistInFullMode &&
       options.recallMode === "full" &&
       results.length >= Math.max(1, this.config.graphAssistMinSeedResults ?? 3);
     const shouldRunGraphExpansion =
-      this.config.qmdTierParityGraphEnabled &&
+      resolveQmdCapabilities(this.config).qmdTierParityGraph &&
       (options.recallMode === "graph_mode" || isFullModeGraphAssist);
 
     if (shouldRunGraphExpansion) {

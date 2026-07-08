@@ -1,7 +1,10 @@
 import path from "node:path";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { log } from "./logger.js";
-import { resolveMemoryLifecycleCapabilities } from "./capabilities.js";
+import {
+  resolveMemoryLifecycleCapabilities,
+  resolveLocalLlmCapabilities,
+} from "./capabilities.js";
 import { readEnvVar } from "./runtime/env.js";
 import type { PluginConfig } from "./types.js";
 import {
@@ -461,7 +464,7 @@ export class EmbeddingFallback {
   }
 
   private createLocalProvider(): ProviderConfig | null {
-    if (!this.config.localLlmEnabled || !this.config.localLlmUrl) return null;
+    if (!resolveLocalLlmCapabilities(this.config).localLlm || !this.config.localLlmUrl) return null;
     const base = this.config.localLlmUrl.replace(/\/$/, "");
     const endpoint = /\/v1$/i.test(base) ? `${base}/embeddings` : `${base}/v1/embeddings`;
     const headers: Record<string, string> = {

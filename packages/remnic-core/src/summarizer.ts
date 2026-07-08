@@ -14,6 +14,7 @@ import {
   resolveSafeStoragePath,
 } from "./storage-paths.js";
 import { sessionStoragePaths } from "./session-identity.js";
+import { resolveLocalLlmCapabilities } from "./capabilities.js";
 
 // Schema for LLM summary output
 const HourlySummarySchema = z.object({
@@ -68,7 +69,7 @@ export class HourlySummarizer {
       fallbackLlmRuntimeContextFromConfig(config),
     );
 
-    if (!gatewayConfig?.agents?.defaults?.model?.primary && !config.localLlmEnabled && config.modelSource !== "gateway") {
+    if (!gatewayConfig?.agents?.defaults?.model?.primary && !resolveLocalLlmCapabilities(config).localLlm && config.modelSource !== "gateway") {
       log.warn("no gateway default AI and local LLM disabled — hourly summarization disabled");
     }
   }
@@ -78,7 +79,7 @@ export class HourlySummarizer {
   }
 
   private get shouldUseLocalLlm(): boolean {
-    return this.config.localLlmEnabled && !this.useGatewayModelSource;
+    return resolveLocalLlmCapabilities(this.config).localLlm && !this.useGatewayModelSource;
   }
 
   private withGatewayAgent(options: import("./fallback-llm.js").FallbackLlmOptions): import("./fallback-llm.js").FallbackLlmOptions {

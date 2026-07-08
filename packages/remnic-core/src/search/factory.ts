@@ -10,7 +10,10 @@ import { EmbedHelper } from "./embed-helper.js";
 import { QmdClient, type QmdClientOptions } from "../qmd.js";
 import { log } from "../logger.js";
 import { FaissConversationIndexAdapter } from "../conversation-index/faiss-adapter.js";
-import { resolveIndexingCapabilities } from "../capabilities.js";
+import {
+  resolveIndexingCapabilities,
+  resolveQmdCapabilities,
+} from "../capabilities.js";
 import {
   createConversationIndexBackend,
   type ConversationIndexBackend,
@@ -91,14 +94,14 @@ function qmdOptions(config: PluginConfig): QmdClientOptions {
     updateTimeoutMs: config.qmdUpdateTimeoutMs,
     updateMinIntervalMs: config.qmdUpdateMinIntervalMs,
     qmdPath: config.qmdPath,
-    daemonUrl: config.qmdDaemonEnabled ? config.qmdDaemonUrl : undefined,
+    daemonUrl: resolveQmdCapabilities(config).qmdDaemon ? config.qmdDaemonUrl : undefined,
     daemonRecheckIntervalMs: config.qmdDaemonRecheckIntervalMs,
     qmdSupportedVersion: config.qmdSupportedVersion,
-    qmdAutoUpgradeEnabled: config.qmdAutoUpgradeEnabled,
+    qmdAutoUpgradeEnabled: resolveQmdCapabilities(config).qmdAutoUpgrade,
     qmdAutoUpgradeCheckIntervalMs: config.qmdAutoUpgradeCheckIntervalMs,
     qmdChunkStrategy: config.qmdChunkStrategy,
     qmdCandidateLimit: config.qmdCandidateLimit,
-    qmdQueryRerankEnabled: config.qmdQueryRerankEnabled,
+    qmdQueryRerankEnabled: resolveQmdCapabilities(config).qmdQueryRerank,
     qmdIndexName: config.qmdIndexName,
     qmdForceCpu: config.qmdForceCpu,
     qmdGpuBackend: config.qmdGpuBackend,
@@ -124,7 +127,7 @@ export function createSearchBackend(config: PluginConfig): SearchBackend {
   if (nonQmd) return nonQmd;
 
   // Default: QMD — fall back to noop if qmdEnabled is false
-  if (!config.qmdEnabled) {
+  if (!resolveQmdCapabilities(config).qmd) {
     return new NoopSearchBackend();
   }
 
@@ -146,7 +149,7 @@ export function createConversationSearchBackend(config: PluginConfig): SearchBac
   if (backend === "noop") return undefined;
 
   // QMD — respect qmdEnabled to avoid spawning the binary
-  if (!config.qmdEnabled) return undefined;
+  if (!resolveQmdCapabilities(config).qmd) return undefined;
 
   return new QmdClient(
     config.conversationIndexQmdCollection,

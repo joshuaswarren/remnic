@@ -18,7 +18,10 @@
 
 import path from "node:path";
 import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
-import { resolveMemoryLifecycleCapabilities } from "../capabilities.js";
+import {
+  resolveMemoryLifecycleCapabilities,
+  resolveQmdCapabilities,
+} from "../capabilities.js";
 import type { StorageManager } from "../storage.js";
 import type { PluginConfig } from "../types.js";
 import {
@@ -135,7 +138,7 @@ async function clearQmdRefreshPending(memoryDir: string): Promise<void> {
 
 async function buildTierRoutingPolicy(config: PluginConfig): Promise<TierRoutingPolicy> {
   const basePolicy: TierRoutingPolicy = {
-    enabled: config.qmdTierMigrationEnabled,
+    enabled: resolveQmdCapabilities(config).qmdTierMigration,
     demotionMinAgeDays: config.qmdTierDemotionMinAgeDays,
     demotionValueThreshold: config.qmdTierDemotionValueThreshold,
     promotionValueThreshold: config.qmdTierPromotionValueThreshold,
@@ -207,7 +210,7 @@ export async function runFirstStartMigration(
     };
   }
 
-  if (!config.qmdTierMigrationEnabled) {
+  if (!resolveQmdCapabilities(config).qmdTierMigration) {
     return {
       skipped: true,
       skipReason: "qmdTierMigrationEnabled is false",
