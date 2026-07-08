@@ -13,7 +13,7 @@ import { FaissConversationIndexAdapter } from "../conversation-index/faiss-adapt
 import {
   resolveIndexingCapabilities,
   resolveQmdCapabilities,
-} from "../capabilities.js";
+  resolveSystemCapabilities} from "../capabilities.js";
 import {
   createConversationIndexBackend,
   type ConversationIndexBackend,
@@ -88,7 +88,7 @@ function resolveNonQmdBackend(config: PluginConfig): SearchBackend | undefined {
 function qmdOptions(config: PluginConfig): QmdClientOptions {
   return {
     slowLog: {
-      enabled: config.slowLogEnabled,
+      enabled: resolveSystemCapabilities(config).slowLog,
       thresholdMs: config.slowLogThresholdMs,
     },
     updateTimeoutMs: config.qmdUpdateTimeoutMs,

@@ -24,7 +24,8 @@
  * - Per-namespace locks prevent duplicate concurrent runs (planner-provided).
  */
 
-import { resolveNamespaceCapabilities } from "../capabilities.js";
+import { resolveNamespaceCapabilities ,
+  resolveSystemCapabilities} from "../capabilities.js";
 import type { NamespaceCatalog } from "../namespaces/catalog.js";
 import type { PluginConfig } from "../types.js";
 import {
@@ -262,7 +263,7 @@ export async function summarizeNamespaceMaintenanceHealth(
 
   return {
     generatedAt,
-    fanoutEnabled: config.maintenanceNamespaceFanoutEnabled !== false,
+    fanoutEnabled: resolveSystemCapabilities(config).maintenanceNamespaceFanout !== false,
     namespacesEnabled: resolveNamespaceCapabilities(config).namespaces,
     maxNamespacesPerCycle: config.maintenanceMaxNamespacesPerCycle,
     jobs,

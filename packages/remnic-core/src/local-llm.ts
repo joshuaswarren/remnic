@@ -5,7 +5,8 @@ import os from "node:os";
 import type { ModelRegistry } from "./model-registry.js";
 import { launchProcessSync } from "./runtime/child-process.js";
 import { mergeEnv, readEnvVar } from "./runtime/env.js";
-import { resolveLocalLlmCapabilities } from "./capabilities.js";
+import { resolveLocalLlmCapabilities ,
+  resolveSystemCapabilities} from "./capabilities.js";
 
 /** Trim trailing slash characters without backtracking regex. */
 function trimTrailingSlashes(s: string): string {
@@ -1186,7 +1187,7 @@ export class LocalLlmClient {
         : this.estimateTokens(messages, content);
 
       const durationMs = Date.now() - startedAtMs;
-      if (this.config.slowLogEnabled && durationMs >= this.config.slowLogThresholdMs) {
+      if (resolveSystemCapabilities(this.config).slowLog && durationMs >= this.config.slowLogThresholdMs) {
         const promptChars = messages.reduce((sum, m) => sum + (m.content?.length ?? 0), 0);
         const op = options.operation ? ` op=${options.operation}` : "";
         log.warn(

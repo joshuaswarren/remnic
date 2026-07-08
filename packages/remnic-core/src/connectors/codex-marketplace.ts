@@ -22,6 +22,7 @@ import path from "node:path";
 
 import { log } from "../logger.js";
 import type { PluginConfig } from "../types.js";
+import { resolveSystemCapabilities } from "../capabilities.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────
 
@@ -295,7 +296,7 @@ export async function installFromMarketplace(
     debug: (msg) => log.debug(`[marketplace] ${msg}`),
   };
 
-  if (!config.codexMarketplaceEnabled) {
+  if (!resolveSystemCapabilities(config).codexMarketplace) {
     return {
       ok: false,
       message: "Codex marketplace is disabled in config (codexMarketplaceEnabled: false)",

@@ -29,7 +29,10 @@ import {
   resolveCapabilities,
   resolveGraphConstructionCapabilities,
   resolveQmdCapabilities,
-  resolveEvalCapabilities} from "./capabilities.js";
+  resolveEvalCapabilities,
+  resolveConversationCapabilities,
+  resolveRecallEnhancementCapabilities,
+  resolveSystemCapabilities} from "./capabilities.js";
 import {
   analyzeSessionIntegrity,
   applySessionRepair,
@@ -934,7 +937,7 @@ async function buildOperatorConfigReviewReport(input: {
     config.memoryOsPreset !== "research-max" &&
     config.memoryOsPreset !== "local-llm-heavy" &&
     resolveIndexingCapabilities(config).queryAwareIndexing === false &&
-    config.verbatimArtifactsEnabled === false &&
+    resolveRecallEnhancementCapabilities(config).verbatimArtifacts === false &&
     !caps.rerank
   ) {
     findings.push(buildConfigReviewFinding({
@@ -1565,11 +1568,11 @@ export async function summarizeBufferSurpriseDistribution(
       return {
         key: "buffer_surprise_distribution",
         status: "ok",
-        summary: config.bufferSurpriseTriggerEnabled
+        summary: resolveConversationCapabilities(config).bufferSurpriseTrigger
           ? "Surprise trigger is enabled but no telemetry has been recorded yet."
           : "Surprise trigger is disabled; no telemetry expected.",
         details: {
-          enabled: config.bufferSurpriseTriggerEnabled,
+          enabled: resolveConversationCapabilities(config).bufferSurpriseTrigger,
           distribution: dist,
         },
       };
@@ -1581,7 +1584,7 @@ export async function summarizeBufferSurpriseDistribution(
       status: "ok",
       summary: `Recent surprise: mean=${dist.mean.toFixed(3)}, median=${dist.median.toFixed(3)}, p90=${dist.p90.toFixed(3)}, triggered=${pct(dist.triggeredRate)}% over ${dist.count} turns (threshold=${dist.currentThreshold ?? config.bufferSurpriseThreshold}).`,
       details: {
-        enabled: config.bufferSurpriseTriggerEnabled,
+        enabled: resolveConversationCapabilities(config).bufferSurpriseTrigger,
         distribution: dist,
       },
     };

@@ -38,6 +38,7 @@ import {
   type ConsolidationOperator as _ConsolidationOperator,
   type SemanticConsolidationLlmOperator as _SemanticConsolidationLlmOperator,
 } from "./consolidation-operator.js";
+import { resolveSystemCapabilities } from "./capabilities.js";
 
 export interface ConsolidationCluster {
   category: string;
@@ -404,7 +405,7 @@ void _CONSOLIDATION_OPERATORS;
 export async function buildExtensionsBlockForConsolidation(
   config: PluginConfig,
 ): Promise<string> {
-  if (!config.memoryExtensionsEnabled) return "";
+  if (!resolveSystemCapabilities(config).memoryExtensions) return "";
   const root = resolveExtensionsRoot(config);
   const extensions = await discoverMemoryExtensions(root, log);
   if (extensions.length === 0) return "";

@@ -41,7 +41,9 @@ import {
   fallbackLlmRuntimeContextFromConfig,
   gatewayTaskChainOptions,
 } from "../fallback-llm.js";
-import { resolveIndexingCapabilities } from "../capabilities.js";
+import { resolveIndexingCapabilities ,
+  resolveExtractionOutputCapabilities,
+  resolveRecallEnhancementCapabilities} from "../capabilities.js";
 import { deindexMemory } from "../temporal-index.js";
 import { runPeerProfileReasoner } from "../peers/index.js";
 import type { StorageManager } from "../index.js";
@@ -101,7 +103,7 @@ export class SemanticConsolidationCoordinator {
       clusters: [],
     };
 
-    if (!this.config.semanticConsolidationEnabled && !options?.force) {
+    if (!resolveExtractionOutputCapabilities(this.config).semanticConsolidation && !options?.force) {
       log.debug("[semantic-consolidation] disabled in config");
       return result;
     }
@@ -418,7 +420,7 @@ export class SemanticConsolidationCoordinator {
     // in a try/catch because reasoner I/O (LLM call, peer-profile
     // writes) must never abort the consolidation result. The reasoner
     // itself also defends against partial failure — see profile-reasoner.ts.
-    if (this.config.peerProfileReasonerEnabled) {
+    if (resolveRecallEnhancementCapabilities(this.config).peerProfileReasoner) {
       try {
         const peerLlm = new FallbackLlmClient(
           this.config.gatewayConfig,

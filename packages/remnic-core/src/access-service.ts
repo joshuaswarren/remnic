@@ -10,7 +10,9 @@ import {
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
   resolveIdentityContinuityCapabilities,
-  resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities} from "./capabilities.js";
+  resolveSecurityCapabilities, resolveObjectiveStateCapabilities, resolveCompressionCapabilities,
+  resolveConversationCapabilities,
+  resolveSystemCapabilities} from "./capabilities.js";
 import { AccessAuditAdapter, type AccessAuditConfig, type AccessAuditResult } from "./access-audit.js";
 import type { AnomalyDetectorResult } from "./recall-audit-anomaly.js";
 import { resolveGitContext } from "./coding/git-context.js";
@@ -2984,7 +2986,7 @@ export class EngramAccessService {
   async daySummary(
     request: EngramAccessDaySummaryRequest,
   ): Promise<import("./types.js").DaySummaryResult | null> {
-    if (!this.orchestrator.config.daySummaryEnabled) {
+    if (!resolveSystemCapabilities(this.orchestrator.config).daySummary) {
       throw new EngramAccessInputError("day summary is disabled");
     }
 
@@ -6832,7 +6834,7 @@ export class EngramAccessService {
     if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled. Enable `identityContinuityEnabled: true`." };
     }
-    if (!this.orchestrator.config.continuityAuditEnabled) {
+    if (!resolveSystemCapabilities(this.orchestrator.config).continuityAudit) {
       return { enabled: false, reason: "Continuity audits are disabled. Enable `continuityAuditEnabled: true`." };
     }
     if (!this.orchestrator.compounding) {
@@ -6854,7 +6856,7 @@ export class EngramAccessService {
     if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled. Enable `identityContinuityEnabled: true`." };
     }
-    if (!this.orchestrator.config.continuityIncidentLoggingEnabled) {
+    if (!resolveSystemCapabilities(this.orchestrator.config).continuityIncidentLogging) {
       return { enabled: false, reason: "Continuity incident logging is disabled. Enable `continuityIncidentLoggingEnabled: true`." };
     }
     const symptom = request.symptom?.trim();
@@ -6880,7 +6882,7 @@ export class EngramAccessService {
     if (!resolveIdentityContinuityCapabilities(this.orchestrator.config).identityContinuity) {
       return { enabled: false, reason: "Identity continuity is disabled." };
     }
-    if (!this.orchestrator.config.continuityIncidentLoggingEnabled) {
+    if (!resolveSystemCapabilities(this.orchestrator.config).continuityIncidentLogging) {
       return { enabled: false, reason: "Continuity incident logging is disabled." };
     }
     const id = request.id?.trim();
@@ -7640,7 +7642,7 @@ export class EngramAccessService {
     vote: "up" | "down";
     note?: string;
   }): Promise<{ recorded: boolean; enabled?: boolean; reason?: string }> {
-    if (!this.orchestrator.config.feedbackEnabled) {
+    if (!resolveConversationCapabilities(this.orchestrator.config).feedback) {
       return {
         recorded: false,
         enabled: false,
@@ -8234,7 +8236,7 @@ export class EngramAccessService {
     const root = explicitRoot ?? storage.dir;
     const memoryDir = explicitMemoryDir ?? this.orchestrator.config.memoryDir;
     const versioning = importOptions.versioning ?? {
-      enabled: this.orchestrator.config.versioningEnabled,
+      enabled: resolveSystemCapabilities(this.orchestrator.config).versioning,
       maxVersionsPerPage: this.orchestrator.config.versioningMaxPerPage,
       sidecarDir: this.orchestrator.config.versioningSidecarDir,
     };

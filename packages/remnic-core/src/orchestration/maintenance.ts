@@ -22,7 +22,8 @@
 import {
   resolveNamespaceCapabilities,
   resolveQmdCapabilities,
-} from "../capabilities.js";
+  resolveExtractionOutputCapabilities,
+  resolveSystemCapabilities} from "../capabilities.js";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
@@ -109,7 +110,7 @@ export class MaintenanceScheduler {
    * `await deferredReady` can rely on jobs.json being current.
    */
   async autoRegisterCrons(_signal: AbortSignal): Promise<void> {
-    if (this.deps.config.daySummaryEnabled) {
+    if (resolveSystemCapabilities(this.deps.config).daySummary) {
       try {
         await this.autoRegisterDaySummaryCron();
       } catch (err) {
@@ -137,14 +138,14 @@ export class MaintenanceScheduler {
         log.debug(`contradiction scan cron auto-register failed (non-fatal): ${err}`);
       }
     }
-    if (this.deps.config.patternReinforcementEnabled) {
+    if (resolveExtractionOutputCapabilities(this.deps.config).patternReinforcement) {
       try {
         await this.autoRegisterPatternReinforcementCron();
       } catch (err) {
         log.debug(`pattern reinforcement cron auto-register failed (non-fatal): ${err}`);
       }
     }
-    if (this.deps.config.graphEdgeDecayEnabled) {
+    if (resolveSystemCapabilities(this.deps.config).graphEdgeDecay) {
       try {
         await this.autoRegisterGraphEdgeDecayCron();
       } catch (err) {

@@ -18,7 +18,9 @@
  */
 
 import type { Orchestrator } from "../orchestrator.js";
-import { resolveCapabilities, resolveSecurityCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities} from "../capabilities.js";
+import { resolveCapabilities, resolveSecurityCapabilities, resolveUtilityLearningCapabilities, resolveObjectiveStateCapabilities,
+  resolveExtractionOutputCapabilities,
+  resolveRecallEnhancementCapabilities} from "../capabilities.js";
 import type { CliCommand } from "../cli.js";
 import type { UtilityTelemetryEvent } from "../utility-telemetry.js";
 import {
@@ -67,7 +69,7 @@ cmd
     const status = await runCausalTrajectoryStatusCliCommand({
       memoryDir: orchestrator.config.memoryDir,
       causalTrajectoryStoreDir: orchestrator.config.causalTrajectoryStoreDir,
-      causalTrajectoryMemoryEnabled: orchestrator.config.causalTrajectoryMemoryEnabled,
+      causalTrajectoryMemoryEnabled: resolveRecallEnhancementCapabilities(orchestrator.config).causalTrajectoryMemory,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -116,7 +118,7 @@ cmd
       memoryDir: orchestrator.config.memoryDir,
       abstractionNodeStoreDir: orchestrator.config.abstractionNodeStoreDir,
       harmonicRetrievalEnabled: caps.harmonicRetrieval,
-      abstractionAnchorsEnabled: orchestrator.config.abstractionAnchorsEnabled,
+      abstractionAnchorsEnabled: resolveExtractionOutputCapabilities(orchestrator.config).abstractionAnchors,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -130,7 +132,7 @@ cmd
       memoryDir: orchestrator.config.memoryDir,
       abstractionNodeStoreDir: orchestrator.config.abstractionNodeStoreDir,
       harmonicRetrievalEnabled: caps.harmonicRetrieval,
-      abstractionAnchorsEnabled: orchestrator.config.abstractionAnchorsEnabled,
+      abstractionAnchorsEnabled: resolveExtractionOutputCapabilities(orchestrator.config).abstractionAnchors,
     });
     console.log(JSON.stringify(status, null, 2));
     console.log("OK");
@@ -152,7 +154,7 @@ cmd
       memoryDir: orchestrator.config.memoryDir,
       abstractionNodeStoreDir: orchestrator.config.abstractionNodeStoreDir,
       harmonicRetrievalEnabled: caps.harmonicRetrieval,
-      abstractionAnchorsEnabled: orchestrator.config.abstractionAnchorsEnabled,
+      abstractionAnchorsEnabled: resolveExtractionOutputCapabilities(orchestrator.config).abstractionAnchors,
       query,
       maxResults: Number.isFinite(maxResults) ? maxResults : 3,
       sessionKey: typeof options.sessionKey === "string" ? options.sessionKey : undefined,

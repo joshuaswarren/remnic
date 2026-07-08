@@ -1,4 +1,5 @@
-import { resolveNamespaceCapabilities } from "../capabilities.js";
+import { resolveNamespaceCapabilities ,
+  resolveSystemCapabilities} from "../capabilities.js";
 import { createHash, randomUUID } from "node:crypto";
 import type { Dirent } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, utimes, writeFile } from "node:fs/promises";
@@ -227,7 +228,7 @@ export async function planNamespaceMaintenance(
     });
   }
 
-  if (resolveNamespaceCapabilities(config).namespaces && config.maintenanceNamespaceFanoutEnabled !== false) {
+  if (resolveNamespaceCapabilities(config).namespaces && resolveSystemCapabilities(config).maintenanceNamespaceFanout !== false) {
     const configuredSet = new Set(configured);
     try {
       const records = options.catalog?.enabled ? await options.catalog.listNamespaces() : [];

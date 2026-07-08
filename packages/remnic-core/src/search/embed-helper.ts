@@ -2,7 +2,7 @@ import { log } from "../logger.js";
 import {
   resolveMemoryLifecycleCapabilities,
   resolveLocalLlmCapabilities,
-} from "../capabilities.js";
+  resolveSystemCapabilities} from "../capabilities.js";
 import type { PluginConfig } from "../types.js";
 import { isAbortError } from "../abort-error.js";
 import { withTimeoutSignal } from "./abort.js";
@@ -217,7 +217,7 @@ export class EmbedHelper {
 
     if (
       options.includeHost !== false &&
-      this.config.hostEmbeddingProviderEnabled !== false
+      resolveSystemCapabilities(this.config).hostEmbeddingProvider !== false
     ) {
       const hostProvider = this.resolveHostEmbeddingProvider();
       if (hostProvider) {

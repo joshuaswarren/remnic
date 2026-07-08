@@ -8,7 +8,11 @@ import {
   resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveIdentityContinuityCapabilities,
-  resolveSecurityCapabilities, resolveEvalCapabilities} from "./capabilities.js";
+  resolveSecurityCapabilities, resolveEvalCapabilities,
+  resolveConversationCapabilities,
+  resolveExtractionOutputCapabilities,
+  resolveRecallEnhancementCapabilities,
+  resolveSystemCapabilities} from "./capabilities.js";
 import { ThreadingManager } from "./threading.js";
 import { utcDayRange } from "./transcript.js";
 import { runWearablesCliCommand } from "./wearables/cli.js";
@@ -6259,7 +6263,7 @@ export function registerCli(
             : 3;
           const results = await runVerifiedRecallSearchCliCommand({
             memoryDir: orchestrator.config.memoryDir,
-            verifiedRecallEnabled: orchestrator.config.verifiedRecallEnabled,
+            verifiedRecallEnabled: resolveRecallEnhancementCapabilities(orchestrator.config).verifiedRecall,
             query,
             maxResults: Number.isFinite(maxResults) ? maxResults : 3,
             boxRecallDays: orchestrator.config.boxRecallDays,
@@ -6277,7 +6281,7 @@ export function registerCli(
           const options = (args[0] ?? {}) as Record<string, unknown>;
           const result = await runSemanticRulePromoteCliCommand({
             memoryDir: orchestrator.config.memoryDir,
-            semanticRulePromotionEnabled: orchestrator.config.semanticRulePromotionEnabled,
+            semanticRulePromotionEnabled: resolveExtractionOutputCapabilities(orchestrator.config).semanticRulePromotion,
             sourceMemoryId: String(options.memoryId ?? ""),
             dryRun: options.dryRun === true,
           });
@@ -6295,8 +6299,8 @@ export function registerCli(
           const options = (args[0] ?? {}) as Record<string, unknown>;
           const result = await runCompoundingPromoteCliCommand({
             memoryDir: orchestrator.config.memoryDir,
-            compoundingEnabled: orchestrator.config.compoundingEnabled,
-            compoundingSemanticEnabled: orchestrator.config.compoundingSemanticEnabled,
+            compoundingEnabled: resolveExtractionOutputCapabilities(orchestrator.config).compounding,
+            compoundingSemanticEnabled: resolveExtractionOutputCapabilities(orchestrator.config).compoundingSemantic,
             weekId: String(options.weekId ?? ""),
             candidateId: String(options.candidateId ?? ""),
             dryRun: options.dryRun === true,
@@ -6318,7 +6322,7 @@ export function registerCli(
             : 3;
           const results = await runSemanticRuleVerifyCliCommand({
             memoryDir: orchestrator.config.memoryDir,
-            semanticRuleVerificationEnabled: orchestrator.config.semanticRuleVerificationEnabled,
+            semanticRuleVerificationEnabled: resolveRecallEnhancementCapabilities(orchestrator.config).semanticRuleVerification,
             query,
             maxResults: Number.isFinite(maxResults) ? maxResults : 3,
           });
@@ -6803,7 +6807,7 @@ export function registerCli(
             principal: resolveAccessPrincipalOverride(options.principal, orchestrator.config.agentAccessHttp.principal),
             maxBodyBytes: Number.isFinite(maxBodyBytesRaw) ? maxBodyBytesRaw : 131072,
             trustPrincipalHeader: options.trustPrincipalHeader === true,
-            citationsEnabled: orchestrator.config.citationsEnabled,
+            citationsEnabled: resolveConversationCapabilities(orchestrator.config).citations,
             citationsAutoDetect: orchestrator.config.citationsAutoDetect,
             emitLegacyTools: orchestrator.config.emitLegacyTools,
           });
@@ -7805,7 +7809,7 @@ export function registerCli(
             memoryDir: orchestrator.config.memoryDir,
             targetPath,
             versioning: {
-              enabled: orchestrator.config.versioningEnabled,
+              enabled: resolveSystemCapabilities(orchestrator.config).versioning,
               maxVersionsPerPage: orchestrator.config.versioningMaxPerPage,
               sidecarDir: orchestrator.config.versioningSidecarDir,
             },
@@ -7894,7 +7898,7 @@ export function registerCli(
             console.log("Identity continuity is disabled.");
             return;
           }
-          if (!orchestrator.config.continuityIncidentLoggingEnabled) {
+          if (!resolveSystemCapabilities(orchestrator.config).continuityIncidentLogging) {
             console.log("Continuity incident logging is disabled.");
             return;
           }
@@ -7925,7 +7929,7 @@ export function registerCli(
             console.log("Identity continuity is disabled.");
             return;
           }
-          if (!orchestrator.config.continuityIncidentLoggingEnabled) {
+          if (!resolveSystemCapabilities(orchestrator.config).continuityIncidentLogging) {
             console.log("Continuity incident logging is disabled.");
             return;
           }
