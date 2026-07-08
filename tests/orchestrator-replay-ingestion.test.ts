@@ -51,7 +51,7 @@ test("queueBufferedExtraction preserves explicit false clearBufferAfterExtractio
 
 test("runExtraction threshold bypasses are explicit and independent", () => {
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "extraction-run.ts"),
     "utf-8",
   );
 
