@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { parseConfig } from "../packages/remnic-core/src/config.js";
-import { Orchestrator, dedupeEntitySynthesisEvidenceEntries } from "../packages/remnic-core/src/orchestrator.js";
+import { Orchestrator } from "../packages/remnic-core/src/orchestrator.js";
+import { dedupeEntitySynthesisEvidenceEntries } from "../packages/remnic-core/src/orchestration/entity-synthesis-coordinator.js";
 import {
   isEntitySynthesisStale,
   normalizeEntityName,
