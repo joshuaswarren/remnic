@@ -6,9 +6,15 @@ import {
   resolveCapabilities,
   resolveAccessSetupCapabilities,
   resolveNamespaceCapabilities,
+  resolveQmdCapabilities,
+  resolveIdentityContinuityCapabilities,
+  resolveLocalLlmCapabilities,
   type CapabilitySet,
   type AccessSetupCapabilitySet,
   type NamespaceCapabilitySet,
+  type QmdCapabilitySet,
+  type IdentityContinuityCapabilitySet,
+  type LocalLlmCapabilitySet,
 } from "./capabilities.js";
 
 /**
@@ -678,4 +684,143 @@ test("resolveNamespaceCapabilities: result is frozen", () => {
   const config = parseConfig({ namespacesEnabled: true });
   const caps = resolveNamespaceCapabilities(config);
   assert.ok(Object.isFrozen(caps), "NamespaceCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// QmdCapabilitySet — gate-parity tests (issue #1523 batch 6).
+//
+// Same invariant: every caps field must project from its `<field>Enabled`
+// config flag. All twelve flags are required booleans on PluginConfig (defaults
+// resolved at the parse boundary), so the projection is pure passthrough.
+// ---------------------------------------------------------------------------
+
+const QMD_FIELD_TO_FLAG: Record<keyof QmdCapabilitySet, string> = {
+  qmd: "qmdEnabled",
+  qmdTierMigration: "qmdTierMigrationEnabled",
+  qmdTierAutoBackfill: "qmdTierAutoBackfillEnabled",
+  qmdAutoEmbed: "qmdAutoEmbedEnabled",
+  qmdMaintenance: "qmdMaintenanceEnabled",
+  qmdColdTier: "qmdColdTierEnabled",
+  qmdDaemon: "qmdDaemonEnabled",
+  qmdTierParityGraph: "qmdTierParityGraphEnabled",
+  qmdQueryRerank: "qmdQueryRerankEnabled",
+  qmdIntentHints: "qmdIntentHintsEnabled",
+  qmdExplain: "qmdExplainEnabled",
+  qmdAutoUpgrade: "qmdAutoUpgradeEnabled",
+};
+
+const QMD_FIELDS = Object.keys(QMD_FIELD_TO_FLAG) as Array<keyof QmdCapabilitySet>;
+
+test("resolveQmdCapabilities projects every field from its flag (true variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(QMD_FIELD_TO_FLAG)) overrides[flag] = true;
+  const config = parseConfig(overrides);
+  const caps = resolveQmdCapabilities(config);
+
+  for (const field of QMD_FIELDS) {
+    const flag = QMD_FIELD_TO_FLAG[field];
+    assert.equal(caps[field], true, `caps.${field} must be true when ${flag}=true`);
+  }
+});
+
+test("resolveQmdCapabilities projects every field from its flag (false variant)", () => {
+  const overrides: Record<string, boolean> = {};
+  for (const flag of Object.values(QMD_FIELD_TO_FLAG)) overrides[flag] = false;
+  const config = parseConfig(overrides);
+  const caps = resolveQmdCapabilities(config);
+
+  for (const field of QMD_FIELDS) {
+    const flag = QMD_FIELD_TO_FLAG[field];
+    assert.equal(caps[field], false, `caps.${field} must be false when ${flag}=false`);
+  }
+});
+
+test("resolveQmdCapabilities returns a frozen object", () => {
+  const config = parseConfig({});
+  const caps = resolveQmdCapabilities(config);
+  assert.equal(Object.isFrozen(caps), true);
+});
+
+test("resolveQmdCapabilities matches pre-migration config reads (parity contract)", () => {
+  const cases: Record<string, Record<string, boolean>> = {
+    "all-off": Object.fromEntries(Object.values(QMD_FIELD_TO_FLAG).map((f) => [f, false])),
+    "all-on": Object.fromEntries(Object.values(QMD_FIELD_TO_FLAG).map((f) => [f, true])),
+    "qmd-on-rest-off": {
+      ...Object.fromEntries(Object.values(QMD_FIELD_TO_FLAG).map((f) => [f, false])),
+      qmdEnabled: true,
+    },
+    "tiers-on-qmd-off": {
+      ...Object.fromEntries(Object.values(QMD_FIELD_TO_FLAG).map((f) => [f, false])),
+      qmdTierMigrationEnabled: true,
+      qmdColdTierEnabled: true,
+    },
+  };
+
+  for (const [label, overrides] of Object.entries(cases)) {
+    const config = parseConfig(overrides);
+    const caps = resolveQmdCapabilities(config);
+
+    for (const field of QMD_FIELDS) {
+      const flag = QMD_FIELD_TO_FLAG[field];
+      assert.equal(
+        caps[field],
+        (config as unknown as Record<string, boolean>)[flag],
+        `[${label}] caps.${field} must equal config.${flag}`,
+      );
+    }
+  }
+});
+
+// ---------------------------------------------------------------------------
+// IdentityContinuityCapabilitySet — gate-parity tests (issue #1523 batch 6).
+// ---------------------------------------------------------------------------
+
+test("resolveIdentityContinuityCapabilities: identityContinuity === config.identityContinuityEnabled (parity)", () => {
+  const cases = [
+    { label: "on", overrides: { identityContinuityEnabled: true } },
+    { label: "off", overrides: { identityContinuityEnabled: false } },
+  ];
+
+  for (const { label, overrides } of cases) {
+    const config = parseConfig(overrides);
+    const caps = resolveIdentityContinuityCapabilities(config);
+    assert.equal(
+      caps.identityContinuity,
+      config.identityContinuityEnabled,
+      `[${label}] caps.identityContinuity must equal config.identityContinuityEnabled`,
+    );
+  }
+});
+
+test("resolveIdentityContinuityCapabilities: result is frozen", () => {
+  const config = parseConfig({ identityContinuityEnabled: true });
+  const caps = resolveIdentityContinuityCapabilities(config);
+  assert.ok(Object.isFrozen(caps), "IdentityContinuityCapabilitySet must be frozen");
+});
+
+// ---------------------------------------------------------------------------
+// LocalLlmCapabilitySet — gate-parity tests (issue #1523 batch 6).
+// ---------------------------------------------------------------------------
+
+test("resolveLocalLlmCapabilities: localLlm === config.localLlmEnabled (parity)", () => {
+  const cases = [
+    { label: "on", overrides: { localLlmEnabled: true } },
+    { label: "off", overrides: { localLlmEnabled: false } },
+  ];
+
+  for (const { label, overrides } of cases) {
+    const config = parseConfig(overrides);
+    const caps = resolveLocalLlmCapabilities(config);
+    assert.equal(
+      caps.localLlm,
+      config.localLlmEnabled,
+      `[${label}] caps.localLlm must equal config.localLlmEnabled`,
+    );
+  }
+});
+
+test("resolveLocalLlmCapabilities: result is frozen", () => {
+  const config = parseConfig({ localLlmEnabled: true });
+  const caps = resolveLocalLlmCapabilities(config);
+  assert.ok(Object.isFrozen(caps), "LocalLlmCapabilitySet must be frozen");
 });
