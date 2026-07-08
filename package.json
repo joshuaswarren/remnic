@@ -1010,6 +1010,7 @@
     "bench:run": "node scripts/run-bench-cli.mjs run",
     "bench:compare": "node scripts/run-bench-cli.mjs compare",
     "bench:quick": "node scripts/run-bench-cli.mjs run --quick longmemeval",
+    "figures:paper": "node scripts/generate-paper-figures.mjs",
     "eval:ci-gate": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx scripts/eval-ci-gate.ts",
     "eval:run": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=remnic-source\" tsx evals/run.ts",
     "eval:download": "bash evals/scripts/download-datasets.sh",
