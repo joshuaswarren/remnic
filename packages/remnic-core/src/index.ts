@@ -101,6 +101,8 @@ export {
 
 export {
   StorageManager,
+  ContentHashIndex,
+  normalizeAttributePairs,
   parseEntityFile,
   serializeEntityFile,
   type MemoryWriteResult,
