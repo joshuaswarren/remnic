@@ -567,9 +567,14 @@ function shouldExcludePushRelPath(
   return false;
 }
 
+// Precompiled once at module load — this check sits on the hot
+// enumeration path for every walked file (Kilo review, PR #1793).
+const DEFAULT_OFFLINE_SYNC_EXCLUDE_REGEXPS: readonly RegExp[] =
+  DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS.map((glob) => globToRegExp(glob));
+
 function matchesOfflineSyncDefaultExclude(relPosix: string): boolean {
-  for (const glob of DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS) {
-    if (globToRegExp(glob).test(relPosix)) return true;
+  for (const regexp of DEFAULT_OFFLINE_SYNC_EXCLUDE_REGEXPS) {
+    if (regexp.test(relPosix)) return true;
   }
   return false;
 }

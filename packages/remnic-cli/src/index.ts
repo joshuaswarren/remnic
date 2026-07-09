@@ -8581,10 +8581,10 @@ function resolveOfflineSyncUserExcludes(rest: string[]): RegExp[] {
   for (let i = 0; i < rest.length; i += 1) {
     if (rest[i] !== "--exclude") continue;
     const value = rest[i + 1];
-    if (value === undefined || value.startsWith("--")) {
+    if (value === undefined || value.startsWith("--") || value.trim().length === 0) {
       throw new Error("--exclude requires a glob argument");
     }
-    globs.push(value);
+    globs.push(value.trim());
     i += 1;
   }
   const configPath = resolveConfigPath();
