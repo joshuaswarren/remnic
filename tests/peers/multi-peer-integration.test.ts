@@ -438,8 +438,10 @@ test("multi-peer: forgetPeer removes targeted peer, all siblings survive", async
 // ──────────────────────────────────────────────────────────────────────
 
 test("orchestrator sets peerProfileXrayAnnotation before xray capture", () => {
+  // #1526 seam 18: recallInternal (and its X-ray capture block) moved to
+  // orchestration/recall-internal.ts; the wiring assertion follows it.
   const src = readFileSync(
-    path.join(repoRoot, "packages/remnic-core/src/orchestrator.ts"),
+    path.join(repoRoot, "packages/remnic-core/src/orchestration/recall-internal.ts"),
     "utf-8",
   );
   assert.match(
