@@ -1,7 +1,7 @@
 {
   "name": "@remnic/connector-omi",
   "version": "9.3.752",
-  "description": "Omi AI wearable connector for Remnic — pull, clean, and remember necklace transcripts via the Omi Integrations API",
+  "description": "Omi AI wearable connector for Remnic — pull, clean, and remember necklace transcripts via the Omi Developer API",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

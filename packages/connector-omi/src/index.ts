@@ -4,12 +4,13 @@
  * À-la-carte optional companion of @remnic/core (computed-specifier
  * discovery; importing this module self-registers idempotently).
  *
- * Requires an Omi integration app with the External Integration
- * `read_conversations` (and, for native-memory import,
- * `read_memories`) capabilities:
- *   - `wearables.sources.omi.appId`  — the app id
- *   - `wearables.sources.omi.userId` — the target uid
+ * Requires an Omi Developer API key from Settings → Developer →
+ * Create Key:
  *   - key via `REMNIC_OMI_API_KEY` / `OMI_API_KEY` env (or `apiKey`)
+ *
+ * Legacy External Integration app installs remain supported when both
+ * `wearables.sources.omi.appId` and `wearables.sources.omi.userId`
+ * are configured.
  */
 
 import {

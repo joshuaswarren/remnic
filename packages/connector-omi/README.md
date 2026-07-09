@@ -16,17 +16,11 @@ Remnic discovers it at runtime. No further registration is needed.
 
 ## Setup
 
-The connector uses Omi's Integrations API, which is scoped to an app
-you create:
+The connector uses Omi's Developer API by default:
 
-1. In the Omi app: **Apps → Create App → External Integration**, and
-   grant the **read conversations** capability (plus **read memories**
-   if you want native-memory import). Install/enable the app for your
-   account.
-2. On the app's management page, create an **API key** (`sk_...`).
-3. Note your **app id** and your **uid** (Omi passes `?uid=` to your
-   app's links; it identifies the account to read).
-4. Configure:
+1. In the Omi app, open **Settings → Developer → Create Key**.
+2. Create a Developer API key (`omi_dev_...`).
+3. Configure:
 
 ```jsonc
 {
@@ -35,8 +29,6 @@ you create:
     "sources": {
       "omi": {
         "enabled": true,
-        "appId": "your-omi-app-id",
-        "userId": "your-omi-uid",
         "memoryMode": "smart",             // smart (default) | off | review | auto
         "importNativeMemories": "smart"    // Omi memories through the same trust pipeline
       }
@@ -46,7 +38,12 @@ you create:
 ```
 
 Provide the key via `OMI_API_KEY` (or `REMNIC_OMI_API_KEY`, or `apiKey`
-in config).
+in config). No app id or uid is needed for the current Developer API.
+
+Legacy External Integration app installs remain supported. If you are
+still using that older flow, configure both `appId` and `userId`; when
+both are present the connector uses Omi's app-scoped integration
+endpoints.
 
 ## Usage
 
@@ -58,9 +55,10 @@ remnic wearables transcript --date 2026-06-10 --source omi
 
 ## Speaker labels
 
-Omi marks the wearer (`is_user`) automatically. Other voices arrive as
-`SPEAKER_NN` diarization labels — or stable person ids once you tag
-people in Omi. Map either form to a display name once:
+Omi Developer API segments carry `speaker_name` and `speaker_id`.
+Legacy integration segments may mark the wearer (`is_user`) and use
+`SPEAKER_NN` diarization labels or stable person ids once you tag
+people in Omi. Map any speaker key to a display name once:
 
 ```bash
 remnic wearables speakers set omi SPEAKER_01 "Jane Doe"
@@ -68,9 +66,10 @@ remnic wearables speakers set omi SPEAKER_01 "Jane Doe"
 
 ## Notes
 
-- Transcripts are fetched **unabridged**: the connector passes
-  `max_transcript_segments=-1` because the API's default silently
-  truncates conversations to their first 100 segments.
+- Transcripts are fetched with `include_transcript=true`. In legacy
+  integration mode, the connector also passes `max_transcript_segments=-1`
+  because that API's default silently truncates conversations to their
+  first 100 segments.
 - Day windows are timezone-correct: the connector computes local-day
   ISO bounds (DST-aware) for the API's `start_date`/`end_date` filters,
   and only `completed`, non-discarded conversations sync.

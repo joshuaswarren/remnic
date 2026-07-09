@@ -3,9 +3,11 @@
  * `WearableConversation` shape, plus the timezone-aware day-window
  * helpers the Omi API needs (its date filters are ISO datetimes).
  *
- * Omi segments carry `is_user` for the wearer, opaque `SPEAKER_NN`
- * diarization labels, optional `person_id`s (user-defined people), and
- * start/end offsets in seconds relative to the conversation start.
+ * Legacy Omi integration segments carry `is_user` for the wearer,
+ * opaque `SPEAKER_NN` diarization labels, optional `person_id`s
+ * (user-defined people), and start/end offsets in seconds relative to
+ * the conversation start. The current Developer API returns
+ * `speaker_name`/`speaker_id` instead; normalize both shapes.
  */
 
 import type {
@@ -78,10 +80,16 @@ export function conversationToWearable(
       typeof segment.person_id === "string" && segment.person_id.length > 0
         ? segment.person_id
         : undefined;
-    const label =
-      typeof segment.speaker === "string" && segment.speaker.trim().length > 0
-        ? segment.speaker.trim()
+    const speakerId =
+      typeof segment.speaker_id === "string" || typeof segment.speaker_id === "number"
+        ? String(segment.speaker_id)
         : undefined;
+    const label =
+      typeof segment.speaker_name === "string" && segment.speaker_name.trim().length > 0
+        ? segment.speaker_name.trim()
+        : typeof segment.speaker === "string" && segment.speaker.trim().length > 0
+          ? segment.speaker.trim()
+          : undefined;
     const startIso =
       !Number.isNaN(startedAtMs) && typeof segment.start === "number"
         ? new Date(startedAtMs + segment.start * 1_000).toISOString()
@@ -93,9 +101,10 @@ export function conversationToWearable(
     segments.push({
       text,
       // person_id is the most stable key when the user has tagged the
-      // speaker as a known person in Omi; the diarization label
-      // otherwise.
-      speakerKey: isWearer ? "user" : (personId ?? label ?? "unknown"),
+      // speaker as a known person in Omi. The Developer API's
+      // speaker_id is the next best stable key, then the diarization
+      // label.
+      speakerKey: isWearer ? "user" : (personId ?? speakerId ?? label ?? "unknown"),
       ...(label !== undefined ? { speakerName: label } : {}),
       ...(isWearer ? { isWearer: true } : {}),
       ...(startIso !== undefined ? { startIso } : {}),

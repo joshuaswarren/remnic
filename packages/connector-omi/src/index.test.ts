@@ -14,9 +14,7 @@ import {
 function settings(overrides: Partial<WearableSourceSettings> = {}): WearableSourceSettings {
   return {
     enabled: true,
-    apiKey: "sk_synthetic_not_real",
-    appId: "app-123",
-    userId: "uid-456",
+    apiKey: "omi_dev_synthetic_not_real",
     memoryMode: "review",
     sourceTrust: 0.8,
     autoApproveTrust: 0.7,
@@ -78,20 +76,26 @@ test("resolveOmiApiKey prefers config, then REMNIC_*, then provider env", () => 
 
 test("fetchConversations applies timezone day bounds and maps cursors to offsets", async () => {
   const stub = stubFetch((url) => {
+    assert.equal(url.pathname, "/v1/dev/user/conversations");
     assert.equal(url.searchParams.get("start_date"), "2026-06-10T00:00:00-05:00");
     assert.equal(url.searchParams.get("end_date"), "2026-06-11T00:00:00-05:00");
-    return {
-      conversations: [
-        {
-          id: "c1",
-          started_at: "2026-06-10T15:00:00+00:00",
-          transcript_segments: [
-            { text: "Planning the launch.", speaker: "SPEAKER_00", is_user: true, start: 0, end: 4 },
-          ],
-        },
-        { id: "c2", started_at: "2026-06-10T16:00:00+00:00", discarded: true },
-      ],
-    };
+    assert.equal(url.searchParams.get("include_transcript"), "true");
+    return [
+      {
+        id: "c1",
+        started_at: "2026-06-10T15:00:00+00:00",
+        transcript_segments: [
+          {
+            text: "Planning the launch.",
+            speaker_name: "Joshua",
+            speaker_id: 1,
+            start: 0,
+            end: 4,
+          },
+        ],
+      },
+      { id: "c2", started_at: "2026-06-10T16:00:00+00:00", discarded: true },
+    ];
   });
   try {
     const connector = createOmiConnector({
@@ -106,6 +110,27 @@ test("fetchConversations applies timezone day bounds and maps cursors to offsets
     assert.deepEqual(page.conversations.map((c) => c.id), ["c1"], "discarded filtered");
     assert.equal(page.nextCursor, null, "partial page ends pagination");
     assert.equal(stub.urls[0].searchParams.get("offset"), "200");
+  } finally {
+    stub.restore();
+  }
+});
+
+test("fetchConversations preserves legacy app and uid configuration", async () => {
+  const stub = stubFetch((url) => {
+    assert.equal(url.pathname, "/v2/integrations/app-123/conversations");
+    assert.equal(url.searchParams.get("uid"), "uid-456");
+    assert.deepEqual(url.searchParams.getAll("statuses"), ["completed"]);
+    return { conversations: [] };
+  });
+  try {
+    const connector = createOmiConnector({
+      settings: settings({ appId: "app-123", userId: "uid-456" }),
+      timezone: "America/Chicago",
+    });
+    await connector.fetchConversations({
+      date: "2026-06-10",
+      timezone: "America/Chicago",
+    });
   } finally {
     stub.restore();
   }
@@ -132,12 +157,13 @@ test("missing credentials surface actionable errors at call time, not constructi
 });
 
 test("fetchNativeMemories maps Omi memories and skips empty content", async () => {
-  const stub = stubFetch(() => ({
-    memories: [
+  const stub = stubFetch((url) => {
+    assert.equal(url.pathname, "/v1/dev/user/memories");
+    return [
       { id: "m1", content: "User runs on Saturdays." },
       { id: "m2", content: "" },
-    ],
-  }));
+    ];
+  });
   try {
     const connector = createOmiConnector({ settings: settings(), timezone: "UTC" });
     assert.ok(connector.fetchNativeMemories, "omi connector must support native memories");
