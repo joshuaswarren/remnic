@@ -17,7 +17,6 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import path from "node:path";
 import { SmartBuffer } from "../buffer.js";
 import type { ImportTurn } from "../bulk-import/types.js";
 import { resolvePipelineProcessingCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
@@ -28,14 +27,12 @@ import { shouldSkipImplicitExtraction } from "../explicit-capture.js";
 import { StorageManager } from "../index.js";
 import { LcmEngine } from "../lcm/index.js";
 import { log } from "../logger.js";
-import { defaultNamespaceForPrincipal, resolvePrincipal } from "../namespaces/principal.js";
 import { ExtractionQueueCoordinator } from "./extraction-queue-coordinator.js";
 import { ExtractionRunCoordinator, type ExtractionRunResult } from "./extraction-run.js";
-import { resolveHandle, stripHandles } from "../recall-handles.js";
+import { stripHandles } from "../recall-handles.js";
 import { type ReplayTurn, normalizeReplaySessionKey } from "../replay/types.js";
 import { SessionObserverState } from "../session-observer-state.js";
 import { CODEX_THREAD_KEY_PREFIX } from "../thread-key.js";
-import { ThreadingManager } from "../threading.js";
 import { TranscriptManager } from "../transcript.js";
 import type { BufferTurn, PluginConfig } from "../types.js";
 import {
