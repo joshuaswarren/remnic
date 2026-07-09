@@ -6,7 +6,7 @@
     "watchlistLoc": {
       "packages/remnic-core/src/orchestrator.ts": 4357,
       "packages/remnic-core/src/cli.ts": 9395,
-      "packages/remnic-core/src/access-service.ts": 9039,
+      "packages/remnic-core/src/access-service.ts": 7849,
       "packages/remnic-core/src/storage.ts": 7747,
       "packages/remnic-core/src/config.ts": 4694
     },
@@ -14,6 +14,6 @@
     "scatteredConfigFlagReads": 0,
     "adHocNamespaceResolutions": 0,
     "unmigratedHandlerCount": 0,
-    "directStorageImports": 42
+    "directStorageImports": 43
   }
 }
