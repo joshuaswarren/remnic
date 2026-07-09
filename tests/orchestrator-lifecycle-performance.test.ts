@@ -34,14 +34,16 @@ test("runLifecyclePolicyPass uses path-based frontmatter writes (no per-item cor
 });
 
 test("runDeepSleepGovernanceNow refreshes entity synthesis after apply runs", () => {
+  // #1526 seam 28: runDeepSleepGovernanceNow moved to
+  // orchestration/session-context.ts; member reads go through `this.deps`.
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "session-context.ts"),
     "utf-8",
   );
 
   assert.match(
     source,
-    /if \(options\?\.dryRun !== true\) \{\s*try \{\s*await this\.processEntitySynthesisQueue\(\s*this\.storageDirNamespace\(targetStorage\.dir\),\s*5,\s*\);/m,
+    /if \(options\?\.dryRun !== true\) \{\s*try \{\s*await this\.deps\.processEntitySynthesisQueue\(\s*this\.deps\.storageDirNamespace\(targetStorage\.dir\),\s*5,\s*\);/m,
     "deep-sleep apply runs should refresh entity synthesis for the active namespace",
   );
 });

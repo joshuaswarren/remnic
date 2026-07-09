@@ -118,6 +118,8 @@ import { PersistenceIndexCoordinator } from "./orchestration/persistence-index.j
 import { WorkspaceOpsCoordinator } from "./orchestration/workspace-ops.js";
 import { NamespaceReadFanoutCoordinator } from "./orchestration/namespace-read-fanout.js";
 import { selfDeps } from "./orchestration/self-deps.js";
+import { RecallEntryCoordinator } from "./orchestration/recall-entry.js";
+import { SessionContextCoordinator } from "./orchestration/session-context.js";
 import {
   abortRecallError,
   buildCompressionGuidelinesMarkdown,
@@ -663,7 +665,7 @@ export class Orchestrator {
    * project/branch scope a session is operating in (rule 42 — read + write
    * through the same namespace layer).
    */
-  private readonly _codingContextBySession = new Map<string, CodingContext>();
+  private _codingContextBySession = new Map<string, CodingContext>();
   /**
    * Per-session peer ID registry (issue #679 PR 3/5).
    * Set by connectors / hooks via `setPeerIdForSession` so `recallInternal`
@@ -672,7 +674,19 @@ export class Orchestrator {
    * Keyed by sessionKey so concurrent sessions don't clobber each other
    * (rule 11 — scope globals per plugin ID / session).
    */
-  private readonly _peerIdBySession = new Map<string, string>();
+  private _peerIdBySession = new Map<string, string>();
+  /**
+   * Defensive init for the session-binding maps (issue #1526 seam 28
+   * review). `Object.create(Orchestrator.prototype)` stubs in legacy
+   * tests skip class-field initializers, so the maps may be undefined on
+   * fakes; SessionContextCoordinator calls this before writing so the
+   * maps are created ON THE ORCHESTRATOR (or fake), never on the
+   * coordinator.
+   */
+  ensureSessionBindingMaps(): void {
+    this._codingContextBySession ??= new Map<string, CodingContext>();
+    this._peerIdBySession ??= new Map<string, string>();
+  }
   private routingRulesStore: RoutingRulesStore | null = null;
   private contentHashIndex: ContentHashIndex | null = null;
   private readonly contentHashIndexesByStorageDir = new Map<string, ContentHashIndex>();
@@ -969,188 +983,59 @@ export class Orchestrator {
     return this.applyCodingNamespaceOverlay(sessionKey, base);
   }
 
-  /**
-   * Effective namespace a same-session LCM/structured-history READER must use
-   * to find what the access `observe` surface WROTE (#1495 thread 2).
-   *
-   * This MUST mirror the `observe` scope plan's write-namespace resolution, NOT
-   * `resolveSelfNamespace`: when no coding overlay applies, `observe` archives
-   * under `config.defaultNamespace` (an unqualified observed turn is NOT moved
-   * to the principal self namespace — identical to
-   * `resolveCodingScopedWriteNamespace`/`memory_store`, rule 39). Only when a
-   * coding overlay actually changes the namespace does the writer (and so the
-   * reader) use the overlaid `project-*` namespace. Returning the self base for
-   * the no-overlay case would prefix the read key with a namespace the writer
-   * never used, so the reader would miss its own evidence.
-   *
-   * Honours the access-surface `principalOverride` (#1505 thread 2, codex): when
-   * a recall supplies an authenticated principal NOT encoded in the raw
-   * `sessionKey`, `observe` archived LCM under THAT principal's base namespace.
-   * Deriving the base from `resolvePrincipal(sessionKey)` alone could fall back
-   * to `default`, so principal `alice` observing `sess-1` would write under
-   * `alice` but READ under `default`. Threading the override here keeps the read
-   * base identical to the write base.
-   *
-   * READ-AUTHORIZATION gate (#1505 round 3, codex P2 "Gate LCM recall keys by
-   * readable namespaces"): the overlay LCM read key is a `<principal>-project-*`
-   * sub-namespace of the principal SELF base. The normal recall namespace set
-   * below only substitutes the coding overlay when the principal SELF base is
-   * actually in the readable recall set (`recallNamespacesForPrincipal` — gated
-   * by `defaultRecallNamespaces.includes("self")` AND `canReadNamespace`). If a
-   * principal can WRITE but not READ its self namespace (or `defaultRecall-
-   * Namespaces` omits `self`), QMD/file recall never touches those overlay rows,
-   * so neither may the LCM read key. When the self base is NOT readable, fall
-   * back to the default store — exactly what an unqualified, unauthorized recall
-   * resolves to — rather than injecting overlay rows the rest of recall excludes
-   * (rule 42 read/write parity; rule 48 least-privilege).
-   */
   private lcmReadNamespaceForSession(
     sessionKey?: string,
     principalOverride?: string,
   ): string {
-    const principal =
-      typeof principalOverride === "string" && principalOverride.length > 0
-        ? principalOverride
-        : this.resolvePrincipal(sessionKey);
-    const base = defaultNamespaceForPrincipal(principal, this.config);
-    const overlaid = this.applyCodingNamespaceOverlay(sessionKey, base);
-    // No overlay → collapse to the default store so the LCM key is the raw
-    // sessionKey, exactly what an unqualified observe archived under.
-    if (overlaid === base) return this.config.defaultNamespace;
-    // Overlay applied. Only honour it when the principal SELF base is in the
-    // readable recall set (same gate the recall namespace set uses to
-    // substitute the overlay). Otherwise the overlay rows are unauthorized for
-    // this reader — fall back to the default store so the LCM read matches
-    // what QMD/file recall would surface.
-    const selfReadableInRecall = recallNamespacesForPrincipal(
-      principal,
-      this.config,
-    ).includes(base);
-    return selfReadableInRecall ? overlaid : this.config.defaultNamespace;
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).lcmReadNamespaceForSession(
+      sessionKey,
+      principalOverride,
+    );
   }
 
-  /**
-   * Attach a coding-agent context to a session (issue #569). Called by the
-   * Claude Code / Codex / Cursor connectors at session start after
-   * `resolveGitContext(cwd)`. The context is consulted by the recall path
-   * and the write path so that memories route to a project- (and optionally
-   * branch-) scoped namespace.
-   *
-   * Pass `null` to clear.
-   */
   setCodingContextForSession(sessionKey: string, codingContext: CodingContext | null): void {
-    if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
-    // Defensive init — `Object.create(Orchestrator.prototype)` stubs in
-    // legacy tests skip class-field initializers (rule 16 applies to test
-    // teardown; we apply the same defensiveness on construction here so
-    // PR 2 doesn't break those tests).
-    if (!this._codingContextBySession) {
-      (this as unknown as { _codingContextBySession: Map<string, CodingContext> })._codingContextBySession = new Map();
-    }
-    if (codingContext === null) {
-      this._codingContextBySession.delete(sessionKey);
-      return;
-    }
-    this._codingContextBySession.set(sessionKey, codingContext);
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).setCodingContextForSession(
+      sessionKey,
+      codingContext,
+    );
   }
 
-  /**
-   * Read-only accessor for the coding context attached to a session. Returns
-   * `null` when none is set. Used by `remnic doctor` and by tests.
-   *
-   * Defensive `_codingContextBySession` lookup — legacy orchestrator-flush
-   * tests use `Object.create(Orchestrator.prototype)` which does not run
-   * class-field initializers, so the Map may be undefined on stubs.
-   */
   getCodingContextForSession(sessionKey: string | undefined): CodingContext | null {
-    if (typeof sessionKey !== "string" || sessionKey.length === 0) return null;
-    return this._codingContextBySession?.get(sessionKey) ?? null;
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).getCodingContextForSession(
+      sessionKey,
+    );
   }
 
-  /**
-   * Shared helper used by both the recall path and the write path (rule 42).
-   *
-   * Given a base namespace computed from the principal, returns the overlaid
-   * coding namespace when the session has a coding context AND
-   * `codingMode.projectScope` is true AND `namespacesEnabled` is true.
-   * Otherwise returns `baseNamespace` unchanged — CLAUDE.md #30 escape hatch.
-   *
-   * Principal isolation (CLAUDE.md rule 42): the overlay is COMBINED with
-   * the principal-derived `baseNamespace` rather than replacing it, so two
-   * principals working in the same repository do not share memories through
-   * a common `project-*` namespace.
-   *
-   * Namespaces-disabled gate: when `namespacesEnabled` is false, the
-   * storage router maps every namespace to the same `memoryDir`. Returning
-   * `project-*` in that mode would create apparent route separation with
-   * no actual storage isolation — a false-isolation trap. In that mode we
-   * return `baseNamespace` unchanged so coding mode degrades to the existing
-   * unscoped behavior.
-   *
-   * @internal
-   */
   applyCodingNamespaceOverlay(sessionKey: string | undefined, baseNamespace: string): string {
-    if (!resolveNamespaceCapabilities(this.config).namespaces) return baseNamespace;
-    const codingContext = this.getCodingContextForSession(sessionKey);
-    const overlay = resolveCodingNamespaceOverlay(codingContext, this.config.codingMode, this.config.defaultNamespace);
-    if (!overlay) return baseNamespace;
-    return combineNamespaces(baseNamespace, overlay.namespace);
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).applyCodingNamespaceOverlay(
+      sessionKey,
+      baseNamespace,
+    );
   }
 
-  /**
-   * Register a peer ID for a session so recall can inject the peer's
-   * profile into context (issue #679 PR 3/5). Pass `null` to clear.
-   *
-   * Connectors and the `before_agent_start` hook call this when the
-   * session's counter-party is known. The ID is validated against
-   * `PEER_ID_PATTERN` before storing.
-   *
-   * Fail-closed (Codex P1 review): an invalid peerId clears any
-   * previously registered mapping for the session rather than silently
-   * keeping stale data. This prevents a malformed metadata update from
-   * mixing one peer's profile context into another session.
-   *
-   * Defensive init (Cursor review + rule 16): `Object.create(
-   * Orchestrator.prototype)` stubs in legacy tests skip class-field
-   * initializers, so `_peerIdBySession` may be undefined. Mirror the
-   * same guard used by `setCodingContextForSession`.
-   */
   setPeerIdForSession(sessionKey: string, peerId: string | null): void {
-    if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
-    // Defensive init — mirrors setCodingContextForSession (rule 16).
-    if (!this._peerIdBySession) {
-      (this as unknown as { _peerIdBySession: Map<string, string> })._peerIdBySession = new Map();
-    }
-    if (peerId === null) {
-      this._peerIdBySession.delete(sessionKey);
-      return;
-    }
-    // Basic pattern guard — full validation lives in peers/storage.ts.
-    // Invalid input is fail-closed: clear the existing mapping so stale
-    // peer context can't bleed in after a bad metadata update (Codex P1).
-    if (
-      typeof peerId !== "string" ||
-      peerId.length === 0 ||
-      peerId.length > 64 ||
-      !/^[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*$/.test(peerId)
-    ) {
-      log.warn(`setPeerIdForSession: invalid peerId — clearing session mapping`);
-      this._peerIdBySession.delete(sessionKey);
-      return;
-    }
-    this._peerIdBySession.set(sessionKey, peerId);
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).setPeerIdForSession(
+      sessionKey,
+      peerId,
+    );
   }
 
-  /**
-   * Return the peer ID registered for a session, or `null` when none
-   * is set. Used by `recallInternal` to inject the peer profile section.
-   * Defensive `_peerIdBySession` lookup — legacy orchestrator-flush tests
-   * use `Object.create(Orchestrator.prototype)` which skips class-field
-   * initializers, so the Map may be undefined on stubs.
-   */
   getPeerIdForSession(sessionKey: string | undefined): string | null {
-    if (typeof sessionKey !== "string" || sessionKey.length === 0) return null;
-    return this._peerIdBySession?.get(sessionKey) ?? null;
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).getPeerIdForSession(
+      sessionKey,
+    );
   }
 
   /**
@@ -2161,24 +2046,11 @@ export class Orchestrator {
     dryRun?: boolean;
     storage?: StorageManager;
   }): Promise<{ scannedMemories: number; appliedActionCount: number; notes?: string }> {
-    const targetStorage = options?.storage ?? this.storage;
-    const { runMemoryGovernance } = await import("./maintenance/memory-governance.js");
-    const { summarizeGovernanceResultForDreams } = await import("./maintenance/dreams-ledger.js");
-    const govResult = await runMemoryGovernance({
-      memoryDir: targetStorage.dir,
-      mode: options?.dryRun === true ? "shadow" : "apply",
-    });
-    if (options?.dryRun !== true) {
-      try {
-        await this.processEntitySynthesisQueue(
-          this.storageDirNamespace(targetStorage.dir),
-          5,
-        );
-      } catch (error) {
-        log.debug(`deep-sleep governance: entity synthesis refresh failed after apply: ${error}`);
-      }
-    }
-    return summarizeGovernanceResultForDreams(govResult, options?.dryRun === true);
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).runDeepSleepGovernanceNow(
+      options,
+    );
   }
 
   // Issue #1526 (seam 5): semantic consolidation moved to
@@ -2232,23 +2104,11 @@ export class Orchestrator {
   async generateDaySummary(
     memories: string | MemoryFile[],
   ): Promise<DaySummaryResult | null> {
-    if (this.initPromise) {
-      let initGateTimeoutHandle: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          this.initPromise.catch(() => undefined),
-          new Promise((resolve) => {
-            initGateTimeoutHandle = setTimeout(
-              resolve,
-              this.config.initGateTimeoutMs,
-            );
-          }),
-        ]);
-      } finally {
-        if (initGateTimeoutHandle) clearTimeout(initGateTimeoutHandle);
-      }
-    }
-    return this.extraction.generateDaySummary(memories);
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).generateDaySummary(
+      memories,
+    );
   }
 
   /**
@@ -2453,136 +2313,13 @@ export class Orchestrator {
     sessionKey?: string,
     options: RecallInvocationOptions = {},
   ): Promise<string> {
-    // Resolve the recall-operation capability gates ONCE, at the operation
-    // entry, and thread the frozen set down (issue #1523). Never re-read the
-    // migrated flags off `this.config` mid-operation.
-    const caps = resolveCapabilities(this.config);
-    const graphCaps = resolveGraphConstructionCapabilities(this.config); // #1566 Cluster A
-    const abortController = new AbortController();
-    const onAbort = () => {
-      abortController.abort();
-    };
-    if (options.abortSignal?.aborted) {
-      abortController.abort();
-    } else {
-      options.abortSignal?.addEventListener("abort", onAbort, { once: true });
-    }
-
-    const principal =
-      typeof options.principalOverride === "string" &&
-      options.principalOverride.length > 0
-        ? options.principalOverride
-        : resolvePrincipal(sessionKey, this.config);
-    const namespacesEnabled = resolveNamespaceCapabilities(this.config).namespaces;
-    if (namespacesEnabled && !principal) {
-      throw new Error("authentication required: namespaces are enabled and no principal was supplied");
-    }
-
-    // Wait for initialization to complete before attempting recall. The timeout
-    // is configurable so OpenClaw's per-hook budget and Remnic's internal init
-    // gate can stay aligned during cold starts.
-    let initGateTimeoutHandle: NodeJS.Timeout | null = null;
-    let onInitGateAbort: (() => void) | null = null;
-    if (this.initPromise) {
-      const gateResult = await Promise.race([
-        this.initPromise.then(() => "ok" as const),
-        new Promise<"timeout">((resolve) => {
-          initGateTimeoutHandle = setTimeout(
-            () => resolve("timeout"),
-            this.config.initGateTimeoutMs,
-          );
-        }),
-        abortController.signal.aborted
-          ? Promise.resolve("aborted" as const)
-          : new Promise<"aborted">((resolve) => {
-              onInitGateAbort = () => resolve("aborted");
-              abortController.signal.addEventListener(
-                "abort",
-                onInitGateAbort,
-                { once: true },
-              );
-            }),
-      ]);
-      if (initGateTimeoutHandle) clearTimeout(initGateTimeoutHandle);
-      if (onInitGateAbort)
-        abortController.signal.removeEventListener("abort", onInitGateAbort);
-      if (gateResult === "aborted") {
-        this.logRecallFailure(abortRecallError("recall aborted before init"));
-        return "";
-      }
-      if (gateResult === "timeout") {
-        log.warn("recall: init gate timed out — proceeding without full init");
-      }
-    }
-
-    // Secure-store lock gate (issue #690 PR 3/4).
-    // If secure-store is enabled but the keyring holds no key for this
-    // memory directory, reject recall with a clear human-readable error
-    // rather than surfacing a cryptic SecureStoreLockedError from deep
-    // inside the storage layer.
-    if (resolveRecallAuxiliaryCapabilities(this.config).secureStore && !this.storage.isSecureStoreUnlocked()) {
-      const lockedMsg =
-        "[secure-store locked] Memory store is encrypted and locked. " +
-        "Unlock the secure-store inside this daemon process, or restart the daemon through a secure-store aware launcher that installs the key.";
-      log.warn("recall blocked: secure-store is locked");
-      return lockedMsg;
-    }
-
-    // Keep outer recall timeout above worst-case serialized hybrid search:
-    // QMD subprocess BM25 (30s) + vector (30s) can consume ~60s under contention.
-    try {
-      const recallPromise = this.recallInternal(prompt, sessionKey, {
-        ...options,
-        abortSignal: abortController.signal,
-      }, caps, graphCaps);
-      const RECALL_TIMEOUT_MS = this.config.recallOuterTimeoutMs ?? 75_000;
-      if (RECALL_TIMEOUT_MS <= 0) {
-        return await recallPromise;
-      }
-
-      let timeoutHandle: NodeJS.Timeout | null = null;
-      const timeoutPromise = new Promise<string>((_, reject) => {
-        timeoutHandle = setTimeout(() => {
-          abortController.abort();
-          reject(new Error("recall timeout"));
-        }, RECALL_TIMEOUT_MS);
-      });
-
-      let recallResult: string;
-      try {
-        recallResult = await Promise.race([recallPromise, timeoutPromise]);
-      } finally {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-      }
-
-      // Observation-mode direct-answer tier (issue #518 slice 3c).
-      // Runs after the user's recall already succeeded, fire-and-forget,
-      // so annotation latency can never delay the caller's response.
-      if (caps.recallDirectAnswer && sessionKey) {
-        try {
-          this.enqueueDirectAnswerObservation(
-            prompt,
-            sessionKey,
-            options.namespace?.trim() || undefined,
-            options.principalOverride,
-            caps,
-            namespacesEnabled,
-          );
-        } catch (err) {
-          log.debug(`direct-answer observation setup failed: ${err}`);
-        }
-      }
-
-      return recallResult;
-    } catch (err) {
-      this.logRecallFailure(err);
-      // endTrace() is safe here: if no trace is active (disabled or already
-      // closed by recallInternal's try/finally), it returns null immediately.
-      this.profiler.endTrace();
-      return ""; // Return empty context on timeout/error
-    } finally {
-      options.abortSignal?.removeEventListener("abort", onAbort);
-    }
+    return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
+      selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
+    )).recall(
+      prompt,
+      sessionKey,
+      options,
+    );
   }
 
   /**
@@ -2649,28 +2386,11 @@ export class Orchestrator {
   }
 
   private logRecallFailure(err: unknown): void {
-    const now = Date.now();
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    const LOG_WINDOW_MS = 60_000;
-    const idleSinceLastFailureMs = now - this.lastRecallFailureAtMs;
-    this.lastRecallFailureAtMs = now;
-    if (idleSinceLastFailureMs >= LOG_WINDOW_MS) {
-      this.suppressedRecallFailures = 0;
-    }
-
-    if (now - this.lastRecallFailureLogAtMs >= LOG_WINDOW_MS) {
-      const suffix =
-        this.suppressedRecallFailures > 0
-          ? ` (suppressed ${this.suppressedRecallFailures} similar failures in last minute)`
-          : "";
-      log.warn(`recall timed out or failed: ${errorMsg}${suffix}`);
-      this.lastRecallFailureLogAtMs = now;
-      this.suppressedRecallFailures = 0;
-      return;
-    }
-
-    this.suppressedRecallFailures += 1;
-    log.debug(`recall timed out or failed (suppressed): ${errorMsg}`);
+    return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
+      selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
+    )).logRecallFailure(
+      err,
+    );
   }
 
   private artifactTypeForCategory(
@@ -3101,6 +2821,40 @@ export class Orchestrator {
     return this._namespaceReadFanoutCoordinator;
   }
 
+  /** RecallEntryCoordinator (issue #1526 seam 28). Lazy; selfDeps live wiring. */
+  private _recallEntryCoordinator: RecallEntryCoordinator | undefined;
+
+  private get recallEntryCoordinator(): RecallEntryCoordinator {
+    if (!this._recallEntryCoordinator) {
+      this._recallEntryCoordinator = new RecallEntryCoordinator(
+        selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
+      );
+    }
+    return this._recallEntryCoordinator;
+  }
+
+  /** SessionContextCoordinator (issue #1526 seam 28). Lazy; selfDeps live wiring. */
+  private _sessionContextCoordinator: SessionContextCoordinator | undefined;
+
+  /**
+   * Self-handle read through the selfDeps proxy (seam 28): coordinators
+   * that construct services against the orchestrator instance (e.g. the
+   * passive-correction CorrectionService) receive it via deps instead of
+   * capturing the coordinator's own `this`.
+   */
+  get orchestratorSelf(): Orchestrator {
+    return this;
+  }
+
+  private get sessionContextCoordinator(): SessionContextCoordinator {
+    if (!this._sessionContextCoordinator) {
+      this._sessionContextCoordinator = new SessionContextCoordinator(
+        selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+      );
+    }
+    return this._sessionContextCoordinator;
+  }
+
   private async recallInternal(
     prompt: string,
     sessionKey?: string,
@@ -3147,39 +2901,12 @@ export class Orchestrator {
       bufferKey?: string;
     },
   ): Promise<void> {
-    const explicitBufferKey =
-      typeof options.bufferKey === "string" && options.bufferKey.length > 0
-        ? options.bufferKey
-        : null;
-    const discoveredBufferKeys =
-      explicitBufferKey ||
-      typeof sessionKey !== "string" ||
-      sessionKey.length === 0 ||
-      typeof this.buffer.findBufferKeysForSession !== "function"
-        ? []
-        : await this.buffer.findBufferKeysForSession(sessionKey);
-    const bufferKeys = explicitBufferKey
-      ? [explicitBufferKey]
-      : discoveredBufferKeys.length > 0
-        ? discoveredBufferKeys
-        : typeof sessionKey === "string" && sessionKey.length > 0
-          ? [sessionKey]
-          : ["default"];
-    for (const bufferKey of bufferKeys) {
-      const turns = this.buffer.getTurns(bufferKey);
-      if (turns.length === 0) continue;
-      await new Promise<void>((resolve, reject) => {
-        void this
-          .queueBufferedExtraction(turns, "trigger_mode", {
-            bufferKey,
-            clearBufferAfterExtraction: true,
-            skipDedupeCheck: true,
-            abortSignal: options.abortSignal,
-            onTaskSettled: (error) => (error ? reject(error) : resolve()),
-          })
-          .catch(reject);
-      });
-    }
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).flushSession(
+      sessionKey,
+      options,
+    );
   }
 
   async ingestReplayBatch(
@@ -3334,52 +3061,11 @@ export class Orchestrator {
     );
   }
 
-  /** Lazily construct the CorrectionService for passive capture. Stateless
-   *  across requests (per #1580 design); cached for the orchestrator's life. */
   private passiveCorrectionService(): CorrectionService {
-    if (this._passiveCorrectionService) return this._passiveCorrectionService;
-    this._passiveCorrectionService = createCorrectionService({
-      orchestrator: this,
-      // Session-scoped write ACL (review: "passive capture bypasses write
-      // ACL"). A correction detected in session S plans only against S readable
-      // namespaces and applies only to writable ones (rule 42) — passive
-      // capture never becomes a cross-tenant mutation vector. Mirrors the
-      // access-service createCorrectionService wiring rather than bypassing it.
-      resolveAuthorizedNamespace: async (req) => {
-        const principal = req.principal || resolvePrincipal(req.sessionKey, this.config);
-        const ns = req.namespace ?? defaultNamespaceForPrincipal(principal, this.config);
-        if (!canWriteNamespace(principal, ns, this.config)) {
-          throw new Error(
-            `passive correction: namespace "${ns}" is not writable for principal ${principal ?? "(none)"}`,
-          );
-        }
-        return ns;
-      },
-      resolveReadableNamespaces: (req) => {
-        const principal = req.principal || resolvePrincipal(req.sessionKey, this.config);
-        return recallNamespacesForPrincipal(principal, this.config);
-      },
-      canWriteNamespace: async (req) => {
-        const principal = req.principal || resolvePrincipal(req.sessionKey, this.config);
-        return canWriteNamespace(principal, req.namespace, this.config);
-      },
-      llmComplete: async ({ system, user }) => {
-        const llmResult = await this.localLlm.chatCompletion(
-          [
-            { role: "system", content: system },
-            { role: "user", content: user },
-          ],
-          { operation: "correction-classify", priority: "background" },
-        );
-        if (!llmResult) {
-          throw new Error(
-            "passive correction classify+draft: local LLM unavailable (disabled or in cooldown)",
-          );
-        }
-        return llmResult.content;
-      },
-    });
-    return this._passiveCorrectionService;
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).passiveCorrectionService(
+    );
   }
 
   async runExtraction(
@@ -3706,24 +3392,11 @@ export class Orchestrator {
   private queueEvalShadowRecall(
     record: Omit<EvalShadowRecallRecord, "schemaVersion">,
   ): void {
-    if (!resolveEvalCapabilities(this.config).evalHarness || !resolveEvalCapabilities(this.config).evalShadowMode)
-      return;
-    this.evalShadowWriteChain = this.evalShadowWriteChain
-      .catch(() => undefined)
-      .then(async () => {
-        try {
-          await recordEvalShadowRecall({
-            memoryDir: this.config.memoryDir,
-            evalStoreDir: this.config.evalStoreDir,
-            record: {
-              schemaVersion: 1,
-              ...record,
-            },
-          });
-        } catch (err) {
-          log.debug(`eval shadow recall write failed: ${err}`);
-        }
-      });
+    return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
+      selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
+    )).queueEvalShadowRecall(
+      record,
+    );
   }
 
   private publishRecallResults(options: {
@@ -3747,20 +3420,10 @@ export class Orchestrator {
      */
     trustByPath?: Map<string, TrustStageResultItem> | null;
   }): void {
-    const sectionId = "memories";
-    // Filter quarantined items from ALL recall paths so no branch can inject
-    // a hard-negative memory that trust scoring excluded on another path.
-    const trustByPath = options.trustByPath ?? null;
-    const injectable = trustByPath
-      ? options.results.filter((r) => !trustByPath.get(r.path)?.quarantined)
-      : options.results;
-    const memoryIds = this.extractMemoryIdsFromResults(injectable);
-    this.trackMemoryAccess(memoryIds);
-
-    this.appendRecallSection(
-      options.sectionBuckets,
-      sectionId,
-      this.formatQmdResults(options.title, injectable, options.sessionKey, trustByPath),
+    return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
+      selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
+    )).publishRecallResults(
+      options,
     );
   }
 
