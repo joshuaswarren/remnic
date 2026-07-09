@@ -1,7 +1,7 @@
 {
   "id": "openclaw-engram",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.3.749",
+  "version": "9.3.750",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -3091,6 +3091,15 @@
         "type": "boolean",
         "default": false,
         "description": "Enable automatic memory linking to build knowledge graph"
+      },
+      "offlineSyncExcludes": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "default": [],
+        "description": "Extra offline-sync push-side exclude globs (relative to memoryDir; * within a segment, leading **/ across segments). Additive to the built-in node-local state excludes (state/*.sqlite, state/*.sqlite-*, state/index_tags.json, state/entity-mention-index.json, state/memory-governance/runs/**). Issue #1786."
       },
       "memoryOsPreset": {
         "type": "string",
