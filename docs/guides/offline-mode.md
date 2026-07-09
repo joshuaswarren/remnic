@@ -123,6 +123,54 @@ The transfer intentionally excludes private or process-local directories such
 as `.secure-store/`, `.offline-sync/`, `.capsules/`, `node_modules/`, and `.git/`.
 Auth tokens stay local and must be provisioned separately on each machine.
 
+### Node-local state excludes
+
+Each node also rebuilds some runtime state from synced records, so the push
+side never sends these paths (issue #1786):
+
+```text
+state/*.sqlite
+state/*.sqlite-*          # -wal / -shm sidecars
+state/index_tags.json
+state/entity-mention-index.json
+state/memory-governance/runs/**
+```
+
+Pushing a live SQLite database risks corrupting the receiving daemon's LCM
+store and previously put the watcher into a permanent large-file retry loop.
+The apply side still accepts these paths, so an initial `prepare` from a
+remote that legitimately serves them keeps working.
+
+### Custom excludes
+
+Add deployment-specific excludes with the `offlineSyncExcludes` config key
+(additive to the built-in list; `*` matches within a path segment, a leading
+`**/` matches any number of segments):
+
+```json
+{
+  "remnic": {
+    "offlineSyncExcludes": ["scratch/**", "state/*.tmp"]
+  }
+}
+```
+
+or per-invocation with the repeatable `--exclude` flag:
+
+```bash
+remnic offline watch --namespace default --exclude "scratch/**" --exclude "state/*.tmp"
+```
+
+Invalid entries (non-strings, empty strings, bad globs) fail config parsing
+loudly instead of being silently ignored.
+
+### Large-file push failures
+
+If a file fails its large-file push on 3 consecutive watch iterations, the
+watcher logs one warning and permanently skips that file for the lifetime of
+the watcher process, so the rest of the namespace keeps syncing. Add the path
+to `offlineSyncExcludes` (or `--exclude`) to silence it across restarts.
+
 ## Environment Variables
 
 The CLI reads these values when flags are omitted:

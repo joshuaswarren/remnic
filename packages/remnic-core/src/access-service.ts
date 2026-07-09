@@ -228,6 +228,7 @@ import {
 } from "./capsule-cli.js";
 import {
   applyOfflineSyncFileContentChunk,
+  compileOfflineSyncExcludeGlobs,
   applyOfflineSyncChangeset,
   buildOfflineSyncSnapshot,
   buildOfflineSyncSnapshotFromBase,
@@ -8433,6 +8434,23 @@ export class EngramAccessService {
     return { namespace: resolvedNamespace, capsulesDir, capsules };
   }
 
+  /**
+   * Operator-configured offline-sync excludes (#1786), compiled once per
+   * service instance. Applied to push-side (snapshot/read) enumeration
+   * only — apply-side stays permissive so remote-authoritative runtime
+   * files keep flowing in.
+   */
+  private _offlineSyncUserExcludes: RegExp[] | null = null;
+
+  private get offlineSyncUserExcludes(): RegExp[] {
+    if (!this._offlineSyncUserExcludes) {
+      this._offlineSyncUserExcludes = compileOfflineSyncExcludeGlobs(
+        this.orchestrator.config.offlineSyncExcludes ?? [],
+      );
+    }
+    return this._offlineSyncUserExcludes;
+  }
+
   async offlineSyncSnapshot(
     options: EngramAccessOfflineSyncSnapshotRequest & { signal?: AbortSignal } = {},
   ): Promise<EngramAccessOfflineSyncSnapshotResponse> {
@@ -8451,6 +8469,7 @@ export class EngramAccessService {
       readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
       readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
       signal: options.signal,
+      userExcludeRegexps: this.offlineSyncUserExcludes,
     });
     return {
       namespace: resolvedNamespace,
@@ -8478,6 +8497,7 @@ export class EngramAccessService {
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
         readFileDigest: async ({ filePath }) => storage.digestOfflineSyncFile(filePath),
         signal: options.signal,
+        userExcludeRegexps: this.offlineSyncUserExcludes,
       }),
     };
   }
@@ -8496,6 +8516,7 @@ export class EngramAccessService {
         includeContent: true,
         includeTranscripts: options.includeTranscripts !== false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+        userExcludeRegexps: this.offlineSyncUserExcludes,
       });
       return {
         namespace: resolvedNamespace,
@@ -8527,6 +8548,7 @@ export class EngramAccessService {
         length: options.length,
         includeTranscripts: options.includeTranscripts !== false,
         readFile: async ({ filePath }) => storage.readOfflineSyncFile(filePath),
+        userExcludeRegexps: this.offlineSyncUserExcludes,
       });
       return {
         namespace: resolvedNamespace,

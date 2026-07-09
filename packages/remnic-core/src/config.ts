@@ -50,6 +50,7 @@ import { parseProvenanceConfig } from "./provenance.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 import { parseChatConfig } from "./chat/chat-config.js";
 import { parseCorrectionIntentConfig, parseFaithfulnessGateConfig } from "./faithfulness-config.js";
+import { compileOfflineSyncExcludeGlobs } from "./offline-sync.js";
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
   ".openclaw",
@@ -4230,7 +4231,38 @@ export function parseConfig(
       typeof cfg.memoryExtensionsRoot === "string" && cfg.memoryExtensionsRoot.trim().length > 0
         ? expandTildePath(cfg.memoryExtensionsRoot.trim())
         : "",
+
+    // Offline sync excludes (#1786) — validated below (parseOfflineSyncExcludes
+    // throws on non-array / non-string / empty entries and on invalid globs).
+    offlineSyncExcludes: parseOfflineSyncExcludes(cfg.offlineSyncExcludes),
   };
+}
+
+/**
+ * Validate the operator-supplied offline-sync exclude list (#1786).
+ * Rejects loudly instead of silently defaulting (CLAUDE.md rule 39):
+ * a misspelled key value must fail config parse, not be ignored.
+ */
+function parseOfflineSyncExcludes(raw: unknown): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      `offlineSyncExcludes must be an array of non-empty glob strings; got ${typeof raw}`,
+    );
+  }
+  for (const entry of raw) {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new Error(
+        "offlineSyncExcludes must contain only non-empty glob strings",
+      );
+    }
+  }
+  const globs = raw.map((entry) => (entry as string).trim());
+  // Compile-check every glob now so a bad pattern fails at parse time
+  // rather than mid-sync. compileOfflineSyncExcludeGlobs throws with a
+  // per-entry message.
+  compileOfflineSyncExcludeGlobs(globs);
+  return globs;
 }
 
 function parseBriefingConfig(raw: unknown): import("./types.js").BriefingConfig {

@@ -786,6 +786,7 @@ export {
   summarizeOfflineSyncPendingFiles,
   writeOfflineSyncState,
   type OfflineSyncApplyChangesetResult,
+  type OfflineSyncApplyFileContentChunkResult,
   type OfflineSyncApplySnapshotResult,
   type OfflineSyncChange,
   type OfflineSyncChangeset,
