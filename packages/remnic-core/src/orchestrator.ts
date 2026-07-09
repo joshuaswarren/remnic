@@ -113,6 +113,7 @@ import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
 import { TurnIngestionCoordinator } from "./orchestration/turn-ingestion.js";
 import { RecallIntrospectionCoordinator } from "./orchestration/recall-introspection.js";
+import { OrchestratorInitCoordinator } from "./orchestration/orchestrator-init.js";
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
 import {
   GraphRecallCoordinator,
@@ -853,7 +854,7 @@ function qmdStartupCollectionCheckTimeoutMs(): number {
     : DEFAULT_QMD_STARTUP_COLLECTION_CHECK_TIMEOUT_MS;
 }
 
-async function qmdStartupCollectionCheckWithTimeout(
+export async function qmdStartupCollectionCheckWithTimeout(
   promise: Promise<SearchCollectionState>,
   controller: AbortController,
   label: string,
@@ -3355,615 +3356,20 @@ export class Orchestrator {
   }
 
   async initialize(): Promise<void> {
-    // Recreate the deferred-ready gate on every initialize() call.
-    // The same Orchestrator instance may be reused across stop/start cycles
-    // (src/index.ts does this). Without this reset, the second cycle's
-    // `await orchestrator.deferredReady` resolves immediately (already settled
-    // from the first cycle) while the new deferredInitialize() is still running.
-    this.deferredReady = new Promise<void>((resolve) => {
-      this.resolveDeferredReady = resolve;
-    });
-
-    try {
-      await migrateFromEngram({
-        quiet: true,
-        logger: (message) => log.info(message),
-      });
-      await this.storage.ensureDirectories();
-      await this.storage.loadAliases();
-      if (resolveNamespaceCapabilities(this.config).namespaces) {
-        const namespaces = new Set<string>([
-          this.config.defaultNamespace,
-          this.config.sharedNamespace,
-          ...this.config.namespacePolicies.map((p) => p.name),
-        ]);
-        for (const ns of namespaces) {
-          const sm = await this.storageRouter.storageFor(ns);
-          await sm.ensureDirectories();
-          await sm.loadAliases().catch(() => undefined);
-        }
-        // Explicitly seed the catalog with all configured namespaces at startup
-        // (round 6, cursor Medium — NBLlR). The storageFor loop above fires the
-        // router's onResolve hook, but a warm router cache (reused instance
-        // across stop/start) can skip onResolve, leaving policy namespaces absent
-        // from the live catalog until an operator runs `rebuild --apply`. This
-        // call is cheap, idempotent, and best-effort: a catalog failure must
-        // never break initialization (rule #13, #40).
-        await this.namespaceCatalog.registerConfiguredNamespaces().catch(() => undefined);
-      }
-      // #1713 Item 2: recover stale `applying` correction plans left behind
-      // by a process that died mid-apply. Best-effort — a failure here must
-      // never block initialization (rule 13). Runs for every configured
-      // namespace since correction plans can exist in any of them.
-      try {
-        // #1713 Item 2 + P2 (cursor): sweep ALL known namespaces — configured
-        // + catalog-discovered — so stale applying plans in derived namespaces
-        // (coding-scoped, session-derived) are also recovered.
-        const correctionNamespaces = new Set(this.configuredNamespaceList());
-        if (this.namespaceCatalog.enabled) {
-          try {
-            for (const rec of await this.namespaceCatalog.listNamespaces()) {
-              correctionNamespaces.add(rec.namespace);
-            }
-          } catch { /* best-effort */ }
-        }
-        const recovered = await this.passiveCorrectionService().recoverStaleApplyingPlans(
-          [...correctionNamespaces],
-        );
-        if (recovered > 0) {
-          log.info(`correction: recovered ${recovered} stale applying plan(s) on startup`);
-        }
-      } catch (staleErr) {
-        log.debug(`correction: stale-plan recovery skipped: ${staleErr instanceof Error ? staleErr.message : String(staleErr)}`);
-      }
-      await this.relevance.load();
-      await this.negatives.load();
-      await this.lastRecall.load();
-      await this.handleHistory.load();
-      await this.tierMigrationStatus.load();
-      await this.sessionObserver.load();
-      this.runtimePolicyValues = await this.policyRuntime.loadRuntimeValues();
-      this.utilityRuntimeValues = await loadUtilityRuntimeValues({
-        memoryDir: this.config.memoryDir,
-        memoryUtilityLearningEnabled: resolveUtilityLearningCapabilities(this.config).memoryUtilityLearning,
-        promotionByOutcomeEnabled: resolveUtilityLearningCapabilities(this.config).promotionByOutcome,
-      });
-
-      // Initialize content-hash dedup index
-      if (resolveRecallAuxiliaryCapabilities(this.config).factDeduplication) {
-        this.contentHashIndex = this.storage.createContentHashIndex();
-        await this.contentHashIndex.load();
-        log.info(
-          `content-hash dedup: loaded ${this.contentHashIndex.size} hashes`,
-        );
-      }
-      await this.transcript.initialize();
-      await this.summarizer.initialize();
-      if (this.sharedContext) {
-        await this.sharedContext.ensureStructure();
-      }
-      if (this.compounding) {
-        await this.compounding.ensureDirs();
-      }
-
-      // Buffer and compaction cleanup are fast and needed for basic operation —
-      // load them before the init gate so turn buffering works immediately.
-      try {
-        await this.buffer.load();
-      } catch (bufErr) {
-        log.error(
-          `buffer.load() failed (init gate will still open): ${bufErr}`,
-        );
-        this.buffer.resetToEmpty();
-      }
-      if (resolveRecallAuxiliaryCapabilities(this.config).compactionReset) {
-        try {
-          const wsDir = this.config.workspaceDir || defaultWorkspaceDir();
-          const files = await readdir(wsDir).catch(() => [] as string[]);
-          for (const f of files) {
-            if (!f.startsWith(".compaction-reset-signal-")) continue;
-            const fp = path.join(wsDir, f);
-            const s = await stat(fp).catch(() => null);
-            if (s && Date.now() - s.mtimeMs >= COMPACTION_SIGNAL_MAX_AGE_MS) {
-              await unlink(fp).catch(() => {});
-              log.debug(`initialize: removed stale compaction signal ${f}`);
-            }
-          }
-        } catch (err) {
-          log.debug("initialize: stale signal sweep failed:", err);
-        }
-      }
-
-      // QMD probe + collection check: determines the final QMD state (real
-      // client vs NoopSearchBackend). Must complete BEFORE the init gate opens
-      // so that recall() — which awaits initPromise — always observes the final
-      // QMD state. Without this ordering, a concurrent recall() could read
-      // this.qmd while it's still the real client, then get errors when
-      // deferredInitialize() swaps it to NoopSearchBackend mid-query.
-      try {
-        const available = await this.qmd.probe();
-        if (available) {
-          log.info(`Search backend: available ${this.qmd.debugStatus()}`);
-          // Ensure collections at startup for the catalog-union namespace set, not
-          // just the configured set (issue #1499 sweep, same class as NHZEV): a
-          // dynamic namespace that exists only in the persisted catalog must have
-          // its QMD collection checked/ensured on boot so recall against it works
-          // after a restart. `registerConfiguredNamespaces()` already seeded the
-          // catalog above, so `maintenanceNamespaces()` is readable here; it falls
-          // back to the configured set on any catalog read failure.
-          const namespaces = resolveNamespaceCapabilities(this.config).namespaces
-            ? await this.maintenanceNamespaces()
-            : [this.config.defaultNamespace];
-          const states = await Promise.all(
-            namespaces.map(async (namespace) => {
-              const collectionCheckAbort = new AbortController();
-              const state = await qmdStartupCollectionCheckWithTimeout(
-                resolveNamespaceCapabilities(this.config).namespaces
-                  ? this.namespaceSearchRouter.ensureNamespaceCollection(
-                      namespace,
-                      { signal: collectionCheckAbort.signal },
-                    )
-                  : this.qmd.ensureCollection(
-                      this.config.memoryDir,
-                      this.config.qmdCollection,
-                      { signal: collectionCheckAbort.signal },
-                    ),
-                collectionCheckAbort,
-                namespace,
-              );
-              return { namespace, state };
-            }),
-          );
-          const defaultState =
-            states.find(
-              (entry) => entry.namespace === this.config.defaultNamespace,
-            )?.state ?? "unknown";
-          if (defaultState === "missing") {
-            await this.disposeSearchBackendIfNeeded();
-            this.qmd = new NoopSearchBackend();
-            log.warn(
-              "Search collection missing for Remnic memory store; disabling search retrieval for this runtime (fallback retrieval remains enabled)",
-            );
-          } else if (defaultState === "unknown") {
-            log.warn(
-              "Search collection check unavailable; keeping search retrieval enabled for fail-open behavior",
-            );
-          } else if (defaultState === "skipped") {
-            log.debug(
-              "Search collection check skipped (remote or daemon-only mode)",
-            );
-          }
-          for (const entry of states) {
-            if (entry.namespace === this.config.defaultNamespace) continue;
-            if (entry.state === "missing") {
-              log.warn(
-                `Search collection missing for namespace '${entry.namespace}'; namespace retrieval will fail open to non-search paths`,
-              );
-            }
-          }
-        } else if (this.qmd instanceof NoopSearchBackend) {
-          log.debug(`Search backend: noop (search intentionally disabled)`);
-        } else {
-          log.warn(`Search backend: not available ${this.qmd.debugStatus()}`);
-        }
-      } catch (err) {
-        log.error(`QMD probe/collection check failed (non-fatal): ${err}`);
-      }
-
-      // Open the init gate — essential state (storage, aliases, relevance,
-      // transcript, summarizer, buffer) is loaded AND QMD state is finalized
-      // (probe + collection check complete, NoopSearchBackend swap done if
-      // needed). Warmup, sync, caches, and remaining heavy operations run in
-      // the background after this point via deferredInitialize().
-      if (this.resolveInit) {
-        this.resolveInit();
-        this.resolveInit = null;
-        log.info("init gate opened (essential state + QMD state loaded)");
-      }
-
-      // Deferred init: QMD sync, warmup, conversation index, caches, cron.
-      // Runs in background so gateway_start returns fast. On low-power hardware
-      // (Umbrel, RPi) QMD warmup/sync alone can take 30-60s and cause gateway
-      // restart loops when they block the startup path. See issue #462.
-      // Note: QMD probe + collection check (including NoopSearchBackend swap)
-      // already ran above before the init gate, so this.qmd is finalized.
-      //
-      // Capture the resolver by value so a concurrent re-initialize() cannot
-      // overwrite this.resolveDeferredReady before .finally() runs — that would
-      // cause the first cycle's .finally() to resolve the *second* cycle's
-      // promise prematurely while leaving the first cycle's promise pending.
-      const resolveDeferred = this.resolveDeferredReady;
-      this.resolveDeferredReady = null;
-      this.deferredInitAbort = new AbortController();
-      this.deferredInitialize(this.deferredInitAbort.signal)
-        .catch((err) => {
-          log.error(`deferred initialization failed (non-fatal): ${err}`);
-        })
-        .finally(() => {
-          resolveDeferred?.();
-        });
-    } catch (err) {
-      // Resolve both gates so callers never hang on permanently-pending promises
-      // after catching the initialize() error:
-      //
-      // - initPromise: recall(), generateDaySummary(), etc. await this as a
-      //   readiness gate with a 15s timeout. Leaving it pending means every
-      //   subsequent call pays that timeout penalty.
-      //
-      // - deferredReady: CLI callers await this for full QMD readiness. Without
-      //   resolution it hangs forever since deferredInitialize() never ran.
-      if (this.resolveInit) {
-        this.resolveInit();
-        this.resolveInit = null;
-      }
-      if (this.resolveDeferredReady) {
-        this.resolveDeferredReady();
-        this.resolveDeferredReady = null;
-      }
-      throw err;
-    }
+    return this.orchestratorInitCoordinator.initialize(
+    );
   }
 
   private async deferredInitialize(signal: AbortSignal): Promise<void> {
-    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
-
-    // Sync QMD index with current disk state so recall finds recently-written
-    // facts. Without this, the index stays stale from the last extraction-
-    // triggered update — which can be days ago if the daemon restarted without
-    // new extractions. This is the root cause of "0 memories" recall results
-    // despite thousands of facts on disk.
-    if (this.qmd.isAvailable() && resolveQmdCapabilities(this.config).qmdMaintenance) {
-      try {
-        log.info("QMD startup sync: updating index to match current disk state");
-        if (resolveNamespaceCapabilities(this.config).namespaces) {
-          // Cover cataloged dynamic namespaces at startup too (NHZEV, codex P2):
-          // a dynamic namespace written before a daemon restart must be synced on
-          // boot, not only by the debounced runQmdMaintenance() path. Same union +
-          // catalog-read-failure fallback as runQmdMaintenance.
-          await this.namespaceSearchRouter.updateNamespaces(
-            await this.maintenanceNamespaces(),
-            { signal },
-          );
-        } else {
-          await this.qmd.update({ signal });
-        }
-        log.info("QMD startup sync: complete");
-        this.deferredSyncSucceeded = true;
-      } catch (err) {
-        log.warn(`QMD startup sync failed (non-fatal): ${err}`);
-        // deferredSyncSucceeded stays false — server retry will attempt sync
-      }
-    } else if (!(this.qmd.isAvailable())) {
-      // QMD not available at deferred init time — server retry will handle it
-    } else {
-      // QMD available but maintenance disabled — consider sync not needed
-      this.deferredSyncSucceeded = true;
-    }
-
-    if (signal.aborted) return;
-
-    // Warmup: run cheap searches to pre-load QMD embedding models and the
-    // embedding-fallback JSON index so the first real recall is fast.
-    const warmupPromises: Promise<void>[] = [];
-    if (this.qmd.isAvailable()) {
-      const warmupNs = this.config.defaultNamespace;
-      log.info("QMD warmup: pre-loading models with a test search");
-      warmupPromises.push(
-        this.qmd
-          .search("warmup", warmupNs, 1, undefined, { signal })
-          .then(() => {
-            log.info("QMD warmup: complete");
-          })
-          .catch((err) => {
-            log.debug(`QMD warmup search failed (non-fatal): ${err}`);
-          }),
-      );
-    }
-    if (resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) {
-      warmupPromises.push(
-        this.embeddingFallback
-          .isAvailable()
-          .then((ok) => {
-            log.info(
-              `Embedding fallback warmup: ${ok ? "available" : "unavailable (no provider)"}`,
-            );
-          })
-          .catch((err) => {
-            log.debug(`Embedding fallback warmup failed (non-fatal): ${err}`);
-          }),
-      );
-    }
-    await Promise.all(warmupPromises);
-    if (signal.aborted) return;
-
-    // Pre-warm knowledge index, memory, and entity caches.
-    // Awaited so callers of `deferredReady` can rely on warmups being complete
-    // and shutdown sequencing does not race with in-flight cache builds.
-    const cacheWarmups: Promise<void>[] = [];
-    if (resolveRecallAuxiliaryCapabilities(this.config).knowledgeIndex) {
-      cacheWarmups.push(
-        (async () => {
-          try {
-            const t0 = Date.now();
-            await this.storage.buildKnowledgeIndex(this.config);
-            log.info(`Knowledge Index warmup: complete in ${Date.now() - t0}ms`);
-          } catch (err) {
-            log.debug(`Knowledge Index warmup failed (non-fatal): ${err}`);
-          }
-        })(),
-      );
-    }
-    cacheWarmups.push(this.storage.readAllMemories().then(() => {}).catch(() => {}));
-    cacheWarmups.push(this.storage.readAllEntityFiles().then(() => {}).catch(() => {}));
-    await Promise.all(cacheWarmups);
-    if (signal.aborted) return;
-
-    if (resolveIndexingCapabilities(this.config).conversationIndex && this.conversationIndexBackend) {
-      try {
-        const init = await this.conversationIndexBackend.initialize();
-        if (!init.enabled) {
-          this.config.conversationIndexEnabled = false;
-        }
-        if (init.logLevel === "info") {
-          log.info(init.message);
-        } else if (init.logLevel === "warn") {
-          log.warn(init.message);
-        } else {
-          log.debug(init.message);
-        }
-      } catch (err) {
-        log.error(`Conversation index initialization failed (non-fatal): ${err}`);
-        this.config.conversationIndexEnabled = false;
-      }
-    }
-
-    if (signal.aborted) return;
-
-    if (resolveLocalLlmCapabilities(this.config).localLlm) {
-      try {
-        await this.validateLocalLlmModel();
-      } catch (err) {
-        log.error(`Local LLM validation failed (non-fatal): ${err}`);
-      }
-    }
-
-    if (signal.aborted) return;
-
-    // Await cron auto-registration so callers that `await deferredReady` can
-    // rely on cron jobs being registered when it resolves. Without this, the
-    // fire-and-forget pattern lets deferredReady settle while cron writes are
-    // still in flight. Errors are non-fatal — catch individually.
-    // Auto-register every cron job in one pass. Each registration is gated
-    // by its config flag inside the scheduler and individually non-fatal
-    // (issue #1526 PR1 — moved to MaintenanceScheduler).
-    await this.maintenanceScheduler.autoRegisterCrons(signal);
-
-    // First-start lifecycle migration (issue #686 retention-completion).
-    // When lifecyclePolicyEnabled is true and the memoryDir has never been
-    // touched by the lifecycle policy, run a one-time rate-limited demotion
-    // sweep (capped at 50 demotions) so the hot tier isn't flooded on the
-    // first real cron pass. Non-fatal — a failure here must not break init.
-    if (signal.aborted) return;
-    if (lifecycleCaps.lifecyclePolicy && resolveQmdCapabilities(this.config).qmdTierMigration) {
-      try {
-        const { runFirstStartMigration } = await import(
-          "./maintenance/first-start-migration.js"
-        );
-        const result = await runFirstStartMigration({
-          storage: this.storage,
-          config: this.config,
-          qmd: this.qmd,
-          hotCollection: this.config.qmdCollection,
-          coldCollection: this.config.qmdColdCollection,
-          signal,
-        });
-        if (!result.skipped) {
-          log.info(
-            `first-start lifecycle migration: demoted ${result.demotedCount} of ${result.candidateCount} candidates (cap=${result.cappedAt})`,
-          );
-        } else {
-          log.debug(`first-start lifecycle migration skipped: ${result.skipReason}`);
-        }
-      } catch (err) {
-        log.warn(`first-start lifecycle migration failed (non-fatal): ${err}`);
-      }
-    }
-
-    // Wearables auto-sync: in-process periodic transcript refresh for
-    // long-lived hosts (default on). Today's transcript keeps growing
-    // while the wearable records; a once-per-local-day deep pass picks
-    // up late uploads and provider re-processing. Static config gate —
-    // sources can't appear at runtime, so checking once here is safe.
-    // The timer is unref'd, so one-shot CLI runs exit naturally without
-    // ever ticking; idempotent across stop/start cycles via the handle
-    // guard. Non-fatal: a failure to start must not break init.
-    if (signal.aborted) return;
-    if (
-      !this.wearablesAutoSyncHandle &&
-      this.config.wearables.enabled &&
-      this.config.wearables.autoSyncEnabled &&
-      Object.values(this.config.wearables.sources).some((source) => source.enabled)
-    ) {
-      try {
-        const { startWearablesAutoSync } = await import("./wearables/auto-sync.js");
-        // Re-check after the await: destroy() may have aborted while
-        // the import was in flight, having found no handle to stop —
-        // starting now would leave a live interval on a destroyed
-        // orchestrator (Cursor review on PR #1464). Handle creation
-        // below is synchronous, so no further window exists.
-        if (signal.aborted) return;
-        this.wearablesAutoSyncHandle = startWearablesAutoSync(
-          {
-            intervalMinutes: this.config.wearables.autoSyncIntervalMinutes,
-            days: this.config.wearables.autoSyncDays,
-            deepDays: this.config.wearables.autoSyncDeepDays,
-            ...(this.config.wearables.timezone !== undefined
-              ? { timezone: this.config.wearables.timezone }
-              : {}),
-          },
-          {
-            sync: (options) => this.getWearablesService().sync(options),
-            log: {
-              info: (message) => log.info(message),
-              warn: (message) => log.warn(message),
-            },
-          },
-        );
-        log.info(
-          `wearables auto-sync started: every ${this.config.wearables.autoSyncIntervalMinutes}m over ${this.config.wearables.autoSyncDays}d (deep ${this.config.wearables.autoSyncDeepDays}d daily)`,
-        );
-      } catch (err) {
-        const { displayErrorDetail } = await import("./runtime/better-sqlite.js");
-        log.warn(
-          `wearables auto-sync failed to start (non-fatal): ${displayErrorDetail(err)}`,
-        );
-      }
-    }
-
-    log.info("orchestrator initialized (full — deferred steps complete)");
+    return this.orchestratorInitCoordinator.deferredInitialize(
+      signal,
+    );
   }
 
-  /**
-   * Namespace-aware startup search sync. Re-probes QMD, ensures collections
-   * (namespace-aware when namespacesEnabled), runs update, and warms up search.
-   * Designed for server retry paths that run after the deferred init completes
-   * when QMD was not available during initial startup.
-   *
-   * Accepts an optional AbortSignal so callers can interrupt the sync during
-   * shutdown. The signal is checked between phases and forwarded into the QMD
-   * update and warmup search calls so a long-running `qmd update` subprocess
-   * is killed promptly rather than left in flight after `httpServer.stop()`.
-   *
-   * Returns true if the sync succeeded (QMD now available), false otherwise.
-   */
   async startupSearchSync(signal?: AbortSignal): Promise<boolean> {
-    if (signal?.aborted) return false;
-
-    const available = await this.qmd.probe();
-    if (!available) return false;
-    if (signal?.aborted) {
-      log.debug("startupSearchSync: aborted after probe");
-      return false;
-    }
-
-    log.info(`startupSearchSync: backend now available ${this.qmd.debugStatus()}`);
-
-    // Clear namespace router cache so re-probe picks up newly available backends
-    if (resolveNamespaceCapabilities(this.config).namespaces) {
-      this.namespaceSearchRouter.clearCache();
-    }
-
-    // Ensure collections — namespace-aware when enabled.
-    // Use the catalog-union namespace set (issue #1499 sweep, same class as
-    // NHZEV): this is the QMD startup-recovery sync that ensures collections AND
-    // runs `updateNamespaces(...)` below over the SAME `namespaces` set. A dynamic
-    // namespace that exists only in the persisted catalog must be ensured and
-    // re-synced here too, otherwise after a backend-was-unavailable-at-boot
-    // recovery its collection stays stale. Falls back to the configured set on any
-    // catalog read failure.
-    const namespaces = resolveNamespaceCapabilities(this.config).namespaces
-      ? await this.maintenanceNamespaces()
-      : [this.config.defaultNamespace];
-
-    const states = await Promise.all(
-      namespaces.map(async (namespace) => ({
-        namespace,
-        state: resolveNamespaceCapabilities(this.config).namespaces
-          ? await this.namespaceSearchRouter.ensureNamespaceCollection(namespace, { signal })
-          : await this.qmd.ensureCollection(this.config.memoryDir, this.config.qmdCollection, { signal }),
-      })),
+    return this.orchestratorInitCoordinator.startupSearchSync(
+      signal,
     );
-
-    if (signal?.aborted) {
-      log.debug("startupSearchSync: aborted after ensureCollection");
-      return false;
-    }
-
-    const defaultState =
-      states.find((e) => e.namespace === this.config.defaultNamespace)?.state ?? "unknown";
-    if (defaultState === "missing") {
-      // Reset the real backend's available flag before replacing it with noop.
-      // probe() set available=true earlier in this call; without this reset,
-      // any code that captured a reference to the old backend (e.g. a concurrent
-      // recall() that read this.qmd before the reassignment) would observe
-      // isAvailable()===true against a backend with a missing collection.
-      if ("available" in this.qmd) {
-        (this.qmd as any).available = false;
-      }
-      await this.disposeSearchBackendIfNeeded();
-      this.qmd = new NoopSearchBackend();
-      log.warn("startupSearchSync: search collection missing; disabling search (fallback retrieval remains enabled)");
-      return false;
-    }
-
-    // Run index update — namespace-aware when enabled.
-    // qmd.update() swallows errors internally, so we: (1) snapshot fail/run
-    // timestamps, (2) reset throttles so the update isn't skipped by stale
-    // backoff, and (3) verify timestamps after update to confirm it executed
-    // and didn't fail silently.
-    // The abort signal is forwarded into the QMD subprocess call so the
-    // long-running `qmd update` process is killed promptly on shutdown.
-    if (resolveQmdCapabilities(this.config).qmdMaintenance) {
-      try {
-        const failTsBefore = "lastUpdateFailedAtMs" in this.qmd
-          ? (this.qmd as any).lastUpdateFailedAtMs as number | null
-          : null;
-        const hasRunTs = "lastUpdateRanAtMs" in this.qmd;
-        if ("resetUpdateThrottles" in this.qmd) {
-          (this.qmd as any).resetUpdateThrottles();
-        }
-        log.info("startupSearchSync: updating index to match current disk state");
-        let namespacesUpdated = 0;
-        if (resolveNamespaceCapabilities(this.config).namespaces) {
-          namespacesUpdated = await this.namespaceSearchRouter.updateNamespaces(
-            namespaces,
-            { signal },
-          );
-        } else {
-          await this.qmd.update({ signal });
-        }
-        if (signal?.aborted) {
-          log.debug("startupSearchSync: aborted after update");
-          return false;
-        }
-        const failTsAfter = "lastUpdateFailedAtMs" in this.qmd
-          ? (this.qmd as any).lastUpdateFailedAtMs as number | null
-          : null;
-        const runTsAfter = hasRunTs
-          ? (this.qmd as any).lastUpdateRanAtMs as number | null
-          : null;
-        if (failTsAfter !== null && failTsAfter !== failTsBefore) {
-          log.warn("startupSearchSync: update silently failed (detected via fail timestamp)");
-          return false;
-        }
-        if (resolveNamespaceCapabilities(this.config).namespaces) {
-          if (namespacesUpdated === 0) {
-            log.warn("startupSearchSync: no namespace backends were eligible for update (all unavailable or collections missing)");
-            return false;
-          }
-          log.info(`startupSearchSync: namespace updates succeeded (${namespacesUpdated}/${namespaces.length} namespaces updated)`);
-        } else if (hasRunTs && runTsAfter === null) {
-          log.warn("startupSearchSync: update was throttled/skipped (run timestamp is null after reset + update)");
-          return false;
-        }
-        log.info("startupSearchSync: sync complete");
-      } catch (err) {
-        log.warn(`startupSearchSync: update failed: ${err}`);
-        return false;
-      }
-    }
-
-    // Warmup search to pre-load embedding models
-    if (!signal?.aborted) {
-      try {
-        await this.qmd.search("warmup", this.config.defaultNamespace, 1, undefined, { signal });
-        log.info("startupSearchSync: warmup complete");
-      } catch (err) {
-        log.debug(`startupSearchSync: warmup search failed (non-fatal): ${err}`);
-      }
-    }
-
-    return true;
   }
 
   /**
@@ -5673,6 +5079,71 @@ export class Orchestrator {
       });
     }
     return this._recallIntrospectionCoordinator;
+  }
+
+  /**
+   * Orchestrator-init coordinator (issue #1526 seam 22). Owns
+   * initialize/deferredInitialize/startupSearchSync. Lazy + accessor-wired
+   * (late-binding rule, seams 18–21); the init gate fields stay on the
+   * orchestrator and are mutated through set accessors.
+   */
+  private _orchestratorInitCoordinator: OrchestratorInitCoordinator | undefined;
+
+  private get orchestratorInitCoordinator(): OrchestratorInitCoordinator {
+    if (!this._orchestratorInitCoordinator) {
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      const self = this;
+      this._orchestratorInitCoordinator = new OrchestratorInitCoordinator({
+        get buffer() { return self.buffer; },
+        get compounding() { return self.compounding; },
+        get config() { return self.config; },
+        configuredNamespaceList: () => self.configuredNamespaceList(),
+        get contentHashIndex() { return self.contentHashIndex; },
+        set contentHashIndex(value) { self.contentHashIndex = value; },
+        get conversationIndexBackend() { return self.conversationIndexBackend; },
+        get deferredInitAbort() { return self.deferredInitAbort; },
+        set deferredInitAbort(value) { self.deferredInitAbort = value; },
+        deferredInitialize: (signal) => self.deferredInitialize(signal),
+        get deferredReady() { return self.deferredReady; },
+        set deferredReady(value) { self.deferredReady = value; },
+        get deferredSyncSucceeded() { return self.deferredSyncSucceeded; },
+        set deferredSyncSucceeded(value) { self.deferredSyncSucceeded = value; },
+        disposeSearchBackendIfNeeded: () => self.disposeSearchBackendIfNeeded(),
+        get embeddingFallback() { return self.embeddingFallback; },
+        getWearablesService: () => self.getWearablesService(),
+        get handleHistory() { return self.handleHistory; },
+        get lastRecall() { return self.lastRecall; },
+        maintenanceNamespaces: (jobName, budgetMode) => self.maintenanceNamespaces(jobName, budgetMode),
+        get maintenanceScheduler() { return self.maintenanceScheduler; },
+        get namespaceCatalog() { return self.namespaceCatalog; },
+        get namespaceSearchRouter() { return self.namespaceSearchRouter; },
+        get negatives() { return self.negatives; },
+        passiveCorrectionService: () => self.passiveCorrectionService(),
+        get policyRuntime() { return self.policyRuntime; },
+        get qmd() { return self.qmd; },
+        set qmd(value) { self.qmd = value; },
+        get relevance() { return self.relevance; },
+        get resolveDeferredReady() { return self.resolveDeferredReady; },
+        set resolveDeferredReady(value) { self.resolveDeferredReady = value; },
+        get resolveInit() { return self.resolveInit; },
+        set resolveInit(value) { self.resolveInit = value; },
+        get runtimePolicyValues() { return self.runtimePolicyValues; },
+        set runtimePolicyValues(value) { self.runtimePolicyValues = value; },
+        get sessionObserver() { return self.sessionObserver; },
+        get sharedContext() { return self.sharedContext; },
+        get storage() { return self.storage; },
+        get storageRouter() { return self.storageRouter; },
+        get summarizer() { return self.summarizer; },
+        get tierMigrationStatus() { return self.tierMigrationStatus; },
+        get transcript() { return self.transcript; },
+        get utilityRuntimeValues() { return self.utilityRuntimeValues; },
+        set utilityRuntimeValues(value) { self.utilityRuntimeValues = value; },
+        validateLocalLlmModel: () => self.validateLocalLlmModel(),
+        get wearablesAutoSyncHandle() { return self.wearablesAutoSyncHandle; },
+        set wearablesAutoSyncHandle(value) { self.wearablesAutoSyncHandle = value; },
+      });
+    }
+    return this._orchestratorInitCoordinator;
   }
 
   private async recallInternal(
