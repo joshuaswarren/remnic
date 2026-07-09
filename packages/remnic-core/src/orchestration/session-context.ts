@@ -29,6 +29,8 @@ import {
 
 export interface SessionContextDeps {
   readonly _codingContextBySession: Map<string, CodingContext>;
+  /** Defensive init for Object.create(prototype) fakes — creates the session-binding maps on the orchestrator. */
+  ensureSessionBindingMaps(): void;
   _passiveCorrectionService: CorrectionService | null;
   readonly _peerIdBySession: Map<string, string>;
   applyCodingNamespaceOverlay(sessionKey: string | undefined, baseNamespace: string): string;
@@ -158,12 +160,10 @@ export class SessionContextCoordinator {
   setCodingContextForSession(sessionKey: string, codingContext: CodingContext | null): void {
     if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
     // Defensive init — `Object.create(Orchestrator.prototype)` stubs in
-    // legacy tests skip class-field initializers (rule 16 applies to test
-    // teardown; we apply the same defensiveness on construction here so
-    // PR 2 doesn't break those tests).
-    if (!this.deps._codingContextBySession) {
-      (this as unknown as { _codingContextBySession: Map<string, CodingContext> })._codingContextBySession = new Map();
-    }
+    // legacy tests skip class-field initializers. The init runs on the
+    // ORCHESTRATOR via deps (PR #1802 review: writing here would create
+    // the map on the coordinator while reads keep going through deps).
+    this.deps.ensureSessionBindingMaps();
     if (codingContext === null) {
       this.deps._codingContextBySession.delete(sessionKey);
       return;
@@ -234,10 +234,9 @@ export class SessionContextCoordinator {
    */
   setPeerIdForSession(sessionKey: string, peerId: string | null): void {
     if (typeof sessionKey !== "string" || sessionKey.length === 0) return;
-    // Defensive init — mirrors setCodingContextForSession (rule 16).
-    if (!this.deps._peerIdBySession) {
-      (this as unknown as { _peerIdBySession: Map<string, string> })._peerIdBySession = new Map();
-    }
+    // Defensive init — mirrors setCodingContextForSession (rule 16);
+    // runs on the orchestrator via deps (PR #1802 review).
+    this.deps.ensureSessionBindingMaps();
     if (peerId === null) {
       this.deps._peerIdBySession.delete(sessionKey);
       return;

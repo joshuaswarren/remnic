@@ -665,7 +665,7 @@ export class Orchestrator {
    * project/branch scope a session is operating in (rule 42 — read + write
    * through the same namespace layer).
    */
-  private readonly _codingContextBySession = new Map<string, CodingContext>();
+  private _codingContextBySession = new Map<string, CodingContext>();
   /**
    * Per-session peer ID registry (issue #679 PR 3/5).
    * Set by connectors / hooks via `setPeerIdForSession` so `recallInternal`
@@ -674,7 +674,19 @@ export class Orchestrator {
    * Keyed by sessionKey so concurrent sessions don't clobber each other
    * (rule 11 — scope globals per plugin ID / session).
    */
-  private readonly _peerIdBySession = new Map<string, string>();
+  private _peerIdBySession = new Map<string, string>();
+  /**
+   * Defensive init for the session-binding maps (issue #1526 seam 28
+   * review). `Object.create(Orchestrator.prototype)` stubs in legacy
+   * tests skip class-field initializers, so the maps may be undefined on
+   * fakes; SessionContextCoordinator calls this before writing so the
+   * maps are created ON THE ORCHESTRATOR (or fake), never on the
+   * coordinator.
+   */
+  ensureSessionBindingMaps(): void {
+    this._codingContextBySession ??= new Map<string, CodingContext>();
+    this._peerIdBySession ??= new Map<string, string>();
+  }
   private routingRulesStore: RoutingRulesStore | null = null;
   private contentHashIndex: ContentHashIndex | null = null;
   private readonly contentHashIndexesByStorageDir = new Map<string, ContentHashIndex>();
