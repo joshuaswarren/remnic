@@ -1151,6 +1151,7 @@ export async function summarizeOfflineSyncPendingChanges(options: {
   now?: Date;
   userExcludeRegexps?: readonly RegExp[];
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
+  readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
 }): Promise<OfflineSyncChangesetSummary> {
   const includeTranscripts = options.includeTranscripts !== false;
   const current = await buildOfflineSyncSnapshotFromBase({
