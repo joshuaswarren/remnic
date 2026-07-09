@@ -140,8 +140,9 @@ test("persisted path resolution is not short-circuited by set-before-resolve", (
 });
 
 test("buildGraphEdge forwards fallback causal predecessor when thread context is absent", () => {
+  // #1526 seam 23: buildGraphEdge moved to orchestration/persistence-index.ts.
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "persistence-index.ts"),
     "utf-8",
   );
   assert.match(
