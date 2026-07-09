@@ -9,7 +9,6 @@
  * Behavior-preserving move (late-binding selfDeps wiring, seams 18–27).
  */
 
-import path from "node:path";
 import { type CapabilitySet, type GraphConstructionCapabilitySet, type MemoryLifecycleCapabilitySet, resolveCapabilities, resolveEvalCapabilities, resolveGraphConstructionCapabilities, resolveNamespaceCapabilities, resolveRecallAuxiliaryCapabilities } from "../capabilities.js";
 import { type EvalShadowRecallRecord, recordEvalShadowRecall } from "../evals.js";
 import { StorageManager } from "../index.js";
