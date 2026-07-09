@@ -16,6 +16,7 @@ import {
 } from "../src/explicit-capture.js";
 import { ContentHashIndex } from "../src/storage.js";
 import { Orchestrator } from "../src/orchestrator.js";
+import { TurnIngestionCoordinator } from "../packages/remnic-core/src/orchestration/turn-ingestion.js";
 import { registerTools } from "../src/tools.js";
 
 test("parseConfig defaults captureMode to implicit and accepts explicit modes", () => {
@@ -38,7 +39,7 @@ test("processTurn skips buffering when captureMode=explicit", async () => {
     queueBufferedExtraction: async () => undefined,
   };
 
-  await Orchestrator.prototype.processTurn.call(fake, "user", "remember this later", "session-1");
+  await new TurnIngestionCoordinator(fake as any).processTurn("user", "remember this later", "session-1");
 
   assert.equal(addTurnCalls, 0);
 });

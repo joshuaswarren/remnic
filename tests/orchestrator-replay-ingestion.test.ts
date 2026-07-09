@@ -3,15 +3,18 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
+// #1526 seam 20: ingestReplayBatch/queueBufferedExtraction moved to
+// orchestration/turn-ingestion.ts; member reads go through `this.deps`.
+const TURN_INGESTION_PATH = resolve(
+  import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "turn-ingestion.ts",
+);
+
 test("ingestReplayBatch enqueues replay slices without clearing shared buffer", () => {
-  const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
-    "utf-8",
-  );
+  const source = readFileSync(TURN_INGESTION_PATH, "utf-8");
 
   assert.match(
     source,
-    /if \(shouldSkipImplicitExtraction\(this\.config\)\) \{[\s\S]*ingestReplayBatch: skipping implicit extraction because captureMode=explicit[\s\S]*return;\s*\}/m,
+    /if \(shouldSkipImplicitExtraction\(this\.deps\.config\)\) \{[\s\S]*ingestReplayBatch: skipping implicit extraction because captureMode=explicit[\s\S]*return;\s*\}/m,
     "replay ingestion should honor explicit capture mode and skip implicit extraction paths",
   );
   assert.match(
@@ -24,8 +27,12 @@ test("ingestReplayBatch enqueues replay slices without clearing shared buffer", 
     /for \(const sessionSlice of splitTurnsBySourceValidAt\(sessionTurns\)\) \{[\s\S]*bufferKey:\s*key,[\s\S]*targetValidAtMs:\s*targetSourceValidAtSortMs\(sessionSlice\),[\s\S]*\.sort\(\(a, b\) => \{[\s\S]*\.map\(\s*\(\{ bufferKey, turns: sessionSlice \}\) =>[\s\S]*skipDedupeCheck:\s*true,[\s\S]*clearBufferAfterExtraction:\s*false,[\s\S]*skipCharThreshold:\s*true,[\s\S]*skipUserTurnThreshold:\s*true,[\s\S]*bufferKey,/m,
     "replay ingestion should globally order source slices while preserving the session-specific buffer key and threshold bypasses",
   );
+  const orchestratorSource = readFileSync(
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    "utf-8",
+  );
   assert.match(
-    source,
+    orchestratorSource,
     /function sourceValidAtContextTurns\([\s\S]*targetStart: number,[\s\S]*targetEnd: number,[\s\S]*contextValidAtMs > targetValidAtMs[\s\S]*\.sort\(\(a, b\) => \{[\s\S]*if \(a\.validAtMs < b\.validAtMs\) return -1;[\s\S]*if \(a\.validAtMs > b\.validAtMs\) return 1;[\s\S]*return a\.index < b\.index \? -1 : 1;[\s\S]*\.slice\(-SOURCE_VALID_AT_CONTEXT_TURNS\)[\s\S]*asExtractionContextTurn/m,
     "source-dated replay context should be selected by source time, not input adjacency, while excluding future-dated turns",
   );
@@ -37,10 +44,7 @@ test("ingestReplayBatch enqueues replay slices without clearing shared buffer", 
 });
 
 test("queueBufferedExtraction preserves explicit false clearBufferAfterExtraction", () => {
-  const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
-    "utf-8",
-  );
+  const source = readFileSync(TURN_INGESTION_PATH, "utf-8");
 
   assert.match(
     source,
@@ -83,14 +87,11 @@ test("runExtraction threshold bypasses are explicit and independent", () => {
 });
 
 test("queueBufferedExtraction settles task callbacks on dedupe skip", () => {
-  const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
-    "utf-8",
-  );
+  const source = readFileSync(TURN_INGESTION_PATH, "utf-8");
 
   assert.match(
     source,
-    /if \(\s*!options\.skipDedupeCheck\s*&&\s*!this\.shouldQueueExtraction\(turnsToExtract,\s*\{\s*bufferKey\s*\}\)\s*\) \{[\s\S]*options\.onTaskSettled\?\.\(undefined,\s*\{[\s\S]*reason:\s*"dedupe"[\s\S]*\}\);[\s\S]*return;/m,
+    /if \(\s*!options\.skipDedupeCheck\s*&&\s*!this\.deps\.shouldQueueExtraction\(turnsToExtract,\s*\{\s*bufferKey\s*\}\)\s*\) \{[\s\S]*options\.onTaskSettled\?\.\(undefined,\s*\{[\s\S]*reason:\s*"dedupe"[\s\S]*\}\);[\s\S]*return;/m,
     "dedupe skip path should settle any task callback to avoid hanging replay promises",
   );
 });

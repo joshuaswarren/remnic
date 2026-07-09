@@ -111,6 +111,7 @@ import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.j
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
+import { TurnIngestionCoordinator } from "./orchestration/turn-ingestion.js";
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
 import {
   GraphRecallCoordinator,
@@ -960,7 +961,7 @@ function sourceValidAtContextTurns(
     .map(({ turn }) => asExtractionContextTurn(turn));
 }
 
-function targetSourceValidAtSortMs(turns: readonly BufferTurn[]): number {
+export function targetSourceValidAtSortMs(turns: readonly BufferTurn[]): number {
   let latestMs: number | null = null;
   for (const turn of turns) {
     if (turn.extractionContextOnly === true) continue;
@@ -991,7 +992,7 @@ function sortSourceValidAtSlicesChronologically(
     .map((slice) => slice.turns);
 }
 
-function splitTurnsBySourceValidAt(
+export function splitTurnsBySourceValidAt(
   turns: readonly BufferTurn[],
   options: { includeContext?: boolean } = {},
 ): BufferTurn[][] {
@@ -6092,6 +6093,39 @@ export class Orchestrator {
     return this._recallSearchPipelineCoordinator;
   }
 
+  /**
+   * Turn-ingestion coordinator (issue #1526 seam 20). Owns the buffer-side
+   * extraction entry points. Lazy + accessor-wired so prototype-call tests
+   * and instance-level stubs stay live (same rule as seams 18/19).
+   */
+  private _turnIngestionCoordinator: TurnIngestionCoordinator | undefined;
+
+  private get turnIngestionCoordinator(): TurnIngestionCoordinator {
+    if (!this._turnIngestionCoordinator) {
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      const self = this;
+      this._turnIngestionCoordinator = new TurnIngestionCoordinator({
+        get buffer() { return self.buffer; },
+        bulkImportWriteNamespace: () => self.bulkImportWriteNamespace(),
+        get config() { return self.config; },
+        get extractionQueueCoordinator() { return self.extractionQueueCoordinator; },
+        getStorage: (namespace) => self.getStorage(namespace),
+        get heartbeatObserverChains() { return self.heartbeatObserverChains; },
+        get lcmEngine() { return self.lcmEngine; },
+        get passiveCorrectionDedup() { return self.passiveCorrectionDedup; },
+        passiveCorrectionService: () => self.passiveCorrectionService(),
+        get passiveCorrectionTelemetry() { return self.passiveCorrectionTelemetry; },
+        queueBufferedExtraction: (turnsToExtract, reason, options) => self.queueBufferedExtraction(turnsToExtract, reason, options),
+        resolveMemoryIdOrHandle: (ref, sessionKey) => self.resolveMemoryIdOrHandle(ref, sessionKey),
+        runExtraction: (...args) => self.runExtraction(...args),
+        get sessionObserver() { return self.sessionObserver; },
+        shouldQueueExtraction: (turns, options) => self.shouldQueueExtraction(turns, options),
+        get transcript() { return self.transcript; },
+      });
+    }
+    return this._turnIngestionCoordinator;
+  }
+
   private async recallInternal(
     prompt: string,
     sessionKey?: string,
@@ -6122,58 +6156,11 @@ export class Orchestrator {
       persistProcessedFingerprint?: boolean;
     } = {},
   ): Promise<void> {
-    if (role !== "user" && role !== "assistant") {
-      log.debug(`processTurn: ignoring unsupported role=${String(role)}`);
-      return;
-    }
-    if (shouldSkipImplicitExtraction(this.config)) {
-      log.debug(
-        "processTurn: skipping implicit extraction because captureMode=explicit",
-      );
-      return;
-    }
-
-    const bufferKey =
-      typeof options.bufferKey === "string" && options.bufferKey.length > 0
-        ? options.bufferKey
-        : typeof sessionKey === "string" && sessionKey.length > 0
-          ? sessionKey
-          : "default";
-    const captureTimestamp = new Date().toISOString();
-    // Issue #1582 hygiene §2 — strip any echoed `[m:xxxx]` handle before the
-    // turn enters the extraction buffer so handles never become memory content
-    // or get QMD-indexed (rule 23). Gated on the feature flag: when handles are
-    // off none are ever injected, so there is nothing to strip and the buffer
-    // stays byte-identical to the pre-#1582 path.
-    const bufferedContent = this.config.recallMemoryHandles
-      ? stripHandles(content)
-      : content;
-    const turn: BufferTurn = {
+    return this.turnIngestionCoordinator.processTurn(
       role,
-      content: bufferedContent,
-      timestamp: captureTimestamp,
-      // #1578: anchor live-capture turns to wall-clock when bi-temporal is on;
-      // replay/import turns carry sourceValidAt explicitly (codex P1).
-      ...(this.config.temporalBiTemporal
-        ? { sourceValidAt: captureTimestamp }
-        : {}),
+      content,
       sessionKey,
-      logicalSessionKey: options.logicalSessionKey ?? bufferKey,
-      providerThreadId: options.providerThreadId ?? null,
-      turnFingerprint: options.turnFingerprint,
-      persistProcessedFingerprint: options.persistProcessedFingerprint === true,
-    };
-
-    const outcome =
-      typeof this.buffer.addTurnWithOutcome === "function"
-        ? await this.buffer.addTurnWithOutcome(bufferKey, turn)
-        : { decision: await this.buffer.addTurn(bufferKey, turn) };
-
-    if (outcome.decision === "keep_buffering") return;
-    await this.queueBufferedExtraction(
-      outcome.extractionTurns ?? this.buffer.getTurns(bufferKey),
-      "trigger_mode",
-      { bufferKey },
+      options,
     );
   }
 
@@ -6250,106 +6237,10 @@ export class Orchestrator {
       principalOverride?: string;
     } = {},
   ): Promise<void> {
-    if (!Array.isArray(turns) || turns.length === 0) return;
-    if (options.abortSignal?.aborted) {
-      throw options.abortSignal.reason instanceof Error
-        ? options.abortSignal.reason
-        : new Error("ingestReplayBatch aborted");
-    }
-    if (shouldSkipImplicitExtraction(this.config)) {
-      log.debug(
-        "ingestReplayBatch: skipping implicit extraction because captureMode=explicit",
-      );
-      return;
-    }
-
-    const bySession = new Map<string, BufferTurn[]>();
-    for (const turn of turns) {
-      if (turn.role !== "user" && turn.role !== "assistant") continue;
-      const key = normalizeReplaySessionKey(turn.sessionKey);
-      const list = bySession.get(key) ?? [];
-      list.push({
-        role: turn.role,
-        content: turn.content,
-        timestamp: turn.timestamp,
-        sourceValidAt: turn.sourceValidAt,
-        sessionKey: key,
-        parts: turn.parts,
-        rawContent: turn.rawContent,
-        sourceFormat: turn.sourceFormat,
-      });
-      bySession.set(key, list);
-    }
-
-    const replaySlices: Array<{
-      bufferKey: string;
-      order: number;
-      targetValidAtMs: number;
-      turns: BufferTurn[];
-    }> = [];
-    for (const [key, sessionTurns] of bySession.entries()) {
-      if (sessionTurns.length === 0) continue;
-      if (options.abortSignal?.aborted) {
-        throw options.abortSignal.reason instanceof Error
-          ? options.abortSignal.reason
-          : new Error("ingestReplayBatch aborted");
-      }
-      if (options.archiveLcm !== false && this.lcmEngine?.enabled) {
-        await this.lcmEngine.observeMessages(
-          key,
-          sessionTurns.map((turn) => ({
-            role: turn.role,
-            content: turn.content,
-            parts: turn.parts,
-            rawContent: turn.rawContent,
-            sourceFormat: turn.sourceFormat,
-          })),
-        );
-      }
-      for (const sessionSlice of splitTurnsBySourceValidAt(sessionTurns)) {
-        replaySlices.push({
-          bufferKey: key,
-          order: replaySlices.length,
-          targetValidAtMs: targetSourceValidAtSortMs(sessionSlice),
-          turns: sessionSlice,
-        });
-      }
-    }
-
-    const replayTasks = replaySlices
-      .sort((a, b) => {
-        if (a.targetValidAtMs < b.targetValidAtMs) return -1;
-        if (a.targetValidAtMs > b.targetValidAtMs) return 1;
-        if (a.order === b.order) return 0;
-        return a.order < b.order ? -1 : 1;
-      })
-      .map(
-        ({ bufferKey, turns: sessionSlice }) =>
-          new Promise<void>((resolve, reject) => {
-            void this.queueBufferedExtraction(sessionSlice, "trigger_mode", {
-              skipDedupeCheck: true,
-              clearBufferAfterExtraction: false,
-              skipCharThreshold: true,
-              skipUserTurnThreshold: true,
-              bufferKey,
-              extractionDeadlineMs: options.deadlineMs,
-              abortSignal: options.abortSignal,
-              writeNamespaceOverride: options.writeNamespaceOverride,
-              principalOverride: options.principalOverride,
-              onTaskSettled: (err) => (err ? reject(err) : resolve()),
-            }).catch(reject);
-          }),
-      );
-    if (replayTasks.length > 0) {
-      const settled = await Promise.allSettled(replayTasks);
-      const firstRejected = settled.find(
-        (result): result is PromiseRejectedResult =>
-          result.status === "rejected",
-      );
-      if (firstRejected) {
-        throw firstRejected.reason;
-      }
-    }
+    return this.turnIngestionCoordinator.ingestReplayBatch(
+      turns,
+      options,
+    );
   }
 
   /**
@@ -6425,45 +6316,6 @@ export class Orchestrator {
     return this.wearablesServiceInstance;
   }
 
-  /**
-   * Ingest a batch of bulk-import turns (#460). Like ingestReplayBatch, this
-   * normalizes user/assistant turns into the extraction buffer and awaits
-   * settlement, but it intentionally bypasses the captureMode="explicit"
-   * gate because bulk-import is itself an explicit user action — the user
-   * ran `bulk-import --source <name> --file ...` and would be surprised to
-   * see the command silently no-op when capture is otherwise restricted.
-   *
-   * Turns with role="other" are skipped (not supported by the extraction
-   * pipeline).
-   *
-   * Two design decisions worth calling out:
-   *
-   * - **sessionKey is truthy and per-batch-unique.**
-   *   `ThreadingManager.shouldStartNewThread` only applies the session-key
-   *   boundary check when `turn.sessionKey` is truthy (threading.ts:82);
-   *   with an empty string, imported turns could attach to the current
-   *   live thread or merge across unrelated import batches. A unique
-   *   `bulk-import:batch:<timestamp>-<rand>` key forces a fresh thread per
-   *   batch without matching common prefix/map rules in
-   *   `principalFromSessionKeyRules`. (Catch-all regex rules could still
-   *   remap the principal, but that only affects metadata provenance —
-   *   see the next point for why write routing is unaffected.)
-   *
-   * - **writeNamespaceOverride pins the storage target.**
-   *   We pass `writeNamespaceOverride: this.bulkImportWriteNamespace()` to
-   *   `queueBufferedExtraction`, which tells `runExtraction` to skip
-   *   `defaultNamespaceForPrincipal` and write directly into the
-   *   orchestrator's declared bulk-import write namespace. This keeps
-   *   writes deterministic even when namespace policies named `"default"`
-   *   exist alongside a different `config.defaultNamespace`, and also
-   *   guards against regex-catch-all principal rules steering bulk-import
-   *   into an unexpected tenant.
-   *
-   * Per-invocation namespace routing (letting callers target a namespace
-   * other than `bulkImportWriteNamespace()`) is a separate feature tracked
-   * as a follow-up — the hook is the `writeNamespaceOverride` option, but
-   * the CLI surface does not yet expose a `--namespace` flag.
-   */
   async ingestBulkImportBatch(
     turns: ImportTurn[],
     options: {
@@ -6472,240 +6324,20 @@ export class Orchestrator {
       includeSourceValidAtContext?: boolean;
     } = {},
   ): Promise<BulkImportBatchIngestResult> {
-    if (!Array.isArray(turns) || turns.length === 0) {
-      return {
-        attemptedTurnCount: 0,
-        extractionCount: 0,
-        persistedCount: 0,
-        durableOutputCount: 0,
-        skippedCount: 0,
-        failedCount: 0,
-        postPersistMetadataFailureCount: 0,
-        processedTurnCount: 0,
-      };
-    }
-
-    // Per-batch unique sessionKey keeps threading honest without matching
-    // typical prefix/map routing rules.  Combined with writeNamespaceOverride
-    // below, the storage target is independent of principal resolution.
-    // Uses crypto.randomBytes (not Math.random) so CodeQL does not flag a
-    // security-context insecure-randomness use even though this value never
-    // leaves the process; the bytes just need to be collision-resistant
-    // across concurrent bulk-import batches.
-    const shouldUseStableBatchKey = turns.some(
-      (turn) =>
-        turn.persistProcessedFingerprint === true ||
-        (typeof turn.turnFingerprint === "string" &&
-          turn.turnFingerprint.length > 0),
+    return this.turnIngestionCoordinator.ingestBulkImportBatch(
+      turns,
+      options,
     );
-    const stableBatchFingerprint = shouldUseStableBatchKey
-      ? createHash("sha256")
-        .update(
-          turns
-            .map((turn) =>
-              [
-                turn.role,
-                typeof turn.turnFingerprint === "string" &&
-                turn.turnFingerprint.length > 0
-                  ? turn.turnFingerprint
-                  : turn.content.replace(/\s+/g, " ").trim(),
-              ].join(":"),
-            )
-            .join("\n"),
-        )
-        .digest("hex")
-        .slice(0, 32)
-      : undefined;
-    const sessionKey = stableBatchFingerprint
-      ? `bulk-import:batch:${stableBatchFingerprint}`
-      : `bulk-import:batch:${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`;
-
-    const sessionTurns: BufferTurn[] = [];
-    for (const turn of turns) {
-      if (turn.role !== "user" && turn.role !== "assistant") continue;
-      sessionTurns.push({
-        role: turn.role,
-        content: turn.content,
-        timestamp: turn.timestamp,
-        sourceValidAt: turn.timestamp,
-        sessionKey,
-        parts: turn.parts,
-        rawContent: turn.rawContent,
-        sourceFormat: turn.sourceFormat,
-        importProvenance: turn.importProvenance,
-        turnFingerprint: turn.turnFingerprint,
-        persistProcessedFingerprint: turn.persistProcessedFingerprint === true,
-      });
-    }
-    if (sessionTurns.length === 0) {
-      return {
-        attemptedTurnCount: 0,
-        extractionCount: 0,
-        persistedCount: 0,
-        durableOutputCount: 0,
-        skippedCount: 0,
-        failedCount: 0,
-        postPersistMetadataFailureCount: 0,
-        processedTurnCount: 0,
-      };
-    }
-
-    if (this.lcmEngine?.enabled) {
-      await this.lcmEngine.observeMessages(
-        sessionKey,
-        sessionTurns.map((turn) => ({
-          role: turn.role,
-          content: turn.content,
-          parts: turn.parts,
-          rawContent: turn.rawContent,
-          sourceFormat: turn.sourceFormat,
-        })),
-      );
-    }
-
-    const sessionSlices = splitTurnsBySourceValidAt(sessionTurns, {
-      includeContext: options.includeSourceValidAtContext !== false,
-    });
-    const results: ExtractionRunResult[] = [];
-    let processedTurnCount = 0;
-    let firstRejected: unknown;
-    for (const sessionSlice of sessionSlices) {
-      try {
-        const result = await new Promise<ExtractionRunResult>(
-          (resolve, reject) => {
-            void this.queueBufferedExtraction(sessionSlice, "trigger_mode", {
-              skipDedupeCheck: true,
-              clearBufferAfterExtraction: false,
-              skipCharThreshold: true,
-              skipUserTurnThreshold: true,
-              bufferKey: sessionKey,
-              extractionDeadlineMs: options.deadlineMs,
-              failOnExtractionFailure: options.failOnExtractionFailure === true,
-              writeNamespaceOverride: this.bulkImportWriteNamespace(),
-              onTaskSettled: (err, result) =>
-                err
-                  ? reject(err)
-                  : resolve(
-                      result ?? {
-                        status: "skipped",
-                        reason: "missing_extraction_result",
-                        persistedCount: 0,
-                        durableOutputCount: 0,
-                      },
-                    ),
-            }).catch(reject);
-          },
-        );
-        results.push(result);
-        processedTurnCount += sessionSlice.filter(
-          (turn) => turn.extractionContextOnly !== true,
-        ).length;
-      } catch (err) {
-        firstRejected = err;
-        break;
-      }
-    }
-    const rejectedCount = firstRejected ? 1 : 0;
-    const ingestResult: BulkImportBatchIngestResult = {
-      attemptedTurnCount: sessionTurns.length,
-      extractionCount: results.length,
-      persistedCount: results.reduce(
-        (sum, result) => sum + result.persistedCount,
-        0,
-      ),
-      durableOutputCount: results.reduce(
-        (sum, result) => sum + result.durableOutputCount,
-        0,
-      ),
-      skippedCount: results.filter((result) => result.status === "skipped").length,
-      failedCount: rejectedCount,
-      postPersistMetadataFailureCount: results.filter(
-        (result) => result.postPersistMetadataFailed === true,
-      ).length,
-      processedTurnCount:
-        rejectedCount === 0 ? sessionTurns.length : processedTurnCount,
-    };
-    if (firstRejected) {
-      if (processedTurnCount > 0) {
-        throw new BulkImportBatchPartialFailureError(
-          "bulk import failed after partial processing",
-          ingestResult,
-          firstRejected,
-        );
-      }
-      throw firstRejected;
-    }
-    return ingestResult;
   }
 
   async observeSessionHeartbeat(
     sessionKey: string,
     options: { bufferKey?: string } = {},
   ): Promise<void> {
-    if (resolvePipelineProcessingCapabilities(this.config).sessionObserver !== true) return;
-    if (!sessionKey || sessionKey.length === 0) return;
-
-    const bufferKey =
-      typeof options.bufferKey === "string" && options.bufferKey.length > 0
-        ? options.bufferKey
-        : sessionKey;
-    const previous =
-      this.heartbeatObserverChains.get(sessionKey) ?? Promise.resolve();
-    const next = previous
-      .catch(() => undefined)
-      .then(async () => {
-        const turns = this.buffer.getTurns(bufferKey);
-        if (turns.length === 0) return;
-        const normalizedSessionKey = normalizeReplaySessionKey(sessionKey);
-        const allowSharedSessionBuffer = bufferKey.startsWith(
-          CODEX_THREAD_KEY_PREFIX,
-        );
-        if (
-          !allowSharedSessionBuffer &&
-          turns.some(
-            (turn) =>
-              turn.sessionKey &&
-              normalizeReplaySessionKey(turn.sessionKey) !== normalizedSessionKey,
-          )
-        ) {
-          log.debug(
-            `heartbeat observer skipped: mixed-session buffer contents for ${bufferKey}`,
-          );
-          return;
-        }
-        if (!this.shouldQueueExtraction(turns, {
-          commit: false,
-          bufferKey,
-        })) {
-          log.debug(
-            `heartbeat observer skipped: extraction dedupe for ${bufferKey}`,
-          );
-          return;
-        }
-        const footprint =
-          await this.transcript.estimateSessionFootprint(sessionKey);
-        const decision = await this.sessionObserver.observe({
-          sessionKey,
-          totalBytes: footprint.bytes,
-          totalTokens: footprint.tokens,
-        });
-        if (!decision.triggered) return;
-        log.debug(
-          `heartbeat observer trigger: session=${sessionKey} deltaBytes=${decision.deltaBytes} deltaTokens=${decision.deltaTokens}`,
-        );
-        await this.queueBufferedExtraction(turns, "heartbeat_observer", {
-          bufferKey,
-        });
-      });
-
-    this.heartbeatObserverChains.set(sessionKey, next);
-    try {
-      await next;
-    } finally {
-      if (this.heartbeatObserverChains.get(sessionKey) === next) {
-        this.heartbeatObserverChains.delete(sessionKey);
-      }
-    }
+    return this.turnIngestionCoordinator.observeSessionHeartbeat(
+      sessionKey,
+      options,
+    );
   }
 
   private async queueBufferedExtraction(
@@ -6740,88 +6372,11 @@ export class Orchestrator {
       principalOverride?: string;
     } = {},
   ): Promise<void> {
-    const bufferKey = options.bufferKey ?? turnsToExtract[0]?.sessionKey ?? "default";
-    if (
-      !options.skipDedupeCheck &&
-      !this.shouldQueueExtraction(turnsToExtract, { bufferKey })
-    ) {
-      log.debug(`extraction dedupe skip: preserving buffer (${reason})`);
-      options.onTaskSettled?.(undefined, {
-        status: "skipped",
-        reason: "dedupe",
-        persistedCount: 0,
-        durableOutputCount: 0,
-      });
-      return;
-    }
-
-    const extractionDeadlineMs =
-      typeof options.extractionDeadlineMs === "number" &&
-      Number.isFinite(options.extractionDeadlineMs)
-        ? options.extractionDeadlineMs
-        : undefined;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    let settled = false;
-    const clearQueueWaitTimer = (): void => {
-      if (timeout) {
-        clearTimeout(timeout);
-        timeout = undefined;
-      }
-    };
-    const settleTask = (
-      error?: unknown,
-      result?: ExtractionRunResult,
-    ): boolean => {
-      if (settled) return false;
-      settled = true;
-      clearQueueWaitTimer();
-      options.onTaskSettled?.(error, result);
-      return true;
-    };
-
-    if (typeof extractionDeadlineMs === "number") {
-      const remainingMs = extractionDeadlineMs - Date.now();
-      if (remainingMs <= 0) {
-        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
-        return;
-      }
-      timeout = setTimeout(() => {
-        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
-      }, remainingMs);
-    }
-
-    this.extractionQueueCoordinator.enqueue(async () => {
-      if (settled) return;
-      if (
-        typeof extractionDeadlineMs === "number" &&
-        extractionDeadlineMs <= Date.now()
-      ) {
-        settleTask(new Error("replay extraction deadline exceeded (queue_wait)"));
-        return;
-      }
-      clearQueueWaitTimer();
-      try {
-        const result = await this.runExtraction(turnsToExtract, {
-          clearBufferAfterExtraction:
-            options.clearBufferAfterExtraction ?? true,
-          skipCharThreshold: options.skipCharThreshold ?? false,
-          skipUserTurnThreshold: options.skipUserTurnThreshold ?? false,
-          deadlineMs: extractionDeadlineMs,
-          bufferKey,
-          abortSignal: options.abortSignal,
-          failOnExtractionFailure: options.failOnExtractionFailure === true,
-          writeNamespaceOverride: options.writeNamespaceOverride,
-          principalOverride: options.principalOverride,
-        });
-        settleTask(undefined, result);
-      } catch (err) {
-        if (settleTask(err)) {
-          throw err;
-        }
-      }
-    });
-
-    log.debug(`queued extraction from ${reason}`);
+    return this.turnIngestionCoordinator.queueBufferedExtraction(
+      turnsToExtract,
+      reason,
+      options,
+    );
   }
 
   private normalizeExtractionFingerprintTurns(turns: BufferTurn[]): string[] {
@@ -6839,16 +6394,6 @@ export class Orchestrator {
     return this.extractionRunCoordinator.shouldQueueExtraction(turns, options);
   }
 
-  /**
-   * Passive correction capture (issue #1581) — detects corrections expressed
-   * passively in conversation turns and routes them to the Correction Contract
-   * (#1580). Called from `runExtraction` after persistence completes.
-   *
-   * Thin wiring: delegates ALL correction logic to the detector + capture
-   * modules + the CorrectionService. This method only checks gates, calls the
-   * detector, and routes results. Fail-open: capture errors never block the
-   * extraction return path.
-   */
   private async maybeCapturePassiveCorrections(
     turns: readonly BufferTurn[],
     opts: {
@@ -6859,69 +6404,10 @@ export class Orchestrator {
       isLiveSession: boolean;
     },
   ): Promise<void> {
-    const mode = this.config.correctionCaptureMode;
-    if (mode === "off") return;
-    if (!resolveRecallAuxiliaryCapabilities(this.config).correction) return;
-
-    try {
-      const corrections = detectPassiveCorrections(
-        turns.map((t) => ({ role: t.role, content: t.content })),
-      );
-      if (corrections.length === 0) return;
-
-      // Replay/import: force queue-only mode even if config says auto.
-      const effectiveMode = opts.isLiveSession ? mode : "queue";
-      const captureConfig: PassiveCaptureConfig = {
-        mode: effectiveMode,
-        confidenceFloor: this.config.correctionCaptureConfidenceFloor,
-        autoApplyMaxAffected: this.config.correctionCaptureAutoApplyMaxAffected,
-      };
-
-      const service = this.passiveCorrectionService();
-      const result = await capturePassiveCorrections(
-        corrections,
-        {
-          correctionEnabled: resolveRecallAuxiliaryCapabilities(this.config).correction,
-          isLiveSession: opts.isLiveSession,
-          bufferKey: opts.bufferKey,
-          sessionKey: opts.sessionKey,
-          principal: opts.principal,
-          namespace: opts.namespace,
-        },
-        captureConfig,
-        {
-          planCorrection: (req) => service.plan(req),
-          applyCorrection: (planId, applyOpts) => service.apply(planId, applyOpts),
-          storageDir: async (ns) => (await this.getStorage(ns)).dir,
-          // Resolve `[m:xxxx]` handles to concrete memory ids via the single
-          // shared helper (#1582). Returns null on miss/ambiguity so the
-          // capture loop drops the handle and the planner falls back to text
-          // search (review: "memory handles not resolved").
-          resolveHandle: (ref, sessionKey) => {
-            try {
-              return this.resolveMemoryIdOrHandle(ref, sessionKey);
-            } catch {
-              return null;
-            }
-          },
-        },
-        this.passiveCorrectionDedup,
-      );
-
-      // Accumulate telemetry
-      this.passiveCorrectionTelemetry.detected += result.telemetry.detected;
-      this.passiveCorrectionTelemetry.queued += result.telemetry.queued;
-      this.passiveCorrectionTelemetry.autoApplied += result.telemetry.autoApplied;
-      for (const [reason, count] of Object.entries(result.telemetry.suppressedReasons)) {
-        this.passiveCorrectionTelemetry.suppressedReasonCounts[reason] =
-          (this.passiveCorrectionTelemetry.suppressedReasonCounts[reason] ?? 0) + count;
-      }
-    } catch (err) {
-      // Fail-open: passive capture never blocks extraction.
-      log.debug(
-        `passive-correction: capture failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
+    return this.turnIngestionCoordinator.maybeCapturePassiveCorrections(
+      turns,
+      opts,
+    );
   }
 
   /** Lazily construct the CorrectionService for passive capture. Stateless

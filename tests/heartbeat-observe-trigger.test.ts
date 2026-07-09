@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { Orchestrator } from "../src/orchestrator.ts";
+import { TurnIngestionCoordinator } from "../packages/remnic-core/src/orchestration/turn-ingestion.js";
 import { ExtractionRunCoordinator } from "../packages/remnic-core/src/orchestration/extraction-run.ts";
 import type { BufferTurn } from "../src/types.js";
 
@@ -42,9 +43,7 @@ test("observeSessionHeartbeat queues buffered extraction when observer threshold
     },
   };
 
-  await (Orchestrator.prototype as any).observeSessionHeartbeat.call(
-    fake,
-    "agent:generalist:main",
+  await new TurnIngestionCoordinator(fake as any).observeSessionHeartbeat("agent:generalist:main",
   );
 
   assert.equal(queued, true);
@@ -94,9 +93,7 @@ test("observeSessionHeartbeat uses an explicit logical buffer key when provided"
     },
   };
 
-  await (Orchestrator.prototype as any).observeSessionHeartbeat.call(
-    fake,
-    "agent:generalist:main",
+  await new TurnIngestionCoordinator(fake as any).observeSessionHeartbeat("agent:generalist:main",
     { bufferKey: "codex-thread:thread-123" },
   );
 
@@ -126,9 +123,7 @@ test("observeSessionHeartbeat no-ops when observer is disabled", async () => {
     },
   };
 
-  await (Orchestrator.prototype as any).observeSessionHeartbeat.call(
-    fake,
-    "agent:generalist:main",
+  await new TurnIngestionCoordinator(fake as any).observeSessionHeartbeat("agent:generalist:main",
   );
 
   assert.equal(invoked, false);
@@ -171,9 +166,7 @@ test("observeSessionHeartbeat skips when buffer contains mixed session turns", a
     },
   };
 
-  await (Orchestrator.prototype as any).observeSessionHeartbeat.call(
-    fake,
-    "agent:generalist:main",
+  await new TurnIngestionCoordinator(fake as any).observeSessionHeartbeat("agent:generalist:main",
   );
 
   assert.equal(queued, false);
@@ -223,9 +216,7 @@ test("observeSessionHeartbeat allows shared Codex logical buffers with mixed ses
     },
   };
 
-  await (Orchestrator.prototype as any).observeSessionHeartbeat.call(
-    fake,
-    "agent:generalist:main",
+  await new TurnIngestionCoordinator(fake as any).observeSessionHeartbeat("agent:generalist:main",
     { bufferKey: "codex-thread:thread-shared-1" },
   );
 
@@ -250,9 +241,7 @@ test("queueBufferedExtraction preserves buffered turns when dedupe skips enqueue
     },
   };
 
-  await (Orchestrator.prototype as any).queueBufferedExtraction.call(
-    fake,
-    [{ role: "user", content: "dup", timestamp: "2026-02-25T00:00:00.000Z" }],
+  await new TurnIngestionCoordinator(fake as any).queueBufferedExtraction([{ role: "user", content: "dup", timestamp: "2026-02-25T00:00:00.000Z" }],
     "heartbeat_observer",
   );
 
@@ -298,13 +287,9 @@ test("observeSessionHeartbeat serializes per-session observer runs", async () =>
   };
 
   await Promise.all([
-    (Orchestrator.prototype as any).observeSessionHeartbeat.call(
-      fake,
-      "agent:generalist:main",
+    new TurnIngestionCoordinator(fake as any).observeSessionHeartbeat("agent:generalist:main",
     ),
-    (Orchestrator.prototype as any).observeSessionHeartbeat.call(
-      fake,
-      "agent:generalist:main",
+    new TurnIngestionCoordinator(fake as any).observeSessionHeartbeat("agent:generalist:main",
     ),
   ]);
 
@@ -347,9 +332,7 @@ test("observeSessionHeartbeat skips observer state update when extraction dedupe
     },
   };
 
-  await (Orchestrator.prototype as any).observeSessionHeartbeat.call(
-    fake,
-    "agent:generalist:main",
+  await new TurnIngestionCoordinator(fake as any).observeSessionHeartbeat("agent:generalist:main",
   );
 
   assert.equal(observed, false);
