@@ -364,7 +364,7 @@ function normalizeFileStates(input: readonly unknown[] | undefined): OfflineSync
 
 export function normalizeOfflineSyncSnapshot(
   input: unknown,
-  options: { requireContent?: boolean; userExcludeRegexps?: readonly RegExp[] } = {},
+  options: { requireContent?: boolean } = {},
 ): OfflineSyncSnapshot {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("offline sync snapshot must be an object");
@@ -396,7 +396,7 @@ export function normalizeOfflineSyncSnapshot(
       );
     }
   }
-  const excludedPath = files.find((file) => shouldExcludeRelPath(file.path, true, options.userExcludeRegexps))?.path;
+  const excludedPath = files.find((file) => shouldExcludeRelPath(file.path, true))?.path;
   if (excludedPath) {
     throw new Error(`offline sync snapshot contains excluded path: ${excludedPath}`);
   }
@@ -412,7 +412,6 @@ export function normalizeOfflineSyncSnapshot(
 
 export function normalizeOfflineSyncChangeset(
   input: unknown,
-  options: { userExcludeRegexps?: readonly RegExp[] } = {},
 ): OfflineSyncChangeset {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("offline sync changeset must be an object");
@@ -475,7 +474,7 @@ export function normalizeOfflineSyncChangeset(
       );
     }
   }
-  const excludedPath = changes.find((change) => shouldExcludeRelPath(change.path, true, options.userExcludeRegexps))?.path;
+  const excludedPath = changes.find((change) => shouldExcludeRelPath(change.path, true))?.path;
   if (excludedPath) {
     throw new Error(`offline sync changeset contains excluded path: ${excludedPath}`);
   }
@@ -518,11 +517,7 @@ function assertUniquePaths(entries: readonly { path: string }[], context: string
   }
 }
 
-function shouldExcludeRelPath(
-  relPosix: string,
-  includeTranscripts: boolean,
-  userExcludeRegexps?: readonly RegExp[],
-): boolean {
+function shouldExcludeRelPath(relPosix: string, includeTranscripts: boolean): boolean {
   const parts = relPosix.split("/");
   if (parts.some((part) => DEFAULT_TRANSFER_EXCLUDE_DIRS.has(part))) return true;
   if (parts.some((part) => part === SYNC_INTERNAL_DIR)) return true;
@@ -531,6 +526,29 @@ function shouldExcludeRelPath(
   if (isCanonicalRuntimeStatePath(parts) && basename.includes(".tmp-")) return true;
   if (EXCLUDED_FILE_NAMES.has(basename)) return true;
   if (EXCLUDED_FILE_PREFIXES.some((prefix) => basename.startsWith(prefix))) return true;
+  return false;
+}
+
+/**
+ * Push-side variant of `shouldExcludeRelPath` for issue #1786. Combines the
+ * legacy structural exclude (private dirs, sync internal, tmp runtime state,
+ * excluded file names/prefixes) with the new push-only exclusion layers:
+ *   - the `state/*.sqlite`, `state/index_tags.json`, etc. defaults that
+ *     describe node-local runtime state each node rebuilds from synced
+ *     records, and
+ *   - operator-supplied `offlineSyncExcludes` regexps.
+ *
+ * Used ONLY by push-side enumeration/validation paths. Apply-side callers
+ * must use the legacy `shouldExcludeRelPath` so a remote snapshot containing
+ * `state/lcm.sqlite` can still be accepted on first sync -- the remote's
+ * view is authoritative for that file until the local LCM is bootstrapped.
+ */
+function shouldExcludePushRelPath(
+  relPosix: string,
+  includeTranscripts: boolean,
+  userExcludeRegexps?: readonly RegExp[],
+): boolean {
+  if (shouldExcludeRelPath(relPosix, includeTranscripts)) return true;
   // Issue #1786: node-local runtime state (live sqlite, derived indexes,
   // per-node governance run logs) is rebuilt by each node, never synced.
   if (matchesOfflineSyncDefaultExclude(relPosix)) return true;
@@ -739,7 +757,7 @@ export async function* iterateOfflineSyncSnapshotFileRecords(options: {
     for (const entry of entries) {
       const abs = path.join(dirAbs, entry.name);
       const relPosix = path.relative(root.abs, abs).split(path.sep).join("/");
-      if (shouldExcludeRelPath(relPosix, includeTranscripts, options.userExcludeRegexps)) continue;
+      if (shouldExcludePushRelPath(relPosix, includeTranscripts, options.userExcludeRegexps)) continue;
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         yield* walk(abs);
@@ -823,7 +841,7 @@ export async function buildOfflineSyncSnapshotFromBase(options: {
       throwIfOfflineSyncAborted(options.signal);
       const abs = path.join(dirAbs, entry.name);
       const relPosix = path.relative(root.abs, abs).split(path.sep).join("/");
-      if (shouldExcludeRelPath(relPosix, includeTranscripts, options.userExcludeRegexps)) continue;
+      if (shouldExcludePushRelPath(relPosix, includeTranscripts, options.userExcludeRegexps)) continue;
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
         await walk(abs);
@@ -889,7 +907,7 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
     throwIfOfflineSyncAborted(options.signal);
     const relPath = normalizeRelativePath(rawPath, "paths[]");
     if (seen.has(relPath)) continue;
-    if (shouldExcludeRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) {
+    if (shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) {
       throw new Error(`offline sync snapshot path is excluded: ${relPath}`);
     }
     const filePath = await resolveSafeArchiveTarget(root, relPath);
@@ -933,7 +951,7 @@ export async function readOfflineSyncFileContentChunk(options: {
   const root = await prepareSafeArchiveRoot(rootAbs, "readOfflineSyncFileContentChunk", "root");
   const includeTranscripts = options.includeTranscripts !== false;
   const relPath = normalizeRelativePath(options.path, "path");
-  if (shouldExcludeRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) {
+  if (shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) {
     throw new Error(`offline sync file content path is excluded: ${relPath}`);
   }
   const offset = options.offset === undefined
@@ -1063,7 +1081,7 @@ export async function buildOfflineSyncChangesetFromSnapshot(options: {
     if (excludedPaths.has(relPath)) continue;
     // Issue #1786: node-local runtime state must never appear in a push-side
     // changeset — each node rebuilds it from synced records.
-    if (shouldExcludeRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) continue;
+    if (shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) continue;
     // Runtime state is remote-authoritative in offline sync: local edits and
     // deletes are not pushed; the pull phase restores or removes these files
     // from the remote snapshot.
@@ -1174,7 +1192,7 @@ export function summarizeOfflineSyncPendingFiles(options: {
   let deletes = 0;
   for (const relPath of unionPaths(base, currentMap)) {
     if (shouldPreferIncomingOfflineRuntimeFile(relPath)) continue;
-    if (shouldExcludeRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) continue;
+    if (shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) continue;
     const baseEntry = base.get(relPath);
     const currentEntry = currentMap.get(relPath);
     if (currentEntry && currentEntry.sha256 !== baseEntry?.sha256) {
@@ -1201,15 +1219,12 @@ export async function applyOfflineSyncSnapshot(options: {
   deferredPaths?: readonly string[];
   allowMissingConflictContent?: boolean;
   writeConflictCopies?: boolean;
-  userExcludeRegexps?: readonly RegExp[];
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
   deleteFile?: (target: OfflineSyncFileTarget) => Promise<void>;
 }): Promise<OfflineSyncApplySnapshotResult> {
-  const snapshot = normalizeOfflineSyncSnapshot(options.snapshot, {
-    userExcludeRegexps: options.userExcludeRegexps,
-  });
+  const snapshot = normalizeOfflineSyncSnapshot(options.snapshot);
   const baseMap = byPath(filterBaseFilesForMode(
     normalizeFileStates(options.baseFiles),
     snapshot.includeTranscripts,
@@ -1226,7 +1241,6 @@ export async function applyOfflineSyncSnapshot(options: {
         sourceId: "local",
         includeContent: false,
         includeTranscripts: snapshot.includeTranscripts,
-        userExcludeRegexps: options.userExcludeRegexps,
         readFile: options.readFile,
         readFileDigest: options.readFileDigest,
       })).files;
@@ -1390,7 +1404,6 @@ export async function applyOfflineSyncChangeset(options: {
   currentFiles?: readonly OfflineSyncFileState[];
   returnCurrentFiles?: boolean;
   writeConflictCopies?: boolean;
-  userExcludeRegexps?: readonly RegExp[];
   readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
   readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
@@ -1398,9 +1411,7 @@ export async function applyOfflineSyncChangeset(options: {
 }): Promise<OfflineSyncApplyChangesetResult> {
   let changeset: OfflineSyncChangeset;
   try {
-    changeset = normalizeOfflineSyncChangeset(options.changeset, {
-      userExcludeRegexps: options.userExcludeRegexps,
-    });
+    changeset = normalizeOfflineSyncChangeset(options.changeset);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(
@@ -1422,7 +1433,6 @@ export async function applyOfflineSyncChangeset(options: {
         paths: changeset.changes.map((change) => change.path),
         includeContent: false,
         includeTranscripts: changeset.includeTranscripts,
-        userExcludeRegexps: options.userExcludeRegexps,
         readFile: options.readFile,
         readFileDigest: options.readFileDigest,
       })).files;
@@ -1516,7 +1526,6 @@ export async function applyOfflineSyncChangeset(options: {
           sourceId: "local",
           includeContent: false,
           includeTranscripts: changeset.includeTranscripts,
-          userExcludeRegexps: options.userExcludeRegexps,
           readFile: options.readFile,
           readFileDigest: options.readFileDigest,
         })).files,
@@ -1645,6 +1654,48 @@ async function setSafeFileMtime(
   return true;
 }
 
+/**
+ * Read the local file digest for a single relative path without applying
+ * push-side exclude rules. Used by apply-side helpers that need to check
+ * the current local state of a path that the push-side exclude would
+ * reject (e.g. `state/lcm.sqlite`). Returns `null` if the file does not
+ * exist, is not a regular file, or is a symlink.
+ */
+async function readLocalFileState(options: {
+  rootAbs: string;
+  relPath: string;
+  readFile?: (target: OfflineSyncFileTarget) => Promise<Buffer>;
+  readFileDigest?: (target: OfflineSyncFileTarget) => Promise<OfflineSyncFileDigest>;
+  signal?: AbortSignal;
+}): Promise<OfflineSyncFileState | null> {
+  const filePath = await resolveSafeArchiveTarget(
+    await prepareSafeArchiveRoot(options.rootAbs, "readLocalFileState", "rootAbs"),
+    options.relPath,
+  );
+  const st = await lstat(filePath).catch((error: unknown) => {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  });
+  if (!st || st.isSymbolicLink() || !st.isFile()) return null;
+  throwIfOfflineSyncAborted(options.signal);
+  let digest: OfflineSyncFileDigest;
+  if (options.readFileDigest) {
+    digest = await options.readFileDigest({ root: options.rootAbs, path: options.relPath, filePath });
+  } else if (options.readFile) {
+    const content = await options.readFile({ root: options.rootAbs, path: options.relPath, filePath });
+    digest = sha256Buffer(content);
+  } else {
+    digest = await sha256File(filePath, options.signal);
+  }
+  throwIfOfflineSyncAborted(options.signal);
+  return {
+    path: options.relPath,
+    sha256: digest.sha256,
+    bytes: digest.bytes,
+    mtimeMs: st.mtimeMs,
+  };
+}
+
 export async function applyOfflineSyncFileContentChunk(options: {
   root: string;
   sourceId: string;
@@ -1661,13 +1712,12 @@ export async function applyOfflineSyncFileContentChunk(options: {
   writeFile?: (target: OfflineSyncFileWriteTarget) => Promise<void>;
   writeStagingFile?: (target: OfflineSyncFileStagingWriteTarget) => Promise<void>;
   writeFileChunks?: (target: OfflineSyncFileWriteChunksTarget) => Promise<void>;
-  userExcludeRegexps?: readonly RegExp[];
 }): Promise<OfflineSyncApplyFileContentChunkResult> {
   const root = await ensureSyncRoot(options.root, "applyOfflineSyncFileContentChunk");
   const sourceId = normalizeSourceId(options.sourceId, "sourceId");
   const relPath = normalizeRelativePath(options.path, "path");
   const includeTranscripts = options.includeTranscripts !== false;
-  if (shouldExcludeRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) {
+  if (shouldExcludeRelPath(relPath, includeTranscripts)) {
     throw new Error(`offline sync file content path is excluded: ${relPath}`);
   }
   const sha256 = assertSha256(options.sha256, "sha256");
@@ -1749,18 +1799,13 @@ export async function applyOfflineSyncFileContentChunk(options: {
   };
   if (offset === 0) {
     await pruneOfflineUploadStaging(root);
-    const currentSnapshot = await buildOfflineSyncSnapshotForPaths({
-      root: root.abs,
-      sourceId: "local",
-      paths: [relPath],
-      includeContent: false,
-      includeTranscripts,
-      userExcludeRegexps: options.userExcludeRegexps,
+    const currentFile = await readLocalFileState({
+      rootAbs: root.abs,
+      relPath,
       readFile: options.readFile,
       readFileDigest: options.readFileDigest,
     });
-    const currentFile = currentSnapshot.files[0];
-    if (currentFile?.sha256 === sha256) {
+    if (currentFile && currentFile.sha256 === sha256) {
       await setSafeFileMtime(root, relPath, mtimeMs);
       return {
         ...baseResult,
@@ -1815,17 +1860,12 @@ export async function applyOfflineSyncFileContentChunk(options: {
     throw new Error(`offline sync upload checksum mismatch for ${relPath}`);
   }
 
-  const currentSnapshot = await buildOfflineSyncSnapshotForPaths({
-    root: root.abs,
-    sourceId: "local",
-    paths: [relPath],
-    includeContent: false,
-    includeTranscripts,
-    userExcludeRegexps: options.userExcludeRegexps,
+  const currentFile = await readLocalFileState({
+    rootAbs: root.abs,
+    relPath,
     readFile: options.readFile,
     readFileDigest: options.readFileDigest,
   });
-  const currentFile = currentSnapshot.files[0];
   const uploadedState: OfflineSyncFileState = {
     path: relPath,
     sha256,
@@ -1834,7 +1874,7 @@ export async function applyOfflineSyncFileContentChunk(options: {
   };
 
   try {
-    if (currentFile?.sha256 === sha256) {
+    if (currentFile && currentFile.sha256 === sha256) {
       await setSafeFileMtime(root, relPath, mtimeMs);
       return {
         ...baseResult,
