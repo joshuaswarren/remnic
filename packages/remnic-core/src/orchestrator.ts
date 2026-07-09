@@ -110,6 +110,7 @@ import { ExtractionRunCoordinator, type ExtractionRunResult } from "./orchestrat
 import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.js";
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
+import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
 export { hasIdentityRecoveryIntent, resolveEffectiveIdentityInjectionMode } from "./orchestration/recall-result-formatter.js";
 import {
   GraphRecallCoordinator,
@@ -1068,7 +1069,7 @@ export function applyQueryAwareCandidateFilter(
   return filtered.length > 0 ? filtered : candidates;
 }
 
-function tokenizeRecallQuery(prompt: string): string[] {
+export function tokenizeRecallQuery(prompt: string): string[] {
   return prompt
     .toLowerCase()
     .split(/[^a-z0-9]+/i)
@@ -5584,56 +5585,11 @@ export class Orchestrator {
     prompt: string,
     targetCount: number,
   ): Promise<MemoryFile[]> {
-    const storage = await this.storageRouter.storageFor(namespace);
-    let fetchLimit = computeArtifactCandidateFetchLimit(targetCount);
-    const maxFetchLimit = Math.min(800, Math.max(fetchLimit, targetCount * 8));
-    const MAX_ATTEMPTS = 4;
-    let bestFiltered: MemoryFile[] = [];
-
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-      const rawResults = await storage.searchArtifacts(prompt, fetchLimit);
-      const sourceIds = Array.from(
-        new Set(
-          rawResults
-            .map((a) => a.frontmatter.sourceMemoryId)
-            .filter(
-              (id): id is string => typeof id === "string" && id.length > 0,
-            ),
-        ),
-      );
-      const sourceStatus =
-        sourceIds.length > 0
-          ? await this.resolveArtifactSourceStatuses(storage, sourceIds)
-          : new Map<string, "active" | "superseded" | "archived" | "missing">();
-
-      const filtered: MemoryFile[] = [];
-      for (const artifact of rawResults) {
-        const sourceId = artifact.frontmatter.sourceMemoryId;
-        if (!sourceId) {
-          filtered.push(artifact);
-          if (filtered.length >= targetCount) break;
-          continue;
-        }
-        const status = sourceStatus.get(sourceId) ?? "missing";
-        if (status !== "active") continue;
-        filtered.push(artifact);
-        if (filtered.length >= targetCount) break;
-      }
-
-      if (filtered.length >= targetCount) return filtered.slice(0, targetCount);
-      if (filtered.length > bestFiltered.length) {
-        bestFiltered = filtered;
-      }
-      if (rawResults.length === 0) return filtered;
-      if (rawResults.length < fetchLimit && filtered.length > 0)
-        return filtered;
-      if (fetchLimit >= maxFetchLimit) return filtered;
-
-      const growth = Math.max(targetCount * 2, 12);
-      fetchLimit = Math.min(maxFetchLimit, fetchLimit + growth);
-    }
-
-    return bestFiltered;
+    return this.recallSearchPipelineCoordinator.fetchActiveArtifactsForNamespace(
+      namespace,
+      prompt,
+      targetCount,
+    );
   }
 
   private async recallArtifactsAcrossNamespaces(
@@ -5675,92 +5631,10 @@ export class Orchestrator {
     prompt: string,
     recallNamespaces: string[],
   ): Promise<QueryAwarePrefilter> {
-    if (!resolveIndexingCapabilities(this.config).queryAwareIndexing || !prompt.trim()) {
-      return {
-        candidatePaths: null,
-        temporalFromDate: null,
-        matchedTags: [],
-        expandedTags: [],
-        combination: "none",
-        filteredToFullSearch: false,
-      };
-    }
-
-    const temporalFromDate = isTemporalQuery(prompt)
-      ? recencyWindowFromPrompt(prompt, Date.now())
-      : null;
-    const [rawTemporal, tagSignals] = await Promise.all([
-      temporalFromDate
-        ? queryByDateRangeAsync(this.config.memoryDir, temporalFromDate)
-        : Promise.resolve<Set<string> | null>(null),
-      resolvePromptTagPrefilterAsync(this.config.memoryDir, prompt).catch(
-        () => ({
-          matchedTags: extractTagsFromPrompt(prompt),
-          expandedTags: extractTagsFromPrompt(prompt),
-          paths: null,
-        }),
-      ),
-    ]);
-
-    const temporalCandidates = this.scopeQueryAwarePaths(
-      rawTemporal,
+    return this.recallSearchPipelineCoordinator.buildQueryAwarePrefilter(
+      prompt,
       recallNamespaces,
     );
-    const tagCandidates = this.scopeQueryAwarePaths(
-      tagSignals.paths,
-      recallNamespaces,
-    );
-    const maxCandidates = this.config.queryAwareIndexingMaxCandidates;
-
-    let candidatePaths: Set<string> | null = null;
-    let combination: QueryAwarePrefilter["combination"] = "none";
-    let filteredToFullSearch = false;
-
-    if (
-      tagSignals.matchedTags.length > 0 &&
-      tagCandidates !== null &&
-      tagCandidates.size === 0
-    ) {
-      candidatePaths = tagCandidates;
-      combination = "tag";
-    } else if (temporalCandidates !== null && tagCandidates !== null) {
-      const intersection = new Set(
-        Array.from(temporalCandidates).filter((memoryPath) =>
-          tagCandidates.has(memoryPath),
-        ),
-      );
-      if (intersection.size > 0) {
-        candidatePaths = intersection;
-        combination = "intersection";
-      } else {
-        candidatePaths = new Set([...temporalCandidates, ...tagCandidates]);
-        combination = "union";
-      }
-    } else if (temporalCandidates !== null) {
-      candidatePaths = temporalCandidates;
-      combination = "temporal";
-    } else if (tagCandidates !== null) {
-      candidatePaths = tagCandidates;
-      combination = "tag";
-    }
-
-    if (
-      candidatePaths &&
-      maxCandidates > 0 &&
-      candidatePaths.size > maxCandidates
-    ) {
-      filteredToFullSearch = true;
-      candidatePaths = null;
-    }
-
-    return {
-      candidatePaths,
-      temporalFromDate,
-      matchedTags: tagSignals.matchedTags,
-      expandedTags: tagSignals.expandedTags,
-      combination,
-      filteredToFullSearch,
-    };
   }
 
   private async searchScopedMemoryCandidates(
@@ -5835,247 +5709,12 @@ export class Orchestrator {
       abortSignal?: AbortSignal;
     },
   ): Promise<QmdSearchResult[]> {
-    throwIfRecallAborted(options.abortSignal);
-    const queryAwarePrefilter =
-      options.queryAwarePrefilter ??
-      (await this.buildQueryAwarePrefilter(prompt, options.recallNamespaces));
-    const scopedSeedResults = queryAwarePrefilter.candidatePaths?.size
-      ? await this.searchScopedMemoryCandidates(
-          queryAwarePrefilter.candidatePaths,
-          prompt,
-          qmdFetchLimit,
-          { allowArchived: options.collection !== undefined },
-        )
-      : [];
-
-    let fetchLimit = Math.max(qmdFetchLimit, qmdHybridFetchLimit);
-    const maxFetchLimit = Math.min(
-      320,
-      Math.max(fetchLimit, qmdFetchLimit * 5),
+    return this.recallSearchPipelineCoordinator.fetchQmdMemoryResultsWithArtifactTopUp(
+      prompt,
+      qmdFetchLimit,
+      qmdHybridFetchLimit,
+      options,
     );
-    const MAX_ATTEMPTS = 2;
-    const qmdRecallBudgetMs = this.config.recallEnrichmentDeadlineMs ?? 25_000;
-    const qmdRecallBudgetEnabled = qmdRecallBudgetMs > 0;
-    const startedAtMs = Date.now();
-    let lastPrimaryResultCount = 0;
-    let lastHybridResultCount = 0;
-    let lastHybridTopUpUsed = false;
-    let lastHybridTopUpSkippedReason: string | undefined;
-    const backendHonorsQmdSearchSignals =
-      (this.config.searchBackend ?? "qmd") === "qmd";
-    const resolvedSearchOptions = (() => {
-      const resolver = (
-        this.qmd as {
-          resolveSupportedSearchOptions?: (
-            options?: SearchQueryOptions,
-          ) => SearchQueryOptions | undefined;
-        }
-      ).resolveSupportedSearchOptions;
-      if (typeof resolver === "function") {
-        return resolver.call(this.qmd, options.searchOptions);
-      }
-      return options.searchOptions;
-    })();
-    const primarySearchOptions = backendHonorsQmdSearchSignals
-      ? resolvedSearchOptions
-      : options.searchOptions;
-    const debugSearchOptions = backendHonorsQmdSearchSignals
-      ? resolvedSearchOptions
-      : undefined;
-    let bestFiltered = filterRecallCandidates(scopedSeedResults, {
-      namespacesEnabled: options.namespacesEnabled,
-      recallNamespaces: options.recallNamespaces,
-      resolveNamespace: options.resolveNamespace,
-      limit: qmdFetchLimit,
-    });
-    const emitDebugSnapshot = async (
-      results: QmdSearchResult[],
-      currentFetchLimit: number,
-    ) => {
-      if (!options.onDebugSnapshot) return;
-      await options.onDebugSnapshot({
-        recordedAt: new Date().toISOString(),
-        queryHash: createHash("sha256").update(prompt).digest("hex"),
-        queryLength: prompt.length,
-        collection: options.collection,
-        namespaces: options.recallNamespaces,
-        fetchLimit: currentFetchLimit,
-        primaryResultCount: lastPrimaryResultCount,
-        hybridResultCount: lastHybridResultCount,
-        queryAwareSeedCount: scopedSeedResults.length,
-        resultCount: results.length,
-        intentHint: debugSearchOptions?.intent,
-        explainEnabled: debugSearchOptions?.explain === true,
-        hybridTopUpUsed: lastHybridTopUpUsed,
-        hybridTopUpSkippedReason: lastHybridTopUpSkippedReason,
-        results: results.slice(0, 32).map((result) => ({
-          ...result,
-          snippet: result.snippet.slice(0, 280),
-        })),
-      });
-    };
-    if (queryAwarePrefilter.candidatePaths?.size === 0) {
-      await emitDebugSnapshot([], fetchLimit);
-      return [];
-    }
-
-    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
-      throwIfRecallAborted(options.abortSignal);
-      if (
-        qmdRecallBudgetEnabled &&
-        Date.now() - startedAtMs >= qmdRecallBudgetMs
-      ) {
-        break;
-      }
-
-      const primaryResults = options.collection
-        ? options.abortSignal
-          ? await this.qmd.search(
-              prompt,
-              options.collection,
-              fetchLimit,
-              primarySearchOptions,
-              {
-                signal: options.abortSignal,
-                onDegradation: options.onDegradation,
-              },
-            )
-          : await this.qmd.search(
-              prompt,
-              options.collection,
-              fetchLimit,
-              primarySearchOptions,
-              { onDegradation: options.onDegradation },
-            )
-        : await this.searchAcrossNamespaces({
-            query: prompt,
-            namespaces: options.namespacesEnabled
-              ? options.recallNamespaces
-              : undefined,
-            maxResults: fetchLimit,
-            mode: "search",
-            searchOptions: primarySearchOptions,
-            execution: {
-              signal: options.abortSignal,
-              onDegradation: options.onDegradation,
-            },
-          });
-      lastPrimaryResultCount = primaryResults.length;
-      lastHybridResultCount = 0;
-      lastHybridTopUpUsed = false;
-      lastHybridTopUpSkippedReason = undefined;
-      let mergedResults = primaryResults;
-
-      // Backfill with hybrid results only when primary retrieval underfills.
-      if (
-        primaryResults.length < qmdFetchLimit &&
-        (!qmdRecallBudgetEnabled ||
-          Date.now() - startedAtMs < qmdRecallBudgetMs)
-      ) {
-        if (debugSearchOptions?.intent) {
-          lastHybridTopUpSkippedReason = "intent_hint_active";
-        } else if (this.config.qmdSearchStrategy === "lex") {
-          // BM25-only strategy: a hybrid top-up runs vectorSearch (see
-          // QmdClient.hybridSearch), which would reintroduce the vector path the
-          // operator opted out of. Keep "lex" BM25-only end-to-end so the gate is
-          // uniform across primary + top-up (gotcha #39). Issue #1335 (codex review #1422).
-          lastHybridTopUpSkippedReason = "lex_strategy";
-        } else {
-          const hybridResults = options.collection
-            ? await this.qmd.hybridSearch(
-                prompt,
-                options.collection,
-                fetchLimit,
-                {
-                  signal: options.abortSignal,
-                  onDegradation: options.onDegradation,
-                },
-              )
-            : await this.searchAcrossNamespaces({
-                query: prompt,
-                namespaces: options.namespacesEnabled
-                  ? options.recallNamespaces
-                  : undefined,
-                maxResults: fetchLimit,
-                mode: "hybrid",
-                execution: {
-                  signal: options.abortSignal,
-                  onDegradation: options.onDegradation,
-                },
-              });
-          lastHybridResultCount = hybridResults.length;
-          lastHybridTopUpUsed = hybridResults.length > 0;
-          if (hybridResults.length > 0) {
-            const mergedByPath = new Map<string, QmdSearchResult>();
-            for (const result of [...primaryResults, ...hybridResults]) {
-              const key = result.path || result.docid;
-              const existing = mergedByPath.get(key);
-              if (!existing || result.score > existing.score) {
-                mergedByPath.set(key, {
-                  ...result,
-                  transport: result.transport ?? "hybrid",
-                  snippet: result.snippet || existing?.snippet || "",
-                });
-              }
-            }
-            mergedResults = [...mergedByPath.values()]
-              .sort((a, b) => b.score - a.score)
-              .slice(0, fetchLimit);
-          }
-        }
-      }
-
-      if (scopedSeedResults.length > 0) {
-        const mergedByPath = new Map<string, QmdSearchResult>();
-        for (const result of [...scopedSeedResults, ...mergedResults]) {
-          const key = result.path || result.docid;
-          const existing = mergedByPath.get(key);
-          if (!existing || result.score > existing.score) {
-            mergedByPath.set(key, {
-              ...result,
-              snippet: result.snippet || existing?.snippet || "",
-            });
-          }
-        }
-        mergedResults = [...mergedByPath.values()]
-          .sort((a, b) => b.score - a.score)
-          .slice(0, fetchLimit);
-      }
-
-      const filteredResults = filterRecallCandidates(mergedResults, {
-        namespacesEnabled: options.namespacesEnabled,
-        recallNamespaces: options.recallNamespaces,
-        resolveNamespace: options.resolveNamespace,
-        limit: fetchLimit,
-      });
-
-      if (filteredResults.length >= qmdFetchLimit) {
-        const capped = filteredResults.slice(0, qmdFetchLimit);
-        await emitDebugSnapshot(capped, fetchLimit);
-        return capped;
-      }
-      if (filteredResults.length > bestFiltered.length) {
-        bestFiltered = filteredResults;
-      }
-      if (mergedResults.length === 0) {
-        await emitDebugSnapshot(filteredResults, fetchLimit);
-        return filteredResults;
-      }
-      if (mergedResults.length < fetchLimit && filteredResults.length > 0) {
-        await emitDebugSnapshot(filteredResults, fetchLimit);
-        return filteredResults;
-      }
-      if (fetchLimit >= maxFetchLimit) {
-        break;
-      }
-
-      const growth = Math.max(20, Math.floor(fetchLimit / 2));
-      fetchLimit = Math.min(maxFetchLimit, fetchLimit + growth);
-    }
-
-    const capped = bestFiltered.slice(0, qmdFetchLimit);
-    await emitDebugSnapshot(capped, fetchLimit);
-    return capped;
   }
 
   // Issue #1526 (seam 14): graph-recall expansion moved to
@@ -6402,6 +6041,55 @@ export class Orchestrator {
       });
     }
     return this._recallInternalCoordinator;
+  }
+
+  /**
+   * Recall search-pipeline coordinator (issue #1526 seam 19). Owns QMD
+   * search post-processing (prefilter, fallbacks, safety filter, boost).
+   * Lazy + accessor-wired for the same reasons as seam 18: instance-level
+   * test overrides of orchestrator members must stay live.
+   */
+  private _recallSearchPipelineCoordinator: RecallSearchPipelineCoordinator | undefined;
+
+  private get recallSearchPipelineCoordinator(): RecallSearchPipelineCoordinator {
+    if (!this._recallSearchPipelineCoordinator) {
+      // eslint-disable-next-line @typescript-eslint/no-this-alias
+      const self = this;
+      this._recallSearchPipelineCoordinator = new RecallSearchPipelineCoordinator({
+        applyMemoryWorthRerank: (results, namespaces) => self.applyMemoryWorthRerank(results, namespaces),
+        applyTrustScoreRerank: (results, namespaces) => self.applyTrustScoreRerank(results, namespaces),
+        boostSearchResults: (results, _recallNamespaces, prompt, preloadedMemoryMap, options) => self.boostSearchResults(results, _recallNamespaces, prompt, preloadedMemoryMap, options),
+        buildConfiguredQmdSearchOptions: (queryText) => self.buildConfiguredQmdSearchOptions(queryText),
+        buildQueryAwarePrefilter: (prompt, recallNamespaces) => self.buildQueryAwarePrefilter(prompt, recallNamespaces),
+        get config() { return self.config; },
+        diversifyAndLimitRecallResults: (sectionId, results, limit, retrievalQuery, caps) => self.diversifyAndLimitRecallResults(sectionId, results, limit, retrievalQuery, caps),
+        effectiveRecencyWeight: () => self.effectiveRecencyWeight(),
+        get embeddingFallback() { return self.embeddingFallback; },
+        expandResultsViaGraph: (options) => self.expandResultsViaGraph(options),
+        get fastLlmForRerank() { return self.fastLlmForRerank; },
+        fetchQmdMemoryResultsWithArtifactTopUp: (prompt, qmdFetchLimit, qmdHybridFetchLimit, options) => self.fetchQmdMemoryResultsWithArtifactTopUp(prompt, qmdFetchLimit, qmdHybridFetchLimit, options),
+        filterSearchResultsByRecallSafety: (results, memoryByPath, options) => self.filterSearchResultsByRecallSafety(results, memoryByPath, options),
+        filterSearchResultsForRecall: (results, preloadedMemoryMap, options) => self.filterSearchResultsForRecall(results, preloadedMemoryMap, options),
+        loadSearchResultMemoryMap: (results, preloadedMemoryMap, options) => self.loadSearchResultMemoryMap(results, preloadedMemoryMap, options),
+        namespaceFromPath: (p) => self.namespaceFromPath(p),
+        get negatives() { return self.negatives; },
+        get qmd() { return self.qmd; },
+        readArchivedMemoriesForNamespaces: (namespaces) => self.readArchivedMemoriesForNamespaces(namespaces),
+        readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces) => self.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces),
+        get relevance() { return self.relevance; },
+        get rerankCache() { return self.rerankCache; },
+        resolveArtifactSourceStatuses: (storage, sourceIds) => self.resolveArtifactSourceStatuses(storage, sourceIds),
+        resolveColdQmdResultForRecall: (result, fallbackStorage, recallNamespaces) => self.resolveColdQmdResultForRecall(result, fallbackStorage, recallNamespaces),
+        scopeQueryAwarePaths: (paths, recallNamespaces) => self.scopeQueryAwarePaths(paths, recallNamespaces),
+        searchAcrossNamespaces: (options) => self.searchAcrossNamespaces(options),
+        searchLongTermArchiveFallback: (prompt, recallNamespaces, limit, queryAwarePrefilter, abortSignal) => self.searchLongTermArchiveFallback(prompt, recallNamespaces, limit, queryAwarePrefilter, abortSignal),
+        searchScopedMemoryCandidates: (candidatePaths, query, limit, options) => self.searchScopedMemoryCandidates(candidatePaths, query, limit, options),
+        get storage() { return self.storage; },
+        get storageRouter() { return self.storageRouter; },
+        get utilityRuntimeValues() { return self.utilityRuntimeValues; },
+      });
+    }
+    return this._recallSearchPipelineCoordinator;
   }
 
   private async recallInternal(
@@ -8112,32 +7800,12 @@ export class Orchestrator {
     query: string,
     limit: number,
   ): Promise<QmdSearchResult[]> {
-    if (!resolveMemoryLifecycleCapabilities(this.config).embeddingFallback) return [];
-    if (!(await this.embeddingFallback.isAvailable())) return [];
-    const hits = await this.embeddingFallback.search(query, limit);
-    if (hits.length === 0) return [];
-
-    const results: QmdSearchResult[] = [];
-    for (const hit of hits) {
-      const fullPath = path.isAbsolute(hit.path)
-        ? hit.path
-        : path.join(this.config.memoryDir, hit.path);
-      const memory = await this.storage.readMemoryByPath(fullPath);
-      if (!memory) continue;
-      results.push({
-        docid: hit.id,
-        path: fullPath,
-        score: hit.score,
-        snippet: memory.content.slice(0, 400).replace(/\n/g, " "),
-      });
-    }
-    return results;
+    return this.recallSearchPipelineCoordinator.searchEmbeddingFallback(
+      query,
+      limit,
+    );
   }
 
-  /**
-   * Long-term fallback retrieval.
-   * Searches archived memories only, and is invoked only when hot recall returns zero hits.
-   */
   private async searchLongTermArchiveFallback(
     prompt: string,
     recallNamespaces: string[],
@@ -8145,66 +7813,13 @@ export class Orchestrator {
     queryAwarePrefilter?: QueryAwarePrefilter,
     abortSignal?: AbortSignal,
   ): Promise<QmdSearchResult[]> {
-    throwIfRecallAborted(abortSignal);
-    const cappedLimit = Math.max(0, limit);
-    if (cappedLimit === 0) return [];
-    if (queryAwarePrefilter?.candidatePaths?.size === 0) return [];
-
-    const scopedSeedResults = queryAwarePrefilter?.candidatePaths?.size
-      ? await this.searchScopedMemoryCandidates(
-          queryAwarePrefilter.candidatePaths,
-          prompt,
-          cappedLimit,
-          { allowArchived: true },
-        )
-      : [];
-    if (scopedSeedResults.length >= cappedLimit) {
-      return scopedSeedResults
-        .filter((result) => !isArtifactMemoryPath(result.path))
-        .slice(0, cappedLimit);
-    }
-
-    const tokens = Array.from(new Set(tokenizeRecallQuery(prompt)));
-    if (tokens.length === 0) return scopedSeedResults;
-
-    throwIfRecallAborted(abortSignal);
-    const archivedMemories =
-      await this.readArchivedMemoriesForNamespaces(recallNamespaces);
-    if (archivedMemories.length === 0) return scopedSeedResults;
-
-    // Issue #1674: off-load the CPU-bound archive-scoring loop to a
-    // worker_threads pool so concurrent recall requests run on separate
-    // cores instead of serializing on the main JS thread. The pure scoring
-    // function is identical to the old inline loop — only the execution
-    // context changed. Aborts are checked at the boundaries (before submit
-    // and after result); the worker's work is bounded by the file count.
-    throwIfRecallAborted(abortSignal);
-    const scoring = getDefaultArchiveScoring();
-    const scoredResults = await scoring.score(archivedMemories.map(memoryFileToScoreItem), tokens, abortSignal);
-    throwIfRecallAborted(abortSignal);
-    const scored: QmdSearchResult[] = scoredResults.map((r) => ({
-      docid: r.docid,
-      path: r.path,
-      score: r.score,
-      snippet: r.snippet,
-    }));
-
-    const mergedByPath = new Map<string, QmdSearchResult>();
-    for (const result of [...scopedSeedResults, ...scored]) {
-      const key = result.path || result.docid;
-      const existing = mergedByPath.get(key);
-      if (!existing || result.score > existing.score) {
-        mergedByPath.set(key, {
-          ...result,
-          snippet: result.snippet || existing?.snippet || "",
-        });
-      }
-    }
-
-    return [...mergedByPath.values()]
-      .filter((result) => !isArtifactMemoryPath(result.path))
-      .sort((a, b) => b.score - a.score)
-      .slice(0, cappedLimit);
+    return this.recallSearchPipelineCoordinator.searchLongTermArchiveFallback(
+      prompt,
+      recallNamespaces,
+      limit,
+      queryAwarePrefilter,
+      abortSignal,
+    );
   }
 
   private async applyColdFallbackPipeline(options: {
@@ -8248,384 +7863,8 @@ export class Orchestrator {
     /** Issue #681 — when true, bypass graphTraversalConfidenceFloor. */
     includeLowConfidence?: boolean;
   }): Promise<QmdSearchResult[]> {
-    // Prefer the threaded set; fall back to a config-derived set so direct
-    // callers (unit tests) behave identically to the recall pipeline (#1523).
-    const caps = options.caps ?? resolveCapabilities(this.config);
-    const graphCaps = options.graphCaps ?? resolveGraphConstructionCapabilities(this.config);
-    if (options.queryAwarePrefilter?.candidatePaths?.size === 0) {
-      if (options.xrayPoolSizeSink) options.xrayPoolSizeSink.size = 0;
-      return [];
-    }
-    const deadlineRemainingMs = (): number | null =>
-      typeof options.deadlineAtMs === "number"
-        ? Math.max(0, options.deadlineAtMs - Date.now())
-        : null;
-    const runColdStepWithinDeadline = async <T>(
-      label: string,
-      fallback: T,
-      task: () => Promise<T>,
-      // Invoked when the deadline abandons this step (before it started or
-      // while it runs), so callers can report the abandonment and gate off
-      // late observer callbacks (#1536, cursor round-6 on #1544).
-      onDeadline?: () => void,
-    ): Promise<T> => {
-      throwIfRecallAborted(options.abortSignal);
-      const remainingMs = deadlineRemainingMs();
-      if (remainingMs === 0) {
-        try {
-          onDeadline?.();
-        } catch {
-          // Observers must never break recall.
-        }
-        log.debug(`cold-tier recall ${label} skipped: shared assembly deadline expired`);
-        return fallback;
-      }
-      if (remainingMs === null) return task();
-
-      let timeoutHandle: NodeJS.Timeout | undefined;
-      let timedOut = false;
-      const taskPromise = task().catch((err) => {
-        if (timedOut) {
-          log.debug(`cold-tier recall ${label} failed after deadline: ${err}`);
-          return fallback;
-        }
-        throw err;
-      });
-
-      try {
-        return await Promise.race<T>([
-          taskPromise,
-          new Promise<T>((resolve) => {
-            timeoutHandle = setTimeout(() => {
-              timedOut = true;
-              try {
-                onDeadline?.();
-              } catch {
-                // Observers must never break recall.
-              }
-              log.debug(
-                `cold-tier recall ${label} skipped: shared assembly deadline expired`,
-              );
-              resolve(fallback);
-            }, remainingMs);
-          }),
-        ]);
-      } finally {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-      }
-    };
-
-    const coldQmdEnabled = resolveQmdCapabilities(this.config).qmdColdTier === true;
-    const coldCollection =
-      this.config.qmdColdCollection ?? "openclaw-engram-cold";
-    const coldMaxResults =
-      this.config.qmdColdMaxResults ?? this.config.qmdMaxResults;
-
-    let longTerm: QmdSearchResult[] = [];
-    if (coldQmdEnabled && this.qmd.isAvailable()) {
-      const coldFetchLimit = Math.max(
-        0,
-        Math.min(options.recallResultLimit, Math.max(0, coldMaxResults)),
-      );
-      if (coldFetchLimit > 0) {
-        const coldHybridLimit = computeQmdHybridFetchLimit(
-          coldFetchLimit,
-          false,
-          0,
-        );
-        // Deadline-gated observer (#1536, cursor round-6 on #1544): when the
-        // shared assembly deadline abandons this lookup, the still-running
-        // fetch's LATE reports must not land after the recall snapshot has
-        // been recorded — gate them off and report the abandonment itself
-        // deterministically at resolution time instead.
-        let coldQmdObserverActive = true;
-        const reportColdQmdDeadline = () => {
-          coldQmdObserverActive = false;
-          try {
-            options.onDegradation?.({
-              backend: "qmd",
-              code: "deadline_exceeded",
-              detail: "cold-tier qmd lookup abandoned (assembly deadline)",
-            });
-          } catch {
-            // Observers must never break recall.
-          }
-        };
-        longTerm = await runColdStepWithinDeadline(
-          "qmd lookup",
-          [],
-          () =>
-            this.fetchQmdMemoryResultsWithArtifactTopUp(
-              options.prompt,
-              coldFetchLimit,
-              coldHybridLimit,
-              {
-                namespacesEnabled: resolveNamespaceCapabilities(this.config).namespaces,
-                recallNamespaces: options.recallNamespaces,
-                resolveNamespace: (p) => this.namespaceFromPath(p),
-                collection: coldCollection,
-                queryAwarePrefilter: options.queryAwarePrefilter,
-                searchOptions: this.buildConfiguredQmdSearchOptions(options.prompt),
-                abortSignal: options.abortSignal,
-                onDegradation: (degradation) => {
-                  if (coldQmdObserverActive) {
-                    options.onDegradation?.(degradation);
-                  }
-                },
-              },
-            ),
-          reportColdQmdDeadline,
-        );
-        // Normal completion also closes the gate: a deadline that fires
-        // after this await has nothing left to suppress, and a fetch that
-        // limps home later cannot mutate a recorded recall's collector.
-        coldQmdObserverActive = false;
-        if (longTerm.length > 0) {
-          log.debug(
-            `cold-tier recall source=cold-qmd collection=${coldCollection} hits=${longTerm.length}`,
-          );
-        }
-      }
-    }
-    if (longTerm.length === 0) {
-      // Deadline-aware abort: terminate the scoring worker when the shared
-      // assembly deadline wins, not just when the caller aborts (#1674).
-      const da = new AbortController();
-      if (options.abortSignal?.aborted) da.abort();
-      else options.abortSignal?.addEventListener("abort", () => da.abort(), { once: true });
-      longTerm = await runColdStepWithinDeadline(
-        "archive scan", [],
-        () => this.searchLongTermArchiveFallback(
-          options.prompt, options.recallNamespaces, options.recallResultLimit,
-          options.queryAwarePrefilter, da.signal),
-        () => da.abort(),
-      );
-      if (longTerm.length > 0) {
-        log.debug("cold-tier recall source=archive-scan");
-      }
-    }
-    if (longTerm.length === 0) return [];
-
-    let results = longTerm;
-    if (resolveNamespaceCapabilities(this.config).namespaces) {
-      const recallRoots: string[] = [];
-      const seenRecallRoots = new Set<string>();
-      for (const namespace of options.recallNamespaces) {
-        try {
-          const storage = await this.storageRouter.storageFor(namespace);
-          const storageDir =
-            typeof (storage as { dir?: unknown }).dir === "string" &&
-            (storage as { dir?: string }).dir
-              ? (storage as { dir: string }).dir
-              : null;
-          if (!storageDir) continue;
-          const recallRoot = path.resolve(storageDir);
-          if (seenRecallRoots.has(recallRoot)) continue;
-          seenRecallRoots.add(recallRoot);
-          recallRoots.push(recallRoot);
-        } catch (err) {
-          log.debug("cold-tier recall namespace root lookup skipped", {
-            namespace,
-            error: (err as Error).message,
-          });
-        }
-      }
-      const scopedResults: QmdSearchResult[] = [];
-      for (const result of results) {
-        if (options.abortSignal?.aborted || deadlineRemainingMs() === 0) break;
-        const parts = qmdCollectionPathParts(result.path);
-        if (parts?.collection === coldCollection) {
-          const resolvedCold = await this.resolveColdQmdResultForRecall(
-            result,
-            this.storage,
-            options.recallNamespaces,
-          );
-          if (resolvedCold) scopedResults.push(resolvedCold.result);
-          continue;
-        }
-        if (path.isAbsolute(result.path)) {
-          const resolvedPath = path.resolve(result.path);
-          if (
-            recallRoots.some((recallRoot) =>
-              isPathInsideStorageRoot(recallRoot, resolvedPath),
-            )
-          ) {
-            scopedResults.push(result);
-          }
-          continue;
-        }
-        if (options.recallNamespaces.includes(this.namespaceFromPath(result.path))) {
-          scopedResults.push(result);
-        }
-      }
-      results = scopedResults;
-    }
-    // Artifact isolation contract: generic recall paths must exclude artifacts.
-    results = results.filter((r) => !isArtifactMemoryPath(r.path));
-    if (results.length === 0) return [];
-
-    const isFullModeGraphAssist =
-      resolveQmdCapabilities(this.config).qmdTierParityGraph &&
-      graphCaps.multiGraphMemory &&
-      caps.graphAssistInFullMode &&
-      options.recallMode === "full" &&
-      results.length >= Math.max(1, this.config.graphAssistMinSeedResults ?? 3);
-    const shouldRunGraphExpansion =
-      resolveQmdCapabilities(this.config).qmdTierParityGraph &&
-      (options.recallMode === "graph_mode" || isFullModeGraphAssist);
-
-    if (shouldRunGraphExpansion) {
-      const { merged } = await this.expandResultsViaGraph({
-        memoryResults: results,
-        recallNamespaces: options.recallNamespaces,
-        recallResultLimit: options.recallResultLimit,
-        deadlineAtMs: options.deadlineAtMs,
-        ...(options.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
-      });
-      results = merged;
-    }
-
-    const boostInput = await this.filterSearchResultsForRecall(
-      results,
-      undefined,
-      {
-        allowLifecycleFiltered: true,
-        asOfMs: options.asOfMs,
-        deadlineAtMs: options.deadlineAtMs,
-        abortSignal: options.abortSignal,
-        dropUnresolved: true,
-        recallNamespaces: options.recallNamespaces,
-      },
-    );
-    results = boostInput.results;
-    const boostTimeoutMs =
-      typeof options.deadlineAtMs === "number"
-        ? Math.max(0, options.deadlineAtMs - Date.now())
-        : null;
-    if (boostTimeoutMs !== 0) {
-      let timeoutHandle: NodeJS.Timeout | undefined;
-      try {
-        const boosted = await (boostTimeoutMs !== null
-          ? Promise.race<QmdSearchResult[] | { status: "timed_out" }>([
-              this.boostSearchResults(
-                boostInput.results,
-                options.recallNamespaces,
-                options.prompt,
-                boostInput.memoryByPath,
-                { allowLifecycleFiltered: true, asOfMs: options.asOfMs },
-              ),
-              new Promise<{ status: "timed_out" }>((resolve) => {
-                timeoutHandle = setTimeout(
-                  () => resolve({ status: "timed_out" }),
-                  boostTimeoutMs,
-                );
-              }),
-            ])
-          : this.boostSearchResults(
-              boostInput.results,
-              options.recallNamespaces,
-              options.prompt,
-              boostInput.memoryByPath,
-              { allowLifecycleFiltered: true, asOfMs: options.asOfMs },
-            ));
-        if (
-          typeof boosted === "object" &&
-          boosted !== null &&
-          "status" in boosted &&
-          boosted.status === "timed_out"
-        ) {
-          log.debug("cold-tier recall boost skipped: shared assembly deadline expired");
-        } else if (Array.isArray(boosted)) {
-          results = boosted;
-        } else {
-          results = boostInput.results;
-        }
-      } catch (err) {
-        log.debug(`cold-tier recall boost failed open: ${err}`);
-      } finally {
-        if (timeoutHandle) clearTimeout(timeoutHandle);
-      }
-    } else {
-      log.debug("cold-tier recall boost skipped: shared assembly deadline already expired");
-    }
-
-    if (caps.rerank && this.config.rerankProvider === "local") {
-      const ranked = await rerankLocalOrNoop({
-        query: options.prompt,
-        candidates: results
-          .slice(0, this.config.rerankMaxCandidates)
-          .map((r) => ({
-            id: r.path,
-            snippet: r.snippet || r.path,
-          })),
-        local: this.fastLlmForRerank,
-        enabled: true,
-        timeoutMs: this.config.rerankTimeoutMs,
-        maxCandidates: this.config.rerankMaxCandidates,
-        cache: this.rerankCache,
-        cacheEnabled: caps.rerankCache,
-        cacheTtlMs: this.config.rerankCacheTtlMs,
-      });
-      if (ranked && ranked.length > 0) {
-        const byPath = new Map(results.map((r) => [r.path, r]));
-        const reordered: QmdSearchResult[] = [];
-        for (const p of ranked) {
-          const it = byPath.get(p);
-          if (it) reordered.push(it);
-        }
-        const rankedSet = new Set(ranked);
-        for (const r of results) {
-          if (!rankedSet.has(r.path)) reordered.push(r);
-        }
-        results = reordered;
-      }
-    }
-    if (caps.rerank && this.config.rerankProvider === "cloud") {
-      log.debug(
-        "rerankProvider=cloud is reserved/experimental in v2.2.0; skipping rerank",
-      );
-    }
-
-    // Trust-reweighting — must fire on the cold fallback path too, or the
-    // feature flag produces divergent behavior by retrieval path (rule 39).
-    // TrustScore subsumes the Memory Worth multiplier; run exactly one.
-    // Fail-open on lookup errors.
-    if (caps.recallTrustScore && results.length > 0) {
-      try {
-        const trustOutcome = await this.applyTrustScoreRerank(results, options.recallNamespaces);
-        results = trustOutcome.results;
-        if (options.trustByPathSink) options.trustByPathSink.trustByPath = trustOutcome.trustByPath;
-      } catch (err) {
-        log.debug("trust-score stage (cold) failed open", {
-          error: (err as Error).message,
-        });
-      }
-    } else if (caps.recallMemoryWorthFilter && results.length > 0) {
-      try {
-        results = await this.applyMemoryWorthRerank(results, options.recallNamespaces);
-      } catch (err) {
-        log.debug("memory-worth filter (cold) failed open", {
-          error: (err as Error).message,
-        });
-      }
-    }
-
-    // Apply MMR before final truncation so the cold fallback path mirrors
-    // the diversification policy applied in the hot QMD/embedding/recent
-    // paths. Running MMR post-slice would be unable to promote diverse
-    // candidates sitting just below the cutoff.
-    if (options.xrayPoolSizeSink) {
-      options.xrayPoolSizeSink.size = Math.max(
-        options.xrayPoolSizeSink.size,
-        results.length,
-      );
-    }
-    return this.diversifyAndLimitRecallResults(
-      "memories",
-      results,
-      options.recallResultLimit,
-      options.prompt,
-      caps,
+    return this.recallSearchPipelineCoordinator.applyColdFallbackPipeline(
+      options,
     );
   }
 
@@ -8721,95 +7960,11 @@ export class Orchestrator {
     unreadablePaths: Set<string>;
     completed: boolean;
   }> {
-    const memoryByPath: Map<string, MemoryFile> = preloadedMemoryMap
-      ? new Map(preloadedMemoryMap)
-      : new Map();
-    const checkedPaths = new Set<string>();
-    const unreadablePaths = new Set<string>();
-
-    const markChecked = (result: QmdSearchResult): void => {
-      if (result.path) checkedPaths.add(result.path);
-    };
-    const markUnreadable = (result: QmdSearchResult, err: unknown): void => {
-      if (!result.path) return;
-      checkedPaths.add(result.path);
-      unreadablePaths.add(result.path);
-      log.warn("recall safety filter dropped unreadable secure-store candidate", {
-        path: result.path,
-        error: (err as Error).message,
-      });
-    };
-    const deadlineExpired = (): boolean =>
-      typeof options?.deadlineAtMs === "number" &&
-      Date.now() >= options.deadlineAtMs;
-
-    if (options?.deadlineAtMs == null) {
-      const batchSize = options?.abortSignal ? 16 : results.length;
-      for (let offset = 0; offset < results.length; offset += batchSize) {
-        if (options?.abortSignal?.aborted) {
-          return {
-            memoryByPath,
-            checkedPaths,
-            unreadablePaths,
-            completed: false,
-          };
-        }
-        await Promise.all(
-          results.slice(offset, offset + batchSize).map(async (r) => {
-            if (!r.path) return;
-            if (memoryByPath.has(r.path)) {
-              markChecked(r);
-              return;
-            }
-            try {
-              const mem = await this.readQmdResultMemory(
-                r.path,
-                this.storage,
-                options?.recallNamespaces,
-              );
-              markChecked(r);
-              if (mem) memoryByPath.set(r.path, mem);
-            } catch (err) {
-              if (err instanceof SecureStoreLockedError) {
-                markUnreadable(r, err);
-                return;
-              }
-              throw err;
-            }
-          }),
-        );
-      }
-
-      return { memoryByPath, checkedPaths, unreadablePaths, completed: true };
-    }
-
-    for (const result of results) {
-      if (!result.path) continue;
-      if (memoryByPath.has(result.path)) {
-        markChecked(result);
-        continue;
-      }
-      if (options?.abortSignal?.aborted || deadlineExpired()) {
-        return { memoryByPath, checkedPaths, unreadablePaths, completed: false };
-      }
-      try {
-        const mem = await this.readQmdResultMemory(
-          result.path,
-          this.storage,
-          options?.recallNamespaces,
-        );
-        markChecked(result);
-        if (mem) memoryByPath.set(result.path, mem);
-      } catch (err) {
-        if (err instanceof SecureStoreLockedError) {
-          markUnreadable(result, err);
-          continue;
-        }
-        throw err;
-      }
-    }
-
-    return { memoryByPath, checkedPaths, unreadablePaths, completed: true };
+    return this.recallSearchPipelineCoordinator.loadSearchResultMemoryMap(
+      results,
+      preloadedMemoryMap,
+      options,
+    );
   }
 
   private filterSearchResultsByRecallSafety(
@@ -8822,146 +7977,11 @@ export class Orchestrator {
       blockedPaths?: Set<string>;
     },
   ): QmdSearchResult[] {
-    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
-    let lifecycleFilteredCount = 0;
-    let temporalSupersededFilteredCount = 0;
-    let biTemporalExpiredFilteredCount = 0;
-    let dedicatedSurfaceFilteredCount = 0;
-    let forgottenFilteredCount = 0;
-    let blockedPathFilteredCount = 0;
-    const filtered: QmdSearchResult[] = [];
-    for (const r of results) {
-      if (r.path && options?.blockedPaths?.has(r.path)) {
-        blockedPathFilteredCount += 1;
-        continue;
-      }
-      const memory = memoryByPath.get(r.path);
-      if (memory) {
-        // Review-lifecycle statuses never enter active recall injection
-        // (forgotten, pending_review, rejected, quarantined). Superseded and
-        // archived have dedicated filters below. #1576: the faithfulness gate
-        // routes unsupported/contradicted facts to pending_review — they must
-        // not leak back via the QMD/embedding path. chatgpt P2.
-        const recallStatus = memory.frontmatter.status;
-        if (
-          recallStatus === "forgotten" ||
-          recallStatus === "pending_review" ||
-          recallStatus === "rejected" ||
-          recallStatus === "quarantined"
-        ) {
-          forgottenFilteredCount += 1;
-          continue;
-        }
-
-        if (
-          options?.allowLifecycleFiltered !== true &&
-          shouldFilterLifecycleRecallCandidate(memory.frontmatter, {
-            lifecyclePolicyEnabled: lifecycleCaps.lifecyclePolicy,
-            lifecycleFilterStaleEnabled:
-              lifecycleCaps.lifecycleFilterStale,
-          })
-        ) {
-          lifecycleFilteredCount += 1;
-          continue;
-        }
-
-        // Historical recall (issue #680): when the caller pinned the
-        // recall to a specific point in time, evaluate temporal validity
-        // at that instant FIRST and bypass the supersession filter
-        // entirely. A fact that is currently superseded but was valid
-        // at `as_of` is exactly what historical recall should surface;
-        // running supersession filtering before the as_of check would
-        // drop it and break the worked example in docs/temporal-recall.md
-        // (codex P1 / cursor High on PR #713).
-        const asOfActive =
-          typeof options?.asOfMs === "number" && Number.isFinite(options.asOfMs);
-        if (asOfActive) {
-          if (!isValidAsOf(memory.frontmatter, options!.asOfMs!)) {
-            temporalSupersededFilteredCount += 1;
-            continue;
-          }
-        } else if (
-          // Temporal supersession filter (issue #375): drop memories that
-          // a newer fact has retired, unless the caller opted in to history.
-          // NOTE: This check is intentionally independent of
-          // allowLifecycleFiltered (Finding A fix) — cold fallback sets
-          // allowLifecycleFiltered=true to include archived/retired
-          // candidates, but superseded memories must still be filtered
-          // unless temporalSupersessionIncludeInRecall is set.
-          // Skipped entirely when `as_of` is active (above branch); the
-          // half-open `[valid_at, invalid_at)` evaluation in isValidAsOf
-          // is the authoritative gate for historical recall.
-          shouldFilterSupersededFromRecall(memory.frontmatter, {
-            enabled: lifecycleCaps.temporalSupersession,
-            includeInRecall: this.config.temporalSupersessionIncludeInRecall,
-          })
-        ) {
-          temporalSupersededFilteredCount += 1;
-          continue;
-        }
-        // Bi-temporal INJECTION filter (issue #1578): when the master gate
-        // is on and the caller did NOT pin `as_of`, drop facts whose event-
-        // time interval has ended before now. This lives ONLY in the recall
-        // injection path (filterSearchResultsByRecallSafety) — explicit
-        // search (access-service.memorySearch → searchAcrossNamespaces /
-        // qmd.search) never routes through here, so expired-validity facts
-        // remain findable by memory_search and `as_of` queries (escape
-        // hatch: the as_of branch above also admits historically-valid
-        // records). Gated off entirely when `temporalExpiredInInjection` is
-        // set. Status-orthogonal: an `active` fact can be validity-expired;
-        // a `superseded` one may still be within its window.
-        if (
-          !asOfActive &&
-          this.config.temporalBiTemporal &&
-          !this.config.temporalExpiredInInjection &&
-          isValidityExpiredNow(memory.frontmatter, Date.now())
-        ) {
-          biTemporalExpiredFilteredCount += 1;
-          continue;
-        }
-
-        if (
-          options?.allowDedicatedSurface !== true &&
-          (memory.frontmatter.memoryKind === "dream" ||
-            memory.frontmatter.memoryKind === "procedural")
-        ) {
-          dedicatedSurfaceFilteredCount += 1;
-          continue;
-        }
-      }
-      filtered.push(r);
-    }
-    if (lifecycleFilteredCount > 0) {
-      log.debug(
-        `lifecycle retrieval filter removed ${lifecycleFilteredCount} stale/archived candidates`,
-      );
-    }
-    if (temporalSupersededFilteredCount > 0) {
-      log.debug(
-        `temporal supersession filter removed ${temporalSupersededFilteredCount} superseded candidates`,
-      );
-    }
-    if (biTemporalExpiredFilteredCount > 0) {
-      log.debug(
-        `bi-temporal validity filter removed ${biTemporalExpiredFilteredCount} expired-validity candidates from injection (temporal.biTemporal on)`,
-      );
-    }
-    if (dedicatedSurfaceFilteredCount > 0) {
-      log.debug(
-        `dedicated surface filter removed ${dedicatedSurfaceFilteredCount} dream/procedural candidates from generic recall`,
-      );
-    }
-    if (forgottenFilteredCount > 0) {
-      log.debug(
-        `forgotten status filter removed ${forgottenFilteredCount} candidates from recall`,
-      );
-    }
-    if (blockedPathFilteredCount > 0) {
-      log.debug(
-        `unreadable-path filter removed ${blockedPathFilteredCount} candidates from recall`,
-      );
-    }
-    return filtered;
+    return this.recallSearchPipelineCoordinator.filterSearchResultsByRecallSafety(
+      results,
+      memoryByPath,
+      options,
+    );
   }
 
   private async filterSearchResultsForRecall(
@@ -8977,47 +7997,13 @@ export class Orchestrator {
       recallNamespaces?: readonly string[];
     },
   ): Promise<{ results: QmdSearchResult[]; memoryByPath: Map<string, MemoryFile> }> {
-    if (results.length === 0) {
-      return {
-        results,
-        memoryByPath: preloadedMemoryMap ? new Map(preloadedMemoryMap) : new Map(),
-      };
-    }
-    const loaded = await this.loadSearchResultMemoryMap(
+    return this.recallSearchPipelineCoordinator.filterSearchResultsForRecall(
       results,
       preloadedMemoryMap,
       options,
     );
-    const candidateResults = loaded.completed
-      ? results
-      : results.filter((result) => !result.path || loaded.checkedPaths.has(result.path));
-    if (!loaded.completed) {
-      log.debug(
-        `recall safety filter stopped before validating all candidates (${candidateResults.length}/${results.length} eligible)`,
-      );
-    }
-    const blockedPaths = new Set(loaded.unreadablePaths);
-    if (options?.dropUnresolved === true) {
-      for (const resultPath of loaded.checkedPaths) {
-        if (!loaded.memoryByPath.has(resultPath)) {
-          blockedPaths.add(resultPath);
-        }
-      }
-    }
-    return {
-      results: this.filterSearchResultsByRecallSafety(
-        candidateResults,
-        loaded.memoryByPath,
-        { ...options, blockedPaths },
-      ),
-      memoryByPath: loaded.memoryByPath,
-    };
   }
 
-  /**
-   * Apply recency, access count, and importance boosting to QMD search results.
-   * Returns re-ranked results.
-   */
   private async boostSearchResults(
     results: QmdSearchResult[],
     _recallNamespaces: string[],
@@ -9036,223 +8022,13 @@ export class Orchestrator {
       asOfMs?: number;
     },
   ): Promise<QmdSearchResult[]> {
-    const lifecycleCaps = resolveMemoryLifecycleCapabilities(this.config);
-    if (results.length === 0) return results;
-
-    const safety = await this.filterSearchResultsForRecall(
+    return this.recallSearchPipelineCoordinator.boostSearchResults(
       results,
+      _recallNamespaces,
+      prompt,
       preloadedMemoryMap,
-      { ...options, recallNamespaces: _recallNamespaces },
+      options,
     );
-    const safeResults = safety.results;
-    const memoryByPath = safety.memoryByPath;
-    if (safeResults.length === 0) return safeResults;
-
-    const now = Date.now();
-
-    // Determine temporal/tag query params before index I/O (pure computation).
-    const resultPaths = new Set(
-      safeResults.map((r) => r.path).filter(Boolean) as string[],
-    );
-    let temporalFromDate: string | null = null;
-    let promptTags: string[] = [];
-    if (resolveIndexingCapabilities(this.config).queryAwareIndexing && prompt) {
-      if (isTemporalQuery(prompt)) {
-        temporalFromDate = recencyWindowFromPrompt(prompt, now);
-      }
-      promptTags = extractTagsFromPrompt(prompt);
-    }
-
-    const [rawTemporal, rawTags] = await Promise.all([
-      temporalFromDate !== null
-        ? queryByDateRangeAsync(this.config.memoryDir, temporalFromDate)
-        : Promise.resolve<Set<string> | null>(null),
-      promptTags.length > 0
-        ? queryByTagsAsync(this.config.memoryDir, promptTags)
-        : Promise.resolve<Set<string> | null>(null),
-    ]);
-
-    const queryIntent =
-      resolveConversationContextCapabilities(this.config).intentRouting && prompt
-        ? inferIntentFromText(prompt)
-        : null;
-
-    // v8.1: Temporal + Tag prefilter candidate set
-    // Scope to result paths first so cross-namespace paths don't consume the cap.
-    let temporalCandidates: Set<string> | null = null;
-    let tagCandidates: Set<string> | null = null;
-    if (resolveIndexingCapabilities(this.config).queryAwareIndexing && prompt) {
-      const maxCandidates = this.config.queryAwareIndexingMaxCandidates;
-      const capSet = (s: Set<string> | null): Set<string> | null => {
-        if (!s) return null;
-        // Intersect with result paths first so out-of-scope paths don't exhaust the budget
-        const scoped = new Set(Array.from(s).filter((p) => resultPaths.has(p)));
-        if (maxCandidates === 0 || scoped.size <= maxCandidates)
-          return scoped;
-        return new Set(Array.from(scoped).slice(0, maxCandidates));
-      };
-      if (temporalFromDate !== null) {
-        temporalCandidates = capSet(rawTemporal);
-      }
-      if (promptTags.length > 0) {
-        tagCandidates = capSet(rawTags);
-      }
-    }
-
-    const boosted: QmdSearchResult[] = [];
-    const recencyWeight = this.effectiveRecencyWeight();
-    for (const r of safeResults) {
-      const memory = memoryByPath.get(r.path);
-      let score = r.score;
-
-      if (memory) {
-        // Recency boost: exponential decay over 7 days
-        if (recencyWeight > 0) {
-          const createdAt = new Date(memory.frontmatter.created).getTime();
-          const ageMs = now - createdAt;
-          const ageDays = ageMs / (1000 * 60 * 60 * 24);
-          const halfLifeDays = 7;
-          const recencyScore = Math.pow(0.5, ageDays / halfLifeDays);
-          score = score * (1 - recencyWeight) + recencyScore * recencyWeight;
-        }
-
-        // Access count boost: log scale, capped
-        if (this.config.boostAccessCount && memory.frontmatter.accessCount) {
-          const accessBoost =
-            Math.log10(memory.frontmatter.accessCount + 1) / 3;
-          score += applyUtilityRankingRuntimeDelta(
-            Math.min(accessBoost, 0.1),
-            this.utilityRuntimeValues,
-            "boost",
-          );
-        }
-
-        // Importance boost (Phase 1B): higher importance = higher rank
-        if (memory.frontmatter.importance) {
-          const importanceScore = memory.frontmatter.importance.score;
-          // Boost important memories, slightly penalize trivial ones
-          // Scale: trivial (-0.05) to critical (+0.15)
-          const importanceBoost = (importanceScore - 0.4) * 0.25;
-          score += applyUtilityRankingRuntimeDelta(
-            importanceBoost,
-            this.utilityRuntimeValues,
-            importanceBoost >= 0 ? "boost" : "suppress",
-          );
-        }
-
-        // Feedback bias (v2.2): apply small user-provided up/down vote adjustments.
-        if (resolveRecallEnhancementCapabilities(this.config).feedback) {
-          const match = memory.path.match(/([^/]+)\.md$/);
-          const memoryId = match ? match[1] : null;
-          if (memoryId) {
-            const feedbackDelta = this.relevance.adjustment(memoryId);
-            score += applyUtilityRankingRuntimeDelta(
-              feedbackDelta,
-              this.utilityRuntimeValues,
-              feedbackDelta >= 0 ? "boost" : "suppress",
-            );
-          }
-        }
-
-        // Negative examples (v2.2): apply a small penalty for memories repeatedly marked "not useful".
-        if (resolvePipelineProcessingCapabilities(this.config).negativeExamples) {
-          const match = memory.path.match(/([^/]+)\.md$/);
-          const memoryId = match ? match[1] : null;
-          if (memoryId) {
-            const negativePenalty = this.negatives.penalty(memoryId, {
-              perHit: this.config.negativeExamplesPenaltyPerHit,
-              cap: this.config.negativeExamplesPenaltyCap,
-            });
-            score -= applyUtilityRankingRuntimeDelta(
-              negativePenalty,
-              this.utilityRuntimeValues,
-              "suppress",
-            );
-          }
-        }
-
-        if (
-          queryIntent &&
-          memory.frontmatter.intentGoal &&
-          memory.frontmatter.intentActionType
-        ) {
-          const compatibility = intentCompatibilityScore(queryIntent, {
-            goal: memory.frontmatter.intentGoal,
-            actionType: memory.frontmatter.intentActionType,
-            entityTypes: memory.frontmatter.intentEntityTypes ?? [],
-          });
-          score += applyUtilityRankingRuntimeDelta(
-            compatibility * this.config.intentRoutingBoost,
-            this.utilityRuntimeValues,
-            "boost",
-          );
-        }
-
-        // v8.1: Temporal + Tag index boost
-        // Results that match the detected temporal window or tag query get a small additive boost.
-        if (resolveIndexingCapabilities(this.config).queryAwareIndexing && r.path) {
-          if (temporalCandidates?.has(r.path)) {
-            score += applyUtilityRankingRuntimeDelta(
-              0.08,
-              this.utilityRuntimeValues,
-              "boost",
-            );
-          }
-          if (tagCandidates?.has(r.path)) {
-            score += applyUtilityRankingRuntimeDelta(
-              0.06,
-              this.utilityRuntimeValues,
-              "boost",
-            );
-          }
-        }
-
-        // v8.3: lifecycle retrieval weighting (fail-open on legacy memories).
-        const lifecycleDelta = lifecycleRecallScoreAdjustment(
-          memory.frontmatter,
-          {
-            lifecyclePolicyEnabled: lifecycleCaps.lifecyclePolicy,
-          },
-        );
-        score += applyUtilityRankingRuntimeDelta(
-          lifecycleDelta,
-          this.utilityRuntimeValues,
-          lifecycleDelta >= 0 ? "boost" : "suppress",
-        );
-
-        // Reinforcement recall boost (issue #687 PR 3/4).
-        // Applies an additive score bonus proportional to how many times the
-        // pattern-reinforcement job has promoted this memory as a canonical.
-        // Formula: min(reinforcement_count * weight, max).
-        // Gated by reinforcementRecallBoostEnabled (default false).
-        let reinforcementBoost = 0;
-        if (
-          resolveRecallEnhancementCapabilities(this.config).reinforcementRecallBoost &&
-          typeof memory.frontmatter.reinforcement_count === "number" &&
-          memory.frontmatter.reinforcement_count > 0
-        ) {
-          reinforcementBoost = Math.min(
-            memory.frontmatter.reinforcement_count *
-              this.config.reinforcementRecallBoostWeight,
-            this.config.reinforcementRecallBoostMax,
-          );
-          score += reinforcementBoost;
-        }
-        if (reinforcementBoost > 0) {
-          boosted.push({
-            ...r,
-            score,
-            explain: { ...(r.explain ?? {}), reinforcementBoost },
-          });
-          continue;
-        }
-      }
-
-      boosted.push({ ...r, score });
-    }
-
-    // Re-sort by boosted score
-    return boosted.sort((a, b) => b.score - a.score);
   }
 
   /**
