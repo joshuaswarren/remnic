@@ -106,50 +106,53 @@ test("orchestrator contains setPeerIdForSession method", () => {
 });
 
 test("orchestrator gates peer profile injection on peerProfileRecallEnabled", () => {
+  // #1526 seam 18: the peer-profile recall block moved (with recallInternal)
+  // to orchestration/recall-internal.ts; deps expose config + session lookup.
   const src = readFileSync(
-    path.join(repoRoot, "packages/remnic-core/src/orchestrator.ts"),
+    path.join(repoRoot, "packages/remnic-core/src/orchestration/recall-internal.ts"),
     "utf-8",
   );
   assert.match(
     src,
-    /resolveRecallEnhancementCapabilities\(this\.config\)\.peerProfileRecall/,
-    "orchestrator must reference peerProfileRecallEnabled (via RecallEnhancementCapabilitySet)",
+    /resolveRecallEnhancementCapabilities\(this\.deps\.config\)\.peerProfileRecall/,
+    "recall pipeline must reference peerProfileRecallEnabled (via RecallEnhancementCapabilitySet)",
   );
   assert.match(
     src,
-    /this\.config\.peerProfileRecallMaxFields/,
-    "orchestrator must reference peerProfileRecallMaxFields",
+    /this\.deps\.config\.peerProfileRecallMaxFields/,
+    "recall pipeline must reference peerProfileRecallMaxFields",
   );
   assert.match(
     src,
     /getPeerIdForSession\(/,
-    "orchestrator recall must call getPeerIdForSession",
+    "recall pipeline must call getPeerIdForSession",
   );
 });
 
 test("orchestrator lazily imports peers barrel for peer profile recall", () => {
   const src = readFileSync(
-    path.join(repoRoot, "packages/remnic-core/src/orchestrator.ts"),
+    path.join(repoRoot, "packages/remnic-core/src/orchestration/recall-internal.ts"),
     "utf-8",
   );
   // The dynamic import must reference the peers barrel so the cold path
-  // doesn't force a peers I/O import on every recall.
+  // doesn't force a peers I/O import on every recall. (Path is ../peers
+  // relative to orchestration/ since the #1526 seam-18 move.)
   assert.match(
     src,
-    /await import\("\.\/peers\/index\.js"\)/,
-    "orchestrator must lazily import peers/index.js for recall injection",
+    /await import\("\.\.\/peers\/index\.js"\)/,
+    "recall pipeline must lazily import peers/index.js for recall injection",
   );
 });
 
 test("orchestrator assembles peer-profile section in Phase 2", () => {
   const src = readFileSync(
-    path.join(repoRoot, "packages/remnic-core/src/orchestrator.ts"),
+    path.join(repoRoot, "packages/remnic-core/src/orchestration/recall-internal.ts"),
     "utf-8",
   );
   assert.match(
     src,
     /appendRecallSection\(\s*sectionBuckets,\s*["']peer-profile["']/,
-    "orchestrator must append peer-profile to sectionBuckets in Phase 2",
+    "recall pipeline must append peer-profile to sectionBuckets in Phase 2",
   );
 });
 
