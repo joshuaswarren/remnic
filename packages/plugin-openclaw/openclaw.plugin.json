@@ -3092,6 +3092,15 @@
         "default": false,
         "description": "Enable automatic memory linking to build knowledge graph"
       },
+      "offlineSyncExcludes": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "minLength": 1
+        },
+        "default": [],
+        "description": "Extra offline-sync push-side exclude globs (relative to memoryDir; * within a segment, leading **/ across segments). Additive to the built-in node-local state excludes (state/*.sqlite, state/*.sqlite-*, state/index_tags.json, state/entity-mention-index.json, state/memory-governance/runs/**). Issue #1786."
+      },
       "memoryOsPreset": {
         "type": "string",
         "enum": [

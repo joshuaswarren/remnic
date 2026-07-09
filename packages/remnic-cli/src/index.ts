@@ -135,6 +135,7 @@ import {
   applyOfflineSyncSnapshot,
   buildOfflineSyncChangeset,
   buildOfflineSyncChangesetFromSnapshot,
+  compileOfflineSyncExcludeGlobs,
   buildOfflineSyncSnapshotFromBase,
   defaultOfflineSyncStatePath,
   normalizeOfflineSyncSnapshot,
@@ -7889,6 +7890,7 @@ type OfflineSyncRunResult = {
   partial: boolean;
   pendingSummary: ReturnType<typeof summarizeOfflineSyncChangeset>;
   remoteFileCount: number | null;
+  largeFilePushFailures: readonly { path: string; error: string }[];
   deferred: {
     localChangedDuringPush: string[];
     remoteChangedDuringHydrate: string[];
@@ -7945,6 +7947,10 @@ export async function runOfflineSyncOnce(options: {
   includeTranscripts: boolean;
   statePath: string;
   statePathExplicit: boolean;
+  /** Operator excludes (#1786): merged --exclude flags + offlineSyncExcludes config, pre-compiled. */
+  userExcludeRegexps?: readonly RegExp[];
+  /** Large files permanently skipped by the watch 3-strikes policy (#1786). */
+  skipLargeFilePaths?: ReadonlySet<string>;
 }): Promise<OfflineSyncRunResult> {
   fs.mkdirSync(options.memoryDir, { recursive: true });
   let activeStatePath = options.statePath;
@@ -7995,11 +8001,13 @@ export async function runOfflineSyncOnce(options: {
     includeTranscripts: options.includeTranscripts,
     readFile: storageIo.readFile,
     readFileDigest: storageIo.readFileDigest,
+    userExcludeRegexps: options.userExcludeRegexps,
   });
   const pendingSummary = summarizeOfflineSyncPendingFiles({
     baseFiles,
     currentFiles: currentSnapshotForPush.files,
     includeTranscripts: options.includeTranscripts,
+    userExcludeRegexps: options.userExcludeRegexps,
   });
   const baseByPath = offlineFileStateMap(baseFiles);
   let directPushAppliedUpserts = 0;
@@ -8013,6 +8021,11 @@ export async function runOfflineSyncOnce(options: {
     currentFiles: currentSnapshotForPush.files,
     baseFiles,
   })) {
+    if (options.skipLargeFilePaths?.has(file.path)) {
+      // 3-strikes policy (#1786): the watch loop already logged a single
+      // warning when this path was retired; stay silent on later passes.
+      continue;
+    }
     let result: OfflineSyncApplyFileContentChunkResult & { namespace?: string };
     try {
       result = await pushOfflineFileContent({
@@ -8136,6 +8149,7 @@ export async function runOfflineSyncOnce(options: {
       partial: true,
       pendingSummary,
       remoteFileCount: partial?.remoteFileCount ?? null,
+      largeFilePushFailures: [...directPushFailures],
       deferred: {
         localChangedDuringPush: [...directPushDeferredPaths].sort(),
         remoteChangedDuringHydrate: [...(partial?.remoteDeferredPaths ?? [])].sort(),
@@ -8158,6 +8172,7 @@ export async function runOfflineSyncOnce(options: {
         includeTranscripts: options.includeTranscripts,
         readFile: storageIo.readFile,
         readFileDigest: storageIo.readFileDigest,
+        userExcludeRegexps: options.userExcludeRegexps,
       })
     : currentSnapshotForPush;
   let changesetRetryCount = 0;
@@ -8168,9 +8183,18 @@ export async function runOfflineSyncOnce(options: {
         sourceId: localSourceId,
         currentFiles: currentSnapshotForChangeset.files,
         baseFiles,
-        excludePaths: [...directPushedPaths, ...directPushDeferredPaths],
+        // 3-strikes skipped large files must be excluded here too — the
+        // direct-push loop skips them, but without this line the changeset
+        // path would still try to upsert them inline (Cursor review, PR
+        // #1793, High severity).
+        excludePaths: [
+          ...directPushedPaths,
+          ...directPushDeferredPaths,
+          ...(options.skipLargeFilePaths ?? []),
+        ],
         includeTranscripts: options.includeTranscripts,
         readFile: storageIo.readFile,
+        userExcludeRegexps: options.userExcludeRegexps,
       });
       break;
     } catch (error) {
@@ -8202,6 +8226,7 @@ export async function runOfflineSyncOnce(options: {
         includeTranscripts: options.includeTranscripts,
         readFile: storageIo.readFile,
         readFileDigest: storageIo.readFileDigest,
+        userExcludeRegexps: options.userExcludeRegexps,
       });
     }
   }
@@ -8312,6 +8337,10 @@ export async function runOfflineSyncOnce(options: {
     resolvedNamespace: resolvedOfflineSnapshotNamespace(remoteSnapshotMetadata, syncNamespace),
     remoteFileCount: remoteSnapshotMetadata.files.length,
   };
+  // Apply-side local view (#1793 review, High): must see node-local state
+  // (state/lcm.sqlite etc.) or incoming upserts misclassify as
+  // local_deleted_remote_modified. Never reuse the push-filtered snapshot
+  // for apply.
   const buildCurrentSnapshotForApply = async (): Promise<typeof currentSnapshot> => buildOfflineSyncSnapshotFromBase({
     root: options.memoryDir,
     sourceId: localSourceId,
@@ -8321,10 +8350,9 @@ export async function runOfflineSyncOnce(options: {
     includeTranscripts: options.includeTranscripts,
     readFile: storageIo.readFile,
     readFileDigest: storageIo.readFileDigest,
+    excludeNodeLocalState: false,
   });
-  const applyCurrentSnapshot = directHydratedPaths.size > 0
-    ? await buildCurrentSnapshotForApply()
-    : currentSnapshot;
+  const applyCurrentSnapshot = await buildCurrentSnapshotForApply();
   let remoteSnapshot: Awaited<ReturnType<typeof hydrateOfflineSnapshotContent>>;
   try {
     remoteSnapshot = await hydrateOfflineSnapshotContent({
@@ -8435,6 +8463,7 @@ export async function runOfflineSyncOnce(options: {
     partial: false,
     pendingSummary,
     remoteFileCount: remoteSnapshot.files.length,
+    largeFilePushFailures: [...directPushFailures],
     deferred: {
       localChangedDuringPush: [...directPushDeferredPaths].sort(),
       remoteChangedDuringHydrate: [...remoteDeferredPaths].sort(),
@@ -8514,6 +8543,82 @@ function assertOfflineStateMatches(options: {
   }
 }
 
+/**
+ * Number of consecutive large-file push failures after which the watch loop
+ * permanently skips a path for the process lifetime (#1786). Prevents a
+ * single unpushable file (e.g. a live SQLite DB) from putting the watcher
+ * into an endless retry loop that hammers the receiving daemon.
+ */
+export const OFFLINE_LARGE_FILE_SKIP_AFTER_FAILURES = 3;
+
+/**
+ * Pure helper for the watch 3-strikes policy (#1786): given the previous
+ * per-path consecutive-failure counts and this run's failures, return the
+ * updated counts plus paths that just crossed the skip threshold. Counters
+ * reset for any path that did not fail this run.
+ */
+export function advanceOfflineLargeFileFailureCounts(options: {
+  counts: ReadonlyMap<string, number>;
+  failures: readonly { path: string }[];
+  threshold?: number;
+}): { counts: Map<string, number>; newlySkipped: string[] } {
+  const threshold = options.threshold ?? OFFLINE_LARGE_FILE_SKIP_AFTER_FAILURES;
+  const next = new Map<string, number>();
+  const newlySkipped: string[] = [];
+  for (const failure of options.failures) {
+    const count = (options.counts.get(failure.path) ?? 0) + 1;
+    next.set(failure.path, count);
+    if (count >= threshold) newlySkipped.push(failure.path);
+  }
+  return { counts: next, newlySkipped };
+}
+
+/**
+ * Merge repeatable `--exclude <glob>` flags with the `offlineSyncExcludes`
+ * config key (#1786) and compile them. Both sources are additive to the
+ * built-in node-local state excludes applied inside offline-sync.ts.
+ * Invalid globs throw with a per-entry message instead of being ignored.
+ */
+function resolveOfflineSyncUserExcludes(rest: string[]): RegExp[] {
+  const globs: string[] = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    if (rest[i] !== "--exclude") continue;
+    const value = rest[i + 1];
+    if (value === undefined || value.startsWith("--") || value.trim().length === 0) {
+      throw new Error("--exclude requires a glob argument");
+    }
+    globs.push(value.trim());
+    i += 1;
+  }
+  const configPath = resolveConfigPath();
+  try {
+    const raw = fs.existsSync(configPath)
+      ? JSON.parse(fs.readFileSync(configPath, "utf8"))
+      : {};
+    const remnicCfg = (raw.remnic ?? raw.engram ?? raw) as Record<string, unknown>;
+    const configured = remnicCfg.offlineSyncExcludes;
+    if (configured !== undefined && configured !== null) {
+      if (!Array.isArray(configured)) {
+        throw new Error("offlineSyncExcludes config must be an array of non-empty glob strings");
+      }
+      for (const entry of configured) {
+        if (typeof entry !== "string" || entry.trim().length === 0) {
+          throw new Error("offlineSyncExcludes config must contain only non-empty glob strings");
+        }
+        globs.push(entry.trim());
+      }
+    }
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      // Unparseable config file: offline commands historically run without
+      // config; surface loudly rather than silently dropping excludes.
+      throw new Error(`cannot read offlineSyncExcludes from ${configPath}: ${error.message}`);
+    }
+    throw error;
+  }
+  return compileOfflineSyncExcludeGlobs(globs);
+}
+
 async function cmdOffline(action: string, rest: string[], json: boolean): Promise<void> {
   if (action === "help" || action === "--help" || action === "-h" || rest.includes("--help") || rest.includes("-h")) {
     console.log(`Usage: remnic offline <prepare|sync|status|watch> [options]
@@ -8526,6 +8631,9 @@ Options:
   --state <path>           Override offline sync state file
   --no-transcripts         Exclude transcripts/ from the offline cache
   --interval-ms <ms>       Watch interval (default 60000)
+  --exclude <glob>         Extra push-side exclude (repeatable; additive to the
+                           built-in node-local state excludes and to the
+                           offlineSyncExcludes config key)
   --json                   JSON output
 
 Environment fallbacks:
@@ -8538,6 +8646,7 @@ Environment fallbacks:
   const includeTranscripts = !hasFlag(rest, "--no-transcripts");
   const stateOverride = resolveRequiredValueFlag(rest, "--state");
   const statePathExplicit = stateOverride !== undefined;
+  const userExcludeRegexps = resolveOfflineSyncUserExcludes(rest);
   const needsRemote = action === "prepare" || action === "sync" || action === "watch";
   const remoteUrl = needsRemote
     ? resolveOfflineRemoteUrl(rest)
@@ -8623,6 +8732,7 @@ Environment fallbacks:
       includeTranscripts,
       statePath,
       statePathExplicit,
+      userExcludeRegexps,
     });
     if (json) {
       console.log(JSON.stringify(offlineSyncResultJsonSummary(result), null, 2));
@@ -8665,6 +8775,7 @@ Environment fallbacks:
       includeTranscripts,
       readFile: storageIo.readFile,
       readFileDigest: storageIo.readFileDigest,
+      userExcludeRegexps,
     });
     if (json) {
       console.log(JSON.stringify({
@@ -8692,6 +8803,8 @@ Environment fallbacks:
       cancelSleep?.();
       console.log("Stopping offline sync watcher.");
     });
+    let largeFileFailureCounts = new Map<string, number>();
+    const skippedLargeFiles = new Set<string>();
     while (!stopped) {
       try {
         const result = await runOfflineSyncOnce({
@@ -8702,13 +8815,41 @@ Environment fallbacks:
           includeTranscripts,
           statePath,
           statePathExplicit,
+          userExcludeRegexps,
+          skipLargeFilePaths: skippedLargeFiles,
         });
+        const advanced = advanceOfflineLargeFileFailureCounts({
+          counts: largeFileFailureCounts,
+          failures: result.largeFilePushFailures,
+        });
+        largeFileFailureCounts = advanced.counts;
+        for (const path of advanced.newlySkipped) {
+          if (skippedLargeFiles.has(path)) continue;
+          skippedLargeFiles.add(path);
+          console.warn(
+            `offline sync: permanently skipping ${path} after ${OFFLINE_LARGE_FILE_SKIP_AFTER_FAILURES} failed large-file pushes for this watcher process (see issue #1786; use --exclude or offlineSyncExcludes to silence permanently)`,
+          );
+        }
         const pulled = result.pull ? result.pull.upserted + result.pull.deleted : 0;
         const conflicts = (result.pushed?.conflicts.length ?? 0) + (result.pull?.conflicts.length ?? 0);
         console.log(
           `[${new Date().toISOString()}] sync ${result.partial ? "partial" : "ok"}: pushed=${result.pushed ? result.pushed.appliedUpserts + result.pushed.appliedDeletes : 0}, pulled=${pulled}, conflicts=${conflicts}, deferred=${result.deferred.total}${result.pullError ? `, pullError=${result.pullError}` : ""}`,
         );
       } catch (error) {
+        if (error instanceof OfflineLargeFilePushError) {
+          const advanced = advanceOfflineLargeFileFailureCounts({
+            counts: largeFileFailureCounts,
+            failures: error.failures,
+          });
+          largeFileFailureCounts = advanced.counts;
+          for (const path of advanced.newlySkipped) {
+            if (skippedLargeFiles.has(path)) continue;
+            skippedLargeFiles.add(path);
+            console.warn(
+              `offline sync: permanently skipping ${path} after ${OFFLINE_LARGE_FILE_SKIP_AFTER_FAILURES} failed large-file pushes for this watcher process (see issue #1786; use --exclude or offlineSyncExcludes to silence permanently)`,
+            );
+          }
+        }
         console.log(`[${new Date().toISOString()}] sync waiting: ${error instanceof Error ? error.message : String(error)}`);
       }
       if (stopped) break;

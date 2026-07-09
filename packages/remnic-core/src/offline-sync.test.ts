@@ -14,6 +14,8 @@ import {
   buildOfflineSyncSnapshot,
   buildOfflineSyncSnapshotFromBase,
   buildOfflineSyncSnapshotForPaths,
+  compileOfflineSyncExcludeGlobs,
+  globToRegExp,
   OFFLINE_SYNC_MAX_MTIME_MS,
   readOfflineSyncFileContentChunk,
   shouldPreferIncomingOfflineRuntimeFile,
@@ -74,9 +76,6 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
         "state/last_intent.json",
         "state/last_qmd_recall.json",
         "state/last_recall.json",
-        "state/lcm.sqlite",
-        "state/lcm.sqlite-shm",
-        "state/lcm.sqlite-wal",
         "transcripts/session.jsonl",
       ],
     );
@@ -101,9 +100,6 @@ test("offline snapshot captures source-of-truth files and excludes private/inter
         "state/last_intent.json",
         "state/last_qmd_recall.json",
         "state/last_recall.json",
-        "state/lcm.sqlite",
-        "state/lcm.sqlite-shm",
-        "state/lcm.sqlite-wal",
       ],
     );
   } finally {
@@ -191,7 +187,7 @@ test("offline sync includes retrieval debug snapshots for full-fidelity offline 
   }
 });
 
-test("offline sync includes live LCM sqlite artifacts for full-fidelity offline mode", async () => {
+test("offline sync push-side default excludes live LCM sqlite but apply-side still accepts it (#1786)", async () => {
   const root = await tempDir("remnic-offline-lcm-sqlite");
   try {
     await write(root, "facts/a.md", "alpha");
@@ -199,33 +195,53 @@ test("offline sync includes live LCM sqlite artifacts for full-fidelity offline 
     await write(root, "state/lcm.sqlite-shm", "live shm");
     await write(root, "state/lcm.sqlite-wal", "live wal");
 
+    // Push-side enumeration: node-local sqlite state is excluded by default
+    // so the local node does not broadcast its live sqlite WAL/SHM to peers.
     const snapshot = await buildOfflineSyncSnapshot({
       root,
       sourceId: "remote",
       includeContent: true,
     });
 
-    assert.deepEqual(snapshot.files.map((file) => file.path), [
-      "facts/a.md",
-      "state/lcm.sqlite",
-      "state/lcm.sqlite-shm",
-      "state/lcm.sqlite-wal",
-    ]);
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/lcm.sqlite-shm"), true);
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/lcm.sqlite-wal"), true);
     assert.equal(shouldPreferIncomingOfflineRuntimeFile("state/last_qmd_recall.json"), true);
-    const focused = await buildOfflineSyncSnapshotForPaths({
-      root,
-      sourceId: "remote",
-      paths: ["state/lcm.sqlite"],
-      includeContent: true,
-    });
-    assert.deepEqual(focused.files.map((file) => file.path), ["state/lcm.sqlite"]);
 
+    // buildOfflineSyncSnapshotForPaths still rejects explicitly excluded
+    // paths so callers cannot bypass the default exclude via path lists.
+    await assert.rejects(
+      () =>
+        buildOfflineSyncSnapshotForPaths({
+          root,
+          sourceId: "remote",
+          paths: ["state/lcm.sqlite"],
+          includeContent: true,
+        }),
+      /offline sync snapshot path is excluded/,
+    );
+
+    // Apply-side: the remote is authoritative for lcm.sqlite and we must
+    // still accept the file content when an upstream snapshot includes it
+    // (e.g. first sync bootstrapping the LCM DB).
+    const remoteSnapshot = {
+      format: "remnic.offline-sync.snapshot.v1" as const,
+      schemaVersion: 1 as const,
+      createdAt: new Date().toISOString(),
+      sourceId: "remote",
+      includeTranscripts: true,
+      files: [{
+        path: "state/lcm.sqlite",
+        sha256: createHash("sha256").update("live db").digest("hex"),
+        bytes: Buffer.byteLength("live db"),
+        mtimeMs: 0,
+        contentBase64: Buffer.from("live db").toString("base64"),
+      }],
+    };
     const oldDb = Buffer.from("old live db");
     const pull = await applyOfflineSyncSnapshot({
       root,
-      snapshot,
+      snapshot: remoteSnapshot,
       baseFiles: [{
         path: "state/lcm.sqlite",
         sha256: createHash("sha256").update(oldDb).digest("hex"),
@@ -234,14 +250,27 @@ test("offline sync includes live LCM sqlite artifacts for full-fidelity offline 
       }],
     });
 
-    assert.equal(pull.skipped, 4);
+    // Corrected apply contract (#1793 review): the apply-side view SEES the
+    // local sqlite (identical content -> no write, no conflict), the local
+    // sidecars survive (node-local guard: absence from a push-filtered
+    // snapshot is not a delete instruction), and nothing is deleted.
+    assert.equal(pull.deleted, 0);
+    assert.deepEqual(pull.conflicts, []);
     assert.equal(await readUtf8(root, "state/lcm.sqlite"), "live db");
+    assert.equal(await readUtf8(root, "state/lcm.sqlite-shm"), "live shm");
+    assert.equal(await readUtf8(root, "state/lcm.sqlite-wal"), "live wal");
 
-    await write(root, "state/lcm.sqlite-wal", "local wal churn");
+    // The push-side changeset excludes lcm.sqlite and friends so the
+    // local node never pushes the live sqlite state up.
     const changeset = await buildOfflineSyncChangeset({
       root,
       sourceId: "laptop",
-      baseFiles: snapshot.files,
+      baseFiles: [{
+        path: "facts/a.md",
+        sha256: createHash("sha256").update("alpha").digest("hex"),
+        bytes: Buffer.byteLength("alpha"),
+        mtimeMs: 0,
+      }],
     });
     assert.deepEqual(changeset.changes.map((change) => change.path), []);
   } finally {
@@ -278,24 +307,23 @@ test("offline sync includes durable runtime state and excludes only transient sy
       includeContent: true,
     });
 
+    // Issue #1786: default excludes drop state/*.sqlite*, state/index_tags.json,
+    // state/entity-mention-index.json, and state/memory-governance/runs/** from
+    // push-side enumeration. Durableremote-authoritative runtime files
+    // (last_intent.json, .artifact-write-version.log, etc.) and namespace
+    // state still ship so the remote can merge.
     assert.deepEqual(snapshot.files.map((file) => file.path), [
       "assets/state/fact-hashes.txt",
       "facts/a.md",
       "namespaces/generalist-project-origin-6ebeaa54/state/.memory-status-version.log",
-      "namespaces/generalist-project-origin-6ebeaa54/state/entity-mention-index.json",
       "namespaces/generalist-project-origin-6ebeaa54/state/last_intent.json",
       "state/.artifact-write-version.log",
       "state/.memory-status-version.log",
       "state/buffer-surprise-ledger.jsonl",
       "state/buffer.json",
       "state/embeddings.json",
-      "state/entity-mention-index.json",
-      "state/index_tags.json",
       "state/index_time.json",
       "state/memory-lifecycle-ledger.jsonl",
-      "state/memory-projection.sqlite",
-      "state/memory-projection.sqlite-shm",
-      "state/memory-projection.sqlite-wal",
       "state/recall_impressions.jsonl",
     ]);
     const focused = await buildOfflineSyncSnapshotForPaths({
@@ -335,6 +363,10 @@ test("offline sync includes durable runtime state and excludes only transient sy
       }],
     });
 
+    // 18 = the 13 durable local-only files plus the 5 node-local excluded
+    // artifacts, which the corrected apply-side view (#1793 review) now
+    // SEES and deliberately leaves untouched (counted as skipped) instead
+    // of hiding from enumeration entirely.
     assert.equal(pull.skipped, 18);
     assert.equal(await readUtf8(root, "state/memory-lifecycle-ledger.jsonl"), "ledger");
   } finally {
@@ -885,7 +917,7 @@ test("offline sync reads bounded file content chunks with metadata", async () =>
   const root = await tempDir("remnic-offline-file-content");
   try {
     await write(root, "artifacts/large.txt", "alpha\nbeta\ngamma\n");
-    await write(root, "state/lcm.sqlite", "live db");
+    await write(root, "facts/small.md", "live db");
 
     const chunk = await readOfflineSyncFileContentChunk({
       root,
@@ -900,11 +932,22 @@ test("offline sync reads bounded file content chunks with metadata", async () =>
     assert.equal(chunk.content.toString("utf-8"), "beta\n");
     assert.equal(chunk.bytes, Buffer.byteLength("alpha\nbeta\ngamma\n"));
 
-    const lcm = await readOfflineSyncFileContentChunk({
+    const factsFile = await readOfflineSyncFileContentChunk({
       root,
-      path: "state/lcm.sqlite",
+      path: "facts/small.md",
     });
-    assert.equal(lcm.content.toString("utf-8"), "live db");
+    assert.equal(factsFile.content.toString("utf-8"), "live db");
+
+    // Issue #1786: push-side default excludes state/lcm.sqlite; reading the
+    // chunk for an excluded path is rejected loudly.
+    await assert.rejects(
+      () =>
+        readOfflineSyncFileContentChunk({
+          root,
+          path: "state/lcm.sqlite",
+        }),
+      /offline sync file content path is excluded: state\/lcm\.sqlite/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1280,7 +1323,13 @@ test("offline snapshot apply preserves new local runtime files without a base", 
   }
 });
 
-test("offline snapshot apply removes current-only sqlite sidecars when absent remotely", async () => {
+test("offline snapshot apply leaves stale sqlite sidecars in place under push-side default exclude (#1786)", async () => {
+  // Issue #1786: lcm.sqlite-wal/shm are excluded from push-side enumeration
+  // because each node rebuilds its own live sqlite state. The remote never
+  // ships those sidecars, so apply cannot enumerate them as "current-only"
+  // and never issues a delete for them. The local WAL/SHM is naturally
+  // overwritten when the next lcm.sqlite reconciliation lands a fresh
+  // page and the WAL is checkpointed.
   const root = await tempDir("remnic-offline-runtime-sidecar-local-create");
   try {
     await write(root, "state/lcm.sqlite-wal", "stale local wal");
@@ -1299,19 +1348,18 @@ test("offline snapshot apply removes current-only sqlite sidecars when absent re
       baseFiles: [],
     });
 
-    assert.equal(pull.deleted, 2);
+    assert.equal(pull.deleted, 0);
     assert.equal(pull.pendingLocal, 0);
-    assert.equal(pull.skipped, 0);
+    // The corrected apply-side view (#1793 review) sees both sidecars and
+    // skips them via the node-local guard — visible-but-untouched, rather
+    // than invisible. deleted stays 0 either way.
+    assert.equal(pull.skipped, 2);
     assert.equal(pull.conflicts.length, 0);
     assert.deepEqual(pull.nextBaseFiles, []);
-    await assert.rejects(
-      () => readFile(path.join(root, "state/lcm.sqlite-wal")),
-      /ENOENT/,
-    );
-    await assert.rejects(
-      () => readFile(path.join(root, "state/lcm.sqlite-shm")),
-      /ENOENT/,
-    );
+    // Local sidecars are still on disk because the remote never asserted
+    // them and the push-side default keeps them out of enumeration.
+    assert.equal(await readUtf8(root, "state/lcm.sqlite-wal"), "stale local wal");
+    assert.equal(await readUtf8(root, "state/lcm.sqlite-shm"), "stale local shm");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -1788,19 +1836,22 @@ test("offline pull can record conflicts without hydrating oversized incoming con
   const remote = await tempDir("remnic-offline-metadata-conflict-remote");
   const local = await tempDir("remnic-offline-metadata-conflict-local");
   try {
-    await write(remote, "state/lcm.sqlite", "base");
+    // Issue #1786: live sqlite is excluded by push-side defaults, so use a
+    // regular facts path to exercise the metadata-only conflict path.
+    await write(remote, "facts/big.bin", "base");
     const initial = await buildOfflineSyncSnapshot({
       root: remote,
       sourceId: "remote",
       includeContent: true,
     });
-    const firstPull = await applyOfflineSyncSnapshot({
+    await applyOfflineSyncSnapshot({
       root: local,
       snapshot: initial,
+      baseFiles: initial.files,
     });
 
-    await write(local, "state/lcm.sqlite", "local edit");
-    await write(remote, "state/lcm.sqlite", "remote edit");
+    await write(local, "facts/big.bin", "local edit");
+    await write(remote, "facts/big.bin", "remote edit");
     const metadataOnly = await buildOfflineSyncSnapshot({
       root: remote,
       sourceId: "remote",
@@ -1810,20 +1861,23 @@ test("offline pull can record conflicts without hydrating oversized incoming con
     const secondPull = await applyOfflineSyncSnapshot({
       root: local,
       snapshot: metadataOnly,
-      baseFiles: firstPull.nextBaseFiles,
+      // Use the initial base so the apply path can detect both_modified
+      // (local edited from "base" -> "local edit", remote edited from
+      // "base" -> "remote edit").
+      baseFiles: initial.files,
       allowMissingConflictContent: true,
+      writeConflictCopies: false,
     });
 
     assert.equal(secondPull.conflicts.length, 1);
     assert.equal(secondPull.conflicts[0]?.reason, "both_modified");
     assert.equal(secondPull.conflicts[0]?.conflictPath, undefined);
-    assert.equal(await readUtf8(local, "state/lcm.sqlite"), "local edit");
+    assert.equal(await readUtf8(local, "facts/big.bin"), "local edit");
   } finally {
     await rm(remote, { recursive: true, force: true });
     await rm(local, { recursive: true, force: true });
   }
 });
-
 test("offline push preserves remote edits when both sides changed since the base", async () => {
   const remote = await tempDir("remnic-offline-push-conflict-remote");
   const local = await tempDir("remnic-offline-push-conflict-local");
@@ -2643,6 +2697,254 @@ test("offline changeset validation reports client input errors with an offline s
         }),
       /offline sync changeset invalid:/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("globToRegExp matches single-segment globs and rejects cross-segment or suffix matches (#1786)", () => {
+  const re = globToRegExp("state/*.sqlite");
+  assert.equal(re.test("state/lcm.sqlite"), true);
+  // Single `*` must stay in-segment: a nested file is NOT matched.
+  assert.equal(re.test("state/nested/lcm.sqlite"), false);
+  // Anchored to full path: trailing variants like -wal are NOT matched.
+  assert.equal(re.test("state/lcm.sqlite-wal"), false);
+});
+
+test("globToRegExp matches sqlite sidecars via the state/*.sqlite-* pattern (#1786)", () => {
+  const re = globToRegExp("state/*.sqlite-*");
+  assert.equal(re.test("state/lcm.sqlite-wal"), true);
+  assert.equal(re.test("state/lcm.sqlite-shm"), true);
+  // The bare database file is NOT matched by the sidecar pattern.
+  assert.equal(re.test("state/lcm.sqlite"), false);
+});
+
+test("globToRegExp leading **/ matches zero or more directory segments (#1786)", () => {
+  const re = globToRegExp("**/foo.md");
+  // Leading ** matches zero segments (file at the root).
+  assert.equal(re.test("foo.md"), true);
+  // And any number of intermediate segments.
+  assert.equal(re.test("a/b/foo.md"), true);
+  assert.equal(re.test("a/b/c/d/foo.md"), true);
+  // No match for an unrelated path.
+  assert.equal(re.test("bar.md"), false);
+  assert.equal(re.test("a/b/bar.md"), false);
+});
+
+test("globToRegExp escapes regex metacharacters in literal glob segments (#1786)", () => {
+  // The literal `+` in the glob must NOT act as a regex quantifier.
+  const re = globToRegExp("a+b.md");
+  assert.equal(re.test("aab.md"), false);
+  assert.equal(re.test("a+b.md"), true);
+});
+
+test("globToRegExp rejects empty input and strings containing NUL (#1786)", () => {
+  assert.throws(() => globToRegExp(""), /non-empty string/);
+  assert.throws(() => globToRegExp("state/with\0nul"), /NUL bytes/);
+});
+
+test("globToRegExp treats ** as cross-segment in trailing and embedded positions (#1786 review)", () => {
+  // Trailing `dir/**` must exclude the whole subtree, matching the
+  // offline-mode guide's `scratch/**` example (Cursor review, PR #1793).
+  const trailing = globToRegExp("scratch/**");
+  assert.equal(trailing.test("scratch/a.md"), true);
+  assert.equal(trailing.test("scratch/a/b.md"), true);
+  assert.equal(trailing.test("scratch"), false);
+  assert.equal(trailing.test("other/scratch/a.md"), false);
+  // Embedded `a/**/b` spans any depth (including zero extra segments).
+  const embedded = globToRegExp("state/**/runs.json");
+  assert.equal(embedded.test("state/runs.json"), true);
+  assert.equal(embedded.test("state/a/runs.json"), true);
+  assert.equal(embedded.test("state/a/b/runs.json"), true);
+  assert.equal(embedded.test("state/a/b/other.json"), false);
+});
+
+test("default excludes cover per-namespace state dirs (#1793 review)", () => {
+  const sqlite = globToRegExp("**/state/*.sqlite");
+  assert.equal(sqlite.test("state/lcm.sqlite"), true);
+  assert.equal(sqlite.test("namespaces/team-a/state/lcm.sqlite"), true);
+  assert.equal(sqlite.test("facts/lcm.sqlite"), false);
+});
+
+test("apply-side local enumeration sees node-local state via excludeNodeLocalState=false (#1793 review)", async () => {
+  const root = await tempDir("remnic-offline-apply-view");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/lcm.sqlite", "live db");
+    const pushView = await buildOfflineSyncSnapshot({ root, sourceId: "local", includeContent: false });
+    assert.deepEqual(pushView.files.map((f) => f.path), ["facts/a.md"]);
+    const applyView = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "local",
+      includeContent: false,
+      excludeNodeLocalState: false,
+    });
+    assert.deepEqual(applyView.files.map((f) => f.path), ["facts/a.md", "state/lcm.sqlite"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("applyOfflineSyncChangeset accepts an incoming node-local state upsert without currentFiles (#1793 review)", async () => {
+  // Forces the internal buildOfflineSyncSnapshotForPaths local enumeration:
+  // with push-side excludes it would THROW "path is excluded" and fail the
+  // whole apply. Apply-side must stay permissive.
+  const root = await tempDir("remnic-offline-apply-state-upsert");
+  try {
+    const content = Buffer.from("incoming durable sqlite", "utf-8");
+    const result = await applyOfflineSyncChangeset({
+      root,
+      changeset: {
+        format: "remnic.offline-sync.changeset.v1",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "laptop",
+        includeTranscripts: true,
+        changes: [
+          {
+            type: "upsert",
+            path: "state/lcm.sqlite",
+            file: {
+              path: "state/lcm.sqlite",
+              sha256: createHash("sha256").update(content).digest("hex"),
+              bytes: content.length,
+              mtimeMs: Date.now(),
+              contentBase64: content.toString("base64"),
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(result.appliedUpserts, 1);
+    assert.equal(await readUtf8(root, "state/lcm.sqlite"), "incoming durable sqlite");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("buildOfflineSyncChangesetFromSnapshot honors excludePaths for 3-strikes skipped files (#1793 review)", async () => {
+  const root = await tempDir("remnic-offline-changeset-skip");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "facts/huge.md", "huge changed content");
+    const current = await buildOfflineSyncSnapshot({ root, sourceId: "local", includeContent: false });
+    const changeset = await buildOfflineSyncChangesetFromSnapshot({
+      root,
+      sourceId: "local",
+      currentFiles: current.files,
+      baseFiles: [],
+      excludePaths: ["facts/huge.md"],
+    });
+    // The skipped file must not ride the inline changeset path.
+    assert.deepEqual(changeset.changes.map((c) => c.path), ["facts/a.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("buildOfflineSyncSnapshotForPaths deduplicates repeated request paths (#1786 review)", async () => {
+  const root = await tempDir("remnic-offline-forpaths-dedup");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    const snapshot = await buildOfflineSyncSnapshotForPaths({
+      root,
+      sourceId: "remote",
+      paths: ["facts/a.md", "facts/a.md", "facts/a.md"],
+      includeContent: false,
+    });
+    // Duplicate entries in paths[] must yield exactly one record —
+    // the seen-set add was dropped in an earlier refactor (Cursor
+    // review, PR #1793) and produced duplicate file records.
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("compileOfflineSyncExcludeGlobs throws on non-string / empty entries and accepts empty input (#1786)", () => {
+  assert.throws(() => compileOfflineSyncExcludeGlobs([42]), /non-empty strings/);
+  assert.throws(() => compileOfflineSyncExcludeGlobs([""]), /non-empty strings/);
+  assert.deepEqual(compileOfflineSyncExcludeGlobs([]), []);
+});
+
+test("buildOfflineSyncSnapshot excludes all default #1786 push-side runtime state artifacts", async () => {
+  const root = await tempDir("remnic-offline-default-exclude-1786");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/lcm.sqlite", "live db");
+    await write(root, "state/lcm.sqlite-wal", "live wal");
+    await write(root, "state/index_tags.json", "tags");
+    await write(root, "state/entity-mention-index.json", "entities");
+    await mkdir(path.join(root, "state/memory-governance/runs"), { recursive: true });
+    await writeFile(path.join(root, "state/memory-governance/runs/r1.json"), "run");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+    });
+
+    const paths = snapshot.files.map((file) => file.path);
+    // Only the source-of-truth fact ships; every default-excluded state
+    // artifact is gone from push-side enumeration.
+    assert.deepEqual(paths, ["facts/a.md"]);
+    // And the excluded paths are individually absent — guard against
+    // accidentally re-introducing one of them via a future code path.
+    for (const excluded of [
+      "state/lcm.sqlite",
+      "state/lcm.sqlite-wal",
+      "state/index_tags.json",
+      "state/entity-mention-index.json",
+      "state/memory-governance/runs/r1.json",
+    ]) {
+      assert.equal(paths.includes(excluded), false, `unexpectedly included: ${excluded}`);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("buildOfflineSyncSnapshot honors userExcludeRegexps additively over default excludes (#1786)", async () => {
+  const root = await tempDir("remnic-offline-user-exclude-1786");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "notes/secret.md", "do not sync");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+      userExcludeRegexps: compileOfflineSyncExcludeGlobs(["notes/**"]),
+    });
+
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("buildOfflineSyncSnapshotFromBase honors userExcludeRegexps on the fast-base path (#1786)", async () => {
+  const root = await tempDir("remnic-offline-user-exclude-fast-base-1786");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "notes/secret.md", "do not sync");
+
+    const baseSnapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: false,
+    });
+
+    const next = await buildOfflineSyncSnapshotFromBase({
+      root,
+      sourceId: "remote",
+      baseFiles: baseSnapshot.files,
+      baseCapturedAt: new Date(),
+      includeContent: false,
+      userExcludeRegexps: compileOfflineSyncExcludeGlobs(["notes/**"]),
+    });
+
+    assert.deepEqual(next.files.map((file) => file.path), ["facts/a.md"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

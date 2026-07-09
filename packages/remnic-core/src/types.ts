@@ -2134,6 +2134,15 @@ export interface PluginConfig {
    * memoryDir: go up to the Remnic home dir and append memory_extensions.
    */
   memoryExtensionsRoot: string;
+
+  // Offline sync excludes (#1786)
+  /**
+   * Operator-supplied glob patterns (relative to the memory dir, `*` and
+   * `**` supported) excluded from offline-sync push-side enumeration IN
+   * ADDITION to the built-in node-local state excludes. Validated at
+   * config parse time; invalid entries reject the config loudly.
+   */
+  offlineSyncExcludes: string[];
 }
 
 /** Runtime configuration for the daily context briefing feature. */

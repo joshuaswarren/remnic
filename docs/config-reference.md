@@ -1112,6 +1112,7 @@ in recall responses. See [Threat model](security/memory-extraction-threat-model.
 | `recallAuditAnomalyHighCardinalityLimit` | `50` | Max candidate memory IDs in a single recall response before high-cardinality flag |
 | `recallAuditAnomalyRapidFireLimit` | `30` | Max queries in window before rapid-fire flag |
 | `memoryExtensionsRoot` | `""` | Override memory extensions root directory |
+| `offlineSyncExcludes` | `[]` | Extra offline-sync push-side exclude globs, additive to the built-in node-local state excludes (issue #1786) |
 
 
 ## Schema-Complete Default and Recommended Settings
@@ -1646,3 +1647,4 @@ This appendix is flattened from the runtime config schema and the live `parseCon
 | `codexMarketplaceEnabled` | `true` | `true` |
 | `memoryExtensionsEnabled` | `true` | `true` |
 | `memoryExtensionsRoot` | `""` | `""` |
+| `offlineSyncExcludes` | `[]` | `[]` |

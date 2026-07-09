@@ -50,6 +50,7 @@ import { parseProvenanceConfig } from "./provenance.js";
 import { parseCodingKnowledgeConfig } from "./coding/coding-knowledge-config.js";
 import { parseChatConfig } from "./chat/chat-config.js";
 import { parseCorrectionIntentConfig, parseFaithfulnessGateConfig } from "./faithfulness-config.js";
+import { parseOfflineSyncExcludes } from "./offline-sync.js";
 const DEFAULT_MEMORY_DIR = path.join(
   resolveHomeDir(),
   ".openclaw",
@@ -4230,6 +4231,10 @@ export function parseConfig(
       typeof cfg.memoryExtensionsRoot === "string" && cfg.memoryExtensionsRoot.trim().length > 0
         ? expandTildePath(cfg.memoryExtensionsRoot.trim())
         : "",
+
+    // Offline sync excludes (#1786) — validated below (parseOfflineSyncExcludes
+    // throws on non-array / non-string / empty entries and on invalid globs).
+    offlineSyncExcludes: parseOfflineSyncExcludes(cfg.offlineSyncExcludes),
   };
 }
 
