@@ -1048,7 +1048,11 @@ export async function readOfflineSyncFileContentChunk(options: {
   const root = await prepareSafeArchiveRoot(rootAbs, "readOfflineSyncFileContentChunk", "root");
   const includeTranscripts = options.includeTranscripts !== false;
   const relPath = normalizeRelativePath(options.path, "path");
-  if (shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) {
+  if (
+    options.excludeNodeLocalState === false
+      ? shouldExcludeRelPath(relPath, includeTranscripts)
+      : shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps)
+  ) {
     throw new Error(`offline sync file content path is excluded: ${relPath}`);
   }
   const offset = options.offset === undefined

@@ -8337,6 +8337,10 @@ export async function runOfflineSyncOnce(options: {
     resolvedNamespace: resolvedOfflineSnapshotNamespace(remoteSnapshotMetadata, syncNamespace),
     remoteFileCount: remoteSnapshotMetadata.files.length,
   };
+  // Apply-side local view (#1793 review, High): must see node-local state
+  // (state/lcm.sqlite etc.) or incoming upserts misclassify as
+  // local_deleted_remote_modified. Never reuse the push-filtered snapshot
+  // for apply.
   const buildCurrentSnapshotForApply = async (): Promise<typeof currentSnapshot> => buildOfflineSyncSnapshotFromBase({
     root: options.memoryDir,
     sourceId: localSourceId,
@@ -8346,10 +8350,9 @@ export async function runOfflineSyncOnce(options: {
     includeTranscripts: options.includeTranscripts,
     readFile: storageIo.readFile,
     readFileDigest: storageIo.readFileDigest,
+    excludeNodeLocalState: false,
   });
-  const applyCurrentSnapshot = directHydratedPaths.size > 0
-    ? await buildCurrentSnapshotForApply()
-    : currentSnapshot;
+  const applyCurrentSnapshot = await buildCurrentSnapshotForApply();
   let remoteSnapshot: Awaited<ReturnType<typeof hydrateOfflineSnapshotContent>>;
   try {
     remoteSnapshot = await hydrateOfflineSnapshotContent({
