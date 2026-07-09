@@ -27,8 +27,10 @@ test("ingestReplayBatch enqueues replay slices without clearing shared buffer", 
     /for \(const sessionSlice of splitTurnsBySourceValidAt\(sessionTurns\)\) \{[\s\S]*bufferKey:\s*key,[\s\S]*targetValidAtMs:\s*targetSourceValidAtSortMs\(sessionSlice\),[\s\S]*\.sort\(\(a, b\) => \{[\s\S]*\.map\(\s*\(\{ bufferKey, turns: sessionSlice \}\) =>[\s\S]*skipDedupeCheck:\s*true,[\s\S]*clearBufferAfterExtraction:\s*false,[\s\S]*skipCharThreshold:\s*true,[\s\S]*skipUserTurnThreshold:\s*true,[\s\S]*bufferKey,/m,
     "replay ingestion should globally order source slices while preserving the session-specific buffer key and threshold bypasses",
   );
+  // #1526 seam 25: module-level replay helpers moved to
+  // orchestration/orchestrator-helpers.ts.
   const orchestratorSource = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "orchestrator-helpers.ts"),
     "utf-8",
   );
   assert.match(

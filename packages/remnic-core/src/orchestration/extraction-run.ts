@@ -44,7 +44,6 @@ import {
   type GraphConstructionCapabilitySet,
   type MemoryLifecycleCapabilitySet,
 } from "../capabilities.js";
-import { throwIfAborted as sharedThrowIfAborted, abortError as sharedAbortError } from "../abort-error.js";
 import { parseFlexibleIsoTimestamp } from "../utils/iso-timestamp.js";
 import { log } from "../logger.js";
 import type {
@@ -122,39 +121,10 @@ export interface ExtractionRunCoordinatorDeps {
   ) => Promise<void>;
 }
 
-// Recall/extraction-specific abort helpers. Thin wrappers over the shared
-// `abort-error.ts` module.
-const abortRecallError = sharedAbortError;
-
-function throwIfRecallAborted(
-  signal?: AbortSignal,
-  message = "recall aborted",
-): void {
-  sharedThrowIfAborted(signal, message);
-}
-
-async function raceRecallAbort<T>(
-  promise: Promise<T>,
-  signal?: AbortSignal,
-  message = "recall aborted",
-): Promise<T> {
-  throwIfRecallAborted(signal, message);
-  if (!signal) return promise;
-
-  let onAbort: (() => void) | null = null;
-  const abortPromise = new Promise<T>((_resolve, reject) => {
-    onAbort = () => reject(abortRecallError(message));
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-
-  try {
-    return await Promise.race([promise, abortPromise]);
-  } finally {
-    if (onAbort) {
-      signal.removeEventListener("abort", onAbort);
-    }
-  }
-}
+// Recall/extraction abort helpers live in orchestrator-helpers.ts since
+// #1526 seam 25; this file previously carried duplicate copies
+// (AGENTS.md rule 8 — no duplicated helpers).
+import { raceRecallAbort, throwIfRecallAborted } from "./orchestrator-helpers.js";
 
 export function deriveTopicsFromExtraction(result: ExtractionResult): string[] {
   const topics = new Set<string>();
