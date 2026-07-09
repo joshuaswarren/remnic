@@ -110,16 +110,18 @@ test("buildGraphEdge does not reload thread file per memory write", () => {
 });
 
 test("persisted path resolution does not call getMemoryById in per-fact write flow", () => {
+  // #1526 seam 25: module-level helpers moved to
+  // orchestration/orchestrator-helpers.ts.
   const source = readFileSync(
-    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestrator.ts"),
+    resolve(import.meta.dirname, "..", "packages", "remnic-core", "src", "orchestration", "orchestrator-helpers.ts"),
     "utf-8",
   );
   const helperMatch = source.match(
-    /export function resolvePersistedMemoryRelativePath\([\s\S]*?\n\}\n\nexport class Orchestrator/m,
+    /export function resolvePersistedMemoryRelativePath\([\s\S]*?\n\}/m,
   );
   assert.ok(
     helperMatch,
-    "expected resolvePersistedMemoryRelativePath helper in orchestrator.ts",
+    "expected resolvePersistedMemoryRelativePath helper in orchestrator-helpers.ts",
   );
   const helperSource = helperMatch[0];
 
