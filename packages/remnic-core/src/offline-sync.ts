@@ -583,6 +583,34 @@ export function compileOfflineSyncExcludeGlobs(
   return out;
 }
 
+/**
+ * Validate the operator-supplied offline-sync exclude list (#1786).
+ * Rejects loudly instead of silently defaulting (CLAUDE.md rule 39):
+ * a misspelled key value must fail config parse, not be ignored.
+ * Lives next to the glob compiler so config.ts only carries the call.
+ */
+export function parseOfflineSyncExcludes(raw: unknown): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error(
+      `offlineSyncExcludes must be an array of non-empty glob strings; got ${typeof raw}`,
+    );
+  }
+  for (const entry of raw) {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
+      throw new Error(
+        "offlineSyncExcludes must contain only non-empty glob strings",
+      );
+    }
+  }
+  const globs = raw.map((entry) => (entry as string).trim());
+  // Compile-check every glob now so a bad pattern fails at parse time
+  // rather than mid-sync. compileOfflineSyncExcludeGlobs throws with a
+  // per-entry message.
+  compileOfflineSyncExcludeGlobs(globs);
+  return globs;
+}
+
 function shouldIgnoreIncomingRuntimePath(relPosix: string): boolean {
   const parts = relPosix.split("/");
   const basename = parts[parts.length - 1] ?? "";
