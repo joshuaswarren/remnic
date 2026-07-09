@@ -213,10 +213,11 @@ const DEFAULT_OFFLINE_SYNC_EXCLUDE_GLOBS: readonly string[] = [
  * Convert a tiny subset of glob syntax (`*`, `**`, `?`, literal text) into a
  * regular expression anchored at the start and end of the input. The matcher
  * is intentionally narrow — it is only used for operator-supplied
- * `offlineSyncExcludes` entries, not for full shell-style globbing. A leading
- * `star-star-slash` at the start matches zero or more path segments so `state/*.sqlite` does not need
- * to also accept `state/nested/*.sqlite`. Any other `**` is treated as `*` so
- * callers do not get surprising partial matches.
+ * `offlineSyncExcludes` entries, not for full shell-style globbing.
+ * `*` and `?` match within a single path segment. `**` is cross-segment
+ * wherever it appears: a `star-star-slash` prefix (leading or embedded)
+ * matches zero or more whole segments, and a trailing `dir/star-star`
+ * matches everything under `dir/` at any depth.
  */
 export function globToRegExp(glob: string): RegExp {
   if (typeof glob !== "string" || glob.length === 0) {
@@ -230,12 +231,18 @@ export function globToRegExp(glob: string): RegExp {
     const ch = glob[i];
     if (ch === "*") {
       if (glob[i + 1] === "*") {
-        if (glob[i + 2] === "/" && i === 0) {
+        // `**` is cross-segment wherever it appears:
+        //   leading `**/`  -> zero or more whole segments
+        //   `/**` at end   -> everything under the directory
+        //   `a/**/b`       -> any depth between segments
+        // (Cursor review on PR #1793: trailing `scratch/**` must match
+        // nested `scratch/a/b.md`, matching the offline-mode guide.)
+        if (glob[i + 2] === "/") {
           source += "(?:.*/)?";
           i += 2;
           continue;
         }
-        source += "[^/]*";
+        source += ".*";
         i += 1;
         continue;
       }
@@ -935,6 +942,7 @@ export async function buildOfflineSyncSnapshotForPaths(options: {
     throwIfOfflineSyncAborted(options.signal);
     const relPath = normalizeRelativePath(rawPath, "paths[]");
     if (seen.has(relPath)) continue;
+    seen.add(relPath);
     if (shouldExcludePushRelPath(relPath, includeTranscripts, options.userExcludeRegexps)) {
       throw new Error(`offline sync snapshot path is excluded: ${relPath}`);
     }

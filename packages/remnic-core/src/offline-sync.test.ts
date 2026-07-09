@@ -2730,6 +2730,41 @@ test("globToRegExp rejects empty input and strings containing NUL (#1786)", () =
   assert.throws(() => globToRegExp("state/with\0nul"), /NUL bytes/);
 });
 
+test("globToRegExp treats ** as cross-segment in trailing and embedded positions (#1786 review)", () => {
+  // Trailing `dir/**` must exclude the whole subtree, matching the
+  // offline-mode guide's `scratch/**` example (Cursor review, PR #1793).
+  const trailing = globToRegExp("scratch/**");
+  assert.equal(trailing.test("scratch/a.md"), true);
+  assert.equal(trailing.test("scratch/a/b.md"), true);
+  assert.equal(trailing.test("scratch"), false);
+  assert.equal(trailing.test("other/scratch/a.md"), false);
+  // Embedded `a/**/b` spans any depth (including zero extra segments).
+  const embedded = globToRegExp("state/**/runs.json");
+  assert.equal(embedded.test("state/runs.json"), true);
+  assert.equal(embedded.test("state/a/runs.json"), true);
+  assert.equal(embedded.test("state/a/b/runs.json"), true);
+  assert.equal(embedded.test("state/a/b/other.json"), false);
+});
+
+test("buildOfflineSyncSnapshotForPaths deduplicates repeated request paths (#1786 review)", async () => {
+  const root = await tempDir("remnic-offline-forpaths-dedup");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    const snapshot = await buildOfflineSyncSnapshotForPaths({
+      root,
+      sourceId: "remote",
+      paths: ["facts/a.md", "facts/a.md", "facts/a.md"],
+      includeContent: false,
+    });
+    // Duplicate entries in paths[] must yield exactly one record —
+    // the seen-set add was dropped in an earlier refactor (Cursor
+    // review, PR #1793) and produced duplicate file records.
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("compileOfflineSyncExcludeGlobs throws on non-string / empty entries and accepts empty input (#1786)", () => {
   assert.throws(() => compileOfflineSyncExcludeGlobs([42]), /non-empty strings/);
   assert.throws(() => compileOfflineSyncExcludeGlobs([""]), /non-empty strings/);
