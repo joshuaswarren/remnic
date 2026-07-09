@@ -14,6 +14,8 @@ import {
   buildOfflineSyncSnapshot,
   buildOfflineSyncSnapshotFromBase,
   buildOfflineSyncSnapshotForPaths,
+  compileOfflineSyncExcludeGlobs,
+  globToRegExp,
   OFFLINE_SYNC_MAX_MTIME_MS,
   readOfflineSyncFileContentChunk,
   shouldPreferIncomingOfflineRuntimeFile,
@@ -2682,6 +2684,136 @@ test("offline changeset validation reports client input errors with an offline s
         }),
       /offline sync changeset invalid:/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("globToRegExp matches single-segment globs and rejects cross-segment or suffix matches (#1786)", () => {
+  const re = globToRegExp("state/*.sqlite");
+  assert.equal(re.test("state/lcm.sqlite"), true);
+  // Single `*` must stay in-segment: a nested file is NOT matched.
+  assert.equal(re.test("state/nested/lcm.sqlite"), false);
+  // Anchored to full path: trailing variants like -wal are NOT matched.
+  assert.equal(re.test("state/lcm.sqlite-wal"), false);
+});
+
+test("globToRegExp matches sqlite sidecars via the state/*.sqlite-* pattern (#1786)", () => {
+  const re = globToRegExp("state/*.sqlite-*");
+  assert.equal(re.test("state/lcm.sqlite-wal"), true);
+  assert.equal(re.test("state/lcm.sqlite-shm"), true);
+  // The bare database file is NOT matched by the sidecar pattern.
+  assert.equal(re.test("state/lcm.sqlite"), false);
+});
+
+test("globToRegExp leading **/ matches zero or more directory segments (#1786)", () => {
+  const re = globToRegExp("**/foo.md");
+  // Leading ** matches zero segments (file at the root).
+  assert.equal(re.test("foo.md"), true);
+  // And any number of intermediate segments.
+  assert.equal(re.test("a/b/foo.md"), true);
+  assert.equal(re.test("a/b/c/d/foo.md"), true);
+  // No match for an unrelated path.
+  assert.equal(re.test("bar.md"), false);
+  assert.equal(re.test("a/b/bar.md"), false);
+});
+
+test("globToRegExp escapes regex metacharacters in literal glob segments (#1786)", () => {
+  // The literal `+` in the glob must NOT act as a regex quantifier.
+  const re = globToRegExp("a+b.md");
+  assert.equal(re.test("aab.md"), false);
+  assert.equal(re.test("a+b.md"), true);
+});
+
+test("globToRegExp rejects empty input and strings containing NUL (#1786)", () => {
+  assert.throws(() => globToRegExp(""), /non-empty string/);
+  assert.throws(() => globToRegExp("state/with\0nul"), /NUL bytes/);
+});
+
+test("compileOfflineSyncExcludeGlobs throws on non-string / empty entries and accepts empty input (#1786)", () => {
+  assert.throws(() => compileOfflineSyncExcludeGlobs([42]), /non-empty strings/);
+  assert.throws(() => compileOfflineSyncExcludeGlobs([""]), /non-empty strings/);
+  assert.deepEqual(compileOfflineSyncExcludeGlobs([]), []);
+});
+
+test("buildOfflineSyncSnapshot excludes all default #1786 push-side runtime state artifacts", async () => {
+  const root = await tempDir("remnic-offline-default-exclude-1786");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/lcm.sqlite", "live db");
+    await write(root, "state/lcm.sqlite-wal", "live wal");
+    await write(root, "state/index_tags.json", "tags");
+    await write(root, "state/entity-mention-index.json", "entities");
+    await mkdir(path.join(root, "state/memory-governance/runs"), { recursive: true });
+    await writeFile(path.join(root, "state/memory-governance/runs/r1.json"), "run");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+    });
+
+    const paths = snapshot.files.map((file) => file.path);
+    // Only the source-of-truth fact ships; every default-excluded state
+    // artifact is gone from push-side enumeration.
+    assert.deepEqual(paths, ["facts/a.md"]);
+    // And the excluded paths are individually absent — guard against
+    // accidentally re-introducing one of them via a future code path.
+    for (const excluded of [
+      "state/lcm.sqlite",
+      "state/lcm.sqlite-wal",
+      "state/index_tags.json",
+      "state/entity-mention-index.json",
+      "state/memory-governance/runs/r1.json",
+    ]) {
+      assert.equal(paths.includes(excluded), false, `unexpectedly included: ${excluded}`);
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("buildOfflineSyncSnapshot honors userExcludeRegexps additively over default excludes (#1786)", async () => {
+  const root = await tempDir("remnic-offline-user-exclude-1786");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "notes/secret.md", "do not sync");
+
+    const snapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: true,
+      userExcludeRegexps: compileOfflineSyncExcludeGlobs(["notes/**"]),
+    });
+
+    assert.deepEqual(snapshot.files.map((file) => file.path), ["facts/a.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("buildOfflineSyncSnapshotFromBase honors userExcludeRegexps on the fast-base path (#1786)", async () => {
+  const root = await tempDir("remnic-offline-user-exclude-fast-base-1786");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "notes/secret.md", "do not sync");
+
+    const baseSnapshot = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "remote",
+      includeContent: false,
+    });
+
+    const next = await buildOfflineSyncSnapshotFromBase({
+      root,
+      sourceId: "remote",
+      baseFiles: baseSnapshot.files,
+      baseCapturedAt: new Date(),
+      includeContent: false,
+      userExcludeRegexps: compileOfflineSyncExcludeGlobs(["notes/**"]),
+    });
+
+    assert.deepEqual(next.files.map((file) => file.path), ["facts/a.md"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
