@@ -27,7 +27,7 @@ import type { LastRecallSnapshot } from "./recall-state.js";
 import { type TagMatchMode, applyTagFilter, normalizeTags, parseTagMatch } from "./recall-tag-filter.js";
 import { type RecallXraySnapshot, estimateRecallTokens } from "./recall-xray.js";
 import { SecureStoreLockedError } from "./secure-store/index.js";
-import { StorageManager } from "./storage.js";
+import { StorageManager } from "./index.js";
 import { DEFAULT_RECALL_DISCLOSURE, type MemoryFile, type RecallDisclosure, type RecallPlanMode, isRecallDisclosure } from "./types.js";
 import {
   EngramAccessInputError,
