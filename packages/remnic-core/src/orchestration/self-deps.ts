@@ -33,6 +33,13 @@ export function selfDeps<T extends object>(self: object): T {
         : value;
     },
     set(_target, prop, value) {
+      // Fail fast on writes to properties the orchestrator does not
+      // declare (Kilo review on PR #1801): returning false makes the
+      // assignment throw a TypeError in strict mode, matching the
+      // error-safety of the hand-written accessor blocks this factory
+      // replaced. Legitimate gate-field writes (deferredReady,
+      // lastXraySnapshot, …) all target existing members.
+      if (!((prop as string) in source)) return false;
       source[prop as string] = value;
       return true;
     },
