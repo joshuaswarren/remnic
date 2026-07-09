@@ -250,8 +250,15 @@ test("offline sync push-side default excludes live LCM sqlite but apply-side sti
       }],
     });
 
-    assert.equal(pull.skipped, 1);
+    // Corrected apply contract (#1793 review): the apply-side view SEES the
+    // local sqlite (identical content -> no write, no conflict), the local
+    // sidecars survive (node-local guard: absence from a push-filtered
+    // snapshot is not a delete instruction), and nothing is deleted.
+    assert.equal(pull.deleted, 0);
+    assert.deepEqual(pull.conflicts, []);
     assert.equal(await readUtf8(root, "state/lcm.sqlite"), "live db");
+    assert.equal(await readUtf8(root, "state/lcm.sqlite-shm"), "live shm");
+    assert.equal(await readUtf8(root, "state/lcm.sqlite-wal"), "live wal");
 
     // The push-side changeset excludes lcm.sqlite and friends so the
     // local node never pushes the live sqlite state up.
@@ -309,7 +316,6 @@ test("offline sync includes durable runtime state and excludes only transient sy
       "assets/state/fact-hashes.txt",
       "facts/a.md",
       "namespaces/generalist-project-origin-6ebeaa54/state/.memory-status-version.log",
-      "namespaces/generalist-project-origin-6ebeaa54/state/entity-mention-index.json",
       "namespaces/generalist-project-origin-6ebeaa54/state/last_intent.json",
       "state/.artifact-write-version.log",
       "state/.memory-status-version.log",
@@ -357,7 +363,11 @@ test("offline sync includes durable runtime state and excludes only transient sy
       }],
     });
 
-    assert.equal(pull.skipped, 13);
+    // 18 = the 13 durable local-only files plus the 5 node-local excluded
+    // artifacts, which the corrected apply-side view (#1793 review) now
+    // SEES and deliberately leaves untouched (counted as skipped) instead
+    // of hiding from enumeration entirely.
+    assert.equal(pull.skipped, 18);
     assert.equal(await readUtf8(root, "state/memory-lifecycle-ledger.jsonl"), "ledger");
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -1340,7 +1350,10 @@ test("offline snapshot apply leaves stale sqlite sidecars in place under push-si
 
     assert.equal(pull.deleted, 0);
     assert.equal(pull.pendingLocal, 0);
-    assert.equal(pull.skipped, 0);
+    // The corrected apply-side view (#1793 review) sees both sidecars and
+    // skips them via the node-local guard — visible-but-untouched, rather
+    // than invisible. deleted stays 0 either way.
+    assert.equal(pull.skipped, 2);
     assert.equal(pull.conflicts.length, 0);
     assert.deepEqual(pull.nextBaseFiles, []);
     // Local sidecars are still on disk because the remote never asserted
@@ -2744,6 +2757,89 @@ test("globToRegExp treats ** as cross-segment in trailing and embedded positions
   assert.equal(embedded.test("state/a/runs.json"), true);
   assert.equal(embedded.test("state/a/b/runs.json"), true);
   assert.equal(embedded.test("state/a/b/other.json"), false);
+});
+
+test("default excludes cover per-namespace state dirs (#1793 review)", () => {
+  const sqlite = globToRegExp("**/state/*.sqlite");
+  assert.equal(sqlite.test("state/lcm.sqlite"), true);
+  assert.equal(sqlite.test("namespaces/team-a/state/lcm.sqlite"), true);
+  assert.equal(sqlite.test("facts/lcm.sqlite"), false);
+});
+
+test("apply-side local enumeration sees node-local state via excludeNodeLocalState=false (#1793 review)", async () => {
+  const root = await tempDir("remnic-offline-apply-view");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "state/lcm.sqlite", "live db");
+    const pushView = await buildOfflineSyncSnapshot({ root, sourceId: "local", includeContent: false });
+    assert.deepEqual(pushView.files.map((f) => f.path), ["facts/a.md"]);
+    const applyView = await buildOfflineSyncSnapshot({
+      root,
+      sourceId: "local",
+      includeContent: false,
+      excludeNodeLocalState: false,
+    });
+    assert.deepEqual(applyView.files.map((f) => f.path), ["facts/a.md", "state/lcm.sqlite"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("applyOfflineSyncChangeset accepts an incoming node-local state upsert without currentFiles (#1793 review)", async () => {
+  // Forces the internal buildOfflineSyncSnapshotForPaths local enumeration:
+  // with push-side excludes it would THROW "path is excluded" and fail the
+  // whole apply. Apply-side must stay permissive.
+  const root = await tempDir("remnic-offline-apply-state-upsert");
+  try {
+    const content = Buffer.from("incoming durable sqlite", "utf-8");
+    const result = await applyOfflineSyncChangeset({
+      root,
+      changeset: {
+        format: "remnic.offline-sync.changeset.v1",
+        schemaVersion: 1,
+        createdAt: new Date().toISOString(),
+        sourceId: "laptop",
+        includeTranscripts: true,
+        changes: [
+          {
+            type: "upsert",
+            path: "state/lcm.sqlite",
+            file: {
+              path: "state/lcm.sqlite",
+              sha256: createHash("sha256").update(content).digest("hex"),
+              bytes: content.length,
+              mtimeMs: Date.now(),
+              contentBase64: content.toString("base64"),
+            },
+          },
+        ],
+      },
+    });
+    assert.equal(result.appliedUpserts, 1);
+    assert.equal(await readUtf8(root, "state/lcm.sqlite"), "incoming durable sqlite");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("buildOfflineSyncChangesetFromSnapshot honors excludePaths for 3-strikes skipped files (#1793 review)", async () => {
+  const root = await tempDir("remnic-offline-changeset-skip");
+  try {
+    await write(root, "facts/a.md", "alpha");
+    await write(root, "facts/huge.md", "huge changed content");
+    const current = await buildOfflineSyncSnapshot({ root, sourceId: "local", includeContent: false });
+    const changeset = await buildOfflineSyncChangesetFromSnapshot({
+      root,
+      sourceId: "local",
+      currentFiles: current.files,
+      baseFiles: [],
+      excludePaths: ["facts/huge.md"],
+    });
+    // The skipped file must not ride the inline changeset path.
+    assert.deepEqual(changeset.changes.map((c) => c.path), ["facts/a.md"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("buildOfflineSyncSnapshotForPaths deduplicates repeated request paths (#1786 review)", async () => {

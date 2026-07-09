@@ -8183,7 +8183,15 @@ export async function runOfflineSyncOnce(options: {
         sourceId: localSourceId,
         currentFiles: currentSnapshotForChangeset.files,
         baseFiles,
-        excludePaths: [...directPushedPaths, ...directPushDeferredPaths],
+        // 3-strikes skipped large files must be excluded here too — the
+        // direct-push loop skips them, but without this line the changeset
+        // path would still try to upsert them inline (Cursor review, PR
+        // #1793, High severity).
+        excludePaths: [
+          ...directPushedPaths,
+          ...directPushDeferredPaths,
+          ...(options.skipLargeFilePaths ?? []),
+        ],
         includeTranscripts: options.includeTranscripts,
         readFile: storageIo.readFile,
         userExcludeRegexps: options.userExcludeRegexps,

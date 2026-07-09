@@ -129,12 +129,15 @@ Each node also rebuilds some runtime state from synced records, so the push
 side never sends these paths (issue #1786):
 
 ```text
-state/*.sqlite
-state/*.sqlite-*          # -wal / -shm sidecars
-state/index_tags.json
-state/entity-mention-index.json
-state/memory-governance/runs/**
+**/state/*.sqlite
+**/state/*.sqlite-*          # -wal / -shm sidecars
+**/state/index_tags.json
+**/state/entity-mention-index.json
+**/state/memory-governance/runs/**
 ```
+
+The leading `**/` means each pattern covers both the root `state/` directory
+and per-namespace `namespaces/<name>/state/` directories.
 
 Pushing a live SQLite database risks corrupting the receiving daemon's LCM
 store and previously put the watcher into a permanent large-file retry loop.
