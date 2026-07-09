@@ -987,41 +987,53 @@ export class Orchestrator {
     sessionKey?: string,
     principalOverride?: string,
   ): string {
-    return this.sessionContextCoordinator.lcmReadNamespaceForSession(
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).lcmReadNamespaceForSession(
       sessionKey,
       principalOverride,
     );
   }
 
   setCodingContextForSession(sessionKey: string, codingContext: CodingContext | null): void {
-    return this.sessionContextCoordinator.setCodingContextForSession(
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).setCodingContextForSession(
       sessionKey,
       codingContext,
     );
   }
 
   getCodingContextForSession(sessionKey: string | undefined): CodingContext | null {
-    return this.sessionContextCoordinator.getCodingContextForSession(
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).getCodingContextForSession(
       sessionKey,
     );
   }
 
   applyCodingNamespaceOverlay(sessionKey: string | undefined, baseNamespace: string): string {
-    return this.sessionContextCoordinator.applyCodingNamespaceOverlay(
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).applyCodingNamespaceOverlay(
       sessionKey,
       baseNamespace,
     );
   }
 
   setPeerIdForSession(sessionKey: string, peerId: string | null): void {
-    return this.sessionContextCoordinator.setPeerIdForSession(
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).setPeerIdForSession(
       sessionKey,
       peerId,
     );
   }
 
   getPeerIdForSession(sessionKey: string | undefined): string | null {
-    return this.sessionContextCoordinator.getPeerIdForSession(
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).getPeerIdForSession(
       sessionKey,
     );
   }
@@ -2034,7 +2046,9 @@ export class Orchestrator {
     dryRun?: boolean;
     storage?: StorageManager;
   }): Promise<{ scannedMemories: number; appliedActionCount: number; notes?: string }> {
-    return this.sessionContextCoordinator.runDeepSleepGovernanceNow(
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).runDeepSleepGovernanceNow(
       options,
     );
   }
@@ -2090,7 +2104,9 @@ export class Orchestrator {
   async generateDaySummary(
     memories: string | MemoryFile[],
   ): Promise<DaySummaryResult | null> {
-    return this.sessionContextCoordinator.generateDaySummary(
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).generateDaySummary(
       memories,
     );
   }
@@ -2297,7 +2313,9 @@ export class Orchestrator {
     sessionKey?: string,
     options: RecallInvocationOptions = {},
   ): Promise<string> {
-    return this.recallEntryCoordinator.recall(
+    return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
+      selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
+    )).recall(
       prompt,
       sessionKey,
       options,
@@ -2368,7 +2386,9 @@ export class Orchestrator {
   }
 
   private logRecallFailure(err: unknown): void {
-    return this.recallEntryCoordinator.logRecallFailure(
+    return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
+      selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
+    )).logRecallFailure(
       err,
     );
   }
@@ -2881,7 +2901,9 @@ export class Orchestrator {
       bufferKey?: string;
     },
   ): Promise<void> {
-    return this.sessionContextCoordinator.flushSession(
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).flushSession(
       sessionKey,
       options,
     );
@@ -3040,7 +3062,9 @@ export class Orchestrator {
   }
 
   private passiveCorrectionService(): CorrectionService {
-    return this.sessionContextCoordinator.passiveCorrectionService(
+    return (this.sessionContextCoordinator ?? new SessionContextCoordinator(
+      selfDeps<ConstructorParameters<typeof SessionContextCoordinator>[0]>(this),
+    )).passiveCorrectionService(
     );
   }
 
@@ -3368,7 +3392,9 @@ export class Orchestrator {
   private queueEvalShadowRecall(
     record: Omit<EvalShadowRecallRecord, "schemaVersion">,
   ): void {
-    return this.recallEntryCoordinator.queueEvalShadowRecall(
+    return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
+      selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
+    )).queueEvalShadowRecall(
       record,
     );
   }
@@ -3394,7 +3420,9 @@ export class Orchestrator {
      */
     trustByPath?: Map<string, TrustStageResultItem> | null;
   }): void {
-    return this.recallEntryCoordinator.publishRecallResults(
+    return (this.recallEntryCoordinator ?? new RecallEntryCoordinator(
+      selfDeps<ConstructorParameters<typeof RecallEntryCoordinator>[0]>(this),
+    )).publishRecallResults(
       options,
     );
   }
