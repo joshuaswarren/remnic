@@ -117,6 +117,7 @@ import { OrchestratorInitCoordinator } from "./orchestration/orchestrator-init.j
 import { PersistenceIndexCoordinator } from "./orchestration/persistence-index.js";
 import { WorkspaceOpsCoordinator } from "./orchestration/workspace-ops.js";
 import { NamespaceReadFanoutCoordinator } from "./orchestration/namespace-read-fanout.js";
+import { selfDeps } from "./orchestration/self-deps.js";
 import {
   abortRecallError,
   buildCompressionGuidelinesMarkdown,
@@ -2979,84 +2980,9 @@ export class Orchestrator {
 
   private get recallInternalCoordinator(): RecallInternalCoordinator {
     if (!this._recallInternalCoordinator) {
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      const self = this;
-      this._recallInternalCoordinator = new RecallInternalCoordinator({
-        get _recallWorkspaceOverrides() { return self._recallWorkspaceOverrides; },
-        appendRecallSection: (sectionBuckets, sectionId, content) => self.appendRecallSection(sectionBuckets, sectionId, content),
-        applyColdFallbackPipeline: (options) => self.applyColdFallbackPipeline(options),
-        applyTrustScoreToBranch: (results, namespaces, caps, label) => self.applyTrustScoreToBranch(results, namespaces, caps, label),
-        assembleRecallSections: (sectionBuckets, budgetOverride) => self.assembleRecallSections(sectionBuckets, budgetOverride),
-        boostSearchResults: (results, _recallNamespaces, prompt, preloadedMemoryMap, options) => self.boostSearchResults(results, _recallNamespaces, prompt, preloadedMemoryMap, options),
-        boxBuilderFor: (storage) => self.boxBuilderFor(storage),
-        buildCompressionGuidelineRecallSection: () => self.buildCompressionGuidelineRecallSection(),
-        buildConfiguredQmdSearchOptions: (queryText) => self.buildConfiguredQmdSearchOptions(queryText),
-        buildGraphRecallRankedResults: (results, sourceLabelResolver, limit) => self.buildGraphRecallRankedResults(results, sourceLabelResolver, limit),
-        buildIdentityContinuitySection: (options) => self.buildIdentityContinuitySection(options),
-        buildLastRecallBudgetSummary: (options) => self.buildLastRecallBudgetSummary(options),
-        buildQueryAwarePrefilter: (prompt, recallNamespaces) => self.buildQueryAwarePrefilter(prompt, recallNamespaces),
-        collectLastRecallSources: (sectionBuckets, recallSource) => self.collectLastRecallSources(sectionBuckets, recallSource),
-        get compounding() { return self.compounding; },
-        get config() { return self.config; },
-        currentPolicyVersion: () => self.currentPolicyVersion(),
-        diversifyAndLimitRecallResults: (sectionId, results, limit, retrievalQuery, caps) => self.diversifyAndLimitRecallResults(sectionId, results, limit, retrievalQuery, caps),
-        effectiveCronRecallInstructionHeavyTokenCap: () => self.effectiveCronRecallInstructionHeavyTokenCap(),
-        emitTrace: (event) => self.emitTrace(event),
-        expandResultsViaGraph: (options) => self.expandResultsViaGraph(options),
-        extractMemoryIdsFromResults: (results) => self.extractMemoryIdsFromResults(results),
-        get fastLlmForRerank() { return self.fastLlmForRerank; },
-        fetchQmdMemoryResultsWithArtifactTopUp: (prompt, qmdFetchLimit, qmdHybridFetchLimit, options) => self.fetchQmdMemoryResultsWithArtifactTopUp(prompt, qmdFetchLimit, qmdHybridFetchLimit, options),
-        filterSearchResultsForRecall: (results, preloadedMemoryMap, options) => self.filterSearchResultsForRecall(results, preloadedMemoryMap, options),
-        formatCausalTrajectoryResults: (results) => self.formatCausalTrajectoryResults(results),
-        formatConversationRecallSection: (results, maxChars) => self.formatConversationRecallSection(results, maxChars),
-        formatHarmonicRetrievalResults: (results) => self.formatHarmonicRetrievalResults(results),
-        formatObjectiveStateResults: (results) => self.formatObjectiveStateResults(results),
-        formatQmdResults: (title, results, sessionKey, trustByPath) => self.formatQmdResults(title, results, sessionKey, trustByPath),
-        formatTrustZoneResults: (results) => self.formatTrustZoneResults(results),
-        formatVerifiedEpisodeResults: (results) => self.formatVerifiedEpisodeResults(results),
-        formatVerifiedSemanticRuleResults: (results) => self.formatVerifiedSemanticRuleResults(results),
-        formatWorkProductResults: (results) => self.formatWorkProductResults(results),
-        getCodingContextForSession: (sessionKey) => self.getCodingContextForSession(sessionKey),
-        getPeerIdForSession: (sessionKey) => self.getPeerIdForSession(sessionKey),
-        getRecallBudgetChars: (override) => self.getRecallBudgetChars(override),
-        getRecallSectionEntry: (sectionId) => self.getRecallSectionEntry(sectionId),
-        getRecallSectionMaxChars: (sectionId) => self.getRecallSectionMaxChars(sectionId),
-        getRecallSectionNumber: (sectionId, key) => self.getRecallSectionNumber(sectionId, key),
-        getStorage: (namespace) => self.getStorage(namespace),
-        get handleHistory() { return self.handleHistory; },
-        isRecallSectionEnabled: (sectionId, defaultEnabled) => self.isRecallSectionEnabled(sectionId, defaultEnabled),
-        isSpecializedRecallSectionEnabled: (sectionId, topLevelEnabled) => self.isSpecializedRecallSectionEnabled(sectionId, topLevelEnabled),
-        get lastQmdReprobeAtMs() { return self.lastQmdReprobeAtMs; },
-        set lastQmdReprobeAtMs(value) { self.lastQmdReprobeAtMs = value; },
-        get lastRecall() { return self.lastRecall; },
-        get lastXraySnapshot() { return self.lastXraySnapshot; },
-        set lastXraySnapshot(value) { self.lastXraySnapshot = value; },
-        get lcmEngine() { return self.lcmEngine; },
-        get namespaceCatalog() { return self.namespaceCatalog; },
-        namespaceFromPath: (p) => self.namespaceFromPath(p),
-        get profiler() { return self.profiler; },
-        publishRecallResults: (options) => self.publishRecallResults(options),
-        get qmd() { return self.qmd; },
-        queueEvalShadowRecall: (record) => self.queueEvalShadowRecall(record),
-        readAllMemoriesForNamespaces: (namespaces) => self.readAllMemoriesForNamespaces(namespaces),
-        recallArtifactsAcrossNamespaces: (prompt, recallNamespaces, targetCount) => self.recallArtifactsAcrossNamespaces(prompt, recallNamespaces, targetCount),
-        recallAssemblyClockMs: () => self.recallAssemblyClockMs(),
-        recordLastGraphRecallSnapshot: (options) => self.recordLastGraphRecallSnapshot(options),
-        recordLastIntentSnapshot: (options) => self.recordLastIntentSnapshot(options),
-        recordLastIntentSnapshotForNamespace: (options) => self.recordLastIntentSnapshotForNamespace(options),
-        recordLastQmdRecallSnapshot: (options) => self.recordLastQmdRecallSnapshot(options),
-        get rerankCache() { return self.rerankCache; },
-        searchConversationRecallResults: (retrievalQuery, topK) => self.searchConversationRecallResults(retrievalQuery, topK),
-        searchEmbeddingFallback: (query, limit) => self.searchEmbeddingFallback(query, limit),
-        get sharedContext() { return self.sharedContext; },
-        get storage() { return self.storage; },
-        get storageRouter() { return self.storageRouter; },
-        get summarizer() { return self.summarizer; },
-        get tmtBuilder() { return self.tmtBuilder; },
-        get transcript() { return self.transcript; },
-        truncateArtifactForRecall: (text, maxChars) => self.truncateArtifactForRecall(text, maxChars),
-        truncateRecallSectionToBudget: (content, maxChars) => self.truncateRecallSectionToBudget(content, maxChars),
-      });
+      this._recallInternalCoordinator = new RecallInternalCoordinator(
+        selfDeps<ConstructorParameters<typeof RecallInternalCoordinator>[0]>(this),
+      );
     }
     return this._recallInternalCoordinator;
   }
@@ -3071,41 +2997,9 @@ export class Orchestrator {
 
   private get recallSearchPipelineCoordinator(): RecallSearchPipelineCoordinator {
     if (!this._recallSearchPipelineCoordinator) {
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      const self = this;
-      this._recallSearchPipelineCoordinator = new RecallSearchPipelineCoordinator({
-        applyMemoryWorthRerank: (results, namespaces) => self.applyMemoryWorthRerank(results, namespaces),
-        applyTrustScoreRerank: (results, namespaces) => self.applyTrustScoreRerank(results, namespaces),
-        boostSearchResults: (results, _recallNamespaces, prompt, preloadedMemoryMap, options) => self.boostSearchResults(results, _recallNamespaces, prompt, preloadedMemoryMap, options),
-        buildConfiguredQmdSearchOptions: (queryText) => self.buildConfiguredQmdSearchOptions(queryText),
-        buildQueryAwarePrefilter: (prompt, recallNamespaces) => self.buildQueryAwarePrefilter(prompt, recallNamespaces),
-        get config() { return self.config; },
-        diversifyAndLimitRecallResults: (sectionId, results, limit, retrievalQuery, caps) => self.diversifyAndLimitRecallResults(sectionId, results, limit, retrievalQuery, caps),
-        effectiveRecencyWeight: () => self.effectiveRecencyWeight(),
-        get embeddingFallback() { return self.embeddingFallback; },
-        expandResultsViaGraph: (options) => self.expandResultsViaGraph(options),
-        get fastLlmForRerank() { return self.fastLlmForRerank; },
-        fetchQmdMemoryResultsWithArtifactTopUp: (prompt, qmdFetchLimit, qmdHybridFetchLimit, options) => self.fetchQmdMemoryResultsWithArtifactTopUp(prompt, qmdFetchLimit, qmdHybridFetchLimit, options),
-        filterSearchResultsByRecallSafety: (results, memoryByPath, options) => self.filterSearchResultsByRecallSafety(results, memoryByPath, options),
-        filterSearchResultsForRecall: (results, preloadedMemoryMap, options) => self.filterSearchResultsForRecall(results, preloadedMemoryMap, options),
-        loadSearchResultMemoryMap: (results, preloadedMemoryMap, options) => self.loadSearchResultMemoryMap(results, preloadedMemoryMap, options),
-        namespaceFromPath: (p) => self.namespaceFromPath(p),
-        get negatives() { return self.negatives; },
-        get qmd() { return self.qmd; },
-        readArchivedMemoriesForNamespaces: (namespaces) => self.readArchivedMemoriesForNamespaces(namespaces),
-        readQmdResultMemory: (resultPath, fallbackStorage, recallNamespaces) => self.readQmdResultMemory(resultPath, fallbackStorage, recallNamespaces),
-        get relevance() { return self.relevance; },
-        get rerankCache() { return self.rerankCache; },
-        resolveArtifactSourceStatuses: (storage, sourceIds) => self.resolveArtifactSourceStatuses(storage, sourceIds),
-        resolveColdQmdResultForRecall: (result, fallbackStorage, recallNamespaces) => self.resolveColdQmdResultForRecall(result, fallbackStorage, recallNamespaces),
-        scopeQueryAwarePaths: (paths, recallNamespaces) => self.scopeQueryAwarePaths(paths, recallNamespaces),
-        searchAcrossNamespaces: (options) => self.searchAcrossNamespaces(options),
-        searchLongTermArchiveFallback: (prompt, recallNamespaces, limit, queryAwarePrefilter, abortSignal) => self.searchLongTermArchiveFallback(prompt, recallNamespaces, limit, queryAwarePrefilter, abortSignal),
-        searchScopedMemoryCandidates: (candidatePaths, query, limit, options) => self.searchScopedMemoryCandidates(candidatePaths, query, limit, options),
-        get storage() { return self.storage; },
-        get storageRouter() { return self.storageRouter; },
-        get utilityRuntimeValues() { return self.utilityRuntimeValues; },
-      });
+      this._recallSearchPipelineCoordinator = new RecallSearchPipelineCoordinator(
+        selfDeps<ConstructorParameters<typeof RecallSearchPipelineCoordinator>[0]>(this),
+      );
     }
     return this._recallSearchPipelineCoordinator;
   }
@@ -3119,26 +3013,9 @@ export class Orchestrator {
 
   private get turnIngestionCoordinator(): TurnIngestionCoordinator {
     if (!this._turnIngestionCoordinator) {
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      const self = this;
-      this._turnIngestionCoordinator = new TurnIngestionCoordinator({
-        get buffer() { return self.buffer; },
-        bulkImportWriteNamespace: () => self.bulkImportWriteNamespace(),
-        get config() { return self.config; },
-        get extractionQueueCoordinator() { return self.extractionQueueCoordinator; },
-        getStorage: (namespace) => self.getStorage(namespace),
-        get heartbeatObserverChains() { return self.heartbeatObserverChains; },
-        get lcmEngine() { return self.lcmEngine; },
-        get passiveCorrectionDedup() { return self.passiveCorrectionDedup; },
-        passiveCorrectionService: () => self.passiveCorrectionService(),
-        get passiveCorrectionTelemetry() { return self.passiveCorrectionTelemetry; },
-        queueBufferedExtraction: (turnsToExtract, reason, options) => self.queueBufferedExtraction(turnsToExtract, reason, options),
-        resolveMemoryIdOrHandle: (ref, sessionKey) => self.resolveMemoryIdOrHandle(ref, sessionKey),
-        runExtraction: (...args) => self.runExtraction(...args),
-        get sessionObserver() { return self.sessionObserver; },
-        shouldQueueExtraction: (turns, options) => self.shouldQueueExtraction(turns, options),
-        get transcript() { return self.transcript; },
-      });
+      this._turnIngestionCoordinator = new TurnIngestionCoordinator(
+        selfDeps<ConstructorParameters<typeof TurnIngestionCoordinator>[0]>(this),
+      );
     }
     return this._turnIngestionCoordinator;
   }
@@ -3152,25 +3029,9 @@ export class Orchestrator {
 
   private get recallIntrospectionCoordinator(): RecallIntrospectionCoordinator {
     if (!this._recallIntrospectionCoordinator) {
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      const self = this;
-      this._recallIntrospectionCoordinator = new RecallIntrospectionCoordinator({
-        annotateDirectAnswerTier: (prompt, sessionKey, namespaces, expectedIdentity, caps, _parentAbortSignal) => self.annotateDirectAnswerTier(prompt, sessionKey, namespaces, expectedIdentity, caps, _parentAbortSignal),
-        get config() { return self.config; },
-        get directAnswerObservationChain() { return self.directAnswerObservationChain; },
-        set directAnswerObservationChain(value) { self.directAnswerObservationChain = value; },
-        effectiveCronRecallInstructionHeavyTokenCap: () => self.effectiveCronRecallInstructionHeavyTokenCap(),
-        get faithfulnessCounters() { return self.faithfulnessCounters; },
-        getCodingContextForSession: (sessionKey) => self.getCodingContextForSession(sessionKey),
-        getLastGraphRecallSnapshot: (namespace) => self.getLastGraphRecallSnapshot(namespace),
-        getLastIntentSnapshot: (namespace) => self.getLastIntentSnapshot(namespace),
-        getLastQmdRecallSnapshot: (namespace) => self.getLastQmdRecallSnapshot(namespace),
-        getStorage: (namespace) => self.getStorage(namespace),
-        get graphRecallCoordinator() { return self.graphRecallCoordinator; },
-        get lastRecall() { return self.lastRecall; },
-        resolveStateDirForNamespace: (namespace) => self.resolveStateDirForNamespace(namespace),
-        get storageRouter() { return self.storageRouter; },
-      });
+      this._recallIntrospectionCoordinator = new RecallIntrospectionCoordinator(
+        selfDeps<ConstructorParameters<typeof RecallIntrospectionCoordinator>[0]>(this),
+      );
     }
     return this._recallIntrospectionCoordinator;
   }
@@ -3185,57 +3046,9 @@ export class Orchestrator {
 
   private get orchestratorInitCoordinator(): OrchestratorInitCoordinator {
     if (!this._orchestratorInitCoordinator) {
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      const self = this;
-      this._orchestratorInitCoordinator = new OrchestratorInitCoordinator({
-        get buffer() { return self.buffer; },
-        get compounding() { return self.compounding; },
-        get config() { return self.config; },
-        configuredNamespaceList: () => self.configuredNamespaceList(),
-        get contentHashIndex() { return self.contentHashIndex; },
-        set contentHashIndex(value) { self.contentHashIndex = value; },
-        get conversationIndexBackend() { return self.conversationIndexBackend; },
-        get deferredInitAbort() { return self.deferredInitAbort; },
-        set deferredInitAbort(value) { self.deferredInitAbort = value; },
-        deferredInitialize: (signal) => self.deferredInitialize(signal),
-        get deferredReady() { return self.deferredReady; },
-        set deferredReady(value) { self.deferredReady = value; },
-        get deferredSyncSucceeded() { return self.deferredSyncSucceeded; },
-        set deferredSyncSucceeded(value) { self.deferredSyncSucceeded = value; },
-        disposeSearchBackendIfNeeded: () => self.disposeSearchBackendIfNeeded(),
-        get embeddingFallback() { return self.embeddingFallback; },
-        getWearablesService: () => self.getWearablesService(),
-        get handleHistory() { return self.handleHistory; },
-        get lastRecall() { return self.lastRecall; },
-        maintenanceNamespaces: (jobName, budgetMode) => self.maintenanceNamespaces(jobName, budgetMode),
-        get maintenanceScheduler() { return self.maintenanceScheduler; },
-        get namespaceCatalog() { return self.namespaceCatalog; },
-        get namespaceSearchRouter() { return self.namespaceSearchRouter; },
-        get negatives() { return self.negatives; },
-        passiveCorrectionService: () => self.passiveCorrectionService(),
-        get policyRuntime() { return self.policyRuntime; },
-        get qmd() { return self.qmd; },
-        set qmd(value) { self.qmd = value; },
-        get relevance() { return self.relevance; },
-        get resolveDeferredReady() { return self.resolveDeferredReady; },
-        set resolveDeferredReady(value) { self.resolveDeferredReady = value; },
-        get resolveInit() { return self.resolveInit; },
-        set resolveInit(value) { self.resolveInit = value; },
-        get runtimePolicyValues() { return self.runtimePolicyValues; },
-        set runtimePolicyValues(value) { self.runtimePolicyValues = value; },
-        get sessionObserver() { return self.sessionObserver; },
-        get sharedContext() { return self.sharedContext; },
-        get storage() { return self.storage; },
-        get storageRouter() { return self.storageRouter; },
-        get summarizer() { return self.summarizer; },
-        get tierMigrationStatus() { return self.tierMigrationStatus; },
-        get transcript() { return self.transcript; },
-        get utilityRuntimeValues() { return self.utilityRuntimeValues; },
-        set utilityRuntimeValues(value) { self.utilityRuntimeValues = value; },
-        validateLocalLlmModel: () => self.validateLocalLlmModel(),
-        get wearablesAutoSyncHandle() { return self.wearablesAutoSyncHandle; },
-        set wearablesAutoSyncHandle(value) { self.wearablesAutoSyncHandle = value; },
-      });
+      this._orchestratorInitCoordinator = new OrchestratorInitCoordinator(
+        selfDeps<ConstructorParameters<typeof OrchestratorInitCoordinator>[0]>(this),
+      );
     }
     return this._orchestratorInitCoordinator;
   }
@@ -3249,18 +3062,9 @@ export class Orchestrator {
 
   private get persistenceIndexCoordinator(): PersistenceIndexCoordinator {
     if (!this._persistenceIndexCoordinator) {
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      const self = this;
-      this._persistenceIndexCoordinator = new PersistenceIndexCoordinator({
-        get config() { return self.config; },
-        get contentHashIndex() { return self.contentHashIndex; },
-        contentHashIndexForStorage: (targetStorage) => self.contentHashIndexForStorage(targetStorage),
-        get contentHashIndexesByStorageDir() { return self.contentHashIndexesByStorageDir; },
-        get embeddingFallback() { return self.embeddingFallback; },
-        graphIndexFor: (storage) => self.graphIndexFor(storage),
-        readAllMemoriesForNamespaces: (namespaces) => self.readAllMemoriesForNamespaces(namespaces),
-        semanticDedupScopeFor: (targetStorage) => self.semanticDedupScopeFor(targetStorage),
-      });
+      this._persistenceIndexCoordinator = new PersistenceIndexCoordinator(
+        selfDeps<ConstructorParameters<typeof PersistenceIndexCoordinator>[0]>(this),
+      );
     }
     return this._persistenceIndexCoordinator;
   }
@@ -3274,32 +3078,9 @@ export class Orchestrator {
 
   private get workspaceOpsCoordinator(): WorkspaceOpsCoordinator {
     if (!this._workspaceOpsCoordinator) {
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      const self = this;
-      this._workspaceOpsCoordinator = new WorkspaceOpsCoordinator({
-        get accessTrackingBuffer() { return self.accessTrackingBuffer; },
-        bulkImportWriteNamespace: () => self.bulkImportWriteNamespace(),
-        get config() { return self.config; },
-        get extraction() { return self.extraction; },
-        getStorage: (namespace) => self.getStorage(namespace),
-        getStorageForNamespace: (namespace) => self.getStorageForNamespace(namespace),
-        get judgeDeferCounts() { return self.judgeDeferCounts; },
-        get judgeVerdictCache() { return self.judgeVerdictCache; },
-        get lastFileHygieneRunAtMs() { return self.lastFileHygieneRunAtMs; },
-        set lastFileHygieneRunAtMs(value) { self.lastFileHygieneRunAtMs = value; },
-        get lastPatternReinforcementAtByNs() { return self.lastPatternReinforcementAtByNs; },
-        get localLlm() { return self.localLlm; },
-        maintenanceNamespaces: (jobName, budgetMode) => self.maintenanceNamespaces(jobName, budgetMode),
-        namespaceFromPath: (p) => self.namespaceFromPath(p),
-        get qmd() { return self.qmd; },
-        readAllMemoriesForNamespaces: (namespaces) => self.readAllMemoriesForNamespaces(namespaces),
-        runNamespaceMaintenanceFanoutForJob: (jobName, runner, options) => self.runNamespaceMaintenanceFanoutForJob(jobName, runner, options),
-        runPatternReinforcement: (options) => self.runPatternReinforcement(options),
-        get storage() { return self.storage; },
-        get storageRouter() { return self.storageRouter; },
-        get wearablesServiceInstance() { return self.wearablesServiceInstance; },
-        set wearablesServiceInstance(value) { self.wearablesServiceInstance = value; },
-      });
+      this._workspaceOpsCoordinator = new WorkspaceOpsCoordinator(
+        selfDeps<ConstructorParameters<typeof WorkspaceOpsCoordinator>[0]>(this),
+      );
     }
     return this._workspaceOpsCoordinator;
   }
@@ -3313,28 +3094,9 @@ export class Orchestrator {
 
   private get namespaceReadFanoutCoordinator(): NamespaceReadFanoutCoordinator {
     if (!this._namespaceReadFanoutCoordinator) {
-      // eslint-disable-next-line @typescript-eslint/no-this-alias
-      const self = this;
-      this._namespaceReadFanoutCoordinator = new NamespaceReadFanoutCoordinator({
-        get artifactSourceStatusCache() { return self.artifactSourceStatusCache; },
-        get config() { return self.config; },
-        configuredNamespaceList: () => self.configuredNamespaceList(),
-        fetchActiveArtifactsForNamespace: (namespace, prompt, targetCount) => self.fetchActiveArtifactsForNamespace(namespace, prompt, targetCount),
-        loadNamespaceStorageDirHintsFromCatalog: () => self.loadNamespaceStorageDirHintsFromCatalog(),
-        get namespaceCatalog() { return self.namespaceCatalog; },
-        namespaceFromPath: (p) => self.namespaceFromPath(p),
-        get namespaceSearchRouter() { return self.namespaceSearchRouter; },
-        namespaceStorageDirHintOwnershipRank: (record, resolvedStorageDir, configured) => self.namespaceStorageDirHintOwnershipRank(record, resolvedStorageDir, configured),
-        get namespaceStorageDirHints() { return self.namespaceStorageDirHints; },
-        get namespaceStorageDirHintsLoaded() { return self.namespaceStorageDirHintsLoaded; },
-        set namespaceStorageDirHintsLoaded(value) { self.namespaceStorageDirHintsLoaded = value; },
-        preferNamespaceStorageDirHintOwner: (current, candidate, resolvedStorageDir, configured) => self.preferNamespaceStorageDirHintOwner(current, candidate, resolvedStorageDir, configured),
-        get qmd() { return self.qmd; },
-        qmdCollectionNamespaceFromPrefix: (collectionPrefix) => self.qmdCollectionNamespaceFromPrefix(collectionPrefix),
-        rememberNamespaceStorageDirHint: (namespace, storageDir) => self.rememberNamespaceStorageDirHint(namespace, storageDir),
-        storageDirMatchesNamespaceHint: (namespace, storageDir) => self.storageDirMatchesNamespaceHint(namespace, storageDir),
-        get storageRouter() { return self.storageRouter; },
-      });
+      this._namespaceReadFanoutCoordinator = new NamespaceReadFanoutCoordinator(
+        selfDeps<ConstructorParameters<typeof NamespaceReadFanoutCoordinator>[0]>(this),
+      );
     }
     return this._namespaceReadFanoutCoordinator;
   }
