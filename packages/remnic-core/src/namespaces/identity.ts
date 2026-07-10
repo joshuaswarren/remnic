@@ -1,5 +1,5 @@
-export function normalizeNamespaceIdentity(namespace: string): string {
-  return namespace.trim();
+export function normalizeNamespaceIdentity(namespace: string | null | undefined): string {
+  return namespace?.trim() ?? "";
 }
 
 export function namespaceIdentityToken(namespace: string): string {

@@ -5,8 +5,8 @@ import {
   appendFile,
   lstat,
   mkdir,
+  open,
   readdir,
-  readFile,
   realpath,
   rename,
   stat,
@@ -426,6 +426,18 @@ function inferKind(namespace: string, config: PluginConfig): NamespaceKind {
   return "explicit";
 }
 
+interface CatalogFileIdentity {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  ino: number;
+}
+
+interface CompactedCatalogCache {
+  identity: CatalogFileIdentity;
+  records: Map<string, NamespaceRecord>;
+}
+
 export class NamespaceCatalog {
   private readonly memoryDir: string;
   private readonly stateDir: string;
@@ -441,12 +453,19 @@ export class NamespaceCatalog {
   // neither mistakes the other's lock for self-held (round 6, codex P2 — NBsGP
   // invariant preserved and tightened).
   private readonly criticalSection = new MutationSerializer();
+  private compactedCache: CompactedCatalogCache | undefined;
   // Test-only seam (round 7 — NEZkA): fires inside a touch's HELD-lock critical
   // section, after the lock is acquired but BEFORE the read→merge→append. A
   // deterministic concurrency test installs a hook here to widen the (otherwise
   // microscopic) window and prove that a cross-process rebuild CANNOT run its
   // load→rename while a touch holds the lock. Never set in production code.
   protected onTouchCriticalSectionForTest?: () => Promise<void>;
+  // Test-only observation seam: fires only when the JSONL file is fully read.
+  // Cached loads do not invoke it.
+  protected onCatalogReadForTest?: () => void;
+  // Test-only seam: fires after this process appends but before it stats the
+  // file to refresh the cache identity.
+  protected onAfterCatalogAppendForTest?: () => Promise<void>;
   // Test-only seam (round 7 — NEZkA): fires inside a mutating rebuild's HELD-lock
   // critical section, after the final cross-process re-merge `loadCompacted()` and
   // BEFORE the atomic `rename()`. This is the EXACT window in which a check-then-
@@ -597,19 +616,20 @@ export class NamespaceCatalog {
     }
     return [...byStorageDir.values()];
   }
-
-  private async loadSanitizedRecords(): Promise<NamespaceRecord[]> {
-    const records = await this.loadCompacted();
-    const sanitized = await Promise.all(
-      [...records.values()].map((r) => this.sanitizeRecordForRead(r)),
-    );
-    // Drop unsafe-namespace rows (sanitizer returned null) at the read boundary.
-    // Then collapse duplicate root aliases so maintenance/QMD see exactly one
-    // namespace owner for a physical storage root, matching rebuild ownership,
-    // while preserving touch recency from every alias row.
-    return this.dropDuplicateStorageRootAliases(
-      sanitized.filter((r): r is NamespaceRecord => r !== null),
-    );
+  private loadSanitizedRecords(): Promise<NamespaceRecord[]> {
+    return this.queueCritical(async () => {
+      const records = await this.loadCompacted();
+      const sanitized = await Promise.all(
+        [...records.values()].map((r) => this.sanitizeRecordForRead(r)),
+      );
+      // Drop unsafe-namespace rows (sanitizer returned null) at the read boundary.
+      // Then collapse duplicate root aliases so maintenance/QMD see exactly one
+      // namespace owner for a physical storage root, matching rebuild ownership,
+      // while preserving touch recency from every alias row.
+      return this.dropDuplicateStorageRootAliases(
+        sanitized.filter((r): r is NamespaceRecord => r !== null),
+      );
+    });
   }
 
   async listNamespaces(filter?: NamespaceCatalogFilter): Promise<NamespaceRecord[]> {
@@ -1701,7 +1721,7 @@ export class NamespaceCatalog {
       // scan, which the in-process `queueCritical` alone cannot see. Only runs
       // when we hold the lock (round 6, codex P2 — NBPmY): an unlocked rebuild
       // must not re-merge then rename, or it races a concurrent lock holder.
-      const latest = await this.loadCompacted();
+      const latest = await this.loadCompacted(true);
       for (const [ns, fresh] of latest) {
         const current = rebuilt.get(ns);
         if (!current) {
@@ -1897,53 +1917,96 @@ export class NamespaceCatalog {
     if (prior.parentNamespace !== undefined) merged.parentNamespace = prior.parentNamespace;
     return merged;
   }
-
   // ── Persistence ──────────────────────────────────────────────────────────
 
   /** Load the JSONL log and fold it into current state (last-record-wins). */
-  private async loadCompacted(): Promise<Map<string, NamespaceRecord>> {
+  private async loadCompacted(forceFresh = false): Promise<Map<string, NamespaceRecord>> {
     const records = new Map<string, NamespaceRecord>();
-    let raw: string;
+    let handle;
     try {
-      raw = await readFile(this.catalogPath, "utf8");
+      handle = await open(this.catalogPath, "r");
     } catch {
+      this.compactedCache = undefined;
       return records;
     }
-    for (const line of raw.split("\n")) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(trimmed);
-      } catch {
-        // Skip corrupt lines (CLAUDE.md rule #18 robustness).
-        continue;
+
+    let identity: CatalogFileIdentity | undefined;
+    try {
+      const fileStat = await handle.stat();
+      identity = {
+        size: fileStat.size,
+        mtimeMs: fileStat.mtimeMs,
+        ctimeMs: fileStat.ctimeMs,
+        ino: fileStat.ino,
+      };
+      if (
+        !forceFresh &&
+        this.compactedCache &&
+        this.compactedCache.identity.size === identity.size &&
+        this.compactedCache.identity.mtimeMs === identity.mtimeMs &&
+        this.compactedCache.identity.ctimeMs === identity.ctimeMs &&
+        this.compactedCache.identity.ino === identity.ino
+      ) {
+        await handle.close().catch(() => undefined);
+        return this.cloneCompactedRecords(this.compactedCache.records);
       }
-      const record = coerceRecord(parsed);
-      if (!record) continue;
-      // Field-level touch merge during compaction (round 6, codex P2 — ND6Cz).
-      // Touches run on PER-PROCESS write chains, so two processes (a gateway write
-      // racing a CLI/second-server read or maintenance touch) can each load the
-      // same prior record and append a full snapshot. Plain last-record-wins
-      // compaction would then discard the earlier snapshot's `lastReadAt` /
-      // `lastWriteAt` / `lastMaintenanceAt`, erasing a real touch and skewing
-      // `writtenSince`. We instead take the LATER record as the base (most recent
-      // identity/disk-derived state) and fold in the MAX of each touch field from
-      // both, so no cross-process touch recency is lost without locking the hot
-      // touch path. A destructive overwrite of real memory is never at stake here
-      // — only best-effort recency metadata.
-      const prior = records.get(record.namespace);
-      records.set(record.namespace, prior ? mergeNewerTouchFields(record, prior) : record);
+    } catch {
+      // A failed fstat cannot prove freshness. Read and parse the open file, but
+      // do not cache the result without a trustworthy identity.
     }
-    return records;
+
+    try {
+      this.onCatalogReadForTest?.();
+      const raw = await handle.readFile("utf8");
+      for (const line of raw.split("\n")) {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) continue;
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(trimmed);
+        } catch {
+          // Skip corrupt lines (CLAUDE.md rule #18 robustness).
+          continue;
+        }
+        const record = coerceRecord(parsed);
+        if (!record) continue;
+        // Preserve each touch field across cross-process full-snapshot appends.
+        // Field-level touch merge preserves the newest value for every touch
+        // field when full-snapshot appends from separate processes interleave.
+        const prior = records.get(record.namespace);
+        records.set(record.namespace, prior ? mergeNewerTouchFields(record, prior) : record);
+      }
+    } catch {
+      this.compactedCache = undefined;
+      return new Map();
+    } finally {
+      await handle.close().catch(() => undefined);
+    }
+
+    this.compactedCache = identity ? { identity, records } : undefined;
+    return this.cloneCompactedRecords(records);
+  }
+
+  private cloneCompactedRecords(
+    records: Map<string, NamespaceRecord>,
+  ): Map<string, NamespaceRecord> {
+    return new Map(
+      [...records].map(([namespace, record]) => [
+        namespace,
+        {
+          ...record,
+          lastMaintenanceAt: record.lastMaintenanceAt
+            ? { ...record.lastMaintenanceAt }
+            : undefined,
+        },
+      ]),
+    );
   }
 
   /**
    * Serialize an arbitrary read-modify-write critical section through the single
-   * per-instance chain. Every catalog mutation (touch read+merge+append, full
-   * rewrite) runs through this so they are mutually exclusive: a touch always
-   * reads the latest persisted state before appending, and a rebuild rewrite
-   * cannot interleave with a touch's append.
+   * per-instance chain. Every catalog mutation and cached catalog read runs
+   * through this queue, so cache validation and updates cannot race in-process.
    *
    * Issue #1524 adoption: delegates to the shared `MutationSerializer` (stored
    * as `criticalSection`). The util owns the rejection-recovery invariant
@@ -1964,8 +2027,13 @@ export class NamespaceCatalog {
    */
   private async appendUnchained(record: NamespaceRecord): Promise<void> {
     const line = serializeRecord(record) + "\n";
+    const lineByteLength = Buffer.byteLength(line, "utf8");
     await mkdir(this.stateDir, { recursive: true });
     await appendFile(this.catalogPath, line, "utf8");
+    if (this.onAfterCatalogAppendForTest) {
+      await this.onAfterCatalogAppendForTest();
+    }
+    await this.refreshCacheAfterAppend(record, lineByteLength);
   }
 
   /**
@@ -1982,6 +2050,53 @@ export class NamespaceCatalog {
     const tmp = `${this.catalogPath}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tmp, body, "utf8");
     await rename(tmp, this.catalogPath);
+    await this.refreshCacheIdentity(new Map(records.map((record) => [record.namespace, record])));
+  }
+
+  private async refreshCacheAfterAppend(
+    record: NamespaceRecord,
+    lineByteLength: number,
+  ): Promise<void> {
+    const cached = this.compactedCache;
+    if (!cached) return;
+    const expectedSize = cached.identity.size + lineByteLength;
+    try {
+      const fileStat = await stat(this.catalogPath);
+      if (fileStat.size !== expectedSize || fileStat.ino !== cached.identity.ino) {
+        this.compactedCache = undefined;
+        return;
+      }
+      const prior = cached.records.get(record.namespace);
+      cached.records.set(record.namespace, prior ? mergeNewerTouchFields(record, prior) : record);
+      this.compactedCache = {
+        identity: {
+          size: fileStat.size,
+          mtimeMs: fileStat.mtimeMs,
+          ctimeMs: fileStat.ctimeMs,
+          ino: fileStat.ino,
+        },
+        records: cached.records,
+      };
+    } catch {
+      this.compactedCache = undefined;
+    }
+  }
+
+  private async refreshCacheIdentity(records: Map<string, NamespaceRecord>): Promise<void> {
+    try {
+      const fileStat = await stat(this.catalogPath);
+      this.compactedCache = {
+        identity: {
+          size: fileStat.size,
+          mtimeMs: fileStat.mtimeMs,
+          ctimeMs: fileStat.ctimeMs,
+          ino: fileStat.ino,
+        },
+        records,
+      };
+    } catch {
+      this.compactedCache = undefined;
+    }
   }
 }
 
