@@ -1,5 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -32,6 +43,17 @@ async function mkMemoryDir(): Promise<string> {
   return await mkdtemp(path.join(os.tmpdir(), "remnic-ns-catalog-"));
 }
 
+class CountingNamespaceCatalog extends NamespaceCatalog {
+  catalogReadCount = 0;
+
+  constructor(config: PluginConfig) {
+    super(config);
+    this.onCatalogReadForTest = () => {
+      this.catalogReadCount++;
+    };
+  }
+}
+
 test("markWrite registers a dynamic project namespace in the catalog", async () => {
   const memoryDir = await mkMemoryDir();
   try {
@@ -45,6 +67,52 @@ test("markWrite registers a dynamic project namespace in the catalog", async () 
     assert.ok(record?.lastWriteAt, "expected lastWriteAt to be set");
     assert.equal(record?.discoveredBy, "write");
     assert.ok(record?.storageDir.includes("namespaces"));
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("touch reloads the catalog after an external append", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("alpha", { discoveredBy: "write" });
+
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    const alpha = JSON.parse((await readFile(catalogPath, "utf8")).trim());
+    const externalNamespace = "external";
+    await appendFile(
+      catalogPath,
+      `${JSON.stringify({
+        ...alpha,
+        namespace: externalNamespace,
+        identityToken: namespaceIdentityToken(externalNamespace),
+        storageDir: path.join(memoryDir, "namespaces", namespaceIdentityToken(externalNamespace)),
+      })}\n`,
+      "utf8",
+    );
+
+    await catalog.markRead("alpha");
+
+    assert.ok(
+      (await catalog.listNamespaces()).some((record) => record.namespace === externalNamespace),
+      "the touch must fold in a row appended through another file descriptor",
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("repeated touches do not re-read an unchanged catalog", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new CountingNamespaceCatalog(makeConfig(memoryDir));
+
+    await catalog.markWrite("alpha", { discoveredBy: "write" });
+    await catalog.markRead("alpha");
+    await catalog.markMaintenance("alpha", "test");
+
+    assert.equal(catalog.catalogReadCount, 1);
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
@@ -84,6 +152,19 @@ test("rebuildFromDisk finds existing tokenized namespace directories", async () 
     const reloaded = new NamespaceCatalog(makeConfig(memoryDir));
     const record = await reloaded.getNamespaceRecord(ns);
     assert.ok(record, "expected rebuilt record to persist");
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("rebuildFromDisk accepts config without sharedNamespace", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const config = makeConfig(memoryDir);
+    delete (config as Partial<PluginConfig>).sharedNamespace;
+    const catalog = new NamespaceCatalog(config);
+
+    await assert.doesNotReject(catalog.rebuildFromDisk());
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
