@@ -1,11 +1,14 @@
 import { access, lstat, readdir, readFile, realpath, stat, writeFile, mkdir, unlink, rename, appendFile, open } from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
-import { createInterface } from "node:readline";
 import { createHash } from "node:crypto"
 import { normalizeContent, computeContentHash } from "./content-hash.js";;
 import path from "node:path";
 import { log } from "./logger.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
+import {
+  readMaybeEncryptedLines,
+  readMemoryActionEventRowsFromLines,
+} from "./storage/secure-line-reader.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
@@ -2815,39 +2818,6 @@ export class StorageManager {
   private readStorageSecureFile(filePath: string): Promise<string> {
     return readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
   }
-  /**
-   * Plain JSONL ledgers stream one row at a time so their total size is not
-   * bounded by V8's maximum string length. Encrypted files still use the
-   * authenticated whole-file decrypt path.
-   */
-  private async *readStorageSecureLines(filePath: string): AsyncGenerator<string> {
-    const file = await open(filePath, "r");
-    const header = Buffer.alloc(MAGIC_HEADER_SIZE);
-    try {
-      const { bytesRead } = await file.read(header, 0, header.length, 0);
-      if (isEncryptedFile(header.subarray(0, bytesRead))) {
-        yield* (await this.readStorageSecureFile(filePath)).split("\n");
-        return;
-      }
-
-      const input = createReadStream(filePath, {
-        autoClose: false,
-        encoding: "utf8",
-        fd: file.fd,
-        start: 0,
-      });
-      const lines = createInterface({ input, crlfDelay: Infinity });
-      try {
-        for await (const line of lines) {
-          yield line;
-        }
-      } finally {
-        lines.close();
-      }
-    } finally {
-      await file.close();
-    }
-  }
   private writeStorageSecureFile(filePath: string, content: string | Buffer): Promise<void> {
     return writeMaybeEncryptedFile(filePath, content, this.resolveWriteKey(), {}, this.baseDir)
       .then(() => this.notifyCatalogWrite());
@@ -5217,42 +5187,13 @@ export class StorageManager {
     if (cappedLimit === 0 || Number.isNaN(cappedLimit)) return [];
 
     try {
-      const out: Array<{ line: number; event: MemoryActionEvent }> = [];
-      let writeIndex = 0;
-      let lineNumber = 0;
-      for await (const row of this.readStorageSecureLines(this.memoryActionsPath)) {
-        lineNumber += 1;
-        const line = row.trim();
-        if (!line) continue;
-        try {
-          const parsed = JSON.parse(line) as Partial<MemoryActionEvent>;
-          const outcome = parsed.outcome === "applied" || parsed.outcome === "skipped" || parsed.outcome === "failed"
-            ? parsed.outcome
-            : null;
-          if (
-            typeof parsed.timestamp === "string" &&
-            typeof parsed.action === "string" &&
-            outcome !== null
-          ) {
-            const entry = {
-              line: lineNumber,
-              event: {
-                ...parsed,
-                outcome,
-              } as MemoryActionEvent,
-            };
-            if (out.length < cappedLimit) {
-              out.push(entry);
-            } else {
-              out[writeIndex] = entry;
-              writeIndex = (writeIndex + 1) % cappedLimit;
-            }
-          }
-        } catch {
-          // Ignore malformed rows (fail-open).
-        }
-      }
-      return writeIndex === 0 ? out : [...out.slice(writeIndex), ...out.slice(0, writeIndex)];
+      return await readMemoryActionEventRowsFromLines(
+        readMaybeEncryptedLines(
+          this.memoryActionsPath,
+          () => this.readStorageSecureFile(this.memoryActionsPath),
+        ),
+        cappedLimit,
+      );
     } catch (err) {
       if (err instanceof SecureStoreLockedError) throw err;
       if (!isErrnoCode(err, "ENOENT")) throw err;
@@ -5263,7 +5204,10 @@ export class StorageManager {
   async readAllMemoryLifecycleEvents(): Promise<MemoryLifecycleEvent[]> {
     try {
       const out: MemoryLifecycleEvent[] = [];
-      for await (const line of this.readStorageSecureLines(this.memoryLifecycleLedgerPath)) {
+      for await (const line of readMaybeEncryptedLines(
+        this.memoryLifecycleLedgerPath,
+        () => this.readStorageSecureFile(this.memoryLifecycleLedgerPath),
+      )) {
         const row = line.trim();
         if (!row) continue;
         try {
