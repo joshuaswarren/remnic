@@ -3,11 +3,19 @@ import { log } from "./logger.js";
 const PROJECTION_FALLBACK_WARN_INTERVAL_MS = 5 * 60_000;
 const projectionFallbackWarnedAt = new Map<string, number>();
 
-export function assertMemoryFrontmatterId(id: string): string {
-  if (typeof id !== "string" || id.trim().length === 0) {
-    throw new Error("memory frontmatter id must not be blank");
+export function assertMemoryFrontmatterId(
+  fm: { id: string; category?: string; created?: string; entityRef?: string },
+): void {
+  if (typeof fm.id !== "string" || fm.id.trim().length === 0) {
+    const context = [
+      fm.category ? `category=${fm.category}` : null,
+      fm.created ? `created=${fm.created}` : null,
+      fm.entityRef ? `entityRef=${fm.entityRef}` : null,
+    ].filter(Boolean).join(" ");
+    throw new Error(
+      `memory frontmatter id must not be blank${context ? ` (${context})` : ""}`,
+    );
   }
-  return "---";
 }
 
 export function warnProjectionFallback(memoryDir: string, consumer: string): null {

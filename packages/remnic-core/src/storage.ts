@@ -305,8 +305,9 @@ function stripCitationMarkersForHashRemoval(value: string, template: string): st
 }
 
 function serializeFrontmatter(fm: MemoryFrontmatter): string {
+  assertMemoryFrontmatterId(fm);
   const lines = [
-    assertMemoryFrontmatterId(fm.id),
+    "---",
     `id: ${fm.id}`,
     `category: ${fm.category}`,
     `created: ${fm.created}`,
@@ -6038,8 +6039,8 @@ export class StorageManager {
         lastAccessed: entry.lastAccessed,
       };
 
-      const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
       try {
+        const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
         updated++;
       } catch (err) {
@@ -6399,9 +6400,8 @@ export class StorageManager {
         updated: now,
       };
 
-      const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
-
       try {
+        const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
         await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.archiveMemories", {
           memoryId: id,
