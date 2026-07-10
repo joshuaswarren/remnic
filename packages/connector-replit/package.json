@@ -1,6 +1,6 @@
 {
   "name": "@remnic/replit",
-  "version": "9.3.762",
+  "version": "9.3.763",
   "description": "Remnic MCP connector for Replit Agent — setup instructions for an existing token",
   "type": "module",
   "main": "dist/index.js",
