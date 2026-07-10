@@ -1614,9 +1614,10 @@ test("rebuildMemoryProjection projects entity mentions, native knowledge chunks,
     });
 
     const projectedReviewQueue = readProjectedLatestReviewQueue(memoryDir);
-    assert.ok(projectedReviewQueue?.found);
-    assert.equal(projectedReviewQueue?.runId, governance.runId);
-    assert.equal(projectedReviewQueue?.reviewQueue.some((entry) => entry.reasonCode === "exact_duplicate"), true);
+    assert.ok(projectedReviewQueue);
+    assert.ok(projectedReviewQueue.found);
+    assert.equal(projectedReviewQueue.runId, governance.runId);
+    assert.equal(projectedReviewQueue.reviewQueue?.some((entry) => entry.reasonCode === "exact_duplicate"), true);
 
     const verify = await verifyMemoryProjection({ memoryDir, defaultNamespace: "global" });
     assert.equal(verify.ok, true);
