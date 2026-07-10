@@ -5463,9 +5463,7 @@ export class StorageManager {
       filePath: string;
     }>
   > {
-    return this.memoryReadStore.readQuestions(
-      opts,
-    );
+    return this.memoryReadStore.readQuestions(opts);
   }
 
   /** Invalidate the questions cache (call after writing a question). */
@@ -5535,6 +5533,7 @@ export class StorageManager {
       `resolvedAt: "${new Date().toISOString()}"\n---\n\n`,
     );
     await this.writeStorageSecureFile(q.filePath, raw);
+    this.invalidateQuestionsCache();
     log.debug(`resolved question ${id}`);
     return true;
   }
