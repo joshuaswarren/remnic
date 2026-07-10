@@ -429,6 +429,7 @@ function inferKind(namespace: string, config: PluginConfig): NamespaceKind {
 interface CatalogFileIdentity {
   size: number;
   mtimeMs: number;
+  ctimeMs: number;
   ino: number;
 }
 
@@ -1935,6 +1936,7 @@ export class NamespaceCatalog {
       identity = {
         size: fileStat.size,
         mtimeMs: fileStat.mtimeMs,
+        ctimeMs: fileStat.ctimeMs,
         ino: fileStat.ino,
       };
       if (
@@ -1942,9 +1944,10 @@ export class NamespaceCatalog {
         this.compactedCache &&
         this.compactedCache.identity.size === identity.size &&
         this.compactedCache.identity.mtimeMs === identity.mtimeMs &&
+        this.compactedCache.identity.ctimeMs === identity.ctimeMs &&
         this.compactedCache.identity.ino === identity.ino
       ) {
-        await handle.close();
+        await handle.close().catch(() => undefined);
         return this.cloneCompactedRecords(this.compactedCache.records);
       }
     } catch {
@@ -1973,8 +1976,11 @@ export class NamespaceCatalog {
         const prior = records.get(record.namespace);
         records.set(record.namespace, prior ? mergeNewerTouchFields(record, prior) : record);
       }
+    } catch {
+      this.compactedCache = undefined;
+      return new Map();
     } finally {
-      await handle.close();
+      await handle.close().catch(() => undefined);
     }
 
     this.compactedCache = identity ? { identity, records } : undefined;
@@ -2066,6 +2072,7 @@ export class NamespaceCatalog {
         identity: {
           size: fileStat.size,
           mtimeMs: fileStat.mtimeMs,
+          ctimeMs: fileStat.ctimeMs,
           ino: fileStat.ino,
         },
         records: cached.records,
@@ -2082,6 +2089,7 @@ export class NamespaceCatalog {
         identity: {
           size: fileStat.size,
           mtimeMs: fileStat.mtimeMs,
+          ctimeMs: fileStat.ctimeMs,
           ino: fileStat.ino,
         },
         records,

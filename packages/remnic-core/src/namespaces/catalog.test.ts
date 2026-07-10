@@ -523,6 +523,20 @@ test("catalog tolerates corrupt / non-object JSONL lines on read", async () => {
   }
 });
 
+test("catalog read fails open when the catalog path is a directory", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    await mkdir(path.join(memoryDir, "state", "namespaces.jsonl"), { recursive: true });
+    const catalog = new NamespaceCatalog(makeConfig(memoryDir));
+
+    await assert.doesNotReject(async () => {
+      assert.deepEqual(await catalog.listNamespaces(), []);
+    });
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 test("catalog quarantines malformed JSONL record fields at the parse boundary", async () => {
   const memoryDir = await mkMemoryDir();
   try {
