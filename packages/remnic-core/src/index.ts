@@ -105,6 +105,15 @@ export {
   normalizeAttributePairs,
   parseEntityFile,
   serializeEntityFile,
+  // Entity-subsystem helpers consumed by storage/entity-store.ts (kept on
+  // the barrel so the directStorageImports ratchet stays authoritative).
+  buildEntitySchemaCacheKey,
+  compareEntityTimestamps,
+  compileEntityFacts,
+  countEntityStructuredFacts,
+  fingerprintEntityStructuredFacts,
+  normalizeEntityName,
+  normalizeStructuredSectionFacts,
   type MemoryWriteResult,
 } from "./storage.js";
 export {
