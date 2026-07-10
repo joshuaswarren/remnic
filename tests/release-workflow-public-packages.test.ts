@@ -83,7 +83,7 @@ test("release workflow verifies the OpenClaw ClawHub packlist after build", asyn
   );
 });
 
-test("release workflow treats known ClawHub backend digest limits as nonfatal", async () => {
+test("release workflow treats known ClawHub backend read limits as nonfatal", async () => {
   const workflow = await readFile(".github/workflows/release-and-publish.yml", "utf8");
 
   assert.match(
@@ -92,14 +92,14 @@ test("release workflow treats known ClawHub backend digest limits as nonfatal", 
     "release workflow must recognize ClawHub's Convex read-limit backend failure",
   );
   assert.ok(
-    workflow.includes("syncPackage[A-Za-z]*SearchDigests?"),
-    "release workflow must constrain the nonfatal skip to ClawHub search-digest failures " +
-      "(matching both syncPackageSearchDigest and syncPackageCapabilitySearchDigests)",
+    !workflow.includes("syncPackage[A-Za-z]*SearchDigests?"),
+    "release workflow must select the nonfatal path on the Convex read-limit string alone, " +
+      "without requiring the internal syncPackage...SearchDigest stack frame",
   );
   assert.match(
     workflow,
-    /ClawHub publish failed in its backend search-digest sync[\s\S]*exit 0/,
-    "known external ClawHub backend failures should not block GitHub release creation after npm publish",
+    /ClawHub publish hit its backend read limit[\s\S]*exit 0/,
+    "known external ClawHub backend read-limit failures should not block GitHub release creation after npm publish",
   );
   assert.match(
     workflow,
