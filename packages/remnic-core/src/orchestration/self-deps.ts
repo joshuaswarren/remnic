@@ -28,7 +28,15 @@ export function selfDeps<T extends object>(self: object): T {
   return new Proxy(Object.create(null) as object, {
     get(_target, prop) {
       const value = source[prop as string];
-      return typeof value === "function"
+      // Bind ONLY prototype/concise methods (they have no own `prototype`
+      // property). Class-valued deps (e.g. `storageManagerClass`, used by
+      // the storage decomposition to reach shared static caches) must pass
+      // through unbound: Function.prototype.bind returns a bound function
+      // WITHOUT the original's own static properties, which silently
+      // strips the class's statics. Plain data and arrows also pass
+      // through unchanged (arrows ignore bind receivers anyway).
+      return typeof value === "function" &&
+        !Object.prototype.hasOwnProperty.call(value, "prototype")
         ? (value as (...args: unknown[]) => unknown).bind(self)
         : value;
     },
