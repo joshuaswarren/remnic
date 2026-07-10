@@ -119,6 +119,7 @@ test("TrustScore runs on the recent-scan path: trust map reaches the X-ray snaps
       );
     }
   } finally {
+    await orchestrator.destroy();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
@@ -152,6 +153,7 @@ test("TrustScore quarantine excludes a contradicted memory from injection but su
       "quarantined result carries a human-readable reason",
     );
   } finally {
+    await orchestrator.destroy();
     await rm(memoryDir, { recursive: true, force: true });
   }
 });

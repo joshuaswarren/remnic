@@ -326,6 +326,7 @@ export interface RecallInternalDeps {
   ): number | undefined;
   getStorage(namespace?: string): Promise<StorageManager>;
   readonly handleHistory: RecallHandleHistoryStore;
+  trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
   isRecallSectionEnabled(
     sectionId: string,
     defaultEnabled?: boolean,
@@ -908,8 +909,8 @@ export class RecallInternalCoordinator {
         }
       }
       if (sessionKey) {
-        this.deps.lastRecall
-          .record({
+        this.deps.trackRecallBackgroundWrite(
+          this.deps.lastRecall.record({
             sessionKey,
             query: retrievalQuery,
             memoryIds: [],
@@ -935,8 +936,9 @@ export class RecallInternalCoordinator {
               injectedChars: identityInjectedChars,
               truncated: identityInjectionTruncated,
             },
-          })
-          .catch((err) => log.debug(`last recall record failed: ${err}`));
+          }),
+          "last recall record",
+        );
       }
       if (sessionKey) {
         this.deps.queueEvalShadowRecall({
@@ -5364,8 +5366,8 @@ export class RecallInternalCoordinator {
 
     if (sessionKey) {
       throwIfRecallAborted(options.abortSignal);
-      this.deps.lastRecall
-        .record({
+      this.deps.trackRecallBackgroundWrite(
+        this.deps.lastRecall.record({
           sessionKey,
           query: retrievalQuery,
           memoryIds: recalledMemoryIds,
@@ -5397,8 +5399,9 @@ export class RecallInternalCoordinator {
           // reviews on #1544).
           backendDegradations:
             backendDegradations.length > 0 ? backendDegradations : undefined,
-        })
-        .catch((err) => log.debug(`last recall record failed: ${err}`));
+        }),
+        "last recall record",
+      );
       // Issue #1582 — record the admitted memory-id set for handle resolution.
       // Only when handles are enabled: if injection is off, no handle is ever
       // rendered, so there is nothing to resolve and we skip the write.
@@ -5410,9 +5413,10 @@ export class RecallInternalCoordinator {
           MEMORY_ID_PATTERN.test(id),
         );
         if (handleEligibleIds.length > 0) {
-          this.deps.handleHistory
-            .record(sessionKey, handleEligibleIds)
-            .catch((err) => log.debug(`handle history record failed: ${err}`));
+          this.deps.trackRecallBackgroundWrite(
+            this.deps.handleHistory.record(sessionKey, handleEligibleIds),
+            "handle history record",
+          );
         }
       }
     }

@@ -58,6 +58,7 @@ export interface RecallEntryDeps {
   readonly storage: StorageManager;
   suppressedRecallFailures: number;
   trackMemoryAccess(memoryIds: string[]): void;
+  trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
 }
 
 export class RecallEntryCoordinator {
@@ -248,6 +249,10 @@ export class RecallEntryCoordinator {
           log.debug(`eval shadow recall write failed: ${err}`);
         }
       });
+    this.deps.trackRecallBackgroundWrite(
+      this.deps.evalShadowWriteChain,
+      "eval shadow recall write",
+    );
   }
 
   publishRecallResults(options: {

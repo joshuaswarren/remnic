@@ -13,6 +13,7 @@ function isoForDate(date: string, time: string): Date {
 test("shared context recall injects latest cross-signals summary when available", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-shared-recall-memory-"));
   const sharedDir = await mkdtemp(path.join(os.tmpdir(), "engram-shared-recall-shared-"));
+  let orchestrator: Orchestrator | undefined;
 
   try {
     const cfg = parseConfig({
@@ -33,7 +34,7 @@ test("shared context recall injects latest cross-signals summary when available"
         { id: "shared-context", enabled: true },
       ],
     });
-    const orchestrator = new Orchestrator(cfg);
+    orchestrator = new Orchestrator(cfg);
     assert.ok(orchestrator.sharedContext);
     await orchestrator.sharedContext!.ensureStructure();
 
@@ -67,6 +68,7 @@ test("shared context recall injects latest cross-signals summary when available"
     assert.match(context, /Recurring Themes/);
     assert.match(context, /checkout/);
   } finally {
+    await orchestrator?.destroy();
     await rm(memoryDir, { recursive: true, force: true });
     await rm(sharedDir, { recursive: true, force: true });
   }
@@ -75,6 +77,7 @@ test("shared context recall injects latest cross-signals summary when available"
 test("scope profile recall omits shared context when serverShared is not readable", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-shared-recall-profile-memory-"));
   const sharedDir = await mkdtemp(path.join(os.tmpdir(), "engram-shared-recall-profile-shared-"));
+  let orchestrator: Orchestrator | undefined;
 
   try {
     const cfg = parseConfig({
@@ -109,7 +112,7 @@ test("scope profile recall omits shared context when serverShared is not readabl
         { id: "shared-context", enabled: true },
       ],
     });
-    const orchestrator = new Orchestrator(cfg);
+    orchestrator = new Orchestrator(cfg);
     assert.ok(orchestrator.sharedContext);
     await orchestrator.sharedContext!.ensureStructure();
     await orchestrator.sharedContext!.appendPrioritiesInbox({
@@ -125,6 +128,7 @@ test("scope profile recall omits shared context when serverShared is not readabl
     assert.doesNotMatch(context, /## Shared Context/);
     assert.doesNotMatch(context, /private-only profile must not inject/);
   } finally {
+    await orchestrator?.destroy();
     await rm(memoryDir, { recursive: true, force: true });
     await rm(sharedDir, { recursive: true, force: true });
   }
