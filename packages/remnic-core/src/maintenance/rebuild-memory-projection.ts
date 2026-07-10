@@ -23,6 +23,7 @@ import {
 import {
   getMemoryProjectionPath,
   initializeMemoryProjectionDb,
+  isProjectedMemoryPathValid,
   type ProjectedEntityMentionRow,
   type MemoryProjectionGovernanceAppliedActionRow,
   type MemoryProjectionGovernanceReviewQueueRow,
@@ -658,6 +659,7 @@ function writeProjectionDb(
   usedLifecycleLedger: boolean,
 ): void {
   const db = openBetterSqlite3(dbPath);
+  const memoryDir = path.dirname(path.dirname(dbPath));
   try {
     initializeMemoryProjectionDb(db);
 
@@ -674,6 +676,7 @@ function writeProjectionDb(
         status,
         lifecycle_state,
         path_rel,
+        path_valid,
         created_at,
         updated_at,
         archived_at,
@@ -687,7 +690,7 @@ function writeProjectionDb(
         last_accessed,
         tags_json,
         preview_text
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertTimeline = db.prepare(`
@@ -785,6 +788,7 @@ function writeProjectionDb(
           row.status,
           row.lifecycleState ?? null,
           row.pathRel,
+          isProjectedMemoryPathValid(memoryDir, row.pathRel) ? 1 : 0,
           row.created,
           row.updated,
           row.archivedAt ?? null,

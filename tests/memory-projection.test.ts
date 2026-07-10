@@ -1776,7 +1776,7 @@ test("projection browse filters realpath-invalid rows before counting and pagina
     await symlink(outsidePath, path.join(memoryDir, "facts/2026-03-08/fact-invalid-link.md"));
     const db = new Database(getMemoryProjectionPath(memoryDir));
     try {
-      db.prepare("UPDATE memory_current SET path_rel = ? WHERE memory_id = ?")
+      db.prepare("UPDATE memory_current SET path_rel = ?, path_valid = 0 WHERE memory_id = ?")
         .run("facts/2026-03-08/fact-invalid-link.md", "fact-invalid");
     } finally {
       db.close();
@@ -1795,3 +1795,54 @@ test("projection browse filters realpath-invalid rows before counting and pagina
     await rm(outsidePath, { force: true });
   }
 });
+test("projection browse validates only the returned page for current schemas", async (t) => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-page-cost-"));
+  try {
+    const projectionPath = getMemoryProjectionPath(memoryDir);
+    await mkdir(path.dirname(projectionPath), { recursive: true });
+    await writeText(memoryDir, "facts/page.md", "page row");
+    const db = new Database(projectionPath);
+    try {
+      initializeMemoryProjectionDb(db);
+      const insert = db.prepare(`
+        INSERT INTO memory_current (
+          memory_id, category, status, lifecycle_state, path_rel, path_valid,
+          created_at, updated_at, archived_at, superseded_at, entity_ref,
+          source, confidence, confidence_tier, memory_kind, access_count,
+          last_accessed, tags_json, preview_text
+        ) VALUES (?, 'fact', 'active', NULL, 'facts/page.md', 1,
+          ?, ?, NULL, NULL, NULL, 'test', 0.8, 'implied', NULL, NULL, NULL, '[]', '')
+      `);
+      const insertMany = db.transaction(() => {
+        for (let index = 0; index < 3_000; index += 1) {
+          const timestamp = new Date(Date.UTC(2026, 2, 8, 0, 0, 0, index)).toISOString();
+          insert.run(`fact-${String(index).padStart(4, "0")}`, timestamp, timestamp);
+        }
+      });
+      insertMany();
+    } finally {
+      db.close();
+    }
+
+    const fs = process.getBuiltinModule("fs");
+    const originalRealpathSync = fs.realpathSync;
+    let realpathCalls = 0;
+    t.mock.method(fs, "realpathSync", (...args: Parameters<typeof fs.realpathSync>) => {
+      realpathCalls += 1;
+      return originalRealpathSync(...args);
+    });
+
+    const browse = readProjectedMemoryBrowse(memoryDir, {
+      limit: 1,
+      offset: 0,
+    });
+
+    assert.ok(browse);
+    assert.equal(browse.total, 3_000);
+    assert.equal(browse.memories.length, 1);
+    assert.ok(realpathCalls <= 2);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
