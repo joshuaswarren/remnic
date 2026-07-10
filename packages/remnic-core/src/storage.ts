@@ -7,6 +7,7 @@ import { log } from "./logger.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
+import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
 import { isErrnoCode } from "./utils/errno.js";
 import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
@@ -113,15 +114,6 @@ import {
   normalizeProjectionPreview,
   normalizeProjectionTags,
 } from "./memory-projection-format.js";
-import {
-  closeContinuityIncidentRecord,
-  createContinuityIncidentRecord,
-  parseContinuityIncident,
-  parseContinuityImprovementLoops,
-  reviewContinuityLoopInMarkdown,
-  serializeContinuityIncident,
-  upsertContinuityLoopInMarkdown,
-} from "./identity-continuity.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 // stripCitation import removed: legacy rebuild fallback was replaced by a
 // skip-with-warning strategy (Finding 1 — Uhol).  See ensureFactHashIndexAuthoritative.
@@ -2558,6 +2550,18 @@ export class StorageManager {
       );
     }
     return this._entityStore;
+  }
+
+  /** IdentityContinuityStore (storage.ts decomposition). Lazy; selfDeps live wiring. */
+  private _identityContinuityStore: IdentityContinuityStore | undefined;
+
+  private get identityContinuityStore(): IdentityContinuityStore {
+    if (!this._identityContinuityStore) {
+      this._identityContinuityStore = new IdentityContinuityStore(
+        selfDeps<ConstructorParameters<typeof IdentityContinuityStore>[0]>(this),
+      );
+    }
+    return this._identityContinuityStore;
   }
 
   get dir(): string {
@@ -5355,137 +5359,60 @@ export class StorageManager {
   }
 
   async writeIdentityAnchor(content: string): Promise<void> {
-    await this.ensureDirectories();
-    await this.writeStorageSecureFile(this.identityAnchorPath, content);
+    return this.identityContinuityStore.writeIdentityAnchor(content);
   }
 
   async readIdentityAnchor(): Promise<string | null> {
-    try {
-      return await this.readStorageSecureFile(this.identityAnchorPath);
-    } catch (err) {
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return null;
-    }
+    return this.identityContinuityStore.readIdentityAnchor();
   }
 
   async appendContinuityIncident(input: ContinuityIncidentOpenInput): Promise<ContinuityIncidentRecord> {
-    await this.ensureDirectories();
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const date = nowIso.slice(0, 10);
-    const id = this.generateId("incident");
-    const incident = createContinuityIncidentRecord(id, input, nowIso);
-    const filePath = path.join(this.identityIncidentsDir, `${date}-${id}.md`);
-    await this.writeStorageSecureFile(filePath, serializeContinuityIncident(incident));
-    return { ...incident, filePath };
+    return this.identityContinuityStore.appendContinuityIncident(input);
   }
 
   async readContinuityIncidents(
     limit: number = 200,
     state: "open" | "closed" | "all" = "all",
   ): Promise<ContinuityIncidentRecord[]> {
-    const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : 0;
-    const cappedLimit = Math.max(0, normalizedLimit);
-    if (cappedLimit === 0) return [];
-
-    try {
-      const candidates = await this.readContinuityIncidentFileNames();
-      const incidents: ContinuityIncidentRecord[] = [];
-
-      for (const file of candidates) {
-        if (incidents.length >= cappedLimit) break;
-        const filePath = path.join(this.identityIncidentsDir, file);
-        try {
-          const raw = await this.readStorageSecureFile(filePath);
-          const parsed = parseContinuityIncident(raw);
-          if (!parsed) continue;
-          if (state !== "all" && parsed.state !== state) continue;
-          incidents.push({ ...parsed, filePath });
-        } catch (err) {
-          if (err instanceof SecureStoreLockedError) throw err;
-          // Fail-open on malformed/missing files.
-        }
-      }
-      return incidents;
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return [];
-    }
+    return this.identityContinuityStore.readContinuityIncidents(limit, state);
   }
 
   async closeContinuityIncident(
     id: string,
     closure: ContinuityIncidentCloseInput,
   ): Promise<ContinuityIncidentRecord | null> {
-    const directFilePath = await this.findContinuityIncidentFilePathById(id);
-    const target = directFilePath ? await this.readContinuityIncidentFile(directFilePath) : null;
-    if (!target || !directFilePath) return null;
-    if (target.state === "closed") return target;
-
-    const closed = closeContinuityIncidentRecord(target, closure, new Date().toISOString());
-    await this.writeStorageSecureFile(directFilePath, serializeContinuityIncident(closed));
-    return { ...closed, filePath: directFilePath };
+    return this.identityContinuityStore.closeContinuityIncident(id, closure);
   }
 
   async writeIdentityAudit(period: "weekly" | "monthly", key: string, content: string): Promise<string> {
-    await this.ensureDirectories();
-    const safeKey = this.sanitizeIdentityAuditKey(key);
-    const dir = period === "weekly" ? this.identityAuditsWeeklyDir : this.identityAuditsMonthlyDir;
-    const filePath = path.join(dir, `${safeKey}.md`);
-    await this.writeStorageSecureFile(filePath, content);
-    return filePath;
+    return this.identityContinuityStore.writeIdentityAudit(period, key, content);
   }
 
   async readIdentityAudit(period: "weekly" | "monthly", key: string): Promise<string | null> {
-    try {
-      const safeKey = this.sanitizeIdentityAuditKey(key);
-      const dir = period === "weekly" ? this.identityAuditsWeeklyDir : this.identityAuditsMonthlyDir;
-      return await this.readStorageSecureFile(path.join(dir, `${safeKey}.md`));
-    } catch (err) {
-      if (err instanceof Error && err.message === "Invalid identity audit key") return null;
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return null;
-    }
+    return this.identityContinuityStore.readIdentityAudit(period, key);
   }
 
   async writeIdentityImprovementLoops(content: string): Promise<void> {
-    await this.ensureDirectories();
-    await this.writeStorageSecureFile(this.identityImprovementLoopsPath, content);
+    return this.identityContinuityStore.writeIdentityImprovementLoops(content);
   }
 
   async readIdentityImprovementLoops(): Promise<string | null> {
-    try {
-      return await this.readStorageSecureFile(this.identityImprovementLoopsPath);
-    } catch (err) {
-      if (!isErrnoCode(err, "ENOENT")) throw err;
-      return null;
-    }
+    return this.identityContinuityStore.readIdentityImprovementLoops();
   }
 
   async readIdentityImprovementLoopRegister(): Promise<ContinuityImprovementLoop[]> {
-    const raw = await this.readIdentityImprovementLoops();
-    if (!raw) return [];
-    return parseContinuityImprovementLoops(raw);
+    return this.identityContinuityStore.readIdentityImprovementLoopRegister();
   }
 
   async upsertIdentityImprovementLoop(input: ContinuityLoopUpsertInput): Promise<ContinuityImprovementLoop> {
-    const nowIso = new Date().toISOString();
-    const raw = await this.readIdentityImprovementLoops();
-    const { markdown, loop } = upsertContinuityLoopInMarkdown(raw, input, nowIso);
-    await this.writeIdentityImprovementLoops(markdown);
-    return loop;
+    return this.identityContinuityStore.upsertIdentityImprovementLoop(input);
   }
 
   async reviewIdentityImprovementLoop(
     id: string,
     input: ContinuityLoopReviewInput,
   ): Promise<ContinuityImprovementLoop | null> {
-    const raw = await this.readIdentityImprovementLoops();
-    const { markdown, loop } = reviewContinuityLoopInMarkdown(raw, id, input, new Date().toISOString());
-    if (!loop) return null;
-    await this.writeIdentityImprovementLoops(markdown);
-    return loop;
+    return this.identityContinuityStore.reviewIdentityImprovementLoop(id, input);
   }
 
   // ---------------------------------------------------------------------------
@@ -5496,50 +5423,6 @@ export class StorageManager {
     const ts = Date.now().toString(36);
     const rand = Math.random().toString(36).slice(2, 4);
     return `${prefix}-${ts}-${rand}`;
-  }
-
-  private async readContinuityIncidentFileNames(): Promise<string[]> {
-    const files = await readdir(this.identityIncidentsDir);
-    return files
-      .filter((file) => file.endsWith(".md"))
-      .sort()
-      .reverse();
-  }
-
-  private async readContinuityIncidentFile(filePath: string): Promise<ContinuityIncidentRecord | null> {
-    try {
-      const raw = await this.readStorageSecureFile(filePath);
-      const parsed = parseContinuityIncident(raw);
-      return parsed ? { ...parsed, filePath } : null;
-    } catch (err) {
-      if (err instanceof SecureStoreLockedError) throw err;
-      return null;
-    }
-  }
-
-  private async findContinuityIncidentFilePathById(id: string): Promise<string | null> {
-    const fileNames = await this.readContinuityIncidentFileNames();
-    const directMatch = fileNames.find((name) => name.endsWith(`-${id}.md`));
-    if (directMatch) {
-      const directPath = path.join(this.identityIncidentsDir, directMatch);
-      const parsed = await this.readContinuityIncidentFile(directPath);
-      if (parsed?.id === id) return directPath;
-    }
-
-    for (const fileName of fileNames) {
-      const filePath = path.join(this.identityIncidentsDir, fileName);
-      const parsed = await this.readContinuityIncidentFile(filePath);
-      if (parsed?.id === id) return filePath;
-    }
-    return null;
-  }
-
-  private sanitizeIdentityAuditKey(key: string): string {
-    const trimmed = key.trim();
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(trimmed) || trimmed.includes("..")) {
-      throw new Error("Invalid identity audit key");
-    }
-    return trimmed;
   }
 
   async writeQuestion(
