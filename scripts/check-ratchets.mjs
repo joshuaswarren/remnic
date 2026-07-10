@@ -201,6 +201,11 @@ function collectMetrics(oversizeThresholdLoc) {
     if (
       relPosix !== "packages/remnic-core/src/storage.ts" &&
       !relPosix.includes("/storage-contract/") &&
+      // The storage/ subdirectory hosts StorageManager's own decomposition
+      // modules (entity-store, ...): they ARE the storage subsystem, not
+      // external importers, and importing the barrel instead creates a
+      // module-initialization cycle (index -> access-* -> ... -> storage).
+      !relPosix.startsWith("packages/remnic-core/src/storage/") &&
       DIRECT_STORAGE_IMPORT_RE.test(content)
     ) {
       directStorageImports++;
