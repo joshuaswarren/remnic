@@ -161,12 +161,16 @@ If you touch any of these files, the hardening suite is mandatory:
 
 - `src/orchestrator.ts`
 - `src/storage.ts`
+- `src/storage/**`
+- `src/orchestration/**`
 - `src/intent.ts`
 - `src/memory-cache.ts`
 - `src/entity-retrieval.ts`
 - `src/config.ts`
 - `packages/remnic-core/src/orchestrator.ts`
 - `packages/remnic-core/src/storage.ts`
+- `packages/remnic-core/src/storage/**`
+- `packages/remnic-core/src/orchestration/**`
 - `packages/remnic-core/src/intent.ts`
 - `packages/remnic-core/src/memory-cache.ts`
 - `packages/remnic-core/src/entity-retrieval.ts`

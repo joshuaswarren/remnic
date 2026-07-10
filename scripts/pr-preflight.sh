@@ -40,12 +40,30 @@ needs_entity_hardening() {
     return 1
   fi
 
-  if printf '%s\n' "$files" | grep -Eq '^(src|packages/remnic-core/src)/(orchestrator|storage|intent|memory-cache|entity-retrieval|config)\.ts$'; then
+  local risky_path_pattern
+  risky_path_pattern='^(src|packages/remnic-core/src)/'
+  risky_path_pattern+='((orchestrator|storage|intent|memory-cache|entity-retrieval|config)\.ts$|(storage|orchestration)/)'
+  if printf '%s\n' "$files" | grep -Eq "$risky_path_pattern"; then
     return 0
   fi
 
   return 1
 }
+
+if [[ "$MODE" == "--check-entity-hardening-path" ]]; then
+  if [[ -z "${2:-}" ]]; then
+    echo "usage: $0 --check-entity-hardening-path <path>" >&2
+    exit 2
+  fi
+  ENTITY_HARDENING_PATH="$2"
+  changed_files() {
+    printf '%s\n' "$ENTITY_HARDENING_PATH"
+  }
+  needs_entity_hardening
+  exit
+fi
+
+run node tests/pr-preflight-paths.test.mjs
 
 # Core mandatory gate from docs/ops/pr-review-hardening-playbook.md
 run npm run lint
