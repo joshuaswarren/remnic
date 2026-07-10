@@ -598,3 +598,38 @@ alpha
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("rebuildMemoryLifecycleLedger skips duplicate events and blank IDs without aborting", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-rebuild-memory-lifecycle-anomalies-"));
+  try {
+    const duplicate = `---
+id: duplicate-id
+category: fact
+created: 2026-03-08T00:00:00.000Z
+updated: 2026-03-08T01:00:00.000Z
+source: test
+confidence: 0.8
+confidenceTier: implied
+tags: []
+---
+
+duplicate
+`;
+    await writeText(memoryDir, "facts/2026-03-08/hot.md", duplicate);
+    await writeText(memoryDir, "cold/facts/2026-03-08/cold.md", duplicate);
+    await writeText(memoryDir, "facts/2026-03-08/blank-a.md", duplicate.replace("id: duplicate-id", "id:"));
+    await writeText(memoryDir, "archive/2026-03-08/blank-b.md", duplicate.replace("id: duplicate-id", "id:   "));
+
+    const result = await rebuildMemoryLifecycleLedger({ memoryDir, dryRun: false });
+
+    assert.equal(result.scannedMemories, 4);
+    assert.equal(result.rebuiltRows, 2);
+    assert.equal(result.skippedBlankIdMemories.length, 2);
+    assert.equal(result.skippedDuplicateEvents.length, 2);
+    assert.equal(result.skippedDuplicateEvents.every((entry) => entry.eventId.includes("duplicate-id")), true);
+    const rows = (await readFile(result.outputPath, "utf-8")).trim().split("\n");
+    assert.equal(rows.length, 2);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
