@@ -1,6 +1,7 @@
 import path from "node:path";
 import { mkdir, rm, stat } from "node:fs/promises";
 import { StorageManager } from "../storage.js";
+import { log } from "../logger.js";
 import {
   listMemoryGovernanceRuns,
   readMemoryGovernanceRunArtifact,
@@ -51,6 +52,27 @@ export interface RebuildMemoryProjectionOptions {
   updatedBefore?: string;
 }
 
+export interface SkippedDuplicateMemory {
+  memoryId: string;
+  keptPath: string;
+  skippedPath: string;
+}
+
+export interface SkippedBlankIdMemory {
+  path: string;
+}
+
+export interface SkippedDuplicateTimelineEvent {
+  eventId: string;
+  keptPath: string;
+  skippedPath: string;
+}
+
+export interface SkippedBlankIdTimelineEvent {
+  eventId: string;
+  path: string;
+}
+
 export interface RebuildMemoryProjectionResult {
   dryRun: boolean;
   scannedMemories: number;
@@ -62,6 +84,10 @@ export interface RebuildMemoryProjectionResult {
   outputPath: string;
   backupPath?: string;
   usedLifecycleLedger: boolean;
+  skippedDuplicateMemories: SkippedDuplicateMemory[];
+  skippedBlankIdMemories: SkippedBlankIdMemory[];
+  skippedDuplicateTimelineEvents: SkippedDuplicateTimelineEvent[];
+  skippedBlankIdTimelineEvents: SkippedBlankIdTimelineEvent[];
   scope: {
     updatedAfter: string | null;
     updatedBefore: string | null;
@@ -435,6 +461,91 @@ function serializeGovernanceReviewQueueRow(
   });
 }
 
+function selectProjectionMemories(
+  tiers: MemoryFile[][],
+): {
+  allMemories: MemoryFile[];
+  memories: MemoryFile[];
+  skippedDuplicateMemories: SkippedDuplicateMemory[];
+  skippedBlankIdMemories: SkippedBlankIdMemory[];
+} {
+  const allMemories = tiers.flat();
+  const memories: MemoryFile[] = [];
+  const keptById = new Map<string, MemoryFile>();
+  const skippedDuplicateMemories: SkippedDuplicateMemory[] = [];
+  const skippedBlankIdMemories: SkippedBlankIdMemory[] = [];
+
+  // Tier order is authoritative: hot wins over cold, and cold wins over archive.
+  // Paths break ties within a tier so the winner does not depend on readdir order.
+  for (const tier of tiers) {
+    for (const memory of [...tier].sort((left, right) => left.path.localeCompare(right.path))) {
+      const memoryId = memory.frontmatter.id.trim();
+      if (!memoryId) {
+        skippedBlankIdMemories.push({ path: memory.path });
+        log.warn(`projection rebuild skipped blank memory id: path=${memory.path}`);
+        continue;
+      }
+      const kept = keptById.get(memoryId);
+      if (kept) {
+        skippedDuplicateMemories.push({
+          memoryId,
+          keptPath: kept.path,
+          skippedPath: memory.path,
+        });
+        log.warn(
+          `projection rebuild skipped duplicate memory id=${memoryId}: kept=${kept.path} skipped=${memory.path}`,
+        );
+        continue;
+      }
+      keptById.set(memoryId, memory);
+      memories.push(memory);
+    }
+  }
+
+  return { allMemories, memories, skippedDuplicateMemories, skippedBlankIdMemories };
+}
+
+function deduplicateTimelineEvents(
+  events: MemoryLifecycleEvent[],
+  sourcePathFor: (event: MemoryLifecycleEvent) => string,
+): {
+  events: MemoryLifecycleEvent[];
+  skipped: SkippedDuplicateTimelineEvent[];
+  skippedBlankIds: SkippedBlankIdTimelineEvent[];
+} {
+  const keptById = new Map<string, { event: MemoryLifecycleEvent; path: string }>();
+  const unique: MemoryLifecycleEvent[] = [];
+  const skipped: SkippedDuplicateTimelineEvent[] = [];
+  const skippedBlankIds: SkippedBlankIdTimelineEvent[] = [];
+  for (const event of sortMemoryLifecycleEvents(events)) {
+    const sourcePath = sourcePathFor(event);
+    if (!event.memoryId.trim()) {
+      skippedBlankIds.push({ eventId: event.eventId, path: sourcePath });
+      log.warn(
+        `projection rebuild skipped timeline event with blank memory id: `
+        + `event_id=${event.eventId} path=${sourcePath}`,
+      );
+      continue;
+    }
+    const kept = keptById.get(event.eventId);
+    if (kept) {
+      skipped.push({
+        eventId: event.eventId,
+        keptPath: kept.path,
+        skippedPath: sourcePath,
+      });
+      log.warn(
+        `projection rebuild skipped duplicate timeline event_id=${event.eventId}: `
+        + `kept=${kept.path} skipped=${sourcePath}`,
+      );
+      continue;
+    }
+    keptById.set(event.eventId, { event, path: sourcePath });
+    unique.push(event);
+  }
+  return { events: unique, skipped, skippedBlankIds };
+}
+
 async function loadAuthoritativeProjectionSnapshot(options: {
   memoryDir: string;
   defaultNamespace?: string;
@@ -464,22 +575,43 @@ async function loadAuthoritativeProjectionSnapshot(options: {
     updatedAfter: string | null;
     updatedBefore: string | null;
   };
+  skippedDuplicateMemories: SkippedDuplicateMemory[];
+  skippedBlankIdMemories: SkippedBlankIdMemory[];
+  skippedDuplicateTimelineEvents: SkippedDuplicateTimelineEvent[];
+  skippedBlankIdTimelineEvents: SkippedBlankIdTimelineEvent[];
 }> {
   const storage = new StorageManager(options.memoryDir);
   // Force a fresh disk read — projection verify/rebuild must see the true
   // on-disk state, not a potentially stale in-process cache.
   storage.invalidateAllMemoriesCacheForDir();
-  const allMemories = [
-    ...await storage.readAllMemories(),
-    ...await storage.readAllColdMemories(),
-    ...await storage.readArchivedMemories(),
-  ]
-    .sort((a, b) => a.frontmatter.id.localeCompare(b.frontmatter.id));
+  const selected = selectProjectionMemories([
+    await storage.readAllMemories(),
+    await storage.readAllColdMemories(),
+    await storage.readArchivedMemories(),
+  ]);
+  const allMemories = selected.allMemories;
+  const projectionMemories = selected.memories;
   const lifecycleEvents = await storage.readAllMemoryLifecycleEvents();
-  const { events, usedLifecycleLedger } = loadTimelineEvents(allMemories, lifecycleEvents);
-  const currentRows = allMemories.map((memory) => toCurrentStateRow(options.memoryDir, memory));
+  const timeline = loadTimelineEvents(projectionMemories, lifecycleEvents);
+  const lifecycleLedgerPath = path.join(
+    options.memoryDir,
+    "state",
+    "memory-lifecycle-ledger.jsonl",
+  );
+  const memoryPathById = new Map(
+    projectionMemories.map((memory) => [memory.frontmatter.id, memory.path]),
+  );
+  const deduplicatedTimeline = deduplicateTimelineEvents(
+    timeline.events,
+    (event) => timeline.usedLifecycleLedger
+      ? lifecycleLedgerPath
+      : memoryPathById.get(event.memoryId) ?? lifecycleLedgerPath,
+  );
+  const events = deduplicatedTimeline.events;
+  const usedLifecycleLedger = timeline.usedLifecycleLedger;
+  const currentRows = projectionMemories.map((memory) => toCurrentStateRow(options.memoryDir, memory));
   const scope = normalizeProjectionScope(options);
-  const scopedMemories = filterMemoriesForProjectionScope(allMemories, scope);
+  const scopedMemories = filterMemoriesForProjectionScope(projectionMemories, scope);
   const scopedMemoryIds = new Set(scopedMemories.map((memory) => memory.frontmatter.id));
   const nativeKnowledgeRows = await loadPersistedNativeKnowledgeChunks({
     memoryDir: options.memoryDir,
@@ -516,6 +648,10 @@ async function loadAuthoritativeProjectionSnapshot(options: {
     governance,
     usedLifecycleLedger,
     scope,
+    skippedDuplicateMemories: selected.skippedDuplicateMemories,
+    skippedBlankIdMemories: selected.skippedBlankIdMemories,
+    skippedDuplicateTimelineEvents: deduplicatedTimeline.skipped,
+    skippedBlankIdTimelineEvents: deduplicatedTimeline.skippedBlankIds,
   };
 }
 
@@ -1040,6 +1176,10 @@ export async function rebuildMemoryProjection(
     outputPath,
     backupPath,
     usedLifecycleLedger: snapshot.usedLifecycleLedger,
+    skippedDuplicateMemories: snapshot.skippedDuplicateMemories,
+    skippedBlankIdMemories: snapshot.skippedBlankIdMemories,
+    skippedDuplicateTimelineEvents: snapshot.skippedDuplicateTimelineEvents,
+    skippedBlankIdTimelineEvents: snapshot.skippedBlankIdTimelineEvents,
     scope: snapshot.scope,
   };
 }

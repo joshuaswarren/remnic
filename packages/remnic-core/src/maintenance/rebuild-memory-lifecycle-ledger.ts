@@ -1,6 +1,7 @@
 import path from "node:path";
 import { stat } from "node:fs/promises";
 import { StorageManager } from "../storage.js";
+import { log } from "../logger.js";
 import type { MemoryLifecycleEvent } from "../types.js";
 import { toBackupStamp } from "./backup-stamp.js";
 import { writeFileAtomically } from "./atomic-file.js";
@@ -15,12 +16,24 @@ export interface RebuildMemoryLifecycleLedgerOptions {
   now?: Date;
 }
 
+export interface SkippedLifecycleBlankIdMemory {
+  path: string;
+}
+
+export interface SkippedDuplicateLifecycleEvent {
+  eventId: string;
+  keptPath: string;
+  skippedPath: string;
+}
+
 export interface RebuildMemoryLifecycleLedgerResult {
   dryRun: boolean;
   scannedMemories: number;
   rebuiltRows: number;
   outputPath: string;
   backupPath?: string;
+  skippedBlankIdMemories: SkippedLifecycleBlankIdMemory[];
+  skippedDuplicateEvents: SkippedDuplicateLifecycleEvent[];
 }
 
 function isNodeError(err: unknown): err is NodeJS.ErrnoException {
@@ -59,16 +72,52 @@ export async function rebuildMemoryLifecycleLedger(
   const now = options.now ?? new Date();
   const outputPath = path.join(options.memoryDir, "state", "memory-lifecycle-ledger.jsonl");
   const storage = new StorageManager(options.memoryDir);
-  const allMemories = [
-    ...await storage.readAllMemories(),
-    ...await storage.readAllColdMemories(),
-    ...await storage.readArchivedMemories(),
-  ]
-    .sort((a, b) => a.frontmatter.id.localeCompare(b.frontmatter.id));
+  const tiers = [
+    await storage.readAllMemories(),
+    await storage.readAllColdMemories(),
+    await storage.readArchivedMemories(),
+  ];
+  const allMemories = tiers.flat();
+  const skippedBlankIdMemories: SkippedLifecycleBlankIdMemory[] = [];
+  const eventCandidates: Array<{ event: MemoryLifecycleEvent; path: string }> = [];
+  for (const tier of tiers) {
+    for (const memory of [...tier].sort((left, right) => left.path.localeCompare(right.path))) {
+      if (!memory.frontmatter.id.trim()) {
+        skippedBlankIdMemories.push({ path: memory.path });
+        log.warn(`lifecycle ledger rebuild skipped blank memory id: path=${memory.path}`);
+        continue;
+      }
+      for (const event of buildLifecycleEventsForMemory(memory)) {
+        eventCandidates.push({ event, path: memory.path });
+      }
+    }
+  }
 
-  const events: MemoryLifecycleEvent[] = sortMemoryLifecycleEvents(
-    allMemories.flatMap((memory) => buildLifecycleEventsForMemory(memory)),
+  const orderedEvents = sortMemoryLifecycleEvents(eventCandidates.map((candidate) => candidate.event));
+  const candidateByEvent = new Map(
+    eventCandidates.map((candidate) => [candidate.event, candidate]),
   );
+  const keptByEventId = new Map<string, { event: MemoryLifecycleEvent; path: string }>();
+  const events: MemoryLifecycleEvent[] = [];
+  const skippedDuplicateEvents: SkippedDuplicateLifecycleEvent[] = [];
+  for (const event of orderedEvents) {
+    const candidate = candidateByEvent.get(event)!;
+    const kept = keptByEventId.get(event.eventId);
+    if (kept) {
+      skippedDuplicateEvents.push({
+        eventId: event.eventId,
+        keptPath: kept.path,
+        skippedPath: candidate.path,
+      });
+      log.warn(
+        `lifecycle ledger rebuild skipped duplicate event_id=${event.eventId}: `
+        + `kept=${kept.path} skipped=${candidate.path}`,
+      );
+      continue;
+    }
+    keptByEventId.set(event.eventId, candidate);
+    events.push(event);
+  }
 
   let backupPath: string | undefined;
   if (!dryRun) {
@@ -87,5 +136,7 @@ export async function rebuildMemoryLifecycleLedger(
     rebuiltRows: events.length,
     outputPath,
     backupPath,
+    skippedBlankIdMemories,
+    skippedDuplicateEvents,
   };
 }

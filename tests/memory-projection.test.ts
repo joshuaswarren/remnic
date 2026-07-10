@@ -1,4 +1,5 @@
 import test from "node:test";
+import { initLogger } from "../src/logger.ts";
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
@@ -1611,7 +1612,6 @@ test("rebuildMemoryProjection projects entity mentions, native knowledge chunks,
       sourceHash: "hash-identity",
       preview: "Alex maintains the Engram memory system.",
     });
-
     const projectedReviewQueue = readProjectedLatestReviewQueue(memoryDir);
     assert.ok(projectedReviewQueue?.found);
     assert.equal(projectedReviewQueue?.runId, governance.runId);
@@ -1793,5 +1793,126 @@ test("projection browse filters realpath-invalid rows before counting and pagina
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
     await rm(outsidePath, { force: true });
+  }
+});
+
+test("rebuildMemoryProjection keeps hot duplicate IDs and reports skipped cold and blank records", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-anomalies-"));
+  const warnings: string[] = [];
+  const logger = {
+    info() {},
+    warn(message: string) { warnings.push(message); },
+    error() {},
+  };
+  initLogger(logger);
+  try {
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/hot.md",
+      memoryDoc({ id: "duplicate-id", content: "hot winner" }),
+    );
+    await writeText(
+      memoryDir,
+      "cold/facts/2026-03-08/cold.md",
+      memoryDoc({ id: "duplicate-id", content: "cold loser" }),
+    );
+    await writeText(
+      memoryDir,
+      "facts/2026-03-08/blank-a.md",
+      memoryDoc({ id: "", content: "blank one" }),
+    );
+    await writeText(
+      memoryDir,
+      "archive/2026-03-08/blank-b.md",
+      memoryDoc({ id: "   ", content: "blank two" }),
+    );
+    const duplicateEvent = {
+      eventId: "duplicate-event",
+      memoryId: "duplicate-id",
+      eventType: "created",
+      timestamp: "2026-03-08T00:00:00.000Z",
+      actor: "test",
+      ruleVersion: "memory-lifecycle-ledger.v1",
+    };
+    await writeText(
+      memoryDir,
+      "state/memory-lifecycle-ledger.jsonl",
+      `${JSON.stringify(duplicateEvent)}\n${JSON.stringify(duplicateEvent)}\n`,
+    );
+
+    const result = await rebuildMemoryProjection({ memoryDir, dryRun: false });
+
+    assert.equal(result.currentRows, 1);
+    assert.equal(readProjectedMemoryState(memoryDir, "duplicate-id")?.preview, "hot winner");
+    assert.equal(result.skippedDuplicateMemories.length, 1);
+    assert.equal(result.skippedDuplicateTimelineEvents.length, 1);
+    assert.equal(result.skippedBlankIdMemories.length, 2);
+    assert.match(result.skippedDuplicateMemories[0]!.keptPath, /facts\/2026-03-08\/hot\.md$/);
+    assert.match(result.skippedDuplicateMemories[0]!.skippedPath, /cold\/facts\/2026-03-08\/cold\.md$/);
+    assert.equal(warnings.some((message) => message.includes("duplicate-id") && message.includes("hot.md") && message.includes("cold.md")), true);
+    assert.equal(warnings.filter((message) => message.includes("blank memory id")).length, 2);
+  } finally {
+    initLogger();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("StorageManager rejects blank frontmatter IDs before writing", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-blank-id-write-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    const { id } = await storage.writeMemory("fact", "valid memory", { source: "test" });
+    const memory = await storage.getMemoryById(id);
+    assert.ok(memory);
+
+    await assert.rejects(
+      () => storage.writeMemoryFrontmatter(memory!, { id: " \t " }),
+      /memory frontmatter id must not be blank/,
+    );
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("StorageManager rate-limits warnings for projection fallbacks by consumer", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-warning-"));
+  const warnings: string[] = [];
+  const originalDateNow = Date.now;
+  initLogger({
+    info() {},
+    warn(message) { warnings.push(message); },
+    error() {},
+  });
+  try {
+    const storage = new StorageManager(memoryDir);
+    const { id } = await storage.writeMemory("fact", "fallback warning", { source: "test" });
+    let now = originalDateNow();
+    Date.now = () => now;
+
+    await storage.getMemoryTimeline(id);
+    await storage.getMemoryTimeline(id);
+    await storage.getProjectedMemoryState(id);
+    await storage.getProjectedMemoryState(id);
+    await storage.browseProjectedMemories({ limit: 10, offset: 0 });
+    await storage.browseProjectedMemories({ limit: 10, offset: 0 });
+    now += 5 * 60_000;
+    await storage.getMemoryTimeline(id);
+
+    assert.equal(
+      warnings.filter((message) => message.includes("getMemoryTimeline") && message.includes("projection")).length,
+      2,
+    );
+    assert.equal(
+      warnings.filter((message) => message.includes("getProjectedMemoryState") && message.includes("projection")).length,
+      1,
+    );
+    assert.equal(
+      warnings.filter((message) => message.includes("browseProjectedMemories") && message.includes("projection")).length,
+      1,
+    );
+  } finally {
+    Date.now = originalDateNow;
+    initLogger();
+    await rm(memoryDir, { recursive: true, force: true });
   }
 });
