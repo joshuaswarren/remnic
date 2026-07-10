@@ -5535,6 +5535,7 @@ export class StorageManager {
       `resolvedAt: "${new Date().toISOString()}"\n---\n\n`,
     );
     await this.writeStorageSecureFile(q.filePath, raw);
+    this.invalidateQuestionsCache();
     log.debug(`resolved question ${id}`);
     return true;
   }

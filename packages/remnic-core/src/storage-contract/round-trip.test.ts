@@ -12,6 +12,8 @@
  */
 
 import assert from "node:assert/strict";
+import { utimes } from "node:fs/promises";
+import path from "node:path";
 import type { MemoryCategory } from "../types.js";
 import test from "node:test";
 
@@ -212,6 +214,9 @@ test("question-queue: writeQuestion → readQuestions → resolveQuestion round-
     // resolve marks it resolved
     const resolved = await storage.resolveQuestion(id);
     assert.equal(resolved, true);
+    // Directory mtimes are only a cross-process hint and may be coarser than
+    // the cache timestamp. Same-process resolution must invalidate directly.
+    await utimes(path.join(storage.dir, "questions"), new Date(0), new Date(0));
 
     const afterResolve = await storage.readQuestions({ unresolvedOnly: true });
     assert.ok(!afterResolve.some((x) => x.id === id), "resolved question must not appear in unresolvedOnly");
