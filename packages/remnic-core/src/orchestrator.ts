@@ -949,8 +949,8 @@ export class Orchestrator {
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
     }
-    await drainRecallWrites(this);
     this.maintenanceScheduler.dispose();
+    await drainRecallWrites(this);
     await this.namespaceSearchRouter.dispose();
     await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
     if (this.conversationQmd && this.conversationQmd !== this.qmd) {

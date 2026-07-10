@@ -6,7 +6,7 @@ import test from "node:test";
 import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 
-test("destroy waits for tracked background writes before disposing runtime state", async () => {
+test("destroy cancels maintenance and waits for tracked writes before disposing search backends", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-background-writes-"));
   const orchestrator = new Orchestrator(
     parseConfig({
@@ -21,6 +21,14 @@ test("destroy waits for tracked background writes before disposing runtime state
       compoundingEnabled: false,
     })
   );
+  const maintenanceScheduler = (orchestrator as unknown as { maintenanceScheduler: { dispose(): void } })
+    .maintenanceScheduler;
+  const originalMaintenanceDispose = maintenanceScheduler.dispose.bind(maintenanceScheduler);
+  let maintenanceDisposed = false;
+  maintenanceScheduler.dispose = () => {
+    maintenanceDisposed = true;
+    originalMaintenanceDispose();
+  };
   const writeGate = Promise.withResolvers<void>();
   let destroySettled = false;
   let destroyPromise: Promise<void> | undefined;
@@ -33,6 +41,7 @@ test("destroy waits for tracked background writes before disposing runtime state
 
     await new Promise<void>((resolve) => setImmediate(resolve));
     assert.equal(destroySettled, false, "destroy must remain pending while a tracked write is pending");
+    assert.equal(maintenanceDisposed, true, "destroy must cancel maintenance before waiting for writes");
 
     writeGate.resolve();
     await destroyPromise;
