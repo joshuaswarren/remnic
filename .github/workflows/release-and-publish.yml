@@ -688,9 +688,8 @@ jobs:
               rm -f "${publish_log}"
               exit 0
             fi
-            if grep -q "Too many bytes read in a single function execution" "${publish_log}" \
-              && grep -qE "syncPackage[A-Za-z]*SearchDigests?" "${publish_log}"; then
-              echo "::notice title=ClawHub publish skipped::ClawHub publish failed in its backend search-digest sync. npm and GitHub release publication already completed; retry the ClawHub publish after ClawHub fixes or clears the digest limit."
+            if grep -q "Too many bytes read in a single function execution" "${publish_log}"; then
+              echo "::notice title=ClawHub publish skipped::ClawHub publish hit its backend read limit. npm and GitHub release publication already completed; retry the ClawHub publish after ClawHub fixes or clears the limit."
               rm -f "${publish_log}"
               exit 0
             fi
