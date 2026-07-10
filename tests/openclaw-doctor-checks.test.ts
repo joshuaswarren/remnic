@@ -182,7 +182,7 @@ test("doctor: OPENAI_API_KEY optionality is scoped to the active runtime mode", 
   );
   assert.ok(
     src.includes("isOpenaiApiKeyDisabled,") &&
-    src.includes("isOpenaiApiKeyDisabled((remnicCfg as Record<string, unknown>).openaiApiKey)"),
+      src.includes("isOpenaiApiKeyDisabled(remnicCfg.openaiApiKey)"),
     "doctor must use the shared core helper to treat CLI-style string false as an explicit standalone OpenAI key opt-out",
   );
   assert.ok(

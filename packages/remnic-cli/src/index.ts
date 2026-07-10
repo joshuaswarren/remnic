@@ -44,6 +44,7 @@ import {
   parseConfig,
   isOpenaiApiKeyDisabled,
   resolveEnvVars,
+  resolveRemnicConfigRecord,
   Orchestrator,
   EngramAccessService,
   initLogger,
@@ -3903,7 +3904,7 @@ export function resolveMemoryDir(): string {
     const raw = fs.existsSync(configPath)
       ? JSON.parse(fs.readFileSync(configPath, "utf8"))
       : {};
-    const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+    const remnicCfg = resolveRemnicConfigRecord(raw);
     if (typeof remnicCfg.memoryDir === "string" && remnicCfg.memoryDir.length > 0) {
       return normalizeMemoryDirPath(remnicCfg.memoryDir);
     }
@@ -4456,7 +4457,7 @@ async function cmdQuery(queryText: string, json: boolean, explain: boolean): Pro
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+  const remnicCfg = resolveRemnicConfigRecord(raw);
   const config = parseConfig(remnicCfg);
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
@@ -4738,7 +4739,7 @@ async function cmdXray(rest: string[]): Promise<void> {
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+  const remnicCfg = resolveRemnicConfigRecord(raw);
   const config = parseConfig(remnicCfg);
   const orchestrator = new Orchestrator(config);
   await orchestrator.initialize();
@@ -4769,7 +4770,7 @@ async function cmdVersions(rest: string[]): Promise<void> {
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+  const remnicCfg = resolveRemnicConfigRecord(raw);
   const config = parseConfig(remnicCfg);
 
   if (!config.versioningEnabled) {
@@ -4900,7 +4901,7 @@ async function cmdEnrich(rest: string[]): Promise<void> {
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+  const remnicCfg = resolveRemnicConfigRecord(raw);
   const config = parseConfig(remnicCfg);
 
   const subcommand = rest[0];
@@ -5212,7 +5213,7 @@ Shared with:
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+  const remnicCfg = resolveRemnicConfigRecord(raw);
   const config = parseConfig(remnicCfg);
 
   const memoryDir = expandTilde(
@@ -5236,7 +5237,7 @@ async function cmdExtensions(action: string, rest: string[]): Promise<void> {
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+  const remnicCfg = resolveRemnicConfigRecord(raw);
   const config = parseConfig(remnicCfg);
 
   const root = resolveExtensionsRoot(config);
@@ -5337,7 +5338,7 @@ async function cmdBriefing(rest: string[]): Promise<void> {
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+  const remnicCfg = resolveRemnicConfigRecord(raw);
   const config = parseConfig(remnicCfg);
 
   if (!config.briefing.enabled) {
@@ -5478,19 +5479,21 @@ async function cmdDoctor(): Promise<void> {
   if (configExists) {
     try {
       const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
-      const remnicCfg = raw.remnic ?? raw.engram ?? raw;
-      standaloneOpenaiApiKeyExplicitlyFalse =
-        typeof remnicCfg === "object" &&
-        remnicCfg !== null &&
-        !Array.isArray(remnicCfg) &&
-        isOpenaiApiKeyDisabled((remnicCfg as Record<string, unknown>).openaiApiKey);
+      const remnicCfg = resolveRemnicConfigRecord(raw);
+      standaloneOpenaiApiKeyExplicitlyFalse = isOpenaiApiKeyDisabled(remnicCfg.openaiApiKey);
       standaloneConfig = parseConfig(remnicCfg);
     } catch (err) {
       standaloneConfigError = err instanceof Error ? err.message : String(err);
     }
   }
 
-  const memoryDir = resolveMemoryDir();
+  let memoryDir: string;
+  try {
+    memoryDir = resolveMemoryDir();
+  } catch {
+    // Doctor must keep running when the config it is diagnosing is malformed.
+    memoryDir = parseConfig({}).memoryDir;
+  }
   try {
     fs.mkdirSync(memoryDir, { recursive: true });
     checks.push({ name: "Memory directory", ok: true, detail: memoryDir });
@@ -6070,7 +6073,7 @@ async function cmdReview(action: string, rest: string[]): Promise<void> {
       const rawCfg = fs.existsSync(configPath)
         ? JSON.parse(fs.readFileSync(configPath, "utf8"))
         : {};
-      const remnicCfg = rawCfg.remnic ?? rawCfg.engram ?? rawCfg;
+      const remnicCfg = resolveRemnicConfigRecord(rawCfg);
       const config = parseConfig(remnicCfg);
       tombstonesConfig = {
         enabled: config.tombstonesEnabled,
@@ -8595,7 +8598,7 @@ function resolveOfflineSyncUserExcludes(rest: string[]): RegExp[] {
     const raw = fs.existsSync(configPath)
       ? JSON.parse(fs.readFileSync(configPath, "utf8"))
       : {};
-    const remnicCfg = (raw.remnic ?? raw.engram ?? raw) as Record<string, unknown>;
+    const remnicCfg = resolveRemnicConfigRecord(raw);
     const configured = remnicCfg.offlineSyncExcludes;
     if (configured !== undefined && configured !== null) {
       if (!Array.isArray(configured)) {
@@ -9242,7 +9245,7 @@ async function cmdConnectors(action: string, rest: string[], json: boolean): Pro
     const raw = fs.existsSync(configPath)
       ? JSON.parse(fs.readFileSync(configPath, "utf8"))
       : {};
-    const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+    const remnicCfg = resolveRemnicConfigRecord(raw);
     const config = parseConfig(remnicCfg);
     const orchestrator = new Orchestrator(config);
     try {
@@ -9389,7 +9392,7 @@ async function cmdConnectorsMarketplace(
   // Unwrap the plugin-scoped config block (remnic or engram wrapper) so
   // parseConfig receives the correct inner object — same pattern used by
   // other CLI entrypoints (resolveMemoryDir, cmdBriefing, etc.).
-  const pluginConfig = rawConfig.remnic ?? rawConfig.engram ?? rawConfig;
+  const pluginConfig = resolveRemnicConfigRecord(rawConfig);
   const config = parseConfig(pluginConfig);
 
   if (subAction === "generate") {
@@ -9638,7 +9641,7 @@ async function cmdLegacyBenchmark(action: string, rest: string[], json: boolean)
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+  const remnicCfg = resolveRemnicConfigRecord(raw);
   const config = parseConfig(remnicCfg);
   const orchestrator = new Orchestrator(config);
   const service = new EngramAccessService(orchestrator);
@@ -10400,7 +10403,7 @@ async function daemonStatus(): Promise<void> {
     const raw = fs.existsSync(configPath)
       ? JSON.parse(fs.readFileSync(configPath, "utf8"))
       : {};
-    const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+    const remnicCfg = resolveRemnicConfigRecord(raw);
     const config = parseConfig(remnicCfg);
     const extRoot = resolveExtensionsRoot(config);
     const noopLog = { warn: () => {}, debug: () => {} };
@@ -10632,7 +10635,7 @@ async function cmdBinary(rest: string[]): Promise<void> {
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+  const remnicCfg = resolveRemnicConfigRecord(raw);
   const config = parseConfig(remnicCfg);
   const memoryDir = resolveMemoryDir();
 
@@ -11155,7 +11158,7 @@ async function cmdTaxonomy(rest: string[]): Promise<void> {
   const raw = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, "utf8"))
     : {};
-  const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+  const remnicCfg = resolveRemnicConfigRecord(raw);
   const config = parseConfig(remnicCfg);
 
   if (!config.taxonomyEnabled) {
@@ -12175,12 +12178,7 @@ Other:
           const raw = fs.existsSync(configPath)
             ? JSON.parse(fs.readFileSync(configPath, "utf8"))
             : {};
-          const remnicCfg =
-            raw !== null && typeof raw === "object"
-              ? ((raw as Record<string, unknown>).remnic ??
-                (raw as Record<string, unknown>).engram ??
-                raw)
-              : {};
+          const remnicCfg = resolveRemnicConfigRecord(raw);
           const config = parseConfig(remnicCfg);
           wearablesOrchestrator = new Orchestrator(config);
           await wearablesOrchestrator.initialize();
@@ -12244,7 +12242,7 @@ Other:
           const raw = fs.existsSync(configPath)
             ? JSON.parse(fs.readFileSync(configPath, "utf8"))
             : {};
-          const remnicCfg = raw.remnic ?? raw.engram ?? raw;
+          const remnicCfg = resolveRemnicConfigRecord(raw);
           const config = parseConfig(remnicCfg);
           orchestratorSingleton = new Orchestrator(config);
           await orchestratorSingleton.initialize();
