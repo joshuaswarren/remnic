@@ -351,10 +351,11 @@ export function updateProjectedMemoryPath(
   memoryId: string,
   pathRel: string,
 ): void {
+  const pathValid = isProjectedMemoryPathValid(memoryDir, pathRel) ? 1 : 0;
   updateProjectionBestEffort(
     memoryDir,
-    "UPDATE memory_current SET path_rel = ?, path_valid = 1 WHERE memory_id = ?",
-    [pathRel, memoryId],
+    "UPDATE memory_current SET path_rel = ?, path_valid = ? WHERE memory_id = ?",
+    [pathRel, pathValid, memoryId],
   );
 }
 

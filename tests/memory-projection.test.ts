@@ -2153,3 +2153,30 @@ test("StorageManager rate-limits warnings for projection fallbacks by consumer",
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+
+test("updateProjectedMemoryPath derives validity for symlink-escaping targets", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-move-escape-"));
+  const outsideDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-move-outside-"));
+  try {
+    await writeText(memoryDir, "facts/fact-escape.md", memoryDoc({
+      id: "fact-escape",
+      content: "projected memory",
+    }));
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+
+    const outsidePath = path.join(outsideDir, "escaped.md");
+    await writeFile(outsidePath, "escaped body", "utf-8");
+    await mkdir(path.join(memoryDir, "cold", "facts"), { recursive: true });
+    await symlink(outsidePath, path.join(memoryDir, "cold", "facts", "fact-escape.md"));
+
+    updateProjectedMemoryPath(memoryDir, "fact-escape", "cold/facts/fact-escape.md");
+
+    const browse = readProjectedMemoryBrowse(memoryDir, { limit: 5, offset: 0 });
+    assert.ok(browse);
+    assert.equal(browse.total, 0);
+    assert.equal(browse.memories.length, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+    await rm(outsideDir, { recursive: true, force: true });
+  }
+});
