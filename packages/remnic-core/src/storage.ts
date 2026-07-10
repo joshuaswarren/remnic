@@ -4,6 +4,7 @@ import { createHash } from "node:crypto"
 import { normalizeContent, computeContentHash } from "./content-hash.js";;
 import path from "node:path";
 import { log } from "./logger.js";
+import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
 import {
   readMaybeEncryptedLines,
@@ -308,6 +309,7 @@ function stripCitationMarkersForHashRemoval(value: string, template: string): st
 }
 
 function serializeFrontmatter(fm: MemoryFrontmatter): string {
+  assertMemoryFrontmatterId(fm);
   const lines = [
     "---",
     `id: ${fm.id}`,
@@ -6020,8 +6022,8 @@ export class StorageManager {
         lastAccessed: entry.lastAccessed,
       };
 
-      const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
       try {
+        const fileContent = `${serializeFrontmatter(newFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
         updated++;
       } catch (err) {
@@ -6070,8 +6072,7 @@ export class StorageManager {
 
   async getProjectedMemoryState(id: string): Promise<MemoryProjectionCurrentState | null> {
     const projected = readProjectedMemoryState(this.baseDir, id);
-    if (projected) return projected;
-
+    if (projected) return projected; warnProjectionFallback(this.baseDir, "getProjectedMemoryState");
     const active = await this.getMemoryById(id);
     if (active) return this.toProjectedCurrentState(active, "active");
 
@@ -6084,7 +6085,8 @@ export class StorageManager {
   async browseProjectedMemories(
     options: ProjectedMemoryBrowseOptions,
   ): Promise<ProjectedMemoryBrowsePage | null> {
-    return readProjectedMemoryBrowse(this.baseDir, options);
+    return readProjectedMemoryBrowse(this.baseDir, options)
+      ?? warnProjectionFallback(this.baseDir, "browseProjectedMemories");
   }
 
   async getProjectedGovernanceRecord(): Promise<ReturnType<typeof readProjectedGovernanceRecord>> {
@@ -6124,8 +6126,7 @@ export class StorageManager {
     if (cappedLimit === 0) return [];
 
     const projected = readProjectedMemoryTimeline(this.baseDir, memoryId, cappedLimit);
-    if (projected && projected.length > 0) return projected;
-
+    if (projected && projected.length > 0) return projected; warnProjectionFallback(this.baseDir, "getMemoryTimeline");
     const events = await this.readAllMemoryLifecycleEvents();
     return events.filter((event) => event.memoryId === memoryId).slice(-cappedLimit);
   }
@@ -6382,9 +6383,8 @@ export class StorageManager {
         updated: now,
       };
 
-      const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
-
       try {
+        const fileContent = `${serializeFrontmatter(updatedFm)}\n\n${memory.content}\n`;
         await this.writeStorageSecureFile(memory.path, fileContent);
         await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.archiveMemories", {
           memoryId: id,
