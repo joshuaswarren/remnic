@@ -437,6 +437,7 @@ export function isProjectedMemoryPathValid(memoryDir: string, pathRel: string): 
 function projectedBrowseRowFromCurrentRow(
   memoryDir: string,
   row: Record<string, unknown>,
+  resolvedFilePath?: string,
   requireExisting = false,
 ): ProjectedMemoryBrowseRow | null {
   if (
@@ -447,7 +448,7 @@ function projectedBrowseRowFromCurrentRow(
   ) {
     return null;
   }
-  const filePath = resolveProjectedMemoryPath(memoryDir, row.path_rel, requireExisting);
+  const filePath = resolvedFilePath ?? resolveProjectedMemoryPath(memoryDir, row.path_rel, requireExisting);
   if (!filePath) return null;
   return {
     id: row.memory_id,
@@ -718,7 +719,7 @@ export function readProjectedMemoryBrowse(
         }
         if (!matches) continue;
         if (total >= options.offset && pageRows.length < options.limit) {
-          const browseRow = projectedBrowseRowFromCurrentRow(memoryDir, row);
+          const browseRow = projectedBrowseRowFromCurrentRow(memoryDir, row, filePath);
           if (browseRow) pageRows.push(browseRow);
         }
         total += 1;
@@ -754,7 +755,7 @@ export function readProjectedMemoryBrowse(
       const pageRows: ProjectedMemoryBrowseRow[] = [];
       let validRowsSeen = 0;
       for (const row of rows) {
-        const browseRow = projectedBrowseRowFromCurrentRow(memoryDir, row, true);
+        const browseRow = projectedBrowseRowFromCurrentRow(memoryDir, row, undefined, true);
         if (!browseRow) continue;
         if (validRowsSeen >= options.offset) {
           pageRows.push(browseRow);

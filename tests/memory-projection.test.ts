@@ -1977,6 +1977,35 @@ test("projection browse drops unmanaged missing files but leaves totals stale", 
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("projection text browse reuses the resolved path for returned rows", async (t) => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-query-resolve-"));
+  try {
+    await writeText(memoryDir, "facts/fact-query.md", memoryDoc({
+      id: "fact-query",
+      content: "query resolution needle",
+    }));
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+    const fs = process.getBuiltinModule("fs");
+    const originalRealpathSync = fs.realpathSync;
+    let realpathCalls = 0;
+    t.mock.method(fs, "realpathSync", (...args: Parameters<typeof fs.realpathSync>) => {
+      realpathCalls += 1;
+      return originalRealpathSync(...args);
+    });
+
+    const browse = readProjectedMemoryBrowse(memoryDir, {
+      query: "query resolution needle",
+      limit: 1,
+      offset: 0,
+    });
+
+    assert.equal(browse?.memories[0]?.id, "fact-query");
+    assert.ok(realpathCalls <= 2);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 
 
 
