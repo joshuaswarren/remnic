@@ -5487,7 +5487,13 @@ async function cmdDoctor(): Promise<void> {
     }
   }
 
-  const memoryDir = resolveMemoryDir();
+  let memoryDir: string;
+  try {
+    memoryDir = resolveMemoryDir();
+  } catch {
+    // Doctor must keep running when the config it is diagnosing is malformed.
+    memoryDir = parseConfig({}).memoryDir;
+  }
   try {
     fs.mkdirSync(memoryDir, { recursive: true });
     checks.push({ name: "Memory directory", ok: true, detail: memoryDir });

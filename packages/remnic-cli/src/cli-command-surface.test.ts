@@ -241,6 +241,25 @@ test("doctor runs diagnostics and reports the Node.js version check", async () =
   assert.equal(result.exitCode, 0);
   assert.match(result.stdout, /Node\.js version/);
 });
+
+test("doctor reports malformed nested config without aborting diagnostics", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-doctor-invalid-config-"));
+  try {
+    fs.writeFileSync(
+      path.join(dir, "remnic.config.json"),
+      JSON.stringify({ remnic: [] }),
+      "utf8",
+    );
+
+    const result = await runCli(["doctor"], { cwd: dir });
+
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /Node\.js version/);
+    assert.match(result.stdout, /OPENAI_API_KEY: config parse failed/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 test("dedup against an empty memory dir reports zero duplicates", async () => {
   const result = await runCli(["dedup"]);
   assert.equal(result.exitCode, 0);
