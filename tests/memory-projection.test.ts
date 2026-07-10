@@ -2006,6 +2006,31 @@ test("projection text browse reuses the resolved path for returned rows", async 
   }
 });
 
+test("projection text browse drops deleted files that match on stored metadata", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-query-deleted-"));
+  try {
+    for (const suffix of ["kept", "gone"]) {
+      await writeText(memoryDir, `facts/fact-${suffix}.md`, memoryDoc({
+        id: `fact-${suffix}`,
+        content: `shared metadata needle ${suffix}`,
+      }));
+    }
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+    await rm(path.join(memoryDir, "facts", "fact-gone.md"));
+
+    const browse = readProjectedMemoryBrowse(memoryDir, {
+      query: "shared metadata needle",
+      limit: 10,
+      offset: 0,
+    });
+
+    assert.ok(browse);
+    assert.deepEqual(browse.memories.map((memory) => memory.id), ["fact-kept"]);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
 
 
 

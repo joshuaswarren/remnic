@@ -702,7 +702,11 @@ export function readProjectedMemoryBrowse(
 
       for (const row of rows) {
         if (typeof row.memory_id !== "string" || typeof row.path_rel !== "string") continue;
-        const filePath = resolveProjectedMemoryPath(memoryDir, row.path_rel);
+        const filePath = resolveProjectedMemoryPath(
+          memoryDir,
+          row.path_rel,
+          currentSelect.hasPathValid,
+        );
         if (!filePath) continue;
         const preview = typeof row.preview_text === "string" ? row.preview_text.toLowerCase() : "";
         const category = typeof row.category === "string" ? row.category.toLowerCase() : "";
