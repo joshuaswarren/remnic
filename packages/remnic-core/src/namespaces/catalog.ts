@@ -462,6 +462,9 @@ export class NamespaceCatalog {
   // Test-only observation seam: fires only when the JSONL file is fully read.
   // Cached loads do not invoke it.
   protected onCatalogReadForTest?: () => void;
+  // Test-only seam: fires after this process appends but before it stats the
+  // file to refresh the cache identity.
+  protected onAfterCatalogAppendForTest?: () => Promise<void>;
   // Test-only seam (round 7 — NEZkA): fires inside a mutating rebuild's HELD-lock
   // critical section, after the final cross-process re-merge `loadCompacted()` and
   // BEFORE the atomic `rename()`. This is the EXACT window in which a check-then-
@@ -1717,7 +1720,7 @@ export class NamespaceCatalog {
       // scan, which the in-process `queueCritical` alone cannot see. Only runs
       // when we hold the lock (round 6, codex P2 — NBPmY): an unlocked rebuild
       // must not re-merge then rename, or it races a concurrent lock holder.
-      const latest = await this.loadCompacted();
+      const latest = await this.loadCompacted(true);
       for (const [ns, fresh] of latest) {
         const current = rebuilt.get(ns);
         if (!current) {
@@ -1916,7 +1919,7 @@ export class NamespaceCatalog {
   // ── Persistence ──────────────────────────────────────────────────────────
 
   /** Load the JSONL log and fold it into current state (last-record-wins). */
-  private async loadCompacted(): Promise<Map<string, NamespaceRecord>> {
+  private async loadCompacted(forceFresh = false): Promise<Map<string, NamespaceRecord>> {
     const records = new Map<string, NamespaceRecord>();
     let handle;
     try {
@@ -1935,6 +1938,7 @@ export class NamespaceCatalog {
         ino: fileStat.ino,
       };
       if (
+        !forceFresh &&
         this.compactedCache &&
         this.compactedCache.identity.size === identity.size &&
         this.compactedCache.identity.mtimeMs === identity.mtimeMs &&
@@ -2017,9 +2021,13 @@ export class NamespaceCatalog {
    */
   private async appendUnchained(record: NamespaceRecord): Promise<void> {
     const line = serializeRecord(record) + "\n";
+    const lineByteLength = Buffer.byteLength(line, "utf8");
     await mkdir(this.stateDir, { recursive: true });
     await appendFile(this.catalogPath, line, "utf8");
-    await this.refreshCacheAfterAppend(record);
+    if (this.onAfterCatalogAppendForTest) {
+      await this.onAfterCatalogAppendForTest();
+    }
+    await this.refreshCacheAfterAppend(record, lineByteLength);
   }
 
   /**
@@ -2039,12 +2047,32 @@ export class NamespaceCatalog {
     await this.refreshCacheIdentity(new Map(records.map((record) => [record.namespace, record])));
   }
 
-  private async refreshCacheAfterAppend(record: NamespaceRecord): Promise<void> {
-    const cachedRecords = this.compactedCache?.records;
-    if (!cachedRecords) return;
-    const prior = cachedRecords.get(record.namespace);
-    cachedRecords.set(record.namespace, prior ? mergeNewerTouchFields(record, prior) : record);
-    await this.refreshCacheIdentity(cachedRecords);
+  private async refreshCacheAfterAppend(
+    record: NamespaceRecord,
+    lineByteLength: number,
+  ): Promise<void> {
+    const cached = this.compactedCache;
+    if (!cached) return;
+    const expectedSize = cached.identity.size + lineByteLength;
+    try {
+      const fileStat = await stat(this.catalogPath);
+      if (fileStat.size !== expectedSize || fileStat.ino !== cached.identity.ino) {
+        this.compactedCache = undefined;
+        return;
+      }
+      const prior = cached.records.get(record.namespace);
+      cached.records.set(record.namespace, prior ? mergeNewerTouchFields(record, prior) : record);
+      this.compactedCache = {
+        identity: {
+          size: fileStat.size,
+          mtimeMs: fileStat.mtimeMs,
+          ino: fileStat.ino,
+        },
+        records: cached.records,
+      };
+    } catch {
+      this.compactedCache = undefined;
+    }
   }
 
   private async refreshCacheIdentity(records: Map<string, NamespaceRecord>): Promise<void> {

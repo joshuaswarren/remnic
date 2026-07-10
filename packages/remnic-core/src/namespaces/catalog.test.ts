@@ -52,6 +52,10 @@ class CountingNamespaceCatalog extends NamespaceCatalog {
       this.catalogReadCount++;
     };
   }
+
+  setAfterAppendHook(hook: () => Promise<void>): void {
+    this.onAfterCatalogAppendForTest = hook;
+  }
 }
 
 test("markWrite registers a dynamic project namespace in the catalog", async () => {
@@ -113,6 +117,39 @@ test("repeated touches do not re-read an unchanged catalog", async () => {
     await catalog.markMaintenance("alpha", "test");
 
     assert.equal(catalog.catalogReadCount, 1);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("a foreign append between append and stat invalidates the cache", async () => {
+  const memoryDir = await mkMemoryDir();
+  try {
+    const catalog = new CountingNamespaceCatalog(makeConfig(memoryDir));
+    await catalog.markWrite("alpha", { discoveredBy: "write" });
+
+    const catalogPath = path.join(memoryDir, "state", "namespaces.jsonl");
+    const alpha = JSON.parse((await readFile(catalogPath, "utf8")).trim());
+    const externalNamespace = "racing-external";
+    catalog.setAfterAppendHook(async () => {
+      await appendFile(
+        catalogPath,
+        `${JSON.stringify({
+          ...alpha,
+          namespace: externalNamespace,
+          identityToken: namespaceIdentityToken(externalNamespace),
+          storageDir: path.join(memoryDir, "namespaces", namespaceIdentityToken(externalNamespace)),
+        })}\n`,
+        "utf8",
+      );
+    });
+
+    await catalog.markRead("alpha");
+    const readsBeforeReload = catalog.catalogReadCount;
+    const records = await catalog.listNamespaces();
+
+    assert.equal(catalog.catalogReadCount, readsBeforeReload + 1);
+    assert.ok(records.some((record) => record.namespace === externalNamespace));
   } finally {
     await rm(memoryDir, { recursive: true, force: true });
   }
