@@ -251,6 +251,7 @@ import {
 import { formatProfileTraceAscii } from "./profiling.js";
 import { resolveAccessSetupCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities } from "./capabilities.js";
 import { resolveRecallEnhancementCapabilities } from "./capabilities.js";
+import { AccessObserveWriteSurface } from "./access-observe-write-surface.js";
 import { AccessLcmSurface } from "./access-lcm-surface.js";
 import { AccessAdminOpsSurface } from "./access-admin-ops-surface.js";
 import { AccessRecallSurface } from "./access-recall-surface.js";
@@ -1308,6 +1309,18 @@ export class EngramAccessService {
   private readonly budgetLocks = new Map<string, Promise<void>>();
   private readonly budget: CrossNamespaceBudget;
   private readonly auditAdapter: AccessAuditAdapter | null;
+
+  /** AccessObserveWriteSurface (access-service decomposition). Lazy; selfDeps live wiring. */
+  private _accessObserveWriteSurface: AccessObserveWriteSurface | undefined;
+
+  private get accessObserveWriteSurface(): AccessObserveWriteSurface {
+    if (!this._accessObserveWriteSurface) {
+      this._accessObserveWriteSurface = new AccessObserveWriteSurface(
+        selfDeps<ConstructorParameters<typeof AccessObserveWriteSurface>[0]>(this),
+      );
+    }
+    return this._accessObserveWriteSurface;
+  }
 
   /** AccessLcmSurface (access-service decomposition). Lazy; selfDeps live wiring. */
   private _accessLcmSurface: AccessLcmSurface | undefined;
@@ -2468,89 +2481,12 @@ export class EngramAccessService {
     namespace: string,
     collection: string,
   ): Promise<EngramAccessQmdHealthResponse> {
-    if (searchBackend !== "qmd" || !qmdEnabled) {
-      return {
-        enabled: qmdEnabled,
-        active: false,
-        degraded: false,
-        mode: searchBackend !== "qmd" ? "not-selected" : "disabled",
-        collection,
-        collectionState: "skipped",
-        installedVersion: null,
-        supportedVersion: null,
-        supported: null,
-        upgradeAvailable: null,
-        doctorAvailable: null,
-        debugStatus: searchBackend !== "qmd" ? `backend=${searchBackend}` : "backend=disabled",
-      };
-    }
-
-    if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true) {
-      const namespaceHealth = await this.namespaceQmdHealth(searchBackend, qmdEnabled, namespace, collection);
-      if (namespaceHealth) return namespaceHealth;
-    }
-
-    const qmd = this.orchestrator.qmd;
-    if (!qmd) {
-      return {
-        enabled: true,
-        active: false,
-        degraded: true,
-        mode: "fallback",
-        collection,
-        collectionState: "unknown",
-        installedVersion: null,
-        supportedVersion: null,
-        supported: null,
-        upgradeAvailable: null,
-        doctorAvailable: null,
-        debugStatus: "backend=unavailable",
-      };
-    }
-    const diagnosticAvailable = await this.qmdProbeAvailable(searchBackend, qmdEnabled);
-    const operationalAvailable = diagnosticAvailable || qmd.isAvailable();
-    const collectionState = diagnosticAvailable
-      ? await this.qmdCollectionState(searchBackend, qmdEnabled, collection)
-      : "unknown";
-    const active = operationalAvailable && collectionState !== "missing";
-    const degraded =
-      searchBackend === "qmd" &&
-      qmdEnabled &&
-      (!active || !diagnosticAvailable || collectionState === "unknown");
-    const debugStatus = qmd.debugStatus();
-    const versionStatus =
-      "getVersionStatus" in qmd && typeof qmd.getVersionStatus === "function"
-        ? qmd.getVersionStatus()
-        : null;
-    const daemonMode =
-      "isDaemonMode" in qmd && typeof qmd.isDaemonMode === "function"
-        ? qmd.isDaemonMode() === true
-        : false;
-    const mode =
-      searchBackend !== "qmd"
-        ? "not-selected"
-        : !qmdEnabled
-        ? "disabled"
-        : !active
-        ? "fallback"
-        : daemonMode
-        ? "daemon"
-        : "cli";
-
-    return {
-      enabled: qmdEnabled,
-      active,
-      degraded,
-      mode,
+    return this.accessObserveWriteSurface.qmdHealth(
+      searchBackend,
+      qmdEnabled,
+      namespace,
       collection,
-      collectionState,
-      installedVersion: versionStatus?.installedVersion ?? null,
-      supportedVersion: versionStatus?.supportedVersion ?? null,
-      supported: versionStatus?.supported ?? null,
-      upgradeAvailable: versionStatus?.upgradeAvailable ?? null,
-      doctorAvailable: versionStatus?.capabilities?.doctor ?? null,
-      debugStatus,
-    };
+    );
   }
 
   private async namespaceQmdHealth(
@@ -2559,77 +2495,12 @@ export class EngramAccessService {
     namespace: string,
     fallbackCollection: string,
   ): Promise<EngramAccessQmdHealthResponse | null> {
-    if (searchBackend !== "qmd" || !qmdEnabled) return null;
-    const searchHealthForNamespace = (
-      this.orchestrator as Orchestrator & {
-        searchHealthForNamespace?: (
-          namespace: string,
-          execution?: { signal?: AbortSignal },
-        ) => Promise<{
-          collection: string;
-          available: boolean;
-          collectionState: EngramAccessQmdCollectionState;
-          debugStatus: string;
-          installedVersion: string | null;
-          supportedVersion: string | null;
-          supported: boolean | null;
-          upgradeAvailable: boolean | null;
-          doctorAvailable: boolean | null;
-          daemonMode: boolean | null;
-        }>;
-      }
-    ).searchHealthForNamespace;
-    if (typeof searchHealthForNamespace !== "function") return null;
-
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 2_000);
-    timer.unref?.();
-    try {
-      const health = await searchHealthForNamespace.call(this.orchestrator, namespace, {
-        signal: controller.signal,
-      });
-      const active = health.available && health.collectionState !== "missing";
-      const degraded = !active || health.collectionState === "unknown";
-      const mode =
-        !active
-          ? "fallback"
-          : health.daemonMode === true
-          ? "daemon"
-          : "cli";
-
-      return {
-        enabled: true,
-        active,
-        degraded,
-        mode,
-        collection: health.collection || fallbackCollection,
-        collectionState: health.collectionState,
-        installedVersion: health.installedVersion,
-        supportedVersion: health.supportedVersion,
-        supported: health.supported,
-        upgradeAvailable: health.upgradeAvailable,
-        doctorAvailable: health.doctorAvailable,
-        debugStatus: health.debugStatus,
-      };
-    } catch (error) {
-      const detail = displayErrorDetail(error) || "unknown";
-      return {
-        enabled: true,
-        active: false,
-        degraded: true,
-        mode: "fallback",
-        collection: fallbackCollection,
-        collectionState: "unknown",
-        installedVersion: null,
-        supportedVersion: null,
-        supported: null,
-        upgradeAvailable: null,
-        doctorAvailable: null,
-        debugStatus: `backend=namespace-unavailable error=${detail}`,
-      };
-    } finally {
-      clearTimeout(timer);
-    }
+    return this.accessObserveWriteSurface.namespaceQmdHealth(
+      searchBackend,
+      qmdEnabled,
+      namespace,
+      fallbackCollection,
+    );
   }
 
   private async qmdCollectionState(
@@ -2714,100 +2585,12 @@ export class EngramAccessService {
     return this.orchestrator.generateDaySummary(memories);
   }
 
-  /**
-   * Build a daily context briefing. Gracefully degrades when the OpenAI key
-   * or Responses API is unavailable — never throws for LLM-related problems.
-   */
   async briefing(
     request: EngramAccessBriefingRequest,
   ): Promise<EngramAccessBriefingResponse> {
-    const config = this.orchestrator.config;
-    if (!config.briefing.enabled) {
-      throw new EngramAccessInputError("briefing is disabled");
-    }
-
-    const namespace = this.resolveReadableNamespace(request.namespace, request.principal);
-    const storage = await this.orchestrator.getStorage(namespace);
-
-    const token = typeof request.since === "string" && request.since.trim().length > 0
-      ? request.since.trim()
-      : config.briefing.defaultWindow;
-    const window = parseBriefingWindow(token);
-    if (!window) {
-      throw new EngramAccessInputError(`invalid briefing window: ${token}`);
-    }
-
-    // Validate focus: only treat undefined / empty strings as "no filter".
-    // Anything else that parses to null (e.g. "project:", "topic:") is malformed
-    // and must be rejected so a templating miss never silently broadens the
-    // briefing from a targeted project view to all memories.
-    const rawFocus = typeof request.focus === "string" ? request.focus.trim() : "";
-    let focus = null;
-    if (rawFocus.length > 0) {
-      focus = parseBriefingFocus(rawFocus);
-      if (!focus) {
-        throw new EngramAccessInputError(
-          `invalid briefing focus filter: ${request.focus}`,
-        );
-      }
-    }
-
-    // Reject unsupported format values explicitly.  Programmatic callers that
-    // bypass CLI/MCP pre-validation (which already use validateBriefingFormat)
-    // could otherwise send a typo like "jsno" and silently receive a response
-    // in the default format, masking the client bug and breaking format-dependent
-    // automation.  Only undefined / absent format falls through to the default.
-    const SUPPORTED_FORMATS = ["markdown", "json"] as const;
-    if (
-      typeof request.format === "string" &&
-      !(SUPPORTED_FORMATS as readonly string[]).includes(request.format)
-    ) {
-      throw new EngramAccessInputError(
-        `unsupported briefing format: "${request.format}". Accepted: ${SUPPORTED_FORMATS.join(", ")}.`,
-      );
-    }
-    const format: "markdown" | "json" = request.format === "json"
-      ? "json"
-      : request.format === "markdown"
-        ? "markdown"
-        : config.briefing.defaultFormat;
-
-    const maxFollowups = typeof request.maxFollowups === "number" && Number.isFinite(request.maxFollowups)
-      ? Math.max(0, Math.min(10, Math.floor(request.maxFollowups)))
-      : config.briefing.maxFollowups;
-
-    const calendarSource = config.briefing.calendarSource
-      ? new FileCalendarSource(config.briefing.calendarSource)
-      : undefined;
-
-    const result = await buildBriefing({
-      storage,
-      namespace,
-      window,
-      focus,
-      calendarSource,
-      maxFollowups,
-      allowLlm: config.briefing.llmFollowups,
-      openaiApiKey: config.openaiApiKey,
-      openaiBaseUrl: config.openaiBaseUrl,
-      model: config.model,
-      // Without a direct OpenAI key, route follow-ups through the configured
-      // LLM chain (gateway model source or local LLM) — same fallback every
-      // other LLM feature uses. A configured key keeps its precedence so
-      // existing deployments are unchanged.
-      followupGenerator: config.openaiApiKey
-        ? undefined
-        : this.orchestrator.briefingChainFollowupGenerator,
-    });
-
-    return {
-      format,
-      window: result.window,
-      namespace,
-      markdown: result.markdown,
-      json: result.json,
-      followupsUnavailableReason: result.followupsUnavailableReason,
-    };
+    return this.accessObserveWriteSurface.briefing(
+      request,
+    );
   }
 
   /**
@@ -3141,73 +2924,10 @@ export class EngramAccessService {
     request: EngramAccessMemoryStoreRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> },
   ): Promise<EngramAccessWriteResponse> {
-    const namespace = await this.resolveCodingScopedWriteNamespace(request);
-    const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
-    if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
-      throw new EngramAccessInputError(`unsupported schemaVersion: ${schemaVersion}`);
-    }
-    const execute = async (): Promise<EngramAccessWriteResponse> => {
-      const candidate = this.validateWriteCandidate(request, namespace);
-      if (request.dryRun === true) {
-        return {
-          schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
-          operation: "memory_store",
-          namespace,
-          dryRun: true,
-          accepted: true,
-          queued: false,
-          status: "validated",
-          idempotencyKey: request.idempotencyKey?.trim() || undefined,
-        };
-      }
-      const result = await persistExplicitCapture(this.orchestrator, candidate, "memory_store");
-      // Seed the session's coding binding ONLY after a real write commits, and
-      // only when the namespace came from project scoping (no explicit
-      // namespace). This mirrors recall's maybeAttachCodingContext so a LATER
-      // bare recall/write on the same session is scoped to the same project —
-      // but never binds the session on a dryRun, replay/conflict, quota
-      // rejection, or an explicit-namespace write (which bypasses the overlay),
-      // since those don't reach this point or aren't project-scoped (Codex review).
-      await this.attachCodingContextAfterScopedWrite(request);
-      // #1645 (review thread yG-): a tombstone-blocked capture is pending_review
-      // (no active copy) — report it as queued_for_review so the HTTP/MCP caller
-      // doesn't read it as a successfully stored active memory.
-      const blocked = result.tombstoneBlocked === true;
-      const response: EngramAccessWriteResponse = {
-        schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
-        operation: "memory_store",
-        namespace,
-        dryRun: false,
-        accepted: true,
-        queued: blocked,
-        status: blocked ? "queued_for_review" : result.duplicateOf ? "duplicate" : "stored",
-        memoryId: result.id,
-        duplicateOf: result.duplicateOf,
-        idempotencyKey: request.idempotencyKey?.trim() || undefined,
-      };
-      log.info(
-        `access-write op=memory_store namespace=${namespace} dryRun=false status=${response.status} memoryId=${response.memoryId ?? "-"} idempotency=${response.idempotencyKey ? "yes" : "no"}`,
-      );
-      return response;
-    };
-    return this.handleIdempotentWrite({
-      operation: "memory_store",
-      idempotencyKey: request.idempotencyKey,
-      requestFingerprint: {
-        schemaVersion,
-        content: request.content,
-        category: request.category,
-        confidence: request.confidence,
-        namespace,
-        tags: request.tags,
-        entityRef: request.entityRef,
-        ttl: request.ttl,
-        sourceReason: request.sourceReason,
-      },
-      skip: request.dryRun === true,
-      beforeExecute: hooks?.enforceWriteQuota,
-      execute,
-    });
+    return this.accessObserveWriteSurface.memoryStore(
+      request,
+      hooks,
+    );
   }
 
   async peekMemoryStoreIdempotency(request: EngramAccessMemoryStoreRequest): Promise<EngramAccessIdempotencyStatus> {
@@ -3238,70 +2958,10 @@ export class EngramAccessService {
     request: EngramAccessSuggestionSubmitRequest,
     hooks?: { enforceWriteQuota?: () => void | Promise<void> },
   ): Promise<EngramAccessWriteResponse> {
-    const namespace = await this.resolveCodingScopedWriteNamespace(request);
-    const schemaVersion = request.schemaVersion ?? ENGRAM_ACCESS_WRITE_SCHEMA_VERSION;
-    if (schemaVersion !== ENGRAM_ACCESS_WRITE_SCHEMA_VERSION) {
-      throw new EngramAccessInputError(`unsupported schemaVersion: ${schemaVersion}`);
-    }
-    const execute = async (): Promise<EngramAccessWriteResponse> => {
-      const candidate = this.validateWriteCandidate(request, namespace);
-      if (request.dryRun === true) {
-        return {
-          schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
-          operation: "suggestion_submit",
-          namespace,
-          dryRun: true,
-          accepted: true,
-          queued: true,
-          status: "validated",
-          idempotencyKey: request.idempotencyKey?.trim() || undefined,
-        };
-      }
-      const result = await queueExplicitCaptureForReview(
-        this.orchestrator,
-        candidate,
-        "suggestion_submit",
-        new Error(request.sourceReason?.trim() || "submitted via engram suggestion_submit"),
-      );
-      // Seed the session binding only after a real, project-scoped submit commits
-      // (mirrors memory_store / recall; skips dryRun, replay, quota-reject, and
-      // explicit-namespace writes — Codex review).
-      await this.attachCodingContextAfterScopedWrite(request);
-      const response: EngramAccessWriteResponse = {
-        schemaVersion: ENGRAM_ACCESS_WRITE_SCHEMA_VERSION,
-        operation: "suggestion_submit",
-        namespace,
-        dryRun: false,
-        accepted: true,
-        queued: true,
-        status: "queued_for_review",
-        memoryId: result.id,
-        duplicateOf: result.duplicateOf,
-        idempotencyKey: request.idempotencyKey?.trim() || undefined,
-      };
-      log.info(
-        `access-write op=suggestion_submit namespace=${namespace} dryRun=false status=${response.status} memoryId=${response.memoryId ?? "-"} idempotency=${response.idempotencyKey ? "yes" : "no"}`,
-      );
-      return response;
-    };
-    return this.handleIdempotentWrite({
-      operation: "suggestion_submit",
-      idempotencyKey: request.idempotencyKey,
-      requestFingerprint: {
-        schemaVersion,
-        content: request.content,
-        category: request.category,
-        confidence: request.confidence,
-        namespace,
-        tags: request.tags,
-        entityRef: request.entityRef,
-        ttl: request.ttl,
-        sourceReason: request.sourceReason,
-      },
-      skip: request.dryRun === true,
-      beforeExecute: hooks?.enforceWriteQuota,
-      execute,
-    });
+    return this.accessObserveWriteSurface.suggestionSubmit(
+      request,
+      hooks,
+    );
   }
 
   async peekSuggestionSubmitIdempotency(
@@ -4391,228 +4051,9 @@ export class EngramAccessService {
   }
 
   private async runObserve(request: EngramAccessObserveRequest): Promise<EngramAccessObserveResponse> {
-    if (!request.sessionKey || typeof request.sessionKey !== "string" || request.sessionKey.trim().length === 0) {
-      throw new EngramAccessInputError("sessionKey is required and must be a non-empty string");
-    }
-    if (!Array.isArray(request.messages) || request.messages.length === 0) {
-      throw new EngramAccessInputError("messages is required and must be a non-empty array");
-    }
-    for (const msg of request.messages) {
-      if (!msg || typeof msg !== "object" || typeof msg.role !== "string" || typeof msg.content !== "string") {
-        throw new EngramAccessInputError("each message must have a string 'role' and 'content'");
-      }
-      if (msg.role !== "user" && msg.role !== "assistant") {
-        throw new EngramAccessInputError(`invalid message role: ${msg.role} (expected 'user' or 'assistant')`);
-      }
-    }
-
-    // 1. Resolve the FULL effective scope plan BEFORE any session mutation
-    //    (Codex P2 / Cursor "orphan context after overlay auth"). The plan is
-    //    read-only and re-runs the SAME authorization as
-    //    memory_store/suggestion_submit (rule 39): the explicit-namespace check
-    //    AND the coding-overlay self-base `canWriteNamespace` check both run
-    //    here. Because `maybeAttachCodingContext` has NOT run yet, the plan's
-    //    overlay resolves from the per-call `cwd`/`projectTag` fallback
-    //    (`resolveCodingContextFromOptions`) — identical to the context that
-    //    would be attached — so the scope is the same either way. Running the
-    //    plan first means an `observe` that ultimately throws on a non-writable
-    //    self base leaves NO coding context bound to the session, matching how
-    //    `memory_store` resolves its full scoped write namespace before any
-    //    session mutation.
-    const scope = await this.resolveMemoryScopePlan(request);
-    const writeNamespace = scope.writeNamespace;
-
-    // Backward-compatible BASE writable namespace (pre-#1495 response semantics)
-    // for the legacy `namespace` response field. DERIVED from the already-resolved
-    // scope plan — NOT a second writable-namespace resolution call
-    // call (#1505 thread jvO). The fresh call re-authorized `undefined ⇒
-    // config.defaultNamespace` a SECOND time; under a restrictive default-namespace
-    // write policy that re-auth could REJECT an otherwise valid project-scoped
-    // observe whose effective self/project write target the scope plan already
-    // authorized (the same target memory_store/suggestion_submit accept). Worse,
-    // that post-plan rejection fired AFTER `resolveMemoryScopePlan` may have seeded
-    // the coding context, leaving an orphaned session binding behind. The plan is
-    // the single authorization point (rule 22 / 39); the legacy field must reuse it
-    // and never re-authorize. Pre-#1495 semantics were exactly
-    // the writable-namespace resolver (overlay-agnostic): the explicit
-    // namespace when supplied, else `config.defaultNamespace` for user-project
-    // coding overlays. Hosted scope-profile layers such as `teamProject` report
-    // their effective profile write namespace because there is no legacy
-    // overlay-compatible base namespace for those writes.
-    const namespace = this.legacyResponseNamespaceForScope(scope);
-    const shouldWriteObjectiveState =
-      resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateMemory === true &&
-      resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateSnapshotWrites === true;
-
-    // 2. Auto-resolve coding context from cwd/projectTag so a LATER bare recall
-    //    on the same session is project-scoped (rule 42: same namespace layer as
-    //    recall). Done AFTER the scope plan authorized the write, so a rejected
-    //    request never leaves orphaned context on the session.
-    await this.maybeAttachCodingContext(request.sessionKey, {
-      cwd: request.cwd,
-      projectTag: request.projectTag,
-    });
-
-    // Prefix sessionKey with the EFFECTIVE write namespace for LCM archival so
-    // observed turns are scoped to the same namespace project-scoped recall
-    // reads. The SAME `lcmSessionKeyForNamespace` helper is used by the
-    // orchestrator recall readers and by compaction flush/record, so the LCM
-    // write key and every read/flush key agree (#1495, rule 42). Only prefixes
-    // when the namespace diverges from the default store; a single-store
-    // deployment keeps the raw sessionKey unchanged.
-    const lcmSessionKey =
-      lcmSessionKeyForNamespace(
-        writeNamespace,
-        request.sessionKey,
-        this.orchestrator.config.defaultNamespace,
-      ) ?? request.sessionKey;
-
-    // 4. Objective-state snapshots → the scope plan's objective-state namespace.
-    //    For explicit-namespace and coding-overlay writes this equals
-    //    writeNamespace; for an IMPLICIT write it is the principal SELF base
-    //    (#928 contract, already auth-checked inside the scope plan), not the
-    //    general default-store write namespace.
-    if (shouldWriteObjectiveState) {
-      try {
-        const objectiveStateLocation =
-          await this.objectiveStateStoreLocationForNamespace(
-            scope.objectiveStateNamespace,
-          );
-        await recordObjectiveStateSnapshotsFromObservedMessages({
-          memoryDir: objectiveStateLocation.memoryDir,
-          objectiveStateStoreDir: objectiveStateLocation.objectiveStateStoreDir,
-          objectiveStateMemoryEnabled: resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateMemory,
-          objectiveStateSnapshotWritesEnabled:
-            resolveObjectiveStateCapabilities(this.orchestrator.config).objectiveStateSnapshotWrites,
-          sessionKey: request.sessionKey,
-          recordedAt: new Date().toISOString(),
-          messages: request.messages,
-        });
-      } catch (err) {
-        log.error(`access-observe objective-state snapshot write failed: ${err}`);
-      }
-    }
-
-    // 5. LCM archival → effective write namespace.
-    // lcmArchived in the response means "LCM archival was queued" (not
-    // "completed"), matching extractionQueued semantics.  Both run async.
-    let lcmArchived = false;
-    if (this.orchestrator.lcmEngine && this.orchestrator.lcmEngine.enabled) {
-      // Fire-and-forget: LCM archival writes to SQLite and builds summary
-      // DAGs, which can take tens of seconds for large sessions.  Don't
-      // block the HTTP response — the caller only needs acknowledgment.
-      try {
-        this.orchestrator.lcmEngine.enqueueObserveMessages(lcmSessionKey, request.messages);
-        lcmArchived = true;
-      } catch (err) {
-        log.error(`access-observe LCM enqueue failed: ${err}`);
-      }
-    }
-
-    // 6. Extraction/replay → effective write namespace for STORAGE, ORIGINAL
-    //    sessionKey for IDENTITY (provenance + threading).
-    let extractionQueued = false;
-    if (request.skipExtraction !== true) {
-      const turns = request.messages.map((m) => ({
-        source: "openclaw" as const,
-        // Identity-vs-routing separation (#1505 thread 1, cursor): extraction
-        // derives the provenance principal via `resolvePrincipal(turn.sessionKey)`
-        // and threads `turn.sessionKey` into conversation threading. Feeding the
-        // namespace-PREFIXED `lcmSessionKey` here mis-derived the principal to
-        // `default` (a `<ns>:<key>` string matches no prefix/map rule and fails
-        // the `agent:` heuristic). Pass the ORIGINAL sessionKey so identity is
-        // correct; storage routing is pinned separately via
-        // writeNamespaceOverride below, and the authenticated principal is pinned
-        // via principalOverride.
-        sessionKey: request.sessionKey,
-        role: m.role,
-        content: m.content,
-        parts: m.parts,
-        rawContent: m.rawContent,
-        sourceFormat: m.sourceFormat,
-        timestamp: new Date().toISOString(),
-      }));
-      // Pin extraction STORAGE to the effective namespace rather than letting the
-      // orchestrator re-derive one from the session key + coding overlay — that
-      // re-derivation would have to reparse identity and could miss the overlay
-      // (the #1495 drift). Passing writeNamespaceOverride makes the extraction
-      // target deterministic and identical to LCM/objective-state (rule 39).
-      //
-      // Pin WHENEVER namespaces are enabled, not only when writeNamespace differs
-      // from the default store (#1505 round 3, codex "Pin default-store extraction
-      // writes too"). For an unqualified/no-overlay observe by a principal that
-      // HAS a self namespace, writeNamespace is `config.defaultNamespace` but an
-      // unpinned `runExtraction` would fall back to
-      // `defaultNamespaceForPrincipal(principal)` = the SELF namespace — diverging
-      // from where LCM/objective-state/response wrote (`default`). Pinning the
-      // resolved writeNamespace forces all side effects onto the one scope-plan
-      // namespace. When namespaces are DISABLED the router collapses every
-      // namespace to one store, so leaving the override undefined preserves the
-      // existing single-store routing byte-for-byte.
-      const writeNamespaceOverride =
-        resolveNamespaceCapabilities(this.orchestrator.config).namespaces === true
-          ? writeNamespace
-          : undefined;
-      // Pin provenance PRINCIPAL to the scope plan's resolved principal (#1505
-      // thread 1). The scope plan already applied auth precedence
-      // (authenticatedPrincipal/principalOverride > resolvePrincipal(original
-      // sessionKey)), so this is the same identity the surface authorized — never
-      // a `default` fallback parsed from a prefixed key. Omitted when no principal
-      // resolved (namespaces-disabled / unauthenticated single-store), preserving
-      // existing behavior.
-      const principalOverride =
-        typeof scope.principal === "string" && scope.principal.length > 0
-          ? scope.principal
-          : undefined;
-      // Fire-and-forget: queue extraction in the background so the HTTP
-      // response returns immediately. LCM archival (above) is also
-      // enqueue-only; extraction involves LLM calls that can take
-      // minutes under load and should not block the caller.
-      //
-      // Backpressure: the orchestrator's own extraction queue already
-      // limits concurrency (one extraction at a time per session via
-      // queueBufferedExtraction). Fire-and-forget here just decouples
-      // the HTTP response from the queue drain.
-      try {
-        const extractionPromise = this.orchestrator.ingestReplayBatch(turns, {
-          archiveLcm: false,
-          writeNamespaceOverride,
-          principalOverride,
-        });
-        extractionPromise.catch((err) => {
-          log.error(`access-observe background extraction failed: ${err}`);
-        });
-        extractionQueued = true;
-      } catch (err) {
-        // Synchronous enqueue failure (e.g. orchestrator disposed)
-        log.error(`access-observe extraction enqueue failed: ${err}`);
-      }
-    }
-
-    log.info(
-      `access-observe namespace=${namespace} effectiveNamespace=${writeNamespace} sessionKey=${request.sessionKey} messages=${request.messages.length} lcm=${lcmArchived} extraction=${extractionQueued}`,
+    return this.accessObserveWriteSurface.runObserve(
+      request,
     );
-
-    return {
-      accepted: request.messages.length,
-      sessionKey: request.sessionKey,
-      namespace,
-      effectiveNamespace: writeNamespace,
-      scopeDebug: {
-        principal: scope.principal,
-        explicitNamespace: scope.explicitNamespace,
-        baseNamespace: scope.baseNamespace,
-        writeNamespace: scope.writeNamespace,
-        codingOverlayApplied: scope.codingOverlayApplied,
-        readNamespaces: scope.readNamespaces,
-        scopeProfile: scope.scopeProfile,
-        writeLayer: scope.writeLayer,
-        layers: scope.layers,
-        promotionTargets: scope.promotionTargets,
-      },
-      lcmArchived,
-      extractionQueued,
-    };
   }
 
   async lcmSearch(request: EngramAccessLcmSearchRequest): Promise<EngramAccessLcmSearchResponse> {
@@ -5205,68 +4646,9 @@ export class EngramAccessService {
     tags?: string[];
     dueAt?: string;
   }): Promise<unknown> {
-    const STATUSES = new Set(["todo", "in_progress", "blocked", "done", "cancelled"]);
-    const PRIORITIES = new Set(["low", "medium", "high"]);
-    const asStatus = (v?: string) => (v && STATUSES.has(v) ? v as "todo" | "in_progress" | "blocked" | "done" | "cancelled" : undefined);
-    const asPriority = (v?: string) => (v && PRIORITIES.has(v) ? v as "low" | "medium" | "high" : undefined);
-
-    const storage = new WorkStorage(this.orchestrator.config.memoryDir);
-    await storage.ensureDirectories();
-    const action = request.action;
-
-    if (action === "create") {
-      if (!request.title?.trim()) throw new EngramAccessInputError("title is required for create");
-      const task = await storage.createTask({
-        title: request.title,
-        description: request.description,
-        status: asStatus(request.status),
-        priority: asPriority(request.priority),
-        owner: request.owner?.trim() || undefined,
-        assignee: request.assignee?.trim() || undefined,
-        projectId: request.projectId?.trim() || undefined,
-        tags: request.tags,
-        dueAt: request.dueAt?.trim() || undefined,
-      });
-      return { action, task };
-    }
-    if (action === "get") {
-      if (!request.id?.trim()) throw new EngramAccessInputError("id is required for get");
-      return { action, task: await storage.getTask(request.id) };
-    }
-    if (action === "list") {
-      const tasks = await storage.listTasks({
-        status: asStatus(request.status),
-        owner: request.owner?.trim() || undefined,
-        assignee: request.assignee?.trim() || undefined,
-        projectId: request.projectId?.trim() || undefined,
-      });
-      return { action, count: tasks.length, tasks };
-    }
-    if (action === "update") {
-      if (!request.id?.trim()) throw new EngramAccessInputError("id is required for update");
-      const patch: Record<string, unknown> = {};
-      if (request.title !== undefined) patch.title = request.title;
-      if (request.description !== undefined) patch.description = request.description;
-      const st = asStatus(request.status); if (st) patch.status = st;
-      const pr = asPriority(request.priority); if (pr) patch.priority = pr;
-      if (request.owner !== undefined) patch.owner = request.owner || null;
-      if (request.assignee !== undefined) patch.assignee = request.assignee || null;
-      if (request.projectId !== undefined) patch.projectId = request.projectId || null;
-      if (request.tags) patch.tags = request.tags;
-      if (request.dueAt !== undefined) patch.dueAt = request.dueAt || null;
-      return { action, task: await storage.updateTask(request.id, patch as any) };
-    }
-    if (action === "transition") {
-      if (!request.id?.trim()) throw new EngramAccessInputError("id is required for transition");
-      const st = asStatus(request.status);
-      if (!st) throw new EngramAccessInputError("valid status is required for transition");
-      return { action, task: await storage.transitionTask(request.id, st) };
-    }
-    if (action === "delete") {
-      if (!request.id?.trim()) throw new EngramAccessInputError("id is required for delete");
-      return { action, deleted: await storage.deleteTask(request.id) };
-    }
-    throw new EngramAccessInputError(`Unsupported work_task action: ${action}`);
+    return this.accessObserveWriteSurface.workTask(
+      request,
+    );
   }
 
   async workProject(request: {
@@ -5280,53 +4662,9 @@ export class EngramAccessService {
     taskId?: string;
     projectId?: string;
   }): Promise<unknown> {
-    const STATUSES = new Set(["active", "on_hold", "completed", "archived"]);
-    const asStatus = (v?: string) => (v && STATUSES.has(v) ? v as "active" | "on_hold" | "completed" | "archived" : undefined);
-
-    const storage = new WorkStorage(this.orchestrator.config.memoryDir);
-    await storage.ensureDirectories();
-    const action = request.action;
-
-    if (action === "create") {
-      if (!request.name?.trim()) throw new EngramAccessInputError("name is required for create");
-      const project = await storage.createProject({
-        name: request.name,
-        description: request.description,
-        status: asStatus(request.status),
-        owner: request.owner?.trim() || undefined,
-        tags: request.tags,
-      });
-      return { action, project };
-    }
-    if (action === "get") {
-      if (!request.id?.trim()) throw new EngramAccessInputError("id is required for get");
-      return { action, project: await storage.getProject(request.id) };
-    }
-    if (action === "list") {
-      const projects = await storage.listProjects();
-      return { action, count: projects.length, projects };
-    }
-    if (action === "update") {
-      if (!request.id?.trim()) throw new EngramAccessInputError("id is required for update");
-      const patch: Record<string, unknown> = {};
-      if (request.name !== undefined) patch.name = request.name;
-      if (request.description !== undefined) patch.description = request.description;
-      const st = asStatus(request.status); if (st) patch.status = st;
-      if (request.owner !== undefined) patch.owner = request.owner || null;
-      if (request.tags) patch.tags = request.tags;
-      return { action, project: await storage.updateProject(request.id, patch as any) };
-    }
-    if (action === "delete") {
-      if (!request.id?.trim()) throw new EngramAccessInputError("id is required for delete");
-      return { action, deleted: await storage.deleteProject(request.id) };
-    }
-    if (action === "link_task") {
-      if (!request.taskId?.trim() || !request.projectId?.trim()) {
-        throw new EngramAccessInputError("taskId and projectId are required for link_task");
-      }
-      return { action, linked: await storage.linkTaskToProject(request.taskId, request.projectId) };
-    }
-    throw new EngramAccessInputError(`Unsupported work_project action: ${action}`);
+    return this.accessObserveWriteSurface.workProject(
+      request,
+    );
   }
 
   async workBoard(request: {
@@ -5335,26 +4673,9 @@ export class EngramAccessService {
     snapshotJson?: string;
     linkToMemory?: boolean;
   }): Promise<unknown> {
-    const memoryDir = this.orchestrator.config.memoryDir;
-    await new WorkStorage(memoryDir).ensureDirectories();
-    const action = request.action;
-    const projectId = request.projectId?.trim() || undefined;
-
-    if (action === "export_markdown") {
-      const markdown = await exportWorkBoardMarkdown({ memoryDir, projectId });
-      return { action, markdown: wrapWorkLayerContext(markdown, { linkToMemory: request.linkToMemory === true }) };
-    }
-    if (action === "export_snapshot") {
-      const snapshot = await exportWorkBoardSnapshot({ memoryDir, projectId });
-      return { action, snapshot };
-    }
-    if (action === "import_snapshot") {
-      if (!request.snapshotJson?.trim()) throw new EngramAccessInputError("snapshotJson is required for import_snapshot");
-      const snapshot = JSON.parse(request.snapshotJson);
-      const result = await importWorkBoardSnapshot({ memoryDir, snapshot, projectId });
-      return { action, result };
-    }
-    throw new EngramAccessInputError(`Unsupported work_board action: ${action}`);
+    return this.accessObserveWriteSurface.workBoard(
+      request,
+    );
   }
 
   // ── Shared Context / Compounding ────────────────────────────────────────
@@ -5767,76 +5088,9 @@ export class EngramAccessService {
     sourcePrompt?: string;
     dryRun?: boolean;
   }): Promise<unknown> {
-    const actionTypes = new Set<MemoryActionType>([
-      "store_episode",
-      "store_note",
-      "update_note",
-      "create_artifact",
-      "summarize_node",
-      "discard",
-      "link_graph",
-    ]);
-    if (!actionTypes.has(request.action as MemoryActionType)) {
-      throw new EngramAccessInputError(
-        `memory_action_apply: invalid action ${JSON.stringify(request.action)}`,
-      );
-    }
-
-    if (resolveCompressionCapabilities(this.orchestrator.config).contextCompressionActions !== true) {
-      throw new EngramAccessInputError(
-        "memory_action_apply is disabled; enable contextCompressionActionsEnabled to use this tool",
-      );
-    }
-
-    const outcome = request.outcome ?? "skipped";
-    if (outcome !== "applied" && outcome !== "skipped" && outcome !== "failed") {
-      throw new EngramAccessInputError(
-        `memory_action_apply: outcome must be "applied", "skipped", or "failed"; got ${JSON.stringify(outcome)}`,
-      );
-    }
-
-    const resolvedNs = this.writableNamespaceFor(
-      request.namespace,
-      request.sessionKey,
-      request.principal,
+    return this.accessObserveWriteSurface.memoryActionApply(
+      request,
     );
-    const inputSummaryParts = [
-      request.content,
-      request.category ? `category=${request.category}` : undefined,
-      request.linkTargetId ? `linkTargetId=${request.linkTargetId}` : undefined,
-      request.linkType ? `linkType=${request.linkType}` : undefined,
-      typeof request.linkStrength === "number"
-        ? `linkStrength=${request.linkStrength}`
-        : undefined,
-      request.artifactType ? `artifactType=${request.artifactType}` : undefined,
-      typeof request.execute === "boolean" ? `execute=${request.execute}` : undefined,
-    ].filter((part): part is string => typeof part === "string" && part.length > 0);
-
-    const event = {
-      action: request.action as MemoryActionType,
-      outcome: outcome as MemoryActionOutcome,
-      namespace: resolvedNs,
-      actor: "access.memory_action_apply",
-      subsystem: "access.memory_action_apply",
-      reason: request.reason,
-      memoryId: request.memoryId,
-      sourceSessionKey: request.sessionKey,
-      inputSummary: inputSummaryParts.length > 0
-        ? inputSummaryParts.join(" | ").slice(0, 500)
-        : undefined,
-      dryRun: request.dryRun === true,
-      promptHash:
-        typeof request.sourcePrompt === "string" && request.sourcePrompt.length > 0
-          ? createHash("sha256").update(request.sourcePrompt).digest("hex")
-          : undefined,
-    };
-    const preview = this.orchestrator.previewMemoryActionEvent(event);
-    if (request.dryRun === true) {
-      return { recorded: false, dryRun: true, event: preview };
-    }
-
-    const recorded = await this.orchestrator.appendMemoryActionEvent(event);
-    return { recorded, event: preview };
   }
 
   async contextCheckpoint(request: {
