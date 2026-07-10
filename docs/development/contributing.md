@@ -126,7 +126,9 @@ npx tsx --test tests/specific.test.ts  # one file
 5. Write tests second
 6. Write implementation third
 7. Run `pnpm run preflight:quick`
-8. If you touched `src/` or `packages/remnic-core/src/` `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`, `entity-retrieval.ts`, or `config.ts`, run `pnpm run test:entity-hardening`
+8. If you touched `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`,
+   `entity-retrieval.ts`, `config.ts`, or any file under `storage/` or `orchestration/`
+   in `src/` or `packages/remnic-core/src/`, run `pnpm run test:entity-hardening`
 9. Run `pnpm run build && pnpm test` — everything must pass
 10. Update `CHANGELOG.md` under `[Unreleased]`
 11. Create PR with description following the template
