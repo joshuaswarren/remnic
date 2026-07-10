@@ -1,23 +1,19 @@
 /**
- * Minimal Omi Integrations API client (raw fetch, no SDK).
+ * Minimal Omi Developer API client (raw fetch, no SDK).
  *
- * Contract verified against docs.omi.me and the open-source backend
- * (`backend/routers/integration.py`, `models/integrations.py`) in
- * 2026-06:
+ * Current contract verified against docs.omi.me in 2026-07:
  *
- *  - base `https://api.omi.me`, auth `Authorization: Bearer sk_...`
- *    (an app API key created in the Omi app; the app needs the
- *    External Integration `read_conversations` / `read_memories`
- *    capabilities and must be enabled for the target user)
- *  - `uid` rides as a query parameter on every endpoint
- *  - `GET /v2/integrations/{app_id}/conversations` with
- *    `limit`/`offset` pagination, `start_date`/`end_date` (ISO 8601),
- *    repeated `statuses` params, and `max_transcript_segments=-1`
- *    (the API default silently truncates to the first 100 segments)
- *  - `GET /v2/integrations/{app_id}/memories` with `limit`/`offset`
- *  - responses serialize with exclude_none — every optional field may
- *    be entirely absent
+ *  - base `https://api.omi.me`, auth `Authorization: Bearer omi_dev_...`
+ *    (Developer API key from Settings → Developer → Create Key)
+ *  - `GET /v1/dev/user/conversations` with `limit`/`offset`
+ *    pagination, `start_date`/`end_date` (ISO 8601), and
+ *    `include_transcript=true`
+ *  - `GET /v1/dev/user/memories` with `limit`/`offset`
+ *  - responses are arrays; every optional field may be absent
  *  - errors are FastAPI-shaped `{"detail": "..."}`
+ *
+ * The older app-scoped Integrations API remains supported when both
+ * `appId` and `userId` are configured.
  *
  * The API key is never logged and never appears in thrown error
  * messages.
@@ -34,6 +30,8 @@ const PAGE_SIZE = 100;
 export interface OmiTranscriptSegment {
   text?: string;
   speaker?: string;
+  speaker_id?: number | string | null;
+  speaker_name?: string | null;
   is_user?: boolean;
   person_id?: string | null;
   start?: number;
@@ -77,13 +75,15 @@ export interface OmiMemoriesPage {
 
 export interface OmiClientOptions {
   apiKey: string;
-  appId: string;
-  userId: string;
+  appId?: string;
+  userId?: string;
   baseUrl?: string;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
 }
+
+type OmiApiMode = "developer" | "integration";
 
 export class OmiApiError extends Error {
   constructor(
@@ -99,8 +99,9 @@ export class OmiApiError extends Error {
 
 export class OmiClient {
   private readonly apiKey: string;
-  private readonly appId: string;
-  private readonly userId: string;
+  private readonly appId?: string;
+  private readonly userId?: string;
+  private readonly mode: OmiApiMode;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
@@ -110,25 +111,31 @@ export class OmiClient {
     if (typeof options.apiKey !== "string" || options.apiKey.trim().length === 0) {
       throw new OmiApiError(
         "Omi API key is missing. Set wearables.sources.omi.apiKey or the " +
-          "OMI_API_KEY environment variable (create a key under your app's " +
-          "API Keys in the Omi app).",
+          "OMI_API_KEY environment variable (create a Developer API key in " +
+          "Settings → Developer → Create Key in the Omi app).",
       );
     }
-    if (typeof options.appId !== "string" || options.appId.trim().length === 0) {
+
+    const appId =
+      typeof options.appId === "string" && options.appId.trim().length > 0
+        ? options.appId.trim()
+        : undefined;
+    const userId =
+      typeof options.userId === "string" && options.userId.trim().length > 0
+        ? options.userId.trim()
+        : undefined;
+    if ((appId === undefined) !== (userId === undefined)) {
       throw new OmiApiError(
-        "Omi app id is missing. Set wearables.sources.omi.appId to your " +
-          "integration app's id.",
+        "Omi legacy integration mode requires both wearables.sources.omi.appId " +
+          "and wearables.sources.omi.userId. Omit both to use the Developer " +
+          "API key-only process.",
       );
     }
-    if (typeof options.userId !== "string" || options.userId.trim().length === 0) {
-      throw new OmiApiError(
-        "Omi user id is missing. Set wearables.sources.omi.userId to the " +
-          "target uid (shown when the user installs/opens your Omi app).",
-      );
-    }
+
     this.apiKey = options.apiKey.trim();
-    this.appId = options.appId.trim();
-    this.userId = options.userId.trim();
+    this.appId = appId;
+    this.userId = userId;
+    this.mode = appId !== undefined && userId !== undefined ? "integration" : "developer";
     this.baseUrl = stripTrailingSlashes(options.baseUrl ?? OMI_DEFAULT_BASE_URL);
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -145,26 +152,40 @@ export class OmiClient {
   }): Promise<OmiConversationsPage> {
     const offset = params.offset ?? 0;
     const search = new URLSearchParams({
-      uid: this.userId,
       limit: String(PAGE_SIZE),
       offset: String(offset),
       start_date: params.startIso,
       end_date: params.endIso,
-      include_discarded: "false",
-      // -1 = unlimited; the API default silently truncates transcripts
-      // to their first 100 segments.
-      max_transcript_segments: "-1",
     });
-    // Repeated param (FastAPI List[str]) — comma-joining does NOT work.
-    search.append("statuses", "completed");
-    const payload = await this.requestJson(
-      `/v2/integrations/${encodeURIComponent(this.appId)}/conversations?${search.toString()}`,
-      params.signal,
-    );
-    const conversations = (payload as { conversations?: unknown }).conversations;
+    let payload: unknown;
+    if (this.mode === "developer") {
+      search.set("include_transcript", "true");
+      payload = await this.requestJson(
+        `/v1/dev/user/conversations?${search.toString()}`,
+        params.signal,
+      );
+    } else {
+      search.set("uid", this.userId ?? "");
+      search.set("include_discarded", "false");
+      // -1 = unlimited; the legacy API default silently truncates
+      // transcripts to their first 100 segments.
+      search.set("max_transcript_segments", "-1");
+      // Repeated param (FastAPI List[str]) — comma-joining does NOT work.
+      search.append("statuses", "completed");
+      payload = await this.requestJson(
+        `/v2/integrations/${encodeURIComponent(this.appId ?? "")}/conversations?${search.toString()}`,
+        params.signal,
+      );
+    }
+    const conversations =
+      this.mode === "developer"
+        ? payload
+        : (payload as { conversations?: unknown }).conversations;
     if (!Array.isArray(conversations)) {
       throw new OmiApiError(
-        "Omi API returned an unexpected conversations shape (missing conversations array)",
+        this.mode === "developer"
+          ? "Omi API returned an unexpected conversations shape (expected array)"
+          : "Omi API returned an unexpected conversations shape (missing conversations array)",
       );
     }
     const valid = conversations.filter(
@@ -172,7 +193,11 @@ export class OmiClient {
         entry !== null &&
         typeof entry === "object" &&
         typeof (entry as { id?: unknown }).id === "string",
-    );
+    )
+      .filter(isCompletedOrStatuslessConversation)
+      .filter((conversation) =>
+        startsInsideHalfOpenWindow(conversation, params.startIso, params.endIso),
+      );
     return {
       conversations: valid,
       nextOffset: conversations.length === PAGE_SIZE ? offset + PAGE_SIZE : null,
@@ -186,18 +211,29 @@ export class OmiClient {
   } = {}): Promise<OmiMemoriesPage> {
     const offset = params.offset ?? 0;
     const search = new URLSearchParams({
-      uid: this.userId,
       limit: String(PAGE_SIZE),
       offset: String(offset),
     });
-    const payload = await this.requestJson(
-      `/v2/integrations/${encodeURIComponent(this.appId)}/memories?${search.toString()}`,
-      params.signal,
-    );
-    const memories = (payload as { memories?: unknown }).memories;
+    let payload: unknown;
+    if (this.mode === "developer") {
+      payload = await this.requestJson(
+        `/v1/dev/user/memories?${search.toString()}`,
+        params.signal,
+      );
+    } else {
+      search.set("uid", this.userId ?? "");
+      payload = await this.requestJson(
+        `/v2/integrations/${encodeURIComponent(this.appId ?? "")}/memories?${search.toString()}`,
+        params.signal,
+      );
+    }
+    const memories =
+      this.mode === "developer" ? payload : (payload as { memories?: unknown }).memories;
     if (!Array.isArray(memories)) {
       throw new OmiApiError(
-        "Omi API returned an unexpected memories shape (missing memories array)",
+        this.mode === "developer"
+          ? "Omi API returned an unexpected memories shape (expected array)"
+          : "Omi API returned an unexpected memories shape (missing memories array)",
       );
     }
     const valid = memories.filter(
@@ -215,28 +251,40 @@ export class OmiClient {
   async verifyAuth(signal?: AbortSignal): Promise<{ ok: boolean; detail?: string }> {
     try {
       const search = new URLSearchParams({
-        uid: this.userId,
         limit: "1",
         offset: "0",
-        max_transcript_segments: "1",
       });
-      await this.requestJson(
-        `/v2/integrations/${encodeURIComponent(this.appId)}/conversations?${search.toString()}`,
-        signal,
-      );
+      if (this.mode === "developer") {
+        search.set("include_transcript", "false");
+        await this.requestJson(
+          `/v1/dev/user/conversations?${search.toString()}`,
+          signal,
+        );
+      } else {
+        search.set("uid", this.userId ?? "");
+        search.set("max_transcript_segments", "1");
+        await this.requestJson(
+          `/v2/integrations/${encodeURIComponent(this.appId ?? "")}/conversations?${search.toString()}`,
+          signal,
+        );
+      }
       return { ok: true };
     } catch (err) {
       if (err instanceof OmiApiError && err.status !== undefined) {
-        // The backend's authorization chain yields distinct, actionable
-        // detail strings: bad key (403), app not enabled for the user
-        // (403), missing capability (403), app not found (404).
+        // The auth chain yields distinct, actionable detail strings.
+        // Legacy integration mode can also surface app/user capability
+        // failures, so keep those hints mode-specific.
         const hint =
           err.status === 401
             ? "missing/malformed Authorization header"
             : err.status === 403
-              ? "key rejected, app not enabled for this uid, or missing read_conversations capability"
+              ? this.mode === "developer"
+                ? "Developer API key rejected or missing conversation access"
+                : "key rejected, app not enabled for this uid, or missing read_conversations capability"
               : err.status === 404
-                ? "app not found — check wearables.sources.omi.appId"
+                ? this.mode === "developer"
+                  ? "Developer API endpoint not found — check the configured baseUrl"
+                  : "app not found — check wearables.sources.omi.appId"
                 : undefined;
         return {
           ok: false,
@@ -328,6 +376,34 @@ function stripTrailingSlashes(value: string): string {
   let end = value.length;
   while (end > 0 && value.charCodeAt(end - 1) === 0x2f) end--;
   return value.slice(0, end);
+}
+
+function startsInsideHalfOpenWindow(
+  conversation: OmiConversation,
+  startIso: string,
+  endIso: string,
+): boolean {
+  const startMs = Date.parse(startIso);
+  const endMs = Date.parse(endIso);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return true;
+
+  const conversationIso =
+    typeof conversation.started_at === "string"
+      ? conversation.started_at
+      : conversation.created_at;
+  if (typeof conversationIso !== "string" || conversationIso.length === 0) {
+    return true;
+  }
+  const conversationMs = Date.parse(conversationIso);
+  if (!Number.isFinite(conversationMs)) return true;
+  return conversationMs >= startMs && conversationMs < endMs;
+}
+
+function isCompletedOrStatuslessConversation(conversation: OmiConversation): boolean {
+  if (typeof conversation.status !== "string" || conversation.status.length === 0) {
+    return true;
+  }
+  return conversation.status === "completed";
 }
 
 async function readDetail(response: Response): Promise<string | undefined> {

@@ -206,9 +206,7 @@ is `off`.
         "baseUrl": "http://127.0.0.1:8787"   // bee proxy (default)
       },
       "omi": {
-        "enabled": true,
-        "appId": "your-omi-app-id",
-        "userId": "your-omi-uid"
+        "enabled": true
       }
     }
   }
@@ -341,14 +339,19 @@ on the next QMD update after a sync (the sync triggers one).
 
 ### Omi (`@remnic/connector-omi`)
 
-- Auth: create an app with the External Integration capabilities
-  (`read_conversations`, `read_memories`) in the Omi app, generate an
-  `sk_...` API key, and configure `appId` + `userId` (your uid).
+- Auth: create a Developer API key in the Omi app under **Settings →
+  Developer → Create Key** and provide it via `REMNIC_OMI_API_KEY`,
+  `OMI_API_KEY`, or `apiKey`.
+- The current Developer API needs only that `omi_dev_...` key. Legacy
+  External Integration app installs remain supported when both `appId`
+  and `userId` are configured.
 - Conversations are fetched with full transcripts
-  (`max_transcript_segments=-1` — the API default silently truncates
-  to 100 segments otherwise) and completed status.
-- Segments carry `is_user` for the wearer plus `SPEAKER_NN` labels and
-  optional person ids; map labels via the speaker registry.
+  (`include_transcript=true`). Legacy integration mode also passes
+  `max_transcript_segments=-1` because that API default silently
+  truncates to 100 segments otherwise.
+- Developer API segments carry `speaker_name` and `speaker_id`; legacy
+  segments may carry `is_user`, `SPEAKER_NN` labels, and optional
+  person ids. Map labels via the speaker registry.
 - `importNativeMemories: "review"` imports Omi's "memories" (its
   extracted facts) into the review queue.
 

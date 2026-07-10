@@ -78,6 +78,27 @@ test("wearer keys as 'user'; known people key by person_id", () => {
   assert.equal(other.speakerName, "SPEAKER_01");
 });
 
+test("maps Developer API speaker_name and speaker_id segments", () => {
+  const conversation = conversationToWearable({
+    id: "omi-dev-1",
+    started_at: "2026-06-10T14:00:00+00:00",
+    transcript_segments: [
+      {
+        text: "The new Omi process is working.",
+        speaker_name: "Joshua",
+        speaker_id: 123,
+        start: 2,
+        end: 6,
+      },
+    ],
+  });
+  assert.equal(conversation.segments.length, 1);
+  assert.equal(conversation.segments[0].speakerName, "Joshua");
+  assert.equal(conversation.segments[0].speakerKey, "123");
+  assert.equal(conversation.segments[0].startIso, "2026-06-10T14:00:02.000Z");
+  assert.equal(conversation.segments[0].endIso, "2026-06-10T14:00:06.000Z");
+});
+
 test("tolerates absent optional fields (exclude_none serialization)", () => {
   const conversation = conversationToWearable({ id: "sparse-1" });
   assert.equal(conversation.segments.length, 0);
