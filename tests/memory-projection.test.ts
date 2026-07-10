@@ -14,10 +14,10 @@ import {
 import { runMemoryGovernance } from "../src/maintenance/memory-governance.ts";
 import {
   getMemoryProjectionPath,
-  initializeMemoryProjectionDb,
+  initializeMemoryProjectionDb, markProjectedMemoryPathInvalid,
   readProjectedEntityMentions,
   readProjectedLatestReviewQueue,
-  readProjectedMemoryBrowse,
+  readProjectedMemoryBrowse, updateProjectedMemoryPath,
   readProjectedMemoryState,
   readProjectedMemoryTimeline,
   readProjectedNativeKnowledgeChunks,
@@ -1845,4 +1845,138 @@ test("projection browse validates only the returned page for current schemas", a
     await rm(memoryDir, { recursive: true, force: true });
   }
 });
+test("projection browse fills pages after a managed archive updates path validity", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-moved-page-"));
+  try {
+    for (let index = 1; index <= 3; index += 1) {
+      await writeText(
+        memoryDir,
+        `facts/2026-03-08/fact-${index}.md`,
+        memoryDoc({
+          id: `fact-${index}`,
+          content: `projected memory ${index}`,
+          created: `2026-03-08T0${index}:00:00.000Z`,
+          updated: `2026-03-08T0${index}:00:00.000Z`,
+        }),
+      );
+    }
+    await rebuildMemoryProjection({
+      memoryDir,
+      dryRun: false,
+      now: new Date("2026-03-08T12:00:00.000Z"),
+    });
+    const storage = new StorageManager(memoryDir);
+    const archivedMemory = (await storage.readAllMemories())
+      .find((memory) => memory.frontmatter.id === "fact-3");
+    assert.ok(archivedMemory);
+    assert.equal(typeof await storage.archiveMemory(archivedMemory), "string");
+
+    const firstBrowse = readProjectedMemoryBrowse(memoryDir, {
+      limit: 2,
+      offset: 0,
+    });
+    assert.ok(firstBrowse);
+    assert.deepEqual(firstBrowse.memories.map((memory) => memory.id), ["fact-2", "fact-1"]);
+    assert.equal(firstBrowse.total, 2);
+
+    const secondBrowse = readProjectedMemoryBrowse(memoryDir, {
+      limit: 2,
+      offset: 0,
+    });
+    assert.ok(secondBrowse);
+    assert.deepEqual(secondBrowse.memories.map((memory) => memory.id), ["fact-2", "fact-1"]);
+    assert.equal(secondBrowse.total, 2);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+test("markProjectedMemoryPathInvalid removes a row from projected totals", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-mark-invalid-"));
+  try {
+    await writeText(memoryDir, "facts/fact-invalid.md", memoryDoc({
+      id: "fact-invalid",
+      content: "projected memory",
+    }));
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+
+    markProjectedMemoryPathInvalid(memoryDir, "fact-invalid");
+
+    assert.equal(readProjectedMemoryBrowse(memoryDir, { limit: 1, offset: 0 })?.total, 0);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("updateProjectedMemoryPath follows a moved memory file", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-update-path-"));
+  try {
+    await writeText(memoryDir, "facts/fact-moved.md", memoryDoc({
+      id: "fact-moved",
+      content: "projected memory",
+    }));
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+
+    updateProjectedMemoryPath(memoryDir, "fact-moved", "cold/facts/fact-moved.md");
+
+    const db = new Database(getMemoryProjectionPath(memoryDir), { readonly: true });
+    try {
+      const row = db.prepare("SELECT path_rel, path_valid FROM memory_current WHERE memory_id = ?")
+        .get("fact-moved") as { path_rel: string; path_valid: number };
+      assert.deepEqual(row, { path_rel: "cold/facts/fact-moved.md", path_valid: 1 });
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("tier migration updates the projected memory path", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-tier-move-"));
+  try {
+    const storage = new StorageManager(memoryDir);
+    await storage.writeMemory("fact", "projected memory", { source: "test" });
+    const memory = (await storage.readAllMemories())[0];
+    assert.ok(memory);
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+
+    const migrated = await storage.migrateMemoryToTier(memory, "cold");
+    const projected = readProjectedMemoryBrowse(memoryDir, { limit: 1, offset: 0 });
+
+    assert.ok(projected);
+    assert.equal(projected.memories[0]?.path, migrated.targetPath);
+    assert.equal(projected.total, 1);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("projection browse drops unmanaged missing files but leaves totals stale", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-memory-projection-unmanaged-rm-"));
+  try {
+    for (let index = 1; index <= 3; index += 1) {
+      await writeText(
+        memoryDir,
+        `facts/fact-${index}.md`,
+        memoryDoc({
+          id: `fact-${index}`,
+          content: `projected memory ${index}`,
+          updated: `2026-03-08T0${index}:00:00.000Z`,
+        }),
+      );
+    }
+    await rebuildMemoryProjection({ memoryDir, dryRun: false });
+    await rm(path.join(memoryDir, "facts", "fact-3.md"));
+
+    const browse = readProjectedMemoryBrowse(memoryDir, { limit: 2, offset: 0 });
+
+    assert.ok(browse);
+    assert.deepEqual(browse.memories.map((memory) => memory.id), ["fact-2", "fact-1"]);
+    assert.equal(browse.total, 3);
+  } finally {
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+
 

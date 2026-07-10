@@ -322,6 +322,41 @@ function openProjectionReadonly(memoryDir: string): BetterSqlite3Database | null
     return null;
   }
 }
+function updateProjectionBestEffort(
+  memoryDir: string,
+  sql: string,
+  params: unknown[],
+): void {
+  let db: BetterSqlite3Database | null = null;
+  try {
+    db = openBetterSqlite3(getMemoryProjectionPath(memoryDir), { fileMustExist: true });
+    db.prepare(sql).run(...params);
+  } catch {
+    // Projection updates must never block the canonical filesystem mutation.
+  } finally {
+    db?.close();
+  }
+}
+
+export function markProjectedMemoryPathInvalid(memoryDir: string, memoryId: string): void {
+  updateProjectionBestEffort(
+    memoryDir,
+    "UPDATE memory_current SET path_valid = 0 WHERE memory_id = ?",
+    [memoryId],
+  );
+}
+
+export function updateProjectedMemoryPath(
+  memoryDir: string,
+  memoryId: string,
+  pathRel: string,
+): void {
+  updateProjectionBestEffort(
+    memoryDir,
+    "UPDATE memory_current SET path_rel = ?, path_valid = 1 WHERE memory_id = ?",
+    [pathRel, memoryId],
+  );
+}
 
 function withProjectionReadonly<T>(
   memoryDir: string,
@@ -376,7 +411,11 @@ function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function resolveProjectedMemoryPath(memoryDir: string, pathRel: string): string | null {
+function resolveProjectedMemoryPath(
+  memoryDir: string,
+  pathRel: string,
+  requireExisting = false,
+): string | null {
   if (path.isAbsolute(pathRel)) return null;
   const root = resolveMemoryDirRoot(memoryDir);
   const candidate = path.resolve(root, pathRel);
@@ -385,6 +424,7 @@ function resolveProjectedMemoryPath(memoryDir: string, pathRel: string): string 
     const realCandidate = fs.realpathSync(candidate);
     if (!isPathInsideRoot(realCandidate, root)) return null;
   } catch {
+    if (requireExisting) return null;
     // Missing files are handled by callers. Still keep the lexical guard above.
   }
   return candidate;
@@ -397,6 +437,7 @@ export function isProjectedMemoryPathValid(memoryDir: string, pathRel: string): 
 function projectedBrowseRowFromCurrentRow(
   memoryDir: string,
   row: Record<string, unknown>,
+  requireExisting = false,
 ): ProjectedMemoryBrowseRow | null {
   if (
     typeof row.memory_id !== "string" ||
@@ -406,7 +447,7 @@ function projectedBrowseRowFromCurrentRow(
   ) {
     return null;
   }
-  const filePath = resolveProjectedMemoryPath(memoryDir, row.path_rel);
+  const filePath = resolveProjectedMemoryPath(memoryDir, row.path_rel, requireExisting);
   if (!filePath) return null;
   return {
     id: row.memory_id,
@@ -693,9 +734,6 @@ export function readProjectedMemoryBrowse(
     const browseWhereSql = `WHERE ${browseWhereClauses.join(" AND ")}`;
 
     if (currentSelect.hasPathValid) {
-      const totalRow = db
-        .prepare(`SELECT COUNT(*) AS total FROM memory_current ${browseWhereSql}`)
-        .get(...params) as { total: number };
       const rows = db
         .prepare(`
           SELECT
@@ -711,15 +749,23 @@ export function readProjectedMemoryBrowse(
           FROM memory_current
           ${browseWhereSql}
           ORDER BY ${orderBySql}
-          LIMIT ? OFFSET ?
         `)
-        .all(...params, options.limit, options.offset) as Array<Record<string, unknown>>;
-      return {
-        total: totalRow.total,
-        memories: rows
-          .map((row) => projectedBrowseRowFromCurrentRow(memoryDir, row))
-          .filter((row): row is ProjectedMemoryBrowseRow => row !== null),
-      };
+        .iterate(...params) as Iterable<Record<string, unknown>>;
+      const pageRows: ProjectedMemoryBrowseRow[] = [];
+      let validRowsSeen = 0;
+      for (const row of rows) {
+        const browseRow = projectedBrowseRowFromCurrentRow(memoryDir, row, true);
+        if (!browseRow) continue;
+        if (validRowsSeen >= options.offset) {
+          pageRows.push(browseRow);
+          if (pageRows.length >= options.limit) break;
+        }
+        validRowsSeen += 1;
+      }
+      const totalRow = db
+        .prepare(`SELECT COUNT(*) AS total FROM memory_current ${browseWhereSql}`)
+        .get(...params) as { total: number };
+      return { total: totalRow.total, memories: pageRows };
     }
 
     // Legacy projections have no materialized path validity. Preserve the
