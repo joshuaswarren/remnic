@@ -28,6 +28,8 @@ import {
 } from "../storage.js";
 
 export interface MemoryReadStoreDeps {
+  /** Live class object of the host instance — shared static caches (see storage.ts storageManagerClass). */
+  readonly storageManagerClass: typeof StorageManager;
   readonly _secureStoreKey: Buffer | null;
   appendStorageSecureFile(filePath: string, content: string): Promise<void>;
   artifactIndexCache: { memories: MemoryFile[]; loadedAtMs: number; writeVersion: number } | null;
@@ -131,7 +133,7 @@ export class MemoryReadStore {
   async readAllArtifactsCached(): Promise<MemoryFile[]> {
     if (
       this.deps.artifactIndexCache &&
-      Date.now() - this.deps.artifactIndexCache.loadedAtMs <= StorageManager.ARTIFACT_INDEX_CACHE_TTL_MS &&
+      Date.now() - this.deps.artifactIndexCache.loadedAtMs <= this.deps.storageManagerClass.ARTIFACT_INDEX_CACHE_TTL_MS &&
       this.deps.artifactIndexCache.writeVersion === this.deps.getArtifactWriteVersion()
     ) {
       return this.deps.artifactIndexCache.memories;
@@ -364,10 +366,10 @@ export class MemoryReadStore {
     const currentColdVersion = this.deps.readColdWriteVersion();
 
     // Return cached result if still valid by both TTL and sentinel version.
-    const cached = StorageManager.coldMemoriesCache.get(coldRoot);
+    const cached = this.deps.storageManagerClass.coldMemoriesCache.get(coldRoot);
     if (
       cached &&
-      Date.now() - cached.loadedAt < StorageManager.COLD_SCAN_CACHE_TTL_MS &&
+      Date.now() - cached.loadedAt < this.deps.storageManagerClass.COLD_SCAN_CACHE_TTL_MS &&
       cached.coldVersion === currentColdVersion
     ) {
       return cached.memories;
@@ -405,7 +407,7 @@ export class MemoryReadStore {
 
     // Store in cache with the sentinel version captured above so that any
     // subsequent cold-version bump (by this or another process) invalidates it.
-    StorageManager.coldMemoriesCache.set(coldRoot, { memories, loadedAt: Date.now(), coldVersion: currentColdVersion });
+    this.deps.storageManagerClass.coldMemoriesCache.set(coldRoot, { memories, loadedAt: Date.now(), coldVersion: currentColdVersion });
     return memories;
   }
 
@@ -717,8 +719,8 @@ export class MemoryReadStore {
     }>
   > {
     const cacheKey = this.deps.questionsDir;
-    const cached = StorageManager.questionsCache.get(cacheKey);
-    if (cached && Date.now() - cached.loadedAt < StorageManager.QUESTIONS_CACHE_TTL_MS) {
+    const cached = this.deps.storageManagerClass.questionsCache.get(cacheKey);
+    if (cached && Date.now() - cached.loadedAt < this.deps.storageManagerClass.QUESTIONS_CACHE_TTL_MS) {
       // Check dir mtime for cross-process invalidation — if another process
       // wrote/resolved a question, the directory mtime will be newer than loadedAt.
       try {
@@ -745,7 +747,7 @@ export class MemoryReadStore {
         }
       }
       const sorted = questions.sort((a, b) => b.priority - a.priority);
-      StorageManager.questionsCache.set(cacheKey, { questions: sorted, loadedAt: Date.now() });
+      this.deps.storageManagerClass.questionsCache.set(cacheKey, { questions: sorted, loadedAt: Date.now() });
       return opts?.unresolvedOnly ? sorted.filter((q) => !q.resolved) : sorted;
     } catch {
       return [];

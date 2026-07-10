@@ -33,6 +33,8 @@ import {
 } from "../storage.js";
 
 export interface EntityStoreDeps {
+  /** Live class object of the host instance — shared static caches (see storage.ts storageManagerClass). */
+  readonly storageManagerClass: typeof StorageManager;
   readonly baseDir: string;
   bumpMemoryStatusVersion(): void;
   ensureDirectories(): Promise<void>;
@@ -341,7 +343,7 @@ export class EntityStore {
     if (
       useDefaultLimits &&
       this.deps.knowledgeIndexCache &&
-      Date.now() - this.deps.knowledgeIndexCache.builtAt < StorageManager.KNOWLEDGE_INDEX_CACHE_TTL_MS
+      Date.now() - this.deps.knowledgeIndexCache.builtAt < this.deps.storageManagerClass.KNOWLEDGE_INDEX_CACHE_TTL_MS
     ) {
       return { result: this.deps.knowledgeIndexCache.result, cached: true };
     }
@@ -356,7 +358,7 @@ export class EntityStore {
     const scored: ScoredEntity[] = entities.map((e) => ({
       name: e.name,
       type: e.type,
-      score: StorageManager.scoreEntity(e, now),
+      score: this.deps.storageManagerClass.scoreEntity(e, now),
       factCount: e.facts.length,
       summary: e.synthesis ?? e.summary,
       topRelationships: e.relationships.slice(0, 3).map((r) => r.target),

@@ -2522,6 +2522,19 @@ export class StorageManager {
     this.loadAliasesSync();
   }
 
+  /**
+   * The LIVE class object of this instance (issue #1809 review of the
+   * storage decomposition): extracted store modules must read/write the
+   * shared static caches (questionsCache, coldMemoriesCache, ...) through
+   * the SAME class binding the host methods use. Referencing the imported
+   * `StorageManager` symbol from a split bundle chunk can yield a second
+   * class copy with its own statics, split-braining the caches
+   * (resolveQuestion clears copy A while readQuestions reads copy B).
+   */
+  get storageManagerClass(): typeof StorageManager {
+    return this.constructor as typeof StorageManager;
+  }
+
   /** The root directory of this storage instance. */
   /** MemoryReadStore (storage.ts decomposition). Lazy; selfDeps live wiring. */
   private _memoryReadStore: MemoryReadStore | undefined;
