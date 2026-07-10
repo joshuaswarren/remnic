@@ -86,7 +86,9 @@ These rules are the default workflow for all agents and contributors.
 
 4. Run the local hardening gate before claiming review-clean.
    - Always run `npm run preflight:quick`.
-   - If you touch `src/` or `packages/remnic-core/src/` `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`, `entity-retrieval.ts`, or `config.ts`, also run `npm run test:entity-hardening`.
+   - If you touch `orchestrator.ts`, `storage.ts`, `intent.ts`, `memory-cache.ts`,
+     `entity-retrieval.ts`, `config.ts`, or any file under `storage/` or `orchestration/`
+     in `src/` or `packages/remnic-core/src/`, also run `npm run test:entity-hardening`.
    - If Cursor CLI is available, run `npm run review:cursor` before requesting external AI review.
 
 5. Treat external AI review as stale unless it matches the current head.

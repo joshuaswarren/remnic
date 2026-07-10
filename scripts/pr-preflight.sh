@@ -40,7 +40,10 @@ needs_entity_hardening() {
     return 1
   fi
 
-  if printf '%s\n' "$files" | grep -Eq '^(src|packages/remnic-core/src)/(orchestrator|storage|intent|memory-cache|entity-retrieval|config)\.ts$'; then
+  local risky_path_pattern
+  risky_path_pattern='^(src|packages/remnic-core/src)/'
+  risky_path_pattern+='((orchestrator|storage|intent|memory-cache|entity-retrieval|config)\.ts$|(storage|orchestration)/)'
+  if printf '%s\n' "$files" | grep -Eq "$risky_path_pattern"; then
     return 0
   fi
 
