@@ -5463,9 +5463,7 @@ export class StorageManager {
       filePath: string;
     }>
   > {
-    return this.memoryReadStore.readQuestions(
-      opts,
-    );
+    return this.memoryReadStore.readQuestions(opts);
   }
 
   /** Invalidate the questions cache (call after writing a question). */
