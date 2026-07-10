@@ -30,7 +30,7 @@ import {
   parseEntityFile,
   serializeEntityFile,
   StorageManager,
-} from "../index.js";
+} from "../storage.js";
 
 export interface EntityStoreDeps {
   readonly baseDir: string;
