@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { loadConfigFile, mergeRemnicConfigForServer, parseServerConfig } from "./index.js";
+import { parseConfig } from "@remnic/core";
+import { createAdminControls, loadConfigFile, mergeRemnicConfigForServer, parseServerConfig } from "./index.js";
 
 async function writeConfig(content: string): Promise<{ filePath: string; cleanup: () => Promise<void> }> {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-server-config-"));
@@ -88,6 +89,57 @@ test("server config loader rejects non-object top-level JSON", async () => {
     } finally {
       await cleanup();
     }
+  }
+});
+
+test("server config loader merges partial remnic and engram blocks over legacy flat core keys", async () => {
+  for (const nestedKey of ["remnic", "engram"] as const) {
+    const { filePath, cleanup } = await writeConfig(JSON.stringify({
+      namespacesEnabled: true,
+      defaultNamespace: "generalist",
+      lcmEnabled: true,
+      wearables: { enabled: true, timezone: "America/Chicago" },
+      [nestedKey]: { wearables: { enabled: false } },
+      server: { principal: "fleet" },
+    }));
+    try {
+      const loaded = loadConfigFile(filePath);
+      assert.deepEqual(loaded.remnic, {
+        namespacesEnabled: true,
+        defaultNamespace: "generalist",
+        lcmEnabled: true,
+        wearables: { enabled: false },
+      });
+      assert.deepEqual(loaded.server, { principal: "fleet" });
+    } finally {
+      await cleanup();
+    }
+  }
+});
+
+test("admin null reset removes nested values and their flat fallbacks", async () => {
+  const { filePath, cleanup } = await writeConfig(JSON.stringify({
+    namespacesEnabled: true,
+    localLlmUrl: "http://127.0.0.1:1/v1",
+    remnic: { namespacesEnabled: false },
+    server: { adminConsoleEnabled: true },
+  }));
+  try {
+    const loaded = loadConfigFile(filePath);
+    const controls = createAdminControls(
+      filePath,
+      parseConfig(loaded.remnic),
+      parseServerConfig(loaded.server),
+    );
+
+    const status = await controls.update?.({ namespacesEnabled: null });
+    const written = JSON.parse(await readFile(filePath, "utf8"));
+
+    assert.equal(Object.hasOwn(written, "namespacesEnabled"), false);
+    assert.equal(Object.hasOwn(written.remnic, "namespacesEnabled"), false);
+    assert.equal(status?.config.values.namespacesEnabled, false);
+  } finally {
+    await cleanup();
   }
 });
 

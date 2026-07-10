@@ -14,7 +14,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokensCached, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokensCached, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
 
 // ── Config loading ──────────────────────────────────────────────────────────
 
@@ -177,11 +177,11 @@ export function loadConfigFile(configPath: string): ServerConfig {
   if (!isPlainRecord(raw)) {
     throw new Error(`Invalid config file ${configPath}: top-level config must be a JSON object`);
   }
-  const remnic = requirePlainConfigBlock(raw, "remnic", configPath);
-  const engram = requirePlainConfigBlock(raw, "engram", configPath);
+  requirePlainConfigBlock(raw, "remnic", configPath);
+  requirePlainConfigBlock(raw, "engram", configPath);
   const server = requirePlainConfigBlock(raw, "server", configPath);
   return {
-    remnic: remnic ?? engram ?? raw,
+    remnic: resolveRemnicConfigRecord(raw),
     server: server ?? {},
   };
 }
@@ -606,7 +606,7 @@ function dashboardFeatures(config: PluginConfig) {
   }));
 }
 
-function createAdminControls(
+export function createAdminControls(
   configPath: string,
   config: PluginConfig,
   serverConfig: ParsedServerConfig,
@@ -649,17 +649,13 @@ function createAdminControls(
       for (const [key, value] of normalizedEntries) {
         if (value === null) {
           delete target[key];
+          if (target !== raw) delete raw[key];
         } else {
           target[key] = value;
         }
       }
 
-      const candidateRemnic = isPlainRecord(raw.remnic)
-        ? raw.remnic
-        : isPlainRecord(raw.engram)
-          ? raw.engram
-          : raw;
-      const nextDisplayConfig = parseConfig(candidateRemnic);
+      const nextDisplayConfig = parseConfig(resolveRemnicConfigRecord(raw));
 
       writeConfigFileAtomically(configPath, raw);
       displayConfig = nextDisplayConfig;

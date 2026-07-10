@@ -75,6 +75,30 @@ test("resolveMemoryDir expands home-relative env and config paths", async () => 
   }
 });
 
+test("resolveMemoryDir preserves flat fallback keys under a partial remnic block", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "remnic-memory-mixed-config-"));
+  try {
+    process.env.HOME = home;
+    delete process.env.REMNIC_MEMORY_DIR;
+    delete process.env.ENGRAM_MEMORY_DIR;
+    delete process.env.ENGRAM_CONFIG_PATH;
+    process.env.REMNIC_CONFIG_PATH = path.join(home, "remnic.json");
+    await writeFile(
+      process.env.REMNIC_CONFIG_PATH,
+      JSON.stringify({
+        memoryDir: "${HOME}/configured-memory",
+        remnic: { wearables: { enabled: false } },
+        server: { principal: "fleet" },
+      }),
+    );
+
+    assert.equal(resolveMemoryDir(), path.join(home, "configured-memory"));
+  } finally {
+    restoreEnv();
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("resolveSyncSourceDir rejects bare source flags", () => {
   assert.equal(resolveSyncSourceDir([]), ".");
   assert.equal(resolveSyncSourceDir(["--source", "/tmp/source", "--json"]), "/tmp/source");
