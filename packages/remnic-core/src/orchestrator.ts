@@ -120,6 +120,7 @@ import { NamespaceReadFanoutCoordinator } from "./orchestration/namespace-read-f
 import { selfDeps } from "./orchestration/self-deps.js";
 import { RecallEntryCoordinator } from "./orchestration/recall-entry.js";
 import { SessionContextCoordinator } from "./orchestration/session-context.js";
+import { drainRecallWrites, trackRecallWrite } from "./orchestration/recall-background-writes.js";
 import {
   abortRecallError,
   buildCompressionGuidelinesMarkdown,
@@ -135,9 +136,8 @@ import {
   type QueryAwarePrefilter,
   type RecallInvocationOptions,
 } from "./orchestration/orchestrator-helpers.js";
-// Issue #1526 seam 25: module-level helpers moved to
-// orchestration/orchestrator-helpers.ts; re-exported here so existing
-// importers (coordinators, tests, root shims) keep working.
+// Issue #1526 seam 25: helpers moved to orchestration/orchestrator-helpers.ts and are
+// re-exported here so existing importers (coordinators, tests, root shims) keep working.
 export {
   BulkImportBatchPartialFailureError,
   COMPACTION_SIGNAL_MAX_AGE_MS,
@@ -701,8 +701,7 @@ export class Orchestrator {
   /** Read by NamespaceReadFanoutCoordinator (seam 26), hence not `private`. */
   static readonly ARTIFACT_STATUS_CACHE_TTL_MS = 60_000;
 
-  // Access tracking buffer (Phase 1A)
-  // Maps memoryId -> {count, lastAccessed} for batched updates
+  // Batched access-tracking counts and timestamps (Phase 1A).
   private accessTrackingBuffer: Map<
     string,
     { count: number; lastAccessed: string }
@@ -887,9 +886,7 @@ export class Orchestrator {
   private utilityRuntimeValues: UtilityRuntimeValues | null = null;
   private evalShadowWriteChain: Promise<void> = Promise.resolve();
 
-  // Pending background observation-mode direct-answer annotations (#518).
-  // Tracks fire-and-forget `annotateDirectAnswerTier` calls so callers (tests,
-  // waitForDirectAnswerObservationIdle) can await settlement.
+  // Pending fire-and-forget direct-answer tier annotations (#518).
   private directAnswerObservationChain: Promise<void> = Promise.resolve();
 
   // Initialization gate: recall() awaits this before proceeding
@@ -934,8 +931,9 @@ export class Orchestrator {
     }
   }
 
-  private async disposeSearchBackendIfNeeded(): Promise<void> {
-    await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
+  /** Track a recall-side write so destroy() can wait for it before teardown. @internal */
+  trackRecallBackgroundWrite(promise: Promise<void>, label: string): void {
+    trackRecallWrite(this, promise, label);
   }
 
   /**
@@ -951,9 +949,10 @@ export class Orchestrator {
       await this.wearablesAutoSyncHandle.stop();
       this.wearablesAutoSyncHandle = null;
     }
+    await drainRecallWrites(this);
     this.maintenanceScheduler.dispose();
     await this.namespaceSearchRouter.dispose();
-    await this.disposeSearchBackendIfNeeded();
+    await (this.qmd as { dispose?: () => void | Promise<void> }).dispose?.();
     if (this.conversationQmd && this.conversationQmd !== this.qmd) {
       await (this.conversationQmd as { dispose?: () => void | Promise<void> }).dispose?.();
     }
@@ -3713,8 +3712,9 @@ export class Orchestrator {
     if (
       this.accessTrackingBuffer.size >= this.config.accessTrackingBufferMaxSize
     ) {
-      this.flushAccessTracking().catch((err) =>
-        log.debug(`background access tracking flush failed: ${err}`),
+      this.trackRecallBackgroundWrite(
+        this.flushAccessTracking(),
+        "background access tracking flush",
       );
     }
   }

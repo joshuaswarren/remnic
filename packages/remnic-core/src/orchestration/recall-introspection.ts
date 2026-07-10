@@ -66,6 +66,7 @@ export interface RecallIntrospectionDeps {
   getStorage(namespace?: string): Promise<StorageManager>;
   readonly graphRecallCoordinator: GraphRecallCoordinator;
   readonly lastRecall: LastRecallStore;
+  trackRecallBackgroundWrite(promise: Promise<void>, label: string): void;
   resolveStateDirForNamespace(
     namespace: string,
   ): Promise<string>;
@@ -500,6 +501,10 @@ export class RecallIntrospectionCoordinator {
           log.debug(`direct-answer observation chain error: ${err}`);
         }
       });
+    this.deps.trackRecallBackgroundWrite(
+      this.deps.directAnswerObservationChain,
+      "direct-answer observation",
+    );
   }
 
   async annotateDirectAnswerTier(
