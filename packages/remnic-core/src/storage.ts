@@ -103,11 +103,11 @@ import type {
 import { confidenceTier, SPECULATIVE_TTL_DAYS } from "./types.js";
 import {
   type ProjectedMemoryBrowseOptions,
-  type ProjectedMemoryBrowsePage,
+  type ProjectedMemoryBrowsePage, markProjectedMemoryPathInvalid,
   readProjectedMemoryState,
   readProjectedMemoryBrowse,
   readProjectedGovernanceRecord,
-  readProjectedMemoryTimeline,
+  readProjectedMemoryTimeline, updateProjectedMemoryPath,
 } from "./memory-projection-store.js";
 import {
   inferMemoryStatus,
@@ -4566,14 +4566,12 @@ export class StorageManager {
     const dir = categoryDirName(memory.frontmatter.category);
     return path.join(root, dir, this.resolveMemoryDateDir(memory), `${memory.frontmatter.id}.md`);
   }
-
   private async writeMemoryFileAtomic(targetPath: string, memory: MemoryFile): Promise<void> {
     const fileContent = `${serializeFrontmatter(memory.frontmatter)}\n\n${memory.content}\n`;
     await writeMaybeEncryptedFile(targetPath, fileContent, this.resolveWriteKey(), {}, this.baseDir);
     this.invalidateAllMemoriesCache();
     this.notifyCatalogWrite();
   }
-
   async moveMemoryToPath(memory: MemoryFile, targetPath: string): Promise<void> {
     await this.writeMemoryFileAtomic(targetPath, memory);
     const sourcePath = path.resolve(memory.path);
@@ -4591,6 +4589,7 @@ export class StorageManager {
       // invalidated, but a concurrent readAllMemories() may have re-populated
       // the cache between the write and the unlink.
       this.invalidateAllMemoriesCache();
+      updateProjectedMemoryPath(this.baseDir, memory.frontmatter.id, toMemoryPathRel(this.baseDir, targetPath));
     }
   }
 
@@ -4615,6 +4614,7 @@ export class StorageManager {
           throw err;
         }
       }
+      updateProjectedMemoryPath(this.baseDir, memory.frontmatter.id, toMemoryPathRel(this.baseDir, targetPath));
       this.bumpMemoryStatusVersion();
       return { changed: false, targetPath };
     }
@@ -4662,7 +4662,7 @@ export class StorageManager {
 
       // Write to archive location first (encrypted if applicable), then remove original.
       await this.writeStorageSecureFile(destPath, fileContent);
-      await unlink(memory.path);
+      await unlink(memory.path); markProjectedMemoryPathInvalid(this.baseDir, memory.frontmatter.id);
       this.invalidateAllMemoriesCache();
       await this.appendGeneratedMemoryLifecycleEventFailOpen(
         "storage.archiveMemory",
@@ -4767,7 +4767,7 @@ export class StorageManager {
     if (!memory) return false;
 
     try {
-      await unlink(memory.path);
+      await unlink(memory.path); markProjectedMemoryPathInvalid(this.baseDir, id);
       this.invalidateAllMemoriesCache();
       this.bumpMemoryStatusVersion();
       log.debug(`invalidated memory ${id}`);
@@ -4906,7 +4906,7 @@ export class StorageManager {
       const expiresAt = new Date(m.frontmatter.expiresAt).getTime();
       if (expiresAt < now) {
         try {
-          await unlink(m.path);
+          await unlink(m.path); markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
           deleted.push(m);
           log.debug(`cleaned expired memory ${m.frontmatter.id} (TTL expired)`);
         } catch {
@@ -5981,7 +5981,7 @@ export class StorageManager {
       if (updatedAt < cutoff) {
         // Remove the file
         try {
-          await unlink(m.path);
+          await unlink(m.path); markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
           deleted.push(m);
           log.debug(`cleaned expired commitment ${m.frontmatter.id}`);
         } catch {

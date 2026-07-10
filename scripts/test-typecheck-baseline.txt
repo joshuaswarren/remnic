@@ -468,7 +468,6 @@ tests/memory-governance.test.ts(1117,61): TS7006
 tests/memory-governance.test.ts(1122,34): TS2339
 tests/memory-governance.test.ts(1128,43): TS7006
 tests/memory-observation-type-shape.test.ts(24,15): TS2614
-tests/memory-projection.test.ts(1618,18): TS18048
 tests/migrate-observations.test.ts(188,9): TS2322
 tests/namespace-migrate.test.ts(22,3): TS2740
 tests/namespace-migrate.test.ts(223,20): TS2339

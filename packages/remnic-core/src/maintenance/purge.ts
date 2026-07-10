@@ -23,6 +23,7 @@ import path from "node:path";
 import { appendFile, mkdir, unlink } from "node:fs/promises";
 import type { StorageManager } from "../storage.js";
 import type { MemoryFile } from "../types.js";
+import { markProjectedMemoryPathInvalid } from "../memory-projection-store.js";
 import type { SearchBackend } from "../search/port.js";
 
 export type PurgeTierFilter = "cold" | "all";
@@ -236,12 +237,14 @@ export async function purgeMemories(
       await unlink(candidate.path);
       actuallyPurged.push(candidate);
       addCollectionForCandidate(candidate);
+      markProjectedMemoryPathInvalid(storage.dir, candidate.id);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       // ENOENT is fine — already gone
       if (hasErrorCode(err, "ENOENT")) {
         alreadyAbsent.push(candidate);
         addCollectionForCandidate(candidate);
+        markProjectedMemoryPathInvalid(storage.dir, candidate.id);
       } else {
         errors.push({ id: candidate.id, path: candidate.path, error: message });
       }

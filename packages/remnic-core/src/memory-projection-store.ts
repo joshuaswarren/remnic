@@ -17,7 +17,7 @@ import {
   type BetterSqlite3Database,
 } from "./runtime/better-sqlite.js";
 
-export const MEMORY_PROJECTION_SCHEMA_VERSION = 2;
+export const MEMORY_PROJECTION_SCHEMA_VERSION = 3;
 
 export interface ProjectedMemoryBrowseOptions {
   query?: string;
@@ -153,11 +153,13 @@ function migrateProjectionSchemaIfNeeded(memoryDir: string): void {
 export function memoryCurrentSelectExpressions(db: BetterSqlite3Database): {
   tagsJson: string;
   previewText: string;
+  hasPathValid: boolean;
 } {
   const columns = listTableColumns(db, "memory_current");
   return {
     tagsJson: columns.has("tags_json") ? "tags_json" : `'[]' AS tags_json`,
     previewText: columns.has("preview_text") ? "preview_text" : `'' AS preview_text`,
+    hasPathValid: columns.has("path_valid"),
   };
 }
 
@@ -174,6 +176,7 @@ export function initializeMemoryProjectionDb(db: BetterSqlite3Database): void {
       status TEXT NOT NULL,
       lifecycle_state TEXT,
       path_rel TEXT NOT NULL,
+      path_valid INTEGER NOT NULL DEFAULT 0 CHECK (path_valid IN (0, 1)),
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       archived_at TEXT,
@@ -195,8 +198,6 @@ export function initializeMemoryProjectionDb(db: BetterSqlite3Database): void {
     CREATE INDEX IF NOT EXISTS idx_memory_current_category
       ON memory_current(category);
 
-    CREATE INDEX IF NOT EXISTS idx_memory_current_updated
-      ON memory_current(updated_at DESC);
 
     CREATE TABLE IF NOT EXISTS memory_timeline (
       event_id TEXT PRIMARY KEY,
@@ -297,6 +298,18 @@ export function initializeMemoryProjectionDb(db: BetterSqlite3Database): void {
   `);
 
   migrateMemoryCurrentTable(db);
+  if (listTableColumns(db, "memory_current").has("path_valid")) {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_memory_current_browse_updated_desc
+        ON memory_current(path_valid, updated_at DESC, created_at DESC, memory_id ASC);
+      CREATE INDEX IF NOT EXISTS idx_memory_current_browse_updated_asc
+        ON memory_current(path_valid, updated_at ASC, created_at ASC, memory_id ASC);
+      CREATE INDEX IF NOT EXISTS idx_memory_current_browse_created_desc
+        ON memory_current(path_valid, created_at DESC, updated_at DESC, memory_id ASC);
+      CREATE INDEX IF NOT EXISTS idx_memory_current_browse_created_asc
+        ON memory_current(path_valid, created_at ASC, updated_at ASC, memory_id ASC);
+    `);
+  }
   db.prepare("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)")
     .run("schemaVersion", String(MEMORY_PROJECTION_SCHEMA_VERSION));
 }
@@ -308,6 +321,42 @@ function openProjectionReadonly(memoryDir: string): BetterSqlite3Database | null
   } catch {
     return null;
   }
+}
+function updateProjectionBestEffort(
+  memoryDir: string,
+  sql: string,
+  params: unknown[],
+): void {
+  let db: BetterSqlite3Database | null = null;
+  try {
+    db = openBetterSqlite3(getMemoryProjectionPath(memoryDir), { fileMustExist: true });
+    db.prepare(sql).run(...params);
+  } catch {
+    // Projection updates must never block the canonical filesystem mutation.
+  } finally {
+    db?.close();
+  }
+}
+
+export function markProjectedMemoryPathInvalid(memoryDir: string, memoryId: string): void {
+  updateProjectionBestEffort(
+    memoryDir,
+    "UPDATE memory_current SET path_valid = 0 WHERE memory_id = ?",
+    [memoryId],
+  );
+}
+
+export function updateProjectedMemoryPath(
+  memoryDir: string,
+  memoryId: string,
+  pathRel: string,
+): void {
+  const pathValid = isProjectedMemoryPathValid(memoryDir, pathRel) ? 1 : 0;
+  updateProjectionBestEffort(
+    memoryDir,
+    "UPDATE memory_current SET path_rel = ?, path_valid = ? WHERE memory_id = ?",
+    [pathRel, pathValid, memoryId],
+  );
 }
 
 function withProjectionReadonly<T>(
@@ -363,7 +412,11 @@ function isPathInsideRoot(candidatePath: string, rootPath: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function resolveProjectedMemoryPath(memoryDir: string, pathRel: string): string | null {
+function resolveProjectedMemoryPath(
+  memoryDir: string,
+  pathRel: string,
+  requireExisting = false,
+): string | null {
   if (path.isAbsolute(pathRel)) return null;
   const root = resolveMemoryDirRoot(memoryDir);
   const candidate = path.resolve(root, pathRel);
@@ -372,14 +425,21 @@ function resolveProjectedMemoryPath(memoryDir: string, pathRel: string): string 
     const realCandidate = fs.realpathSync(candidate);
     if (!isPathInsideRoot(realCandidate, root)) return null;
   } catch {
+    if (requireExisting) return null;
     // Missing files are handled by callers. Still keep the lexical guard above.
   }
   return candidate;
 }
 
+export function isProjectedMemoryPathValid(memoryDir: string, pathRel: string): boolean {
+  return resolveProjectedMemoryPath(memoryDir, pathRel) !== null;
+}
+
 function projectedBrowseRowFromCurrentRow(
   memoryDir: string,
   row: Record<string, unknown>,
+  resolvedFilePath?: string,
+  requireExisting = false,
 ): ProjectedMemoryBrowseRow | null {
   if (
     typeof row.memory_id !== "string" ||
@@ -389,7 +449,7 @@ function projectedBrowseRowFromCurrentRow(
   ) {
     return null;
   }
-  const filePath = resolveProjectedMemoryPath(memoryDir, row.path_rel);
+  const filePath = resolvedFilePath ?? resolveProjectedMemoryPath(memoryDir, row.path_rel, requireExisting);
   if (!filePath) return null;
   return {
     id: row.memory_id,
@@ -613,8 +673,15 @@ export function readProjectedMemoryBrowse(
     const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
     if (normalizedQuery) {
-      // Query-based browse: fetch all matching rows, filter by full file content, then paginate in JS
-      const allRows = db
+      // Full-content search still examines every eligible row so totals and
+      // matches stay exact, but iteration keeps memory use proportional to the page.
+      const queryWhereClauses = currentSelect.hasPathValid
+        ? [...whereClauses, ...projectedBrowsePathSqlClauses(), "path_valid = 1"]
+        : whereClauses;
+      const queryWhereSql = queryWhereClauses.length > 0
+        ? `WHERE ${queryWhereClauses.join(" AND ")}`
+        : "";
+      const rows = db
         .prepare(`
           SELECT
             memory_id,
@@ -627,47 +694,88 @@ export function readProjectedMemoryBrowse(
             ${currentSelect.tagsJson},
             ${currentSelect.previewText}
           FROM memory_current
-          ${whereSql}
+          ${queryWhereSql}
           ORDER BY ${orderBySql}
         `)
-        .all(...params) as Array<Record<string, unknown>>;
+        .iterate(...params) as Iterable<Record<string, unknown>>;
+      const pageRows: ProjectedMemoryBrowseRow[] = [];
+      let total = 0;
 
-      const filtered = allRows.filter((row) => {
-        if (typeof row.memory_id !== "string" || typeof row.path_rel !== "string") return false;
-        const filePath = resolveProjectedMemoryPath(memoryDir, row.path_rel);
-        if (!filePath) return false;
-        // Check preview, category, entity_ref, tags first (fast)
+      for (const row of rows) {
+        if (typeof row.memory_id !== "string" || typeof row.path_rel !== "string") continue;
+        const filePath = resolveProjectedMemoryPath(
+          memoryDir,
+          row.path_rel,
+          currentSelect.hasPathValid,
+        );
+        if (!filePath) continue;
         const preview = typeof row.preview_text === "string" ? row.preview_text.toLowerCase() : "";
         const category = typeof row.category === "string" ? row.category.toLowerCase() : "";
         const entityRef = typeof row.entity_ref === "string" ? row.entity_ref.toLowerCase() : "";
         const tags = typeof row.tags_json === "string" ? row.tags_json.toLowerCase() : "";
-        if (preview.includes(normalizedQuery) || category.includes(normalizedQuery) ||
-            entityRef.includes(normalizedQuery) || tags.includes(normalizedQuery)) {
-          return true;
+        let matches = preview.includes(normalizedQuery) || category.includes(normalizedQuery) ||
+          entityRef.includes(normalizedQuery) || tags.includes(normalizedQuery);
+        if (!matches) {
+          try {
+            matches = fs.readFileSync(filePath, "utf-8").toLowerCase().includes(normalizedQuery);
+          } catch {
+            matches = false;
+          }
         }
-        // Fall back to reading full file content from disk
-        try {
-          const content = fs.readFileSync(filePath, "utf-8").toLowerCase();
-          return content.includes(normalizedQuery);
-        } catch {
-          return false;
+        if (!matches) continue;
+        if (total >= options.offset && pageRows.length < options.limit) {
+          const browseRow = projectedBrowseRowFromCurrentRow(memoryDir, row, filePath);
+          if (browseRow) pageRows.push(browseRow);
         }
-      });
+        total += 1;
+      }
 
-      const pageRows = filtered.slice(options.offset, options.offset + options.limit);
-      return {
-        total: filtered.length,
-        memories: pageRows
-          .map((row) => projectedBrowseRowFromCurrentRow(memoryDir, row))
-          .filter((row): row is ProjectedMemoryBrowseRow => row !== null),
-      };
+      return { total, memories: pageRows };
     }
 
-    // No query: push lexical path safety into SQL, then count through the same
-    // realpath-aware row parser used for returned rows so symlink escapes do not
-    // inflate totals.
     const browseWhereClauses = [...whereClauses, ...projectedBrowsePathSqlClauses()];
+    if (currentSelect.hasPathValid) {
+      browseWhereClauses.push("path_valid = 1");
+    }
     const browseWhereSql = `WHERE ${browseWhereClauses.join(" AND ")}`;
+
+    if (currentSelect.hasPathValid) {
+      const rows = db
+        .prepare(`
+          SELECT
+            memory_id,
+            path_rel,
+            category,
+            status,
+            created_at,
+            updated_at,
+            entity_ref,
+            ${currentSelect.tagsJson},
+            ${currentSelect.previewText}
+          FROM memory_current
+          ${browseWhereSql}
+          ORDER BY ${orderBySql}
+        `)
+        .iterate(...params) as Iterable<Record<string, unknown>>;
+      const pageRows: ProjectedMemoryBrowseRow[] = [];
+      let validRowsSeen = 0;
+      for (const row of rows) {
+        const browseRow = projectedBrowseRowFromCurrentRow(memoryDir, row, undefined, true);
+        if (!browseRow) continue;
+        if (validRowsSeen >= options.offset) {
+          pageRows.push(browseRow);
+          if (pageRows.length >= options.limit) break;
+        }
+        validRowsSeen += 1;
+      }
+      const totalRow = db
+        .prepare(`SELECT COUNT(*) AS total FROM memory_current ${browseWhereSql}`)
+        .get(...params) as { total: number };
+      return { total: totalRow.total, memories: pageRows };
+    }
+
+    // Legacy projections have no materialized path validity. Preserve the
+    // realpath-aware full scan rather than trusting rows from an older writer.
     const pageRows: ProjectedMemoryBrowseRow[] = [];
     const fetchSize = Math.max(options.limit * 2, 50);
     let validRowsSeen = 0;
