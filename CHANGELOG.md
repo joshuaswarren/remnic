@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.3.764] — 2026-07-11
+
 ### Changed
 
 - Exposed recall introspection through the typed `Orchestrator.recallIntrospection`
