@@ -14,7 +14,7 @@ import { z } from "zod";
 import type { DreamsPhase, RecallDisclosure, RecallPlanMode } from "./types.js";
 import type { RemnicChatGptMemoryInspectorInput } from "./mcp-memory-inspector-app.js";
 import { defineOperation } from "./access-boundary.js";
-import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { EngramAccessForbiddenError, EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { expandTildePath } from "./utils/path.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
@@ -267,7 +267,7 @@ defineOperation({
         ctx.operatorPrincipal,
       )
     ) {
-      throw new Error("recall timings require the configured operator principal");
+      throw new EngramAccessForbiddenError("recall timings require the configured operator principal");
     }
     return { result: getRecallTimingStatus(ctx.service.configRef) };
   },

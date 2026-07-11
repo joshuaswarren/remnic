@@ -61,6 +61,7 @@ test("authenticated recall timings route returns two recalls without user-correl
       },
     });
     assert.equal(nonOperator.status, 403);
+    assert.equal(nonOperator.headers.get("cache-control"), "no-store");
 
     const response = await fetch(url, {
       headers: {
@@ -229,4 +230,72 @@ test("status envelope reports a stable process start and live generation time", 
   assert.equal(first.order, "newest-first");
   assert.equal(first.count, 0);
   assert.deepEqual(first.records, []);
+});
+
+test("configured operator principal outranks a divergent server principal override", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recall-timings-div-"));
+  const config = makeConfig(memoryDir, {
+    agentAccessHttp: {
+      enabled: true,
+      host: "127.0.0.1",
+      port: 0,
+      principal: "config-operator",
+      maxBodyBytes: 1024,
+    },
+  });
+  const orchestrator = new Orchestrator(config);
+  const service = new EngramAccessService(orchestrator);
+  const server = new EngramAccessHttpServer({
+    service,
+    host: "127.0.0.1",
+    port: 0,
+    authToken: "secret-token",
+    principal: "cli-override",
+    trustPrincipalHeader: true,
+    maxBodyBytes: 1024,
+  });
+  const started = await server.start();
+  const url = `http://${started.host}:${started.port}/engram/v1/recall/timings`;
+  try {
+    // The server's own default identity is NOT the operator when the config
+    // explicitly names a different one. Settled precedence: config first.
+    const overrideOnly = await fetch(url, {
+      headers: { Authorization: "Bearer secret-token" },
+    });
+    assert.equal(overrideOnly.status, 403);
+
+    const configOperator = await fetch(url, {
+      headers: {
+        Authorization: "Bearer secret-token",
+        "X-Engram-Principal": "config-operator",
+      },
+    });
+    assert.equal(configOperator.status, 200);
+  } finally {
+    await server.stop();
+    await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("batch context without transport operator fails closed when config names no operator", async () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-batch-closed"));
+  const orchestrator = new Orchestrator(config);
+  const service = new EngramAccessService(orchestrator);
+  const operation = getOperation("recall_timings");
+  assert.ok(operation);
+  // No config principal and no transport operator: nobody can pass the gate,
+  // not even a caller whose authenticated principal would match elsewhere.
+  await assert.rejects(
+    operation.run({}, { service, authenticatedPrincipal: "operator" }),
+    /configured operator principal/,
+  );
+  // The same caller passes once the transport supplies the operator context,
+  // as the HTTP route does by dispatching with operatorPrincipal set to the
+  // server's own principal.
+  const output = await operation.run({}, {
+    service,
+    authenticatedPrincipal: "operator",
+    operatorPrincipal: "operator",
+  }) as { result: { count: number } };
+  assert.equal(output.result.count, 0);
 });

@@ -260,6 +260,9 @@ import { selfDeps } from "./orchestration/self-deps.js";
 
 export class EngramAccessInputError extends Error {}
 
+/** Authenticated caller lacks the required authorization (HTTP 403). */
+export class EngramAccessForbiddenError extends Error {}
+
 function qmdCollectionPathParts(resultPath: string): {
   collection: string;
   relativePath: string;
