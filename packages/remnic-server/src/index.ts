@@ -943,6 +943,7 @@ export async function startServer(options?: {
   // block the server listener — connections are accepted immediately above.
   // An AbortController allows the shutdown handler to cancel pending retries.
   const startupSyncAbort = new AbortController();
+  const readinessAbort = new AbortController();
   void completeStartupReadiness({
     deferredReady: orchestrator.deferredReady,
     warmup: (signal) =>
@@ -966,7 +967,7 @@ export async function startServer(options?: {
     openGate: () => {
       readiness.ready = true;
     },
-    shutdownSignal: startupSyncAbort.signal,
+    shutdownSignal: readinessAbort.signal,
   });
   // Wrap httpServer.stop() so that existing callers also get full lifecycle
   // cleanup: retry timers, deferred init, HTTP listener, and orchestrator.
@@ -976,6 +977,7 @@ export async function startServer(options?: {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
       startupSyncAbort.abort();
+      readinessAbort.abort();
       orchestrator.abortDeferredInit();
       try {
         await originalStop();
