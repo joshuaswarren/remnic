@@ -184,3 +184,38 @@ test("non-transcript files in the wearables tree are ignored by listing", async 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("fused-day artifacts write/read/list and stay out of transcript listings", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    // Seed a raw transcript so the listing is non-empty.
+    await storage.writeWearableDayTranscript(
+      "limitless",
+      "2026-06-10",
+      "---\nkind: wearable-transcript\n---\n\nbody\n",
+    );
+    // Write a fused-day artifact.
+    assert.equal(await storage.readWearableFusedDay("2026-06-10"), null);
+    await storage.writeWearableFusedDay(
+      "2026-06-10",
+      "---\nkind: wearable-fusion\n---\n\n[]\n",
+    );
+    const raw = await storage.readWearableFusedDay("2026-06-10");
+    assert.ok(raw?.includes("wearable-fusion"));
+    assert.deepEqual(await storage.listWearableFusedDays(), ["2026-06-10"]);
+
+    // The reserved _fusion dir must NOT show up as a pseudo-source in
+    // the per-source transcript listing.
+    const transcriptDays = await storage.listWearableTranscriptDays();
+    assert.ok(transcriptDays.every((entry) => entry.source !== "_fusion"));
+    assert.equal(transcriptDays.length, 1);
+
+    // Malformed dates are rejected before path math (no traversal).
+    await assert.rejects(
+      storage.readWearableFusedDay("../../etc/passwd"),
+      /invalid wearable fusion date/,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

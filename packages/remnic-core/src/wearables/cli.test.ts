@@ -198,3 +198,68 @@ test("backend faults propagate instead of being swallowed as exit codes", async 
     /disk exploded/,
   );
 });
+
+test("fuse command requires a date and renders the fuseDay result", async () => {
+  const { io, out, err } = makeIo();
+  const service = stubService({
+    fuseDay: async () => ({
+      date: "2026-06-10",
+      sources: ["bee", "limitless"],
+      conversationCount: 2,
+      contentHash: "abc123",
+      written: true,
+    }),
+  });
+  assert.equal(await runWearablesCliCommand(service, ["fuse"], io), 1);
+  assert.match(err.join(""), /fuse requires a date/);
+
+  // Success path needs its own captured stdout.
+  const okIo = makeIo();
+  assert.equal(
+    await runWearablesCliCommand(service, ["fuse", "2026-06-10"], okIo.io),
+    0,
+  );
+  assert.match(
+    okIo.out.join(""),
+    /Fused 2026-06-10: 2 conversations from 2 sources/,
+  );
+});
+
+test("fused command lists conversations and surfaces disagreements (--json)", async () => {
+  const { io, out } = makeIo();
+  const service = stubService({
+    fusedConversations: async () => [
+      {
+        id: "fusion-1",
+        date: "2026-06-10",
+        startIso: "2026-06-10T09:00:00.000Z",
+        sources: ["bee", "limitless"],
+        speakers: [],
+        segments: [
+          { speaker: "Me (you)", isSelf: true, text: "hi", confidence: 0.8, provenance: { source: "limitless", conversationId: "c1", sourceTrust: 0.8, reason: "only-source", alternatives: [] } },
+        ],
+        disagreements: [
+          { kind: "asr-text", subject: "2026-06-10T09:00:00.000Z", candidates: [{ source: "bee", value: "x" }, { source: "limitless", value: "y" }] },
+        ],
+        provenance: { contributions: [], proximityGapMs: 300000, windowToleranceMs: 30000, method: "time-proximity" },
+      },
+    ],
+  });
+  assert.equal(await runWearablesCliCommand(service, ["fused", "2026-06-10", "--json"], io), 0);
+  const parsed = JSON.parse(out.join(""));
+  assert.equal(parsed.date, "2026-06-10");
+  assert.equal(parsed.conversations.length, 1);
+  assert.equal(parsed.conversations[0].disagreements.length, 1);
+
+  // Plain-text path surfaces the disagreement count.
+  const text = makeIo();
+  assert.equal(await runWearablesCliCommand(service, ["fused", "2026-06-10"], text.io), 0);
+  assert.match(text.out.join(""), /disagreement \[asr-text\]/);
+});
+
+test("fused command reports nothing-fused gracefully", async () => {
+  const { io, out } = makeIo();
+  const service = stubService({ fusedConversations: async () => [] });
+  assert.equal(await runWearablesCliCommand(service, ["fused", "2026-06-10"], io), 0);
+  assert.match(out.join(""), /No fused conversations for 2026-06-10/);
+});

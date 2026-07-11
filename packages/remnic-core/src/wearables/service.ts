@@ -14,6 +14,14 @@ import {
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { isValidTranscriptDate, parseDayTranscript } from "./day-store.js";
+import {
+  composeFusionDayMeta,
+  fuseDay as fuseDayInputs,
+  parseFusionDay,
+  reconstructFusionInputs,
+  serializeFusionDay,
+  type FusedWearableConversation,
+} from "./fusion/index.js";
 import { stripAttributesSuffix } from "../storage.js";
 import type { MemoryFrontmatter } from "../types.js";
 import type { WearableMemoryGenDeps } from "./memory-gen.js";
@@ -59,6 +67,9 @@ export interface WearableStorageIo {
   listWearableTranscriptDays(
     sourceId?: string,
   ): Promise<Array<{ source: string; date: string }>>;
+  writeWearableFusedDay(date: string, serialized: string): Promise<void>;
+  readWearableFusedDay(date: string): Promise<string | null>;
+  listWearableFusedDays(): Promise<string[]>;
   readAllMemories(): Promise<
     Array<{
       path: string;
@@ -462,6 +473,99 @@ export class WearablesService {
     if (sourceId !== undefined) assertValidSourceId(sourceId);
     const storage = await this.deps.getStorage();
     return storage.listWearableTranscriptDays(sourceId);
+  }
+
+  // -- cross-source fusion (#1810) -----------------------------------------
+
+  /**
+   * Fuse all enabled sources' stored transcripts for one day into a
+   * derived `FusedWearableConversation[]` artifact. Deterministic and
+   * idempotent: unchanged inputs produce a stable content hash and the
+   * derived file is left untouched on re-run. Requires
+   * `wearables.fusion.enabled`; otherwise it throws. Raw per-source
+   * transcripts are never modified.
+   */
+  async fuseDay(date: string): Promise<{
+    date: string;
+    sources: string[];
+    conversationCount: number;
+    contentHash: string;
+    written: boolean;
+  }> {
+    if (!this.deps.config.fusion.enabled) {
+      throw new WearablesInputError(
+        "wearables fusion is not enabled — set `wearables.fusion.enabled: true` in the plugin config",
+      );
+    }
+    if (!isValidTranscriptDate(date)) {
+      throw new WearablesInputError(`invalid date '${date}' — expected YYYY-MM-DD`);
+    }
+    const storage = await this.deps.getStorage();
+    const enabled = this.enabledSources();
+    const bodies: Array<{ source: string; body: string }> = [];
+    for (const [source] of enabled) {
+      const raw = await storage.readWearableDayTranscript(source, date);
+      if (raw === null) continue;
+      bodies.push({ source, body: parseDayTranscript(raw)?.body ?? raw });
+    }
+    const sourceTrust: Record<string, number> = {};
+    for (const [id, settings] of enabled) {
+      sourceTrust[id] = settings.sourceTrust;
+    }
+    const result = fuseDayInputs(date, reconstructFusionInputs(date, bodies), {
+      proximityGapMs: this.deps.config.fusion.proximityGapMs,
+      windowToleranceMs: this.deps.config.fusion.windowToleranceMs,
+      sourceTrust,
+    });
+    // Idempotent skip-unchanged: do not rewrite when the content hash
+    // matches the stored artifact (mirrors the raw-transcript fast path).
+    const existingRaw = await storage.readWearableFusedDay(date);
+    const existingHash =
+      parseFusionDay(existingRaw ?? "")?.meta.contentHash ?? null;
+    const written = existingHash !== result.contentHash;
+    if (written) {
+      const meta = composeFusionDayMeta(
+        date,
+        result.conversations,
+        result.sources,
+        result.contentHash,
+        new Date().toISOString(),
+      );
+      await storage.writeWearableFusedDay(
+        date,
+        serializeFusionDay(meta, result.conversations),
+      );
+    }
+    return {
+      date: result.date,
+      sources: result.sources,
+      conversationCount: result.conversations.length,
+      contentHash: result.contentHash,
+      written,
+    };
+  }
+
+  /**
+   * List fused conversations for a date (the fusion listing surface).
+   * Returns the persisted derived artifact, or an empty array when no
+   * fused artifact has been written for that day.
+   */
+  async fusedConversations(
+    date: string,
+  ): Promise<FusedWearableConversation[]> {
+    if (!isValidTranscriptDate(date)) {
+      throw new WearablesInputError(`invalid date '${date}' — expected YYYY-MM-DD`);
+    }
+    const storage = await this.deps.getStorage();
+    const raw = await storage.readWearableFusedDay(date);
+    if (raw === null) return [];
+    return parseFusionDay(raw)?.conversations ?? [];
+  }
+
+  /** List dates with stored fused artifacts, newest first. */
+  async listFusedDays(): Promise<string[]> {
+    const storage = await this.deps.getStorage();
+    return storage.listWearableFusedDays();
   }
 
   /**

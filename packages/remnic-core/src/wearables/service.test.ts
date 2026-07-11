@@ -34,6 +34,7 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
     content: string;
   }>;
 } {
+  const fusedFiles = new Map<string, string>();
   const files = new Map<string, string>();
   const storage = {
     dir: memoryDir,
@@ -64,6 +65,15 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
         })
         .filter((entry) => sourceId === undefined || entry.source === sourceId)
         .sort((a, b) => (a.date > b.date ? -1 : a.date < b.date ? 1 : 0));
+    },
+    async writeWearableFusedDay(date: string, serialized: string) {
+      fusedFiles.set(date, serialized);
+    },
+    async readWearableFusedDay(date: string) {
+      return fusedFiles.get(date) ?? null;
+    },
+    async listWearableFusedDays() {
+      return [...fusedFiles.keys()].sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
     },
     async readAllMemories() {
       return storage.memories;
@@ -593,5 +603,73 @@ test("speaker and correction management round-trips through the service", async 
     await assert.rejects(service.removeCorrection(5), /out of range/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fuseDay is gated by wearables.fusion.enabled", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    storeDay(storage, "limitless", "2026-06-10", ["Hello world."]);
+    const service = makeService(storage); // fusion defaults to disabled
+    await assert.rejects(() => service.fuseDay("2026-06-10"), /fusion is not enabled/);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
+test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcripts untouched", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    // Two enabled sources recorded the same overlapping window.
+    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."]);
+    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."]);
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: {
+        enabled: true,
+        proximityGapMs: 300_000,
+        windowToleranceMs: 30_000,
+      },
+    });
+
+    // No fused artifact yet.
+    assert.equal(await storage.readWearableFusedDay("2026-06-10"), null);
+
+    const first = await service.fuseDay("2026-06-10");
+    assert.equal(first.written, true);
+    assert.ok(first.conversationCount >= 1, "overlapping sources fuse into >=1 conversation");
+    assert.deepEqual([...first.sources].sort(), ["bee", "limitless"]);
+
+    // The derived artifact is readable via the listing surface.
+    const conversations = await service.fusedConversations("2026-06-10");
+    assert.equal(conversations.length, first.conversationCount);
+    assert.ok(conversations[0]!.id.startsWith("fusion-"));
+    assert.deepEqual(
+      [...conversations[0]!.sources].sort(),
+      ["bee", "limitless"],
+    );
+
+    // Idempotent re-run: identical inputs -> not written again.
+    const second = await service.fuseDay("2026-06-10");
+    assert.equal(second.written, false, "unchanged inputs must not rewrite the artifact");
+    assert.equal(second.contentHash, first.contentHash);
+
+    // Raw per-source transcripts remain readable and untouched.
+    const limitlessRaw = await storage.readWearableDayTranscript("limitless", "2026-06-10");
+    const beeRaw = await storage.readWearableDayTranscript("bee", "2026-06-10");
+    assert.notEqual(limitlessRaw, null);
+    assert.notEqual(beeRaw, null);
+    // Raw transcripts are byte-identical to what was stored (fusion never
+    // overwrites source transcripts).
+    assert.ok(limitlessRaw?.includes("We agreed to ship Friday."));
+    assert.ok(beeRaw?.includes("We agreed to ship Friday."));
+
+    // listFusedDays surfaces the fused date.
+    assert.deepEqual(await service.listFusedDays(), ["2026-06-10"]);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
   }
 });
