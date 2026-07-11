@@ -992,6 +992,20 @@ export {
   type TokenStore,
 } from "./tokens.js";
 
+export {
+  TOKEN_CAPABILITIES_VERSION,
+  capabilityAllowsNamespace,
+  capabilityAllowsOp,
+  isCapabilityRestricted,
+  isValidNamespaceValue,
+  normalizeCapabilities,
+  tokenCapabilityStore,
+  validateCapabilitiesForMint,
+  type TokenCapabilities,
+} from "./access-token-capabilities.js";
+
+export { OPERATION_NAMES, type OperationName } from "./access-boundary.js";
+
 // ---------------------------------------------------------------------------
 // Codex materializer (#378)
 // ---------------------------------------------------------------------------

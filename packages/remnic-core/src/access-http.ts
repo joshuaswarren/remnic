@@ -35,7 +35,13 @@ import {
 } from "./graph-events.js";
 import { expandTildePath } from "./utils/path.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
-import { getOperation } from "./access-boundary.js";
+import { getOperation, type OperationName } from "./access-boundary.js";
+import {
+  assertOperationAllowed,
+  isCapabilityRestricted,
+  tokenCapabilityStore,
+  type TokenCapabilities,
+} from "./access-token-capabilities.js";
 // Importing access-operations registers the pilot boundary operations
 // (memory_get / memory_store) as a side effect; the HTTP handlers below
 // dispatch the migrated routes through the registry (issue #1525).
@@ -66,7 +72,7 @@ export interface EngramAccessHttpServerOptions {
    * is set: the connector used for the policy decision comes from the SAME
    * entry that validated, so identity can never lag validation.
    */
-  authTokenEntriesGetter?: () => ReadonlyArray<{ token: string; connector?: string }>;
+  authTokenEntriesGetter?: () => ReadonlyArray<{ token: string; connector?: string; capabilities?: TokenCapabilities }>;
   /**
    * Optional per-request scope policy for tokens sourced from
    * `authTokenEntriesGetter`. Return false to deny the (validated) token
@@ -343,7 +349,7 @@ export class EngramAccessHttpServer {
   private readonly authToken?: string;
   private readonly authTokens: string[];
   private readonly authTokensGetter?: () => string[];
-  private readonly authTokenEntriesGetter?: () => ReadonlyArray<{ token: string; connector?: string }>;
+  private readonly authTokenEntriesGetter?: () => ReadonlyArray<{ token: string; connector?: string; capabilities?: TokenCapabilities }>;
   private readonly tokenPathPolicy?: (connector: string, pathname: string | undefined) => boolean;
   private readonly authenticatedPrincipal?: string;
   private readonly maxBodyBytes: number;
@@ -659,7 +665,22 @@ export class EngramAccessHttpServer {
    *  is intentionally NOT used as a fallback for REST requests — omitting namespace
    *  should default to the server's global namespace, not silently scope to an adapter. */
   private resolveNamespace(_req: IncomingMessage, bodyNamespace?: string): string | undefined {
-    return bodyNamespace || undefined;
+    const namespace = bodyNamespace || undefined;
+    // Per-token namespace enforcement (issue #1837): when the presenting
+    // token carries a namespaces allow-list, reject an EXPLICIT namespace
+    // that is not permitted. An absent namespace (→ server default) is left
+    // to the service's existing resolution so legitimate default-scoped ops
+    // are not over-restricted (default-namespace scoping is handled by the
+    // service's read/write resolvers).
+    const caps = tokenCapabilityStore.getStore();
+    if (
+      namespace !== undefined &&
+      caps?.namespaces !== undefined &&
+      !caps.namespaces.includes(namespace)
+    ) {
+      throw new EngramAccessForbiddenError(`token is not permitted to access namespace: ${namespace}`);
+    }
+    return namespace;
   }
 
   /**
@@ -726,7 +747,11 @@ export class EngramAccessHttpServer {
     // here so the handler can implement operator-only endpoints
     // (e.g. /oauth/pending) without owning token validation.
     if (this.externalRequestHandler) {
-      const authorized = this.isAuthorized(req, pathname);
+      // Operator-only endpoints (OAuth pending/approve/deny) must only pass
+      // for unrestricted tokens — a scoped (least-privileged) token must NOT
+      // reach operator surfaces (issue #1837).
+      const authorized = this.isAuthorized(req, pathname) &&
+        !isCapabilityRestricted(this.resolveTokenCapabilities(req, pathname));
       if (await this.externalRequestHandler(req, res, { authorized })) {
         return;
       }
@@ -742,6 +767,12 @@ export class EngramAccessHttpServer {
       res.end(body);
       return;
     }
+
+    // Bind the presenting token's capabilities to this request's async
+    // context so the access boundary (op allow-list) and namespace
+    // enforcement observe the SAME resolved capabilities for the whole
+    // request (issue #1837). Unrestricted tokens ⇒ undefined ⇒ no-op.
+    tokenCapabilityStore.enterWith(this.resolveTokenCapabilities(req, pathname));
 
     // Method-conformance for the streamable-HTTP MCP endpoint:
     // GET/DELETE on /mcp must return 405 + Allow: POST instead of
@@ -782,6 +813,7 @@ export class EngramAccessHttpServer {
       req.method === "GET" &&
       (pathname === "/engram/v1/admin/dashboard" || pathname === "/remnic/v1/admin/dashboard")
     ) {
+      this.requireOperatorToken();
       if (!this.adminControls) {
         this.respondJson(res, 404, { error: "admin_controls_unavailable", code: "admin_controls_unavailable" });
         return;
@@ -794,6 +826,7 @@ export class EngramAccessHttpServer {
       req.method === "PATCH" &&
       (pathname === "/engram/v1/admin/config" || pathname === "/remnic/v1/admin/config")
     ) {
+      this.requireOperatorToken();
       if (!this.adminControls?.update) {
         this.respondJson(res, 404, { error: "admin_controls_unavailable", code: "admin_controls_unavailable" });
         return;
@@ -811,7 +844,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/recall") {
-      void getOperation("recall"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("recall"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "recall");
       // Preserve the distinction between `codingContext: null` (explicit
       // clear) and `codingContext` missing from the JSON payload
@@ -934,7 +967,7 @@ export class EngramAccessHttpServer {
     // at session start after resolving a git context for the cwd; `remnic
     // doctor` (PR 8) surfaces the attached context.
     if (req.method === "POST" && pathname === "/engram/v1/coding-context") {
-      void getOperation("set_coding_context"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("set_coding_context"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "setCodingContext");
       const codingContext =
         body.codingContext !== undefined
@@ -956,7 +989,7 @@ export class EngramAccessHttpServer {
       req.method === "POST" &&
       (pathname === "/engram/v1/capsules/export" || pathname === "/remnic/v1/capsules/export")
     ) {
-      void getOperation("capsule_export"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("capsule_export"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "capsuleExport");
       this.ensureWriteRateLimitAvailable();
       const result = await this.service.capsuleExport({
@@ -978,7 +1011,7 @@ export class EngramAccessHttpServer {
       req.method === "POST" &&
       (pathname === "/engram/v1/capsules/import" || pathname === "/remnic/v1/capsules/import")
     ) {
-      void getOperation("capsule_import"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("capsule_import"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "capsuleImport");
       this.ensureWriteRateLimitAvailable();
       const result = await this.service.capsuleImport({
@@ -997,7 +1030,7 @@ export class EngramAccessHttpServer {
       req.method === "GET" &&
       (pathname === "/engram/v1/offline-sync/snapshot" || pathname === "/remnic/v1/offline-sync/snapshot")
     ) {
-      void getOperation("offline_sync_snapshot"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("offline_sync_snapshot"); // boundary dispatch (issue #1525)
       const includeTranscriptsRaw = parsed.searchParams.get("include_transcripts");
       const includeContentRaw = parsed.searchParams.get("content");
       if (
@@ -1037,7 +1070,7 @@ export class EngramAccessHttpServer {
       (pathname === "/engram/v1/offline-sync/snapshot-stream" ||
         pathname === "/remnic/v1/offline-sync/snapshot-stream")
     ) {
-      void getOperation("offline_sync_snapshot_stream"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("offline_sync_snapshot_stream"); // boundary dispatch (issue #1525)
       const includeTranscriptsRaw = parsed.searchParams.get("include_transcripts");
       const includeContentRaw = parsed.searchParams.get("content");
       if (
@@ -1074,7 +1107,7 @@ export class EngramAccessHttpServer {
       req.method === "POST" &&
       (pathname === "/engram/v1/offline-sync/snapshot" || pathname === "/remnic/v1/offline-sync/snapshot")
     ) {
-      void getOperation("offline_sync_snapshot"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("offline_sync_snapshot"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(
         req,
         "offlineSyncSnapshot",
@@ -1097,7 +1130,7 @@ export class EngramAccessHttpServer {
       req.method === "POST" &&
       (pathname === "/engram/v1/offline-sync/files" || pathname === "/remnic/v1/offline-sync/files")
     ) {
-      void getOperation("offline_sync_files"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("offline_sync_files"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "offlineSyncFiles");
       const result = await this.service.offlineSyncFiles({
         namespace: this.resolveNamespace(req, body.namespace),
@@ -1116,7 +1149,7 @@ export class EngramAccessHttpServer {
         pathname === "/remnic/v1/offline-sync/file-content"
       )
     ) {
-      void getOperation("offline_sync_file_content"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("offline_sync_file_content"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "offlineSyncFileContent");
       const result = await this.service.offlineSyncFileContent({
         namespace: this.resolveNamespace(req, body.namespace),
@@ -1145,7 +1178,7 @@ export class EngramAccessHttpServer {
         pathname === "/remnic/v1/offline-sync/apply-file-content"
       )
     ) {
-      void getOperation("offline_sync_apply_file_content"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("offline_sync_apply_file_content"); // boundary dispatch (issue #1525)
       const namespaceParam = parsed.searchParams.get("namespace");
       const bytes = this.readRequiredIntegerHeader(req, "x-remnic-file-bytes");
       const offset = this.readOptionalIntegerHeader(req, "x-remnic-chunk-offset") ?? 0;
@@ -1178,7 +1211,7 @@ export class EngramAccessHttpServer {
       req.method === "POST" &&
       (pathname === "/engram/v1/offline-sync/apply" || pathname === "/remnic/v1/offline-sync/apply")
     ) {
-      void getOperation("offline_sync_apply"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("offline_sync_apply"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "offlineSyncApply", OFFLINE_SYNC_APPLY_MAX_BODY_BYTES);
       const result = await this.service.offlineSyncApply({
         namespace: this.resolveNamespace(req, body.namespace),
@@ -1191,7 +1224,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/recall/explain") {
-      void getOperation("recall_explain"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("recall_explain"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "recallExplain");
       const response = await this.service.recallExplain({
         sessionKey: body.sessionKey,
@@ -1206,7 +1239,7 @@ export class EngramAccessHttpServer {
       req.method === "POST" &&
       (pathname === "/engram/v1/action-confidence" || pathname === "/remnic/v1/action-confidence")
     ) {
-      void getOperation("action_confidence"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("action_confidence"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "actionConfidence");
       this.respondJson(res, 200, await this.service.actionConfidence(body));
       return;
@@ -1216,7 +1249,7 @@ export class EngramAccessHttpServer {
     // the direct-answer retrieval tier.  Orthogonal to /recall/explain
     // above, which returns a graph-path explanation document.
     if (req.method === "GET" && pathname === "/engram/v1/recall/tier-explain") {
-      void getOperation("recall_tier_explain"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("recall_tier_explain"); // boundary dispatch (issue #1525)
       const sessionParam = parsed.searchParams.get("session");
       const sessionKey = sessionParam && sessionParam.length > 0 ? sessionParam : undefined;
       const namespaceParam = parsed.searchParams.get("namespace");
@@ -1240,7 +1273,7 @@ export class EngramAccessHttpServer {
     // GET stays cacheable; `namespace` / `session` / `budget` are
     // optional.
     if (req.method === "GET" && pathname === "/engram/v1/recall/xray") {
-      void getOperation("recall_xray"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("recall_xray"); // boundary dispatch (issue #1525)
       const queryParam = parsed.searchParams.get("q");
       if (!queryParam || queryParam.trim().length === 0) {
         this.respondJson(res, 400, {
@@ -1349,7 +1382,7 @@ export class EngramAccessHttpServer {
       req.method === "GET" &&
       (pathname === "/engram/v1/wearables/status" || pathname === "/remnic/v1/wearables/status")
     ) {
-      void getOperation("wearables_status"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("wearables_status"); // boundary dispatch (issue #1525)
       this.respondJson(res, 200, await this.service.wearablesStatus());
       return;
     }
@@ -1358,7 +1391,7 @@ export class EngramAccessHttpServer {
       req.method === "POST" &&
       (pathname === "/engram/v1/wearables/sync" || pathname === "/remnic/v1/wearables/sync")
     ) {
-      void getOperation("wearables_sync"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("wearables_sync"); // boundary dispatch (issue #1525)
       const body = (await this.readJsonBody(req)) as Record<string, unknown>;
       const source = optionalQueryString(body.source, "source");
       const date = optionalQueryString(body.date, "date");
@@ -1399,7 +1432,7 @@ export class EngramAccessHttpServer {
       req.method === "GET" &&
       (pathname === "/engram/v1/wearables/transcript" || pathname === "/remnic/v1/wearables/transcript")
     ) {
-      void getOperation("transcript_day"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("transcript_day"); // boundary dispatch (issue #1525)
       const date = parsed.searchParams.get("date");
       if (!date || date.trim().length === 0) {
         throw new EngramAccessInputError(
@@ -1425,7 +1458,7 @@ export class EngramAccessHttpServer {
       (pathname === "/engram/v1/wearables/transcripts/search" ||
         pathname === "/remnic/v1/wearables/transcripts/search")
     ) {
-      void getOperation("transcript_search"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("transcript_search"); // boundary dispatch (issue #1525)
       const queryParam = parsed.searchParams.get("q");
       if (!queryParam || queryParam.trim().length === 0) {
         throw new EngramAccessInputError(
@@ -1452,7 +1485,7 @@ export class EngramAccessHttpServer {
       req.method === "GET" &&
       (pathname === "/engram/v1/wearables/memories" || pathname === "/remnic/v1/wearables/memories")
     ) {
-      void getOperation("transcript_memories"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("transcript_memories"); // boundary dispatch (issue #1525)
       try {
         const memories = await this.service.wearablesTranscriptMemories({
           source: nonEmptyQueryParam(parsed.searchParams.get("source")),
@@ -1468,7 +1501,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/observe") {
-      void getOperation("observe"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("observe"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "observe");
       const response = await this.service.observe(
         {
@@ -1508,7 +1541,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/lcm/search") {
-      void getOperation("lcm_search"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("lcm_search"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "lcmSearch");
       const response = await this.service.lcmSearch({
         query: body.query,
@@ -1526,7 +1559,7 @@ export class EngramAccessHttpServer {
       req.method === "POST" &&
       (pathname === "/engram/v1/lcm/compaction/flush" || pathname === "/remnic/v1/lcm/compaction/flush")
     ) {
-      void getOperation("lcm_compaction_flush"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("lcm_compaction_flush"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "lcmCompactionFlush");
       this.ensureWriteRateLimitAvailable();
       const response = await this.service.lcmCompactionFlush({
@@ -1543,7 +1576,7 @@ export class EngramAccessHttpServer {
       req.method === "POST" &&
       (pathname === "/engram/v1/lcm/compaction/record" || pathname === "/remnic/v1/lcm/compaction/record")
     ) {
-      void getOperation("lcm_compaction_record"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("lcm_compaction_record"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "lcmCompactionRecord");
       this.ensureWriteRateLimitAvailable();
       const response = await this.service.lcmCompactionRecord({
@@ -1559,7 +1592,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/lcm/status") {
-      void getOperation("lcm_status"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("lcm_status"); // boundary dispatch (issue #1525)
       this.respondJson(res, 200, await this.service.lcmStatus());
       return;
     }
@@ -1728,7 +1761,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/suggestions") {
-      void getOperation("suggestion_submit"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("suggestion_submit"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "suggestionSubmit");
       const request = {
         schemaVersion: body.schemaVersion,
@@ -1761,7 +1794,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/memories") {
-      void getOperation("memory_list"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("memory_list"); // boundary dispatch (issue #1525)
       const limit = parseStrictIntegerQuery(parsed.searchParams.get("limit"), "limit", 50, 1);
       const offset = parseStrictIntegerQuery(parsed.searchParams.get("offset"), "offset", 0, 0);
       const sort = parseMemorySort(parsed.searchParams.get("sort"));
@@ -1830,8 +1863,8 @@ export class EngramAccessHttpServer {
     }
 
     const timelineMatch = pathname.match(/^\/engram\/v1\/memories\/([^/]+)\/timeline$/);
-      void getOperation("memory_timeline"); // boundary dispatch (issue #1525)
     if (req.method === "GET" && timelineMatch) {
+      this.enforceTokenOp("memory_timeline"); // boundary dispatch (issue #1525)
       const memoryId = decodeURIComponent(timelineMatch[1] ?? "");
       const namespace = parsed.searchParams.get("namespace") ?? undefined;
       const limit = parseStrictIntegerQuery(parsed.searchParams.get("limit"), "limit", 200, 1);
@@ -1841,7 +1874,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/entities") {
-      void getOperation("entity_list"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("entity_list"); // boundary dispatch (issue #1525)
       const limit = parseStrictIntegerQuery(parsed.searchParams.get("limit"), "limit", 50, 1);
       const offset = parseStrictIntegerQuery(parsed.searchParams.get("offset"), "offset", 0, 0);
       const response = await this.service.entityList({
@@ -1855,8 +1888,8 @@ export class EngramAccessHttpServer {
     }
 
     const entityMatch = pathname.match(/^\/engram\/v1\/entities\/([^/]+)$/);
-      void getOperation("entity_get"); // boundary dispatch (issue #1525)
     if (req.method === "GET" && entityMatch) {
+      this.enforceTokenOp("entity_get"); // boundary dispatch (issue #1525)
       const entityName = decodeURIComponent(entityMatch[1] ?? "");
       const namespace = parsed.searchParams.get("namespace") ?? undefined;
       const response = await this.service.entityGet(entityName, namespace);
@@ -1865,7 +1898,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/review-queue") {
-      void getOperation("review_queue_list"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("review_queue_list"); // boundary dispatch (issue #1525)
       const response = await this.service.reviewQueue(
         parsed.searchParams.get("runId") ?? undefined,
         parsed.searchParams.get("namespace") ?? undefined,
@@ -1876,19 +1909,19 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/maintenance") {
-      void getOperation("maintenance_status"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("maintenance_status"); // boundary dispatch (issue #1525)
       this.respondJson(res, 200, await this.service.maintenance(parsed.searchParams.get("namespace") ?? undefined, this.resolveRequestPrincipal(req)));
       return;
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/quality") {
-      void getOperation("quality_status"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("quality_status"); // boundary dispatch (issue #1525)
       this.respondJson(res, 200, await this.service.quality(parsed.searchParams.get("namespace") ?? undefined, this.resolveRequestPrincipal(req)));
       return;
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/trust-zones/status") {
-      void getOperation("trust_zones_status"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("trust_zones_status"); // boundary dispatch (issue #1525)
       this.respondJson(
         res,
         200,
@@ -1901,7 +1934,7 @@ export class EngramAccessHttpServer {
     // scoped via the same resolver used by recall/trust-zones so cross-
     // tenant reads aren't possible (CLAUDE.md rule 42).
     if (req.method === "GET" && pathname === "/engram/v1/procedural/stats") {
-      void getOperation("procedural_stats"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("procedural_stats"); // boundary dispatch (issue #1525)
       const namespaceParam = parsed.searchParams.get("namespace");
       this.respondJson(
         res,
@@ -1922,7 +1955,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/trust-zones/records") {
-      void getOperation("trust_zones_records"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("trust_zones_records"); // boundary dispatch (issue #1525)
       const limit = parseStrictIntegerQuery(parsed.searchParams.get("limit"), "limit", 25, 1);
       const offset = parseStrictIntegerQuery(parsed.searchParams.get("offset"), "offset", 0, 0);
       const response = await this.service.trustZoneBrowse({
@@ -1939,7 +1972,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/review-disposition") {
-      void getOperation("review_disposition"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("review_disposition"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "reviewDisposition");
       this.ensureWriteRateLimitAvailable();
       const response = await this.service.reviewDisposition({
@@ -1957,7 +1990,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/trust-zones/promote") {
-      void getOperation("trust_zones_promote"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("trust_zones_promote"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "trustZonePromote");
       const dryRun = body.dryRun === true;
       if (!dryRun) {
@@ -1981,7 +2014,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/trust-zones/demo-seed") {
-      void getOperation("trust_zones_demo_seed"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("trust_zones_demo_seed"); // boundary dispatch (issue #1525)
       const body = await this.readValidatedBody(req, "trustZoneDemoSeed");
       const dryRun = body.dryRun === true;
       if (!dryRun) {
@@ -2003,7 +2036,7 @@ export class EngramAccessHttpServer {
 
     // Citation usage tracking (issue #379)
     if (req.method === "POST" && pathname === "/v1/citations/observed") {
-      void getOperation("citations_observed"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("citations_observed"); // boundary dispatch (issue #1525)
       const body = await this.readJsonBody(req);
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         throw new HttpError(400, "request body must be a JSON object", "invalid_body");
@@ -2075,7 +2108,7 @@ export class EngramAccessHttpServer {
 
     // ── Contradiction Review (issue #520) ─────────────────────────────────────
     if (req.method === "GET" && pathname === "/engram/v1/review/contradictions") {
-      void getOperation("review_list"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("review_list"); // boundary dispatch (issue #1525)
       const VALID_FILTERS = new Set(["all", "unresolved", "contradicts", "independent", "duplicates", "needs-user"]);
       const rawFilter = parsed.searchParams.get("filter") ?? "unresolved";
       if (!VALID_FILTERS.has(rawFilter)) {
@@ -2105,7 +2138,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "GET" && pathname.startsWith("/engram/v1/review/contradictions/")) {
-      void getOperation("contradiction_detail"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("contradiction_detail"); // boundary dispatch (issue #1525)
       const pairId = pathname.split("/").pop() ?? "";
       const { readPair } = await import("./contradiction/contradiction-review.js");
       const pair = readPair(this.service.memoryDir, pairId);
@@ -2124,7 +2157,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/review/resolve") {
-      void getOperation("review_resolve"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("review_resolve"); // boundary dispatch (issue #1525)
       const body = await this.readJsonBody(req) as Record<string, unknown>;
       const pairId = typeof body.pairId === "string" ? body.pairId : "";
       const verb = typeof body.verb === "string" ? body.verb : "";
@@ -2162,7 +2195,7 @@ export class EngramAccessHttpServer {
     // params so the surface stays cacheable; invalid values yield 400 with
     // a descriptive body (CLAUDE.md rule 51 — never silently default).
     if (req.method === "GET" && pathname === "/engram/v1/graph/snapshot") {
-      void getOperation("graph_snapshot"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("graph_snapshot"); // boundary dispatch (issue #1525)
       const limitRaw = parsed.searchParams.get("limit");
       let limit: number | undefined;
       if (limitRaw !== null && limitRaw.length > 0) {
@@ -2255,7 +2288,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/contradiction-scan") {
-      void getOperation("contradiction_scan_run"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("contradiction_scan_run"); // boundary dispatch (issue #1525)
       const body = await this.readJsonBody(req) as Record<string, unknown>;
       const { runContradictionScan } = await import("./contradiction/contradiction-scan.js");
       const principal = this.resolveRequestPrincipal(req);
@@ -2294,14 +2327,14 @@ export class EngramAccessHttpServer {
     // The stream sends a heartbeat `data: {"type":"heartbeat"}\n\n` every
     // 25 s so load balancers and proxies don't time out idle connections.
     if (req.method === "GET" && pathname === "/engram/v1/graph/events") {
-      void getOperation("graph_events"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("graph_events"); // boundary dispatch (issue #1525)
       await this.handleGraphEventsSSE(req, res);
       return;
     }
 
     // ── Chat endpoints (issue #1583) ────────────────────────────────────────
     if (req.method === "POST" && pathname === "/engram/v1/chat/message") {
-      void getOperation("chat_message"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("chat_message"); // boundary dispatch (issue #1525)
       const body = await this.readJsonBody(req) as Record<string, unknown>;
       await handleChatMessage(
         req, res, body,
@@ -2312,7 +2345,7 @@ export class EngramAccessHttpServer {
     }
     const chatEventsMatch = /^\/engram\/v1\/chat\/events\/([^/]+)$/.exec(pathname);
     if (req.method === "GET" && chatEventsMatch) {
-      void getOperation("chat_events"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("chat_events"); // boundary dispatch (issue #1525)
       await handleChatEventsSSE(
         req, res, chatEventsMatch[1] ?? "",
         {
@@ -2339,7 +2372,7 @@ export class EngramAccessHttpServer {
     // Read-only; namespace-aware via resolveRequestPrincipal so cross-tenant
     // reads are not possible (CLAUDE.md rule 42).
     if (req.method === "GET" && pathname === "/engram/v1/console/state") {
-      void getOperation("console_state"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("console_state"); // boundary dispatch (issue #1525)
       const namespace = parsed.searchParams.get("namespace") ?? undefined;
       const snapshot = await this.service.consoleState(namespace, this.resolveRequestPrincipal(req));
       this.respondJson(res, 200, snapshot);
@@ -2353,7 +2386,7 @@ export class EngramAccessHttpServer {
     //   DELETE /engram/v1/peers/:id?forget=true — destructive full purge (issue #679 completion)
     //   GET    /engram/v1/peers/:id/profile  — get peer profile
     if (req.method === "GET" && pathname === "/engram/v1/peers") {
-      void getOperation("peer_list"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("peer_list"); // boundary dispatch (issue #1525)
       const result = await this.service.peerList();
       this.respondJson(res, 200, result);
       return;
@@ -2361,7 +2394,7 @@ export class EngramAccessHttpServer {
 
     const peerProfileMatch = /^\/engram\/v1\/peers\/([^/]+)\/profile$/.exec(pathname);
     if (peerProfileMatch) {
-      void getOperation("peer_profile_get"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("peer_profile_get"); // boundary dispatch (issue #1525)
       if (req.method !== "GET") {
         this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
         return;
@@ -2381,7 +2414,7 @@ export class EngramAccessHttpServer {
       const peerId = decodePeerIdSegment(peerIdMatch[1] ?? "");
 
       if (req.method === "GET") {
-        void getOperation("peer_get"); // boundary dispatch (issue #1525)
+        this.enforceTokenOp("peer_get"); // boundary dispatch (issue #1525)
         const result = await this.service.peerGet(peerId);
         if (!result.found) {
           this.respondJson(res, 404, { error: "peer_not_found", code: "peer_not_found" });
@@ -2392,7 +2425,7 @@ export class EngramAccessHttpServer {
       }
 
       if (req.method === "PUT") {
-        void getOperation("peer_set"); // boundary dispatch (issue #1525)
+        this.enforceTokenOp("peer_set"); // boundary dispatch (issue #1525)
         const body = await this.readJsonBody(req) as Record<string, unknown>;
         // Reject malformed types up front rather than silently dropping them
         // to undefined and letting peerSet fall back to defaults
@@ -2421,7 +2454,7 @@ export class EngramAccessHttpServer {
       }
 
       if (req.method === "DELETE") {
-        void getOperation("peer_delete"); // boundary dispatch (issue #1525)
+        this.enforceTokenOp("peer_delete"); // boundary dispatch (issue #1525)
         // `?forget=true` triggers the destructive full-purge path (issue #679
         // completion). The caller must also pass `confirm=yes` in the request
         // body; absent confirmation yields 400. Plain DELETE (no ?forget) keeps
@@ -2454,7 +2487,7 @@ export class EngramAccessHttpServer {
     // ── Dreams telemetry (issue #678 PR 3+4) ──────────────────────────────────
 
     if (req.method === "GET" && pathname === "/engram/v1/dreams/status") {
-      void getOperation("dreams_status"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("dreams_status"); // boundary dispatch (issue #1525)
       const { normalizeDreamsStatusWindowHours } = await import("./maintenance/dreams-ledger.js");
       const windowHoursRaw = parsed.searchParams.get("windowHours");
       let windowHours: number;
@@ -2478,7 +2511,7 @@ export class EngramAccessHttpServer {
     }
 
     if (req.method === "POST" && pathname === "/engram/v1/dreams/run") {
-      void getOperation("dreams_run"); // boundary dispatch (issue #1525)
+      this.enforceTokenOp("dreams_run"); // boundary dispatch (issue #1525)
       const body = await this.readJsonBody(req) as Record<string, unknown>;
       const VALID_PHASES = ["lightSleep", "rem", "deepSleep"] as const;
       const phase = typeof body.phase === "string" ? body.phase : undefined;
@@ -2540,6 +2573,7 @@ export class EngramAccessHttpServer {
         this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
         return;
       }
+      this.requireOperatorToken();
       const principal = this.resolveRequestPrincipal(req);
       let sessionKey: string | undefined;
       let namespaceOverride: string | undefined;
@@ -2563,12 +2597,12 @@ export class EngramAccessHttpServer {
       this.respondJson(res, 200, inspection);
       return;
     }
-
     if (pathname === "/engram/v1/admin/namespaces") {
       if (req.method !== "GET") {
         this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
         return;
       }
+      this.requireOperatorToken();
       const kind = parsed.searchParams.get("kind");
       const principal = parsed.searchParams.get("principal");
       const projectId = parsed.searchParams.get("projectId");
@@ -2584,32 +2618,32 @@ export class EngramAccessHttpServer {
       this.respondJson(res, 200, result);
       return;
     }
-
     if (pathname === "/engram/v1/admin/maintenance-health") {
       if (req.method !== "GET") {
         this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
         return;
       }
+      this.requireOperatorToken();
       const report = await this.service.adminMaintenanceHealth();
       this.respondJson(res, 200, report);
       return;
     }
-
     if (pathname === "/engram/v1/admin/transcript-audit") {
       if (req.method !== "GET") {
         this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
         return;
       }
+      this.requireOperatorToken();
       const report = await this.service.adminTranscriptAudit();
       this.respondJson(res, 200, report);
       return;
     }
-
     if (pathname === "/engram/v1/admin/promote") {
       if (req.method !== "POST") {
         this.respondJson(res, 405, { error: "method_not_allowed", code: "method_not_allowed" });
         return;
       }
+      this.requireOperatorToken();
       const body = await this.readJsonBody(req) as Record<string, unknown>;
       if (typeof body.sourceMemoryId !== "string" || body.sourceMemoryId.trim().length === 0) {
         this.respondJson(res, 400, {
@@ -3280,13 +3314,27 @@ export class EngramAccessHttpServer {
   }
 
    private isAuthorized(req: IncomingMessage, pathname?: string): boolean {
+    return this.resolveAuthorizedEntry(req, pathname) !== null;
+  }
+
+  /**
+   * Resolve the presenting token's entry for an authorized request, or null.
+   * Captures the matched entry — including its capabilities record — so the
+   * op/namespace capability enforcement (issue #1837) uses the SAME entry
+   * that validated. Static operator tokens (`authToken`/`authTokens`) and
+   * the string-token getter carry no capabilities ⇒ unrestricted.
+   */
+  private resolveAuthorizedEntry(
+    req: IncomingMessage,
+    pathname?: string,
+  ): { token: string; connector?: string; capabilities?: TokenCapabilities } | null {
     if (
       !this.authToken &&
       this.authTokens.length === 0 &&
       !this.authTokensGetter &&
       !this.authTokenEntriesGetter
     ) {
-      return false;
+      return null;
     }
     // Primary path: Authorization: Bearer <token> header.
     const raw = req.headers.authorization;
@@ -3319,38 +3367,88 @@ export class EngramAccessHttpServer {
         // Malformed URL — don't authenticate
       }
     }
-    if (!candidate) return false;
+    if (!candidate) return null;
     const token = candidate;
-    // Check primary token
-    if (this.authToken && this.timingSafeStringEqual(token, this.authToken)) return true;
+    // Check primary token (static operator token — no capabilities ⇒ unrestricted)
+    if (this.authToken && this.timingSafeStringEqual(token, this.authToken)) {
+      return { token };
+    }
     // Check static multi-connector tokens
     for (const valid of this.authTokens) {
-      if (this.timingSafeStringEqual(token, valid)) return true;
+      if (this.timingSafeStringEqual(token, valid)) return { token: valid };
     }
     // Entry-based dynamic tokens are AUTHORITATIVE when configured: the
     // dynamic-token decision ends here (no fall-through to the string
     // getter, which carries no identity and would bypass the policy).
     // Validation and connector identity come from the same snapshot entry,
     // so a scope policy can never observe a token fresher than the
-    // identity it scopes (mint/revoke coherence).
+    // identity it scopes (mint/revoke coherence). Capabilities ride on the
+    // same entry so enforcement can never lag the token that validated.
     if (this.authTokenEntriesGetter) {
       for (const entry of this.authTokenEntriesGetter()) {
         if (!this.timingSafeStringEqual(token, entry.token)) continue;
-        if (!this.tokenPathPolicy) return true;
+        const matched = { token: entry.token, connector: entry.connector, capabilities: entry.capabilities };
+        if (!this.tokenPathPolicy) return matched;
         // Fail closed: a policy without a connector identity denies.
-        if (typeof entry.connector !== "string" || entry.connector.length === 0) return false;
-        return this.tokenPathPolicy(entry.connector, pathname);
+        if (typeof entry.connector !== "string" || entry.connector.length === 0) return null;
+        return this.tokenPathPolicy(entry.connector, pathname) ? matched : null;
       }
-      return false;
+      return null;
     }
     // String-token getter (no identity, no policy) — only consulted when
     // no entry getter is configured.
     if (this.authTokensGetter) {
       for (const valid of this.authTokensGetter()) {
-        if (this.timingSafeStringEqual(token, valid)) return true;
+        if (this.timingSafeStringEqual(token, valid)) return { token: valid };
       }
     }
-    return false;
+    return null;
+  }
+
+  /** Cache for per-request capability resolution (avoids re-resolving). */
+  private capabilityCache = new WeakMap<IncomingMessage, TokenCapabilities | null>();
+
+  /**
+   * Resolve the presenting token's capabilities for this request, or
+   * undefined when the token is unrestricted (legacy / static operator /
+   * explicit-unrestricted record). Cached per-request. `null` sentinel
+   * distinguishes "resolved as unrestricted" from "not yet resolved".
+   */
+  private resolveTokenCapabilities(
+    req: IncomingMessage,
+    pathname?: string,
+  ): TokenCapabilities | undefined {
+    if (this.capabilityCache.has(req)) {
+      return this.capabilityCache.get(req) ?? undefined;
+    }
+    const caps = this.resolveAuthorizedEntry(req, pathname)?.capabilities;
+    this.capabilityCache.set(req, caps ?? null);
+    return caps;
+  }
+
+  /**
+   * Enforce the presenting token's ops allow-list for an HTTP route that
+   * dispatches directly to the service (not through the boundary). Reads the
+   * per-request capability context set in `handle`; unrestricted tokens
+   * pass. Throws {@link EngramAccessForbiddenError} (→ 403) when a scoped
+   * token calls a non-permitted op (issue #1837).
+   */
+  private enforceTokenOp(op: OperationName): void {
+    void getOperation(op); // preserve the registration side-effect assertion
+    assertOperationAllowed(tokenCapabilityStore.getStore(), op);
+  }
+
+  /**
+   * Operator/admin routes are unrestricted-only surfaces: a scoped
+   * (least-privileged) token must NOT reach them (issue #1837). Legacy and
+   * explicit-unrestricted tokens pass. Throws EngramAccessForbiddenError (→403).
+   */
+  private requireOperatorToken(): void {
+    if (isCapabilityRestricted(tokenCapabilityStore.getStore())) {
+      throw new EngramAccessForbiddenError(
+        "token is scoped and may not access operator/admin routes",
+      );
+    }
   }
 
   private timingSafeStringEqual(a: string, b: string): boolean {
