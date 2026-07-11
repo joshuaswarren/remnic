@@ -1,9 +1,9 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
+import test from "node:test";
+import { Ajv } from "ajv";
 import { EngramMcpServer } from "../src/access-mcp.js";
 import type { EngramAccessService } from "../src/access-service.js";
-import { Ajv } from "ajv";
 
 function createFakeService(): EngramAccessService {
   return {
@@ -66,15 +66,17 @@ function createFakeService(): EngramAccessService {
       found: true,
       namespace: "global",
       count: 1,
-      timeline: [{
-        eventId: "evt-1",
-        memoryId,
-        eventType: "created",
-        timestamp: "2026-03-08T00:00:00.000Z",
-        eventOrder: 1,
-        actor: "engram",
-        ruleVersion: "1",
-      }],
+      timeline: [
+        {
+          eventId: "evt-1",
+          memoryId,
+          eventType: "created",
+          timestamp: "2026-03-08T00:00:00.000Z",
+          eventOrder: 1,
+          actor: "engram",
+          ruleVersion: "1",
+        },
+      ],
     }),
     memoryStore: async ({ dryRun }) => ({
       schemaVersion: 1,
@@ -94,7 +96,9 @@ function createFakeService(): EngramAccessService {
         inputSummary: [
           request.category ? `category=${request.category}` : undefined,
           typeof request.execute === "boolean" ? `execute=${request.execute}` : undefined,
-        ].filter(Boolean).join(" | "),
+        ]
+          .filter(Boolean)
+          .join(" | "),
       },
     }),
     suggestionSubmit: async ({ dryRun }) => ({
@@ -139,15 +143,17 @@ function createFakeService(): EngramAccessService {
       ranCount: 1,
       skippedCount: 0,
       errorCount: 0,
-      results: [{
-        id: "google-drive",
-        displayName: "Google Drive",
-        enabled: true,
-        ran: true,
-        docsImported: 2,
-        lastSyncAt: "2026-04-28T00:00:00.000Z",
-        nextDueAt: "2026-04-28T00:05:00.000Z",
-      }],
+      results: [
+        {
+          id: "google-drive",
+          displayName: "Google Drive",
+          enabled: true,
+          ran: true,
+          docsImported: 2,
+          lastSyncAt: "2026-04-28T00:00:00.000Z",
+          nextDueAt: "2026-04-28T00:05:00.000Z",
+        },
+      ],
     }),
     reviewQueue: async () => ({
       found: true,
@@ -183,12 +189,14 @@ function createFakeService(): EngramAccessService {
       },
     }),
     capsuleImport: async ({ archivePath, mode }) => ({
-      imported: [{
-        sourcePath: "facts/2026-04-28/fact-a.md",
-        targetPath: "facts/2026-04-28/fact-a.md",
-        snapshotted: mode === "overwrite",
-        rewroteId: false,
-      }],
+      imported: [
+        {
+          sourcePath: "facts/2026-04-28/fact-a.md",
+          targetPath: "facts/2026-04-28/fact-a.md",
+          snapshotted: mode === "overwrite",
+          rewroteId: false,
+        },
+      ],
       skipped: [],
       manifest: {
         format: "openclaw-engram-export",
@@ -198,7 +206,11 @@ function createFakeService(): EngramAccessService {
         includesTranscripts: false,
         files: [{ path: "facts/2026-04-28/fact-a.md", sha256: "abc123", bytes: 42 }],
         capsule: {
-          id: String(archivePath).split("/").pop()?.replace(/\.capsule\.json\.gz(?:\.enc)?$/, "") ?? "imported",
+          id:
+            String(archivePath)
+              .split("/")
+              .pop()
+              ?.replace(/\.capsule\.json\.gz(?:\.enc)?$/, "") ?? "imported",
           version: "1.0.0",
           schemaVersion: "test",
           parentCapsule: null,
@@ -217,15 +229,17 @@ function createFakeService(): EngramAccessService {
     capsuleList: async () => ({
       namespace: "global",
       capsulesDir: "/tmp/remnic/.capsules",
-      capsules: [{
-        id: "daily-ops",
-        archivePath: "/tmp/remnic/.capsules/daily-ops.capsule.json.gz",
-        manifestPath: "/tmp/remnic/.capsules/daily-ops.manifest.json",
-        createdAt: "2026-04-28T00:00:00.000Z",
-        pluginVersion: "test",
-        fileCount: 1,
-        description: "Daily ops capsule",
-      }],
+      capsules: [
+        {
+          id: "daily-ops",
+          archivePath: "/tmp/remnic/.capsules/daily-ops.capsule.json.gz",
+          manifestPath: "/tmp/remnic/.capsules/daily-ops.manifest.json",
+          createdAt: "2026-04-28T00:00:00.000Z",
+          pluginVersion: "test",
+          fileCount: 1,
+          description: "Daily ops capsule",
+        },
+      ],
     }),
     briefingEnabled: true,
     peerList: async () => ({
@@ -345,7 +359,12 @@ test("MCP initialize negotiates the protocol version per spec", async () => {
 
 test("MCP tools/list marks read-only tools with readOnlyHint and leaves write tools unmarked", async () => {
   const server = new EngramMcpServer(createFakeService());
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18" },
+  });
   const listed = await server.handleRequest({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const result = listed?.result as { tools: Array<{ name: string; annotations?: { readOnlyHint?: boolean } }> };
   const byName = new Map(result.tools.map((tool) => [tool.name, tool]));
@@ -369,7 +388,12 @@ test("MCP tools/list marks read-only tools with readOnlyHint and leaves write to
 test("MCP server advertises tools and dispatches recall", async () => {
   const server = new EngramMcpServer(createFakeService());
 
-  const init = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  const init = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18" },
+  });
   assert.equal(init?.jsonrpc, "2.0");
   // Requested version is supported → server echoes it back.
   assert.equal((init?.result as { protocolVersion: string }).protocolVersion, "2025-06-18");
@@ -469,7 +493,10 @@ test("MCP server advertises tools and dispatches recall", async () => {
     "engram.memory_correct_apply",
   ];
   const canonicalListed = legacyListed.map((name) => name.replace(/^engram\./, "remnic."));
-  assert.deepEqual(listed, legacyListed.flatMap((name, index) => [canonicalListed[index], name]));
+  assert.deepEqual(
+    listed,
+    legacyListed.flatMap((name, index) => [canonicalListed[index], name])
+  );
 
   const recall = await server.handleRequest({
     jsonrpc: "2.0",
@@ -759,9 +786,30 @@ test("engram.dreams_status rejects invalid windowHours without calling service",
         windowStart: "2026-04-01T00:00:00.000Z",
         windowEnd: "2026-04-02T00:00:00.000Z",
         phases: {
-          lightSleep: { phase: "lightSleep", runCount: 0, totalDurationMs: 0, totalItemsProcessed: 0, lastRunAt: null, lastDurationMs: null },
-          rem: { phase: "rem", runCount: 0, totalDurationMs: 0, totalItemsProcessed: 0, lastRunAt: null, lastDurationMs: null },
-          deepSleep: { phase: "deepSleep", runCount: 0, totalDurationMs: 0, totalItemsProcessed: 0, lastRunAt: null, lastDurationMs: null },
+          lightSleep: {
+            phase: "lightSleep",
+            runCount: 0,
+            totalDurationMs: 0,
+            totalItemsProcessed: 0,
+            lastRunAt: null,
+            lastDurationMs: null,
+          },
+          rem: {
+            phase: "rem",
+            runCount: 0,
+            totalDurationMs: 0,
+            totalItemsProcessed: 0,
+            lastRunAt: null,
+            lastDurationMs: null,
+          },
+          deepSleep: {
+            phase: "deepSleep",
+            runCount: 0,
+            totalDurationMs: 0,
+            totalItemsProcessed: 0,
+            lastRunAt: null,
+            lastDurationMs: null,
+          },
         },
       };
     },
@@ -808,9 +856,30 @@ test("engram.dreams_status rejects non-string namespace without calling service"
         windowStart: "2026-04-01T00:00:00.000Z",
         windowEnd: "2026-04-02T00:00:00.000Z",
         phases: {
-          lightSleep: { phase: "lightSleep", runCount: 0, totalDurationMs: 0, totalItemsProcessed: 0, lastRunAt: null, lastDurationMs: null },
-          rem: { phase: "rem", runCount: 0, totalDurationMs: 0, totalItemsProcessed: 0, lastRunAt: null, lastDurationMs: null },
-          deepSleep: { phase: "deepSleep", runCount: 0, totalDurationMs: 0, totalItemsProcessed: 0, lastRunAt: null, lastDurationMs: null },
+          lightSleep: {
+            phase: "lightSleep",
+            runCount: 0,
+            totalDurationMs: 0,
+            totalItemsProcessed: 0,
+            lastRunAt: null,
+            lastDurationMs: null,
+          },
+          rem: {
+            phase: "rem",
+            runCount: 0,
+            totalDurationMs: 0,
+            totalItemsProcessed: 0,
+            lastRunAt: null,
+            lastDurationMs: null,
+          },
+          deepSleep: {
+            phase: "deepSleep",
+            runCount: 0,
+            totalDurationMs: 0,
+            totalItemsProcessed: 0,
+            lastRunAt: null,
+            lastDurationMs: null,
+          },
         },
       };
     },
@@ -961,7 +1030,12 @@ test("engram.peer_set rejects non-string kind/displayName/notes (Codex P2 PR #75
 
 test("engram.console_state and remnic.console_state return a ConsoleStateSnapshot", async () => {
   const server = new EngramMcpServer(createFakeService());
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18" },
+  });
 
   for (const toolName of ["engram.console_state", "remnic.console_state"]) {
     const resp = await server.handleRequest({
@@ -989,16 +1063,26 @@ test("MCP initialize re-reads the server version for each server instance", asyn
   try {
     process.env.OPENCLAW_ENGRAM_VERSION = "9.9.1";
     const firstServer = new EngramMcpServer(createFakeService());
-    const firstInit = await firstServer.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+    const firstInit = await firstServer.handleRequest({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18" },
+    });
     assert.equal((firstInit?.result as { serverInfo: { version: string } }).serverInfo.version, "9.9.1");
 
     process.env.OPENCLAW_ENGRAM_VERSION = "9.9.2";
     const secondServer = new EngramMcpServer(createFakeService());
-    const secondInit = await secondServer.handleRequest({ jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+    const secondInit = await secondServer.handleRequest({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "initialize",
+      params: { protocolVersion: "2025-06-18" },
+    });
     assert.equal((secondInit?.result as { serverInfo: { version: string } }).serverInfo.version, "9.9.2");
   } finally {
     if (originalVersion === undefined) {
-      delete process.env.OPENCLAW_ENGRAM_VERSION;
+      process.env.OPENCLAW_ENGRAM_VERSION = undefined;
     } else {
       process.env.OPENCLAW_ENGRAM_VERSION = originalVersion;
     }
@@ -1008,30 +1092,33 @@ test("MCP initialize re-reads the server version for each server instance", asyn
 test("MCP server binds write authorization to its configured principal", async () => {
   let capturedPrincipal: string | undefined;
   let capturedSessionKey: string | undefined;
-  const server = new EngramMcpServer({
-    ...createFakeService(),
-    memoryStore: async ({
-      authenticatedPrincipal,
-      sessionKey,
-    }: {
-      authenticatedPrincipal?: string;
-      sessionKey?: string;
-    }) => {
-      capturedPrincipal = authenticatedPrincipal;
-      capturedSessionKey = sessionKey;
-      return {
-        schemaVersion: 1,
-        operation: "memory_store",
-        namespace: "secret-team",
-        dryRun: true,
-        accepted: true,
-        queued: false,
-        status: "validated",
-      };
-    },
-  } as unknown as EngramAccessService, {
-    principal: "secret-team",
-  });
+  const server = new EngramMcpServer(
+    {
+      ...createFakeService(),
+      memoryStore: async ({
+        authenticatedPrincipal,
+        sessionKey,
+      }: {
+        authenticatedPrincipal?: string;
+        sessionKey?: string;
+      }) => {
+        capturedPrincipal = authenticatedPrincipal;
+        capturedSessionKey = sessionKey;
+        return {
+          schemaVersion: 1,
+          operation: "memory_store",
+          namespace: "secret-team",
+          dryRun: true,
+          accepted: true,
+          queued: false,
+          status: "validated",
+        };
+      },
+    } as unknown as EngramAccessService,
+    {
+      principal: "secret-team",
+    }
+  );
 
   const store = await server.handleRequest({
     jsonrpc: "2.0",
@@ -1124,7 +1211,7 @@ test("MCP server drains buffered requests in arrival order across overlapping da
   }>;
   assert.deepEqual(
     responseBodies.map((body) => body.result?.structuredContent?.query),
-    ["first", "second"],
+    ["first", "second"]
   );
 });
 
@@ -1148,7 +1235,7 @@ test("MCP session override preserves explicit LCM sessionPrefix searches", async
         arguments: { query: "handoff", sessionPrefix: "run-" },
       },
     },
-    { sessionKeyOverride: "adapter-session" },
+    { sessionKeyOverride: "adapter-session" }
   );
   const prefixResult = prefixSearch?.result as {
     structuredContent: { request: { sessionKey?: string; sessionPrefix?: string } };
@@ -1166,7 +1253,7 @@ test("MCP session override preserves explicit LCM sessionPrefix searches", async
         arguments: { query: "handoff" },
       },
     },
-    { sessionKeyOverride: "adapter-session" },
+    { sessionKeyOverride: "adapter-session" }
   );
   const exactResult = exactSearch?.result as {
     structuredContent: { request: { sessionKey?: string; sessionPrefix?: string } };
@@ -1209,8 +1296,12 @@ test("MCP tools/list: key tools have outputSchema with declared properties", asy
   const resp = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
   const tools = fieldOf(fieldOf(resp, "result"), "tools") as unknown as Array<Record<string, unknown>>;
   const keyTools = [
-    "remnic.recall", "remnic.memory_store", "remnic.memory_get",
-    "remnic.briefing", "remnic.action_confidence", "remnic.memory_search",
+    "remnic.recall",
+    "remnic.memory_store",
+    "remnic.memory_get",
+    "remnic.briefing",
+    "remnic.action_confidence",
+    "remnic.memory_search",
   ];
   for (const name of keyTools) {
     const tool = tools.find((t) => fieldOf(t, "name") === name);
@@ -1219,8 +1310,10 @@ test("MCP tools/list: key tools have outputSchema with declared properties", asy
     assert.ok(schema !== undefined && typeof schema === "object", `${name} outputSchema must be an object`);
     const properties = fieldOf(schema, "properties");
     assert.ok(
-      properties !== undefined && typeof properties === "object" && Object.keys(properties as Record<string, unknown>).length > 0,
-      `${name} outputSchema must declare non-empty properties, not just {type:'object'}`,
+      properties !== undefined &&
+        typeof properties === "object" &&
+        Object.keys(properties as Record<string, unknown>).length > 0,
+      `${name} outputSchema must declare non-empty properties, not just {type:'object'}`
     );
   }
 });
@@ -1245,7 +1338,10 @@ test("MCP tools/call: structuredContent typeof matches declared outputSchema typ
   ];
   for (const { name, args } of fixtures) {
     const resp = await server.handleRequest({
-      jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args },
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name, arguments: args },
     });
     const result = fieldOf(resp, "result");
     assert.ok(result !== null && typeof result === "object", `${name}: result must be an object`);
@@ -1254,8 +1350,9 @@ test("MCP tools/call: structuredContent typeof matches declared outputSchema typ
     const actualType = sc === null ? "null" : Array.isArray(sc) ? "array" : typeof sc;
     const declaredType = schemaTypeByTool.get(name);
     assert.equal(
-      actualType, declaredType,
-      `${name}: structuredContent typeof (${actualType}) must match outputSchema.type`,
+      actualType,
+      declaredType,
+      `${name}: structuredContent typeof (${actualType}) must match outputSchema.type`
     );
   }
 });
@@ -1266,7 +1363,12 @@ test("outputSchema: no tool falls through to the generic default (every schema h
   // { type: 'object', additionalProperties: true } fallback. This prevents
   // a newly added tool silently getting a vacuous schema that CI still passes.
   const server = new EngramMcpServer(createFakeService());
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18" },
+  });
   const listed = await server.handleRequest({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
   const tools = fieldOf(fieldOf(listed, "result"), "tools") as Array<{
     name: string;
@@ -1284,9 +1386,9 @@ test("outputSchema: no tool falls through to the generic default (every schema h
     }
   }
   assert.deepEqual(
-    fallbacks, [],
-    `These tools have no declared properties (generic fallback): ${fallbacks.join(", ")}. ` +
-      `Add them to TOOL_OUTPUT_SCHEMAS in access-mcp.ts.`,
+    fallbacks,
+    [],
+    `These tools have no declared properties (generic fallback): ${fallbacks.join(", ")}. Add them to TOOL_OUTPUT_SCHEMAS in access-mcp.ts.`
   );
 });
 
@@ -1326,9 +1428,13 @@ test("AJV: structuredContent validates against declared outputSchema for represe
       counts: { total: 10, active: 8, superseded: 2 },
       recent: { total: 3, minerSourced: 1 },
       config: {
-        enabled: true, minOccurrences: 3, successFloor: 0,
-        autoPromoteOccurrences: 0, autoPromoteEnabled: false,
-        lookbackDays: 7, recallMaxProcedures: 5,
+        enabled: true,
+        minOccurrences: 3,
+        successFloor: 0,
+        autoPromoteOccurrences: 0,
+        autoPromoteEnabled: false,
+        lookbackDays: 7,
+        recallMaxProcedures: 5,
       },
     }),
     actionConfidence: async () => ({
@@ -1350,7 +1456,12 @@ test("AJV: structuredContent validates against declared outputSchema for represe
   } as unknown as EngramAccessService;
 
   const server = new EngramMcpServer(service);
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18" },
+  });
 
   // Collect outputSchema per tool from tools/list.
   const listResp = await server.handleRequest({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
@@ -1391,7 +1502,10 @@ test("AJV: structuredContent validates against declared outputSchema for represe
     // Nullable null fields (intent:null, graph:null — typeof-null bug guard)
     { name: "engram.recall_explain", args: {} },
     // Action confidence — corrected schema (matchedRules phantom removed)
-    { name: "engram.action_confidence", args: { intendedAction: "write", confidence: 0.9, risk: "low", contextReadiness: "sufficient" } },
+    {
+      name: "engram.action_confidence",
+      args: { intendedAction: "write", confidence: 0.9, risk: "low", contextReadiness: "sufficient" },
+    },
     // List shape (peers)
     { name: "engram.peer_list", args: {} },
     // Complex nested object (console state)
@@ -1400,7 +1514,10 @@ test("AJV: structuredContent validates against declared outputSchema for represe
 
   for (const { name, args } of cases) {
     const resp = await server.handleRequest({
-      jsonrpc: "2.0", id: 3, method: "tools/call", params: { name, arguments: args },
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name, arguments: args },
     });
     const result = fieldOf(resp, "result");
     assert.notEqual(fieldOf(result, "isError"), true, `${name}: must not return an error`);
@@ -1409,10 +1526,7 @@ test("AJV: structuredContent validates against declared outputSchema for represe
     assert.ok(schema, `${name}: no outputSchema found in tools/list`);
     const validate = ajv.compile(schema);
     const valid = validate(sc);
-    assert.ok(
-      valid,
-      `${name}: structuredContent failed AJV validation: ${JSON.stringify(validate.errors)}`,
-    );
+    assert.ok(valid, `${name}: structuredContent failed AJV validation: ${JSON.stringify(validate.errors)}`);
   }
 
   // memory_get with found=false: structuredContent.memory is absent (nullable),
@@ -1424,7 +1538,9 @@ test("AJV: structuredContent validates against declared outputSchema for represe
     } as unknown as EngramAccessService;
     const nfServer = new EngramMcpServer(notFoundService);
     const resp = await nfServer.handleRequest({
-      jsonrpc: "2.0", id: 4, method: "tools/call",
+      jsonrpc: "2.0",
+      id: 4,
+      method: "tools/call",
       params: { name: "engram.memory_get", arguments: { memoryId: "nonexistent" } },
     });
     const result = fieldOf(resp, "result");
@@ -1436,81 +1552,117 @@ test("AJV: structuredContent validates against declared outputSchema for represe
     const valid = validate(sc);
     assert.ok(
       valid,
-      `memory_get(found=false): structuredContent failed AJV validation: ${JSON.stringify(validate.errors)}`,
+      `memory_get(found=false): structuredContent failed AJV validation: ${JSON.stringify(validate.errors)}`
     );
   }
-  // peer_profile_get: positive (found=true, profile with all required fields)
+  // peer_profile_get: real schema from tools/list + exhaustive matrix
   {
-    const ppService = {
-      ...createFakeService(),
-      peerProfileGet: async () => ({
-        found: true as const,
-        profile: {
-          peerId: "alice",
-          updatedAt: "2026-07-11T00:00:00.000Z",
-          fields: { communication_style: "direct" },
-          provenance: {
-            communication_style: [
-              { observedAt: "2026-07-11T00:00:00.000Z", signal: "explicit_preference" },
-            ],
-          },
-        },
-      }),
-    } as unknown as EngramAccessService;
-    const ppServer = new EngramMcpServer(ppService);
-    const resp = await ppServer.handleRequest({
-      jsonrpc: "2.0", id: 5, method: "tools/call",
-      params: { name: "engram.peer_profile_get", arguments: { id: "alice" } },
-    });
-    const result = fieldOf(resp, "result");
-    assert.notEqual(fieldOf(result, "isError"), true, "peer_profile_get: must not error");
-    const sc = fieldOf(result, "structuredContent");
-    const schema = schemaByName.get("engram.peer_profile_get");
-    assert.ok(schema, "engram.peer_profile_get: no outputSchema found");
-    const validate = ajv.compile(schema);
-    assert.ok(validate(sc), `peer_profile_get(found=true): AJV failed: ${JSON.stringify(validate.errors)}`);
-    // NEGATIVE: malformed profile missing required fields → AJV must REJECT
-    assert.notEqual(
-      validate({ found: true, profile: { peerId: "x" } }),
-      true,
-      "peer_profile_get: AJV must reject profile missing required fields",
-    );
+    const ppSchema = schemaByName.get("engram.peer_profile_get");
+    assert.ok(ppSchema, "engram.peer_profile_get: no outputSchema in tools/list");
+    const validate = ajv.compile(ppSchema);
+    const validProfile = {
+      peerId: "alice",
+      updatedAt: "2026-07-11T00:00:00Z",
+      fields: { style: "direct" },
+      provenance: { style: [{ observedAt: "2026-07-11T00:00:00Z", signal: "explicit_preference" }] },
+    };
+    const omit = (o: Record<string, unknown>, ...keys: string[]): Record<string, unknown> => {
+      const r = { ...o };
+      for (const k of keys) delete r[k];
+      return r;
+    };
+    const cases: Array<{ d: string; v: unknown; pass: boolean }> = [
+      { d: "found=true with full profile", v: { found: true, profile: validProfile }, pass: true },
+      { d: "found=false (profile absent)", v: { found: false }, pass: true },
+      { d: "profile missing peerId", v: { found: true, profile: omit(validProfile, "peerId") }, pass: false },
+      { d: "profile missing updatedAt", v: { found: true, profile: omit(validProfile, "updatedAt") }, pass: false },
+      { d: "profile missing fields", v: { found: true, profile: omit(validProfile, "fields") }, pass: false },
+      { d: "profile missing provenance", v: { found: true, profile: omit(validProfile, "provenance") }, pass: false },
+      { d: "profile null", v: { found: true, profile: null }, pass: false },
+      {
+        d: "fields with non-string value",
+        v: { found: true, profile: { ...validProfile, fields: { x: 42 } } },
+        pass: false,
+      },
+      {
+        d: "provenance entry missing observedAt",
+        v: { found: true, profile: { ...validProfile, provenance: { style: [{ signal: "x" }] } } },
+        pass: false,
+      },
+      {
+        d: "provenance entry missing signal",
+        v: { found: true, profile: { ...validProfile, provenance: { style: [{ observedAt: "x" }] } } },
+        pass: false,
+      },
+      {
+        d: "provenance entries not an array",
+        v: { found: true, profile: { ...validProfile, provenance: { style: "not-array" } } },
+        pass: false,
+      },
+      {
+        d: "provenance array with non-object entry",
+        v: { found: true, profile: { ...validProfile, provenance: { style: ["bad"] } } },
+        pass: false,
+      },
+    ];
+    for (const { d: desc, v, pass } of cases) {
+      const result = validate(v);
+      assert.equal(
+        result,
+        pass,
+        `peer_profile_get "${desc}": expected ${pass ? "valid" : "invalid"}${validate.errors ? ` — ${JSON.stringify(validate.errors)}` : ""}`
+      );
+    }
   }
 
-  // memory_chat: use a server with chatVisible=true so the tool appears in
-  // tools/list and we validate against the ACTUAL declared schema (not a copy).
+  // memory_chat: real schema from chatVisible=true server + exhaustive matrix
   {
     const chatServer = new EngramMcpServer(createFakeService(), { chatVisible: true });
-    const chatListResp = await chatServer.handleRequest({ jsonrpc: "2.0", id: 6, method: "tools/list", params: {} });
-    const chatTools = fieldOf(fieldOf(chatListResp, "result"), "tools") as Array<Record<string, unknown>>;
+    const chatList = await chatServer.handleRequest({ jsonrpc: "2.0", id: 6, method: "tools/list", params: {} });
+    const chatTools = fieldOf(fieldOf(chatList, "result"), "tools") as Array<Record<string, unknown>>;
     const mcTool = chatTools.find((t) => fieldOf(t, "name") === "engram.memory_chat");
-    assert.ok(mcTool, "engram.memory_chat not found in tools/list with chatVisible=true");
+    assert.ok(mcTool, "engram.memory_chat not in tools/list with chatVisible=true");
     const mcSchema = fieldOf(mcTool, "outputSchema") as Record<string, unknown>;
     assert.ok(mcSchema, "engram.memory_chat has no outputSchema");
     const validate = ajv.compile(mcSchema);
-    // Positive: pendingPlan present with required fields
-    assert.ok(
-      validate({ reply: "hi", chatSessionId: "s1", pendingPlan: { planId: "p1", preview: "do X" } }),
-      `memory_chat(with pendingPlan): AJV failed: ${JSON.stringify(validate.errors)}`,
-    );
-    // Positive: pendingPlan absent (optional) + skippedTools present
-    assert.ok(
-      validate({ reply: "hi", chatSessionId: "s1", skippedTools: ["tool_a"] }),
-      `memory_chat(without pendingPlan, with skippedTools): AJV failed: ${JSON.stringify(validate.errors)}`,
-    );
-    // NEGATIVE: pendingPlan missing required planId
-    assert.notEqual(
-      validate({ reply: "hi", chatSessionId: "s1", pendingPlan: { preview: "no id" } }),
-      true,
-      "memory_chat: AJV must reject pendingPlan missing required planId",
-    );
-    // NEGATIVE: skippedTools with non-string item
-    assert.notEqual(
-      validate({ reply: "hi", chatSessionId: "s1", skippedTools: [42] }),
-      true,
-      "memory_chat: AJV must reject skippedTools with non-string items",
-    );
+    const cases: Array<{ d: string; v: unknown; pass: boolean }> = [
+      {
+        d: "with pendingPlan (required fields present)",
+        v: { reply: "hi", chatSessionId: "s1", pendingPlan: { planId: "p1", preview: "do X" } },
+        pass: true,
+      },
+      { d: "without pendingPlan (optional)", v: { reply: "hi", chatSessionId: "s1" }, pass: true },
+      {
+        d: "with skippedTools (string items)",
+        v: { reply: "hi", chatSessionId: "s1", skippedTools: ["tool_a"] },
+        pass: true,
+      },
+      {
+        d: "pendingPlan missing planId",
+        v: { reply: "hi", chatSessionId: "s1", pendingPlan: { preview: "no id" } },
+        pass: false,
+      },
+      {
+        d: "pendingPlan missing preview",
+        v: { reply: "hi", chatSessionId: "s1", pendingPlan: { planId: "p1" } },
+        pass: false,
+      },
+      { d: "pendingPlan null", v: { reply: "hi", chatSessionId: "s1", pendingPlan: null }, pass: false },
+      { d: "pendingPlan empty object", v: { reply: "hi", chatSessionId: "s1", pendingPlan: {} }, pass: false },
+      {
+        d: "skippedTools with non-string item",
+        v: { reply: "hi", chatSessionId: "s1", skippedTools: [42] },
+        pass: false,
+      },
+      {
+        d: "skippedTools scalar instead of array",
+        v: { reply: "hi", chatSessionId: "s1", skippedTools: "tool_a" },
+        pass: false,
+      },
+    ];
+    for (const { d: desc, v, pass } of cases) {
+      const result = validate(v);
+      assert.equal(result, pass, `memory_chat "${desc}": expected ${pass ? "valid" : "invalid"}`);
+    }
   }
-
-
 });
