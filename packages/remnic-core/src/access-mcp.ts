@@ -483,7 +483,36 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   peer_get: objectSchema({ found: T_BOOLEAN, peer: T_NULLABLE_OBJECT }),
   peer_set: objectSchema({ ok: T_BOOLEAN, created: T_BOOLEAN, peer: T_OBJECT }),
   peer_delete: objectSchema({ ok: T_BOOLEAN, deleted: T_BOOLEAN }),
-  peer_profile_get: objectSchema({ found: T_BOOLEAN }),
+  peer_profile_get: objectSchema({
+    found: T_BOOLEAN,
+    profile: {
+      type: "object",
+      properties: {
+        peerId: T_STRING,
+        updatedAt: T_STRING,
+        fields: { type: "object", additionalProperties: T_STRING },
+        provenance: {
+          type: "object",
+          additionalProperties: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                observedAt: T_STRING,
+                signal: T_STRING,
+                sourceSessionId: T_STRING,
+                note: T_STRING,
+              },
+              required: ["observedAt", "signal"],
+              additionalProperties: true,
+            },
+          },
+        },
+      },
+      required: ["peerId", "updatedAt", "fields", "provenance"],
+      additionalProperties: true,
+    },
+  }),
   peer_forget: objectSchema({ ok: T_BOOLEAN, purged: T_BOOLEAN }),
   console_state: objectSchema({
     capturedAt: T_STRING,
@@ -534,7 +563,17 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
     auditMemoryId: T_STRING,
     appliedAt: T_STRING,
   }),
-  memory_chat: objectSchema({ reply: T_STRING, chatSessionId: T_STRING }),
+  memory_chat: objectSchema({
+    reply: T_STRING,
+    chatSessionId: T_STRING,
+    pendingPlan: {
+      type: "object",
+      properties: { planId: T_STRING, preview: T_STRING },
+      required: ["planId", "preview"],
+      additionalProperties: true,
+    },
+    skippedTools: { type: "array", items: T_STRING },
+  }),
   codegraph_index: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
   codegraph_list_projects: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
   codegraph_delete_project: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
