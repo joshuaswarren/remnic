@@ -1439,4 +1439,78 @@ test("AJV: structuredContent validates against declared outputSchema for represe
       `memory_get(found=false): structuredContent failed AJV validation: ${JSON.stringify(validate.errors)}`,
     );
   }
+  // peer_profile_get: positive (found=true, profile with all required fields)
+  {
+    const ppService = {
+      ...createFakeService(),
+      peerProfileGet: async () => ({
+        found: true as const,
+        profile: {
+          peerId: "alice",
+          updatedAt: "2026-07-11T00:00:00.000Z",
+          fields: { communication_style: "direct" },
+          provenance: {
+            communication_style: [
+              { observedAt: "2026-07-11T00:00:00.000Z", signal: "explicit_preference" },
+            ],
+          },
+        },
+      }),
+    } as unknown as EngramAccessService;
+    const ppServer = new EngramMcpServer(ppService);
+    const resp = await ppServer.handleRequest({
+      jsonrpc: "2.0", id: 5, method: "tools/call",
+      params: { name: "engram.peer_profile_get", arguments: { id: "alice" } },
+    });
+    const result = fieldOf(resp, "result");
+    assert.notEqual(fieldOf(result, "isError"), true, "peer_profile_get: must not error");
+    const sc = fieldOf(result, "structuredContent");
+    const schema = schemaByName.get("engram.peer_profile_get");
+    assert.ok(schema, "engram.peer_profile_get: no outputSchema found");
+    const validate = ajv.compile(schema);
+    assert.ok(validate(sc), `peer_profile_get(found=true): AJV failed: ${JSON.stringify(validate.errors)}`);
+    // NEGATIVE: malformed profile missing required fields → AJV must REJECT
+    assert.notEqual(
+      validate({ found: true, profile: { peerId: "x" } }),
+      true,
+      "peer_profile_get: AJV must reject profile missing required fields",
+    );
+  }
+
+  // memory_chat: use a server with chatVisible=true so the tool appears in
+  // tools/list and we validate against the ACTUAL declared schema (not a copy).
+  {
+    const chatServer = new EngramMcpServer(createFakeService(), { chatVisible: true });
+    const chatListResp = await chatServer.handleRequest({ jsonrpc: "2.0", id: 6, method: "tools/list", params: {} });
+    const chatTools = fieldOf(fieldOf(chatListResp, "result"), "tools") as Array<Record<string, unknown>>;
+    const mcTool = chatTools.find((t) => fieldOf(t, "name") === "engram.memory_chat");
+    assert.ok(mcTool, "engram.memory_chat not found in tools/list with chatVisible=true");
+    const mcSchema = fieldOf(mcTool, "outputSchema") as Record<string, unknown>;
+    assert.ok(mcSchema, "engram.memory_chat has no outputSchema");
+    const validate = ajv.compile(mcSchema);
+    // Positive: pendingPlan present with required fields
+    assert.ok(
+      validate({ reply: "hi", chatSessionId: "s1", pendingPlan: { planId: "p1", preview: "do X" } }),
+      `memory_chat(with pendingPlan): AJV failed: ${JSON.stringify(validate.errors)}`,
+    );
+    // Positive: pendingPlan absent (optional) + skippedTools present
+    assert.ok(
+      validate({ reply: "hi", chatSessionId: "s1", skippedTools: ["tool_a"] }),
+      `memory_chat(without pendingPlan, with skippedTools): AJV failed: ${JSON.stringify(validate.errors)}`,
+    );
+    // NEGATIVE: pendingPlan missing required planId
+    assert.notEqual(
+      validate({ reply: "hi", chatSessionId: "s1", pendingPlan: { preview: "no id" } }),
+      true,
+      "memory_chat: AJV must reject pendingPlan missing required planId",
+    );
+    // NEGATIVE: skippedTools with non-string item
+    assert.notEqual(
+      validate({ reply: "hi", chatSessionId: "s1", skippedTools: [42] }),
+      true,
+      "memory_chat: AJV must reject skippedTools with non-string items",
+    );
+  }
+
+
 });
