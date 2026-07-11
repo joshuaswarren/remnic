@@ -19,6 +19,7 @@ export interface RecallTimingStatus {
 interface RecallTimingHistoryEntry {
   readonly record: RecallTimingRecord;
   readonly searchedNamespaces: readonly string[];
+  readonly aclNamespaces: readonly string[];
 }
 
 const RECALL_TIMING_HISTORY_LIMIT = 50;
@@ -28,13 +29,19 @@ export function recordRecallTiming(
   config: PluginConfig,
   record: RecallTimingRecord,
   searchedNamespaces: readonly string[] = [record.namespace],
+  aclNamespaces: readonly string[] = searchedNamespaces,
 ): void {
   const history = histories.get(config) ?? [];
+  const effectiveSearchedNamespaces =
+    searchedNamespaces.length > 0 ? searchedNamespaces : [record.namespace];
+  const effectiveAclNamespaces =
+    aclNamespaces.length > 0 ? aclNamespaces : [record.namespace];
   // JS runs this synchronous push/shift block to completion, so concurrent
   // recalls cannot interleave ring updates and do not need a lock.
   history.push({
     record: { ...record },
-    searchedNamespaces: [...searchedNamespaces],
+    searchedNamespaces: [...effectiveSearchedNamespaces],
+    aclNamespaces: [...effectiveAclNamespaces],
   });
   if (history.length > RECALL_TIMING_HISTORY_LIMIT) history.shift();
   histories.set(config, history);
@@ -47,7 +54,7 @@ export function getRecallTimings(
   const history = histories.get(config) ?? [];
   const readable = resolveNamespaceCapabilities(config).namespaces
     ? history.filter((entry) =>
-      entry.searchedNamespaces.every((namespace) =>
+      entry.aclNamespaces.every((namespace) =>
         canReadNamespace(authenticatedPrincipal, namespace, config)
       )
     )

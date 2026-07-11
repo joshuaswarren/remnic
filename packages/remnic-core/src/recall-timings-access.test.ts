@@ -11,6 +11,7 @@ import { parseConfig } from "./config.js";
 import { Orchestrator } from "./orchestrator.js";
 import {
   getRecallTimings,
+  getRecallTimingStatus,
   recordRecallTiming,
   type RecallTimingRecord,
 } from "./recall-timings.js";
@@ -127,4 +128,53 @@ test("recall timings require access to every namespace searched", () => {
   }, ["default", "private"]);
 
   assert.deepEqual(getRecallTimings(config, "reader"), []);
+});
+
+test("empty searched namespace metadata falls back to the record namespace ACL", () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-empty-acl"), {
+    namespacesEnabled: true,
+    namespacePolicies: [{
+      name: "default",
+      readPrincipals: ["reader"],
+      writePrincipals: ["reader"],
+    }],
+  });
+  recordRecallTiming(config, {
+    timestamp: new Date(0).toISOString(),
+    namespace: "default",
+    total: "1ms",
+    recallPlan: "full",
+    queryPolicy: "general/full",
+  }, []);
+
+  assert.equal(getRecallTimings(config, "reader").length, 1);
+  assert.deepEqual(getRecallTimings(config, "intruder"), []);
+});
+
+test("coding overlay recall timings remain visible to the owning principal", async () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-overlay"), {
+    namespacesEnabled: true,
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "reader:", principal: "reader" }],
+    defaultRecallNamespaces: ["self"],
+    namespacePolicies: [{
+      name: "reader",
+      readPrincipals: ["reader"],
+      writePrincipals: ["reader"],
+    }],
+    codingMode: { projectScope: true, branchScope: true },
+  });
+  const orchestrator = new Orchestrator(config);
+  const sessionKey = "reader:chat";
+  orchestrator.setCodingContextForSession(sessionKey, {
+    projectId: "project-1",
+    branch: "feature/timings",
+    rootPath: "/tmp/project-1",
+    defaultBranch: "main",
+  });
+
+  await orchestrator.recall("skip retrieval", sessionKey, { mode: "no_recall" });
+
+  assert.equal(getRecallTimingStatus(config, "reader").count, 1);
+  assert.equal(getRecallTimingStatus(config, "intruder").count, 0);
 });
