@@ -8,7 +8,13 @@ import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
 import { abortError, isAbortError } from "./abort-error.js";
-import { EngramAccessInputError, type EngramAccessService, type EngramAccessMemoryResponse, type EngramAccessWriteResponse } from "./access-service.js";
+import { EngramAccessForbiddenError } from "./access-errors.js";
+import {
+  EngramAccessInputError,
+  type EngramAccessService,
+  type EngramAccessMemoryResponse,
+  type EngramAccessWriteResponse,
+} from "./access-service.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js";
 import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
@@ -449,6 +455,10 @@ export class EngramAccessHttpServer {
           }
           if (err instanceof EngramAccessInputError) {
             this.respondJson(res, 400, { error: err.message, code: "input_error" });
+            return;
+          }
+          if (err instanceof EngramAccessForbiddenError) {
+            this.respondJson(res, 403, { error: err.message, code: "forbidden" });
             return;
           }
           if (err instanceof CorrectionContractError) {
@@ -1766,6 +1776,27 @@ export class EngramAccessHttpServer {
         offset,
       });
       this.respondJson(res, 200, response);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/engram/v1/recall/timings") {
+      const op = getOperation("recall_timings"); // boundary dispatch (issue #1830)
+      if (!op) {
+        throw new Error("access-boundary: operation not registered: recall_timings");
+      }
+      // Live diagnostic route; no response (success or denial) is cacheable.
+      // Set before dispatch so the 403 path carries the header too.
+      res.setHeader("cache-control", "no-store");
+      // Dispatch through the registered operation so the HTTP route and the
+      // boundary registration share one gate. The server's own principal is
+      // the transport-level operator fallback; a configured
+      // agentAccessHttp.principal outranks it.
+      const output = (await op.run({}, {
+        service: this.service,
+        authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        operatorPrincipal: this.authenticatedPrincipal,
+      })) as { result: unknown };
+      this.respondJson(res, 200, output.result);
       return;
     }
 

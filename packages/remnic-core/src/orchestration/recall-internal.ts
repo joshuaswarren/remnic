@@ -51,6 +51,7 @@ import { createRecallSectionMetricRecorder } from "../recall-qos.js";
 import { buildRecallQueryPolicy } from "../recall-query-policy.js";
 import { type GraphRecallExpandedEntry, type LastRecallBudgetSummary, type LastRecallSnapshot, LastRecallStore, RecallHandleHistoryStore } from "../recall-state.js";
 import { type RecallFilterTrace, type RecallXrayResult, type RecallXrayScoreDecomposition, type RecallXraySnapshot, buildXraySnapshot } from "../recall-xray.js";
+import { recordRecallTiming } from "../recall-timings.js";
 import { findUnresolvedEntityRefs } from "../reconstruct.js";
 import { RerankCache, rerankLocalOrNoop } from "../rerank.js";
 import { buildResponseGuidanceRecallSection, shouldRecallResponseGuidance } from "../response-guidance-recall.js";
@@ -752,6 +753,9 @@ export class RecallInternalCoordinator {
     // Catalog read touch (issue #1499) is recorded LATER — after the Phase 1
     // abort gate — so it fires only when retrieval actually runs, not for
     // aborted / short-circuited recalls.
+    const codingContext = sessionKey
+      ? this.deps.getCodingContextForSession(sessionKey)
+      : null;
     const scopePlan = resolveScopePlan({
       config: this.deps.config,
       sessionKey,
@@ -761,9 +765,7 @@ export class RecallInternalCoordinator {
           && options.principalOverride.length > 0
           ? options.principalOverride
           : undefined,
-      codingContext: sessionKey
-        ? this.deps.getCodingContextForSession(sessionKey)
-        : null,
+      codingContext,
       namespacesEnabled,
     });
     const {
@@ -867,6 +869,14 @@ export class RecallInternalCoordinator {
       const earlySessionKey = sessionKey ?? "default";
       this.deps._recallWorkspaceOverrides.delete(earlySessionKey);
       timings.total = `${Date.now() - recallStart}ms`;
+      recordRecallTiming(this.deps.config, {
+        ...timings,
+        timestamp: new Date().toISOString(),
+        namespace: selfNamespace,
+        total: timings.total,
+        recallPlan: timings.recallPlan,
+        queryPolicy: timings.queryPolicy,
+      });
       // X-ray capture for the `no_recall` early-return path
       // (issue #570 PR 1).  `no_recall` skips retrieval entirely, so
       // the snapshot carries zero results and an empty-budget accounting
@@ -5146,6 +5156,14 @@ export class RecallInternalCoordinator {
       .map(([k, v]) => `${k}=${v}`)
       .join(", ");
     log.info(`recall timings: ${timingParts}`);
+    recordRecallTiming(this.deps.config, {
+      ...timings,
+      timestamp: new Date().toISOString(),
+      namespace: selfNamespace,
+      total: timings.total,
+      recallPlan: timings.recallPlan,
+      queryPolicy: timings.queryPolicy,
+    });
 
     const assembledRecall = this.deps.assembleRecallSections(
       sectionBuckets,
