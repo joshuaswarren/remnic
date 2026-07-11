@@ -200,7 +200,6 @@ export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
   { method: "POST", pathname: "/engram/v1/coding/delta", operation: "coding_delta" },
   { method: "POST", pathname: "/engram/v1/suggestions", operation: "suggestion_submit" },
   { method: "GET", pathname: "/engram/v1/memories", operation: "memory_list" },
-  { method: "GET", pathname: "/engram/v1/recall/timings", operation: "recall_timings" },
   { method: "GET", pathname: "/engram/v1/memories/:id", operation: "memory_get" },
   { method: "GET", pathname: "/engram/v1/memories/:id/timeline", operation: "memory_timeline" },
   { method: "GET", pathname: "/engram/v1/entities", operation: "entity_list" },
