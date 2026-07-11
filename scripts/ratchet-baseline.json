@@ -7,10 +7,10 @@
       "packages/remnic-core/src/orchestrator.ts": 3972,
       "packages/remnic-core/src/cli.ts": 9395,
       "packages/remnic-core/src/access-service.ts": 5902,
-      "packages/remnic-core/src/storage.ts": 6532,
+      "packages/remnic-core/src/storage.ts": 6549,
       "packages/remnic-core/src/config.ts": 4438
     },
-    "oversizedFileCount": 12,
+    "oversizedFileCount": 11,
     "scatteredConfigFlagReads": 0,
     "adHocNamespaceResolutions": 0,
     "unmigratedHandlerCount": 0,
