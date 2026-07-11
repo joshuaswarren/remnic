@@ -55,6 +55,7 @@ import { createOAuthMetadata, mcpAuthMetadataRouter } from "@modelcontextprotoco
 import {
   InvalidGrantError,
   InvalidTokenError,
+  ServerError,
   UnsupportedGrantTypeError,
 } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
@@ -549,6 +550,21 @@ export class OAuthState {
     }
     return entry;
   }
+
+  /**
+   * Un-burn a code consumed by takeCode when the downstream token persist
+   * fails (disk full, permissions). Lets the client retry the exchange
+   * instead of being forced through a fresh authorize+approve. Only
+   * revives an entry still present and within TTL; a binding/PKCE
+   * mismatch is NOT revived (that is a genuine client error, and OAuth
+   * 2.1 revokes a code presented incorrectly).
+   */
+  reviveCode(code: string): void {
+    const entry = this.codes.get(code);
+    if (entry && entry.expiresAt >= Date.now()) {
+      entry.consumed = false;
+    }
+  }
 }
 
 // ── HTML approval page (auto-polling) ────────────────────────────────────────
@@ -749,9 +765,23 @@ class RemnicOAuthProvider implements OAuthServerProvider {
     }
     // Mint a fresh Remnic connector token as the OAuth access token.
     // commitTokenEntry replaces the previous `chatgpt` entry, so
-    // re-linking rotates the token — documented behavior.
+    // re-linking rotates the token — documented behavior. If the
+    // token-store write fails (disk full, permissions), revive the code
+    // so the client can retry the exchange instead of being forced
+    // through a fresh authorize+approve (AGENTS.md #14 — don't burn old
+    // state before the replacement is confirmed).
     const tokenEntry = buildTokenEntry(CHATGPT_CONNECTOR_ID);
-    commitTokenEntry(tokenEntry, this.tokensPath);
+    try {
+      commitTokenEntry(tokenEntry, this.tokensPath);
+    } catch (err) {
+      this.state.reviveCode(authorizationCode);
+      log.warn(
+        `OAuth token persist failed; authorization code revived for retry: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      throw new ServerError("failed to persist the issued token; retry the exchange");
+    }
     log.info(`OAuth token issued for connector "${CHATGPT_CONNECTOR_ID}" (client=${client.client_id})`);
     return {
       access_token: tokenEntry.token,

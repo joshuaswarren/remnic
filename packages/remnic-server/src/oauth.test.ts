@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -13,7 +13,13 @@ import {
   getAllValidTokenEntriesCached,
   revokeToken,
 } from "@remnic/core";
-import { buildOAuthRequestHandler, parseOAuthConfig, applyOAuthEnvOverrides, type ParsedOAuthConfig } from "./oauth.js";
+import {
+  buildOAuthRequestHandler,
+  OAuthState,
+  parseOAuthConfig,
+  applyOAuthEnvOverrides,
+  type ParsedOAuthConfig,
+} from "./oauth.js";
 
 const OPERATOR_TOKEN = "operator-test-token";
 const CLIENT_ID = "remnic-chatgpt-test";
@@ -739,5 +745,139 @@ test("rate limiting: decision bucket returns JSON 429 when exhausted; poll bucke
     assert.notEqual(poll.status, 429, "poll bucket must not be consumed by decision traffic");
   } finally {
     await h.cleanup();
+  }
+});
+
+test("OAuthState.reviveCode: a persist failure can un-burn the code so the exchange retries", () => {
+  const config = parseOAuthConfig({
+    enabled: true,
+    issuerUrl: "http://127.0.0.1:4318",
+    clientId: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
+    redirectUris: [REDIRECT_URI],
+  });
+  const state = new OAuthState(config);
+  const txn = state.createPending({
+    clientId: CLIENT_ID,
+    redirectUri: REDIRECT_URI,
+    scopes: [],
+    resource: undefined,
+    state: undefined,
+    codeChallenge: "x".repeat(43),
+  });
+  const { code } = state.approveByRef(txn.ref);
+
+  // First exchange consumes the code.
+  const first = state.takeCode({ code, clientId: CLIENT_ID, redirectUri: REDIRECT_URI, resource: undefined });
+  assert.ok(first, "first takeCode must succeed");
+  // Single-use: a second attempt is rejected while consumed.
+  assert.equal(
+    state.takeCode({ code, clientId: CLIENT_ID, redirectUri: REDIRECT_URI, resource: undefined }),
+    undefined,
+    "a consumed code must not be reusable",
+  );
+  // Simulating a token-persist failure: revive, then the retry succeeds.
+  state.reviveCode(code);
+  const retry = state.takeCode({ code, clientId: CLIENT_ID, redirectUri: REDIRECT_URI, resource: undefined });
+  assert.ok(retry, "revived code must be exchangeable again");
+
+  // A binding mismatch is NOT revived by reviveCode (only un-burns; the
+  // wrong-client attempt below still fails on its own merits).
+  state.reviveCode(code);
+  assert.equal(
+    state.takeCode({ code, clientId: "someone-else", redirectUri: REDIRECT_URI, resource: undefined }),
+    undefined,
+    "wrong client_id must still be rejected after revive",
+  );
+});
+
+test("token exchange: persist failure returns 500 and preserves the code; retry after recovery succeeds once", async () => {
+  // tokensPath lives in a read-only directory, so token-store LOAD (file
+  // absent → empty) works but the WRITE fails with EACCES — forcing the
+  // real catch in exchangeAuthorizationCode without breaking reads.
+  // Restoring write permission lets a retry of the SAME code succeed,
+  // proving the code was not burned by the failed persist.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-oauth-persistfail-"));
+  const roDir = path.join(dir, "ro");
+  await mkdir(roDir, { recursive: true });
+  await chmod(roDir, 0o555);
+  const tokensPath = path.join(roDir, "tokens.json"); // parent is read-only → EACCES on write
+  const port = await reserveFreePort();
+  const issuer = `http://127.0.0.1:${port}`;
+  const config = parseOAuthConfig({
+    enabled: true,
+    issuerUrl: issuer,
+    clientId: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
+    redirectUris: [REDIRECT_URI],
+  });
+  const server = new EngramAccessHttpServer({
+    service: serviceStub as EngramAccessService,
+    host: "127.0.0.1",
+    port,
+    authToken: OPERATOR_TOKEN,
+    authTokenEntriesGetter: () => getAllValidTokenEntriesCached(tokensPath),
+    tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
+    adminConsoleEnabled: false,
+    externalRequestHandler: buildOAuthRequestHandler(config, { tokensPath }),
+  });
+  await server.start();
+  try {
+    const { verifier, challenge } = pkcePair();
+    const authorizeUrl = new URL("/authorize", issuer);
+    authorizeUrl.searchParams.set("response_type", "code");
+    authorizeUrl.searchParams.set("client_id", CLIENT_ID);
+    authorizeUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+    authorizeUrl.searchParams.set("code_challenge", challenge);
+    authorizeUrl.searchParams.set("code_challenge_method", "S256");
+    assert.equal((await fetch(authorizeUrl)).status, 200);
+    const pending = (await (
+      await fetch(`${issuer}/oauth/pending`, { headers: { authorization: `Bearer ${OPERATOR_TOKEN}` } })
+    ).json()) as { pending: Array<{ ref: string }> };
+    const ref = pending.pending[0]?.ref;
+    assert.ok(ref);
+    const approve = (await (
+      await fetch(`${issuer}/oauth/pending/${ref}/approve`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${OPERATOR_TOKEN}` },
+      })
+    ).json()) as { redirect: string };
+    const code = new URL(approve.redirect).searchParams.get("code");
+    assert.ok(code);
+
+    const exchange = () =>
+      fetch(`${issuer}/token`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "authorization_code",
+          code,
+          code_verifier: verifier,
+          redirect_uri: REDIRECT_URI,
+          client_id: CLIENT_ID,
+          client_secret: CLIENT_SECRET,
+        }),
+      });
+
+    // Persist fails → 500 server_error, no token minted.
+    const failed = await exchange();
+    assert.equal(failed.status, 500);
+    assert.equal(((await failed.json()) as { error?: string }).error, "server_error");
+    assert.deepEqual([...getAllValidTokenEntriesCached(tokensPath)], [], "no token may be persisted on failure");
+
+    // Recover: restore write permission so the token store can persist.
+    await chmod(roDir, 0o755);
+    const ok = await exchange();
+    assert.equal(ok.status, 200, `retry must succeed after recovery: ${await ok.clone().text()}`);
+    assert.match(((await ok.json()) as { access_token: string }).access_token, /^remnic_cg_/);
+
+    // Single-use preserved: a third attempt with the now-spent code fails.
+    const replay = await exchange();
+    assert.equal(replay.status, 400);
+    assert.equal(((await replay.json()) as { error?: string }).error, "invalid_grant");
+  } finally {
+    await server.stop();
+    await chmod(roDir, 0o755).catch(() => {});
+    await rm(dir, { recursive: true, force: true });
   }
 });
