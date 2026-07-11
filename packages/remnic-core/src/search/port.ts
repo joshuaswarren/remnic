@@ -43,6 +43,17 @@ export interface SearchExecutionOptions {
   onDegradation?: (degradation: SearchDegradation) => void;
 }
 
+export function reportSearchDegradation(
+  execution: SearchExecutionOptions | undefined,
+  degradation: SearchDegradation,
+): void {
+  try {
+    execution?.onDegradation?.(degradation);
+  } catch {
+    // Observability must never break search.
+  }
+}
+
 export function resolveEnsureCollectionArgs(
   collectionOrExecution?: string | SearchExecutionOptions,
   execution?: SearchExecutionOptions,

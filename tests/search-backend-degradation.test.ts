@@ -36,3 +36,30 @@ test("Meilisearch reports a final fail-open search error as degradation", async 
     },
   ]);
 });
+
+test("backend degradation observers cannot break fail-open search", async () => {
+  const backend = new MeilisearchBackend({
+    host: "http://127.0.0.1:7700",
+    collection: "memory",
+  });
+  const internal = backend as unknown as {
+    available: boolean;
+    client: { index: () => { search: () => Promise<never> } };
+  };
+  internal.available = true;
+  internal.client = {
+    index: () => ({
+      search: async () => {
+        throw new Error("query failed");
+      },
+    }),
+  };
+
+  const results = await backend.search("warmup", undefined, 1, undefined, {
+    onDegradation: () => {
+      throw new Error("observer failed");
+    },
+  });
+
+  assert.deepEqual(results, []);
+});

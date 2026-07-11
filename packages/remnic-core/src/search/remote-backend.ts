@@ -1,5 +1,11 @@
 import { log } from "../logger.js";
-import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
+import {
+  reportSearchDegradation,
+  type SearchBackend,
+  type SearchExecutionOptions,
+  type SearchQueryOptions,
+  type SearchResult,
+} from "./port.js";
 
 export interface RemoteSearchBackendOptions {
   baseUrl: string;
@@ -104,7 +110,7 @@ export class RemoteSearchBackend implements SearchBackend {
     execution?: SearchExecutionOptions,
   ): Promise<SearchResult[]> {
     if (!this.available) {
-      execution?.onDegradation?.({
+      reportSearchDegradation(execution, {
         backend: "remote",
         code: "backend_unavailable",
       });
@@ -121,7 +127,7 @@ export class RemoteSearchBackend implements SearchBackend {
       });
       if (!res.ok) {
         log.debug(`RemoteSearchBackend ${endpoint} returned ${res.status}`);
-        execution?.onDegradation?.({
+        reportSearchDegradation(execution, {
           backend: "remote",
           code: "remote_error",
           detail: `HTTP ${res.status}`,
@@ -130,7 +136,7 @@ export class RemoteSearchBackend implements SearchBackend {
       }
       const data = await res.json();
       if (!Array.isArray(data)) {
-        execution?.onDegradation?.({
+        reportSearchDegradation(execution, {
           backend: "remote",
           code: "remote_error",
           detail: "invalid response body",
@@ -140,7 +146,7 @@ export class RemoteSearchBackend implements SearchBackend {
       return data as SearchResult[];
     } catch (err) {
       log.debug(`RemoteSearchBackend ${endpoint} failed: ${err}`);
-      execution?.onDegradation?.({
+      reportSearchDegradation(execution, {
         backend: "remote",
         code: "remote_error",
         detail: err instanceof Error ? err.name : typeof err,

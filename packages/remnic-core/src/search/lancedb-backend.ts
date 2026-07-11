@@ -1,5 +1,6 @@
 import { log } from "../logger.js";
 import {
+  reportSearchDegradation,
   resolveEnsureCollectionArgs,
   type SearchBackend,
   type SearchExecutionOptions,
@@ -492,7 +493,7 @@ export class LanceDbBackend implements SearchBackend {
     } catch (err) {
       log.debug(`LanceDbBackend search (${mode}) failed: ${err}`);
       if (!isSearchAborted(execution)) {
-        execution?.onDegradation?.({
+        reportSearchDegradation(execution, {
           backend: "lancedb",
           code: "backend_error",
           detail: err instanceof Error ? err.name : typeof err,
