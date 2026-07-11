@@ -124,3 +124,42 @@ test("a disconnected recall queued on the principal budget lock never starts", a
   await assert.rejects(waitFor(second), (error: Error) => error.name === "AbortError");
   assert.equal(secondStarted, false);
 });
+
+test("an aborted queued recall does not poison the principal budget lock", async () => {
+  const firstStarted = deferred<void>();
+  const releaseFirst = deferred<void>();
+  let secondStarted = false;
+  let thirdStarted = false;
+  const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+  const lockHost = service as unknown as {
+    budgetLocks: Map<string, Promise<void>>;
+    withBudgetLock<T>(
+      principal: string,
+      abortSignal: AbortSignal | undefined,
+      operation: () => Promise<T>,
+    ): Promise<T>;
+  };
+  lockHost.budgetLocks = new Map();
+
+  const first = lockHost.withBudgetLock("principal", undefined, async () => {
+    firstStarted.resolve();
+    await releaseFirst.promise;
+  });
+  await firstStarted.promise;
+
+  const controller = new AbortController();
+  const second = lockHost.withBudgetLock("principal", controller.signal, async () => {
+    secondStarted = true;
+  });
+  const third = lockHost.withBudgetLock("principal", undefined, async () => {
+    thirdStarted = true;
+  });
+  controller.abort();
+  releaseFirst.resolve();
+
+  await first;
+  await assert.rejects(waitFor(second), (error: Error) => error.name === "AbortError");
+  await waitFor(third);
+  assert.equal(secondStarted, false);
+  assert.equal(thirdStarted, true);
+});
