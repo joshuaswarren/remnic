@@ -706,7 +706,7 @@ export interface StartupReadinessState {
   lastError?: string | null;
 }
 
-export type StartupReadinessOutcome = "warmed" | "cancelled" | "overridden";
+export type StartupReadinessOutcome = "warmed" | "cancelled" | "overridden" | "search-disabled";
 
 class StartupWarmupDegradationError extends Error {
   constructor(code: string) {
@@ -738,6 +738,7 @@ export async function completeStartupReadiness(options: {
   timeoutMs?: number;
   retryIntervalMs?: number;
   override?: boolean;
+  skipWarmup?: () => boolean;
   openGate: () => void;
   shutdownSignal?: AbortSignal;
   warn?: (message: string) => void;
@@ -769,6 +770,12 @@ export async function completeStartupReadiness(options: {
     warn(`Standalone deferred initialization failed; warm-up retries will continue: ${err}`);
   }
   if (options.shutdownSignal?.aborted) return "cancelled";
+  if (options.skipWarmup?.()) {
+    options.openGate();
+    options.state.ready = true;
+    info("Standalone init gate opened without search warm-up (search intentionally disabled)");
+    return "search-disabled";
+  }
 
   const lifecycleAbort = new AbortController();
   const onShutdown = () => lifecycleAbort.abort(options.shutdownSignal?.reason);
@@ -964,6 +971,8 @@ export async function startServer(options?: {
       }),
     state: readiness,
     override: parsedServerConfig.readinessOverride,
+    skipWarmup: () =>
+      !config.qmdEnabled || orchestrator.qmd.debugStatus() === "backend=noop",
     openGate: () => {
       readiness.ready = true;
     },

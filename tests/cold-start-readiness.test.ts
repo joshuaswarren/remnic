@@ -202,6 +202,31 @@ test("a fail-open degraded search result stays cold and retries", async () => {
   assert.equal(readiness.ready, true);
 });
 
+test("intentionally disabled search opens readiness without a warm-up", async () => {
+  const readiness = { ready: false, warmupAttempts: 0 };
+  let warmupCalls = 0;
+
+  const outcome = await completeStartupReadiness({
+    deferredReady: Promise.resolve(),
+    warmup: async () => {
+      warmupCalls += 1;
+    },
+    skipWarmup: () => true,
+    state: readiness,
+    openGate: () => {
+      readiness.ready = true;
+    },
+  });
+
+  assert.equal(outcome, "search-disabled");
+  assert.equal(warmupCalls, 0);
+  assert.deepEqual(readiness, {
+    ready: true,
+    warmupAttempts: 0,
+    lastError: null,
+  });
+});
+
 test("the emergency override opens readiness at once and logs the exposure", async () => {
   const readiness = { ready: false, warmupAttempts: 0 };
   const errors: string[] = [];
