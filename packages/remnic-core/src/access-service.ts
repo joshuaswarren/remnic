@@ -401,6 +401,7 @@ export interface EngramAccessRecallRequest {
   topK?: number;
   mode?: RecallPlanMode | "auto";
   includeDebug?: boolean;
+  abortSignal?: AbortSignal;
   /**
    * Recall disclosure depth (issue #677).  Selects how much content each
    * result returns: `"chunk"` (default), `"section"`, or `"raw"`.  Omitting
@@ -2421,7 +2422,7 @@ export class EngramAccessService {
     }
   }
 
-  private async withBudgetLock<T>(principal: string, fn: () => Promise<T>): Promise<T> {
+  private async withBudgetLock<T>(principal: string, abortSignal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
     const key = principal || "__anonymous__";
     const previous = this.budgetLocks.get(key) ?? Promise.resolve();
     let release!: () => void;
@@ -2430,9 +2431,9 @@ export class EngramAccessService {
     });
     const queued = previous.then(() => current, () => current);
     this.budgetLocks.set(key, queued);
-
     await previous.catch(() => {});
     try {
+      abortSignal?.throwIfAborted();
       return await fn();
     } finally {
       release();
@@ -2743,8 +2744,7 @@ export class EngramAccessService {
         "authentication required: namespaces are enabled and no principal was supplied",
       );
     }
-    const budgetLockPrincipal = principal ?? "default";
-    return this.withBudgetLock(budgetLockPrincipal, async () => {
+    return this.withBudgetLock(principal ?? "default", request.abortSignal, async () => {
       let budgetRecordPrincipal: string | null = null;
       const response = await this.handleIdempotentRead({
         operation: "recall",

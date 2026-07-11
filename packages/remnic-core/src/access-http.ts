@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
+import { abortError, isAbortError } from "./abort-error.js";
 import { EngramAccessInputError, type EngramAccessService, type EngramAccessMemoryResponse, type EngramAccessWriteResponse } from "./access-service.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js";
@@ -344,8 +345,22 @@ export class EngramAccessHttpServer {
 
     const server = createServer((req, res) => {
       const correlationId = randomUUID();
+      const abortController = new AbortController();
+      const abortDisconnectedRequest = () => {
+        if (!res.writableFinished && !abortController.signal.aborted) {
+          abortController.abort(abortError("HTTP client disconnected"));
+        }
+      };
+      req.once("aborted", abortDisconnectedRequest);
+      res.once("close", abortDisconnectedRequest);
       correlationIdStore.run(correlationId, () => {
-        void this.handle(req, res, correlationId).catch((err) => {
+        void this.handle(req, res, correlationId, abortController.signal).catch((err) => {
+          if (isAbortError(err) || abortController.signal.aborted) {
+            if (!res.destroyed && !res.writableEnded) {
+              res.end();
+            }
+            return;
+          }
           log.debug(`engram access HTTP request failed [${correlationId}]: ${err}`);
           if (err instanceof HttpError) {
             const payload: Record<string, unknown> = { error: err.message, code: err.code };
@@ -370,6 +385,9 @@ export class EngramAccessHttpServer {
             err,
           );
           this.respondJson(res, 500, { error: "internal_error", code: "internal_error" });
+        }).finally(() => {
+          req.off("aborted", abortDisconnectedRequest);
+          res.off("close", abortDisconnectedRequest);
         });
       });
     });
@@ -583,7 +601,12 @@ export class EngramAccessHttpServer {
     return queryDisclosure;
   }
 
-  private async handle(req: IncomingMessage, res: ServerResponse, correlationId: string): Promise<void> {
+  private async handle(
+    req: IncomingMessage,
+    res: ServerResponse,
+    correlationId: string,
+    abortSignal: AbortSignal,
+  ): Promise<void> {
     const parsed = new URL(req.url ?? "/", `http://${hostToUrlAuthority(this.host)}`);
     const pathname = parsed.pathname;
 
@@ -767,6 +790,7 @@ export class EngramAccessHttpServer {
         ...(tags !== undefined ? { tags } : {}),
         ...(tagMatch !== undefined ? { tagMatch } : {}),
         ...(includeLowConfidence ? { includeLowConfidence: true } : {}),
+        abortSignal,
       });
       this.respondJson(res, 200, response);
       return;
