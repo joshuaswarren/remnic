@@ -29,6 +29,7 @@ export interface ServerConfig {
     adminConsoleEnabled?: boolean;
     adminConsolePublicDir?: string;
     adminConsolePrefillToken?: boolean;
+    readinessOverride?: boolean;
   };
 }
 
@@ -99,6 +100,7 @@ export interface ParsedServerConfig {
   adminConsoleEnabled: boolean;
   adminConsolePublicDir?: string;
   adminConsolePrefillToken: boolean;
+  readinessOverride: boolean;
 }
 
 export function parseServerConfig(
@@ -116,6 +118,7 @@ export function parseServerConfig(
     adminConsoleEnabled: parseOptionalBoolean(raw.adminConsoleEnabled, "server.adminConsoleEnabled") ?? false,
     adminConsolePublicDir: parseOptionalString(raw.adminConsolePublicDir, "server.adminConsolePublicDir"),
     adminConsolePrefillToken: parseOptionalBoolean(raw.adminConsolePrefillToken, "server.adminConsolePrefillToken") ?? false,
+    readinessOverride: parseOptionalBoolean(raw.readinessOverride, "server.readinessOverride") ?? false,
   };
 }
 
@@ -215,12 +218,14 @@ function envOverrides(): Partial<ServerConfig["server"]> & { remnic?: Record<str
   const adminConsoleEnabled = readCompatEnv("REMNIC_ADMIN_CONSOLE_ENABLED", "ENGRAM_ADMIN_CONSOLE_ENABLED");
   const adminConsolePublicDir = readCompatEnv("REMNIC_ADMIN_CONSOLE_PUBLIC_DIR", "ENGRAM_ADMIN_CONSOLE_PUBLIC_DIR");
   const adminConsolePrefillToken = readCompatEnv("REMNIC_ADMIN_CONSOLE_PREFILL_TOKEN", "ENGRAM_ADMIN_CONSOLE_PREFILL_TOKEN");
+  const readinessOverride = process.env.REMNIC_READY_OVERRIDE;
   if (port) overrides.port = port;
   if (host) overrides.host = host;
   if (authToken) overrides.authToken = authToken;
   if (adminConsoleEnabled) overrides.adminConsoleEnabled = adminConsoleEnabled;
   if (adminConsolePublicDir) overrides.adminConsolePublicDir = adminConsolePublicDir;
   if (adminConsolePrefillToken) overrides.adminConsolePrefillToken = adminConsolePrefillToken;
+  if (readinessOverride !== undefined) overrides.readinessOverride = readinessOverride;
 
   if (process.env.OPENAI_API_KEY) remnic.openaiApiKey = process.env.OPENAI_API_KEY;
   const memoryDir = readCompatEnv("REMNIC_MEMORY_DIR", "ENGRAM_MEMORY_DIR");
@@ -693,72 +698,107 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
 }
 
 const STARTUP_WARMUP_TIMEOUT_MS = 20_000;
+const STARTUP_WARMUP_RETRY_INTERVAL_MS = 30_000;
 
-export type StartupReadinessOutcome = "warmed" | "failed-open" | "cancelled";
+export interface StartupReadinessState {
+  ready: boolean;
+  warmupAttempts: number;
+  lastError?: string | null;
+}
+
+export type StartupReadinessOutcome = "warmed" | "cancelled" | "overridden";
 
 export async function completeStartupReadiness(options: {
   deferredReady: Promise<void>;
   warmup: (signal: AbortSignal) => Promise<unknown>;
+  state: StartupReadinessState;
   timeoutMs?: number;
+  retryIntervalMs?: number;
+  override?: boolean;
   openGate: () => void;
   shutdownSignal?: AbortSignal;
   warn?: (message: string) => void;
   info?: (message: string) => void;
+  error?: (message: string) => void;
 }): Promise<StartupReadinessOutcome> {
   const timeoutMs = options.timeoutMs ?? STARTUP_WARMUP_TIMEOUT_MS;
+  const retryIntervalMs = options.retryIntervalMs ?? STARTUP_WARMUP_RETRY_INTERVAL_MS;
   const warn = options.warn ?? ((message: string) => log.warn(message));
   const info = options.info ?? ((message: string) => log.info(message));
+  const error = options.error ?? ((message: string) => log.error(message));
+
+  options.state.ready = false;
+  options.state.lastError = null;
+  if (options.override) {
+    options.openGate();
+    options.state.ready = true;
+    error(
+      "CRITICAL: emergency readiness override enabled; exposing a cold search backend to traffic",
+    );
+    return "overridden";
+  }
 
   try {
     await options.deferredReady;
   } catch (err) {
     if (options.shutdownSignal?.aborted) return "cancelled";
-    warn(`Standalone deferred initialization failed; opening readiness gate: ${err}`);
-    options.openGate();
-    info("Standalone init gate opened after deferred initialization failure (fail-open)");
-    return "failed-open";
+    options.state.lastError = err instanceof Error ? err.name : typeof err;
+    warn(`Standalone deferred initialization failed; warm-up retries will continue: ${err}`);
   }
   if (options.shutdownSignal?.aborted) return "cancelled";
 
-  const warmupAbort = new AbortController();
-  const onShutdown = () => warmupAbort.abort(options.shutdownSignal?.reason);
+  const lifecycleAbort = new AbortController();
+  const onShutdown = () => lifecycleAbort.abort(options.shutdownSignal?.reason);
   options.shutdownSignal?.addEventListener("abort", onShutdown, { once: true });
-  const timeout = (Promise as PromiseConstructorWithResolvers).withResolvers<never>();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    warmupAbort.abort();
-    timeout.reject(new Error(`startup warm-up timed out after ${timeoutMs}ms`));
-  }, timeoutMs);
-  timer.unref();
 
-  let outcome: StartupReadinessOutcome = "warmed";
   try {
-    await Promise.race([options.warmup(warmupAbort.signal), timeout.promise]);
-  } catch (err) {
-    if (options.shutdownSignal?.aborted) {
-      outcome = "cancelled";
-    } else {
-      outcome = "failed-open";
-      warn(
-        timedOut
-          ? `Standalone startup warm-up timed out after ${timeoutMs}ms; opening readiness gate`
-          : `Standalone startup warm-up failed; opening readiness gate: ${err}`,
-      );
+    while (!lifecycleAbort.signal.aborted) {
+      options.state.warmupAttempts += 1;
+      const warmupAbort = new AbortController();
+      const onLifecycleAbort = () => warmupAbort.abort(lifecycleAbort.signal.reason);
+      lifecycleAbort.signal.addEventListener("abort", onLifecycleAbort, { once: true });
+      const timeout = (Promise as PromiseConstructorWithResolvers).withResolvers<never>();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        warmupAbort.abort();
+        timeout.reject(new Error(`startup warm-up timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref();
+
+      try {
+        await Promise.race([options.warmup(warmupAbort.signal), timeout.promise]);
+        if (lifecycleAbort.signal.aborted) return "cancelled";
+        options.state.lastError = null;
+        options.openGate();
+        options.state.ready = true;
+        info(
+          `Standalone init gate opened after search warm-up attempt ${options.state.warmupAttempts}`,
+        );
+        return "warmed";
+      } catch (err) {
+        if (lifecycleAbort.signal.aborted) return "cancelled";
+        options.state.lastError = timedOut
+          ? "TimeoutError"
+          : err instanceof Error
+            ? err.name
+            : typeof err;
+        warn(
+          timedOut
+            ? `Standalone startup warm-up attempt ${options.state.warmupAttempts} timed out after ${timeoutMs}ms; retrying in ${retryIntervalMs}ms`
+            : `Standalone startup warm-up attempt ${options.state.warmupAttempts} failed (${options.state.lastError}); retrying in ${retryIntervalMs}ms`,
+        );
+      } finally {
+        clearTimeout(timer);
+        lifecycleAbort.signal.removeEventListener("abort", onLifecycleAbort);
+      }
+
+      await abortableDelay(retryIntervalMs, lifecycleAbort.signal);
     }
+    return "cancelled";
   } finally {
-    clearTimeout(timer);
     options.shutdownSignal?.removeEventListener("abort", onShutdown);
   }
-
-  if (outcome === "cancelled" || options.shutdownSignal?.aborted) return "cancelled";
-  options.openGate();
-  info(
-    outcome === "warmed"
-      ? "Standalone init gate opened (startup sync and search warm-up complete)"
-      : "Standalone init gate opened after warm-up failure (fail-open)",
-  );
-  return outcome;
 }
 
 async function cleanupFailedStartup(
@@ -834,7 +874,7 @@ export async function startServer(options?: {
   // Start the HTTP server immediately so health checks, MCP handshakes,
   // and liveness probes can connect while deferred init is still running.
   const service = new EngramAccessService(orchestrator);
-  let ready = false;
+  const readiness: StartupReadinessState = { ready: false, warmupAttempts: 0, lastError: null };
 
   const authToken = parsedServerConfig.authToken ?? readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN") ?? "";
 
@@ -850,7 +890,7 @@ export async function startServer(options?: {
     port: parsedServerConfig.port,
     authToken: authToken || undefined,
     authTokensGetter: () => getAllValidTokensCached(),
-    isReady: () => ready,
+    readiness: () => readiness,
     principal: parsedServerConfig.principal,
     maxBodyBytes: parsedServerConfig.maxBodyBytes,
     adminConsoleEnabled: parsedServerConfig.adminConsoleEnabled,
@@ -890,13 +930,13 @@ export async function startServer(options?: {
         undefined,
         { signal },
       ),
+    state: readiness,
+    override: parsedServerConfig.readinessOverride,
     openGate: () => {
-      ready = true;
+      readiness.ready = true;
     },
     shutdownSignal: startupSyncAbort.signal,
   });
-
-
   // Wrap httpServer.stop() so that existing callers also get full lifecycle
   // cleanup: retry timers, deferred init, HTTP listener, and orchestrator.
   const originalStop = httpServer.stop.bind(httpServer);
