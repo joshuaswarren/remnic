@@ -147,6 +147,13 @@ test("operator principal resolution agrees for standalone and embedded access", 
     resolveRecallTimingsOperatorPrincipal(embeddedConfig),
     "embedded-operator",
   );
+  assert.equal(
+    resolveRecallTimingsOperatorPrincipal(
+      embeddedConfig,
+      "fallback-transport-principal",
+    ),
+    "embedded-operator",
+  );
 });
 
 test("recall timing records expose only the fixed telemetry schema", () => {

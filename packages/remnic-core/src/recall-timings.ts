@@ -85,8 +85,8 @@ export function resolveRecallTimingsOperatorPrincipal(
   config: PluginConfig,
   transportPrincipal?: string,
 ): string | undefined {
-  return transportPrincipal?.trim()
-    || config.agentAccessHttp.principal?.trim()
+  return config.agentAccessHttp.principal?.trim()
+    || transportPrincipal?.trim()
     || undefined;
 }
 
