@@ -1173,3 +1173,88 @@ test("MCP session override preserves explicit LCM sessionPrefix searches", async
   assert.equal(exactResult.structuredContent.request.sessionKey, "adapter-session");
   assert.equal(exactResult.structuredContent.request.sessionPrefix, undefined);
 });
+
+// ---------------------------------------------------------------------------
+// outputSchema coverage — every MCP tool must declare an outputSchema.
+// Uses a small safe-access helper instead of inline casts (ts-no-inline-cast-access).
+// ---------------------------------------------------------------------------
+
+function fieldOf(value: unknown, key: string): unknown {
+  if (value !== null && typeof value === "object" && key in value) {
+    return (value as Record<string, unknown>)[key];
+  }
+  return undefined;
+}
+
+test("MCP tools/list: every tool (including engram.* aliases) declares an outputSchema", async () => {
+  const server = new EngramMcpServer(createFakeService());
+  const resp = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  const result = fieldOf(resp, "result");
+  const tools = fieldOf(result, "tools");
+  assert.ok(Array.isArray(tools), "tools/list must return a tools array");
+  assert.ok((tools as unknown[]).length > 0, "tools array must be non-empty");
+  const missing: string[] = [];
+  for (const tool of tools) {
+    const name = fieldOf(tool, "name");
+    if (typeof name === "string" && fieldOf(tool, "outputSchema") === undefined) {
+      missing.push(name);
+    }
+  }
+  assert.deepEqual(missing, [], `every tool must declare outputSchema; missing on: ${missing.join(", ")}`);
+});
+
+test("MCP tools/list: key tools have outputSchema with declared properties", async () => {
+  const server = new EngramMcpServer(createFakeService());
+  const resp = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  const tools = fieldOf(fieldOf(resp, "result"), "tools") as unknown as Array<Record<string, unknown>>;
+  const keyTools = [
+    "remnic.recall", "remnic.memory_store", "remnic.memory_get",
+    "remnic.briefing", "remnic.action_confidence", "remnic.memory_search",
+  ];
+  for (const name of keyTools) {
+    const tool = tools.find((t) => fieldOf(t, "name") === name);
+    assert.ok(tool, `${name} must be listed`);
+    const schema = fieldOf(tool, "outputSchema");
+    assert.ok(schema !== undefined && typeof schema === "object", `${name} outputSchema must be an object`);
+    const properties = fieldOf(schema, "properties");
+    assert.ok(
+      properties !== undefined && typeof properties === "object" && Object.keys(properties as Record<string, unknown>).length > 0,
+      `${name} outputSchema must declare non-empty properties, not just {type:'object'}`,
+    );
+  }
+});
+
+test("MCP tools/call: structuredContent typeof matches declared outputSchema type", async () => {
+  const server = new EngramMcpServer(createFakeService());
+  const listResp = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  const tools = fieldOf(fieldOf(listResp, "result"), "tools") as unknown as Array<Record<string, unknown>>;
+  const schemaTypeByTool = new Map<string, unknown>();
+  for (const tool of tools) {
+    const name = fieldOf(tool, "name");
+    if (typeof name === "string") {
+      schemaTypeByTool.set(name, fieldOf(fieldOf(tool, "outputSchema"), "type"));
+    }
+  }
+  const fixtures: Array<{ name: string; args: Record<string, unknown> }> = [
+    { name: "engram.recall", args: { query: "test" } },
+    { name: "engram.memory_get", args: { memoryId: "fact-1" } },
+    { name: "engram.memory_store", args: { category: "fact", content: "hello", dryRun: true } },
+    { name: "engram.peer_list", args: {} },
+    { name: "engram.capsule_list", args: {} },
+  ];
+  for (const { name, args } of fixtures) {
+    const resp = await server.handleRequest({
+      jsonrpc: "2.0", id: 2, method: "tools/call", params: { name, arguments: args },
+    });
+    const result = fieldOf(resp, "result");
+    assert.ok(result !== null && typeof result === "object", `${name}: result must be an object`);
+    assert.notEqual(fieldOf(result, "isError"), true, `${name}: must not return an error`);
+    const sc = fieldOf(result, "structuredContent");
+    const actualType = sc === null ? "null" : Array.isArray(sc) ? "array" : typeof sc;
+    const declaredType = schemaTypeByTool.get(name);
+    assert.equal(
+      actualType, declaredType,
+      `${name}: structuredContent typeof (${actualType}) must match outputSchema.type`,
+    );
+  }
+});

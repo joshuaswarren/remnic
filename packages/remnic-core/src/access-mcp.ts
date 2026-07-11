@@ -191,6 +191,139 @@ function withToolAliases(tool: McpTool, emitLegacyTools = true): McpTool[] {
   return emitLegacyTools ? [canonicalTool, tool] : [canonicalTool];
 }
 
+// ---------------------------------------------------------------------------
+// outputSchema registry (JSON Schema per canonical tool suffix).
+//
+// Keyed by the canonical suffix (the part after `remnic.` / `engram.`) so a
+// single entry covers both naming forms. Schemas describe the shape observed
+// at runtime via the structuredContent channel (callTool return value).
+// Fields are inferred from observed structuredContent keys and their value
+// types; `additionalProperties: true` tolerates fields not enumerated here so
+// the schema never rejects a valid response that added a field.
+// ---------------------------------------------------------------------------
+
+const T_STRING = { type: "string" } as const;
+const T_NUMBER = { type: "number" } as const;
+const T_BOOLEAN = { type: "boolean" } as const;
+const T_ARRAY = { type: "array" } as const;
+const T_OBJECT = { type: "object" } as const;
+
+/** Build a JSON Schema object type with the given properties. */
+function objectSchema(properties: Record<string, Readonly<Record<string, unknown>>>): Record<string, unknown> {
+  return { type: "object", properties, additionalProperties: true };
+}
+
+/**
+ * Per-suffix outputSchema registry. Tools not present here fall back to
+ * `{ type: "object", additionalProperties: true }` in the constructor pass.
+ * The `chatgpt_memory_inspector` tool ships its own precise schema and is
+ * intentionally absent — the apply pass skips tools that already have one.
+ */
+const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
+  recall: objectSchema({ query: T_STRING, namespace: T_STRING, context: T_STRING, count: T_NUMBER, memoryIds: T_ARRAY, results: T_ARRAY, fallbackUsed: T_BOOLEAN, sourcesUsed: T_ARRAY }),
+  recall_explain: objectSchema({ found: T_BOOLEAN, snapshot: T_OBJECT, intent: T_OBJECT, graph: T_OBJECT }),
+  recall_tier_explain: objectSchema({ snapshotFound: T_BOOLEAN, tierExplain: T_OBJECT }),
+  recall_xray: objectSchema({ snapshotFound: T_BOOLEAN, snapshot: T_OBJECT }),
+  set_coding_context: objectSchema({ ok: T_BOOLEAN }),
+  wearables_status: objectSchema({ sources: T_ARRAY, available: T_BOOLEAN }),
+  wearables_sync: objectSchema({ source: T_STRING, synced: T_ARRAY, memoriesCreated: T_NUMBER }),
+  transcript_day: objectSchema({ day: T_STRING, sources: T_ARRAY }),
+  transcript_search: objectSchema({ results: T_ARRAY, total: T_NUMBER }),
+  transcript_memories: objectSchema({ memories: T_ARRAY, total: T_NUMBER }),
+  action_confidence: objectSchema({ schemaVersion: T_NUMBER, decision: T_STRING, confidence: T_NUMBER, risk: T_STRING, contextReadiness: T_STRING, intendedAction: T_STRING, attentionPolicy: T_STRING, principle: T_STRING, reasons: T_ARRAY, blockers: T_ARRAY, factors: T_ARRAY, retrievedMemoryCount: T_NUMBER, matchedRules: T_ARRAY, scopeMismatchCount: T_NUMBER, safeToAct: T_BOOLEAN }),
+  day_summary: objectSchema({ summary: T_STRING, sections: T_ARRAY }),
+  capsule_export: objectSchema({ archivePath: T_STRING, manifestPath: T_STRING, encryptedArchivePath: T_OBJECT, manifest: T_OBJECT }),
+  capsule_import: objectSchema({ imported: T_ARRAY, skipped: T_ARRAY, manifest: T_OBJECT }),
+  capsule_list: objectSchema({ namespace: T_STRING, capsulesDir: T_STRING, capsules: T_ARRAY }),
+  memory_governance_run: objectSchema({ namespace: T_STRING, runId: T_STRING, traceId: T_STRING, mode: T_STRING, reviewQueueCount: T_NUMBER, proposedActionCount: T_NUMBER, appliedActionCount: T_NUMBER, summaryPath: T_STRING, reportPath: T_STRING }),
+  procedure_mining_run: objectSchema({ namespace: T_STRING, clustersProcessed: T_NUMBER, proceduresWritten: T_NUMBER }),
+  pattern_reinforcement_run: objectSchema({ namespace: T_STRING, clustersProcessed: T_NUMBER, promoted: T_NUMBER, superseded: T_NUMBER }),
+  procedural_stats: objectSchema({ namespace: T_STRING, counts: T_OBJECT, recentWrites: T_ARRAY }),
+  memory_get: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, memory: T_OBJECT }),
+  memory_timeline: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, count: T_NUMBER, timeline: T_ARRAY }),
+  memory_store: objectSchema({ schemaVersion: T_NUMBER, operation: T_STRING, namespace: T_STRING, dryRun: T_BOOLEAN, accepted: T_BOOLEAN, queued: T_BOOLEAN, status: T_STRING, memoryId: T_STRING }),
+  suggestion_submit: objectSchema({ schemaVersion: T_NUMBER, operation: T_STRING, namespace: T_STRING, dryRun: T_BOOLEAN, accepted: T_BOOLEAN, queued: T_BOOLEAN, status: T_STRING, memoryId: T_STRING }),
+  entity_get: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, entity: T_OBJECT }),
+  review_queue_list: objectSchema({ found: T_BOOLEAN, runId: T_STRING, reviewQueue: T_ARRAY }),
+  observe: objectSchema({ accepted: T_NUMBER, sessionKey: T_STRING, namespace: T_STRING, effectiveNamespace: T_STRING, lcmArchived: T_BOOLEAN, extractionQueued: T_BOOLEAN }),
+  lcm_search: objectSchema({ query: T_STRING, namespace: T_STRING, results: T_ARRAY, count: T_NUMBER, lcmEnabled: T_BOOLEAN }),
+  lcm_compaction_flush: objectSchema({ enabled: T_BOOLEAN, flushed: T_BOOLEAN, sessionKey: T_STRING, namespace: T_STRING }),
+  lcm_compaction_record: objectSchema({ enabled: T_BOOLEAN, recorded: T_BOOLEAN, sessionKey: T_STRING, namespace: T_STRING }),
+  continuity_audit_generate: objectSchema({ enabled: T_BOOLEAN, period: T_STRING, reportPath: T_STRING }),
+  continuity_incident_open: objectSchema({ id: T_STRING, symptom: T_STRING, state: T_STRING }),
+  continuity_incident_close: objectSchema({ id: T_STRING, state: T_STRING }),
+  continuity_incident_list: objectSchema({ incidents: T_ARRAY }),
+  continuity_loop_add_or_update: objectSchema({ id: T_STRING, title: T_STRING, ok: T_BOOLEAN }),
+  continuity_loop_review: objectSchema({ id: T_STRING, status: T_STRING, ok: T_BOOLEAN }),
+  identity_anchor_get: objectSchema({ found: T_BOOLEAN, anchor: T_OBJECT }),
+  identity_anchor_update: objectSchema({ ok: T_BOOLEAN, updated: T_ARRAY }),
+  memory_identity: objectSchema({ found: T_BOOLEAN, content: T_STRING }),
+  work_task: objectSchema({ ok: T_BOOLEAN, tasks: T_ARRAY }),
+  work_project: objectSchema({ ok: T_BOOLEAN, projects: T_ARRAY }),
+  work_board: objectSchema({ ok: T_BOOLEAN, markdown: T_STRING }),
+  shared_context_write_output: objectSchema({ ok: T_BOOLEAN, path: T_STRING }),
+  shared_feedback_record: objectSchema({ ok: T_BOOLEAN, recorded: T_BOOLEAN }),
+  shared_priorities_append: objectSchema({ ok: T_BOOLEAN }),
+  shared_context_cross_signals_run: objectSchema({ ok: T_BOOLEAN, artifacts: T_ARRAY }),
+  shared_context_curate_daily: objectSchema({ ok: T_BOOLEAN, summary: T_STRING }),
+  compounding_weekly_synthesize: objectSchema({ ok: T_BOOLEAN, reports: T_ARRAY }),
+  compounding_promote_candidate: objectSchema({ ok: T_BOOLEAN, promoted: T_BOOLEAN }),
+  compression_guidelines_optimize: objectSchema({ ok: T_BOOLEAN, guidelines: T_ARRAY }),
+  compression_guidelines_activate: objectSchema({ ok: T_BOOLEAN, activated: T_BOOLEAN }),
+  memory_search: objectSchema({ query: T_STRING, results: T_ARRAY, count: T_NUMBER }),
+  memory_profile: objectSchema({ preferences: T_OBJECT, habits: T_ARRAY }),
+  memory_entities_list: objectSchema({ entities: T_ARRAY, count: T_NUMBER }),
+  memory_questions: objectSchema({ questions: T_ARRAY, count: T_NUMBER }),
+  memory_last_recall: objectSchema({ found: T_BOOLEAN }),
+  memory_intent_debug: objectSchema({ found: T_BOOLEAN }),
+  memory_qmd_debug: objectSchema({ found: T_BOOLEAN }),
+  memory_graph_explain: objectSchema({ explanation: T_OBJECT }),
+  graph_snapshot: objectSchema({ nodes: T_ARRAY, edges: T_ARRAY }),
+  memory_feedback: objectSchema({ recorded: T_BOOLEAN, enabled: T_BOOLEAN }),
+  memory_promote: objectSchema({ ok: T_BOOLEAN, promoted: T_BOOLEAN }),
+  memory_outcome: objectSchema({ ok: T_BOOLEAN, recorded: T_BOOLEAN }),
+  memory_action_apply: objectSchema({ recorded: T_BOOLEAN, event: T_OBJECT }),
+  context_checkpoint: objectSchema({ ok: T_BOOLEAN, path: T_STRING }),
+  briefing: objectSchema({ markdown: T_STRING, json: T_OBJECT, sections: T_OBJECT, window: T_OBJECT }),
+  review_list: objectSchema({ items: T_ARRAY }),
+  review_resolve: objectSchema({ ok: T_BOOLEAN, resolved: T_BOOLEAN }),
+  contradiction_scan_run: objectSchema({ ok: T_BOOLEAN, scanned: T_NUMBER, pairs: T_ARRAY }),
+  memory_summarize_hourly: objectSchema({ ok: T_BOOLEAN, message: T_STRING }),
+  conversation_index_update: objectSchema({ ok: T_BOOLEAN, indexed: T_NUMBER }),
+  profiling_report: objectSchema({ enabled: T_BOOLEAN, format: T_STRING, traces: T_ARRAY, stats: T_OBJECT, bottleneck: T_OBJECT }),
+  graph_edge_decay_run: objectSchema({ ok: T_BOOLEAN, decayed: T_NUMBER }),
+  live_connectors_run: objectSchema({ ranAt: T_STRING, force: T_BOOLEAN, totalDocsImported: T_NUMBER, ranCount: T_NUMBER, skippedCount: T_NUMBER, errorCount: T_NUMBER, results: T_ARRAY }),
+  peer_list: objectSchema({ peers: T_ARRAY }),
+  peer_get: objectSchema({ found: T_BOOLEAN, peer: T_OBJECT }),
+  peer_set: objectSchema({ ok: T_BOOLEAN, created: T_BOOLEAN, peer: T_OBJECT }),
+  peer_delete: objectSchema({ ok: T_BOOLEAN, deleted: T_BOOLEAN }),
+  peer_profile_get: objectSchema({ found: T_BOOLEAN }),
+  peer_forget: objectSchema({ ok: T_BOOLEAN, purged: T_BOOLEAN }),
+  console_state: objectSchema({ capturedAt: T_STRING, bufferState: T_OBJECT, extractionQueue: T_OBJECT, dedupRecent: T_ARRAY, maintenanceLedgerTail: T_ARRAY, qmdProbe: T_OBJECT, daemon: T_OBJECT, errors: T_ARRAY }),
+  dreams_status: objectSchema({ phases: T_ARRAY, windowHours: T_NUMBER }),
+  dreams_run: objectSchema({ phase: T_STRING, durationMs: T_NUMBER, itemsProcessed: T_NUMBER }),
+  coding_decision: objectSchema({ decisions: T_ARRAY }),
+  coding_architecture: objectSchema({ architecture: T_OBJECT }),
+  coding_delta: objectSchema({ commits: T_ARRAY, files: T_ARRAY }),
+  memory_correct_plan: objectSchema({ planId: T_STRING, summary: T_STRING, diff: T_OBJECT, changes: T_ARRAY }),
+  memory_correct_apply: objectSchema({ applied: T_BOOLEAN, planId: T_STRING }),
+  memory_chat: objectSchema({ reply: T_STRING, chatSessionId: T_STRING }),
+  codegraph_index: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_list_projects: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_delete_project: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_index_status: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_search_graph: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_trace_path: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_detect_changes: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_query_graph: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_get_schema: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_get_snippet: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_get_architecture: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_search_code: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_manage_adr: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+  codegraph_ingest_traces: objectSchema({ ok: T_BOOLEAN, result: T_OBJECT }),
+};
+
 /**
  * MCP tool name (legacy `engram.*` form, since {@link toLegacyToolName}
  * canonicalizes incoming calls) → boundary operation it dispatches through.
@@ -2439,6 +2572,20 @@ export class EngramMcpServer {
         ? { ...tool, annotations: { ...(tool.annotations ?? {}), readOnlyHint: true } }
         : tool,
     );
+    // Apply `outputSchema` declarations from the registry. Like the
+    // readOnlyHint pass above, this is a final suffix-based pass so every
+    // tool (including both `remnic.*` and `engram.*` aliases) gets a
+    // schema. Tools that already declare an outputSchema (e.g.
+    // chatgpt_memory_inspector) are left untouched.
+    this.tools = this.tools.map((tool) => {
+      if (tool.outputSchema) return tool;
+      const suffix = tool.name.startsWith(CANONICAL_MCP_PREFIX)
+        ? tool.name.slice(CANONICAL_MCP_PREFIX.length)
+        : tool.name.startsWith(LEGACY_MCP_PREFIX)
+          ? tool.name.slice(LEGACY_MCP_PREFIX.length)
+          : tool.name;
+      return { ...tool, outputSchema: TOOL_OUTPUT_SCHEMAS[suffix] ?? { type: "object", additionalProperties: true } };
+    });
   }
 
   /** Get clientInfo for a specific MCP session. Returns undefined for non-MCP requests. */
