@@ -791,6 +791,12 @@ export async function completeStartupReadiness(options: {
 
   try {
     while (!lifecycleAbort.signal.aborted) {
+      if (options.skipWarmup?.()) {
+        options.openGate();
+        options.state.ready = true;
+        info("Standalone init gate opened without search warm-up (search intentionally disabled)");
+        return "search-disabled";
+      }
       options.state.warmupAttempts += 1;
       const warmupAbort = new AbortController();
       const onLifecycleAbort = () => warmupAbort.abort(lifecycleAbort.signal.reason);
@@ -980,7 +986,7 @@ export async function startServer(options?: {
       if (startupSyncInFlight === attempt) startupSyncInFlight = undefined;
     }
   };
-  void completeStartupReadiness({
+  const readinessTask = completeStartupReadiness({
     deferredReady: orchestrator.deferredReady,
     warmup: (signal) =>
       runStartupSearchWarmup({
@@ -1021,7 +1027,11 @@ export async function startServer(options?: {
       try {
         await originalStop();
       } finally {
-        await orchestrator.destroy();
+        try {
+          await readinessTask;
+        } finally {
+          await orchestrator.destroy();
+        }
       }
     })();
     return stopPromise;

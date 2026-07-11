@@ -285,6 +285,35 @@ test("intentionally disabled search opens readiness without a warm-up", async ()
   });
 });
 
+test("a backend that becomes no-op during sync opens readiness on the next retry", async () => {
+  const readiness = { ready: false, warmupAttempts: 0 };
+  let searchDisabled = false;
+  let syncCalls = 0;
+  let warmupCalls = 0;
+
+  const outcome = await completeStartupReadiness({
+    deferredReady: Promise.resolve(),
+    prepareWarmup: async () => {
+      syncCalls += 1;
+      searchDisabled = true;
+      return syncCalls >= 2;
+    },
+    warmup: async () => {
+      warmupCalls += 1;
+    },
+    skipWarmup: () => searchDisabled,
+    retryIntervalMs: 1,
+    state: readiness,
+    openGate: () => {
+      readiness.ready = true;
+    },
+  });
+
+  assert.equal(outcome, "search-disabled");
+  assert.equal(warmupCalls, 0);
+  assert.equal(readiness.ready, true);
+});
+
 test("the emergency override opens readiness at once and logs the exposure", async () => {
   const readiness = { ready: false, warmupAttempts: 0 };
   const errors: string[] = [];
