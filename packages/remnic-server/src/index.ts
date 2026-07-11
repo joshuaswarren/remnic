@@ -769,6 +769,13 @@ export async function completeStartupReadiness(options: {
     );
     return "overridden";
   }
+  if (options.skipWarmup?.()) {
+    options.openGate();
+    options.state.ready = true;
+    info("Standalone init gate opened without search warm-up (search intentionally disabled)");
+    return "search-disabled";
+  }
+
 
   let removeDeferredShutdownListener: () => void = () => undefined;
   const deferredShutdown = new Promise<"shutdown">((resolve) => {
@@ -795,12 +802,6 @@ export async function completeStartupReadiness(options: {
     removeDeferredShutdownListener();
   }
   if (options.shutdownSignal?.aborted) return "cancelled";
-  if (options.skipWarmup?.()) {
-    options.openGate();
-    options.state.ready = true;
-    info("Standalone init gate opened without search warm-up (search intentionally disabled)");
-    return "search-disabled";
-  }
 
   const lifecycleAbort = new AbortController();
   const onShutdown = () => lifecycleAbort.abort(options.shutdownSignal?.reason);

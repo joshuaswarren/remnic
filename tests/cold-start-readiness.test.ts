@@ -265,7 +265,7 @@ test("intentionally disabled search opens readiness without a warm-up", async ()
   let warmupCalls = 0;
 
   const outcome = await completeStartupReadiness({
-    deferredReady: Promise.resolve(),
+    deferredReady: Promise.withResolvers<void>().promise,
     warmup: async () => {
       warmupCalls += 1;
     },
