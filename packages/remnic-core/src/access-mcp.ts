@@ -1,9 +1,11 @@
-import type { Readable, Writable } from "node:stream";
-import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { EngramAccessInputError, type EngramAccessService, type EngramAccessRecallResponse } from "./access-service.js";
+import { readFile } from "node:fs/promises";
+import type { Readable, Writable } from "node:stream";
+// Importing access-operations registers the pilot boundary operations
+// (memory_get / memory_search / memory_store) as a side effect; callTool
+// dispatches migrated tools through the registry (issue #1525).
+import { type OperationName, getOperation } from "./access-boundary.js";
 import {
-  validateRequest,
   type ActionConfidenceRequest,
   type CapsuleExportRequest,
   type CapsuleImportRequest,
@@ -12,30 +14,29 @@ import {
   type SchemaName,
   type SchemaTypeFor,
   type SuggestionSubmitRequest,
+  validateRequest,
 } from "./access-schema.js";
-// Importing access-operations registers the pilot boundary operations
-// (memory_get / memory_search / memory_store) as a side effect; callTool
-// dispatches migrated tools through the registry (issue #1525).
-import { getOperation, type OperationName } from "./access-boundary.js";
+import { EngramAccessInputError, type EngramAccessRecallResponse, type EngramAccessService } from "./access-service.js";
 import "./access-operations.js";
-import { readEnvVar } from "./runtime/env.js";
-import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { validateBriefingFormat } from "./briefing.js";
-import { buildCitationGuidance, type CitationMetadata } from "./citations.js";
+import { processChatMessage } from "./chat/chat-factory.js";
+import { type CitationMetadata, buildCitationGuidance } from "./citations.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
-import { expandTildePath } from "./utils/path.js";
-import { resolvePrincipal } from "./namespaces/principal.js";
 import {
   REMNIC_CHATGPT_MEMORY_INSPECTOR_MIME_TYPE,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_TOOL,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML,
   REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
+  type RemnicChatGptMemoryInspectorInput,
   buildChatGptMemoryInspectorActionRequest,
   buildChatGptMemoryInspectorResult,
-  type RemnicChatGptMemoryInspectorInput,
 } from "./mcp-memory-inspector-app.js";
-import { processChatMessage } from "./chat/chat-factory.js";
+import { resolvePrincipal } from "./namespaces/principal.js";
+import { readEnvVar } from "./runtime/env.js";
+import type { RecallDisclosure, RecallPlanMode } from "./types.js";
+import { expandTildePath } from "./utils/path.js";
 
+import { applyToolOutputSchemas } from "./access-mcp-output-schemas.js";
 type JsonRpcId = string | number | null;
 
 type JsonRpcRequest = {
@@ -145,19 +146,13 @@ const MCP_READ_ONLY_TOOL_SUFFIXES: Readonly<Record<string, true>> = {
  * Exported so the HTTP transport can validate the `MCP-Protocol-Version`
  * header and reject requests advertising an unknown version.
  */
-export const MCP_SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = [
-  "2025-06-18",
-  "2025-03-26",
-  "2024-11-05",
-];
+export const MCP_SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MCP_DEFAULT_PROTOCOL_VERSION: string = MCP_SUPPORTED_PROTOCOL_VERSIONS[0] ?? "2025-06-18";
 const LEGACY_MCP_PREFIX = "engram.";
 const CANONICAL_MCP_PREFIX = "remnic.";
 
 function toCanonicalToolName(name: string): string {
-  return name.startsWith(LEGACY_MCP_PREFIX)
-    ? `${CANONICAL_MCP_PREFIX}${name.slice(LEGACY_MCP_PREFIX.length)}`
-    : name;
+  return name.startsWith(LEGACY_MCP_PREFIX) ? `${CANONICAL_MCP_PREFIX}${name.slice(LEGACY_MCP_PREFIX.length)}` : name;
 }
 function toLegacyToolName(name: string): string {
   return name.startsWith(CANONICAL_MCP_PREFIX)
@@ -309,7 +304,7 @@ const MCP_MIGRATED_OPERATIONS: Readonly<Record<string, OperationName>> = {
 
 function resolveChatGptInspectorRecallSessionKey(
   explicitSessionKey: string | undefined,
-  authenticatedPrincipal: string | undefined,
+  authenticatedPrincipal: string | undefined
 ): string | undefined {
   if (explicitSessionKey) return explicitSessionKey;
   if (!authenticatedPrincipal) return undefined;
@@ -317,14 +312,7 @@ function resolveChatGptInspectorRecallSessionKey(
 }
 
 const STRICT_MCP_SCHEMA_KEYS: Partial<Record<SchemaName, readonly string[]>> = {
-  daySummary: [
-    "memories",
-    "sessionKey",
-    "namespace",
-    "timeZone",
-    "cwd",
-    "projectTag",
-  ],
+  daySummary: ["memories", "sessionKey", "namespace", "timeZone", "cwd", "projectTag"],
   memoryStore: [
     "schemaVersion",
     "idempotencyKey",
@@ -392,8 +380,7 @@ const MCP_GIT_CONTEXT_SCHEMA_PROPS_SCOPED: Record<string, unknown> = {
 const MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED: Record<string, unknown> = {
   cwd: {
     type: "string",
-    description:
-      "Accepted for MCP client compatibility (git-context auto-injection); ignored by this tool.",
+    description: "Accepted for MCP client compatibility (git-context auto-injection); ignored by this tool.",
   },
   projectTag: {
     type: "string",
@@ -401,29 +388,22 @@ const MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED: Record<string, unknown> = {
   },
 };
 
-function parseMcpRequest<N extends SchemaName>(
-  schemaName: N,
-  args: Record<string, unknown>,
-): SchemaTypeFor<N> {
+function parseMcpRequest<N extends SchemaName>(schemaName: N, args: Record<string, unknown>): SchemaTypeFor<N> {
   const allowedKeys = STRICT_MCP_SCHEMA_KEYS[schemaName];
   if (allowedKeys) {
     const allowed = new Set(allowedKeys);
     const unexpected = Object.keys(args).filter((key) => !allowed.has(key));
     if (unexpected.length > 0) {
       throw new EngramAccessInputError(
-        `request validation failed: (root): Unrecognized key(s) in object: ${unexpected.join(", ")}`,
+        `request validation failed: (root): Unrecognized key(s) in object: ${unexpected.join(", ")}`
       );
     }
   }
   const validation = validateRequest<SchemaTypeFor<N>>(schemaName, args);
   if (validation.success) return validation.data;
-  const details = validation.error.details
-    .map((detail) => `${detail.field}: ${detail.message}`)
-    .join("; ");
+  const details = validation.error.details.map((detail) => `${detail.field}: ${detail.message}`).join("; ");
   throw new EngramAccessInputError(
-    details.length > 0
-      ? `${validation.error.error}: ${details}`
-      : validation.error.error,
+    details.length > 0 ? `${validation.error.error}: ${details}` : validation.error.error
   );
 }
 
@@ -458,15 +438,11 @@ function optionalPositiveInteger(value: unknown, label: string): number | undefi
 }
 
 function getObjectProperties(value: unknown): Record<string, unknown> | undefined {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
 async function getMcpServerVersion(): Promise<string> {
-  const envVersion =
-    readEnvVar("OPENCLAW_ENGRAM_VERSION")?.trim() ||
-    readEnvVar("npm_package_version")?.trim();
+  const envVersion = readEnvVar("OPENCLAW_ENGRAM_VERSION")?.trim() || readEnvVar("npm_package_version")?.trim();
   if (envVersion) return envVersion;
   try {
     const pkgPath = new URL("../package.json", import.meta.url);
@@ -560,7 +536,7 @@ export class EngramMcpServer {
       sessionDeltaVisible?: boolean;
       correctionVisible?: boolean;
       chatVisible?: boolean;
-    } = {},
+    } = {}
   ) {
     this.citationsEnabled = options.citationsEnabled === true;
     this.citationsAutoDetect = options.citationsAutoDetect !== false;
@@ -573,9 +549,7 @@ export class EngramMcpServer {
     this.correctionVisible = options.correctionVisible !== false;
     this.chatVisible = options.chatVisible === true;
     this.authenticatedPrincipal =
-      options.principal?.trim() ||
-      readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() ||
-      undefined;
+      options.principal?.trim() || readEnvVar("OPENCLAW_ENGRAM_ACCESS_PRINCIPAL")?.trim() || undefined;
     this.resources = [
       {
         uri: REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
@@ -598,10 +572,7 @@ export class EngramMcpServer {
       },
     ];
     this.resourceTextByUri = new Map([
-      [
-        REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI,
-        REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML,
-      ],
+      [REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_URI, REMNIC_CHATGPT_MEMORY_INSPECTOR_WIDGET_HTML],
     ]);
     this.tools = [
       {
@@ -622,7 +593,10 @@ export class EngramMcpServer {
             // without it being silently dropped.
             disclosure: { type: "string", enum: ["chunk", "section", "raw"] },
             cwd: { type: "string", description: "Working directory for auto git-context resolution." },
-            projectTag: { type: "string", description: "Project tag for non-git project scoping (e.g. 'blend-supply')." },
+            projectTag: {
+              type: "string",
+              description: "Project tag for non-git project scoping (e.g. 'blend-supply').",
+            },
             asOf: {
               type: "string",
               description:
@@ -636,7 +610,8 @@ export class EngramMcpServer {
             tagMatch: {
               type: "string",
               enum: ["any", "all"],
-              description: "Tag-filter match mode. 'any' (default) admits results with at least one filter tag; 'all' requires every filter tag.",
+              description:
+                "Tag-filter match mode. 'any' (default) admits results with at least one filter tag; 'all' requires every filter tag.",
             },
           },
           required: ["query"],
@@ -675,7 +650,10 @@ export class EngramMcpServer {
                     projectId: { type: "string", description: "Stable project id (origin:<hex> or root:<hex>)." },
                     branch: { type: ["string", "null"], description: "Current branch, or null in detached HEAD." },
                     rootPath: { type: "string", description: "Absolute path to the repo root." },
-                    defaultBranch: { type: ["string", "null"], description: "Default branch (usually main/master), or null when unknown." },
+                    defaultBranch: {
+                      type: ["string", "null"],
+                      description: "Default branch (usually main/master), or null when unknown.",
+                    },
                   },
                   required: ["projectId", "branch", "rootPath", "defaultBranch"],
                   additionalProperties: false,
@@ -740,8 +718,7 @@ export class EngramMcpServer {
             budget: {
               type: "integer",
               minimum: 1,
-              description:
-                "Optional positive-integer override for the recall character budget.",
+              description: "Optional positive-integer override for the recall character budget.",
             },
             disclosure: {
               type: "string",
@@ -900,12 +877,7 @@ export class EngramMcpServer {
                 properties: {
                   kind: {
                     type: "string",
-                    enum: [
-                      "ask-before",
-                      "do-not-use-outside-this-context",
-                      "never",
-                      "requires-escalation",
-                    ],
+                    enum: ["ask-before", "do-not-use-outside-this-context", "never", "requires-escalation"],
                   },
                   description: { type: "string" },
                   matched: { type: "boolean" },
@@ -975,8 +947,7 @@ export class EngramMcpServer {
             currentContextScopes: {
               type: "array",
               items: { type: "string" },
-              description:
-                "Optional current user-context scopes, such as repo, work, personal, client, or private.",
+              description: "Optional current user-context scopes, such as repo, work, personal, client, or private.",
             },
             allowUnverifiedPreview: {
               type: "boolean",
@@ -1117,7 +1088,8 @@ export class EngramMcpServer {
             namespace: { type: "string" },
             sessionKey: {
               type: "string",
-              description: "Optional session key used to derive namespace principal when no trusted transport principal is present.",
+              description:
+                "Optional session key used to derive namespace principal when no trusted transport principal is present.",
             },
             ...MCP_GIT_CONTEXT_SCHEMA_PROPS_IGNORED,
           },
@@ -1353,7 +1325,10 @@ export class EngramMcpServer {
             namespace: { type: "string" },
             skipExtraction: { type: "boolean" },
             cwd: { type: "string", description: "Working directory for auto git-context resolution." },
-            projectTag: { type: "string", description: "Project tag for non-git project scoping (e.g. 'blend-supply')." },
+            projectTag: {
+              type: "string",
+              description: "Project tag for non-git project scoping (e.g. 'blend-supply').",
+            },
           },
           required: ["sessionKey", "messages"],
           additionalProperties: false,
@@ -1377,8 +1352,7 @@ export class EngramMcpServer {
       },
       {
         name: "engram.lcm_compaction_flush",
-        description:
-          "Flush pending LCM observe work and incremental summaries before a host compacts session context.",
+        description: "Flush pending LCM observe work and incremental summaries before a host compacts session context.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1391,8 +1365,7 @@ export class EngramMcpServer {
       },
       {
         name: "engram.lcm_compaction_record",
-        description:
-          "Record a host compaction event with before/after token counts in the LCM archive.",
+        description: "Record a host compaction event with before/after token counts in the LCM archive.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1413,7 +1386,10 @@ export class EngramMcpServer {
           type: "object",
           properties: {
             period: { type: "string", enum: ["weekly", "monthly"] },
-            key: { type: "string", description: "Period key (weekly: YYYY-Www, monthly: YYYY-MM). Defaults to current." },
+            key: {
+              type: "string",
+              description: "Period key (weekly: YYYY-Www, monthly: YYYY-MM). Defaults to current.",
+            },
           },
           additionalProperties: false,
         },
@@ -1516,7 +1492,10 @@ export class EngramMcpServer {
           properties: {
             namespace: { type: "string" },
             identityTraits: { type: "string", description: "Updates for 'Identity Traits' section." },
-            communicationPreferences: { type: "string", description: "Updates for 'Communication Preferences' section." },
+            communicationPreferences: {
+              type: "string",
+              description: "Updates for 'Communication Preferences' section.",
+            },
             operatingPrinciples: { type: "string", description: "Updates for 'Operating Principles' section." },
             continuityNotes: { type: "string", description: "Updates for 'Continuity Notes' section." },
           },
@@ -1537,7 +1516,8 @@ export class EngramMcpServer {
       // ── Work Layer tools ─────────────────────────────────────────────────
       {
         name: "engram.work_task",
-        description: "Manage work-layer tasks (create, get, list, update, transition, delete). Excluded from memory extraction.",
+        description:
+          "Manage work-layer tasks (create, get, list, update, transition, delete). Excluded from memory extraction.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1559,7 +1539,8 @@ export class EngramMcpServer {
       },
       {
         name: "engram.work_project",
-        description: "Manage work-layer projects (create, get, list, update, delete, link_task). Excluded from memory extraction.",
+        description:
+          "Manage work-layer projects (create, get, list, update, delete, link_task). Excluded from memory extraction.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1668,7 +1649,8 @@ export class EngramMcpServer {
       },
       {
         name: "engram.compounding_weekly_synthesize",
-        description: "Generate weekly compounding outputs: reports, mistake registry, rubrics, and promotion candidates.",
+        description:
+          "Generate weekly compounding outputs: reports, mistake registry, rubrics, and promotion candidates.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1719,14 +1701,19 @@ export class EngramMcpServer {
       // ── Memory search & debug tools ────────────────────────────────────
       {
         name: "engram.memory_search",
-        description: "Direct semantic search over memory files using the QMD index. Returns matching memories with relevance scores.",
+        description:
+          "Direct semantic search over memory files using the QMD index. Returns matching memories with relevance scores.",
         inputSchema: {
           type: "object",
           properties: {
             query: { type: "string" },
             namespace: { type: "string" },
             maxResults: { type: "number" },
-            collection: { type: "string", description: "QMD collection. With namespaces enabled, omitted, base, and 'global' searches stay scoped to readable namespaces; namespace-derived collections require matching namespace access." },
+            collection: {
+              type: "string",
+              description:
+                "QMD collection. With namespaces enabled, omitted, base, and 'global' searches stay scoped to readable namespaces; namespace-derived collections require matching namespace access.",
+            },
           },
           required: ["query"],
           additionalProperties: false,
@@ -1734,7 +1721,8 @@ export class EngramMcpServer {
       },
       {
         name: "engram.memory_profile",
-        description: "Read the user's behavioral profile — a living document of their preferences, habits, and personality.",
+        description:
+          "Read the user's behavioral profile — a living document of their preferences, habits, and personality.",
         inputSchema: {
           type: "object",
           properties: { namespace: { type: "string" } },
@@ -1802,14 +1790,18 @@ export class EngramMcpServer {
         // surface so connectors / CLI clients can hit either endpoint
         // interchangeably.
         name: "engram.graph_snapshot",
-        description: "Return a read-only graph snapshot (nodes + edges) for the admin pane. Filters: limit (default 500, max 5000), since (ISO timestamp), focusNodeId (restricts to neighborhood), categories (allow-list of memory categories).",
+        description:
+          "Return a read-only graph snapshot (nodes + edges) for the admin pane. Filters: limit (default 500, max 5000), since (ISO timestamp), focusNodeId (restricts to neighborhood), categories (allow-list of memory categories).",
         inputSchema: {
           type: "object",
           properties: {
             namespace: { type: "string" },
             limit: { type: "number", description: "Maximum number of edges to return (default 500, max 5000)." },
             since: { type: "string", description: "Inclusive lower bound on edge timestamp (ISO-8601)." },
-            focusNodeId: { type: "string", description: "When set, restrict the snapshot to the focus node and its neighbors." },
+            focusNodeId: {
+              type: "string",
+              description: "When set, restrict the snapshot to the focus node and its neighbors.",
+            },
             categories: {
               type: "array",
               items: { type: "string" },
@@ -1853,7 +1845,8 @@ export class EngramMcpServer {
       // mw_fail) and will feed the recall-time filter added in PR 4.
       {
         name: "engram.memory_outcome",
-        description: "Record a Memory Worth outcome (success/failure) for a memory. Increments mw_success or mw_fail in the memory's frontmatter for use by the recall filter.",
+        description:
+          "Record a Memory Worth outcome (success/failure) for a memory. Increments mw_success or mw_fail in the memory's frontmatter for use by the recall filter.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1869,8 +1862,7 @@ export class EngramMcpServer {
       },
       {
         name: "engram.memory_action_apply",
-        description:
-          "Record a memory-action application event for policy-learning telemetry.",
+        description: "Record a memory-action application event for policy-learning telemetry.",
         inputSchema: {
           type: "object",
           properties: {
@@ -1923,21 +1915,33 @@ export class EngramMcpServer {
       // Uses the legacy "engram.*" prefix like every other tool in this array;
       // withToolAliases (applied via .flatMap below) generates the canonical
       // "remnic.briefing" alias automatically.
-      ...(service.briefingEnabled ? [{
-        name: "engram.briefing",
-        description: "Generate a daily context briefing by cross-referencing active entities, recent facts, open commitments, and optional calendar events.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            since: { type: "string", description: "Lookback window (e.g. 'yesterday', '3d', '1w', '24h')." },
-            focus: { type: "string", description: "Optional focus filter (e.g. 'person:Jane Doe', 'project:remnic-core', 'topic:retrieval')." },
-            namespace: { type: "string" },
-            format: { type: "string", enum: ["markdown", "json"] },
-            maxFollowups: { type: "number", description: "Maximum LLM-suggested follow-ups (0 disables that section)." },
-          },
-          additionalProperties: false,
-        },
-      }] : []),
+      ...(service.briefingEnabled
+        ? [
+            {
+              name: "engram.briefing",
+              description:
+                "Generate a daily context briefing by cross-referencing active entities, recent facts, open commitments, and optional calendar events.",
+              inputSchema: {
+                type: "object",
+                properties: {
+                  since: { type: "string", description: "Lookback window (e.g. 'yesterday', '3d', '1w', '24h')." },
+                  focus: {
+                    type: "string",
+                    description:
+                      "Optional focus filter (e.g. 'person:Jane Doe', 'project:remnic-core', 'topic:retrieval').",
+                  },
+                  namespace: { type: "string" },
+                  format: { type: "string", enum: ["markdown", "json"] },
+                  maxFollowups: {
+                    type: "number",
+                    description: "Maximum LLM-suggested follow-ups (0 disables that section).",
+                  },
+                },
+                additionalProperties: false,
+              },
+            },
+          ]
+        : []),
       // ── Contradiction Review (issue #520) ────────────────────────────────
       {
         name: "engram.review_list",
@@ -1945,7 +1949,11 @@ export class EngramMcpServer {
         inputSchema: {
           type: "object",
           properties: {
-            filter: { type: "string", enum: ["all", "unresolved", "contradicts", "independent", "duplicates", "needs-user"], description: "Filter by verdict type. Default: unresolved." },
+            filter: {
+              type: "string",
+              enum: ["all", "unresolved", "contradicts", "independent", "duplicates", "needs-user"],
+              description: "Filter by verdict type. Default: unresolved.",
+            },
             namespace: { type: "string" },
             limit: { type: "number", description: "Max items to return (default 50)." },
           },
@@ -1959,7 +1967,11 @@ export class EngramMcpServer {
           type: "object",
           properties: {
             pairId: { type: "string", description: "The contradiction pair ID to resolve." },
-            verb: { type: "string", enum: ["keep-a", "keep-b", "merge", "both-valid", "needs-more-context"], description: "Resolution action." },
+            verb: {
+              type: "string",
+              enum: ["keep-a", "keep-b", "merge", "both-valid", "needs-more-context"],
+              description: "Resolution action.",
+            },
             mergedMemoryId: { type: "string", description: "Existing merged memory ID to use when verb is merge." },
             mergedContent: { type: "string", description: "Content for a new merged memory when verb is merge." },
           },
@@ -2215,8 +2227,14 @@ export class EngramMcpServer {
                 enum: ["list", "get", "record", "supersede"],
                 description: "Which decision-record operation to run.",
               },
-              sessionKey: { type: "string", description: "Session identifier whose coding context scopes the operation." },
-              namespace: { type: "string", description: "Optional explicit namespace (overrides coding-context overlay)." },
+              sessionKey: {
+                type: "string",
+                description: "Session identifier whose coding context scopes the operation.",
+              },
+              namespace: {
+                type: "string",
+                description: "Optional explicit namespace (overrides coding-context overlay).",
+              },
               id: { type: "string", description: "Decision record id (required for get and supersede)." },
               title: { type: "string", description: "Decision title (required for record and supersede)." },
               status: {
@@ -2232,13 +2250,16 @@ export class EngramMcpServer {
                 items: { type: "string" },
                 description: "Entity references the decision relates to.",
               },
-              supersedesId: { type: "string", description: "Id of the record this decision supersedes (supersede only)." },
+              supersedesId: {
+                type: "string",
+                description: "Id of the record this decision supersedes (supersede only).",
+              },
             },
             required: ["subcommand"],
             additionalProperties: false,
           },
         },
-        this.emitLegacyTools,
+        this.emitLegacyTools
       );
       this.tools = [...this.tools, ...codingDecisionTools];
     }
@@ -2256,14 +2277,20 @@ export class EngramMcpServer {
                 enum: ["get", "refresh"],
                 description: "Which architecture-card operation to run.",
               },
-              sessionKey: { type: "string", description: "Session identifier whose coding context scopes the operation." },
-              namespace: { type: "string", description: "Optional explicit namespace (overrides coding-context overlay)." },
+              sessionKey: {
+                type: "string",
+                description: "Session identifier whose coding context scopes the operation.",
+              },
+              namespace: {
+                type: "string",
+                description: "Optional explicit namespace (overrides coding-context overlay).",
+              },
             },
             required: ["subcommand"],
             additionalProperties: false,
           },
         },
-        this.emitLegacyTools,
+        this.emitLegacyTools
       );
       this.tools = [...this.tools, ...architectureTools];
     }
@@ -2275,18 +2302,42 @@ export class EngramMcpServer {
       const codegraphToolDefs: Array<{ suffix: string; description: string; required?: string[] }> = [
         { suffix: "index", description: "Index a repository into the code graph.", required: ["repoRoot"] },
         { suffix: "list_projects", description: "List code graph projects for the principal." },
-        { suffix: "delete_project", description: "Delete a code graph project (requires confirm: true).", required: ["confirm"] },
+        {
+          suffix: "delete_project",
+          description: "Delete a code graph project (requires confirm: true).",
+          required: ["confirm"],
+        },
         { suffix: "index_status", description: "Get the indexing status for a project." },
         { suffix: "search_graph", description: "Search the code graph for symbols.", required: ["query"] },
-        { suffix: "trace_path", description: "Trace call/dependency paths from a starting symbol.", required: ["start"] },
+        {
+          suffix: "trace_path",
+          description: "Trace call/dependency paths from a starting symbol.",
+          required: ["start"],
+        },
         { suffix: "detect_changes", description: "Detect changed symbols since a git ref.", required: ["head"] },
-        { suffix: "query_graph", description: "Run a structured query against the code graph.", required: ["structuredQuery"] },
+        {
+          suffix: "query_graph",
+          description: "Run a structured query against the code graph.",
+          required: ["structuredQuery"],
+        },
         { suffix: "get_schema", description: "Get the code graph schema statistics." },
         { suffix: "get_snippet", description: "Get a source code snippet for a symbol.", required: ["qualifiedName"] },
         { suffix: "get_architecture", description: "Get the composed architecture card + graph stats." },
-        { suffix: "search_code", description: "Search the code graph for code (functions, classes, methods).", required: ["query"] },
-        { suffix: "manage_adr", description: "Manage ADRs via Track A decision records (list, get, record, supersede).", required: ["subcommand"] },
-        { suffix: "ingest_traces", description: "Ingest call-site traces to upgrade edge confidence.", required: ["traces"] },
+        {
+          suffix: "search_code",
+          description: "Search the code graph for code (functions, classes, methods).",
+          required: ["query"],
+        },
+        {
+          suffix: "manage_adr",
+          description: "Manage ADRs via Track A decision records (list, get, record, supersede).",
+          required: ["subcommand"],
+        },
+        {
+          suffix: "ingest_traces",
+          description: "Ingest call-site traces to upgrade edge confidence.",
+          required: ["traces"],
+        },
       ];
       for (const def of codegraphToolDefs) {
         const tools = withToolAliases(
@@ -2296,7 +2347,10 @@ export class EngramMcpServer {
             inputSchema: {
               type: "object",
               properties: {
-                sessionKey: { type: "string", description: "Session identifier whose coding context scopes the operation." },
+                sessionKey: {
+                  type: "string",
+                  description: "Session identifier whose coding context scopes the operation.",
+                },
                 project: { type: "string", description: "Explicit project id (defaults to session coding context)." },
                 principal: { type: "string", description: "Authenticated principal override." },
                 query: { type: "string" },
@@ -2326,7 +2380,7 @@ export class EngramMcpServer {
               additionalProperties: false,
             },
           },
-          this.emitLegacyTools,
+          this.emitLegacyTools
         );
         this.tools = [...this.tools, ...tools];
       }
@@ -2345,14 +2399,20 @@ export class EngramMcpServer {
                 enum: ["get"],
                 description: "Which delta operation to run.",
               },
-              sessionKey: { type: "string", description: "Session identifier whose coding context scopes the operation." },
-              namespace: { type: "string", description: "Optional explicit namespace (overrides coding-context overlay)." },
+              sessionKey: {
+                type: "string",
+                description: "Session identifier whose coding context scopes the operation.",
+              },
+              namespace: {
+                type: "string",
+                description: "Optional explicit namespace (overrides coding-context overlay).",
+              },
             },
             required: ["subcommand"],
             additionalProperties: false,
           },
         },
-        this.emitLegacyTools,
+        this.emitLegacyTools
       );
       this.tools = [...this.tools, ...deltaTools];
     }
@@ -2371,7 +2431,7 @@ export class EngramMcpServer {
             properties: {
               text: {
                 type: "string",
-                description: "The natural-language correction (e.g. \"we migrated to MySQL in March\").",
+                description: 'The natural-language correction (e.g. "we migrated to MySQL in March").',
               },
               targetIds: {
                 type: "array",
@@ -2385,7 +2445,7 @@ export class EngramMcpServer {
             additionalProperties: false,
           },
         },
-        this.emitLegacyTools,
+        this.emitLegacyTools
       );
       const applyTool = withToolAliases(
         {
@@ -2404,7 +2464,7 @@ export class EngramMcpServer {
             additionalProperties: false,
           },
         },
-        this.emitLegacyTools,
+        this.emitLegacyTools
       );
       this.tools = [...this.tools, ...planTool, ...applyTool];
     }
@@ -2417,14 +2477,21 @@ export class EngramMcpServer {
           inputSchema: {
             type: "object",
             properties: {
-              message: { type: "string", description: "The user's message — a question about memories, a correction request, or a confirmation (yes/apply) to proceed with a pending plan." },
-              chatSessionId: { type: "string", description: "Optional existing chat session id to resume. Omit to start a new session." },
+              message: {
+                type: "string",
+                description:
+                  "The user's message — a question about memories, a correction request, or a confirmation (yes/apply) to proceed with a pending plan.",
+              },
+              chatSessionId: {
+                type: "string",
+                description: "Optional existing chat session id to resume. Omit to start a new session.",
+              },
             },
             required: ["message"],
             additionalProperties: false,
           },
         },
-        this.emitLegacyTools,
+        this.emitLegacyTools
       );
       this.tools = [...this.tools, ...chatTools];
     }
@@ -2437,8 +2504,14 @@ export class EngramMcpServer {
     this.tools = this.tools.map((tool) =>
       isReadOnlyToolName(tool.name) && tool.annotations?.readOnlyHint !== true
         ? { ...tool, annotations: { ...(tool.annotations ?? {}), readOnlyHint: true } }
-        : tool,
+        : tool
     );
+    // Apply `outputSchema` declarations from the registry. Like the
+    // readOnlyHint pass above, this is a final suffix-based pass so every
+    // tool (including both `remnic.*` and `engram.*` aliases) gets a
+    // schema. Tools that already declare an outputSchema (e.g.
+    // chatgpt_memory_inspector) are left untouched.
+    this.tools = applyToolOutputSchemas(this.tools, CANONICAL_MCP_PREFIX, LEGACY_MCP_PREFIX);
   }
 
   /** Get clientInfo for a specific MCP session. Returns undefined for non-MCP requests. */
@@ -2478,9 +2551,7 @@ export class EngramMcpServer {
           id,
           error: {
             code: -32602,
-            message:
-              "initialize requires params.protocolVersion (string); " +
-              `supported versions: ${MCP_SUPPORTED_PROTOCOL_VERSIONS.join(", ")}`,
+            message: `initialize requires params.protocolVersion (string); supported versions: ${MCP_SUPPORTED_PROTOCOL_VERSIONS.join(", ")}`,
           },
         };
       }
@@ -2625,7 +2696,14 @@ export class EngramMcpServer {
           ...(options?.namespaceOverride ? { namespace: options.namespaceOverride } : {}),
           ...(options?.sessionKeyOverride ? { sessionKey: options.sessionKeyOverride } : {}),
         };
-        const result = await this.callTool(name, argumentsObject, effectivePrincipal, options?.sessionId, mcpScope, options?.enforceWriteQuota);
+        const result = await this.callTool(
+          name,
+          argumentsObject,
+          effectivePrincipal,
+          options?.sessionId,
+          mcpScope,
+          options?.enforceWriteQuota
+        );
         return {
           jsonrpc: "2.0",
           id,
@@ -2707,7 +2785,7 @@ export class EngramMcpServer {
         this.buffer = Buffer.alloc(0);
         return;
       }
-      const contentLength = parseInt(contentLengthHeader.split(":")[1]?.trim() ?? "0", 10);
+      const contentLength = Number.parseInt(contentLengthHeader.split(":")[1]?.trim() ?? "0", 10);
       if (!Number.isFinite(contentLength) || contentLength < 0) {
         this.buffer = Buffer.alloc(0);
         return;
@@ -2813,14 +2891,21 @@ export class EngramMcpServer {
       }));
   }
 
-  private async callTool(name: string, args: Record<string, unknown>, effectivePrincipal?: string, mcpSessionId?: string, scope?: { namespace?: string; sessionKey?: string }, enforceWriteQuota?: () => void | Promise<void>): Promise<unknown> {
+  private async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    effectivePrincipal?: string,
+    mcpSessionId?: string,
+    scope?: { namespace?: string; sessionKey?: string },
+    enforceWriteQuota?: () => void | Promise<void>
+  ): Promise<unknown> {
     const migrated = MCP_MIGRATED_OPERATIONS[toLegacyToolName(name)];
     if (!migrated) {
-      throw new Error("unknown tool: " + name);
+      throw new Error(`unknown tool: ${name}`);
     }
     const op = getOperation(migrated);
     if (!op) {
-      throw new EngramAccessInputError("access-boundary: operation not registered: " + migrated);
+      throw new EngramAccessInputError(`access-boundary: operation not registered: ${migrated}`);
     }
     let envelope: Record<string, unknown>;
     if (migrated === "memory_store") {
@@ -2870,13 +2955,20 @@ export class EngramMcpServer {
     }
     // recall citation guidance (MCP-specific post-processing).
     if (migrated === "recall") {
-      const result = await op.run(envelope, { service: this.service, authenticatedPrincipal: effectivePrincipal }) as { result: unknown };
+      const result = (await op.run(envelope, {
+        service: this.service,
+        authenticatedPrincipal: effectivePrincipal,
+      })) as { result: unknown };
       const response = result.result as Record<string, unknown>;
       if (this.shouldEmitCitations(mcpSessionId)) {
         const citations = this.buildRecallCitations(response as unknown as EngramAccessRecallResponse);
         const guidance = buildCitationGuidance(citations);
         if (guidance.length > 0) {
-          return { ...response, context: ((response as Record<string, unknown>).context as string ?? "") + guidance, citations };
+          return {
+            ...response,
+            context: (((response as Record<string, unknown>).context as string) ?? "") + guidance,
+            citations,
+          };
         }
       }
       return response;

@@ -1034,7 +1034,8 @@
     "tsup": "^8.5.1",
     "tsx": "^4.0.0",
     "turbo": "2.9.14",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "ajv": "^8.20.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": ["better-sqlite3", "esbuild", "sharp", "koffi", "protobufjs"],
