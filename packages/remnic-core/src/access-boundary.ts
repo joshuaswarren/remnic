@@ -17,6 +17,7 @@
 
 import { z } from "zod";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { assertOperationAllowed, tokenCapabilityStore } from "./access-token-capabilities.js";
 import { expandTildePath } from "./utils/path.js";
 
 // ---------------------------------------------------------------------------
@@ -30,138 +31,149 @@ import { expandTildePath } from "./utils/path.js";
  * lands; the fitness test in `access-surface-catalog.test.ts` treats the
  * registered set as the migration state.
  */
-export type OperationName =
-  | "memory_get"
-  | "memory_search"
-  | "memory_store"
-  | "coding_decision"
-  | "coding_architecture"
+export const OPERATION_NAMES = [
+  "memory_get",
+  "memory_search",
+  "memory_store",
+  "coding_decision",
+  "coding_architecture",
   // codegraph parity tools (issue #1554) -- each maps to one codegraph_*
   // boundary operation that delegates to the surface handler in
   // coding/codegraph-surfaces.ts. Names match the external tool suffixes.
-  | "codegraph_index"
-  | "codegraph_list_projects"
-  | "codegraph_delete_project"
-  | "codegraph_index_status"
-  | "codegraph_search_graph"
-  | "codegraph_trace_path"
-  | "codegraph_detect_changes"
-  | "codegraph_query_graph"
-  | "codegraph_get_schema"
-  | "codegraph_get_snippet"
-  | "codegraph_get_architecture"
-  | "codegraph_search_code"
-  | "codegraph_manage_adr"
-  | "codegraph_ingest_traces"
-  | "memory_correct_plan"
-  | "memory_correct_apply"
-  | "coding_delta"
+  "codegraph_index",
+  "codegraph_list_projects",
+  "codegraph_delete_project",
+  "codegraph_index_status",
+  "codegraph_search_graph",
+  "codegraph_trace_path",
+  "codegraph_detect_changes",
+  "codegraph_query_graph",
+  "codegraph_get_schema",
+  "codegraph_get_snippet",
+  "codegraph_get_architecture",
+  "codegraph_search_code",
+  "codegraph_manage_adr",
+  "codegraph_ingest_traces",
+  "memory_correct_plan",
+  "memory_correct_apply",
+  "coding_delta",
   // Remaining MCP/HTTP handlers migrated through the boundary (issue #1525).
-  | "recall"
-  | "recall_explain"
-  | "set_coding_context"
-  | "recall_tier_explain"
-  | "recall_xray"
-  | "wearables_status"
-  | "wearables_sync"
-  | "transcript_day"
-  | "transcript_search"
-  | "transcript_memories"
-  | "action_confidence"
-  | "chatgpt_memory_inspector"
-  | "day_summary"
-  | "capsule_export"
-  | "capsule_import"
-  | "capsule_list"
-  | "memory_governance_run"
-  | "procedure_mining_run"
-  | "pattern_reinforcement_run"
-  | "procedural_stats"
-  | "memory_timeline"
-  | "suggestion_submit"
-  | "entity_get"
-  | "review_queue_list"
-  | "correction_pending"
-  | "observe"
-  | "lcm_search"
-  | "lcm_compaction_flush"
-  | "lcm_compaction_record"
-  | "continuity_audit_generate"
-  | "continuity_incident_open"
-  | "continuity_incident_close"
-  | "continuity_incident_list"
-  | "continuity_loop_add_or_update"
-  | "continuity_loop_review"
-  | "identity_anchor_get"
-  | "identity_anchor_update"
-  | "memory_identity"
-  | "work_task"
-  | "work_project"
-  | "work_board"
-  | "shared_context_write_output"
-  | "shared_feedback_record"
-  | "shared_priorities_append"
-  | "shared_context_cross_signals_run"
-  | "shared_context_curate_daily"
-  | "compounding_weekly_synthesize"
-  | "compounding_promote_candidate"
-  | "compression_guidelines_optimize"
-  | "compression_guidelines_activate"
-  | "memory_profile"
-  | "memory_entities_list"
-  | "memory_questions"
-  | "memory_last_recall"
-  | "memory_intent_debug"
-  | "memory_qmd_debug"
-  | "memory_graph_explain"
-  | "graph_snapshot"
-  | "memory_feedback"
-  | "memory_promote"
-  | "memory_outcome"
-  | "memory_action_apply"
-  | "context_checkpoint"
-  | "briefing"
-  | "review_list"
-  | "review_resolve"
-  | "contradiction_scan_run"
-  | "memory_summarize_hourly"
-  | "conversation_index_update"
-  | "profiling_report"
-  | "graph_edge_decay_run"
-  | "live_connectors_run"
-  | "peer_list"
-  | "peer_get"
-  | "peer_set"
-  | "peer_delete"
-  | "peer_profile_get"
-  | "peer_forget"
-  | "console_state"
-  | "dreams_status"
-  | "dreams_run"
+  "recall",
+  "recall_explain",
+  "set_coding_context",
+  "recall_tier_explain",
+  "recall_xray",
+  "wearables_status",
+  "wearables_sync",
+  "transcript_day",
+  "transcript_search",
+  "transcript_memories",
+  "action_confidence",
+  "chatgpt_memory_inspector",
+  "day_summary",
+  "capsule_export",
+  "capsule_import",
+  "capsule_list",
+  "memory_governance_run",
+  "procedure_mining_run",
+  "pattern_reinforcement_run",
+  "procedural_stats",
+  "memory_timeline",
+  "suggestion_submit",
+  "entity_get",
+  "review_queue_list",
+  "correction_pending",
+  "observe",
+  "lcm_search",
+  "lcm_compaction_flush",
+  "lcm_compaction_record",
+  "continuity_audit_generate",
+  "continuity_incident_open",
+  "continuity_incident_close",
+  "continuity_incident_list",
+  "continuity_loop_add_or_update",
+  "continuity_loop_review",
+  "identity_anchor_get",
+  "identity_anchor_update",
+  "memory_identity",
+  "work_task",
+  "work_project",
+  "work_board",
+  "shared_context_write_output",
+  "shared_feedback_record",
+  "shared_priorities_append",
+  "shared_context_cross_signals_run",
+  "shared_context_curate_daily",
+  "compounding_weekly_synthesize",
+  "compounding_promote_candidate",
+  "compression_guidelines_optimize",
+  "compression_guidelines_activate",
+  "memory_profile",
+  "memory_entities_list",
+  "memory_questions",
+  "memory_last_recall",
+  "memory_intent_debug",
+  "memory_qmd_debug",
+  "memory_graph_explain",
+  "graph_snapshot",
+  "memory_feedback",
+  "memory_promote",
+  "memory_outcome",
+  "memory_action_apply",
+  "context_checkpoint",
+  "briefing",
+  "review_list",
+  "review_resolve",
+  "contradiction_scan_run",
+  "memory_summarize_hourly",
+  "conversation_index_update",
+  "profiling_report",
+  "graph_edge_decay_run",
+  "live_connectors_run",
+  "peer_list",
+  "peer_get",
+  "peer_set",
+  "peer_delete",
+  "peer_profile_get",
+  "peer_forget",
+  "console_state",
+  "dreams_status",
+  "dreams_run",
   // HTTP-only routes (no direct MCP tool equivalent).
-  | "offline_sync_snapshot"
-  | "offline_sync_snapshot_stream"
-  | "offline_sync_files"
-  | "offline_sync_file_content"
-  | "offline_sync_apply_file_content"
-  | "offline_sync_apply"
-  | "lcm_status"
-  | "memory_list"
-  | "recall_timings"
-  | "entity_list"
-  | "maintenance_status"
-  | "quality_status"
-  | "trust_zones_status"
-  | "trust_zones_records"
-  | "review_disposition"
-  | "trust_zones_promote"
-  | "trust_zones_demo_seed"
-  | "citations_observed"
-  | "contradiction_detail"
-  | "graph_events"
+  "offline_sync_snapshot",
+  "offline_sync_snapshot_stream",
+  "offline_sync_files",
+  "offline_sync_file_content",
+  "offline_sync_apply_file_content",
+  "offline_sync_apply",
+  "lcm_status",
+  "memory_list",
+  "recall_timings",
+  "entity_list",
+  "maintenance_status",
+  "quality_status",
+  "trust_zones_status",
+  "trust_zones_records",
+  "review_disposition",
+  "trust_zones_promote",
+  "trust_zones_demo_seed",
+  "citations_observed",
+  "contradiction_detail",
+  "graph_events",
   // Chat surface — conversational memory inspection/correction (issue #1583).
-  | "chat_message"
-  | "chat_events";
+  "chat_message",
+  "chat_events",
+] as const;
+
+/**
+ * Canonical operation ids. One id is shared by the MCP tool, the HTTP route,
+ * and the CLI command that expose the same operation. Derived from
+ * {@link OPERATION_NAMES} (single source of truth) so the runtime catalog
+ * used for token-capability validation cannot drift from the type. The
+ * fitness test in `access-surface-catalog.test.ts` treats the registered set
+ * as the migration state.
+ */
+export type OperationName = (typeof OPERATION_NAMES)[number];
 
 // ---------------------------------------------------------------------------
 // Operation context — what every handler receives
@@ -372,6 +384,14 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
       if (!parseResult.success) {
         throw new EngramAccessInputError(formatZodIssues(parseResult.error));
       }
+      // Per-token capability enforcement (issue #1837): when the presenting
+      // token carries an ops allow-list, reject operations not in it. The
+      // capability record is carried via AsyncLocalStorage, set once per
+      // authorized HTTP/MCP request; absent (CLI/tests/direct callers) ⇒
+      // unrestricted. Default-deny ONLY when an ops axis is present — legacy
+      // tokens (absent record) and explicit-unrestricted new tokens are
+      // unaffected.
+      assertOperationAllowed(tokenCapabilityStore.getStore(), spec.name);
       return spec.handler(parseResult.data, ctx);
     },
   };

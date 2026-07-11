@@ -9,11 +9,27 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { resolveHomeDir } from "./runtime/env.js";
+import {
+  TOKEN_CAPABILITIES_VERSION,
+  normalizeCapabilities,
+  type TokenCapabilities,
+} from "./access-token-capabilities.js";
 
 export interface TokenEntry {
   token: string;
   connector: string;
   createdAt: string;
+  /**
+   * Versioned capabilities record (issue #1837). PRESENT ⇒ the token was
+   * minted by the capability-aware path; its ops/namespaces axes are
+   * enforced (absent axis ⇒ unrestricted on that axis; empty array ⇒ deny
+   * all; non-empty ⇒ allow-list). ABSENT ⇒ a pre-feature legacy entry ⇒
+   * unrestricted (full access), purely for backward compatibility — this is
+   * the ONLY path by which full access is granted by omission. Every new
+   * token carries an explicit record (even `{ version: 1 }` for a deliberate
+   * unrestricted mint), so a new token can never silently gain full access.
+   */
+  capabilities?: TokenCapabilities;
 }
 
 export interface TokenStore {
@@ -75,6 +91,9 @@ function validateTokenEntry(raw: unknown, index: number): TokenEntry {
   if (typeof entry.connector !== "string" || entry.connector.length === 0) {
     throw new Error(`invalid token entry at index ${index}: connector must be a non-empty string`);
   }
+  const capabilities = entry.capabilities !== undefined
+    ? normalizeCapabilities(entry.capabilities)
+    : undefined;
   return {
     token: entry.token,
     connector: entry.connector,
@@ -82,6 +101,7 @@ function validateTokenEntry(raw: unknown, index: number): TokenEntry {
       typeof entry.createdAt === "string" && entry.createdAt.length > 0
         ? entry.createdAt
         : new Date(0).toISOString(),
+    ...(capabilities ? { capabilities } : {}),
   };
 }
 
@@ -201,13 +221,18 @@ export function saveTokenStore(store: TokenStore, tokensPath?: string): void {
  * dependent write (e.g. Hermes config.yaml) succeeds — see
  * commitTokenEntry() to persist the candidate.
  */
-export function buildTokenEntry(connector: string): TokenEntry {
+export function buildTokenEntry(connector: string, capabilities?: TokenCapabilities): TokenEntry {
   const prefix = TOKEN_PREFIXES[connector] ?? "remnic_xx_";
   const token = prefix + randomBytes(24).toString("hex");
+  // Every newly-built entry carries an EXPLICIT capabilities record (issue
+  // #1837). When none is requested, record a deliberate unrestricted
+  // `{ version: 1 }` — never an omitted field — so "full access via omission"
+  // is reachable only by pre-feature legacy entries lacking the marker.
   return {
     token,
     connector,
     createdAt: new Date().toISOString(),
+    capabilities: capabilities ?? { version: TOKEN_CAPABILITIES_VERSION },
   };
 }
 
@@ -230,13 +255,17 @@ export function commitTokenEntry(entry: TokenEntry, tokensPath?: string): void {
   saveTokenStore(store, tokensPath);
 }
 
-export function generateToken(connector: string, tokensPath?: string): TokenEntry {
+export function generateToken(
+  connector: string,
+  tokensPath?: string,
+  capabilities?: TokenCapabilities,
+): TokenEntry {
   const store = loadTokenStore(tokensPath);
 
   // Remove existing token for this connector
   store.tokens = store.tokens.filter((t) => t.connector !== connector);
 
-  const entry = buildTokenEntry(connector);
+  const entry = buildTokenEntry(connector, capabilities);
   store.tokens.push(entry);
   saveTokenStore(store, tokensPath);
   return entry;
