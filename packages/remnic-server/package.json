@@ -31,10 +31,14 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@remnic/core": "workspace:^"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@remnic/core": "workspace:^",
+    "express": "^4.21.2",
+    "express-rate-limit": "^8.5.2"
   },
   "devDependencies": {
     "@remnic/core": "workspace:^",
+    "@types/express": "^4.17.21",
     "tsup": "^8.5.1",
     "typescript": "^5.9.3"
   },

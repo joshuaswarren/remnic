@@ -31,6 +31,7 @@
  *   sync              Diff-aware sync
  *   dedup             Find duplicate memories
  *   connectors        Manage host adapters
+ *   oauth <cmd>       Manage pending OAuth authorizations (ChatGPT MCP)
  */
 
 import fs from "node:fs";
@@ -399,7 +400,8 @@ type CommandName =
   | "xray"
   | "wearables"
   | "capsule"
-  | "offline";
+  | "offline"
+  | "oauth";
 
 type DaemonAction = "start" | "stop" | "restart" | "install" | "uninstall" | "status";
 type TokenAction = "generate" | "list" | "revoke";
@@ -4362,6 +4364,506 @@ async function cmdStatus(json: boolean): Promise<void> {
     console.log("Health: unable to reach server");
   } finally {
     clearTimeout(timeoutId);
+  }
+}
+// ── OAuth operator commands ─────────────────────────────────────────────────
+//
+// `remnic oauth <pending|approve|deny>` lets the operator manage pending
+// authorization requests served by `@remnic/server`'s OAuth 2.1 facade
+// (issue #1963 / ChatGPT developer-mode MCP). The daemon exposes three
+// bearer-protected endpoints (operator token is the same `server.authToken`
+// the rest of the access server accepts); this CLI is the only path the
+// human operator uses to approve or deny the requests those endpoints
+// represent.
+//
+// Reuses the same patterns as `cmdStatus` (host/port via
+// `resolveConfigPath` + the `server.port` default, bearer token from
+// `server.authToken` with the `REMNIC_AUTH_TOKEN` / `ENGRAM_AUTH_TOKEN`
+// env fallback already used by the offline token resolver) and the
+// `--format json|text` flag pattern from `cmdProcedural`.
+
+/** Shape of one entry in `GET /oauth/pending`. Mirrors the server response. */
+interface OAuthPendingEntry {
+  ref: string;
+  clientId: string;
+  redirectUri: string;
+  scopes: string[];
+  resource: string | null;
+  createdAt: string;
+  expiresAt: string;
+}
+
+/** Result of a `POST /oauth/pending/<ref>/{approve,deny}` decision. */
+interface OAuthDecisionResponse {
+  ref: string;
+  status: "approved" | "denied";
+  redirect?: string;
+}
+
+/**
+ * Read + parse the remnic config file, returning a `Record<string, unknown>`
+ * view of its top level. Returns `undefined` on any IO / parse error so
+ * the caller can fall through to the env / default path. The cast is
+ * unavoidable here — `JSON.parse` returns `any` and the on-disk shape is
+ * user-authored — so this helper is the single point that materialises
+ * the unsafe boundary. Callers narrow with `typeof` / `in` at every
+ * access (rule: `ts-no-inline-cast-access`).
+ */
+function oauthReadConfigRecord(configPath: string): Record<string, unknown> | undefined {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function oauthResolveBaseUrl(): string {
+  const configPath = resolveConfigPath();
+  let port = 4318;
+  let host = "127.0.0.1";
+  const raw = oauthReadConfigRecord(configPath);
+  if (raw && "server" in raw) {
+    const server = raw.server;
+    if (server && typeof server === "object") {
+      const hostCandidate = (server as Record<string, unknown>).host;
+      if (typeof hostCandidate === "string" && hostCandidate.length > 0) {
+        host = hostCandidate;
+      }
+      const portCandidate = (server as Record<string, unknown>).port;
+      if (typeof portCandidate === "number" && Number.isInteger(portCandidate)) {
+        port = portCandidate;
+      }
+    }
+  }
+  // Env overrides win over the file, matching the daemon: startServer()
+  // merges REMNIC_HOST/REMNIC_PORT (ENGRAM_* legacy) over server.host/port,
+  // so the CLI must resolve the same endpoint or it targets the wrong port.
+  const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
+  if (typeof envHost === "string" && envHost.length > 0) {
+    host = envHost;
+  }
+  const envPortRaw = readCompatEnv("REMNIC_PORT", "ENGRAM_PORT");
+  if (typeof envPortRaw === "string" && envPortRaw.length > 0) {
+    const envPort = Number(envPortRaw);
+    // Reject an explicitly-set-but-invalid port instead of silently
+    // falling back (the daemon rejects it too, so a bad value is a
+    // misconfiguration the operator must see, not paper over).
+    if (!Number.isInteger(envPort) || envPort < 1 || envPort > 65535) {
+      throw new Error(
+        `Invalid REMNIC_PORT/ENGRAM_PORT "${envPortRaw}": expected an integer in [1, 65535].`,
+      );
+    }
+    port = envPort;
+  }
+  return `http://${host}:${port}`;
+}
+
+/**
+ * Resolve the operator bearer token, matching the daemon's precedence
+ * exactly. `startServer()` merges `REMNIC_AUTH_TOKEN` (env) OVER
+ * `server.authToken` (file), so the running daemon accepts the env token
+ * when both are set. This resolver therefore checks env FIRST, then the
+ * file value (with `ENGRAM_AUTH_TOKEN` as the legacy env alias). A file
+ * that still holds the literal `${REMNIC_AUTH_TOKEN}` placeholder no
+ * longer shadows the real env token. Returns `undefined` when no token is
+ * configured; callers fail loudly rather than auto-pick a default.
+ */
+function oauthResolveOperatorToken(): string | undefined {
+  const envToken = readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN");
+  if (typeof envToken === "string" && envToken.length > 0) return envToken;
+  const raw = oauthReadConfigRecord(resolveConfigPath());
+  if (raw && "server" in raw) {
+    const server = raw.server;
+    if (server && typeof server === "object" && "authToken" in server) {
+      const candidate = (server as Record<string, unknown>).authToken;
+      if (typeof candidate === "string" && candidate.length > 0) {
+        return candidate;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Hit one of the operator OAuth endpoints. Centralises the auth header,
+ * the timeout, and the user-facing error mapping (401 → "operator token
+ * rejected"; connection refused → "is remnic-server running?"). The
+ * `JSON.parse` body is the result; status 204 / 200 with no body returns
+ * `null`. Throws on transport / status errors so the caller can
+ * translate the message into a CLI exit code.
+ */
+async function oauthFetch(
+  method: "GET" | "POST",
+  path: string,
+  token: string,
+  body: unknown | undefined,
+): Promise<unknown> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const headers: Record<string, string> = {
+      authorization: `Bearer ${token}`,
+      accept: "application/json",
+    };
+    if (body !== undefined) {
+      headers["content-type"] = "application/json";
+    }
+    const init: RequestInit = {
+      method,
+      signal: controller.signal,
+      headers,
+    };
+    if (body !== undefined) {
+      init.body = JSON.stringify(body);
+    }
+    const response = await fetch(`${oauthResolveBaseUrl()}${path}`, init);
+    if (response.status === 401) {
+      throw new Error(
+        "operator token rejected by remnic-server (HTTP 401). Update `server.authToken` or `REMNIC_AUTH_TOKEN` to match the running daemon.",
+      );
+    }
+    if (response.status === 404) {
+      throw new Error("unknown or expired ref");
+    }
+    if (response.status === 409) {
+      let description = "request conflicts with current state";
+      try {
+        const payload: unknown = await response.json();
+        if (
+          payload &&
+          typeof payload === "object" &&
+          "error_description" in payload
+        ) {
+          const candidate = (payload as Record<string, unknown>).error_description;
+          if (typeof candidate === "string" && candidate.length > 0) {
+            description = candidate;
+          }
+        }
+      } catch {
+        // Body wasn't JSON; keep the default description.
+      }
+      throw new Error(description);
+    }
+    if (!response.ok) {
+      throw new Error(`remnic-server returned HTTP ${response.status} ${response.statusText}`);
+    }
+    const text = await response.text();
+    if (text.length === 0) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      throw new Error("remnic-server returned a non-JSON response");
+    }
+  } catch (err) {
+    if (err instanceof Error) {
+      const msg = err.message;
+      if (
+        msg.includes("ECONNREFUSED") ||
+        msg.includes("ECONNRESET") ||
+        msg.includes("fetch failed") ||
+        msg.includes("aborted") ||
+        msg.includes("ENOTFOUND")
+      ) {
+        throw new Error(
+          `cannot reach remnic-server at ${oauthResolveBaseUrl()} — is remnic-server running? Start it with \`remnic daemon start\`.`,
+        );
+      }
+      throw err;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/**
+ * Render the pending list as a human-readable table. One line per entry:
+ *   ref <id>  client=<id>  redirect=<uri>  expires=<iso>
+ * Empty arrays produce the "No pending OAuth authorizations." line; the
+ * caller decides whether to add a trailing newline.
+ */
+function oauthFormatPendingText(pending: readonly OAuthPendingEntry[]): string {
+  if (pending.length === 0) {
+    return "No pending OAuth authorizations.";
+  }
+  const lines: string[] = [`Pending OAuth authorizations (${pending.length}):`];
+  for (const txn of pending) {
+    const scopes = txn.scopes.length === 0 ? "(none)" : txn.scopes.join(" ");
+    const resource = txn.resource === null || txn.resource.length === 0 ? "(none)" : txn.resource;
+    lines.push(
+      `  ref=${txn.ref}  client=${txn.clientId}  redirect=${txn.redirectUri}`,
+      `      scopes=${scopes}  resource=${resource}  expires=${txn.expiresAt}`,
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Prompt the operator on a TTY. Returns true on `y` / `yes` (case
+ * insensitive), false on `n` / `no` / empty / EOF. Non-TTY callers MUST
+ * use `--yes` (or a similar explicit flag) — the `cmdOAuth` approve
+ * branch enforces that at the dispatch site.
+ */
+async function oauthPromptYesNo(question: string): Promise<boolean> {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    return false;
+  }
+  process.stdout.write(`${question} [y/N] `);
+  return new Promise<boolean>((resolve) => {
+    let buffer = "";
+    const onData = (chunk: Buffer | string): void => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      buffer += text;
+      if (text.includes("\n")) {
+        process.stdin.removeListener("data", onData);
+        process.stdin.pause();
+        const answer = buffer.trim().toLowerCase();
+        resolve(answer === "y" || answer === "yes");
+      }
+    };
+    process.stdin.resume();
+    process.stdin.on("data", onData);
+  });
+}
+
+/** Print the full request details + warning before approval. */
+function oauthPrintApprovalDetails(txn: OAuthPendingEntry): void {
+  const scopeList = txn.scopes.length === 0 ? "(none)" : txn.scopes.join(" ");
+  const resource = txn.resource === null || txn.resource === undefined
+    ? "(none)"
+    : txn.resource;
+  console.log("Pending OAuth authorization request:");
+  console.log(`  ref:         ${txn.ref}`);
+  console.log(`  client:      ${txn.clientId}`);
+  console.log(`  redirect:    ${txn.redirectUri}`);
+  console.log(`  scopes:      ${scopeList}`);
+  console.log(`  resource:    ${resource}`);
+  console.log(`  created:     ${txn.createdAt}`);
+  console.log(`  expires:     ${txn.expiresAt}`);
+  console.log(
+    "WARNING: approval grants the requesting application an MCP access token tied to this Remnic instance.",
+  );
+}
+
+const OAUTH_USAGE = `Usage: remnic oauth <pending|approve|deny> [options]
+
+Manage pending OAuth authorizations (ChatGPT MCP).
+
+Subcommands:
+  remnic oauth pending [--format json|text]            List pending authorization requests
+  remnic oauth approve <ref> [--yes]                   Approve a pending request
+  remnic oauth deny <ref>                              Deny a pending request
+
+Options:
+  --format <name>   Output format for \`pending\`: "text" (default) or "json"
+  --yes             Required for \`approve\` when stdin is not a TTY
+
+Server endpoints (operator bearer auth):
+  GET  /oauth/pending
+  POST /oauth/pending/<ref>/approve
+  POST /oauth/pending/<ref>/deny`;
+
+/**
+ * Resolve the operator token or exit. Called AFTER input validation in
+ * each subcommand branch — invalid input must be reported regardless of
+ * env/config state (rule: validate inputs first, deterministically).
+ */
+function oauthRequireOperatorToken(): string {
+  const token = oauthResolveOperatorToken();
+  if (!token) {
+    console.error(
+      "remnic oauth: no operator token configured. Set `server.authToken` in remnic.config.json or export REMNIC_AUTH_TOKEN.",
+    );
+    process.exit(1);
+  }
+  return token;
+}
+
+/**
+ * Strict argument validation for `remnic oauth` subcommands (rule: reject
+ * invalid CLI input explicitly; never silently ignore it). Walks the args
+ * once, rejects unknown options, and enforces the positional arity.
+ * Returns the positional args in order.
+ */
+function oauthValidateArgs(
+  args: string[],
+  spec: { flags: Record<string, "value" | "boolean">; maxPositionals: number; usage: string },
+): string[] {
+  const positionals: string[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg !== undefined && arg.startsWith("-")) {
+      if (seen.has(arg)) {
+        console.error(`Duplicate option "${arg}". ${spec.usage}`);
+        process.exit(1);
+      }
+      seen.add(arg);
+      const kind = spec.flags[arg];
+      if (kind === undefined) {
+        console.error(`Unknown option "${arg}". ${spec.usage}`);
+        process.exit(1);
+      }
+      if (kind === "value") {
+        const next = args[i + 1];
+        if (next === undefined || next.startsWith("-")) {
+          console.error(`${arg} requires a value. ${spec.usage}`);
+          process.exit(1);
+        }
+        i++; // skip the flag's value slot
+      }
+      continue;
+    }
+    if (arg !== undefined) positionals.push(arg);
+  }
+  if (positionals.length > spec.maxPositionals) {
+    console.error(`Unexpected argument "${positionals[spec.maxPositionals]}". ${spec.usage}`);
+    process.exit(1);
+  }
+  return positionals;
+}
+
+async function cmdOAuth(rest: string[]): Promise<void> {
+  if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h") {
+    console.log(OAUTH_USAGE);
+    return;
+  }
+  const subcommand = rest[0];
+  const subRest = rest.slice(1);
+
+  switch (subcommand) {
+    case "pending": {
+      oauthValidateArgs(subRest, {
+        flags: { "--format": "value" },
+        maxPositionals: 0,
+        usage: "Usage: remnic oauth pending [--format json|text]",
+      });
+      const formatRaw = resolveFlag(subRest, "--format");
+      const formatPresent = hasFlag(subRest, "--format");
+      const format = (() => {
+        if (!formatPresent || formatRaw === undefined || formatRaw === null) return "text";
+        const normalized = String(formatRaw).trim().toLowerCase();
+        if (normalized !== "text" && normalized !== "json") {
+          console.error(`Invalid --format "${formatRaw}". Allowed: text, json.`);
+          process.exit(1);
+        }
+        return normalized;
+      })();
+      const token = oauthRequireOperatorToken();
+      try {
+        const payload = (await oauthFetch("GET", "/oauth/pending", token, undefined)) as
+          | { pending?: OAuthPendingEntry[] }
+          | null;
+        const pending = Array.isArray(payload?.pending) ? payload.pending : [];
+        if (format === "json") {
+          process.stdout.write(JSON.stringify(payload ?? { pending: [] }, null, 2) + "\n");
+          return;
+        }
+        console.log(oauthFormatPendingText(pending));
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+      return;
+    }
+
+    case "approve": {
+      const positionals = oauthValidateArgs(subRest, {
+        flags: { "--yes": "boolean", "-y": "boolean" },
+        maxPositionals: 1,
+        usage: "Usage: remnic oauth approve <ref> [--yes]",
+      });
+      const ref = positionals[0];
+      if (!ref) {
+        console.error("Usage: remnic oauth approve <ref> [--yes]");
+        process.exit(1);
+      }
+      const yes = hasFlag(subRest, "--yes") || hasFlag(subRest, "-y");
+      const token = oauthRequireOperatorToken();
+      try {
+        const payload = (await oauthFetch("GET", "/oauth/pending", token, undefined)) as
+          | { pending?: OAuthPendingEntry[] }
+          | null;
+        const pending = Array.isArray(payload?.pending) ? payload.pending : [];
+        const txn = pending.find((entry) => entry.ref === ref);
+        if (!txn) {
+          console.error(
+            `remnic oauth approve: no pending authorization with ref "${ref}". Run \`remnic oauth pending\` to see active requests.`,
+          );
+          process.exit(1);
+        }
+        oauthPrintApprovalDetails(txn);
+        let confirmed = yes;
+        if (!confirmed) {
+          if (!process.stdin.isTTY) {
+            console.error(
+              "remnic oauth approve: refusing to send the approval without an explicit --yes flag (stdin is not a TTY). Re-run with --yes to confirm.",
+            );
+            process.exit(1);
+          }
+          confirmed = await oauthPromptYesNo("Approve this request?");
+          if (!confirmed) {
+            console.log("Approval cancelled.");
+            return;
+          }
+        }
+        const result = (await oauthFetch(
+          "POST",
+          `/oauth/pending/${encodeURIComponent(ref)}/approve`,
+          token,
+          {},
+        )) as OAuthDecisionResponse | null;
+        const status = result?.status ?? "approved";
+        const redirect = result?.redirect;
+        console.log(`Approved ref=${ref} (status: ${status}).`);
+        if (typeof redirect === "string" && redirect.length > 0) {
+          console.log(`Client redirect: ${redirect}`);
+        }
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+      return;
+    }
+
+    case "deny": {
+      const positionals = oauthValidateArgs(subRest, {
+        flags: {},
+        maxPositionals: 1,
+        usage: "Usage: remnic oauth deny <ref>",
+      });
+      const ref = positionals[0];
+      if (!ref) {
+        console.error("Usage: remnic oauth deny <ref>");
+        process.exit(1);
+      }
+      const token = oauthRequireOperatorToken();
+      try {
+        const result = (await oauthFetch(
+          "POST",
+          `/oauth/pending/${encodeURIComponent(ref)}/deny`,
+          token,
+          {},
+        )) as OAuthDecisionResponse | null;
+        const status = result?.status ?? "denied";
+        console.log(`Denied ref=${ref} (status: ${status}).`);
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        process.exit(1);
+      }
+      return;
+    }
+
+    default: {
+      console.error(
+        `Unknown oauth subcommand "${String(subcommand)}". Run \`remnic oauth --help\` for usage.`,
+      );
+      process.exit(1);
+    }
   }
 }
 
@@ -12044,6 +12546,15 @@ Options:
       break;
     }
 
+    case "oauth": {
+      // `remnic oauth <pending|approve|deny> [...]` — operator-side
+      // management of pending ChatGPT-MCP authorization requests. All
+      // network and rendering logic lives in cmdOAuth; the dispatcher
+      // just routes the slice.
+      await cmdOAuth(rest);
+      break;
+    }
+
     case "dedup": {
       const json = rest.includes("--json");
       cmdDedup(json);
@@ -12476,6 +12987,7 @@ Usage:
   remnic review <list|approve|dismiss|flag> [id]  Review inbox
   remnic sync <run|watch> [--source <dir>] Diff-aware sync
   remnic offline <prepare|sync|status|watch> Remote/offline memory sync
+  remnic oauth <pending|approve|deny> Manage pending OAuth authorizations (ChatGPT MCP)
   remnic dedup [--json]             Find duplicate memories
   remnic connectors <list|install|remove|doctor|marketplace> [id]  Manage connectors
     marketplace generate    Generate marketplace.json for Codex

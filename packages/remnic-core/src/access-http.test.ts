@@ -1454,3 +1454,353 @@ test("HTTP offline apply requires a changeset", async () => {
     await server.stop();
   }
 });
+
+test("HTTP server rejects invalid resourceMetadataUrl at construction", () => {
+  const service = {} as EngramAccessService;
+  for (const bad of ["not a url", "ftp://example.com/oauth", "//relative/path", ""]) {
+    assert.throws(
+      () =>
+        new EngramAccessHttpServer({
+          service,
+          port: 0,
+          authToken: "test-token",
+          adminConsoleEnabled: false,
+          resourceMetadataUrl: bad,
+        }),
+      /access HTTP resourceMetadataUrl/,
+      `resourceMetadataUrl=${JSON.stringify(bad)} must be rejected`,
+    );
+  }
+  // http and https are accepted.
+  for (const ok of [
+    "https://example.com/.well-known/oauth-protected-resource",
+    "http://127.0.0.1:8787/.well-known/oauth-protected-resource",
+  ]) {
+    const server = new EngramAccessHttpServer({
+      service,
+      port: 0,
+      authToken: "test-token",
+      adminConsoleEnabled: false,
+      resourceMetadataUrl: ok,
+    });
+    assert.ok(server, `resourceMetadataUrl=${ok} should be accepted`);
+  }
+});
+
+test("HTTP 401 www-authenticate carries resource_metadata exactly when configured", async () => {
+  const service = {} as EngramAccessService;
+  const metadataUrl = "https://example.test/.well-known/oauth-protected-resource";
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    resourceMetadataUrl: metadataUrl,
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/health`);
+    assert.equal(response.status, 401);
+    assert.equal(
+      response.headers.get("www-authenticate"),
+      `Bearer resource_metadata="${metadataUrl}"`,
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP 401 www-authenticate is the bare Bearer challenge when resourceMetadataUrl is unset", async () => {
+  const service = {} as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/health`);
+    assert.equal(response.status, 401);
+    assert.equal(response.headers.get("www-authenticate"), "Bearer");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP /mcp returns 405 with Allow: POST for GET and DELETE (authorized requests)", async () => {
+  const service = {} as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    for (const method of ["GET", "DELETE"]) {
+      const response = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
+        method,
+        headers: { authorization: "Bearer test-token" },
+      });
+      assert.equal(response.status, 405, `${method} /mcp must be 405`);
+      assert.equal(response.headers.get("allow"), "POST", `${method} /mcp must advertise Allow: POST`);
+      const body = await response.json() as { code?: string };
+      assert.equal(body.code, "method_not_allowed");
+    }
+    // Unauthenticated GET /mcp still gets 401 first (auth gate beats method-conformance).
+    const unauth = await fetch(`http://127.0.0.1:${status.port}/mcp`, { method: "GET" });
+    assert.equal(unauth.status, 401);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP /mcp rejects unknown MCP-Protocol-Version header with 400 JSON-RPC error", async () => {
+  const service = {} as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer test-token",
+        "content-type": "application/json",
+        "mcp-protocol-version": "1999-01-01",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    assert.equal(response.status, 400);
+    const body = await response.json() as { jsonrpc?: string; error?: { message?: string } };
+    assert.equal(body.jsonrpc, "2.0");
+    assert.match(body.error?.message ?? "", /unsupported MCP-Protocol-Version/);
+
+    // A supported header is accepted (and a valid request proceeds normally).
+    for (const v of ["2025-06-18", "2025-03-26", "2024-11-05"]) {
+      const ok = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer test-token",
+          "content-type": "application/json",
+          "mcp-protocol-version": v,
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+      });
+      assert.equal(ok.status, 200, `version ${v} should be accepted`);
+    }
+
+    // Absent header is also fine.
+    const absent = await fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "POST",
+      headers: { authorization: "Bearer test-token", "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }),
+    });
+    assert.equal(absent.status, 200);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls through on false", async () => {
+  // Minimal service stub: the fall-through leg hits /engram/v1/health, which
+  // calls service.health(). The stub is signature-faithful (full
+  // EngramAccessHealthResponse via `satisfies`) so interface drift fails here
+  // instead of passing vacuously; everything else in this test bypasses the
+  // service.
+  const healthStub = {
+    health: async () => ({
+      ok: true as const,
+      memoryDir: "/tmp/remnic-test",
+      namespacesEnabled: false,
+      defaultNamespace: "default",
+      searchBackend: "recent",
+      qmdEnabled: false,
+      qmd: {
+        enabled: false,
+        active: false,
+        degraded: false,
+        mode: "disabled" as const,
+        collection: "",
+        collectionState: "skipped" as const,
+        installedVersion: null,
+        supportedVersion: null,
+        supported: null,
+        upgradeAvailable: null,
+        doctorAvailable: null,
+        debugStatus: "disabled",
+      },
+      nativeKnowledgeEnabled: false,
+      projectionAvailable: false,
+    }),
+  } satisfies Pick<EngramAccessService, "health">;
+  const service = healthStub as EngramAccessService;
+  const seen: Array<{ path: string; method: string; authorized: boolean }> = [];
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    externalRequestHandler: async (_req, res, ctx) => {
+      seen.push({
+        path: new URL(_req.url ?? "/", "http://placeholder").pathname,
+        method: _req.method ?? "",
+        authorized: ctx.authorized,
+      });
+      if (new URL(_req.url ?? "/", "http://placeholder").pathname === "/probe/handled") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ handled: true, authorized: ctx.authorized }));
+        return true;
+      }
+      return false; // fall through to the normal pipeline
+    },
+  });
+  const status = await server.start();
+  try {
+    // Pre-auth, the handler sees authorized=false (no token sent).
+    const handled = await fetch(`http://127.0.0.1:${status.port}/probe/handled`);
+    assert.equal(handled.status, 200);
+    const handledBody = await handled.json() as { handled?: boolean; authorized?: boolean };
+    assert.equal(handledBody.handled, true);
+    assert.equal(handledBody.authorized, false, "handler must observe authorized=false pre-token");
+
+    // Fall-through path: same handler returns false, request continues to normal
+    // routing. Hit a real endpoint so we know the request reached it.
+    const passthrough = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/health`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    assert.equal(passthrough.status, 200, "fall-through should reach the normal health route");
+    const passthroughBody = await passthrough.json() as { ok?: boolean; memoryDir?: string };
+    assert.equal(passthroughBody.ok, true, "fall-through must return the stubbed health payload");
+    assert.equal(passthroughBody.memoryDir, "/tmp/remnic-test");
+
+    // Authorized request: handler sees ctx.authorized=true.
+    const authed = await fetch(
+      `http://127.0.0.1:${status.port}/probe/handled`,
+      { headers: { authorization: "Bearer test-token" } },
+    );
+    assert.equal(authed.status, 200);
+    const authedBody = await authed.json() as { authorized?: boolean };
+    assert.equal(authedBody.authorized, true, "handler must observe authorized=true with valid token");
+
+    assert.deepEqual(seen, [
+      { path: "/probe/handled", method: "GET", authorized: false },
+      { path: "/engram/v1/health", method: "GET", authorized: true },
+      { path: "/probe/handled", method: "GET", authorized: true },
+    ]);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP externalRequestHandler errors flow through the existing error handler", async () => {
+  const service = {} as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "test-token",
+    adminConsoleEnabled: false,
+    externalRequestHandler: async () => {
+      throw new Error("external-handler-explosion");
+    },
+  });
+  const status = await server.start();
+  try {
+    const response = await fetch(`http://127.0.0.1:${status.port}/engram/v1/health`);
+    assert.equal(response.status, 500, "thrown errors must produce a 500 via the existing error handler");
+    const body = await response.json() as { code?: string };
+    assert.equal(body.code, "internal_error");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connectors and never falls through", async () => {
+  // Signature-faithful health stub so non-MCP authorization outcomes are
+  // observable as 200-with-body (a bare `{}` service would 500 and mask
+  // accidental policy application).
+  const healthStub = {
+    health: async () => ({
+      ok: true as const,
+      memoryDir: "/tmp/remnic-scope-test",
+      namespacesEnabled: false,
+      defaultNamespace: "default",
+      searchBackend: "recent",
+      qmdEnabled: false,
+      qmd: {
+        enabled: false,
+        active: false,
+        degraded: false,
+        mode: "disabled" as const,
+        collection: "",
+        collectionState: "skipped" as const,
+        installedVersion: null,
+        supportedVersion: null,
+        supported: null,
+        upgradeAvailable: null,
+        doctorAvailable: null,
+        debugStatus: "disabled",
+      },
+      nativeKnowledgeEnabled: false,
+      projectionAvailable: false,
+    }),
+  } satisfies Pick<EngramAccessService, "health">;
+  const entries = [
+    { token: "remnic_cg_scoped", connector: "chatgpt" },
+    { token: "remnic_cx_free", connector: "codex" },
+    { token: "remnic_xx_anon" }, // no connector — must fail closed under a policy
+  ];
+  const server = new EngramAccessHttpServer({
+    service: healthStub as EngramAccessService,
+    port: 0,
+    authToken: "operator-token",
+    // Dangerous shape on purpose: BOTH getters configured, and the string
+    // getter is a superset (extra "string_only_token"). The entries getter
+    // must decide alone; nothing may leak into the string getter.
+    authTokensGetter: () => [...entries.map((entry) => entry.token), "string_only_token"],
+    authTokenEntriesGetter: () => entries,
+    tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const request = (token: string, path: string, method = "GET") =>
+    fetch(`http://127.0.0.1:${status.port}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      ...(method === "POST" ? { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }) } : {}),
+    });
+  try {
+    // Scoped chatgpt token: /mcp only; health denied.
+    assert.equal((await request("remnic_cg_scoped", "/mcp", "POST")).status, 200);
+    assert.equal(
+      (await request("remnic_cg_scoped", "/engram/v1/health")).status,
+      401,
+      "chatgpt token must be denied off /mcp even with a permissive string getter present",
+    );
+    // Other connector tokens are unrestricted by this policy: /mcp AND health.
+    assert.equal((await request("remnic_cx_free", "/mcp", "POST")).status, 200);
+    const codexHealth = await request("remnic_cx_free", "/engram/v1/health");
+    assert.equal(codexHealth.status, 200);
+    assert.equal(((await codexHealth.json()) as { ok?: boolean }).ok, true);
+    // Entry without connector fails closed when a policy is configured.
+    assert.equal((await request("remnic_xx_anon", "/mcp", "POST")).status, 401);
+    // A token present ONLY in the string getter is NOT honored: the entries
+    // getter is authoritative and there is no fall-through.
+    assert.equal((await request("string_only_token", "/mcp", "POST")).status, 401);
+    assert.equal((await request("string_only_token", "/engram/v1/health")).status, 401);
+    // Unknown tokens are rejected everywhere.
+    assert.equal((await request("remnic_zz_unknown", "/mcp", "POST")).status, 401);
+    // Static operator token bypasses the policy entirely: /mcp AND health.
+    assert.equal((await request("operator-token", "/mcp", "POST")).status, 200);
+    const operatorHealth = await request("operator-token", "/engram/v1/health");
+    assert.equal(operatorHealth.status, 200);
+    assert.equal(((await operatorHealth.json()) as { ok?: boolean }).ok, true);
+  } finally {
+    await server.stop();
+  }
+});

@@ -14,7 +14,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokensCached, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
+import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokensCached, getAllValidTokenEntriesCached, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
+import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
 
 // ── Config loading ──────────────────────────────────────────────────────────
 
@@ -30,6 +31,8 @@ export interface ServerConfig {
     adminConsolePublicDir?: string;
     adminConsolePrefillToken?: boolean;
     readinessOverride?: boolean;
+    /** OAuth authorization-server facade for ChatGPT dev-mode apps (parsed by oauth.ts). */
+    oauth?: unknown;
   };
 }
 
@@ -951,13 +954,24 @@ export async function startServer(options?: {
   if (!authToken && getAllValidTokens().length === 0) {
     log.warn("No auth token set — server will reject all requests. Set REMNIC_AUTH_TOKEN, server.authToken in config, or generate tokens with 'remnic token generate'.");
   }
+  // OAuth facade (ChatGPT developer-mode apps): file block < REMNIC_OAUTH_* env.
+  // Parsed strictly — invalid values abort startup with a precise message.
+  const oauthConfig = applyOAuthEnvOverrides((serverConfig as { oauth?: unknown }).oauth);
+  const oauthRequestHandler = buildOAuthRequestHandler(oauthConfig);
+
 
   const httpServer = new EngramAccessHttpServer({
     service,
     host: parsedServerConfig.host,
     port: parsedServerConfig.port,
     authToken: authToken || undefined,
-    authTokensGetter: () => getAllValidTokensCached(),
+    // Entry-based getter: validation + connector identity from ONE cached
+    // snapshot (see tokens.ts). The path policy pins ChatGPT-minted OAuth
+    // tokens (connector "chatgpt") to the MCP endpoint only — they never
+    // authorize REST/admin routes. All other connector tokens keep full
+    // access, matching pre-OAuth behavior.
+    authTokenEntriesGetter: () => getAllValidTokenEntriesCached(),
+    tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
     readiness: () => readiness,
     principal: parsedServerConfig.principal,
     maxBodyBytes: parsedServerConfig.maxBodyBytes,
@@ -972,6 +986,15 @@ export async function startServer(options?: {
     citationsEnabled: config.citationsEnabled,
     citationsAutoDetect: config.citationsAutoDetect,
     emitLegacyTools: config.emitLegacyTools,
+    ...(oauthConfig.enabled
+      ? {
+          externalRequestHandler: oauthRequestHandler,
+          resourceMetadataUrl: new URL(
+            "/.well-known/oauth-protected-resource/mcp",
+            oauthConfig.issuerUrl,
+          ).href,
+        }
+      : {}),
   });
 
   let host: string;

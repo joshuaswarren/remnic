@@ -57,6 +57,16 @@
 - [Identity Continuity](identity-continuity.md) — Continuity artifacts, templates, and rollout safety model (v8.4)
 - [Graph Dashboard](graph-dashboard.md) — Optional live graph observability server + patch stream (v8.8)
 
+## Integrations
+
+- [ChatGPT (developer mode)](integration/chatgpt.md) — Public-internet MCP + OAuth 2.1 flow: Tailscale Funnel / Cloudflare Tunnel, `server.oauth` config, local operator approval, troubleshooting
+- [Connector Setup Guide](integration/connector-setup.md) — Wire Remnic memory to Claude Code, Codex, Cursor, Copilot, Cline, Roo Code, Windsurf, Amp, Replit, Hermes, and any generic MCP client
+- [Pi Coding Agent](integration/pi.md) — Native Pi extension (`@remnic/plugin-pi`) for hooks, slash commands, and compaction coordination
+- [Oh My Pi (omp)](integration/omp.md) — omp rules, MCP server config, and the native omp extension
+- [Hermes Setup](integration/hermes-setup.md) — Hermes Agent via `remnic-hermes` Python package or `X-Hermes-Session-Id` auto-detection
+- [Deployment Topologies](integration/deployment-topologies.md) — Localhost, LAN, remote, containerized, standalone
+- [Plugin ID and Memory Namespaces](integration/plugin-id-and-memory-namespaces.md) — OpenClaw plugin id `openclaw-remnic`, memory namespace isolation
+
 ## Plans / Roadmaps
 
 - [Remnic Feature Roadmap (GitHub Project)](https://github.com/users/joshuaswarren/projects/1) — Current priority order, blockers, and next work

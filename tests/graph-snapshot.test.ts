@@ -624,7 +624,7 @@ test("MCP graph_snapshot tool is exposed under both prefixes", async () => {
     jsonrpc: "2.0",
     id: 1,
     method: "initialize",
-    params: {},
+    params: { protocolVersion: "2025-06-18" },
   });
   assert.ok(init);
   const tools = await mcp.handleRequest({
@@ -663,7 +663,7 @@ test("MCP graph_snapshot tool dispatches to the service", async () => {
     jsonrpc: "2.0",
     id: 1,
     method: "initialize",
-    params: {},
+    params: { protocolVersion: "2025-06-18" },
   });
   const result = await mcp.handleRequest({
     jsonrpc: "2.0",
@@ -692,7 +692,7 @@ test("MCP graph_snapshot rejects non-numeric limit at the boundary", async () =>
     jsonrpc: "2.0",
     id: 1,
     method: "initialize",
-    params: {},
+    params: { protocolVersion: "2025-06-18" },
   });
   const result = await mcp.handleRequest({
     jsonrpc: "2.0",

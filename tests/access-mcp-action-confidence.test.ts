@@ -31,7 +31,7 @@ function fakeService(capture: { calls: unknown[] }): EngramAccessService {
 
 test("MCP advertises action_confidence under engram and remnic names", async () => {
   const server = new EngramMcpServer(fakeService({ calls: [] }));
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
 
   const tools = await server.handleRequest({
     jsonrpc: "2.0",
@@ -48,7 +48,7 @@ test("MCP advertises action_confidence under engram and remnic names", async () 
 test("MCP action_confidence validates and dispatches to service", async () => {
   const capture = { calls: [] as unknown[] };
   const server = new EngramMcpServer(fakeService(capture));
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
 
   const response = await server.handleRequest({
     jsonrpc: "2.0",
@@ -85,7 +85,7 @@ test("MCP action_confidence validates and dispatches to service", async () => {
 test("MCP action_confidence rejects unknown risk values before service dispatch", async () => {
   const capture = { calls: [] as unknown[] };
   const server = new EngramMcpServer(fakeService(capture));
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
 
   const response = await server.handleRequest({
     jsonrpc: "2.0",

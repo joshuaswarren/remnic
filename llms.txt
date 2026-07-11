@@ -309,3 +309,12 @@ CONNECTING OTHER AGENTS
   remnic connectors install codex-cli
   remnic connectors install replit
   pip install remnic-hermes
+
+CHATGPT DEVELOPER MODE (public OAuth + MCP flow):
+  docs/integration/chatgpt.md     chatgpt.com developer mode -> Remnic via
+                                  Tailscale Funnel or Cloudflare Tunnel, with
+                                  server.oauth config and local operator
+                                  approval (`remnic oauth pending|approve|deny`).
+                                  The OAuth facade in @remnic/server is the
+                                  authorization server; the connector id is
+                                  `chatgpt` (token prefix remnic_cg_).
