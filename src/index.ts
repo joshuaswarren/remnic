@@ -1929,7 +1929,7 @@ const pluginDefinition = {
         explainLastRecall:
           cfg.activeRecallAttachRecallExplain === true
             ? async () =>
-                await orchestrator
+                await orchestrator.recallIntrospection
                   .explainLastQmdRecall()
                   .catch(() => null)
             : undefined,

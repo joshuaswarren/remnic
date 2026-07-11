@@ -7,14 +7,30 @@ import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { registerTools } from "../src/tools.ts";
 
-const hasGetLastIntentSnapshot =
-  typeof (Orchestrator.prototype as any).getLastIntentSnapshot === "function";
-const hasExplainLastIntent =
-  typeof (Orchestrator.prototype as any).explainLastIntent === "function";
+
+test("Orchestrator exposes a stable recall-introspection surface", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-introspection-surface-"));
+  const orchestrator = new Orchestrator(
+    parseConfig({
+      openaiApiKey: "sk-test",
+      memoryDir,
+      workspaceDir: path.join(memoryDir, "workspace"),
+      qmdEnabled: false,
+    }),
+  );
+
+  try {
+    const surface = orchestrator.recallIntrospection;
+    assert.equal(surface, orchestrator.recallIntrospection);
+    assert.equal(typeof surface.getLastIntentSnapshot, "function");
+    assert.equal(typeof surface.explainLastIntent, "function");
+  } finally {
+    await orchestrator.destroy();
+  }
+});
 
 test(
   "recallInternal persists last_intent.json when intent debugging is available",
-  { skip: !hasGetLastIntentSnapshot },
   async (t) => {
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-intent-debug-write-"));
     const cfg = parseConfig({
@@ -51,7 +67,6 @@ test(
 
 test(
   "getLastIntentSnapshot reads persisted intent snapshots when available",
-  { skip: !hasGetLastIntentSnapshot },
   async () => {
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-intent-debug-read-"));
     const cfg = parseConfig({
@@ -95,7 +110,8 @@ test(
       "utf-8",
     );
 
-    const snapshot = (await (orchestrator as any).getLastIntentSnapshot()) as
+    const snapshot =
+      (await orchestrator.recallIntrospection.getLastIntentSnapshot()) as
       | {
           promptHash?: string;
           plannedMode?: string;
@@ -118,7 +134,6 @@ test(
 
 test(
   "explainLastIntent returns a tool-facing summary when available",
-  { skip: !hasExplainLastIntent },
   async () => {
     const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-intent-debug-explain-"));
     const cfg = parseConfig({
@@ -162,7 +177,8 @@ test(
       "utf-8",
     );
 
-    const explanation = await (orchestrator as any).explainLastIntent();
+    const explanation =
+      await orchestrator.recallIntrospection.explainLastIntent();
     assert.equal(typeof explanation, "string");
     assert.match(explanation, /intent/i);
     assert.match(explanation, /graph_mode/i);
@@ -201,8 +217,10 @@ test("registerTools exposes memory_intent_debug when explainLastIntent is availa
       compoundingEnabled: false,
       identityContinuityEnabled: false,
     },
-    explainLastIntent: async () => "## Last Intent Debug\n\nPlanned mode: graph_mode",
-    explainLastGraphRecall: async () => "noop",
+    recallIntrospection: {
+      explainLastIntent: async () => "## Last Intent Debug\n\nPlanned mode: graph_mode",
+      explainLastGraphRecall: async () => "noop",
+    },
     qmd: {
       search: async () => [],
       searchGlobal: async () => [],

@@ -2121,8 +2121,8 @@ export class EngramAccessService {
     if (!includeDebug) return undefined;
     if (!sessionKey?.trim()) return undefined;
     const [intent, graph] = await Promise.all([
-      this.orchestrator.getLastIntentSnapshot(namespace),
-      this.orchestrator.getLastGraphRecallSnapshot(namespace),
+      this.orchestrator.recallIntrospection.getLastIntentSnapshot(namespace),
+      this.orchestrator.recallIntrospection.getLastGraphRecallSnapshot(namespace),
     ]);
     return snapshot || intent || graph
       ? {
@@ -2831,8 +2831,8 @@ export class EngramAccessService {
     })();
     if (!namespace) return { found: false };
     const [intent, graph] = await Promise.all([
-      this.orchestrator.getLastIntentSnapshot(namespace),
-      this.orchestrator.getLastGraphRecallSnapshot(namespace),
+      this.orchestrator.recallIntrospection.getLastIntentSnapshot(namespace),
+      this.orchestrator.recallIntrospection.getLastGraphRecallSnapshot(namespace),
     ]);
     if (!readableSnapshot && !intent && !graph) return { found: false };
     return { found: true, snapshot: readableSnapshot ?? undefined, intent, graph };
@@ -4817,17 +4817,17 @@ export class EngramAccessService {
   }
 
   async intentDebug(namespace?: string): Promise<unknown> {
-    const snapshot = await this.orchestrator.getLastIntentSnapshot(namespace);
+    const snapshot = await this.orchestrator.recallIntrospection.getLastIntentSnapshot(namespace);
     return snapshot ?? { message: "No intent debug snapshot available" };
   }
 
   async qmdDebug(namespace?: string): Promise<unknown> {
-    const snapshot = await this.orchestrator.getLastQmdRecallSnapshot(namespace);
+    const snapshot = await this.orchestrator.recallIntrospection.getLastQmdRecallSnapshot(namespace);
     return snapshot ?? { message: "No QMD debug snapshot available" };
   }
 
   async graphExplainLastRecall(namespace?: string): Promise<unknown> {
-    const explanation = await this.orchestrator.explainLastGraphRecall({ namespace });
+    const explanation = await this.orchestrator.recallIntrospection.explainLastGraphRecall({ namespace });
     return { explanation };
   }
 
