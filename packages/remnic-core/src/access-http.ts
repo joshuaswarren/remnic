@@ -7,6 +7,7 @@ import path from "node:path";
 import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
+import { abortError, isAbortError } from "./abort-error.js";
 import { EngramAccessInputError, type EngramAccessService, type EngramAccessMemoryResponse, type EngramAccessWriteResponse } from "./access-service.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js";
@@ -39,6 +40,12 @@ import { handleChatMessage, handleChatEventsSSE } from "./chat/chat-http.js";
 // server lifecycle (issue #1685 item 1 / #1687 Thread 21).
 import { cleanupExpiredChatSessions } from "./chat/chat-session.js";
 
+export interface AccessHttpReadinessState {
+  ready: boolean;
+  warmupAttempts: number;
+  lastError?: string | null;
+}
+
 export interface EngramAccessHttpServerOptions {
   service: EngramAccessService;
   host?: string;
@@ -67,6 +74,11 @@ export interface EngramAccessHttpServerOptions {
   emitLegacyTools?: boolean;
   /** Optional authenticated admin dashboard/config controls supplied by the host server. */
   adminControls?: RemnicAdminControls;
+  /**
+   * Standalone readiness state. Defaults to ready so embedded hosts keep their
+   * existing health behavior.
+   */
+  readiness?: () => AccessHttpReadinessState;
 }
 
 export interface EngramAccessHttpServerStatus {
@@ -280,6 +292,7 @@ export class EngramAccessHttpServer {
   private readonly adminControls?: RemnicAdminControls;
   private readonly trustPrincipalHeader: boolean;
   private readonly adapterRegistry: AdapterRegistry | null;
+  private readonly readiness: () => AccessHttpReadinessState;
   private readonly writeRequestTimestamps: number[] = [];
   private readonly mcpServer: EngramMcpServer;
   private server: Server | null = null;
@@ -320,6 +333,7 @@ export class EngramAccessHttpServer {
     this.adminConsolePrefillToken = options.adminConsolePrefillToken === true ? this.authToken : undefined;
     this.adminControls = options.adminControls;
     this.trustPrincipalHeader = options.trustPrincipalHeader === true;
+    this.readiness = options.readiness ?? (() => ({ ready: true, warmupAttempts: 0 }));
     this.adapterRegistry = options.enableAdapters !== false
       ? (options.adapterRegistry ?? new AdapterRegistry())
       : null;
@@ -345,8 +359,22 @@ export class EngramAccessHttpServer {
 
     const server = createServer((req, res) => {
       const correlationId = randomUUID();
+      const abortController = new AbortController();
+      const abortDisconnectedRequest = () => {
+        if (!res.writableFinished && !abortController.signal.aborted) {
+          abortController.abort(abortError("HTTP client disconnected"));
+        }
+      };
+      req.once("aborted", abortDisconnectedRequest);
+      res.once("close", abortDisconnectedRequest);
       correlationIdStore.run(correlationId, () => {
-        void this.handle(req, res, correlationId).catch((err) => {
+        void this.handle(req, res, correlationId, abortController.signal).catch((err) => {
+          if (isAbortError(err)) {
+            if (!res.destroyed && !res.writableEnded) {
+              res.end();
+            }
+            return;
+          }
           log.debug(`engram access HTTP request failed [${correlationId}]: ${err}`);
           if (err instanceof HttpError) {
             const payload: Record<string, unknown> = { error: err.message, code: err.code };
@@ -371,6 +399,9 @@ export class EngramAccessHttpServer {
             err,
           );
           this.respondJson(res, 500, { error: "internal_error", code: "internal_error" });
+        }).finally(() => {
+          req.off("aborted", abortDisconnectedRequest);
+          res.off("close", abortDisconnectedRequest);
         });
       });
     });
@@ -584,12 +615,32 @@ export class EngramAccessHttpServer {
     return queryDisclosure;
   }
 
-  private async handle(req: IncomingMessage, res: ServerResponse, correlationId: string): Promise<void> {
+  private async handle(
+    req: IncomingMessage,
+    res: ServerResponse,
+    correlationId: string,
+    abortSignal: AbortSignal,
+  ): Promise<void> {
     const parsed = new URL(req.url ?? "/", `http://${hostToUrlAuthority(this.host)}`);
     const pathname = parsed.pathname;
 
     if (this.adminConsoleEnabled && await this.handleAdminConsole(req, res, pathname)) {
       return;
+    }
+
+    if (req.method === "GET" && pathname === "/engram/v1/health") {
+      const readiness = this.readiness();
+      if (!readiness.ready) {
+        this.respondJson(res, 503, {
+          ok: false,
+          ready: false,
+          warmupAttempts: readiness.warmupAttempts,
+          lastError: readiness.lastError ?? null,
+          code: "not_ready",
+        });
+        return;
+      }
+
     }
 
     if (!this.isAuthorized(req, pathname)) {
@@ -768,6 +819,7 @@ export class EngramAccessHttpServer {
         ...(tags !== undefined ? { tags } : {}),
         ...(tagMatch !== undefined ? { tagMatch } : {}),
         ...(includeLowConfidence ? { includeLowConfidence: true } : {}),
+        abortSignal,
       });
       this.respondJson(res, 200, response);
       return;

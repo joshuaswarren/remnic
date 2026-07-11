@@ -1,5 +1,11 @@
 import { log } from "../logger.js";
-import type { SearchBackend, SearchExecutionOptions, SearchQueryOptions, SearchResult } from "./port.js";
+import {
+  reportSearchDegradation,
+  type SearchBackend,
+  type SearchExecutionOptions,
+  type SearchQueryOptions,
+  type SearchResult,
+} from "./port.js";
 
 export interface RemoteSearchBackendOptions {
   baseUrl: string;
@@ -103,7 +109,13 @@ export class RemoteSearchBackend implements SearchBackend {
     body: Record<string, unknown>,
     execution?: SearchExecutionOptions,
   ): Promise<SearchResult[]> {
-    if (!this.available) return [];
+    if (!this.available) {
+      reportSearchDegradation(execution, {
+        backend: "remote",
+        code: "backend_unavailable",
+      });
+      return [];
+    }
     try {
       const res = await fetch(`${this.baseUrl}${endpoint}`, {
         method: "POST",
@@ -115,13 +127,30 @@ export class RemoteSearchBackend implements SearchBackend {
       });
       if (!res.ok) {
         log.debug(`RemoteSearchBackend ${endpoint} returned ${res.status}`);
+        reportSearchDegradation(execution, {
+          backend: "remote",
+          code: "remote_error",
+          detail: `HTTP ${res.status}`,
+        });
         return [];
       }
       const data = await res.json();
-      if (!Array.isArray(data)) return [];
+      if (!Array.isArray(data)) {
+        reportSearchDegradation(execution, {
+          backend: "remote",
+          code: "remote_error",
+          detail: "invalid response body",
+        });
+        return [];
+      }
       return data as SearchResult[];
     } catch (err) {
       log.debug(`RemoteSearchBackend ${endpoint} failed: ${err}`);
+      reportSearchDegradation(execution, {
+        backend: "remote",
+        code: "remote_error",
+        detail: err instanceof Error ? err.name : typeof err,
+      });
       return [];
     }
   }

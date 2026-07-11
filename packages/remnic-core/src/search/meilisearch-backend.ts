@@ -1,5 +1,6 @@
 import { log } from "../logger.js";
 import {
+  reportSearchDegradation,
   resolveEnsureCollectionArgs,
   type SearchBackend,
   type SearchExecutionOptions,
@@ -282,6 +283,13 @@ export class MeilisearchBackend implements SearchBackend {
     } catch (err) {
       log.debug(`MeilisearchBackend search failed: ${err}`);
       if (rethrow) throw err;
+      if (!isSearchAborted(execution)) {
+        reportSearchDegradation(execution, {
+          backend: "meilisearch",
+          code: "backend_error",
+          detail: err instanceof Error ? err.name : typeof err,
+        });
+      }
       return [];
     }
   }

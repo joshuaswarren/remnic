@@ -823,6 +823,7 @@ export class AccessRecallSurface {
       ...(authenticatedPrincipal ? { principalOverride: authenticatedPrincipal } : {}),
       ...(asOf !== undefined ? { asOf } : {}),
       ...(request.includeLowConfidence === true ? { includeLowConfidence: true } : {}),
+      ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}),
     };
     const startedAt = Date.now();
     const context = await this.deps.orchestrator.recall(query, request.sessionKey, recallOptions);

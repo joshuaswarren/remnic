@@ -881,11 +881,13 @@ test("QMD recall snapshot helpers read persisted snapshots and memory_qmd_debug 
     "utf-8",
   );
 
-  const snapshot = await (orchestrator as any).getLastQmdRecallSnapshot();
+  const snapshot =
+    await orchestrator.recallIntrospection.getLastQmdRecallSnapshot();
   assert.ok(snapshot);
   assert.equal(snapshot.intentHint, "goal:review action:review");
 
-  const explanation = await (orchestrator as any).explainLastQmdRecall();
+  const explanation =
+    await orchestrator.recallIntrospection.explainLastQmdRecall();
   assert.match(explanation, /Last QMD Recall/);
   assert.match(explanation, /intent hint/i);
   assert.match(explanation, /hybrid top-up skipped reason/i);
@@ -918,9 +920,11 @@ test("QMD recall snapshot helpers read persisted snapshots and memory_qmd_debug 
       compoundingEnabled: false,
       identityContinuityEnabled: false,
     },
-    explainLastIntent: async () => "noop",
-    explainLastQmdRecall: async () => "## Last QMD Recall\n\nIntent hint: goal:review",
-    explainLastGraphRecall: async () => "noop",
+    recallIntrospection: {
+      explainLastIntent: async () => "noop",
+      explainLastQmdRecall: async () => "## Last QMD Recall\n\nIntent hint: goal:review",
+      explainLastGraphRecall: async () => "noop",
+    },
     qmd: {
       search: async () => [],
       searchGlobal: async () => [],

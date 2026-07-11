@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.3.764] — 2026-07-11
+
+### Changed
+
+- Exposed recall introspection through the typed `Orchestrator.recallIntrospection`
+  coordinator and removed the duplicate intent, QMD, and graph-recall forwarding
+  methods from the oversized composition root.
+- Moved scope-profile and team configuration parsing into a dedicated
+  namespace config module while preserving `parseConfig` validation and
+  defaults.
+
 ## [v9.3.652] — 2026-06-30
 
 ### Added

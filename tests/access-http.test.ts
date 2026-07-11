@@ -2029,8 +2029,10 @@ test("access HTTP server binds namespace write authorization to its configured p
       getMemoryById: async () => null,
       getMemoryTimeline: async () => [],
     }),
+    recallIntrospection: {
     getLastIntentSnapshot: async () => null,
     getLastGraphRecallSnapshot: async () => null,
+    },
   } as any);
 
   const headers = {
@@ -2547,8 +2549,10 @@ test("access HTTP server returns 400 for explicit-capture validation errors", as
     recall: async () => "ctx",
     lastRecall: { get: () => null, getMostRecent: () => null },
     getStorage: async () => storage,
+    recallIntrospection: {
     getLastIntentSnapshot: async () => null,
     getLastGraphRecallSnapshot: async () => null,
+    },
   } as any);
   const server = new EngramAccessHttpServer({
     service,

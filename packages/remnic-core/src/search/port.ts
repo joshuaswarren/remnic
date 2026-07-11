@@ -19,13 +19,15 @@ export interface SearchQueryOptions {
  * rule 34).
  */
 export interface SearchDegradation {
-  backend: "qmd";
+  backend: "qmd" | "remote" | "meilisearch" | "orama" | "lancedb";
   code:
     | "backend_unavailable"
+    | "backend_error"
     | "daemon_timeout"
     | "daemon_loading"
     | "subprocess_error"
-    | "deadline_exceeded";
+    | "deadline_exceeded"
+    | "remote_error";
   detail?: string;
 }
 
@@ -39,6 +41,17 @@ export interface SearchExecutionOptions {
    * observability must never break search.
    */
   onDegradation?: (degradation: SearchDegradation) => void;
+}
+
+export function reportSearchDegradation(
+  execution: SearchExecutionOptions | undefined,
+  degradation: SearchDegradation,
+): void {
+  try {
+    execution?.onDegradation?.(degradation);
+  } catch {
+    // Observability must never break search.
+  }
 }
 
 export function resolveEnsureCollectionArgs(

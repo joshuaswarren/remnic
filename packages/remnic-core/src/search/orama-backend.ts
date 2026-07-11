@@ -2,6 +2,7 @@ import path from "node:path";
 import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { log } from "../logger.js";
 import {
+  reportSearchDegradation,
   resolveEnsureCollectionArgs,
   type SearchBackend,
   type SearchExecutionOptions,
@@ -581,6 +582,13 @@ export class OramaBackend implements SearchBackend {
       }));
     } catch (err) {
       log.debug(`OramaBackend search (${mode}) failed: ${err}`);
+      if (!isSearchAborted(execution)) {
+        reportSearchDegradation(execution, {
+          backend: "orama",
+          code: "backend_error",
+          detail: err instanceof Error ? err.name : typeof err,
+        });
+      }
       return [];
     }
   }

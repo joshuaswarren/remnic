@@ -1237,6 +1237,7 @@ test("access service recall forwards overrides and returns explainable metadata"
       },
       lastRecall: { get: () => snapshot, getMostRecent: () => snapshot },
       getStorage: async () => storage,
+      recallIntrospection: {
       getLastIntentSnapshot: async () => ({
         recordedAt: "2026-03-08T00:00:00.000Z",
         promptHash: "prompt",
@@ -1258,6 +1259,7 @@ test("access service recall forwards overrides and returns explainable metadata"
         },
       }),
       getLastGraphRecallSnapshot: async () => null,
+      },
     } as any);
 
     const response = await service.recall({
@@ -1329,6 +1331,7 @@ test("access service recall reports the effective snapshot namespace in response
         getMostRecent: () => null,
       },
       getStorage: async () => storage,
+      recallIntrospection: {
       getLastIntentSnapshot: async (namespace: string) => {
         intentNamespace = namespace;
         return null;
@@ -1336,6 +1339,7 @@ test("access service recall reports the effective snapshot namespace in response
       getLastGraphRecallSnapshot: async (namespace: string) => {
         graphNamespace = namespace;
         return null;
+      },
       },
     } as any);
 
@@ -1410,8 +1414,10 @@ test("access service serializes result paths from the snapshot namespace", async
       recall: async () => "ctx",
       lastRecall: { get: () => snapshot, getMostRecent: () => snapshot },
       getStorage: async (namespace?: string) => (namespace === "project-x" ? namespaceStorage : globalStorage),
+      recallIntrospection: {
       getLastIntentSnapshot: async () => null,
       getLastGraphRecallSnapshot: async () => null,
+      },
     } as any);
 
     const response = await service.recall({
@@ -1469,8 +1475,10 @@ test("access service recall count stays aligned with snapshot memory ids when so
       recall: async () => "ctx",
       lastRecall: { get: () => snapshot, getMostRecent: () => snapshot },
       getStorage: async () => storage,
+      recallIntrospection: {
       getLastIntentSnapshot: async () => null,
       getLastGraphRecallSnapshot: async () => null,
+      },
     } as any);
 
     const response = await service.recall({
@@ -1531,6 +1539,7 @@ test("access service recall without a session key does not reuse another session
         },
       },
       getStorage: async () => storage,
+      recallIntrospection: {
       getLastIntentSnapshot: async () => ({
         recordedAt: "2026-03-10T00:00:00.000Z",
         promptHash: "prompt",
@@ -1548,6 +1557,7 @@ test("access service recall without a session key does not reuse another session
         nodes: [],
         edges: [],
       }),
+      },
     } as any);
 
     const response = await service.recall({
@@ -1609,8 +1619,10 @@ test("access service recallExplain omits mismatched most-recent snapshot when na
       getMemoryById: async () => null,
       getMemoryTimeline: async () => [],
     }),
+    recallIntrospection: {
     getLastIntentSnapshot: async () => null,
     getLastGraphRecallSnapshot: async () => null,
+    },
   } as any);
 
   const response = await service.recallExplain({
@@ -1659,8 +1671,10 @@ test("access service recallExplain omits most-recent snapshots without a namespa
       getMemoryById: async () => null,
       getMemoryTimeline: async () => [],
     }),
+    recallIntrospection: {
     getLastIntentSnapshot: async () => null,
     getLastGraphRecallSnapshot: async () => null,
+    },
   } as any);
 
   const response = await service.recallExplain({
@@ -1710,8 +1724,10 @@ test("access service recallExplain requires identity before exposing the most re
       getMemoryById: async () => null,
       getMemoryTimeline: async () => [],
     }),
+    recallIntrospection: {
     getLastIntentSnapshot: async () => null,
     getLastGraphRecallSnapshot: async () => null,
+    },
   } as any);
 
   const response = await service.recallExplain();
@@ -1768,6 +1784,7 @@ test("access service recallExplain does not fall back to unreadable default name
       getMemoryById: async () => null,
       getMemoryTimeline: async () => [],
     }),
+    recallIntrospection: {
     getLastIntentSnapshot: async (namespace: string) => {
       intentSnapshotCalls += 1;
       assert.equal(namespace, "global");
@@ -1777,6 +1794,7 @@ test("access service recallExplain does not fall back to unreadable default name
       graphSnapshotCalls += 1;
       assert.equal(namespace, "global");
       return { namespace, graph: "debug-default" };
+    },
     },
   } as any);
 
@@ -1836,8 +1854,10 @@ test("access service recallExplain filters session snapshots by the requested na
       getMemoryById: async () => null,
       getMemoryTimeline: async () => [],
     }),
+    recallIntrospection: {
     getLastIntentSnapshot: async () => null,
     getLastGraphRecallSnapshot: async () => null,
+    },
   } as any);
 
   const response = await service.recallExplain({
