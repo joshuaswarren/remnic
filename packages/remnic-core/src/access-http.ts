@@ -355,7 +355,7 @@ export class EngramAccessHttpServer {
       res.once("close", abortDisconnectedRequest);
       correlationIdStore.run(correlationId, () => {
         void this.handle(req, res, correlationId, abortController.signal).catch((err) => {
-          if (isAbortError(err) || abortController.signal.aborted) {
+          if (isAbortError(err)) {
             if (!res.destroyed && !res.writableEnded) {
               res.end();
             }

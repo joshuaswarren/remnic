@@ -5,6 +5,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import { throwIfAborted } from "./abort-error.js";
 import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
@@ -403,11 +404,8 @@ export interface EngramAccessRecallRequest {
   includeDebug?: boolean;
   abortSignal?: AbortSignal;
   /**
-   * Recall disclosure depth (issue #677).  Selects how much content each
-   * result returns: `"chunk"` (default), `"section"`, or `"raw"`.  Omitting
-   * this field is equivalent to passing `"chunk"` and preserves pre-#677
-   * behavior.  Surfaces (CLI / HTTP / MCP) and per-level token telemetry
-   * are wired in subsequent PRs of #677.
+   * Recall disclosure depth. Omitting it preserves the `"chunk"` default.
+   * Other accepted values are `"section"` and `"raw"`.
    */
   disclosure?: RecallDisclosure;
   /**
@@ -2433,7 +2431,7 @@ export class EngramAccessService {
     this.budgetLocks.set(key, queued);
     await previous.catch(() => {});
     try {
-      abortSignal?.throwIfAborted();
+      throwIfAborted(abortSignal);
       return await fn();
     } finally {
       release();
@@ -2737,6 +2735,7 @@ export class EngramAccessService {
       throw new EngramAccessInputError("query is required");
     }
     const normalizedRequest = { ...request, query };
+    const { abortSignal: _abortSignal, ...requestFingerprint } = normalizedRequest;
     const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
     const principal = this.resolveRequestPrincipal(request.sessionKey, authenticatedPrincipal);
     if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces && !principal) {
@@ -2749,9 +2748,10 @@ export class EngramAccessService {
       const response = await this.handleIdempotentRead({
         operation: "recall",
         idempotencyKey: request.idempotencyKey,
-        requestFingerprint: normalizedRequest,
+        requestFingerprint,
         execute: async () => {
           const result = await this.executeRecall(normalizedRequest);
+          throwIfAborted(request.abortSignal);
           budgetRecordPrincipal = result.budgetRecordPrincipal;
           return result.response;
         },

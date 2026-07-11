@@ -163,3 +163,78 @@ test("an aborted queued recall does not poison the principal budget lock", async
   assert.equal(secondStarted, false);
   assert.equal(thirdStarted, true);
 });
+
+function makeRecallServiceProbe(): {
+  service: EngramAccessService;
+  setExecuteRecall: (execute: () => Promise<void>) => void;
+  requestFingerprint: () => unknown;
+  stored: () => boolean;
+} {
+  const service = Object.create(EngramAccessService.prototype) as EngramAccessService;
+  let executeRecall = async () => {};
+  let capturedFingerprint: unknown;
+  let didStore = false;
+  const host = service as unknown as {
+    budgetLocks: Map<string, Promise<void>>;
+    orchestrator: { config: Record<string, unknown> };
+    resolveRequestPrincipal: () => string;
+    executeRecall: () => Promise<{ response: Record<string, never>; budgetRecordPrincipal: null }>;
+    handleIdempotentRead: (options: {
+      requestFingerprint: unknown;
+      execute: () => Promise<Record<string, never>>;
+    }) => Promise<Record<string, never>>;
+  };
+  host.budgetLocks = new Map();
+  host.orchestrator = { config: {} };
+  host.resolveRequestPrincipal = () => "principal";
+  host.executeRecall = async () => {
+    await executeRecall();
+    return { response: {}, budgetRecordPrincipal: null };
+  };
+  host.handleIdempotentRead = async (options) => {
+    capturedFingerprint = options.requestFingerprint;
+    const response = await options.execute();
+    didStore = true;
+    return response;
+  };
+  return {
+    service,
+    setExecuteRecall: (execute) => {
+      executeRecall = execute;
+    },
+    requestFingerprint: () => capturedFingerprint,
+    stored: () => didStore,
+  };
+}
+
+test("recall excludes its abort signal from the idempotency fingerprint", async () => {
+  const probe = makeRecallServiceProbe();
+  await probe.service.recall({
+    query: "same payload",
+    idempotencyKey: "same-key",
+    abortSignal: new AbortController().signal,
+  });
+
+  assert.equal(
+    Object.hasOwn(probe.requestFingerprint() as object, "abortSignal"),
+    false,
+  );
+});
+
+test("recall does not store a result when the pipeline consumes an abort", async () => {
+  const probe = makeRecallServiceProbe();
+  const controller = new AbortController();
+  probe.setExecuteRecall(async () => {
+    controller.abort();
+  });
+
+  await assert.rejects(
+    probe.service.recall({
+      query: "cancelled",
+      idempotencyKey: "cancelled-key",
+      abortSignal: controller.signal,
+    }),
+    (error: Error) => error.name === "AbortError",
+  );
+  assert.equal(probe.stored(), false);
+});
