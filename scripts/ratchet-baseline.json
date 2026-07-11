@@ -8,7 +8,7 @@
       "packages/remnic-core/src/cli.ts": 9395,
       "packages/remnic-core/src/access-service.ts": 5902,
       "packages/remnic-core/src/storage.ts": 6549,
-      "packages/remnic-core/src/config.ts": 4694
+      "packages/remnic-core/src/config.ts": 4438
     },
     "oversizedFileCount": 11,
     "scatteredConfigFlagReads": 0,
