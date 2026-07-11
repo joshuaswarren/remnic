@@ -171,6 +171,10 @@ test("oauth pending (text) renders the list and sends the bearer token", async (
     assert.match(result.stdout, /ref=abc123/);
     assert.match(result.stdout, /client=chatgpt-demo/);
     assert.match(result.stdout, /redirect=https:\/\/chatgpt\.com\/oauth\/callback/);
+    // Scopes + resource must be visible so an operator using `approve --yes`
+    // can vet the request from the listing (Codex review).
+    assert.match(result.stdout, /scopes=mcp:read mcp:write/);
+    assert.match(result.stdout, /resource=https:\/\/mcp\.example\.com/);
   } finally {
     restoreFetch();
   }

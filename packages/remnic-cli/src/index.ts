@@ -4592,8 +4592,11 @@ function oauthFormatPendingText(pending: readonly OAuthPendingEntry[]): string {
   }
   const lines: string[] = [`Pending OAuth authorizations (${pending.length}):`];
   for (const txn of pending) {
+    const scopes = txn.scopes.length === 0 ? "(none)" : txn.scopes.join(" ");
+    const resource = txn.resource === null || txn.resource.length === 0 ? "(none)" : txn.resource;
     lines.push(
-      `  ref=${txn.ref}  client=${txn.clientId}  redirect=${txn.redirectUri}  expires=${txn.expiresAt}`,
+      `  ref=${txn.ref}  client=${txn.clientId}  redirect=${txn.redirectUri}`,
+      `      scopes=${scopes}  resource=${resource}  expires=${txn.expiresAt}`,
     );
   }
   return lines.join("\n");

@@ -923,3 +923,37 @@ test("poll reports expired (not approved) once the authorization code is gone", 
   const afterConsume = state.poll(txn.txn, txn.pollSecret);
   assert.equal(afterConsume?.status, "expired", "poll must not redirect with a spent/expired code");
 });
+
+test("approved transactions survive the pending TTL while the authorization code is still live", (t) => {
+  t.mock.timers.enable({ apis: ["Date"] });
+  try {
+    const config = parseOAuthConfig({
+      enabled: true,
+      issuerUrl: "http://127.0.0.1:4318",
+      clientId: CLIENT_ID,
+      clientSecret: CLIENT_SECRET,
+      redirectUris: [REDIRECT_URI],
+      approvalTtlSeconds: 1, // 1 s pending TTL vs 120 s code TTL
+    });
+    const state = new OAuthState(config);
+    const txn = state.createPending({
+      clientId: CLIENT_ID,
+      redirectUri: REDIRECT_URI,
+      scopes: [],
+      resource: undefined,
+      state: undefined,
+      codeChallenge: "x".repeat(43),
+    });
+    state.approveByRef(txn.ref);
+    // Advance PAST the 1 s pending TTL but well within the 120 s code TTL.
+    t.mock.timers.tick(1_500);
+    const stillApproved = state.poll(txn.txn, txn.pollSecret);
+    assert.equal(stillApproved?.status, "approved", "approval before the deadline must remain redeemable");
+    // Advance past the code TTL: now both code and txn are gone.
+    t.mock.timers.tick(120_000);
+    const afterCode = state.poll(txn.txn, txn.pollSecret);
+    assert.equal(afterCode?.status, "expired");
+  } finally {
+    t.mock.timers.reset();
+  }
+});

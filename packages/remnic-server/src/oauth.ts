@@ -394,11 +394,19 @@ export class OAuthState {
 
   /** Delete expired entries. Run before each lookup. */
   private gc(now: number): void {
-    for (const [key, txn] of this.pending) {
-      if (txn.expiresAt < now) this.pending.delete(key);
-    }
+    // Expire codes first so the pending check below sees the post-GC code
+    // set.
     for (const [key, code] of this.codes) {
       if (code.expiresAt < now) this.codes.delete(key);
+    }
+    for (const [key, txn] of this.pending) {
+      if (txn.expiresAt >= now) continue;
+      // Keep an APPROVED transaction alive while its authorization code is
+      // still live, even past the pending TTL: an approval made just
+      // before the deadline (or under a short approvalTtlSeconds) must
+      // still be pollable+redirectable until the code itself expires.
+      if (txn.outcome?.kind === "approved" && this.codes.has(txn.outcome.code)) continue;
+      this.pending.delete(key);
     }
   }
 
