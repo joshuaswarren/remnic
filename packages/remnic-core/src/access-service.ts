@@ -5,6 +5,7 @@ import { readdirSync, unlinkSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { ZodError } from "zod";
 import { AccessIdempotencyStore, hashAccessIdempotencyPayload } from "./access-idempotency.js";
+import { throwIfAborted } from "./abort-error.js";
 import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveQmdCapabilities,
@@ -401,12 +402,10 @@ export interface EngramAccessRecallRequest {
   topK?: number;
   mode?: RecallPlanMode | "auto";
   includeDebug?: boolean;
+  abortSignal?: AbortSignal;
   /**
-   * Recall disclosure depth (issue #677).  Selects how much content each
-   * result returns: `"chunk"` (default), `"section"`, or `"raw"`.  Omitting
-   * this field is equivalent to passing `"chunk"` and preserves pre-#677
-   * behavior.  Surfaces (CLI / HTTP / MCP) and per-level token telemetry
-   * are wired in subsequent PRs of #677.
+   * Recall disclosure depth. Omitting it preserves the `"chunk"` default.
+   * Other accepted values are `"section"` and `"raw"`.
    */
   disclosure?: RecallDisclosure;
   /**
@@ -2421,7 +2420,7 @@ export class EngramAccessService {
     }
   }
 
-  private async withBudgetLock<T>(principal: string, fn: () => Promise<T>): Promise<T> {
+  private async withBudgetLock<T>(principal: string, abortSignal: AbortSignal | undefined, fn: () => Promise<T>): Promise<T> {
     const key = principal || "__anonymous__";
     const previous = this.budgetLocks.get(key) ?? Promise.resolve();
     let release!: () => void;
@@ -2430,9 +2429,9 @@ export class EngramAccessService {
     });
     const queued = previous.then(() => current, () => current);
     this.budgetLocks.set(key, queued);
-
     await previous.catch(() => {});
     try {
+      throwIfAborted(abortSignal);
       return await fn();
     } finally {
       release();
@@ -2736,6 +2735,7 @@ export class EngramAccessService {
       throw new EngramAccessInputError("query is required");
     }
     const normalizedRequest = { ...request, query };
+    const { abortSignal: _abortSignal, ...requestFingerprint } = normalizedRequest;
     const authenticatedPrincipal = request.authenticatedPrincipal?.trim();
     const principal = this.resolveRequestPrincipal(request.sessionKey, authenticatedPrincipal);
     if (resolveNamespaceCapabilities(this.orchestrator.config).namespaces && !principal) {
@@ -2743,15 +2743,15 @@ export class EngramAccessService {
         "authentication required: namespaces are enabled and no principal was supplied",
       );
     }
-    const budgetLockPrincipal = principal ?? "default";
-    return this.withBudgetLock(budgetLockPrincipal, async () => {
+    return this.withBudgetLock(principal ?? "default", request.abortSignal, async () => {
       let budgetRecordPrincipal: string | null = null;
       const response = await this.handleIdempotentRead({
         operation: "recall",
         idempotencyKey: request.idempotencyKey,
-        requestFingerprint: normalizedRequest,
+        requestFingerprint,
         execute: async () => {
           const result = await this.executeRecall(normalizedRequest);
+          throwIfAborted(request.abortSignal);
           budgetRecordPrincipal = result.budgetRecordPrincipal;
           return result.response;
         },
