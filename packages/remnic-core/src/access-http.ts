@@ -8,7 +8,13 @@ import { fileURLToPath, URL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { log } from "./logger.js";
 import { abortError, isAbortError } from "./abort-error.js";
-import { EngramAccessForbiddenError, EngramAccessInputError, type EngramAccessService, type EngramAccessMemoryResponse, type EngramAccessWriteResponse } from "./access-service.js"
+import { EngramAccessForbiddenError } from "./access-errors.js";
+import {
+  EngramAccessInputError,
+  type EngramAccessService,
+  type EngramAccessMemoryResponse,
+  type EngramAccessWriteResponse,
+} from "./access-service.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js";
 import { EngramMcpServer } from "./access-mcp.js";
