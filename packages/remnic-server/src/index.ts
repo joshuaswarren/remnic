@@ -665,6 +665,16 @@ export function createAdminControls(
   };
 }
 
+interface PromiseResolvers<T> {
+  promise: Promise<T>;
+  resolve: (value: T | PromiseLike<T>) => void;
+  reject: (reason?: unknown) => void;
+}
+
+type PromiseConstructorWithResolvers = PromiseConstructor & {
+  withResolvers<T>(): PromiseResolvers<T>;
+};
+
 /**
  * Like `setTimeout` wrapped in a Promise, but respects an `AbortSignal`.
  * Resolves immediately (without throwing) when the signal fires so the
@@ -672,14 +682,83 @@ export function createAdminControls(
  */
 function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
-  return new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    const onAbort = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
+  const { promise, resolve } = (Promise as PromiseConstructorWithResolvers).withResolvers<void>();
+  const timer = setTimeout(resolve, ms);
+  const onAbort = () => {
+    clearTimeout(timer);
+    resolve();
+  };
+  signal.addEventListener("abort", onAbort, { once: true });
+  return promise.finally(() => signal.removeEventListener("abort", onAbort));
+}
+
+const STARTUP_WARMUP_TIMEOUT_MS = 20_000;
+
+export type StartupReadinessOutcome = "warmed" | "failed-open" | "cancelled";
+
+export async function completeStartupReadiness(options: {
+  deferredReady: Promise<void>;
+  warmup: (signal: AbortSignal) => Promise<unknown>;
+  timeoutMs?: number;
+  openGate: () => void;
+  shutdownSignal?: AbortSignal;
+  warn?: (message: string) => void;
+  info?: (message: string) => void;
+}): Promise<StartupReadinessOutcome> {
+  const timeoutMs = options.timeoutMs ?? STARTUP_WARMUP_TIMEOUT_MS;
+  const warn = options.warn ?? ((message: string) => log.warn(message));
+  const info = options.info ?? ((message: string) => log.info(message));
+
+  try {
+    await options.deferredReady;
+  } catch (err) {
+    if (options.shutdownSignal?.aborted) return "cancelled";
+    warn(`Standalone deferred initialization failed; opening readiness gate: ${err}`);
+    options.openGate();
+    info("Standalone init gate opened after deferred initialization failure (fail-open)");
+    return "failed-open";
+  }
+  if (options.shutdownSignal?.aborted) return "cancelled";
+
+  const warmupAbort = new AbortController();
+  const onShutdown = () => warmupAbort.abort(options.shutdownSignal?.reason);
+  options.shutdownSignal?.addEventListener("abort", onShutdown, { once: true });
+  const timeout = (Promise as PromiseConstructorWithResolvers).withResolvers<never>();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    warmupAbort.abort();
+    timeout.reject(new Error(`startup warm-up timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+  timer.unref();
+
+  let outcome: StartupReadinessOutcome = "warmed";
+  try {
+    await Promise.race([options.warmup(warmupAbort.signal), timeout.promise]);
+  } catch (err) {
+    if (options.shutdownSignal?.aborted) {
+      outcome = "cancelled";
+    } else {
+      outcome = "failed-open";
+      warn(
+        timedOut
+          ? `Standalone startup warm-up timed out after ${timeoutMs}ms; opening readiness gate`
+          : `Standalone startup warm-up failed; opening readiness gate: ${err}`,
+      );
+    }
+  } finally {
+    clearTimeout(timer);
+    options.shutdownSignal?.removeEventListener("abort", onShutdown);
+  }
+
+  if (outcome === "cancelled" || options.shutdownSignal?.aborted) return "cancelled";
+  options.openGate();
+  info(
+    outcome === "warmed"
+      ? "Standalone init gate opened (startup sync and search warm-up complete)"
+      : "Standalone init gate opened after warm-up failure (fail-open)",
+  );
+  return outcome;
 }
 
 async function cleanupFailedStartup(
@@ -755,6 +834,7 @@ export async function startServer(options?: {
   // Start the HTTP server immediately so health checks, MCP handshakes,
   // and liveness probes can connect while deferred init is still running.
   const service = new EngramAccessService(orchestrator);
+  let ready = false;
 
   const authToken = parsedServerConfig.authToken ?? readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN") ?? "";
 
@@ -770,6 +850,7 @@ export async function startServer(options?: {
     port: parsedServerConfig.port,
     authToken: authToken || undefined,
     authTokensGetter: () => getAllValidTokensCached(),
+    isReady: () => ready,
     principal: parsedServerConfig.principal,
     maxBodyBytes: parsedServerConfig.maxBodyBytes,
     adminConsoleEnabled: parsedServerConfig.adminConsoleEnabled,
@@ -799,6 +880,22 @@ export async function startServer(options?: {
   // block the server listener — connections are accepted immediately above.
   // An AbortController allows the shutdown handler to cancel pending retries.
   const startupSyncAbort = new AbortController();
+  void completeStartupReadiness({
+    deferredReady: orchestrator.deferredReady,
+    warmup: (signal) =>
+      orchestrator.qmd.search(
+        "remnic startup readiness",
+        config.defaultNamespace,
+        1,
+        undefined,
+        { signal },
+      ),
+    openGate: () => {
+      ready = true;
+    },
+    shutdownSignal: startupSyncAbort.signal,
+  });
+
 
   // Wrap httpServer.stop() so that existing callers also get full lifecycle
   // cleanup: retry timers, deferred init, HTTP listener, and orchestrator.

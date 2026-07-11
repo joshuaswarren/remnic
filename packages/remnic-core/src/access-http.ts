@@ -66,6 +66,11 @@ export interface EngramAccessHttpServerOptions {
   emitLegacyTools?: boolean;
   /** Optional authenticated admin dashboard/config controls supplied by the host server. */
   adminControls?: RemnicAdminControls;
+  /**
+   * Standalone readiness gate. Defaults to ready so embedded hosts keep their
+   * existing health behavior.
+   */
+  isReady?: () => boolean;
 }
 
 export interface EngramAccessHttpServerStatus {
@@ -279,6 +284,7 @@ export class EngramAccessHttpServer {
   private readonly adminControls?: RemnicAdminControls;
   private readonly trustPrincipalHeader: boolean;
   private readonly adapterRegistry: AdapterRegistry | null;
+  private readonly isReady: () => boolean;
   private readonly writeRequestTimestamps: number[] = [];
   private readonly mcpServer: EngramMcpServer;
   private server: Server | null = null;
@@ -319,6 +325,7 @@ export class EngramAccessHttpServer {
     this.adminConsolePrefillToken = options.adminConsolePrefillToken === true ? this.authToken : undefined;
     this.adminControls = options.adminControls;
     this.trustPrincipalHeader = options.trustPrincipalHeader === true;
+    this.isReady = options.isReady ?? (() => true);
     this.adapterRegistry = options.enableAdapters !== false
       ? (options.adapterRegistry ?? new AdapterRegistry())
       : null;
@@ -588,6 +595,19 @@ export class EngramAccessHttpServer {
     const pathname = parsed.pathname;
 
     if (this.adminConsoleEnabled && await this.handleAdminConsole(req, res, pathname)) {
+      return;
+    }
+
+    if (
+      req.method === "GET" &&
+      pathname === "/engram/v1/health" &&
+      !this.isReady()
+    ) {
+      this.respondJson(res, 503, {
+        ok: false,
+        ready: false,
+        code: "not_ready",
+      });
       return;
     }
 
