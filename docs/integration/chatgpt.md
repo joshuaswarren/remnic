@@ -138,8 +138,8 @@ Field-by-field:
 | `enabled` | yes | Master gate. Must be `true` for ChatGPT to discover the OAuth endpoints. Default `false`. |
 | `issuerUrl` | yes | **Public HTTPS base URL of the tunneled server.** Must match the URL ChatGPT sees exactly — this is the value the discovery documents are served from, and the value used in `WWW-Authenticate: Bearer resource_metadata=...` on `401` responses. |
 | `clientId` | yes | Operator-chosen identifier. You paste the same string into ChatGPT's app-creation UI. Pick anything memorable; the same value is the credential both sides trust. |
-| `clientSecret` | yes | High-entropy secret. Generate with `openssl rand -hex 32`. The same value is pasted into ChatGPT as the OAuth client secret. |
-| `tokenEndpointAuthMethod` | yes | Exactly one of `client_secret_post`, `client_secret_basic`, or `none`. This single method is both **advertised** in the discovery document and **enforced** at the token endpoint. Pick one and stick with it. |
+| `clientSecret` | when method is `client_secret_post` | High-entropy secret. Generate with `openssl rand -hex 32`. The same value is pasted into ChatGPT as the OAuth client secret. Not consulted (and not required) when `tokenEndpointAuthMethod` is `none`. |
+| `tokenEndpointAuthMethod` | no (default `client_secret_post`) | Exactly one of `client_secret_post` or `none`. The single configured method is both **advertised** in the discovery document and **enforced** at the token endpoint. `none` makes the client public — the token exchange is protected only by PKCE plus the local operator approval; prefer the default unless you understand that tradeoff. |
 | `redirectUris` | yes | Exact byte-for-byte allowlist of allowed ChatGPT redirect URIs. No prefixes, no patterns. You will add the value ChatGPT shows you after the app is created (see Step 3). Empty array = nothing can link. |
 | `approvalTtlSeconds` | no | How long a pending authorization transaction lives while waiting for the local operator to approve. Default `600` (10 minutes). |
 
@@ -366,7 +366,7 @@ re-runs the OAuth approval flow.
 | "Expired approval" in the browser tab on the server machine | `approvalTtlSeconds` elapsed (default 600 s) before the operator ran `remnic oauth approve`. | Run `remnic oauth approve <new-ref>` from the new pending transaction; the old ref is gone. Raise `approvalTtlSeconds` in the OAuth config if your operator is regularly slower. |
 | ChatGPT says "service unavailable" or the tool list is empty after the tunnel is working | The tunnel went offline (Tailscale node disconnected, `cloudflared` lost the connection). | Check the tunnel's status (`tailscale status`, `cloudflared tunnel info ...`) and re-establish. The server itself does not need a restart once the tunnel is back. |
 | ChatGPT keeps showing the **old** tool list after Remnic added or renamed a tool | ChatGPT caches the discovered tool list per app. | Use the **Refresh** action on the app's settings page in ChatGPT; it forces a re-fetch of the discovery document and tool list. Server-side changes do not invalidate ChatGPT's cache. |
-| `remnic oauth pending` says "No pending requests" while the browser is on the approval page | The page is polling the wrong server, or the server is bound to a different port than `issuerUrl` points at. | Check the URL in the browser tab — it should be `<issuerUrl>/oauth/authorize/poll?...`. If it is `127.0.0.1`, the tunnel is not routing correctly. |
+| `remnic oauth pending` says "No pending requests" while the browser is on the approval page | The page is polling the wrong server, or the server is bound to a different port than `issuerUrl` points at. | Check the URL in the browser tab — it should be `<issuerUrl>/authorize?...`, and the page polls `<issuerUrl>/oauth/authorize/poll`. If it shows `127.0.0.1`, the tunnel is not routing correctly. |
 | ChatGPT returns "Invalid client" or "Invalid client_secret" at the token endpoint | `clientId` / `clientSecret` pasted into ChatGPT does not match `server.oauth.clientId` / `server.oauth.clientSecret`. | Remnic enforces the single `tokenEndpointAuthMethod` from your config. Re-copy the values from your config file (no surrounding whitespace, no shell-expanded placeholders) and re-paste into the ChatGPT app. |
 | Operator `remnic oauth approve` returns 401 | The CLI is talking to a Remnic daemon that does not have the same operator bearer token. | The CLI uses the same operator auth as the rest of the daemon-backed commands (`REMNIC_AUTH_TOKEN` / config). Re-check the config / env on the server machine. |
 
@@ -421,11 +421,12 @@ re-runs the OAuth approval flow.
 
 ---
 
-## Endpoint reference (authoritative from contract)
+## Endpoint reference
 
-The following paths are mounted by Remnic's OAuth facade and are
-authoritative from the integration contract. If a future SDK change moves
-any of them, this doc will be updated to match.
+The following paths are mounted by Remnic's OAuth facade. The
+authorization and token endpoints follow the MCP TypeScript SDK's auth
+router layout (root-level `/authorize` and `/token`); the exact values
+are always discoverable from `/.well-known/oauth-authorization-server`.
 
 - `GET /.well-known/oauth-protected-resource` — RFC 9728 protected-resource
   metadata.
@@ -435,10 +436,10 @@ any of them, this doc will be updated to match.
   server metadata. ChatGPT fetches this during discovery; the
   `authorization_endpoint` and `token_endpoint` values are derived from
   `server.oauth.issuerUrl`.
-- `GET /oauth/authorize` — start of the authorization-code + PKCE (S256)
+- `GET /authorize` — start of the authorization-code + PKCE (S256)
   flow. Validates `client_id`, exact `redirect_uri` match, `response_type=code`,
   and PKCE S256 challenge. Renders the approval-instructions page.
-- `POST /oauth/token` — authorization-code grant only. Enforces the
+- `POST /token` — authorization-code grant only. Enforces the
   single configured `tokenEndpointAuthMethod`, verifies the PKCE verifier,
   and returns a long-lived bearer token. Re-linking rotates the token.
 - `POST /oauth/authorize/poll` — used by the approval page to wait for
