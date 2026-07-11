@@ -38,6 +38,12 @@ import { handleChatMessage, handleChatEventsSSE } from "./chat/chat-http.js";
 // server lifecycle (issue #1685 item 1 / #1687 Thread 21).
 import { cleanupExpiredChatSessions } from "./chat/chat-session.js";
 
+export interface AccessHttpReadinessState {
+  ready: boolean;
+  warmupAttempts: number;
+  lastError?: string | null;
+}
+
 export interface EngramAccessHttpServerOptions {
   service: EngramAccessService;
   host?: string;
@@ -66,6 +72,11 @@ export interface EngramAccessHttpServerOptions {
   emitLegacyTools?: boolean;
   /** Optional authenticated admin dashboard/config controls supplied by the host server. */
   adminControls?: RemnicAdminControls;
+  /**
+   * Standalone readiness state. Defaults to ready so embedded hosts keep their
+   * existing health behavior.
+   */
+  readiness?: () => AccessHttpReadinessState;
 }
 
 export interface EngramAccessHttpServerStatus {
@@ -279,6 +290,7 @@ export class EngramAccessHttpServer {
   private readonly adminControls?: RemnicAdminControls;
   private readonly trustPrincipalHeader: boolean;
   private readonly adapterRegistry: AdapterRegistry | null;
+  private readonly readiness: () => AccessHttpReadinessState;
   private readonly writeRequestTimestamps: number[] = [];
   private readonly mcpServer: EngramMcpServer;
   private server: Server | null = null;
@@ -319,6 +331,7 @@ export class EngramAccessHttpServer {
     this.adminConsolePrefillToken = options.adminConsolePrefillToken === true ? this.authToken : undefined;
     this.adminControls = options.adminControls;
     this.trustPrincipalHeader = options.trustPrincipalHeader === true;
+    this.readiness = options.readiness ?? (() => ({ ready: true, warmupAttempts: 0 }));
     this.adapterRegistry = options.enableAdapters !== false
       ? (options.adapterRegistry ?? new AdapterRegistry())
       : null;
@@ -589,6 +602,21 @@ export class EngramAccessHttpServer {
 
     if (this.adminConsoleEnabled && await this.handleAdminConsole(req, res, pathname)) {
       return;
+    }
+
+    if (req.method === "GET" && pathname === "/engram/v1/health") {
+      const readiness = this.readiness();
+      if (!readiness.ready) {
+        this.respondJson(res, 503, {
+          ok: false,
+          ready: false,
+          warmupAttempts: readiness.warmupAttempts,
+          lastError: readiness.lastError ?? null,
+          code: "not_ready",
+        });
+        return;
+      }
+
     }
 
     if (!this.isAuthorized(req, pathname)) {
