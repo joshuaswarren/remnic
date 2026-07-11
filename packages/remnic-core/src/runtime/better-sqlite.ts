@@ -28,6 +28,35 @@ export function openBetterSqlite3(
   return new Database(file, options);
 }
 
+export interface BetterSqlite3DriverProbe {
+  /** true when the native binding loaded successfully under this process. */
+  ok: boolean;
+  /** Path-free detail string (class + code) from `displayErrorDetail`; "" when ok. */
+  detail: string;
+  /** true when the failure is classified as a native-binding ABI mismatch. */
+  nativeBindingMismatch: boolean;
+}
+
+/**
+ * Attempt to load the better-sqlite3 native driver under the running process
+ * WITHOUT opening a database. Used by the server startup check (issue #1829)
+ * to surface a wrong-ABI build loudly instead of letting each memory browse
+ * silently fall back to a full-corpus scan. Never throws — callers log the
+ * result. A successful probe also warms the ctor cache for later opens.
+ */
+export function probeBetterSqlite3Driver(): BetterSqlite3DriverProbe {
+  try {
+    loadBetterSqlite3();
+    return { ok: true, detail: "", nativeBindingMismatch: false };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: displayErrorDetail(error),
+      nativeBindingMismatch: isLikelyBetterSqlite3NativeBindingError(error),
+    };
+  }
+}
+
 function requireBetterSqlite3Ctor(require: RuntimeRequire): BetterSqlite3Ctor {
   const loaded = require("better-sqlite3") as
     | BetterSqlite3Ctor

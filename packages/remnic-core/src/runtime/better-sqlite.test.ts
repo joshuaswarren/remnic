@@ -4,6 +4,7 @@ import {
   displayErrorDetail,
   isLikelyBetterSqlite3NativeBindingError,
   openBetterSqlite3,
+  probeBetterSqlite3Driver,
 } from "./better-sqlite.js";
 
 test("isLikelyBetterSqlite3NativeBindingError recognizes missing and mismatched native bindings", () => {
@@ -58,4 +59,13 @@ test("openBetterSqlite3 can open an in-memory database after install verificatio
   } finally {
     db.close();
   }
+});
+
+test("probeBetterSqlite3Driver succeeds (ok=true) under the verified process and warms the ctor cache", () => {
+  const probe = probeBetterSqlite3Driver();
+  assert.equal(probe.ok, true);
+  assert.equal(probe.detail, "");
+  assert.equal(probe.nativeBindingMismatch, false);
+  // A second probe reuses the warmed cache (no re-load); still ok.
+  assert.equal(probeBetterSqlite3Driver().ok, true);
 });

@@ -12,7 +12,10 @@ import type {
   MemoryProjectionCurrentState,
   MemoryStatus,
 } from "./types.js";
+import { log } from "./logger.js";
 import {
+  displayErrorDetail,
+  isLikelyBetterSqlite3NativeBindingError,
   openBetterSqlite3,
   type BetterSqlite3Database,
 } from "./runtime/better-sqlite.js";
@@ -314,12 +317,104 @@ export function initializeMemoryProjectionDb(db: BetterSqlite3Database): void {
     .run("schemaVersion", String(MEMORY_PROJECTION_SCHEMA_VERSION));
 }
 
+// Test seam (issue #1829): the readonly projection opener is overridable so
+// tests can inject an ABI-style throw against a PRESENT file without faking a
+// corrupt native binding. Default delegates to the shared opener.
+type ProjectionReadonlyOpener = typeof openBetterSqlite3;
+let projectionReadonlyOpener: ProjectionReadonlyOpener = openBetterSqlite3;
+
+/** @internal Test seam: override the readonly projection opener; returns a restore fn. */
+export function __setProjectionReadonlyOpenerForTest(
+  opener: ProjectionReadonlyOpener | null,
+): () => void {
+  const previous = projectionReadonlyOpener;
+  projectionReadonlyOpener = opener ?? openBetterSqlite3;
+  return () => {
+    projectionReadonlyOpener = previous;
+  };
+}
+
+// Rate-limited suppression for open failures — mirrors warnProjectionFallback
+// in storage-guards.ts (5-min dedup per memoryDir). A present-but-unopenable
+// projection is a real failure that must surface, but it repeats on every
+// browse, so the log is throttled to keep output actionable (issue #1829).
+const PROJECTION_OPEN_FAILURE_LOG_INTERVAL_MS = 5 * 60_000;
+const projectionOpenFailureLoggedAt = new Map<string, number>();
+
+/** @internal Test seam: clear the rate-limit dedup map. */
+export function __resetProjectionOpenFailureSuppressionForTest(): void {
+  projectionOpenFailureLoggedAt.clear();
+}
+
+function logProjectionOpenFailure(memoryDir: string, error: unknown): void {
+  const now = Date.now();
+  const warnedAt = projectionOpenFailureLoggedAt.get(memoryDir) ?? 0;
+  if (now - warnedAt < PROJECTION_OPEN_FAILURE_LOG_INTERVAL_MS) return;
+  projectionOpenFailureLoggedAt.set(memoryDir, now);
+  // Path-free detail only (rule 11 / CodeQL js/stack-trace-exposure): the raw
+  // message can embed absolute loader paths; displayErrorDetail returns class +
+  // code. This is the DISTINCT signal that was missing before #1829, when a
+  // wrong-ABI build collapsed into the same silent null as a missing file.
+  const detail = displayErrorDetail(error);
+  const nativeMismatch = isLikelyBetterSqlite3NativeBindingError(error);
+  const detailSuffix = detail ? ` (${detail})` : "";
+  const abiSuffix = nativeMismatch
+    ? " — native binding built for the wrong Node.js ABI; rebuild better-sqlite3 for this process"
+    : "";
+  log.warn(
+    `storage.memory-projection: index present but could not be opened${detailSuffix}${abiSuffix}; falling back to full-corpus scan`,
+  );
+}
+
 function openProjectionReadonly(memoryDir: string): BetterSqlite3Database | null {
   const dbPath = getMemoryProjectionPath(memoryDir);
+  // A MISSING file is a normal fallback (cold install, never built). A file
+  // that EXISTS but cannot open (wrong ABI / corrupt / bad perms) is a real
+  // failure that must surface (issue #1829): previously both collapsed into
+  // the same silent null, hiding native-binding mismatches behind 17-27s
+  // full-corpus scans on every memory list.
+  if (!fs.existsSync(dbPath)) return null;
   try {
-    return openBetterSqlite3(dbPath, { readonly: true, fileMustExist: true });
-  } catch {
+    return projectionReadonlyOpener(dbPath, { readonly: true, fileMustExist: true });
+  } catch (error) {
+    logProjectionOpenFailure(memoryDir, error);
     return null;
+  }
+}
+
+export type ProjectionHealthState = "absent" | "openable" | "unopenable";
+
+export interface ProjectionHealthProbe {
+  state: ProjectionHealthState;
+  /** Path-free detail (class + code) when state === "unopenable"; "" otherwise. */
+  detail: string;
+  /** true when the open failure is classified as a native-binding ABI mismatch. */
+  nativeBindingMismatch: boolean;
+}
+
+/**
+ * Stat + attempt-open the memory projection WITHOUT keeping a handle, for the
+ * `remnic doctor` health check (issue #1829). Distinguishes the three states a
+ * projection can be in so operators can tell "not built yet" (normal) from
+ * "exists but broken" (needs a rebuild / native-binding rebuild). Never throws.
+ */
+export function probeProjectionHealth(memoryDir: string): ProjectionHealthProbe {
+  const dbPath = getMemoryProjectionPath(memoryDir);
+  if (!fs.existsSync(dbPath)) {
+    return { state: "absent", detail: "", nativeBindingMismatch: false };
+  }
+  let db: BetterSqlite3Database | null = null;
+  try {
+    db = projectionReadonlyOpener(dbPath, { readonly: true, fileMustExist: true });
+    return { state: "openable", detail: "", nativeBindingMismatch: false };
+  } catch (error) {
+    return {
+      state: "unopenable",
+      detail: displayErrorDetail(error),
+      nativeBindingMismatch: isLikelyBetterSqlite3NativeBindingError(error),
+    };
+  } finally {
+    db?.close();
   }
 }
 function updateProjectionBestEffort(
