@@ -1679,8 +1679,9 @@ export class EngramAccessHttpServer {
       void getOperation("recall_timings"); // boundary dispatch (issue #1830)
       if (
         !isRecallTimingsOperator(
-          this.authenticatedPrincipal,
+          this.service.configRef,
           this.resolveRequestPrincipal(req),
+          this.authenticatedPrincipal,
         )
       ) {
         this.respondJson(res, 403, { error: "operator principal required" });

@@ -13,6 +13,7 @@ import {
   getRecallTimings,
   getRecallTimingStatus,
   recordRecallTiming,
+  resolveRecallTimingsOperatorPrincipal,
   type RecallTimingRecord,
 } from "./recall-timings.js";
 
@@ -124,6 +125,28 @@ test("recall timing history keeps only the newest 50 records", () => {
   assert.equal(records.length, 50);
   assert.equal(records[0]?.total, 50);
   assert.equal(records[49]?.total, 1);
+});
+
+test("operator principal resolution agrees for standalone and embedded access", () => {
+  const standaloneConfig = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-standalone"));
+  assert.equal(
+    resolveRecallTimingsOperatorPrincipal(standaloneConfig, "standalone-operator"),
+    "standalone-operator",
+  );
+
+  const embeddedConfig = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-embedded"), {
+    agentAccessHttp: {
+      enabled: true,
+      host: "127.0.0.1",
+      port: 0,
+      principal: "embedded-operator",
+      maxBodyBytes: 1024,
+    },
+  });
+  assert.equal(
+    resolveRecallTimingsOperatorPrincipal(embeddedConfig),
+    "embedded-operator",
+  );
 });
 
 test("recall timing records expose only the fixed telemetry schema", () => {

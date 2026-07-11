@@ -81,15 +81,28 @@ export function recordRecallTiming(
   histories.set(config, history);
 }
 
+export function resolveRecallTimingsOperatorPrincipal(
+  config: PluginConfig,
+  transportPrincipal?: string,
+): string | undefined {
+  return transportPrincipal?.trim()
+    || config.agentAccessHttp.principal?.trim()
+    || undefined;
+}
+
 export function isRecallTimingsOperator(
-  operatorPrincipal: string | undefined,
+  config: PluginConfig,
   authenticatedPrincipal?: string,
+  transportPrincipal?: string,
 ): boolean {
-  const configuredOperator = operatorPrincipal?.trim();
+  const operatorPrincipal = resolveRecallTimingsOperatorPrincipal(
+    config,
+    transportPrincipal,
+  );
   return Boolean(
-    configuredOperator
+    operatorPrincipal
     && authenticatedPrincipal
-    && authenticatedPrincipal === configuredOperator,
+    && authenticatedPrincipal === operatorPrincipal,
   );
 }
 

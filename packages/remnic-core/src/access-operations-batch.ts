@@ -260,9 +260,13 @@ defineOperation({
   description: "List recent recall timings.",
   schema: strictSchema({}),
   handler: async (_input, ctx) => {
-    const operatorPrincipal =
-      ctx.operatorPrincipal ?? ctx.service.configRef.agentAccessHttp.principal;
-    if (!isRecallTimingsOperator(operatorPrincipal, ctx.authenticatedPrincipal)) {
+    if (
+      !isRecallTimingsOperator(
+        ctx.service.configRef,
+        ctx.authenticatedPrincipal,
+        ctx.operatorPrincipal,
+      )
+    ) {
       throw new Error("recall timings require the configured operator principal");
     }
     return { result: getRecallTimingStatus(ctx.service.configRef) };
