@@ -312,7 +312,8 @@ test("getLastGraphRecallSnapshot reads persisted snapshot", async () => {
     "utf-8",
   );
 
-  const snapshot = await orchestrator.getLastGraphRecallSnapshot();
+  const snapshot =
+    await orchestrator.recallIntrospection.getLastGraphRecallSnapshot();
   assert.ok(snapshot);
   assert.equal(snapshot!.mode, "graph_mode");
   assert.equal(snapshot!.seedCount, 1);
@@ -358,7 +359,8 @@ test("getLastGraphRecallSnapshot preserves richer fallback and ranking fields wh
     "utf-8",
   );
 
-  const snapshot = (await orchestrator.getLastGraphRecallSnapshot()) as
+  const snapshot =
+    (await orchestrator.recallIntrospection.getLastGraphRecallSnapshot()) as
     | ({
         status?: string;
         reason?: string;
@@ -406,7 +408,10 @@ test("explainLastGraphRecall returns human-readable graph explanation", async ()
     "utf-8",
   );
 
-  const explanation = await orchestrator.explainLastGraphRecall({ maxExpanded: 1 });
+  const explanation =
+    await orchestrator.recallIntrospection.explainLastGraphRecall({
+      maxExpanded: 1,
+    });
   assert.match(explanation, /Last Graph Recall/);
   assert.match(explanation, /Mode: graph_mode/);
   assert.match(explanation, /showing 1/);
@@ -451,7 +456,10 @@ test("explainLastGraphRecall tolerates richer fallback snapshots and surfaces th
     "utf-8",
   );
 
-  const explanation = await orchestrator.explainLastGraphRecall({ maxExpanded: 5 });
+  const explanation =
+    await orchestrator.recallIntrospection.explainLastGraphRecall({
+      maxExpanded: 5,
+    });
   assert.match(explanation, /Last Graph Recall/);
   assert.match(explanation, /Mode: full/);
   if (explanation.includes("fallback")) {

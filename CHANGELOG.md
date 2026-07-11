@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Exposed recall introspection through the typed `Orchestrator.recallIntrospection`
+  coordinator and removed the duplicate intent, QMD, and graph-recall forwarding
+  methods from the oversized composition root.
+
 ## [v9.3.652] — 2026-06-30
 
 ### Added

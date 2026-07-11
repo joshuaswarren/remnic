@@ -611,7 +611,7 @@ export class Orchestrator {
   }
 
   getConsoleFaithfulnessDistribution(): FaithfulnessGateCounters | undefined {
-    return this.recallIntrospectionCoordinator.getConsoleFaithfulnessDistribution(
+    return this.recallIntrospection.getConsoleFaithfulnessDistribution(
     );
   }
   readonly modelRegistry: ModelRegistry;
@@ -2158,54 +2158,6 @@ export class Orchestrator {
     }
   }
 
-  async getLastGraphRecallSnapshot(
-    namespace?: string,
-  ): Promise<GraphRecallSnapshot | null> {
-    return this.recallIntrospectionCoordinator.getLastGraphRecallSnapshot(
-      namespace,
-    );
-  }
-
-  async getLastIntentSnapshot(
-    namespace?: string,
-  ): Promise<IntentDebugSnapshot | null> {
-    return this.recallIntrospectionCoordinator.getLastIntentSnapshot(
-      namespace,
-    );
-  }
-
-  async getLastQmdRecallSnapshot(
-    namespace?: string,
-  ): Promise<QmdRecallSnapshot | null> {
-    return this.recallIntrospectionCoordinator.getLastQmdRecallSnapshot(
-      namespace,
-    );
-  }
-
-  async explainLastGraphRecall(options?: {
-    namespace?: string;
-    maxExpanded?: number;
-  }): Promise<string> {
-    return this.recallIntrospectionCoordinator.explainLastGraphRecall(
-      options,
-    );
-  }
-
-  async explainLastIntent(options?: { namespace?: string }): Promise<string> {
-    return this.recallIntrospectionCoordinator.explainLastIntent(
-      options,
-    );
-  }
-
-  async explainLastQmdRecall(options?: {
-    namespace?: string;
-    maxResults?: number;
-  }): Promise<string> {
-    return this.recallIntrospectionCoordinator.explainLastQmdRecall(
-      options,
-    );
-  }
-
   private async searchConversationRecallResults(
     retrievalQuery: string,
     topK: number,
@@ -2341,7 +2293,7 @@ export class Orchestrator {
   async waitForDirectAnswerObservationIdle(
     timeoutMs: number = 60_000,
   ): Promise<boolean> {
-    return this.recallIntrospectionCoordinator.waitForDirectAnswerObservationIdle(
+    return this.recallIntrospection.waitForDirectAnswerObservationIdle(
       timeoutMs,
     );
   }
@@ -2354,7 +2306,7 @@ export class Orchestrator {
     caps: CapabilitySet,
     namespacesEnabled: boolean,
   ): void {
-    return this.recallIntrospectionCoordinator.enqueueDirectAnswerObservation(
+    return this.recallIntrospection.enqueueDirectAnswerObservation(
       prompt,
       sessionKey,
       namespaceOverride,
@@ -2374,7 +2326,7 @@ export class Orchestrator {
     caps: CapabilitySet,
     _parentAbortSignal?: AbortSignal,
   ): Promise<void> {
-    return this.recallIntrospectionCoordinator.annotateDirectAnswerTier(
+    return this.recallIntrospection.annotateDirectAnswerTier(
       prompt,
       sessionKey,
       namespaces,
@@ -2540,7 +2492,7 @@ export class Orchestrator {
     finalResults?: GraphRecallRankedResult[];
     shadowComparison?: GraphRecallShadowComparison;
   }): Promise<void> {
-    return this.recallIntrospectionCoordinator.recordLastGraphRecallSnapshot(
+    return this.recallIntrospection.recordLastGraphRecallSnapshot(
       options,
     );
   }
@@ -2548,7 +2500,7 @@ export class Orchestrator {
     storage: StorageManager;
     snapshot: IntentDebugSnapshot;
   }): Promise<void> {
-    return this.recallIntrospectionCoordinator.recordLastIntentSnapshot(
+    return this.recallIntrospection.recordLastIntentSnapshot(
       options,
     );
   }
@@ -2557,7 +2509,7 @@ export class Orchestrator {
     storage: StorageManager;
     snapshot: QmdRecallSnapshot;
   }): Promise<void> {
-    return this.recallIntrospectionCoordinator.recordLastQmdRecallSnapshot(
+    return this.recallIntrospection.recordLastQmdRecallSnapshot(
       options,
     );
   }
@@ -2566,7 +2518,7 @@ export class Orchestrator {
     namespace: string;
     snapshot: IntentDebugSnapshot;
   }): Promise<void> {
-    return this.recallIntrospectionCoordinator.recordLastIntentSnapshotForNamespace(
+    return this.recallIntrospection.recordLastIntentSnapshotForNamespace(
       options,
     );
   }
@@ -2746,7 +2698,7 @@ export class Orchestrator {
    */
   private _recallIntrospectionCoordinator: RecallIntrospectionCoordinator | undefined;
 
-  private get recallIntrospectionCoordinator(): RecallIntrospectionCoordinator {
+  get recallIntrospection(): RecallIntrospectionCoordinator {
     if (!this._recallIntrospectionCoordinator) {
       this._recallIntrospectionCoordinator = new RecallIntrospectionCoordinator(
         selfDeps<ConstructorParameters<typeof RecallIntrospectionCoordinator>[0]>(this),

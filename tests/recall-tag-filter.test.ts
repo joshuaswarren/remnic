@@ -114,8 +114,10 @@ function buildService(memories: FakeMemory[]) {
       },
       getMemoryTimeline: async () => [],
     }),
+    recallIntrospection: {
     getLastIntentSnapshot: async () => null,
     getLastGraphRecallSnapshot: async () => null,
+    },
   };
   return new EngramAccessService(orchestrator as never);
 }

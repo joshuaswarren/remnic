@@ -1104,7 +1104,7 @@ Best for:
         const { namespace } = params as {
           namespace?: string;
         };
-        const text = await orchestrator.explainLastIntent({
+        const text = await orchestrator.recallIntrospection.explainLastIntent({
           namespace,
         });
         return toolResult(text);
@@ -1139,7 +1139,7 @@ Best for:
           namespace?: string;
           maxResults?: number;
         };
-        const text = await orchestrator.explainLastQmdRecall({
+        const text = await orchestrator.recallIntrospection.explainLastQmdRecall({
           namespace,
           maxResults,
         });
@@ -1175,7 +1175,7 @@ Best for:
           namespace?: string;
           maxExpanded?: number;
         };
-        const text = await orchestrator.explainLastGraphRecall({
+        const text = await orchestrator.recallIntrospection.explainLastGraphRecall({
           namespace,
           maxExpanded,
         });

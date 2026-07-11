@@ -54,15 +54,6 @@ export interface RecallIntrospectionDeps {
   effectiveCronRecallInstructionHeavyTokenCap(): number;
   readonly faithfulnessCounters: FaithfulnessGateCounters;
   getCodingContextForSession(sessionKey: string | undefined): CodingContext | null;
-  getLastGraphRecallSnapshot(
-    namespace?: string,
-  ): Promise<GraphRecallSnapshot | null>;
-  getLastIntentSnapshot(
-    namespace?: string,
-  ): Promise<IntentDebugSnapshot | null>;
-  getLastQmdRecallSnapshot(
-    namespace?: string,
-  ): Promise<QmdRecallSnapshot | null>;
   getStorage(namespace?: string): Promise<StorageManager>;
   readonly graphRecallCoordinator: GraphRecallCoordinator;
   readonly lastRecall: LastRecallStore;
@@ -299,7 +290,7 @@ export class RecallIntrospectionCoordinator {
     namespace?: string;
     maxExpanded?: number;
   }): Promise<string> {
-    const snapshot = await this.deps.getLastGraphRecallSnapshot(options?.namespace);
+    const snapshot = await this.getLastGraphRecallSnapshot(options?.namespace);
     if (!snapshot) return "No graph-recall snapshot found yet.";
     const maxExpanded = Math.max(1, Math.min(50, options?.maxExpanded ?? 10));
     const expanded = snapshot.expanded.slice(0, maxExpanded);
@@ -353,7 +344,7 @@ export class RecallIntrospectionCoordinator {
   }
 
   async explainLastIntent(options?: { namespace?: string }): Promise<string> {
-    const snapshot = await this.deps.getLastIntentSnapshot(options?.namespace);
+    const snapshot = await this.getLastIntentSnapshot(options?.namespace);
     if (!snapshot) return "No intent-debug snapshot found yet.";
     return [
       "## Last Intent Debug",
@@ -375,7 +366,7 @@ export class RecallIntrospectionCoordinator {
     namespace?: string;
     maxResults?: number;
   }): Promise<string> {
-    const snapshot = await this.deps.getLastQmdRecallSnapshot(options?.namespace);
+    const snapshot = await this.getLastQmdRecallSnapshot(options?.namespace);
     if (!snapshot) return "No QMD recall snapshot found yet.";
     const maxResults = Math.max(1, Math.min(25, options?.maxResults ?? 10));
     const shown = snapshot.results.slice(0, maxResults);
