@@ -977,11 +977,14 @@ export {
 // ---------------------------------------------------------------------------
 
 export {
+  buildTokenEntry,
+  commitTokenEntry,
   generateToken,
   listTokens,
   revokeToken,
   getAllValidTokens,
   getAllValidTokensCached,
+  getAllValidTokenEntriesCached,
   resolveConnectorFromToken,
   loadTokenStore,
   saveTokenStore,

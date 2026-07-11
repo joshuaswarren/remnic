@@ -54,6 +54,21 @@ export interface EngramAccessHttpServerOptions {
   authTokens?: string[];
   /** Dynamic token loader — called on each auth check so new/revoked tokens take effect without restart. */
   authTokensGetter?: () => string[];
+  /**
+   * Dynamic token-ENTRY loader ({token, connector} pairs from one coherent
+   * snapshot). Preferred over `authTokensGetter` when a `tokenPathPolicy`
+   * is set: the connector used for the policy decision comes from the SAME
+   * entry that validated, so identity can never lag validation.
+   */
+  authTokenEntriesGetter?: () => ReadonlyArray<{ token: string; connector?: string }>;
+  /**
+   * Optional per-request scope policy for tokens sourced from
+   * `authTokenEntriesGetter`. Return false to deny the (validated) token
+   * for this pathname. Static `authToken`/`authTokens` (operator-supplied)
+   * bypass the policy. Entries whose connector is missing FAIL CLOSED when
+   * a policy is configured.
+   */
+  tokenPathPolicy?: (connector: string, pathname: string | undefined) => boolean;
   principal?: string;
   maxBodyBytes?: number;
   adminConsoleEnabled?: boolean;
@@ -322,6 +337,8 @@ export class EngramAccessHttpServer {
   private readonly authToken?: string;
   private readonly authTokens: string[];
   private readonly authTokensGetter?: () => string[];
+  private readonly authTokenEntriesGetter?: () => ReadonlyArray<{ token: string; connector?: string }>;
+  private readonly tokenPathPolicy?: (connector: string, pathname: string | undefined) => boolean;
   private readonly authenticatedPrincipal?: string;
   private readonly maxBodyBytes: number;
   private readonly adminConsoleEnabled: boolean;
@@ -368,6 +385,8 @@ export class EngramAccessHttpServer {
     this.authToken = options.authToken?.trim() || undefined;
     this.authTokens = (options.authTokens ?? []).map((t) => t.trim()).filter(Boolean);
     this.authTokensGetter = options.authTokensGetter;
+    this.authTokenEntriesGetter = options.authTokenEntriesGetter;
+    this.tokenPathPolicy = options.tokenPathPolicy;
     this.authenticatedPrincipal = options.principal?.trim() || undefined;
     this.maxBodyBytes = Number.isFinite(options.maxBodyBytes)
       ? Math.max(1, Math.floor(options.maxBodyBytes ?? 131072))
@@ -398,7 +417,7 @@ export class EngramAccessHttpServer {
   }
 
   async start(): Promise<EngramAccessHttpServerStatus> {
-    if (!this.authToken && this.authTokens.length === 0 && !this.authTokensGetter) {
+    if (!this.authToken && this.authTokens.length === 0 && !this.authTokensGetter && !this.authTokenEntriesGetter) {
       throw new Error("engram access HTTP requires authToken or authTokens");
     }
     if (this.server) return this.status();
@@ -3230,7 +3249,14 @@ export class EngramAccessHttpServer {
   }
 
    private isAuthorized(req: IncomingMessage, pathname?: string): boolean {
-    if (!this.authToken && this.authTokens.length === 0 && !this.authTokensGetter) return false;
+    if (
+      !this.authToken &&
+      this.authTokens.length === 0 &&
+      !this.authTokensGetter &&
+      !this.authTokenEntriesGetter
+    ) {
+      return false;
+    }
     // Primary path: Authorization: Bearer <token> header.
     const raw = req.headers.authorization;
     let candidate: string | null = null;
@@ -3270,7 +3296,24 @@ export class EngramAccessHttpServer {
     for (const valid of this.authTokens) {
       if (this.timingSafeStringEqual(token, valid)) return true;
     }
-    // Check dynamic tokens (reloaded per request for generate/revoke without restart)
+    // Entry-based dynamic tokens are AUTHORITATIVE when configured: the
+    // dynamic-token decision ends here (no fall-through to the string
+    // getter, which carries no identity and would bypass the policy).
+    // Validation and connector identity come from the same snapshot entry,
+    // so a scope policy can never observe a token fresher than the
+    // identity it scopes (mint/revoke coherence).
+    if (this.authTokenEntriesGetter) {
+      for (const entry of this.authTokenEntriesGetter()) {
+        if (!this.timingSafeStringEqual(token, entry.token)) continue;
+        if (!this.tokenPathPolicy) return true;
+        // Fail closed: a policy without a connector identity denies.
+        if (typeof entry.connector !== "string" || entry.connector.length === 0) return false;
+        return this.tokenPathPolicy(entry.connector, pathname);
+      }
+      return false;
+    }
+    // String-token getter (no identity, no policy) — only consulted when
+    // no entry getter is configured.
     if (this.authTokensGetter) {
       for (const valid of this.authTokensGetter()) {
         if (this.timingSafeStringEqual(token, valid)) return true;

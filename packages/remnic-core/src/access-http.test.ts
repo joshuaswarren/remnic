@@ -1615,7 +1615,7 @@ test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls th
   const healthStub = {
     health: async () => ({
       ok: true as const,
-      memoryDir: "/tmp/engram-test",
+      memoryDir: "/tmp/remnic-test",
       namespacesEnabled: false,
       defaultNamespace: "default",
       searchBackend: "recent",
@@ -1677,7 +1677,7 @@ test("HTTP externalRequestHandler runs pre-auth, can end responses, and falls th
     assert.equal(passthrough.status, 200, "fall-through should reach the normal health route");
     const passthroughBody = await passthrough.json() as { ok?: boolean; memoryDir?: string };
     assert.equal(passthroughBody.ok, true, "fall-through must return the stubbed health payload");
-    assert.equal(passthroughBody.memoryDir, "/tmp/engram-test");
+    assert.equal(passthroughBody.memoryDir, "/tmp/remnic-test");
 
     // Authorized request: handler sees ctx.authorized=true.
     const authed = await fetch(
@@ -1715,6 +1715,91 @@ test("HTTP externalRequestHandler errors flow through the existing error handler
     assert.equal(response.status, 500, "thrown errors must produce a 500 via the existing error handler");
     const body = await response.json() as { code?: string };
     assert.equal(body.code, "internal_error");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connectors and never falls through", async () => {
+  // Signature-faithful health stub so non-MCP authorization outcomes are
+  // observable as 200-with-body (a bare `{}` service would 500 and mask
+  // accidental policy application).
+  const healthStub = {
+    health: async () => ({
+      ok: true as const,
+      memoryDir: "/tmp/remnic-scope-test",
+      namespacesEnabled: false,
+      defaultNamespace: "default",
+      searchBackend: "recent",
+      qmdEnabled: false,
+      qmd: {
+        enabled: false,
+        active: false,
+        degraded: false,
+        mode: "disabled" as const,
+        collection: "",
+        collectionState: "skipped" as const,
+        installedVersion: null,
+        supportedVersion: null,
+        supported: null,
+        upgradeAvailable: null,
+        doctorAvailable: null,
+        debugStatus: "disabled",
+      },
+      nativeKnowledgeEnabled: false,
+      projectionAvailable: false,
+    }),
+  } satisfies Pick<EngramAccessService, "health">;
+  const entries = [
+    { token: "remnic_cg_scoped", connector: "chatgpt" },
+    { token: "remnic_cx_free", connector: "codex" },
+    { token: "remnic_xx_anon" }, // no connector — must fail closed under a policy
+  ];
+  const server = new EngramAccessHttpServer({
+    service: healthStub as EngramAccessService,
+    port: 0,
+    authToken: "operator-token",
+    // Dangerous shape on purpose: BOTH getters configured, and the string
+    // getter is a superset (extra "string_only_token"). The entries getter
+    // must decide alone; nothing may leak into the string getter.
+    authTokensGetter: () => [...entries.map((entry) => entry.token), "string_only_token"],
+    authTokenEntriesGetter: () => entries,
+    tokenPathPolicy: (connector, pathname) => connector !== "chatgpt" || pathname === "/mcp",
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const request = (token: string, path: string, method = "GET") =>
+    fetch(`http://127.0.0.1:${status.port}${path}`, {
+      method,
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      ...(method === "POST" ? { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" }) } : {}),
+    });
+  try {
+    // Scoped chatgpt token: /mcp only; health denied.
+    assert.equal((await request("remnic_cg_scoped", "/mcp", "POST")).status, 200);
+    assert.equal(
+      (await request("remnic_cg_scoped", "/engram/v1/health")).status,
+      401,
+      "chatgpt token must be denied off /mcp even with a permissive string getter present",
+    );
+    // Other connector tokens are unrestricted by this policy: /mcp AND health.
+    assert.equal((await request("remnic_cx_free", "/mcp", "POST")).status, 200);
+    const codexHealth = await request("remnic_cx_free", "/engram/v1/health");
+    assert.equal(codexHealth.status, 200);
+    assert.equal(((await codexHealth.json()) as { ok?: boolean }).ok, true);
+    // Entry without connector fails closed when a policy is configured.
+    assert.equal((await request("remnic_xx_anon", "/mcp", "POST")).status, 401);
+    // A token present ONLY in the string getter is NOT honored: the entries
+    // getter is authoritative and there is no fall-through.
+    assert.equal((await request("string_only_token", "/mcp", "POST")).status, 401);
+    assert.equal((await request("string_only_token", "/engram/v1/health")).status, 401);
+    // Unknown tokens are rejected everywhere.
+    assert.equal((await request("remnic_zz_unknown", "/mcp", "POST")).status, 401);
+    // Static operator token bypasses the policy entirely: /mcp AND health.
+    assert.equal((await request("operator-token", "/mcp", "POST")).status, 200);
+    const operatorHealth = await request("operator-token", "/engram/v1/health");
+    assert.equal(operatorHealth.status, 200);
+    assert.equal(((await operatorHealth.json()) as { ok?: boolean }).ok, true);
   } finally {
     await server.stop();
   }

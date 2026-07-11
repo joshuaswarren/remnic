@@ -261,26 +261,36 @@ export function getAllValidTokens(tokensPath?: string): string[] {
   return loadTokenStore(tokensPath).tokens.map((t) => t.token);
 }
 
-// Cached token loader to avoid synchronous disk I/O on every HTTP request.
-// Re-reads tokens.json at most once per TTL interval (default 5s).
+// Cached token-entry snapshot to avoid synchronous disk I/O on every HTTP
+// request. Re-reads tokens.json at most once per TTL interval (default 5s).
+// There is deliberately exactly ONE cache: validation (token strings) and
+// identity (connector ids) are derived from the SAME snapshot, so a token
+// can never validate against a fresher snapshot than the one that resolves
+// its connector. saveTokenStore() invalidates on every mutation, so a
+// freshly minted or revoked token is coherent immediately.
 const TOKEN_CACHE_TTL_MS = 5_000;
-let _cachedTokens: string[] = [];
+let _cachedEntries: TokenEntry[] = [];
 let _cachedAt = 0;
 let _cachedPath: string | undefined;
 
 function invalidateTokenCache(): void {
-  _cachedTokens = [];
+  _cachedEntries = [];
   _cachedAt = 0;
   _cachedPath = undefined;
 }
 
-export function getAllValidTokensCached(tokensPath?: string): string[] {
+/** Cached token-entry snapshot ({token, connector} pairs). */
+export function getAllValidTokenEntriesCached(tokensPath?: string): readonly TokenEntry[] {
   const now = Date.now();
-  if (now - _cachedAt < TOKEN_CACHE_TTL_MS && tokensPath === _cachedPath) return _cachedTokens;
-  _cachedTokens = getAllValidTokens(tokensPath);
+  if (now - _cachedAt < TOKEN_CACHE_TTL_MS && tokensPath === _cachedPath) return _cachedEntries;
+  _cachedEntries = loadTokenStore(tokensPath).tokens;
   _cachedAt = now;
   _cachedPath = tokensPath;
-  return _cachedTokens;
+  return _cachedEntries;
+}
+
+export function getAllValidTokensCached(tokensPath?: string): string[] {
+  return getAllValidTokenEntriesCached(tokensPath).map((entry) => entry.token);
 }
 
 export function resolveConnectorFromToken(token: string, tokensPath?: string): string | undefined {
