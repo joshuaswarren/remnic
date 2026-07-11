@@ -881,3 +881,45 @@ test("token exchange: persist failure returns 500 and preserves the code; retry 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("applyOAuthEnvOverrides rejects a present-but-non-object server.oauth block", () => {
+  // `"oauth": true` / a string is invalid config, not "disabled" — it must
+  // throw rather than silently coerce to {} and turn OAuth off.
+  for (const bad of [true, "on", 42, ["x"]]) {
+    assert.throws(() => applyOAuthEnvOverrides(bad), /server\.oauth/);
+  }
+  // undefined (absent) is legal → disabled.
+  assert.equal(applyOAuthEnvOverrides(undefined).enabled, false);
+});
+
+test("poll reports expired (not approved) once the authorization code is gone", () => {
+  const config = parseOAuthConfig({
+    enabled: true,
+    issuerUrl: "http://127.0.0.1:4318",
+    clientId: CLIENT_ID,
+    clientSecret: CLIENT_SECRET,
+    redirectUris: [REDIRECT_URI],
+  });
+  const state = new OAuthState(config);
+  const txn = state.createPending({
+    clientId: CLIENT_ID,
+    redirectUri: REDIRECT_URI,
+    scopes: [],
+    resource: undefined,
+    state: undefined,
+    codeChallenge: "x".repeat(43),
+  });
+  state.approveByRef(txn.ref);
+  // While the code is live, poll hands back the redirect.
+  const approved = state.poll(txn.txn, txn.pollSecret);
+  assert.equal(approved?.status, "approved");
+  // Consume the code (as the token exchange does). The pending txn still
+  // reads "approved" (600 s TTL) but the code (120 s TTL) is gone, so poll
+  // must NOT redirect the browser to a dead code — it reports expired.
+  const code = new URL((approved as { redirect: string }).redirect).searchParams.get("code");
+  assert.ok(code, "approved poll must carry a code in the redirect");
+  const taken = state.takeCode({ code, clientId: CLIENT_ID, redirectUri: REDIRECT_URI, resource: undefined });
+  assert.ok(taken, "sanity: code was consumable");
+  const afterConsume = state.poll(txn.txn, txn.pollSecret);
+  assert.equal(afterConsume?.status, "expired", "poll must not redirect with a spent/expired code");
+});

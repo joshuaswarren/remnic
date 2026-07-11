@@ -4439,6 +4439,26 @@ function oauthResolveBaseUrl(): string {
       }
     }
   }
+  // Env overrides win over the file, matching the daemon: startServer()
+  // merges REMNIC_HOST/REMNIC_PORT (ENGRAM_* legacy) over server.host/port,
+  // so the CLI must resolve the same endpoint or it targets the wrong port.
+  const envHost = readCompatEnv("REMNIC_HOST", "ENGRAM_HOST");
+  if (typeof envHost === "string" && envHost.length > 0) {
+    host = envHost;
+  }
+  const envPortRaw = readCompatEnv("REMNIC_PORT", "ENGRAM_PORT");
+  if (typeof envPortRaw === "string" && envPortRaw.length > 0) {
+    const envPort = Number(envPortRaw);
+    // Reject an explicitly-set-but-invalid port instead of silently
+    // falling back (the daemon rejects it too, so a bad value is a
+    // misconfiguration the operator must see, not paper over).
+    if (!Number.isInteger(envPort) || envPort < 1 || envPort > 65535) {
+      throw new Error(
+        `Invalid REMNIC_PORT/ENGRAM_PORT "${envPortRaw}": expected an integer in [1, 65535].`,
+      );
+    }
+    port = envPort;
+  }
   return `http://${host}:${port}`;
 }
 

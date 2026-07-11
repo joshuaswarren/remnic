@@ -306,6 +306,13 @@ export function readOAuthEnvOverrides(): Record<string, unknown> {
 
 /** Merge env overrides over the file block and parse the result. */
 export function applyOAuthEnvOverrides(fileBlock: unknown): ParsedOAuthConfig {
+  // A present-but-non-object `server.oauth` (e.g. `true` or a string) is
+  // invalid config, not "disabled". Hand it straight to parseOAuthConfig,
+  // which throws a precise error, instead of silently coercing it to `{}`
+  // and treating OAuth as off (repo rule: reject invalid input).
+  if (fileBlock !== undefined && !isPlainObject(fileBlock)) {
+    return parseOAuthConfig(fileBlock);
+  }
   const overrides = readOAuthEnvOverrides();
   const merged: Record<string, unknown> = isPlainObject(fileBlock) ? { ...fileBlock } : {};
   for (const [key, value] of Object.entries(overrides)) {
@@ -508,6 +515,13 @@ export class OAuthState {
       return { status: "pending" };
     }
     if (txn.outcome.kind === "denied") return { status: "denied" };
+    // Approved, but only hand back the redirect while the authorization
+    // code is still live. The code TTL (120 s) is shorter than the txn TTL
+    // (approvalTtlSeconds, default 600 s), so a slow browser poll could
+    // otherwise be redirected with a code that has already expired,
+    // failing the token exchange. Once the code is gone (expired or
+    // already exchanged), report expired so the client restarts cleanly.
+    if (!this.peekCode(txn.outcome.code)) return { status: "expired" };
     return { status: "approved", redirect: this.buildRedirect(txn, txn.outcome.code) };
   }
 

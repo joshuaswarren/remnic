@@ -549,6 +549,62 @@ test("oauth honours server.host and server.port from the config", async () => {
   }
 });
 
+test("oauth honours REMNIC_HOST/REMNIC_PORT env over server.host/port (matches daemon)", async () => {
+  // The daemon merges REMNIC_HOST/REMNIC_PORT over the file, so the CLI
+  // must target the same endpoint or it hits the wrong port.
+  await writeFile(
+    process.env.REMNIC_CONFIG_PATH ?? "",
+    JSON.stringify({ server: { host: "10.0.0.42", port: 9999, authToken: "tok" } }),
+    "utf8",
+  );
+  process.env.REMNIC_HOST = "192.168.5.5";
+  process.env.REMNIC_PORT = "7777";
+  const { requests } = installFetchMock(() => ({ status: 200, body: { pending: [] } }));
+  try {
+    const result = await runCli(["oauth", "pending"]);
+    assert.equal(result.exitCode, 0, `unexpected stderr: ${result.stderr}`);
+    assert.match(requests[0].url, /^http:\/\/192\.168\.5\.5:7777\/oauth\/pending/);
+  } finally {
+    delete process.env.REMNIC_HOST;
+    delete process.env.REMNIC_PORT;
+    restoreFetch();
+  }
+});
+
+test("oauth rejects an invalid REMNIC_PORT instead of silently defaulting", async () => {
+  const { requests } = installFetchMock(() => ({ status: 200, body: { pending: [] } }));
+  process.env.REMNIC_PORT = "abc";
+  try {
+    for (const bad of ["abc", "0", "70000", "42.5"]) {
+      process.env.REMNIC_PORT = bad;
+      const result = await runCli(["oauth", "pending"]);
+      assert.notEqual(result.exitCode, 0, `port "${bad}" must be rejected`);
+      assert.match(result.stderr, /Invalid REMNIC_PORT/);
+    }
+    assert.equal(requests.length, 0, "invalid port must never reach the daemon");
+  } finally {
+    delete process.env.REMNIC_PORT;
+    restoreFetch();
+  }
+});
+
+test("oauth honours legacy ENGRAM_HOST/ENGRAM_PORT when REMNIC_* are absent", async () => {
+  delete process.env.REMNIC_HOST;
+  delete process.env.REMNIC_PORT;
+  process.env.ENGRAM_HOST = "172.16.0.9";
+  process.env.ENGRAM_PORT = "5150";
+  const { requests } = installFetchMock(() => ({ status: 200, body: { pending: [] } }));
+  try {
+    const result = await runCli(["oauth", "pending"]);
+    assert.equal(result.exitCode, 0, `unexpected stderr: ${result.stderr}`);
+    assert.match(requests[0].url, /^http:\/\/172\.16\.0\.9:5150\/oauth\/pending/);
+  } finally {
+    delete process.env.ENGRAM_HOST;
+    delete process.env.ENGRAM_PORT;
+    restoreFetch();
+  }
+});
+
 test("oauth rejects an unknown subcommand with usage guidance and no HTTP call", async () => {
   const { requests } = installFetchMock(() => {
     throw new Error("must not be called");
