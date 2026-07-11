@@ -22,6 +22,7 @@ export {
   extractMetrics,
   buildBaselineFromReport,
   compareMachineFingerprints,
+  METRIC_DIRECTION,
 } from "./regression.js";
 export type { RegressionMetricKey } from "./regression.js";
 

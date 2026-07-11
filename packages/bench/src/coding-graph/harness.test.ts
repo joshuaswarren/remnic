@@ -23,6 +23,7 @@ import {
   checkCodingGraphRegression,
   buildBaselineFromReport,
   extractMetrics,
+  METRIC_DIRECTION,
   compareMachineFingerprints,
   createSeededRng,
   DEFAULT_SMOKE_FIXTURE,
@@ -219,17 +220,23 @@ test("regression gate: tolerates a slowdown strictly below the tolerance bound",
   // gate, and it flaked on untouched branches AND blocked two release runs
   // on 2026-07-11 even after the #1688 hardening. The tolerance contract is
   // deterministic when tested like the prove-fail test below: perturb the
-  // BASELINE by a known factor and assert the gate's verdict. Scaling every
-  // baseline metric by 1/1.2 makes each measured metric read as exactly a
-  // +20% change - ratio math, independent of absolute wall-clock values -
-  // which sits strictly below the 30% tolerance, so the gate MUST pass
-  // outright. No stable-metric filtering, no waiver.
+  // BASELINE by a known factor and assert the gate's verdict. Each metric is
+  // moved 20% into ITS OWN regressing direction: lower-is-better (ms, bytes)
+  // baselines sit below the measured value so the measurement reads as a
+  // +20% slowdown; higher-is-better (LOC/s) baselines sit ABOVE the measured
+  // value so the measurement reads as a 20% throughput drop
+  // (chatgpt-codex-connector #1843 P2). Both are 20% in the regressing
+  // direction - ratio math, no wall-clock coupling - strictly below the 30%
+  // tolerance, so the gate MUST pass outright. No stable-metric waiver.
   const realMetrics = extractMetrics(report);
   const scaled = Object.fromEntries(
-    Object.entries(realMetrics).map(([key, value]) => [
-      key,
-      typeof value === "number" ? Math.max(0.001, value / 1.2) : value,
-    ]),
+    Object.entries(realMetrics).map(([key, value]) => {
+      if (typeof value !== "number") return [key, value];
+      const higherIsBetter =
+        METRIC_DIRECTION[key as keyof typeof METRIC_DIRECTION] === "higher-is-better";
+      const scaledValue = higherIsBetter ? value * 1.2 : value / 1.2;
+      return [key, Math.max(0.001, scaledValue)];
+    }),
   ) as typeof realMetrics;
   const moderateBaseline: CodingGraphBaseline = {
     schemaVersion: report.schemaVersion,
@@ -237,7 +244,7 @@ test("regression gate: tolerates a slowdown strictly below the tolerance bound",
     fixtureConfig: report.fixture.config,
     metrics: scaled,
     createdAt: report.timestamp,
-    note: "synthetic: every metric 1.2x faster than measured (+20% apparent change)",
+    note: "synthetic: every metric 20% into its regressing direction vs measured",
   };
 
   const result = checkCodingGraphRegression(report, moderateBaseline, 30);

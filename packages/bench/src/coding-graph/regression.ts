@@ -27,7 +27,7 @@ import { DEFAULT_TOLERANCE_PERCENT } from "./types.js";
 // higherIsBetter keys: throughput (LOC/s).
 // ---------------------------------------------------------------------------
 
-const METRIC_DIRECTION = {
+export const METRIC_DIRECTION = {
   fullIndexMs: "lower-is-better" as const,
   fullIndexLocsPerSecond: "higher-is-better" as const,
   incrementalUpdateP95Ms: "lower-is-better" as const,
