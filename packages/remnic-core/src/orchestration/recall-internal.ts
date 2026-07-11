@@ -868,6 +868,14 @@ export class RecallInternalCoordinator {
       const earlySessionKey = sessionKey ?? "default";
       this.deps._recallWorkspaceOverrides.delete(earlySessionKey);
       timings.total = `${Date.now() - recallStart}ms`;
+      recordRecallTiming(this.deps.config, {
+        ...timings,
+        timestamp: new Date().toISOString(),
+        namespace: selfNamespace,
+        total: timings.total,
+        recallPlan: timings.recallPlan,
+        queryPolicy: timings.queryPolicy,
+      }, recallNamespaces);
       // X-ray capture for the `no_recall` early-return path
       // (issue #570 PR 1).  `no_recall` skips retrieval entirely, so
       // the snapshot carries zero results and an empty-budget accounting
@@ -5154,7 +5162,7 @@ export class RecallInternalCoordinator {
       total: timings.total,
       recallPlan: timings.recallPlan,
       queryPolicy: timings.queryPolicy,
-    });
+    }, recallNamespaces);
 
     const assembledRecall = this.deps.assembleRecallSections(
       sectionBuckets,

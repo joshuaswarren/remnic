@@ -11,15 +11,31 @@ export interface RecallTimingRecord {
   readonly [field: string]: string;
 }
 
+export interface RecallTimingStatus {
+  readonly count: number;
+  readonly records: RecallTimingRecord[];
+}
+
+interface RecallTimingHistoryEntry {
+  readonly record: RecallTimingRecord;
+  readonly searchedNamespaces: readonly string[];
+}
+
 const RECALL_TIMING_HISTORY_LIMIT = 50;
-const histories = new WeakMap<PluginConfig, RecallTimingRecord[]>();
+const histories = new WeakMap<PluginConfig, RecallTimingHistoryEntry[]>();
 
 export function recordRecallTiming(
   config: PluginConfig,
   record: RecallTimingRecord,
+  searchedNamespaces: readonly string[] = [record.namespace],
 ): void {
   const history = histories.get(config) ?? [];
-  history.push({ ...record });
+  // JS runs this synchronous push/shift block to completion, so concurrent
+  // recalls cannot interleave ring updates and do not need a lock.
+  history.push({
+    record: { ...record },
+    searchedNamespaces: [...searchedNamespaces],
+  });
   if (history.length > RECALL_TIMING_HISTORY_LIMIT) history.shift();
   histories.set(config, history);
 }
@@ -30,9 +46,19 @@ export function getRecallTimings(
 ): RecallTimingRecord[] {
   const history = histories.get(config) ?? [];
   const readable = resolveNamespaceCapabilities(config).namespaces
-    ? history.filter((record) =>
-      canReadNamespace(authenticatedPrincipal, record.namespace, config)
+    ? history.filter((entry) =>
+      entry.searchedNamespaces.every((namespace) =>
+        canReadNamespace(authenticatedPrincipal, namespace, config)
+      )
     )
     : history;
-  return readable.slice().reverse().map((record) => ({ ...record }));
+  return readable.slice().reverse().map(({ record }) => ({ ...record }));
+}
+
+export function getRecallTimingStatus(
+  config: PluginConfig,
+  authenticatedPrincipal?: string,
+): RecallTimingStatus {
+  const records = getRecallTimings(config, authenticatedPrincipal);
+  return { count: records.length, records };
 }

@@ -15,7 +15,7 @@ import {
   type RecallTimingRecord,
 } from "./recall-timings.js";
 
-function makeConfig(memoryDir: string) {
+function makeConfig(memoryDir: string, overrides: Record<string, unknown> = {}) {
   return parseConfig({
     openaiApiKey: "sk-test",
     memoryDir,
@@ -25,6 +25,7 @@ function makeConfig(memoryDir: string) {
     recallPlannerEnabled: false,
     sharedContextEnabled: false,
     initGateTimeoutMs: 1000,
+    ...overrides,
   });
 }
 
@@ -43,7 +44,7 @@ test("authenticated recall timings route returns two recalls without user-correl
   const url = `http://${started.host}:${started.port}/engram/v1/recall/timings`;
   try {
     await orchestrator.recall("private first query", "private:first:session");
-    await orchestrator.recall("private second query", "private:second:session");
+    await orchestrator.recall("private second query", "private:second:session", { mode: "no_recall" });
 
     const denied = await fetch(url);
     assert.equal(denied.status, 401);
@@ -52,16 +53,20 @@ test("authenticated recall timings route returns two recalls without user-correl
       headers: { Authorization: "Bearer secret-token" },
     });
     assert.equal(response.status, 200);
-    const records = await response.json() as RecallTimingRecord[];
-    assert.equal(records.length, 2);
+    const payload = await response.json() as {
+      count: number;
+      records: RecallTimingRecord[];
+    };
+    assert.equal(payload.count, 2);
+    assert.equal(payload.records.length, 2);
     const operation = getOperation("recall_timings");
     assert.ok(operation);
     const operationOutput = await operation.run({}, {
       service,
       authenticatedPrincipal: "operator",
-    }) as { result: RecallTimingRecord[] };
-    assert.deepEqual(operationOutput.result, records);
-    for (const record of records) {
+    }) as { result: { count: number; records: RecallTimingRecord[] } };
+    assert.deepEqual(operationOutput.result, payload);
+    for (const record of payload.records) {
       assert.equal(record.namespace, "default");
       assert.ok(Number.isFinite(Date.parse(record.timestamp)));
       assert.match(record.total, /^\d+ms$/);
@@ -95,4 +100,31 @@ test("recall timing history keeps only the newest 50 records", () => {
   assert.equal(records.length, 50);
   assert.equal(records[0]?.total, "50ms");
   assert.equal(records[49]?.total, "1ms");
+});
+
+test("recall timings require access to every namespace searched", () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-acl"), {
+    namespacesEnabled: true,
+    namespacePolicies: [
+      {
+        name: "default",
+        readPrincipals: ["reader"],
+        writePrincipals: ["reader"],
+      },
+      {
+        name: "private",
+        readPrincipals: ["owner"],
+        writePrincipals: ["owner"],
+      },
+    ],
+  });
+  recordRecallTiming(config, {
+    timestamp: new Date(0).toISOString(),
+    namespace: "default",
+    total: "1ms",
+    recallPlan: "full",
+    queryPolicy: "general/full",
+  }, ["default", "private"]);
+
+  assert.deepEqual(getRecallTimings(config, "reader"), []);
 });
