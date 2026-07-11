@@ -95,10 +95,13 @@ beforeEach(async () => {
  */
 function installFetchMock(handler: FetchHandler): { requests: CapturedRequest[] } {
   const requests: CapturedRequest[] = [];
+  // Structural param types (no DOM lib names): check-test-types runs
+  // without the browser lib, where `RequestInfo` does not resolve. The
+  // trailing `as typeof fetch` cast bridges to the real global signature.
   globalThis.fetch = (async (
-    input: RequestInfo | URL,
-    init: RequestInit = {},
-  ): Promise<Response> => {
+    input: string | URL | { url?: string },
+    init: { method?: string; headers?: Record<string, string>; body?: unknown } = {},
+  ) => {
     const url = typeof input === "string"
       ? input
       : input instanceof URL
@@ -515,6 +518,38 @@ test("oauth pending surfaces a clear error when the daemon returns non-JSON", as
     const result = await runCli(["oauth", "pending"]);
     assert.notEqual(result.exitCode, 0);
     assert.match(result.stderr, /non-JSON response/);
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("oauth pending rejects unknown options, duplicates, flag-as-value, and stray positionals", async () => {
+  const { requests } = installFetchMock(() => {
+    throw new Error("must not be called");
+  });
+  try {
+    const unknown = await runCli(["oauth", "pending", "--verbose"]);
+    assert.notEqual(unknown.exitCode, 0);
+    assert.match(unknown.stderr, /Unknown option "--verbose"/);
+
+    const duplicate = await runCli(["oauth", "pending", "--format", "json", "--format", "text"]);
+    assert.notEqual(duplicate.exitCode, 0);
+    assert.match(duplicate.stderr, /Duplicate option "--format"/);
+
+    // A flag in the value slot is a missing value, not a value.
+    const flagAsValue = await runCli(["oauth", "pending", "--format", "--yes"]);
+    assert.notEqual(flagAsValue.exitCode, 0);
+    assert.match(flagAsValue.stderr, /--format requires a value/);
+
+    const strayPositional = await runCli(["oauth", "pending", "extra"]);
+    assert.notEqual(strayPositional.exitCode, 0);
+    assert.match(strayPositional.stderr, /Unexpected argument "extra"/);
+
+    const strayApprove = await runCli(["oauth", "approve", "ref1", "ref2", "--yes"]);
+    assert.notEqual(strayApprove.exitCode, 0);
+    assert.match(strayApprove.stderr, /Unexpected argument "ref2"/);
+
+    assert.equal(requests.length, 0, "invalid input must never reach the daemon");
   } finally {
     restoreFetch();
   }

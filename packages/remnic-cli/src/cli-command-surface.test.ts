@@ -108,7 +108,8 @@ const DOCUMENTED_COMMANDS = [
   "wearables",
   "capsule",
   "offline",
-] as const;
+  "oauth",
+ ] as const;
 
 /**
  * The full set of top-level command names handled by `main()`'s switch
@@ -191,7 +192,8 @@ test("every recognised command dispatches to its own handler, not the banner", a
     "action-confidence": ["action-confidence"],
     capsule: ["capsule"],
     offline: ["offline", "status"],
-  };
+    oauth: ["oauth", "--help"],
+   };
 
   for (const command of ALL_COMMAND_NAMES) {
     const argv = fast[command];
@@ -364,4 +366,47 @@ test("capsule lineage without --fork-id is rejected with an error", async () => 
   const result = await runCli(["capsule", "lineage", "--root", "/tmp"]);
   assert.notEqual(result.exitCode, 0);
   assert.match(result.stderr, /--fork-id/);
+});
+
+test("oauth --help renders the oauth usage block (no banner)", async () => {
+  // Same pattern as `tree` / `capsule` no-subaction tests: --help is a
+  // deterministic in-process branch and should never fall through to the
+  // catch-all banner.
+  const result = await runCli(["oauth", "--help"]);
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /Usage: remnic oauth/);
+  assert.match(result.stdout, /oauth pending/);
+  assert.match(result.stdout, /oauth approve/);
+  assert.match(result.stdout, /oauth deny/);
+  assert.equal(result.stdout.includes(BANNER_MARKER), false);
+});
+
+test("oauth with an unknown subcommand prints usage and exits non-zero", async () => {
+  // Reaches the dispatcher (operator token gate runs first) and rejects
+  // the bogus subcommand. With no REMNIC_AUTH_TOKEN in the test env
+  // (the file-level isolation strips it) the token-gate fires before the
+  // subcommand switch — but the contract we care about is "non-zero exit
+  // + clear error", which both paths satisfy. Accept either message.
+  const result = await runCli(["oauth", "__bogus__"]);
+  assert.notEqual(result.exitCode, 0);
+  assert.match(
+    result.stderr + result.stdout,
+    /no operator token configured|Unknown oauth subcommand/,
+  );
+});
+
+test("oauth pending --format rejects an invalid value", async () => {
+  // Bad --format values are rejected before the operator-token check,
+  // so this is deterministic regardless of env state.
+  const result = await runCli(["oauth", "pending", "--format", "xml"]);
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.stderr, /Invalid --format/);
+});
+
+test("oauth pending --format rejects a bare flag with no value", async () => {
+  // `--format` requires a value; a bare flag must error rather than
+  // silently default to "text" (CLAUDE.md rule 51 / cursor review #611).
+  const result = await runCli(["oauth", "pending", "--format"]);
+  assert.notEqual(result.exitCode, 0);
+  assert.match(result.stderr, /--format requires a value/);
 });

@@ -4623,9 +4623,11 @@ function oauthPrintApprovalDetails(txn: OAuthPendingEntry): void {
   );
 }
 
-const OAUTH_USAGE = `remnic oauth — Manage pending OAuth authorizations (ChatGPT MCP)
+const OAUTH_USAGE = `Usage: remnic oauth <pending|approve|deny> [options]
 
-Usage:
+Manage pending OAuth authorizations (ChatGPT MCP).
+
+Subcommands:
   remnic oauth pending [--format json|text]            List pending authorization requests
   remnic oauth approve <ref> [--yes]                   Approve a pending request
   remnic oauth deny <ref>                              Deny a pending request
@@ -4639,13 +4641,12 @@ Server endpoints (operator bearer auth):
   POST /oauth/pending/<ref>/approve
   POST /oauth/pending/<ref>/deny`;
 
-async function cmdOAuth(rest: string[]): Promise<void> {
-  if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h") {
-    console.log(OAUTH_USAGE);
-    return;
-  }
-  const subcommand = rest[0];
-  const subRest = rest.slice(1);
+/**
+ * Resolve the operator token or exit. Called AFTER input validation in
+ * each subcommand branch — invalid input must be reported regardless of
+ * env/config state (rule: validate inputs first, deterministically).
+ */
+function oauthRequireOperatorToken(): string {
   const token = oauthResolveOperatorToken();
   if (!token) {
     console.error(
@@ -4653,15 +4654,70 @@ async function cmdOAuth(rest: string[]): Promise<void> {
     );
     process.exit(1);
   }
+  return token;
+}
+
+/**
+ * Strict argument validation for `remnic oauth` subcommands (rule: reject
+ * invalid CLI input explicitly; never silently ignore it). Walks the args
+ * once, rejects unknown options, and enforces the positional arity.
+ * Returns the positional args in order.
+ */
+function oauthValidateArgs(
+  args: string[],
+  spec: { flags: Record<string, "value" | "boolean">; maxPositionals: number; usage: string },
+): string[] {
+  const positionals: string[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg !== undefined && arg.startsWith("-")) {
+      if (seen.has(arg)) {
+        console.error(`Duplicate option "${arg}". ${spec.usage}`);
+        process.exit(1);
+      }
+      seen.add(arg);
+      const kind = spec.flags[arg];
+      if (kind === undefined) {
+        console.error(`Unknown option "${arg}". ${spec.usage}`);
+        process.exit(1);
+      }
+      if (kind === "value") {
+        const next = args[i + 1];
+        if (next === undefined || next.startsWith("-")) {
+          console.error(`${arg} requires a value. ${spec.usage}`);
+          process.exit(1);
+        }
+        i++; // skip the flag's value slot
+      }
+      continue;
+    }
+    if (arg !== undefined) positionals.push(arg);
+  }
+  if (positionals.length > spec.maxPositionals) {
+    console.error(`Unexpected argument "${positionals[spec.maxPositionals]}". ${spec.usage}`);
+    process.exit(1);
+  }
+  return positionals;
+}
+
+async function cmdOAuth(rest: string[]): Promise<void> {
+  if (rest.length === 0 || rest[0] === "--help" || rest[0] === "-h") {
+    console.log(OAUTH_USAGE);
+    return;
+  }
+  const subcommand = rest[0];
+  const subRest = rest.slice(1);
 
   switch (subcommand) {
     case "pending": {
-      const formatPresent = hasFlag(subRest, "--format");
+      oauthValidateArgs(subRest, {
+        flags: { "--format": "value" },
+        maxPositionals: 0,
+        usage: "Usage: remnic oauth pending [--format json|text]",
+      });
       const formatRaw = resolveFlag(subRest, "--format");
-      if (formatPresent && (formatRaw === undefined || formatRaw === null)) {
-        console.error("--format requires a value. Use `--format json` or `--format text`.");
-        process.exit(1);
-      }
+      const formatPresent = hasFlag(subRest, "--format");
       const format = (() => {
         if (!formatPresent || formatRaw === undefined || formatRaw === null) return "text";
         const normalized = String(formatRaw).trim().toLowerCase();
@@ -4671,6 +4727,7 @@ async function cmdOAuth(rest: string[]): Promise<void> {
         }
         return normalized;
       })();
+      const token = oauthRequireOperatorToken();
       try {
         const payload = (await oauthFetch("GET", "/oauth/pending", token, undefined)) as
           | { pending?: OAuthPendingEntry[] }
@@ -4689,12 +4746,18 @@ async function cmdOAuth(rest: string[]): Promise<void> {
     }
 
     case "approve": {
-      const ref = subRest.find((arg) => !arg.startsWith("--"));
+      const positionals = oauthValidateArgs(subRest, {
+        flags: { "--yes": "boolean", "-y": "boolean" },
+        maxPositionals: 1,
+        usage: "Usage: remnic oauth approve <ref> [--yes]",
+      });
+      const ref = positionals[0];
       if (!ref) {
         console.error("Usage: remnic oauth approve <ref> [--yes]");
         process.exit(1);
       }
       const yes = hasFlag(subRest, "--yes") || hasFlag(subRest, "-y");
+      const token = oauthRequireOperatorToken();
       try {
         const payload = (await oauthFetch("GET", "/oauth/pending", token, undefined)) as
           | { pending?: OAuthPendingEntry[] }
@@ -4742,11 +4805,17 @@ async function cmdOAuth(rest: string[]): Promise<void> {
     }
 
     case "deny": {
-      const ref = subRest.find((arg) => !arg.startsWith("--"));
+      const positionals = oauthValidateArgs(subRest, {
+        flags: {},
+        maxPositionals: 1,
+        usage: "Usage: remnic oauth deny <ref>",
+      });
+      const ref = positionals[0];
       if (!ref) {
         console.error("Usage: remnic oauth deny <ref>");
         process.exit(1);
       }
+      const token = oauthRequireOperatorToken();
       try {
         const result = (await oauthFetch(
           "POST",
