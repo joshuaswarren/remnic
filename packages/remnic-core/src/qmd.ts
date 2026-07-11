@@ -134,6 +134,12 @@ const QMD_TIMEOUT_MS = 30_000;
 // queries more headroom. The effective value lives in `this.daemonTimeoutMs`.
 const QMD_DAEMON_TIMEOUT_MS = 8_000;
 const QMD_PROBE_TIMEOUT_MS = 8_000;
+// Backoff schedule (ms) for retrying a TRANSIENT (timeout/abort) version-check
+// probe of a CONFIGURED qmdPath before declaring it failed. A binary that
+// resolved and ran before is more likely slow under load than gone, so we retry
+// transient failures but NOT ENOENT/EACCES (hard misconfiguration, fail fast).
+// Length == number of retries after the initial attempt. Issue #1841.
+const QMD_PROBE_RETRY_BACKOFF_MS = [300, 800];
 const QMD_UPDATE_BACKOFF_MS = 15 * 60 * 1000; // 15m
 const QMD_EMBED_BACKOFF_MS = 60 * 60 * 1000; // 60m
 const QMD_CLI_WARN_THROTTLE_MS = 15 * 60 * 1000; // 15m
@@ -267,6 +273,30 @@ function isVectorDimensionMismatchError(err: unknown): boolean {
     (/vectors?_vec/i.test(msg) && /float\[\d+\]/i.test(msg)) ||
     (/embedding/i.test(msg) && /dimensions?/i.test(msg))
   );
+}
+
+/**
+ * Classify a `qmd --version` probe failure so the preflight can distinguish a
+ * slow/overloaded binary (timeout or abort mid-spawn) from a genuine
+ * misconfiguration (ENOENT/EACCES — the configured path is missing or not
+ * executable). Only transient failures are retried; missing binaries fail fast.
+ * Issue #1841.
+ */
+type QmdProbeFailureKind = "transient" | "missing" | "other";
+function classifyProbeFailure(err: unknown): QmdProbeFailureKind {
+  // Caller-cancelled or deadline-aborted spawns are transient under load.
+  if (isAbortError(err)) return "transient";
+  const msg = err instanceof Error ? err.message : String(err);
+  if (/timed?[\s-]?out|deadline|abort/i.test(msg)) return "transient";
+  // Node spawn failures carry `code` = ENOENT (not found) / EACCES (not executable).
+  if (err && typeof err === "object" && "code" in err) {
+    const code = err.code;
+    if (code === "ENOENT" || code === "EACCES") return "missing";
+  }
+  if (/enoent|eacces|not executable|no such file|not found|permission denied/i.test(msg)) {
+    return "missing";
+  }
+  return "other";
 }
 
 export function parseQmdVersion(version: string | null): QmdVersionTuple | null {
@@ -1437,6 +1467,18 @@ export class QmdClient implements SearchBackend {
     }
   }
 
+  /**
+   * Run a single `qmd --version` probe against `qmdPath`. Extracted as its own
+   * method so tests can inject a fake probe runner that exercises the preflight
+   * retry/classification paths without spawning a real qmd binary. Issue #1841.
+   */
+  private runVersionProbe(
+    qmdPath: string,
+    signal?: AbortSignal,
+  ): Promise<{ stdout: string; stderr: string }> {
+    return runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, qmdPath, signal, this.qmdRuntimeEnv);
+  }
+
   private async probeCli(
     options: {
       allowAutoUpgrade?: boolean;
@@ -1490,24 +1532,67 @@ export class QmdClient implements SearchBackend {
     };
 
     if (this.configuredQmdPath) {
-      try {
-        const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, this.configuredQmdPath, options.signal, this.qmdRuntimeEnv);
-        await recordProbeSuccess(result, this.configuredQmdPath, "configured");
-        return true;
-      } catch (err) {
-        markProbeFailure(err);
-        configuredProbeFailure = this.lastCliProbeError;
-        // Do not hard-fail here: fall through to PATH/fallback probing.
-        // This keeps recall healthy even when configured path is stale.
+      const configuredPath = this.configuredQmdPath;
+      // Retry only TRANSIENT (timeout/abort) probes of the configured path: a
+      // binary that resolved and ran before is more likely slow under load than
+      // gone. ENOENT/EACCES is a hard misconfiguration and must fail fast.
+      // Issue #1841.
+      let failureKind: QmdProbeFailureKind = "other";
+      let retries = 0;
+      for (let attempt = 0; attempt <= QMD_PROBE_RETRY_BACKOFF_MS.length; attempt += 1) {
+        try {
+          const result = await this.runVersionProbe(configuredPath, options.signal);
+          await recordProbeSuccess(result, configuredPath, "configured");
+          return true;
+        } catch (err) {
+          failureKind = classifyProbeFailure(err);
+          markProbeFailure(err);
+          configuredProbeFailure = this.lastCliProbeError;
+          // Never retry once the caller has cancelled, and never retry a hard
+          // misconfiguration (missing/not-executable) — only transient slowness.
+          if (
+            failureKind === "transient" &&
+            attempt < QMD_PROBE_RETRY_BACKOFF_MS.length &&
+            options.signal?.aborted !== true
+          ) {
+            try {
+              await sleepWithSignal(
+                QMD_PROBE_RETRY_BACKOFF_MS[attempt] ?? 500,
+                options.signal,
+              );
+            } catch {
+              // Aborted mid-backoff: stop retrying, fall through to the warning.
+              break;
+            }
+            retries += 1;
+            continue;
+          }
+          break;
+        }
+      }
+      // Distinct operator-facing warnings so a slow binary is not mistaken for
+      // a misconfiguration (and vice versa). Do not hard-fail here: fall through
+      // to PATH/fallback probing so recall stays healthy when config is stale.
+      // Issue #1841.
+      if (failureKind === "transient") {
         this.logCliProbeWarning(
-          `QMD: configured qmdPath failed (${this.configuredQmdPath}): ${this.lastCliProbeError}`,
+          `QMD: qmdPath ${configuredPath} version check timed out (host may be under load); retried ${retries} time${retries === 1 ? "" : "s"}`,
+        );
+      } else if (failureKind === "missing") {
+        this.logCliProbeWarning(
+          `QMD: configured qmdPath not found or not executable (${configuredPath}): ${this.lastCliProbeError}`,
+        );
+      } else {
+        // Preserve the historical generic message for exit-code/other failures.
+        this.logCliProbeWarning(
+          `QMD: configured qmdPath failed (${configuredPath}): ${this.lastCliProbeError}`,
         );
       }
     }
 
     // Try PATH first
     try {
-      const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, "qmd", options.signal, this.qmdRuntimeEnv);
+      const result = await this.runVersionProbe("qmd", options.signal);
       await recordProbeSuccess(result, "qmd", "auto-path");
       return true;
     } catch (err) {
@@ -1515,7 +1600,7 @@ export class QmdClient implements SearchBackend {
       // Try fallback paths
       for (const fallbackPath of this.qmdFallbackPaths) {
         try {
-          const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, fallbackPath, options.signal, this.qmdRuntimeEnv);
+          const result = await this.runVersionProbe(fallbackPath, options.signal);
           await recordProbeSuccess(result, fallbackPath, "auto-fallback");
           log.info(`QMD: found at ${fallbackPath}`);
           return true;
