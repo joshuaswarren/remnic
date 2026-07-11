@@ -1258,3 +1258,29 @@ test("MCP tools/call: structuredContent typeof matches declared outputSchema typ
     );
   }
 });
+
+test("outputSchema: no tool falls through to the generic default (every schema has declared properties)", async () => {
+  // Every tool's outputSchema must have `properties` with at least one key,
+  // proving it's a precise registry/pre-existing schema — NOT the generic
+  // { type: 'object', additionalProperties: true } fallback. This prevents
+  // a newly added tool silently getting a vacuous schema that CI still passes.
+  const server = new EngramMcpServer(createFakeService());
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  const listed = await server.handleRequest({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+  const tools = fieldOf(fieldOf(listed, "result"), "tools") as Array<{
+    name: string;
+    outputSchema?: Record<string, unknown>;
+  }>;
+  const fallbacks: string[] = [];
+  for (const tool of tools) {
+    const props = tool.outputSchema?.properties;
+    if (!props || typeof props !== "object" || Object.keys(props).length === 0) {
+      fallbacks.push(tool.name);
+    }
+  }
+  assert.deepEqual(
+    fallbacks, [],
+    `These tools have no declared properties (generic fallback): ${fallbacks.join(", ")}. ` +
+      `Add them to TOOL_OUTPUT_SCHEMAS in access-mcp.ts.`,
+  );
+});
