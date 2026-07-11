@@ -1007,8 +1007,7 @@ export async function startServer(options?: {
     prepareWarmup: ensureStartupSync,
     state: readiness,
     override: parsedServerConfig.readinessOverride,
-    skipWarmup: () =>
-      !config.qmdEnabled || orchestrator.qmd.debugStatus() === "backend=noop",
+    skipWarmup: () => orchestrator.qmd.debugStatus() === "backend=noop",
     openGate: () => {
       readiness.ready = true;
     },
