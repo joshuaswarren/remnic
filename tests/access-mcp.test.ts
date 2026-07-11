@@ -1665,4 +1665,133 @@ test("AJV: structuredContent validates against declared outputSchema for represe
       assert.equal(result, pass, `memory_chat "${desc}": expected ${pass ? "valid" : "invalid"}`);
     }
   }
+  // memory_identity: real schema from tools/list + snapshot/fallback cases
+  {
+    const idSchema = schemaByName.get("engram.memory_identity");
+    assert.ok(idSchema, "engram.memory_identity: no outputSchema in tools/list");
+    const validate = ajv.compile(idSchema);
+    const cases: Array<{ d: string; v: unknown; pass: boolean }> = [
+      {
+        d: "found=true with identity string",
+        v: { found: true, identity: "## Identity Reflections\n- Prefers concise output" },
+        pass: true,
+      },
+      {
+        d: "found=false with message fallback",
+        v: { found: false, message: "No identity reflections found" },
+        pass: true,
+      },
+      { d: "identity as number (invalid)", v: { found: true, identity: 42 }, pass: false },
+      {
+        d: "identity as object (invalid — the original bug)",
+        v: { found: true, identity: { text: "reflections" } },
+        pass: false,
+      },
+      { d: "found as string (invalid)", v: { found: "yes", identity: "x" }, pass: false },
+    ];
+    for (const { d: desc, v, pass } of cases) {
+      const result = validate(v);
+      assert.equal(
+        result,
+        pass,
+        `memory_identity "${desc}": expected ${pass ? "valid" : "invalid"}${validate.errors ? ` — ${JSON.stringify(validate.errors)}` : ""}`
+      );
+    }
+  }
+
+  // memory_last_recall: real schema, snapshot form vs message fallback
+  {
+    const lrSchema = schemaByName.get("engram.memory_last_recall");
+    assert.ok(lrSchema, "engram.memory_last_recall: no outputSchema in tools/list");
+    const validate = ajv.compile(lrSchema);
+    const snapshot = {
+      sessionKey: "s1",
+      recordedAt: "2026-07-11T00:00:00Z",
+      queryHash: "abc123",
+      queryLen: 42,
+      memoryIds: ["mem-1", "mem-2"],
+    };
+    const cases: Array<{ d: string; v: unknown; pass: boolean }> = [
+      { d: "full snapshot", v: snapshot, pass: true },
+      { d: "message fallback", v: { message: "No last recall snapshot" }, pass: true },
+      { d: "queryLen as string (invalid)", v: { ...snapshot, queryLen: "42" }, pass: false },
+      { d: "memoryIds as object (invalid)", v: { ...snapshot, memoryIds: {} }, pass: false },
+    ];
+    for (const { d: desc, v, pass } of cases) {
+      const result = validate(v);
+      assert.equal(
+        result,
+        pass,
+        `memory_last_recall "${desc}": expected ${pass ? "valid" : "invalid"}${validate.errors ? ` — ${JSON.stringify(validate.errors)}` : ""}`
+      );
+    }
+  }
+
+  // memory_intent_debug: real schema, snapshot form vs message fallback
+  {
+    const idSchema2 = schemaByName.get("engram.memory_intent_debug");
+    assert.ok(idSchema2, "engram.memory_intent_debug: no outputSchema in tools/list");
+    const validate = ajv.compile(idSchema2);
+    const snapshot = {
+      recordedAt: "2026-07-11T00:00:00Z",
+      promptHash: "h1",
+      promptLength: 100,
+      retrievalQueryHash: "h2",
+      retrievalQueryLength: 50,
+      plannerEnabled: true,
+      plannedMode: "full",
+      effectiveMode: "full",
+      recallResultLimit: 10,
+      queryIntent: { type: "question" },
+      graphExpandedIntentDetected: false,
+      graphDecision: {
+        status: "not_requested",
+        shadowMode: false,
+        qmdAvailable: true,
+        graphRecallEnabled: false,
+        multiGraphMemoryEnabled: false,
+      },
+    };
+    const cases: Array<{ d: string; v: unknown; pass: boolean }> = [
+      { d: "full snapshot", v: snapshot, pass: true },
+      { d: "message fallback", v: { message: "No intent debug snapshot" }, pass: true },
+      { d: "plannerEnabled as string (invalid)", v: { ...snapshot, plannerEnabled: "yes" }, pass: false },
+      { d: "promptLength as string (invalid)", v: { ...snapshot, promptLength: "100" }, pass: false },
+    ];
+    for (const { d: desc, v, pass } of cases) {
+      const result = validate(v);
+      assert.equal(result, pass, `memory_intent_debug "${desc}": expected ${pass ? "valid" : "invalid"}`);
+    }
+  }
+
+  // memory_qmd_debug: real schema, snapshot form vs message fallback
+  {
+    const qdSchema = schemaByName.get("engram.memory_qmd_debug");
+    assert.ok(qdSchema, "engram.memory_qmd_debug: no outputSchema in tools/list");
+    const validate = ajv.compile(qdSchema);
+    const snapshot = {
+      recordedAt: "2026-07-11T00:00:00Z",
+      queryHash: "h1",
+      queryLength: 50,
+      namespaces: ["default"],
+      fetchLimit: 100,
+      primaryResultCount: 10,
+      hybridResultCount: 5,
+      queryAwareSeedCount: 3,
+      resultCount: 15,
+      explainEnabled: false,
+      hybridTopUpUsed: false,
+      results: [],
+    };
+    const cases: Array<{ d: string; v: unknown; pass: boolean }> = [
+      { d: "full snapshot", v: snapshot, pass: true },
+      { d: "message fallback", v: { message: "No QMD debug snapshot" }, pass: true },
+      { d: "fetchLimit as string (invalid)", v: { ...snapshot, fetchLimit: "100" }, pass: false },
+      { d: "explainEnabled as number (invalid)", v: { ...snapshot, explainEnabled: 1 }, pass: false },
+    ];
+    for (const { d: desc, v, pass } of cases) {
+      const result = validate(v);
+      assert.equal(result, pass, `memory_qmd_debug "${desc}": expected ${pass ? "valid" : "invalid"}`);
+    }
+  }
 });
