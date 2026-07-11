@@ -1688,6 +1688,8 @@ export class EngramAccessHttpServer {
         return;
       }
       const response = getRecallTimingStatus(this.service.configRef);
+      // Live diagnostic snapshot; must never be served from a cache.
+      res.setHeader("cache-control", "no-store");
       this.respondJson(res, 200, response);
       return;
     }

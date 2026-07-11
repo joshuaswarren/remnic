@@ -69,10 +69,20 @@ test("authenticated recall timings route returns two recalls without user-correl
       },
     });
     assert.equal(response.status, 200);
+    assert.equal(response.headers.get("cache-control"), "no-store");
     const payload = await response.json() as {
+      generatedAt: string;
+      processStartedAt: string;
+      capacity: number;
       count: number;
+      order: string;
       records: RecallTimingRecord[];
     };
+    assert.ok(Number.isFinite(Date.parse(payload.generatedAt)));
+    assert.ok(Number.isFinite(Date.parse(payload.processStartedAt)));
+    assert.ok(Date.parse(payload.processStartedAt) <= Date.parse(payload.generatedAt));
+    assert.equal(payload.capacity, 50);
+    assert.equal(payload.order, "newest-first");
     assert.equal(payload.count, 2);
     assert.equal(payload.records.length, 2);
     const operation = getOperation("recall_timings");
@@ -90,18 +100,22 @@ test("authenticated recall timings route returns two recalls without user-correl
       authenticatedPrincipal: "operator",
       operatorPrincipal: "operator",
     }) as { result: { count: number; records: RecallTimingRecord[] } };
-    assert.deepEqual(operationOutput.result, payload);
+    // generatedAt legitimately differs between the two calls; the data must not.
+    assert.equal(operationOutput.result.count, payload.count);
+    assert.deepEqual(operationOutput.result.records, payload.records);
     for (const record of payload.records) {
       assert.equal(record.namespace, "default");
       assert.ok(Number.isFinite(Date.parse(record.timestamp)));
-      assert.equal(typeof record.total, "number");
-      assert.ok(record.total >= 0);
+      assert.equal(typeof record.timingsMs.total, "number");
+      assert.ok(record.timingsMs.total >= 0);
       assert.equal(typeof record.recallPlan, "string");
       assert.equal(typeof record.queryPolicy, "string");
       assert.equal("query" in record, false);
       assert.equal("prompt" in record, false);
       assert.equal("sessionKey" in record, false);
       assert.equal("retrievalQuery" in record, false);
+      assert.equal("query" in record.timingsMs, false);
+      assert.equal("prompt" in record.timingsMs, false);
     }
   } finally {
     await server.stop();
@@ -123,8 +137,8 @@ test("recall timing history keeps only the newest 50 records", () => {
 
   const records = getRecallTimings(config);
   assert.equal(records.length, 50);
-  assert.equal(records[0]?.total, 50);
-  assert.equal(records[49]?.total, 1);
+  assert.equal(records[0]?.timingsMs.total, 50);
+  assert.equal(records[49]?.timingsMs.total, 1);
 });
 
 test("operator principal resolution agrees for standalone and embedded access", () => {
@@ -176,10 +190,43 @@ test("recall timing records expose only the fixed telemetry schema", () => {
   assert.deepEqual(record, {
     timestamp: new Date(0).toISOString(),
     namespace: "default",
-    total: 7,
-    qmd: 3,
-    qmdPost: 2,
+    recallPlan: "full",
+    queryPolicy: "general/full",
+    timingsMs: {
+      total: 7,
+      qmd: 3,
+      qmdPost: 2,
+    },
+  });
+});
+
+test("phases that did not run are omitted while measured zeros survive", () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-phases"));
+  recordRecallTiming(config, {
+    timestamp: new Date(0).toISOString(),
+    namespace: "default",
+    total: "5ms",
+    qmd: "0ms",
     recallPlan: "full",
     queryPolicy: "general/full",
   });
+
+  const record = getRecallTimings(config)[0];
+  assert.ok(record);
+  assert.equal(record.timingsMs.qmd, 0);
+  assert.equal("qmdPost" in record.timingsMs, false);
+  assert.equal("ki" in record.timingsMs, false);
+});
+
+test("status envelope reports a stable process start and live generation time", () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-envelope"));
+  const first = getRecallTimingStatus(config);
+  const second = getRecallTimingStatus(config);
+  assert.equal(first.processStartedAt, second.processStartedAt);
+  assert.ok(Number.isFinite(Date.parse(first.processStartedAt)));
+  assert.ok(Date.parse(first.processStartedAt) <= Date.now());
+  assert.equal(first.capacity, 50);
+  assert.equal(first.order, "newest-first");
+  assert.equal(first.count, 0);
+  assert.deepEqual(first.records, []);
 });
