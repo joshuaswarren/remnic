@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import { EngramMcpServer } from "../src/access-mcp.js";
 import type { EngramAccessService } from "../src/access-service.js";
+import { Ajv } from "ajv";
 
 function createFakeService(): EngramAccessService {
   return {
@@ -1273,6 +1274,10 @@ test("outputSchema: no tool falls through to the generic default (every schema h
   }>;
   const fallbacks: string[] = [];
   for (const tool of tools) {
+    // Array-typed schemas (type:"array") legitimately have no `properties` —
+    // they carry `items` instead. They are deliberate, precise schemas, not
+    // the generic {type:"object",additionalProperties:true} fallback.
+    if (tool.outputSchema?.type === "array") continue;
     const props = tool.outputSchema?.properties;
     if (!props || typeof props !== "object" || Object.keys(props).length === 0) {
       fallbacks.push(tool.name);
@@ -1283,4 +1288,155 @@ test("outputSchema: no tool falls through to the generic default (every schema h
     `These tools have no declared properties (generic fallback): ${fallbacks.join(", ")}. ` +
       `Add them to TOOL_OUTPUT_SCHEMAS in access-mcp.ts.`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// AJV outputSchema validation — representative tools validated against their
+// declared JSON-Schema outputSchema. Catches field-level type mismatches
+// (wrong field names, wrong types, phantom fields from fake stubs) that the
+// loose typeof check above cannot detect.
+// ---------------------------------------------------------------------------
+
+test("AJV: structuredContent validates against declared outputSchema for representative tools", async () => {
+  const ajv = new Ajv({ strict: false });
+
+  // Service stubs that return data matching the REAL return types.
+  // The fake service (createFakeService) was the source of the original
+  // mismatches; these overrides fill in tools it never stubbed and whose
+  // schemas were corrected.
+  const service = {
+    ...createFakeService(),
+    wearablesStatus: async () => ({
+      enabled: true,
+      timezone: "UTC",
+      sources: [],
+      connectorsInstalled: [],
+    }),
+    patternReinforcementRun: async () => ({
+      namespace: "global",
+      ran: true,
+      clustersFound: 5,
+      canonicalsUpdated: 3,
+      duplicatesSuperseded: 2,
+    }),
+    procedureStats: async () => ({
+      schemaVersion: 1 as const,
+      generatedAt: "2026-07-11T00:00:00.000Z",
+      namespace: "global",
+      counts: { total: 10, active: 8, superseded: 2 },
+      recent: { total: 3, minerSourced: 1 },
+      config: {
+        enabled: true, minOccurrences: 3, successFloor: 0,
+        autoPromoteOccurrences: 0, autoPromoteEnabled: false,
+        lookbackDays: 7, recallMaxProcedures: 5,
+      },
+    }),
+    actionConfidence: async () => ({
+      schemaVersion: 1,
+      decision: "proceed",
+      confidence: 0.85,
+      risk: "low",
+      contextReadiness: "sufficient",
+      intendedAction: "write memory",
+      attentionPolicy: "standard",
+      principle: "sufficient-context",
+      reasons: [],
+      blockers: [],
+      factors: [],
+      retrievedMemoryCount: 3,
+      scopeMismatchCount: 0,
+      safeToAct: true,
+    }),
+  } as unknown as EngramAccessService;
+
+  const server = new EngramMcpServer(service);
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+
+  // Collect outputSchema per tool from tools/list.
+  const listResp = await server.handleRequest({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+  const tools = fieldOf(fieldOf(listResp, "result"), "tools") as Array<Record<string, unknown>>;
+  const schemaByName = new Map<string, Record<string, unknown>>();
+  for (const tool of tools) {
+    const name = fieldOf(tool, "name");
+    if (typeof name === "string") {
+      const schema = fieldOf(tool, "outputSchema") as Record<string, unknown>;
+      if (schema && typeof schema === "object") schemaByName.set(name, schema);
+    }
+  }
+
+  // Representative tools covering: read, write, list, nullable-object,
+  // nullable-string, object-return, string-return, and corrected schemas
+  // (phantom field removal, nullable union fixes).
+  const cases: Array<{ name: string; args: Record<string, unknown> }> = [
+    // Read + complex object
+    { name: "engram.recall", args: { query: "test" } },
+    // Nullable object (memory present)
+    { name: "engram.memory_get", args: { memoryId: "fact-1" } },
+    // Write response
+    { name: "engram.memory_store", args: { category: "fact", content: "x", dryRun: true } },
+    // Nullable object (entity present)
+    { name: "engram.entity_get", args: { name: "Alice" } },
+    // List shape
+    { name: "engram.capsule_list", args: {} },
+    // Nullable string (encryptedArchivePath null when encrypt=false)
+    { name: "engram.capsule_export", args: { name: "cap-1" } },
+    // Array-of-objects import result
+    { name: "engram.capsule_import", args: { archivePath: "/tmp/a.capsule.json.gz" } },
+    // Complex governance object
+    { name: "engram.memory_governance_run", args: {} },
+    // Corrected schemas (phantom removal + type fixes)
+    { name: "engram.wearables_status", args: {} },
+    { name: "engram.pattern_reinforcement_run", args: {} },
+    { name: "engram.procedural_stats", args: {} },
+    // Nullable null fields (intent:null, graph:null — typeof-null bug guard)
+    { name: "engram.recall_explain", args: {} },
+    // Action confidence — corrected schema (matchedRules phantom removed)
+    { name: "engram.action_confidence", args: { intendedAction: "write", confidence: 0.9, risk: "low", contextReadiness: "sufficient" } },
+    // List shape (peers)
+    { name: "engram.peer_list", args: {} },
+    // Complex nested object (console state)
+    { name: "engram.console_state", args: {} },
+  ];
+
+  for (const { name, args } of cases) {
+    const resp = await server.handleRequest({
+      jsonrpc: "2.0", id: 3, method: "tools/call", params: { name, arguments: args },
+    });
+    const result = fieldOf(resp, "result");
+    assert.notEqual(fieldOf(result, "isError"), true, `${name}: must not return an error`);
+    const sc = fieldOf(result, "structuredContent");
+    const schema = schemaByName.get(name);
+    assert.ok(schema, `${name}: no outputSchema found in tools/list`);
+    const validate = ajv.compile(schema);
+    const valid = validate(sc);
+    assert.ok(
+      valid,
+      `${name}: structuredContent failed AJV validation: ${JSON.stringify(validate.errors)}`,
+    );
+  }
+
+  // memory_get with found=false: structuredContent.memory is absent (nullable),
+  // validating the T_NULLABLE_OBJECT schema against the not-found code path.
+  {
+    const notFoundService = {
+      ...createFakeService(),
+      memoryGet: async (_id: string) => ({ found: false, namespace: "global" }),
+    } as unknown as EngramAccessService;
+    const nfServer = new EngramMcpServer(notFoundService);
+    const resp = await nfServer.handleRequest({
+      jsonrpc: "2.0", id: 4, method: "tools/call",
+      params: { name: "engram.memory_get", arguments: { memoryId: "nonexistent" } },
+    });
+    const result = fieldOf(resp, "result");
+    assert.notEqual(fieldOf(result, "isError"), true, "memory_get(not found): must not error");
+    const sc = fieldOf(result, "structuredContent");
+    const schema = schemaByName.get("engram.memory_get");
+    assert.ok(schema, "engram.memory_get: no outputSchema found");
+    const validate = ajv.compile(schema);
+    const valid = validate(sc);
+    assert.ok(
+      valid,
+      `memory_get(found=false): structuredContent failed AJV validation: ${JSON.stringify(validate.errors)}`,
+    );
+  }
 });
