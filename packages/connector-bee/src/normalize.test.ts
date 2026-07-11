@@ -77,3 +77,76 @@ test("maps Bee facts to native memories", () => {
     tags: ["habit"],
   });
 });
+
+
+test("maps utterance start/end to segment timing, preferring start over spoken_at (#1811)", () => {
+  const conversation = conversationToWearable({
+    id: 11,
+    start_time: BASE_MS,
+    transcriptions: [
+      {
+        utterances: [
+          {
+            text: "First line.",
+            speaker: "0",
+            start: BASE_MS + 5_000,
+            end: BASE_MS + 8_000,
+            spoken_at: BASE_MS + 60_000,
+          },
+        ],
+      },
+    ],
+  });
+  assert.equal(conversation.segments.length, 1);
+  const segment = conversation.segments[0];
+  assert.equal(segment.startIso, new Date(BASE_MS + 5_000).toISOString());
+  assert.equal(segment.endIso, new Date(BASE_MS + 8_000).toISOString());
+});
+
+test("keeps many Unknown-labeled utterances as distinct segments with end timing (#1811)", () => {
+  const conversation = conversationToWearable({
+    id: 12,
+    start_time: BASE_MS,
+    transcriptions: [
+      {
+        utterances: Array.from({ length: 6 }, (_, index) => ({
+          text: `Utterance number ${index + 1}.`,
+          speaker: "Unknown",
+          start: BASE_MS + index * 10_000,
+          end: BASE_MS + index * 10_000 + 4_000,
+        })),
+      },
+    ],
+  });
+  // No mega-collapse at the normalizer: every utterance is its own segment.
+  assert.equal(conversation.segments.length, 6);
+  // Full transcript text is preserved across all segments.
+  assert.deepEqual(
+    conversation.segments.map((segment) => segment.text),
+    Array.from({ length: 6 }, (_, index) => `Utterance number ${index + 1}.`),
+  );
+  // End timing is carried through for every segment.
+  for (const [index, segment] of conversation.segments.entries()) {
+    assert.equal(segment.speakerKey, "Unknown");
+    assert.equal(segment.startIso, new Date(BASE_MS + index * 10_000).toISOString());
+    assert.equal(segment.endIso, new Date(BASE_MS + index * 10_000 + 4_000).toISOString());
+  }
+});
+
+test("falls back to spoken_at when start/end are absent (#1811)", () => {
+  const conversation = conversationToWearable({
+    id: 13,
+    start_time: BASE_MS,
+    transcriptions: [
+      {
+        utterances: [
+          { text: "Only spoken_at.", speaker: "0", spoken_at: BASE_MS + 120_000 },
+        ],
+      },
+    ],
+  });
+  assert.equal(conversation.segments.length, 1);
+  const segment = conversation.segments[0];
+  assert.equal(segment.startIso, new Date(BASE_MS + 120_000).toISOString());
+  assert.equal(segment.endIso, undefined);
+});

@@ -44,7 +44,32 @@ test("source settings default to the fully-automated smart pipeline", () => {
     stripFillers: true,
     collapseRepeats: true,
     dropLowQuality: true,
+    // Opt-in for Bee only; limitless keeps the legacy default (issue #1811).
+    preserveUtteranceBoundaries: false,
   });
+});
+
+test("bee source defaults to preserving utterance boundaries (#1811)", () => {
+  const parsed = parseWearablesConfig({
+    enabled: true,
+    sources: { bee: { enabled: true } },
+  });
+  assert.equal(parsed.sources.bee.cleanup.preserveUtteranceBoundaries, true);
+});
+
+test("cleanup.preserveUtteranceBoundaries is parsed and overrides the source default", () => {
+  const parsed = parseWearablesConfig({
+    enabled: true,
+    sources: { bee: { enabled: true, cleanup: { preserveUtteranceBoundaries: false } } },
+  });
+  assert.equal(parsed.sources.bee.cleanup.preserveUtteranceBoundaries, false);
+  assert.throws(
+    () =>
+      parseWearablesConfig({
+        sources: { bee: { cleanup: { preserveUtteranceBoundaries: "maybe" } } },
+      }),
+    /cleanup.preserveUtteranceBoundaries/,
+  );
 });
 
 test("top-level defaults are full-featured: digest and off-the-record on", () => {

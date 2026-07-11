@@ -35,12 +35,18 @@ export function conversationToWearable(
         typeof utterance.speaker === "string" && utterance.speaker.trim().length > 0
           ? utterance.speaker.trim()
           : "unknown";
+      // Prefer Bee's explicit utterance `start`/`end` when present; fall
+      // back to `spoken_at` for the start (issue #1811). Carrying `end`
+      // keeps per-utterance timing on the segment and lets the cleanup
+      // pass reason about real gaps instead of treating every utterance
+      // as a point in time.
+      const startIso = msToIso(utterance.start ?? utterance.spoken_at);
+      const endIso = msToIso(utterance.end ?? undefined);
       segments.push({
         text,
         speakerKey: speaker,
-        ...(msToIso(utterance.spoken_at) !== undefined
-          ? { startIso: msToIso(utterance.spoken_at) }
-          : {}),
+        ...(startIso !== undefined ? { startIso } : {}),
+        ...(endIso !== undefined ? { endIso } : {}),
       });
     }
   }

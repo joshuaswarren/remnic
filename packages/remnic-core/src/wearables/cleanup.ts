@@ -25,6 +25,14 @@ export interface CleanupResult {
 const MERGE_GAP_MS = 30_000;
 
 /**
+ * Speaker labels that carry no real diarization signal. Bee (and other
+ * providers that fall back to a placeholder) emit "Unknown"/"unknown"
+ * or an empty string when diarization is unavailable; merging on such a
+ * label would collapse an entire conversation into one segment (issue #1811).
+ */
+const GENERIC_SPEAKER_PATTERN = /^unknown$/i;
+
+/**
  * Standalone filler tokens stripped when `stripFillers` is on. Matched
  * case-insensitively on word boundaries, only as whole tokens — "um"
  * inside "umbrella" is never touched. Deliberately short, low-risk
@@ -47,6 +55,9 @@ export function cleanConversation(
   let segments = conversation.segments.map((segment) => ({ ...segment }));
   let droppedSegments = 0;
   let mergedSegments = 0;
+  // Optional on the type so other connectors keep the legacy no-op
+  // default; absent means "off" (unchanged merge behavior).
+  const preserveBoundaries = settings.preserveUtteranceBoundaries === true;
 
   if (settings.stripFillers) {
     for (const segment of segments) {
@@ -86,7 +97,7 @@ export function cleanConversation(
     const merged: WearableTranscriptSegment[] = [];
     for (const segment of segments) {
       const previous = merged[merged.length - 1];
-      if (previous && canMerge(previous, segment)) {
+      if (previous && canMerge(previous, segment, preserveBoundaries)) {
         previous.text = `${previous.text} ${segment.text}`.trim();
         if (segment.endIso) previous.endIso = segment.endIso;
         mergedSegments += 1;
@@ -107,8 +118,18 @@ export function cleanConversation(
 function canMerge(
   previous: WearableTranscriptSegment,
   next: WearableTranscriptSegment,
+  preserveUtteranceBoundaries: boolean,
 ): boolean {
   if (previous.speakerKey !== next.speakerKey) return false;
+  // A generic/low-confidence speaker label ("Unknown", empty) carries no
+  // real diarization: merging on it collapses unrelated utterances. When
+  // the source opts into boundary preservation, refuse to merge across
+  // such a label (issue #1811). The keys are equal here, so checking one
+  // suffices; diarized labels still merge normally.
+  if (preserveUtteranceBoundaries) {
+    const label = previous.speakerKey.trim();
+    if (label.length === 0 || GENERIC_SPEAKER_PATTERN.test(label)) return false;
+  }
   const previousEnd = previous.endIso ? Date.parse(previous.endIso) : NaN;
   const nextStart = next.startIso ? Date.parse(next.startIso) : NaN;
   // Without timestamps, adjacency is the only signal — still merge.
