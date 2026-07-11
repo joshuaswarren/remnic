@@ -32,13 +32,18 @@ function makeConfig(memoryDir: string, overrides: Record<string, unknown> = {}) 
 
 test("authenticated recall timings route returns two recalls without user-correlatable inputs", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recall-timings-"));
-  const orchestrator = new Orchestrator(makeConfig(memoryDir));
+  const config = makeConfig(memoryDir, {
+    agentAccessHttp: { enabled: true, host: "127.0.0.1", port: 0, principal: "operator", maxBodyBytes: 1024 },
+  });
+  const orchestrator = new Orchestrator(config);
   const service = new EngramAccessService(orchestrator);
   const server = new EngramAccessHttpServer({
     service,
     host: "127.0.0.1",
     port: 0,
     authToken: "secret-token",
+    principal: "operator",
+    trustPrincipalHeader: true,
     maxBodyBytes: 1024,
   });
   const started = await server.start();
@@ -50,8 +55,19 @@ test("authenticated recall timings route returns two recalls without user-correl
     const denied = await fetch(url);
     assert.equal(denied.status, 401);
 
+    const nonOperator = await fetch(url, {
+      headers: {
+        Authorization: "Bearer secret-token",
+        "X-Engram-Principal": "reader",
+      },
+    });
+    assert.equal(nonOperator.status, 403);
+
     const response = await fetch(url, {
-      headers: { Authorization: "Bearer secret-token" },
+      headers: {
+        Authorization: "Bearer secret-token",
+        "X-Engram-Principal": "operator",
+      },
     });
     assert.equal(response.status, 200);
     const payload = await response.json() as {
@@ -62,6 +78,13 @@ test("authenticated recall timings route returns two recalls without user-correl
     assert.equal(payload.records.length, 2);
     const operation = getOperation("recall_timings");
     assert.ok(operation);
+    await assert.rejects(
+      operation.run({}, {
+        service,
+        authenticatedPrincipal: "reader",
+      }),
+      /configured operator principal/,
+    );
     const operationOutput = await operation.run({}, {
       service,
       authenticatedPrincipal: "operator",
@@ -70,8 +93,8 @@ test("authenticated recall timings route returns two recalls without user-correl
     for (const record of payload.records) {
       assert.equal(record.namespace, "default");
       assert.ok(Number.isFinite(Date.parse(record.timestamp)));
-      assert.match(record.total, /^\d+ms$/);
-      assert.ok(Number.parseInt(record.total, 10) >= 0);
+      assert.equal(typeof record.total, "number");
+      assert.ok(record.total >= 0);
       assert.equal(typeof record.recallPlan, "string");
       assert.equal(typeof record.queryPolicy, "string");
       assert.equal("query" in record, false);
@@ -91,7 +114,7 @@ test("recall timing history keeps only the newest 50 records", () => {
     recordRecallTiming(config, {
       timestamp: new Date(index * 1000).toISOString(),
       namespace: "default",
-      total: `${index}ms`,
+      total: index,
       recallPlan: "full",
       queryPolicy: "general/full",
     });
@@ -99,148 +122,34 @@ test("recall timing history keeps only the newest 50 records", () => {
 
   const records = getRecallTimings(config);
   assert.equal(records.length, 50);
-  assert.equal(records[0]?.total, "50ms");
-  assert.equal(records[49]?.total, "1ms");
+  assert.equal(records[0]?.total, 50);
+  assert.equal(records[49]?.total, 1);
 });
 
-test("recall timings require access to every namespace searched", () => {
-  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-acl"), {
-    namespacesEnabled: true,
-    namespacePolicies: [
-      {
-        name: "default",
-        readPrincipals: ["reader"],
-        writePrincipals: ["reader"],
-      },
-      {
-        name: "private",
-        readPrincipals: ["owner"],
-        writePrincipals: ["owner"],
-      },
-    ],
-  });
+test("recall timing records expose only the fixed telemetry schema", () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-schema"));
   recordRecallTiming(config, {
     timestamp: new Date(0).toISOString(),
     namespace: "default",
-    total: "1ms",
+    total: "7ms",
+    qmd: "3ms",
+    qmdPost: "2ms",
     recallPlan: "full",
     queryPolicy: "general/full",
-  }, ["default", "private"]);
-
-  assert.deepEqual(getRecallTimings(config, "reader"), []);
-});
-
-test("empty searched namespace metadata falls back to the record namespace ACL", () => {
-  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-empty-acl"), {
-    namespacesEnabled: true,
-    namespacePolicies: [{
-      name: "default",
-      readPrincipals: ["reader"],
-      writePrincipals: ["reader"],
-    }],
+    queryAware: "1ms;helped=private prompt detail",
+    prompt: "private prompt",
+    sessionKey: "user-session",
+    unknownTiming: "9ms",
   });
-  recordRecallTiming(config, {
+
+  const record = getRecallTimings(config)[0];
+  assert.deepEqual(record, {
     timestamp: new Date(0).toISOString(),
     namespace: "default",
-    total: "1ms",
+    total: 7,
+    qmd: 3,
+    qmdPost: 2,
     recallPlan: "full",
     queryPolicy: "general/full",
-  }, []);
-
-  assert.equal(getRecallTimings(config, "reader").length, 1);
-  assert.deepEqual(getRecallTimings(config, "intruder"), []);
-});
-
-test("scope-profile project timing stays visible to its principal only", async () => {
-  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-overlay"), {
-    namespacesEnabled: true,
-    principalFromSessionKeyMode: "prefix",
-    principalFromSessionKeyRules: [{ match: "reader:", principal: "reader" }],
-    defaultRecallNamespaces: ["self"],
-    namespacePolicies: [{
-      name: "reader",
-      readPrincipals: ["reader"],
-      writePrincipals: ["reader"],
-    }],
-    codingMode: { projectScope: true, branchScope: true },
-    scopeProfiles: {
-      teamOnly: {
-        readOrder: ["teamProject"],
-        writeDefault: "userProject",
-        teamProject: {
-          namespaceTemplate: "team-{teamId}-project-{projectHash}",
-        },
-      },
-    },
-    defaultScopeProfile: "teamOnly",
-    teams: {
-      ops: {
-        principals: ["reader"],
-        read: ["reader"],
-        write: ["reader"],
-        promote: ["reader"],
-      },
-    },
   });
-  const orchestrator = new Orchestrator(config);
-  const sessionKey = "reader:chat";
-  orchestrator.setCodingContextForSession(sessionKey, {
-    projectId: "project-1",
-    branch: "feature/timings",
-    rootPath: "/tmp/project-1",
-    defaultBranch: "main",
-  });
-
-  await orchestrator.recall("skip retrieval", sessionKey, { mode: "no_recall" });
-
-  assert.equal(getRecallTimingStatus(config, "reader").count, 1);
-  assert.equal(getRecallTimingStatus(config, "intruder").count, 0);
-});
-
-test("scope-profile timing without a coding overlay stays visible to its owner", async () => {
-  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-profile-global"), {
-    namespacesEnabled: true,
-    principalFromSessionKeyMode: "prefix",
-    principalFromSessionKeyRules: [{ match: "owner:", principal: "owner" }],
-    scopeProfiles: {
-      globals: {
-        readOrder: ["userGlobal"],
-        writeDefault: "userGlobal",
-      },
-    },
-    defaultScopeProfile: "globals",
-  });
-  const orchestrator = new Orchestrator(config);
-
-  await orchestrator.recall("skip retrieval", "owner:chat", { mode: "no_recall" });
-
-  assert.equal(getRecallTimingStatus(config, "owner").count, 1);
-  assert.equal(getRecallTimingStatus(config, "outsider").count, 0);
-});
-
-test("scope-profile timing honors every readable global layer", async () => {
-  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-profile-layers"), {
-    namespacesEnabled: true,
-    principalFromSessionKeyMode: "prefix",
-    principalFromSessionKeyRules: [{ match: "owner:", principal: "owner" }],
-    sharedNamespace: "server-shared",
-    namespacePolicies: [{
-      name: "server-shared",
-      readPrincipals: ["owner"],
-      writePrincipals: [],
-    }],
-    scopeProfiles: {
-      globals: {
-        readOrder: ["userGlobal", "serverShared"],
-        writeDefault: "userGlobal",
-      },
-    },
-    defaultScopeProfile: "globals",
-  });
-  const orchestrator = new Orchestrator(config);
-
-  await orchestrator.recall("skip retrieval", "owner:chat", { mode: "no_recall" });
-
-  assert.equal(getRecallTimingStatus(config, "owner").count, 1);
-  assert.equal(getRecallTimingStatus(config, "outsider").count, 0);
 });

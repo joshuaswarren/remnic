@@ -18,7 +18,7 @@ import { EngramAccessInputError, type EngramAccessService } from "./access-servi
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { expandTildePath } from "./utils/path.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
-import { getRecallTimingStatus } from "./recall-timings.js";
+import { getRecallTimingStatus, isRecallTimingsOperator } from "./recall-timings.js";
 import { validateBriefingFormat } from "./briefing.js";
 import {
   buildChatGptMemoryInspectorActionRequest,
@@ -255,7 +255,17 @@ defineOperation({ name: "offline_sync_apply_file_content", description: "Apply f
 defineOperation({ name: "offline_sync_apply", description: "Apply sync.", schema: strictSchema({ changeset: z.unknown().optional(), namespace: S.str }), handler: async (input, ctx) => ({ result: await ctx.service.offlineSyncApply({ changeset: input.changeset, namespace: optStr(input.namespace), principal: ctx.authenticatedPrincipal }) }) });
 defineOperation({ name: "lcm_status", description: "LCM status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.lcmStatus() }) });
 defineOperation({ name: "memory_list", description: "List memories.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.memoryBrowse() }) });
-defineOperation({ name: "recall_timings", description: "List recent recall timings.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: getRecallTimingStatus(ctx.service.configRef, ctx.authenticatedPrincipal) }) });
+defineOperation({
+  name: "recall_timings",
+  description: "List recent recall timings.",
+  schema: strictSchema({}),
+  handler: async (_input, ctx) => {
+    if (!isRecallTimingsOperator(ctx.service.configRef, ctx.authenticatedPrincipal)) {
+      throw new Error("recall timings require the configured operator principal");
+    }
+    return { result: getRecallTimingStatus(ctx.service.configRef) };
+  },
+});
 defineOperation({ name: "entity_list", description: "List entities.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.entityList() }) });
 defineOperation({ name: "maintenance_status", description: "Maintenance status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.maintenance() }) });
 defineOperation({ name: "quality_status", description: "Quality status.", schema: strictSchema({}), handler: async (_i, ctx) => ({ result: await ctx.service.quality() }) });

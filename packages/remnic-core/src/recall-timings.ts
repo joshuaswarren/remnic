@@ -1,15 +1,12 @@
-import { resolveNamespaceCapabilities } from "./capabilities.js";
-import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
-import { canReadNamespace } from "./namespaces/principal.js";
-import type { CodingContext, PluginConfig } from "./types.js";
+import type { PluginConfig } from "./types.js";
 
 export interface RecallTimingRecord {
   readonly timestamp: string;
   readonly namespace: string;
-  readonly total: string;
+  readonly total: number;
   readonly recallPlan: string;
   readonly queryPolicy: string;
-  readonly [field: string]: string;
+  readonly [field: string]: string | number;
 }
 
 export interface RecallTimingStatus {
@@ -17,86 +14,91 @@ export interface RecallTimingStatus {
   readonly records: RecallTimingRecord[];
 }
 
-export interface RecallTimingScopeContext {
-  readonly codingContext: CodingContext | null;
-  readonly codingOverlay: {
-    readonly namespace: string;
-    readonly readFallbacks: readonly string[];
-  } | null;
-}
-
-interface RecallTimingHistoryEntry {
-  readonly record: RecallTimingRecord;
-  readonly searchedNamespaces: readonly string[];
-  readonly aclNamespaces: readonly string[];
-  readonly scopeContext?: RecallTimingScopeContext;
-}
-
 const RECALL_TIMING_HISTORY_LIMIT = 50;
-const histories = new WeakMap<PluginConfig, RecallTimingHistoryEntry[]>();
+const TIMING_FIELD_ALLOWLIST = [
+  "total",
+  "sharedCtx",
+  "profile",
+  "peerProfile",
+  "identityContinuity",
+  "entityRetrieval",
+  "ki",
+  "artifacts",
+  "objectiveState",
+  "causalTrajectories",
+  "cmcCausalChains",
+  "calibrationRules",
+  "trustZones",
+  "harmonicRetrieval",
+  "verifiedRecall",
+  "verifiedRules",
+  "workProducts",
+  "qmd",
+  "transcript",
+  "summaries",
+  "nativeKnowledge",
+  "convRecall",
+  "compounding",
+  "graphShadow",
+  "qmdPost",
+] as const;
+const histories = new WeakMap<PluginConfig, RecallTimingRecord[]>();
+
+function numericMilliseconds(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) {
+    return value;
+  }
+  if (typeof value !== "string") return undefined;
+  const match = /^(\d+)ms$/.exec(value);
+  return match ? Number(match[1]) : undefined;
+}
+
+function sanitizeRecallTiming(
+  input: Record<string, unknown>,
+): RecallTimingRecord {
+  const record: Record<string, string | number> = {
+    timestamp: typeof input.timestamp === "string" ? input.timestamp : "",
+    namespace: typeof input.namespace === "string" ? input.namespace : "",
+    total: numericMilliseconds(input.total) ?? 0,
+    recallPlan: typeof input.recallPlan === "string" ? input.recallPlan : "",
+    queryPolicy: typeof input.queryPolicy === "string" ? input.queryPolicy : "",
+  };
+  for (const field of TIMING_FIELD_ALLOWLIST) {
+    if (field === "total") continue;
+    const value = numericMilliseconds(input[field]);
+    if (value !== undefined) record[field] = value;
+  }
+  return record as RecallTimingRecord;
+}
 
 export function recordRecallTiming(
   config: PluginConfig,
-  record: RecallTimingRecord,
-  searchedNamespaces: readonly string[] = [record.namespace],
-  aclNamespaces: readonly string[] = searchedNamespaces,
-  scopeContext?: RecallTimingScopeContext,
+  input: Record<string, unknown>,
 ): void {
   const history = histories.get(config) ?? [];
-  const effectiveSearchedNamespaces =
-    searchedNamespaces.length > 0 ? searchedNamespaces : [record.namespace];
-  const effectiveAclNamespaces =
-    aclNamespaces.length > 0 ? aclNamespaces : [record.namespace];
-  // JS runs this synchronous push/shift block to completion, so concurrent
-  // recalls cannot interleave ring updates and do not need a lock.
-  history.push({
-    record: { ...record },
-    searchedNamespaces: [...effectiveSearchedNamespaces],
-    aclNamespaces: [...effectiveAclNamespaces],
-    ...(scopeContext ? { scopeContext } : {}),
-  });
+  history.push(sanitizeRecallTiming(input));
   if (history.length > RECALL_TIMING_HISTORY_LIMIT) history.shift();
   histories.set(config, history);
 }
 
-export function getRecallTimings(
+export function isRecallTimingsOperator(
   config: PluginConfig,
   authenticatedPrincipal?: string,
-): RecallTimingRecord[] {
-  const history = histories.get(config) ?? [];
-  const readable = resolveNamespaceCapabilities(config).namespaces
-    ? history.filter((entry) => {
-      const profilePlan = entry.scopeContext
-        ? resolveScopeProfilePlan({
-            config,
-            principal: authenticatedPrincipal,
-            codingContext: entry.scopeContext.codingContext,
-            codingOverlay: entry.scopeContext.codingOverlay
-              ? {
-                  namespace: entry.scopeContext.codingOverlay.namespace,
-                  readFallbacks: [...entry.scopeContext.codingOverlay.readFallbacks],
-                }
-              : null,
-          })
-        : null;
-      const readableProfileNamespaces = new Set(
-        profilePlan?.layers.flatMap((layer) =>
-          layer.readable && layer.namespace ? [layer.namespace] : []
-        ) ?? [],
-      );
-      return entry.aclNamespaces.every((namespace) =>
-        canReadNamespace(authenticatedPrincipal, namespace, config)
-        || readableProfileNamespaces.has(namespace)
-      );
-    })
-    : history;
-  return readable.slice().reverse().map(({ record }) => ({ ...record }));
+): boolean {
+  const operatorPrincipal = config.agentAccessHttp.principal?.trim();
+  return Boolean(
+    operatorPrincipal
+    && authenticatedPrincipal
+    && authenticatedPrincipal === operatorPrincipal,
+  );
 }
 
-export function getRecallTimingStatus(
-  config: PluginConfig,
-  authenticatedPrincipal?: string,
-): RecallTimingStatus {
-  const records = getRecallTimings(config, authenticatedPrincipal);
+export function getRecallTimings(config: PluginConfig): RecallTimingRecord[] {
+  const history = histories.get(config) ?? [];
+  return history.slice().reverse().map((record) => ({ ...record }));
+}
+
+export function getRecallTimingStatus(config: PluginConfig): RecallTimingStatus {
+  const records = getRecallTimings(config);
   return { count: records.length, records };
 }

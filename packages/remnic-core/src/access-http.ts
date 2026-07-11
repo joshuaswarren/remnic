@@ -30,7 +30,7 @@ import {
 import { expandTildePath } from "./utils/path.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation } from "./access-boundary.js";
-import { getRecallTimingStatus } from "./recall-timings.js";
+import { getRecallTimingStatus, isRecallTimingsOperator } from "./recall-timings.js";
 // Importing access-operations registers the pilot boundary operations
 // (memory_get / memory_store) as a side effect; the HTTP handlers below
 // dispatch the migrated routes through the registry (issue #1525).
@@ -1677,10 +1677,16 @@ export class EngramAccessHttpServer {
 
     if (req.method === "GET" && pathname === "/engram/v1/recall/timings") {
       void getOperation("recall_timings"); // boundary dispatch (issue #1830)
-      const response = getRecallTimingStatus(
-        this.service.configRef,
-        this.resolveRequestPrincipal(req),
-      );
+      if (
+        !isRecallTimingsOperator(
+          this.service.configRef,
+          this.resolveRequestPrincipal(req),
+        )
+      ) {
+        this.respondJson(res, 403, { error: "operator principal required" });
+        return;
+      }
+      const response = getRecallTimingStatus(this.service.configRef);
       this.respondJson(res, 200, response);
       return;
     }

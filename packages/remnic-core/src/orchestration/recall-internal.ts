@@ -26,7 +26,6 @@ import { BoxBuilder, type BoxFrontmatter } from "../boxes.js";
 import { type CapabilitySet, type GraphConstructionCapabilitySet, type MemoryLifecycleCapabilitySet, resolveCapabilities, resolveCompressionCapabilities, resolveConsolidationCapabilities, resolveConversationContextCapabilities, resolveCreationMemoryCapabilities, resolveGraphConstructionCapabilities, resolveIdentityContinuityCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolveObjectiveStateCapabilities, resolvePipelineProcessingCapabilities, resolvePresentationCapabilities, resolveQmdCapabilities, resolveRecallAuxiliaryCapabilities, resolveRecallEnhancementCapabilities, resolveSecurityCapabilities } from "../capabilities.js";
 import { type CausalTrajectorySearchResult, searchCausalTrajectories } from "../causal-trajectory.js";
 import { CompoundingEngine } from "../compounding/engine.js";
-import { combineNamespaces } from "../coding/coding-namespace.js";
 import { buildEntityRecallSection, entityRecentTranscriptLookbackHours, readRecentEntityTranscriptEntries } from "../entity-retrieval.js";
 import type { EvalShadowRecallRecord } from "../evals.js";
 import { buildEventOrderRecallSection, shouldRecallEventOrderEvidence } from "../event-order-recall.js";
@@ -39,7 +38,7 @@ import { LcmEngine } from "../lcm/index.js";
 import { log } from "../logger.js";
 import { buildRetrievedMemoryProvenance } from "../memory-provenance.js";
 import { NamespaceCatalog } from "../namespaces/catalog.js";
-import { canReadNamespace, defaultNamespaceForPrincipal, resolvePrincipal } from "../namespaces/principal.js";
+import { canReadNamespace, resolvePrincipal } from "../namespaces/principal.js";
 import { NamespaceStorageRouter } from "../namespaces/storage.js";
 import { collectNativeKnowledgeChunks, formatNativeKnowledgeSection, searchNativeKnowledge } from "../native-knowledge.js";
 import { type ObjectiveStateSearchResult, objectiveStateStoreOverrideForNamespace, searchObjectiveStateSnapshots } from "../objective-state.js";
@@ -775,34 +774,6 @@ export class RecallInternalCoordinator {
       scopeProfilePlan,
       lcmReadSessionIds,
     } = scopePlan;
-    const timingAclNamespaces = (() => {
-      if (!scopePlan.codingOverlay) return recallNamespaces;
-      const principalSelfNamespace = defaultNamespaceForPrincipal(
-        principal,
-        this.deps.config,
-      );
-      const codingNamespaces = new Set([
-        combineNamespaces(
-          principalSelfNamespace,
-          scopePlan.codingOverlay.namespace,
-        ),
-        ...scopePlan.readFallbacks,
-      ]);
-      return recallNamespaces.map((namespace) =>
-        codingNamespaces.has(namespace) ? principalSelfNamespace : namespace
-      );
-    })();
-    const timingScopeContext = scopeProfilePlan
-      ? {
-          codingContext,
-          codingOverlay: scopePlan.codingOverlay
-            ? {
-                namespace: scopePlan.codingOverlay.namespace,
-                readFallbacks: [...scopePlan.codingOverlay.readFallbacks],
-              }
-            : null,
-        }
-      : undefined;
     // Query an LCM-backed read across the ordered read key set and return the
     // FIRST non-empty result (#1505 fallback-namespace unification). The primary
     // overlay key is tried first; if a branch-scoped session has no rows under its
@@ -905,7 +876,7 @@ export class RecallInternalCoordinator {
         total: timings.total,
         recallPlan: timings.recallPlan,
         queryPolicy: timings.queryPolicy,
-      }, recallNamespaces, timingAclNamespaces, timingScopeContext);
+      });
       // X-ray capture for the `no_recall` early-return path
       // (issue #570 PR 1).  `no_recall` skips retrieval entirely, so
       // the snapshot carries zero results and an empty-budget accounting
@@ -5192,7 +5163,7 @@ export class RecallInternalCoordinator {
       total: timings.total,
       recallPlan: timings.recallPlan,
       queryPolicy: timings.queryPolicy,
-    }, recallNamespaces, timingAclNamespaces, timingScopeContext);
+    });
 
     const assembledRecall = this.deps.assembleRecallSections(
       sectionBuckets,
