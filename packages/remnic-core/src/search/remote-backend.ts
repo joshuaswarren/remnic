@@ -103,7 +103,13 @@ export class RemoteSearchBackend implements SearchBackend {
     body: Record<string, unknown>,
     execution?: SearchExecutionOptions,
   ): Promise<SearchResult[]> {
-    if (!this.available) return [];
+    if (!this.available) {
+      execution?.onDegradation?.({
+        backend: "remote",
+        code: "backend_unavailable",
+      });
+      return [];
+    }
     try {
       const res = await fetch(`${this.baseUrl}${endpoint}`, {
         method: "POST",
@@ -115,13 +121,30 @@ export class RemoteSearchBackend implements SearchBackend {
       });
       if (!res.ok) {
         log.debug(`RemoteSearchBackend ${endpoint} returned ${res.status}`);
+        execution?.onDegradation?.({
+          backend: "remote",
+          code: "remote_error",
+          detail: `HTTP ${res.status}`,
+        });
         return [];
       }
       const data = await res.json();
-      if (!Array.isArray(data)) return [];
+      if (!Array.isArray(data)) {
+        execution?.onDegradation?.({
+          backend: "remote",
+          code: "remote_error",
+          detail: "invalid response body",
+        });
+        return [];
+      }
       return data as SearchResult[];
     } catch (err) {
       log.debug(`RemoteSearchBackend ${endpoint} failed: ${err}`);
+      execution?.onDegradation?.({
+        backend: "remote",
+        code: "remote_error",
+        detail: err instanceof Error ? err.name : typeof err,
+      });
       return [];
     }
   }

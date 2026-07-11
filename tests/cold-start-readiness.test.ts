@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { type EngramAccessService, EngramAccessHttpServer } from "@remnic/core";
+import { RemoteSearchBackend } from "@remnic/core/search/remote-backend";
 import {
   completeStartupReadiness,
   parseServerConfig,
@@ -200,6 +201,63 @@ test("a fail-open degraded search result stays cold and retries", async () => {
   assert.equal(searches, 2);
   assert.equal(readiness.warmupAttempts, 2);
   assert.equal(readiness.ready, true);
+});
+
+test("readiness waits for startup sync before running the warm-up", async () => {
+  const readiness = { ready: false, warmupAttempts: 0 };
+  let syncChecks = 0;
+  let warmupCalls = 0;
+
+  const outcome = await completeStartupReadiness({
+    deferredReady: Promise.resolve(),
+    prepareWarmup: async () => {
+      syncChecks += 1;
+      return syncChecks >= 3;
+    },
+    warmup: async () => {
+      warmupCalls += 1;
+    },
+    timeoutMs: 100,
+    retryIntervalMs: 1,
+    state: readiness,
+    openGate: () => {
+      readiness.ready = true;
+    },
+  });
+
+  assert.equal(outcome, "warmed");
+  assert.equal(syncChecks, 3);
+  assert.equal(warmupCalls, 1);
+  assert.equal(readiness.ready, true);
+});
+
+test("remote search failures report degradation instead of a healthy empty result", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async (input) =>
+    String(input).endsWith("/health")
+      ? new Response(null, { status: 200 })
+      : new Response(null, { status: 503 });
+
+  const backend = new RemoteSearchBackend({
+    baseUrl: "http://127.0.0.1:1",
+    timeoutMs: 100,
+  });
+  assert.equal(await backend.probe(), true);
+  const degradations: Array<{ backend: string; code: string }> = [];
+
+  const results = await backend.search("warm-up", undefined, 1, undefined, {
+    onDegradation: (degradation) => degradations.push(degradation),
+  });
+
+  assert.deepEqual(results, []);
+  assert.deepEqual(degradations, [{
+    backend: "remote",
+    code: "remote_error",
+    detail: "HTTP 503",
+  }]);
 });
 
 test("intentionally disabled search opens readiness without a warm-up", async () => {

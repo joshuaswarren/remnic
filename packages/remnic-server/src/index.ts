@@ -715,6 +715,13 @@ class StartupWarmupDegradationError extends Error {
   }
 }
 
+class StartupSyncPendingError extends Error {
+  constructor() {
+    super("startup search sync is not complete");
+    this.name = "StartupSyncPendingError";
+  }
+}
+
 export async function runStartupSearchWarmup(options: {
   signal: AbortSignal;
   isAvailable: () => boolean;
@@ -734,6 +741,7 @@ export async function runStartupSearchWarmup(options: {
 export async function completeStartupReadiness(options: {
   deferredReady: Promise<void>;
   warmup: (signal: AbortSignal) => Promise<unknown>;
+  prepareWarmup?: (signal: AbortSignal) => Promise<boolean>;
   state: StartupReadinessState;
   timeoutMs?: number;
   retryIntervalMs?: number;
@@ -797,7 +805,13 @@ export async function completeStartupReadiness(options: {
       timer.unref();
 
       try {
-        await Promise.race([options.warmup(warmupAbort.signal), timeout.promise]);
+        const attempt = async () => {
+          if (options.prepareWarmup && !await options.prepareWarmup(warmupAbort.signal)) {
+            throw new StartupSyncPendingError();
+          }
+          return options.warmup(warmupAbort.signal);
+        };
+        await Promise.race([attempt(), timeout.promise]);
         if (lifecycleAbort.signal.aborted) return "cancelled";
         options.state.lastError = null;
         options.openGate();
@@ -951,6 +965,21 @@ export async function startServer(options?: {
   // An AbortController allows the shutdown handler to cancel pending retries.
   const startupSyncAbort = new AbortController();
   const readinessAbort = new AbortController();
+  let startupSyncInFlight: Promise<boolean> | undefined;
+  const ensureStartupSync = async (signal: AbortSignal): Promise<boolean> => {
+    if (orchestrator.deferredSyncSucceeded) return true;
+    if (startupSyncInFlight) return startupSyncInFlight;
+    const attempt = orchestrator.startupSearchSync(signal).then((synced) => {
+      if (synced) orchestrator.deferredSyncSucceeded = true;
+      return synced;
+    });
+    startupSyncInFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      if (startupSyncInFlight === attempt) startupSyncInFlight = undefined;
+    }
+  };
   void completeStartupReadiness({
     deferredReady: orchestrator.deferredReady,
     warmup: (signal) =>
@@ -969,6 +998,7 @@ export async function startServer(options?: {
             },
           ),
       }),
+    prepareWarmup: ensureStartupSync,
     state: readiness,
     override: parsedServerConfig.readinessOverride,
     skipWarmup: () =>
@@ -1039,7 +1069,7 @@ export async function startServer(options?: {
           return;
         }
 
-        const synced = await orchestrator.startupSearchSync(startupSyncAbort.signal);
+        const synced = await ensureStartupSync(startupSyncAbort.signal);
         if (!synced) {
           if (orchestrator.qmd.debugStatus() === "backend=noop") {
             log.debug("QMD startup-sync retry: search intentionally disabled; stopping retries");

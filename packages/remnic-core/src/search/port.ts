@@ -19,13 +19,14 @@ export interface SearchQueryOptions {
  * rule 34).
  */
 export interface SearchDegradation {
-  backend: "qmd";
+  backend: "qmd" | "remote";
   code:
     | "backend_unavailable"
     | "daemon_timeout"
     | "daemon_loading"
     | "subprocess_error"
-    | "deadline_exceeded";
+    | "deadline_exceeded"
+    | "remote_error";
   detail?: string;
 }
 
