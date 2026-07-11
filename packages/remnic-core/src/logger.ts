@@ -24,12 +24,14 @@ let _debug = false;
 let _timestamps = true;
 let _clock: () => string = () => new Date().toISOString();
 
-// Coerce a boolean-like env string. Unrecognized values return undefined so
-// callers fall through to the default rather than silently disabling.
+// Coerce a boolean-like env string. Empty/whitespace-only and unrecognized
+// values return undefined so callers fall through to the default (timestamps
+// on) rather than silently disabling — an empty env var reads as "unset".
 function coerceBool(value: string | undefined): boolean | undefined {
   if (value === undefined) return undefined;
   const s = value.trim().toLowerCase();
-  if (s === "0" || s === "false" || s === "no" || s === "off" || s === "") return false;
+  if (s === "") return undefined;
+  if (s === "0" || s === "false" || s === "no" || s === "off") return false;
   if (s === "1" || s === "true" || s === "yes" || s === "on") return true;
   return undefined;
 }

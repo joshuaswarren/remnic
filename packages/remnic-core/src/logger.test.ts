@@ -108,3 +108,13 @@ test("unrecognized REMNIC_LOG_TIMESTAMPS falls through to the default (on)", () 
   log.info("hello");
   assert.equal(lines[0], `info|${FIXED} remnic: hello`);
 });
+
+test("empty or whitespace-only REMNIC_LOG_TIMESTAMPS reads as unset (default on)", () => {
+  for (const raw of ["", "   "]) {
+    const { lines, backend } = capture();
+    process.env.REMNIC_LOG_TIMESTAMPS = raw;
+    initLogger(backend, false, { clock: () => FIXED });
+    log.info("hello");
+    assert.equal(lines[0], `info|${FIXED} remnic: hello`, `raw=${JSON.stringify(raw)}`);
+  }
+});
