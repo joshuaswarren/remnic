@@ -770,12 +770,29 @@ export async function completeStartupReadiness(options: {
     return "overridden";
   }
 
+  let removeDeferredShutdownListener: () => void = () => undefined;
+  const deferredShutdown = new Promise<"shutdown">((resolve) => {
+    if (options.shutdownSignal?.aborted) {
+      resolve("shutdown");
+      return;
+    }
+    const onDeferredShutdown = () => resolve("shutdown");
+    options.shutdownSignal?.addEventListener("abort", onDeferredShutdown, { once: true });
+    removeDeferredShutdownListener = () =>
+      options.shutdownSignal?.removeEventListener("abort", onDeferredShutdown);
+  });
   try {
-    await options.deferredReady;
+    const deferredOutcome = await Promise.race([
+      options.deferredReady.then(() => "ready" as const),
+      deferredShutdown,
+    ]);
+    if (deferredOutcome === "shutdown") return "cancelled";
   } catch (err) {
     if (options.shutdownSignal?.aborted) return "cancelled";
     options.state.lastError = err instanceof Error ? err.name : typeof err;
     warn(`Standalone deferred initialization failed; warm-up retries will continue: ${err}`);
+  } finally {
+    removeDeferredShutdownListener();
   }
   if (options.shutdownSignal?.aborted) return "cancelled";
   if (options.skipWarmup?.()) {

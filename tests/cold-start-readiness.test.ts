@@ -314,6 +314,26 @@ test("a backend that becomes no-op during sync opens readiness on the next retry
   assert.equal(readiness.ready, true);
 });
 
+test("shutdown cancels readiness while deferred initialization is pending", async () => {
+  const shutdown = new AbortController();
+  const pendingInit = Promise.withResolvers<void>();
+  let gateOpenCount = 0;
+  const readinessTask = completeStartupReadiness({
+    deferredReady: pendingInit.promise,
+    warmup: async () => undefined,
+    state: { ready: false, warmupAttempts: 0 },
+    openGate: () => {
+      gateOpenCount += 1;
+    },
+    shutdownSignal: shutdown.signal,
+  });
+
+  shutdown.abort();
+
+  assert.equal(await readinessTask, "cancelled");
+  assert.equal(gateOpenCount, 0);
+});
+
 test("the emergency override opens readiness at once and logs the exposure", async () => {
   const readiness = { ready: false, warmupAttempts: 0 };
   const errors: string[] = [];
