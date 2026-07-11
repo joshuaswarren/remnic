@@ -116,7 +116,6 @@ export function reconstructFusionInputs(
             : {}),
         };
         current.segments.push(segment);
-        continue;
       }
       // Unrecognized lines (e.g. the H1 source header) are ignored.
     }
