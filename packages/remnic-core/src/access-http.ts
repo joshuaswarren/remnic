@@ -11,7 +11,7 @@ import { abortError, isAbortError } from "./abort-error.js";
 import { EngramAccessInputError, type EngramAccessService, type EngramAccessMemoryResponse, type EngramAccessWriteResponse } from "./access-service.js";
 import { CorrectionContractError } from "./correction/correction-contract.js";
 import { WearablesInputError } from "./wearables/errors.js";
-import { EngramMcpServer } from "./access-mcp.js";
+import { EngramMcpServer, MCP_SUPPORTED_PROTOCOL_VERSIONS } from "./access-mcp.js";
 import { validateRequest, type SchemaName, type SchemaTypeFor } from "./access-schema.js";
 import {
   OFFLINE_SYNC_APPLY_MAX_BODY_BYTES,
@@ -78,6 +78,28 @@ export interface EngramAccessHttpServerOptions {
    * existing health behavior.
    */
   readiness?: () => AccessHttpReadinessState;
+  /**
+   * When set, every 401 response includes
+   * `WWW-Authenticate: Bearer resource_metadata="<value>"` so MCP clients
+   * can discover the OAuth 2.0 protected-resource metadata document
+   * (RFC 9728). Must be an absolute http(s) URL; constructor throws on
+   * anything else. Unset → bare `Bearer`.
+   */
+  resourceMetadataUrl?: string;
+  /**
+   * Optional pre-auth request handler (e.g. OAuth facade mounted by
+   * `@remnic/server`). Runs after the admin-console handler and BEFORE
+   * bearer authorization. Return true if the request was fully handled
+   * (response ended). `ctx.authorized` reports whether the request
+   * carries a valid operator bearer token, so the handler can gate
+   * operator-only endpoints without owning token validation.
+   * Errors thrown by the handler flow into the existing error handling.
+   */
+  externalRequestHandler?: (
+    req: IncomingMessage,
+    res: ServerResponse,
+    ctx: { authorized: boolean },
+  ) => Promise<boolean>;
 }
 
 export interface EngramAccessHttpServerStatus {
@@ -182,6 +204,23 @@ function parseHttpServerPort(port: number | undefined): number {
     throw new Error("access HTTP port must be an integer from 0 to 65535");
   }
   return port;
+}
+function assertResourceMetadataUrl(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error(
+      `access HTTP resourceMetadataUrl must be an absolute http(s) URL, got: ${value}`,
+    );
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(
+      `access HTTP resourceMetadataUrl must use http or https, got: ${parsed.protocol}`,
+    );
+  }
+  return value;
 }
 
 function parseTrustZoneKindFilter(raw: string | null): TrustZoneRecordKind | undefined {
@@ -292,6 +331,12 @@ export class EngramAccessHttpServer {
   private readonly trustPrincipalHeader: boolean;
   private readonly adapterRegistry: AdapterRegistry | null;
   private readonly readiness: () => AccessHttpReadinessState;
+  private readonly resourceMetadataUrl?: string;
+  private readonly externalRequestHandler?: (
+    req: IncomingMessage,
+    res: ServerResponse,
+    ctx: { authorized: boolean },
+  ) => Promise<boolean>;
   private readonly writeRequestTimestamps: number[] = [];
   private readonly mcpServer: EngramMcpServer;
   private server: Server | null = null;
@@ -333,6 +378,8 @@ export class EngramAccessHttpServer {
     this.adminControls = options.adminControls;
     this.trustPrincipalHeader = options.trustPrincipalHeader === true;
     this.readiness = options.readiness ?? (() => ({ ready: true, warmupAttempts: 0 }));
+    this.resourceMetadataUrl = assertResourceMetadataUrl(options.resourceMetadataUrl);
+    this.externalRequestHandler = options.externalRequestHandler;
     this.adapterRegistry = options.enableAdapters !== false
       ? (options.adapterRegistry ?? new AdapterRegistry())
       : null;
@@ -642,11 +689,40 @@ export class EngramAccessHttpServer {
 
     }
 
+    // Run any host-supplied pre-auth request handler. It runs AFTER the
+    // admin-console branch (admin assets are public) and BEFORE the
+    // operator bearer gate. The handler decides whether it has fully
+    // owned the response (return true) or wants the request to fall
+    // through to the normal pipeline. `ctx.authorized` is computed
+    // here so the handler can implement operator-only endpoints
+    // (e.g. /oauth/pending) without owning token validation.
+    if (this.externalRequestHandler) {
+      const authorized = this.isAuthorized(req, pathname);
+      if (await this.externalRequestHandler(req, res, { authorized })) {
+        return;
+      }
+    }
+
     if (!this.isAuthorized(req, pathname)) {
       const body = JSON.stringify({ error: "unauthorized", code: "unauthorized" });
       res.writeHead(401, {
         "content-type": "application/json; charset=utf-8",
-        "www-authenticate": "Bearer",
+        "www-authenticate": this.bearerChallenge(),
+        "x-request-id": correlationId,
+      });
+      res.end(body);
+      return;
+    }
+
+    // Method-conformance for the streamable-HTTP MCP endpoint:
+    // GET/DELETE on /mcp must return 405 + Allow: POST instead of
+    // silently falling through to the generic 404. POST continues
+    // to the normal handler below.
+    if (pathname === "/mcp" && (req.method === "GET" || req.method === "DELETE")) {
+      const body = JSON.stringify({ error: "method_not_allowed", code: "method_not_allowed" });
+      res.writeHead(405, {
+        "content-type": "application/json; charset=utf-8",
+        allow: "POST",
         "x-request-id": correlationId,
       });
       res.end(body);
@@ -2682,7 +2758,28 @@ export class EngramAccessHttpServer {
   }
 
   private async handleMcpRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // Reject requests that advertise an unknown MCP protocol version in
+    // the streamable-HTTP `MCP-Protocol-Version` header. Absent or
+    // valid → proceed. Unknown → 400 with a JSON-RPC-shaped error so
+    // the client surfaces a clear message. The supported set is
+    // exported by @remnic/core's access-mcp module to keep the
+    // version policy in a single place.
+    const headerVersion = req.headers["mcp-protocol-version"];
+    if (typeof headerVersion === "string" && headerVersion.length > 0) {
+      if (!(MCP_SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(headerVersion)) {
+        this.respondJson(res, 400, {
+          jsonrpc: "2.0",
+          id: null,
+          error: {
+            code: -32000,
+            message: `unsupported MCP-Protocol-Version: ${headerVersion}; supported: ${MCP_SUPPORTED_PROTOCOL_VERSIONS.join(", ")}`,
+          },
+        });
+        return;
+      }
+    }
     const body = await this.readJsonBody(req);
+
     const request = body as {
       jsonrpc?: string;
       id?: string | number | null;
@@ -3118,7 +3215,21 @@ export class EngramAccessHttpServer {
     return result.data as SchemaTypeFor<S>;
   }
 
-  private isAuthorized(req: IncomingMessage, pathname?: string): boolean {
+  /**
+   * Build the WWW-Authenticate challenge string for 401 responses.
+   * When `resourceMetadataUrl` is configured, includes the RFC 9728
+   * `resource_metadata` parameter so MCP clients (e.g. ChatGPT) can
+   * discover the OAuth 2.0 protected-resource metadata document.
+   * Otherwise the bare `Bearer` challenge is returned (unchanged).
+   */
+  private bearerChallenge(): string {
+    if (this.resourceMetadataUrl) {
+      return `Bearer resource_metadata="${this.resourceMetadataUrl}"`;
+    }
+    return "Bearer";
+  }
+
+   private isAuthorized(req: IncomingMessage, pathname?: string): boolean {
     if (!this.authToken && this.authTokens.length === 0 && !this.authTokensGetter) return false;
     // Primary path: Authorization: Bearer <token> header.
     const raw = req.headers.authorization;

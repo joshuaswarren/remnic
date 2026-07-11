@@ -36,6 +36,7 @@ const TOKEN_PREFIXES: Record<string, string> = {
   "windsurf": "remnic_ws_",
   "amp": "remnic_am_",
   "generic-mcp": "remnic_gm_",
+  "chatgpt": "remnic_cg_",
 };
 
 function defaultTokensPath(): string {

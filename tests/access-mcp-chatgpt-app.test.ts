@@ -144,12 +144,7 @@ function resultText(response: unknown): string {
 
 test("ChatGPT Apps inspector advertises app-compatible tool metadata and aliases", async () => {
   const server = new EngramMcpServer(fakeService({ recalls: [], xrays: [], actionRequests: [] }));
-  const init = await server.handleRequest({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "initialize",
-    params: {},
-  });
+  const init = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
   assert.deepEqual((init?.result as { capabilities: Record<string, unknown> }).capabilities.resources, {});
 
   const toolsResponse = await server.handleRequest({

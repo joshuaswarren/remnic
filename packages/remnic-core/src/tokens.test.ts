@@ -208,3 +208,34 @@ test("generateToken uses a recognizable prefix for the omp connector", async () 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("generateToken uses a recognizable prefix for the chatgpt connector", async () => {
+  const { dir, tokensPath } = await makeTempTokenPath();
+  try {
+    const entry = generateToken("chatgpt", tokensPath);
+    assert.equal(entry.connector, "chatgpt");
+    assert.ok(
+      entry.token.startsWith("remnic_cg_"),
+      `expected remnic_cg_ prefix, got ${entry.token}`,
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("commitTokenEntry replaces the prior chatgpt entry so re-linking rotates the token", async () => {
+  const { dir, tokensPath } = await makeTempTokenPath();
+  try {
+    const first = generateToken("chatgpt", tokensPath);
+    commitTokenEntry(first, tokensPath);
+    const second = generateToken("chatgpt", tokensPath);
+    commitTokenEntry(second, tokensPath);
+    assert.notEqual(first.token, second.token, "re-linking must mint a new token");
+    const store = loadTokenStore(tokensPath);
+    const chatgptEntries = store.tokens.filter((t) => t.connector === "chatgpt");
+    assert.equal(chatgptEntries.length, 1, "only one chatgpt entry survives the rotate");
+    assert.equal(chatgptEntries[0]?.token, second.token, "the new token is the surviving one");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

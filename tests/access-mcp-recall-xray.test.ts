@@ -50,7 +50,7 @@ function fakeService(capture: {
 
 test("MCP advertises both engram.recall_xray and remnic.recall_xray", async () => {
   const server = new EngramMcpServer(fakeService({ calls: [] }));
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
   const tools = await server.handleRequest({
     jsonrpc: "2.0",
     id: 2,
@@ -67,7 +67,7 @@ test("MCP advertises both engram.recall_xray and remnic.recall_xray", async () =
 test("MCP engram.recall_xray dispatches to recallXray with threaded params", async () => {
   const capture = { calls: [] as any[] };
   const server = new EngramMcpServer(fakeService(capture));
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
 
   const response = await server.handleRequest({
     jsonrpc: "2.0",
@@ -99,7 +99,7 @@ test("MCP engram.recall_xray dispatches to recallXray with threaded params", asy
 test("MCP remnic.recall_xray alias dispatches identically", async () => {
   const capture = { calls: [] as any[] };
   const server = new EngramMcpServer(fakeService(capture));
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
   await server.handleRequest({
     jsonrpc: "2.0",
     id: 2,
@@ -116,7 +116,7 @@ test("MCP remnic.recall_xray alias dispatches identically", async () => {
 test("MCP engram.recall_xray coerces string budget to integer", async () => {
   const capture = { calls: [] as any[] };
   const server = new EngramMcpServer(fakeService(capture));
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
   await server.handleRequest({
     jsonrpc: "2.0",
     id: 2,
@@ -132,7 +132,7 @@ test("MCP engram.recall_xray coerces string budget to integer", async () => {
 test("MCP engram.recall_xray rejects invalid budget with a listed-options error", async () => {
   const capture = { calls: [] as any[] };
   const server = new EngramMcpServer(fakeService(capture));
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
   const response = await server.handleRequest({
     jsonrpc: "2.0",
     id: 2,
@@ -163,7 +163,7 @@ test("MCP engram.recall_xray rejects non-string non-number budgets (e.g., boolea
   // of coercing them.  This exercises the boolean and object cases.
   const capture = { calls: [] as any[] };
   const server = new EngramMcpServer(fakeService(capture));
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
   for (const badBudget of [true, false, { v: 1 }, [4096]]) {
     const response = await server.handleRequest({
       jsonrpc: "2.0",

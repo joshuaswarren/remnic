@@ -298,17 +298,80 @@ function toolCallErrorMessage(resp: unknown): string {
   return r.result.content?.[0]?.text ?? "";
 }
 
+test("MCP initialize negotiates the protocol version per spec", async () => {
+  const server = new EngramMcpServer(createFakeService());
+
+  // Every supported version is echoed back verbatim.
+  for (const version of ["2025-06-18", "2025-03-26", "2024-11-05"]) {
+    const init = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: version },
+    });
+    const result = init?.result;
+    assert.ok(result && typeof result === "object" && "protocolVersion" in result);
+    assert.equal(result.protocolVersion, version, `supported version ${version} must be echoed`);
+  }
+
+  // A well-formed but unsupported version gets the spec counter-offer:
+  // the newest version the server supports.
+  const future = await server.handleRequest({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "initialize",
+    params: { protocolVersion: "2099-01-01" },
+  });
+  const futureResult = future?.result;
+  assert.ok(futureResult && typeof futureResult === "object" && "protocolVersion" in futureResult);
+  assert.equal(futureResult.protocolVersion, "2025-06-18");
+
+  // Missing / mistyped / empty protocolVersion is invalid params, not a
+  // silent default (rule: reject invalid inputs explicitly).
+  for (const params of [{}, { protocolVersion: 42 }, { protocolVersion: "" }]) {
+    const bad = await server.handleRequest({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "initialize",
+      params: params as Record<string, unknown>,
+    });
+    const error = bad?.error;
+    assert.ok(error && typeof error === "object" && "code" in error, "expected JSON-RPC error");
+    assert.equal(error.code, -32602);
+    assert.match(String((error as { message?: unknown }).message ?? ""), /protocolVersion/);
+  }
+});
+
+test("MCP tools/list marks read-only tools with readOnlyHint and leaves write tools unmarked", async () => {
+  const server = new EngramMcpServer(createFakeService());
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  const listed = await server.handleRequest({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} });
+  const result = listed?.result as { tools: Array<{ name: string; annotations?: { readOnlyHint?: boolean } }> };
+  const byName = new Map(result.tools.map((tool) => [tool.name, tool]));
+
+  // Pure reads carry the hint in both naming forms.
+  for (const name of ["remnic.recall", "engram.recall", "remnic.memory_get", "engram.memory_search"]) {
+    const tool = byName.get(name);
+    assert.ok(tool, `${name} must be listed`);
+    assert.equal(tool.annotations?.readOnlyHint, true, `${name} must carry readOnlyHint`);
+  }
+
+  // Mutating tools must NOT carry it — ChatGPT treats unannotated tools as
+  // write actions requiring confirmation, which is the safe default.
+  for (const name of ["remnic.memory_store", "engram.memory_store", "remnic.wearables_sync", "engram.observe"]) {
+    const tool = byName.get(name);
+    assert.ok(tool, `${name} must be listed`);
+    assert.notEqual(tool.annotations?.readOnlyHint, true, `${name} must not be marked read-only`);
+  }
+});
+
 test("MCP server advertises tools and dispatches recall", async () => {
   const server = new EngramMcpServer(createFakeService());
 
-  const init = await server.handleRequest({
-    jsonrpc: "2.0",
-    id: 1,
-    method: "initialize",
-    params: {},
-  });
+  const init = await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
   assert.equal(init?.jsonrpc, "2.0");
-  assert.equal((init?.result as { protocolVersion: string }).protocolVersion, "2024-11-05");
+  // Requested version is supported → server echoes it back.
+  assert.equal((init?.result as { protocolVersion: string }).protocolVersion, "2025-06-18");
 
   const tools = await server.handleRequest({
     jsonrpc: "2.0",
@@ -897,7 +960,7 @@ test("engram.peer_set rejects non-string kind/displayName/notes (Codex P2 PR #75
 
 test("engram.console_state and remnic.console_state return a ConsoleStateSnapshot", async () => {
   const server = new EngramMcpServer(createFakeService());
-  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} });
+  await server.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
 
   for (const toolName of ["engram.console_state", "remnic.console_state"]) {
     const resp = await server.handleRequest({
@@ -925,22 +988,12 @@ test("MCP initialize re-reads the server version for each server instance", asyn
   try {
     process.env.OPENCLAW_ENGRAM_VERSION = "9.9.1";
     const firstServer = new EngramMcpServer(createFakeService());
-    const firstInit = await firstServer.handleRequest({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: {},
-    });
+    const firstInit = await firstServer.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
     assert.equal((firstInit?.result as { serverInfo: { version: string } }).serverInfo.version, "9.9.1");
 
     process.env.OPENCLAW_ENGRAM_VERSION = "9.9.2";
     const secondServer = new EngramMcpServer(createFakeService());
-    const secondInit = await secondServer.handleRequest({
-      jsonrpc: "2.0",
-      id: 2,
-      method: "initialize",
-      params: {},
-    });
+    const secondInit = await secondServer.handleRequest({ jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: "2025-06-18" } });
     assert.equal((secondInit?.result as { serverInfo: { version: string } }).serverInfo.version, "9.9.2");
   } finally {
     if (originalVersion === undefined) {

@@ -78,7 +78,80 @@ type McpResource = {
   _meta?: Record<string, unknown>;
 };
 
-const MCP_PROTOCOL_VERSION = "2024-11-05";
+/**
+ * Conservative allowlist of canonical MCP tool suffixes that are
+ * unambiguously read-only. Tools in this set are tagged with
+ * `annotations: { readOnlyHint: true }` so ChatGPT (and other MCP
+ * clients that honor the hint) can skip per-call confirmation.
+ *
+ * The list is suffix-based so it covers both the `remnic.*` and
+ * `engram.*` naming forms. Anything not on it stays unannotated:
+ * uncertainty is resolved as "might mutate".
+ *
+ * Excluded by construction: anything that writes, runs a pipeline,
+ * flushes, applies, records, imports, or destructively deletes.
+ */
+const MCP_READ_ONLY_TOOL_SUFFIXES: Readonly<Record<string, true>> = {
+  recall: true,
+  recall_explain: true,
+  recall_tier_explain: true,
+  recall_xray: true,
+  briefing: true,
+  wearables_status: true,
+  transcript_day: true,
+  transcript_search: true,
+  transcript_memories: true,
+  action_confidence: true,
+  capsule_list: true,
+  procedural_stats: true,
+  memory_get: true,
+  memory_timeline: true,
+  entity_get: true,
+  review_queue_list: true,
+  lcm_search: true,
+  continuity_audit_generate: true,
+  continuity_incident_list: true,
+  identity_anchor_get: true,
+  memory_identity: true,
+  memory_search: true,
+  memory_profile: true,
+  memory_entities_list: true,
+  memory_questions: true,
+  memory_last_recall: true,
+  memory_intent_debug: true,
+  memory_qmd_debug: true,
+  memory_graph_explain: true,
+  graph_snapshot: true,
+  review_list: true,
+  profiling_report: true,
+  peer_list: true,
+  peer_get: true,
+  peer_profile_get: true,
+  console_state: true,
+  dreams_status: true,
+  codegraph_list_projects: true,
+  codegraph_index_status: true,
+  codegraph_search_graph: true,
+  codegraph_trace_path: true,
+  codegraph_detect_changes: true,
+  codegraph_query_graph: true,
+  codegraph_get_schema: true,
+  codegraph_get_snippet: true,
+  codegraph_get_architecture: true,
+  codegraph_search_code: true,
+};
+
+/**
+ * MCP protocol versions this server understands, ordered newest → oldest.
+ * Exported so the HTTP transport can validate the `MCP-Protocol-Version`
+ * header and reject requests advertising an unknown version.
+ */
+export const MCP_SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = [
+  "2025-06-18",
+  "2025-03-26",
+  "2024-11-05",
+];
+const MCP_DEFAULT_PROTOCOL_VERSION: string = MCP_SUPPORTED_PROTOCOL_VERSIONS[0] ?? "2025-06-18";
 const LEGACY_MCP_PREFIX = "engram.";
 const CANONICAL_MCP_PREFIX = "remnic.";
 
@@ -87,11 +160,25 @@ function toCanonicalToolName(name: string): string {
     ? `${CANONICAL_MCP_PREFIX}${name.slice(LEGACY_MCP_PREFIX.length)}`
     : name;
 }
-
 function toLegacyToolName(name: string): string {
   return name.startsWith(CANONICAL_MCP_PREFIX)
     ? `${LEGACY_MCP_PREFIX}${name.slice(CANONICAL_MCP_PREFIX.length)}`
     : name;
+}
+
+/**
+ * Suffix-based allowlist matcher. Returns true for tools whose canonical
+ * suffix (after stripping `remnic.` or `engram.`) is in
+ * {@link MCP_READ_ONLY_TOOL_SUFFIXES}. Unprefixed names are treated as
+ * unannotated.
+ */
+function isReadOnlyToolName(name: string): boolean {
+  for (const prefix of [CANONICAL_MCP_PREFIX, LEGACY_MCP_PREFIX]) {
+    if (name.startsWith(prefix)) {
+      return MCP_READ_ONLY_TOOL_SUFFIXES[name.slice(prefix.length)] === true;
+    }
+  }
+  return false;
 }
 
 function withToolAliases(tool: McpTool, emitLegacyTools = true): McpTool[] {
@@ -2342,6 +2429,17 @@ export class EngramMcpServer {
       );
       this.tools = [...this.tools, ...chatTools];
     }
+    // Apply `readOnlyHint` annotations to the conservative read-only
+    // allowlist. Done as a final pass so every spread (chat, codegraph,
+    // coding_*, correction, etc.) inherits the annotation without
+    // scattering the same logic across every `withToolAliases` call site.
+    // Suffix-based matching covers both the `remnic.*` and `engram.*`
+    // naming forms emitted by `withToolAliases`.
+    this.tools = this.tools.map((tool) =>
+      isReadOnlyToolName(tool.name) && tool.annotations?.readOnlyHint !== true
+        ? { ...tool, annotations: { ...(tool.annotations ?? {}), readOnlyHint: true } }
+        : tool,
+    );
   }
 
   /** Get clientInfo for a specific MCP session. Returns undefined for non-MCP requests. */
@@ -2369,6 +2467,24 @@ export class EngramMcpServer {
     }
     if (method === "initialize") {
       const params = request.params ?? {};
+      // MCP initialize REQUIRES params.protocolVersion (string). Reject a
+      // missing/mistyped field with JSON-RPC invalid params instead of
+      // silently negotiating (repo rule: never reinterpret invalid input).
+      // An unsupported-but-well-formed version gets the spec-mandated
+      // counter-offer below instead: the server answers with the newest
+      // version it supports and the client decides whether to proceed.
+      if (typeof params.protocolVersion !== "string" || params.protocolVersion.length === 0) {
+        return {
+          jsonrpc: "2.0",
+          id,
+          error: {
+            code: -32602,
+            message:
+              "initialize requires params.protocolVersion (string); " +
+              `supported versions: ${MCP_SUPPORTED_PROTOCOL_VERSIONS.join(", ")}`,
+          },
+        };
+      }
       const rawClientInfo = params.clientInfo as { name?: string; version?: string } | undefined;
       // Generate a server-side session ID for this MCP session.
       // The caller should send this back as Mcp-Session-Id on subsequent requests.
@@ -2391,7 +2507,9 @@ export class EngramMcpServer {
         jsonrpc: "2.0",
         id,
         result: {
-          protocolVersion: MCP_PROTOCOL_VERSION,
+          protocolVersion: MCP_SUPPORTED_PROTOCOL_VERSIONS.includes(params.protocolVersion)
+            ? params.protocolVersion
+            : MCP_DEFAULT_PROTOCOL_VERSION,
           capabilities: {
             tools: {},
             resources: {},
