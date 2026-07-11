@@ -19,9 +19,10 @@ export interface SearchQueryOptions {
  * rule 34).
  */
 export interface SearchDegradation {
-  backend: "qmd" | "remote";
+  backend: "qmd" | "remote" | "meilisearch" | "orama" | "lancedb";
   code:
     | "backend_unavailable"
+    | "backend_error"
     | "daemon_timeout"
     | "daemon_loading"
     | "subprocess_error"

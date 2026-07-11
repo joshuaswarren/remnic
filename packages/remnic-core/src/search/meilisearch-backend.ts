@@ -282,6 +282,13 @@ export class MeilisearchBackend implements SearchBackend {
     } catch (err) {
       log.debug(`MeilisearchBackend search failed: ${err}`);
       if (rethrow) throw err;
+      if (!isSearchAborted(execution)) {
+        execution?.onDegradation?.({
+          backend: "meilisearch",
+          code: "backend_error",
+          detail: err instanceof Error ? err.name : typeof err,
+        });
+      }
       return [];
     }
   }
