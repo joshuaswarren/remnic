@@ -179,6 +179,7 @@ export type OperationName =
 export interface OperationContext {
   readonly service: EngramAccessService;
   readonly authenticatedPrincipal?: string;
+  readonly operatorPrincipal?: string;
   readonly hooks?: OperationHooks;
 }
 

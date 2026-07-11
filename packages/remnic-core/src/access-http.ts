@@ -1679,7 +1679,7 @@ export class EngramAccessHttpServer {
       void getOperation("recall_timings"); // boundary dispatch (issue #1830)
       if (
         !isRecallTimingsOperator(
-          this.service.configRef,
+          this.authenticatedPrincipal,
           this.resolveRequestPrincipal(req),
         )
       ) {

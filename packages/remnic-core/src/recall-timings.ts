@@ -49,7 +49,7 @@ function numericMilliseconds(value: unknown): number | undefined {
     return value;
   }
   if (typeof value !== "string") return undefined;
-  const match = /^(\d+)ms$/.exec(value);
+  const match = /^(\d+)ms/.exec(value);
   return match ? Number(match[1]) : undefined;
 }
 
@@ -82,14 +82,14 @@ export function recordRecallTiming(
 }
 
 export function isRecallTimingsOperator(
-  config: PluginConfig,
+  operatorPrincipal: string | undefined,
   authenticatedPrincipal?: string,
 ): boolean {
-  const operatorPrincipal = config.agentAccessHttp.principal?.trim();
+  const configuredOperator = operatorPrincipal?.trim();
   return Boolean(
-    operatorPrincipal
+    configuredOperator
     && authenticatedPrincipal
-    && authenticatedPrincipal === operatorPrincipal,
+    && authenticatedPrincipal === configuredOperator,
   );
 }
 

@@ -32,9 +32,7 @@ function makeConfig(memoryDir: string, overrides: Record<string, unknown> = {}) 
 
 test("authenticated recall timings route returns two recalls without user-correlatable inputs", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recall-timings-"));
-  const config = makeConfig(memoryDir, {
-    agentAccessHttp: { enabled: true, host: "127.0.0.1", port: 0, principal: "operator", maxBodyBytes: 1024 },
-  });
+  const config = makeConfig(memoryDir);
   const orchestrator = new Orchestrator(config);
   const service = new EngramAccessService(orchestrator);
   const server = new EngramAccessHttpServer({
@@ -82,12 +80,14 @@ test("authenticated recall timings route returns two recalls without user-correl
       operation.run({}, {
         service,
         authenticatedPrincipal: "reader",
+        operatorPrincipal: "operator",
       }),
       /configured operator principal/,
     );
     const operationOutput = await operation.run({}, {
       service,
       authenticatedPrincipal: "operator",
+      operatorPrincipal: "operator",
     }) as { result: { count: number; records: RecallTimingRecord[] } };
     assert.deepEqual(operationOutput.result, payload);
     for (const record of payload.records) {
@@ -133,7 +133,7 @@ test("recall timing records expose only the fixed telemetry schema", () => {
     namespace: "default",
     total: "7ms",
     qmd: "3ms",
-    qmdPost: "2ms",
+    qmdPost: "2ms-cache",
     recallPlan: "full",
     queryPolicy: "general/full",
     queryAware: "1ms;helped=private prompt detail",
