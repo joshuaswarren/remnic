@@ -150,3 +150,21 @@ test("falls back to spoken_at when start/end are absent (#1811)", () => {
   assert.equal(segment.startIso, new Date(BASE_MS + 120_000).toISOString());
   assert.equal(segment.endIso, undefined);
 });
+
+test("falls back to spoken_at when start is 0 instead of treating 0 as set (#1811)", () => {
+  const conversation = conversationToWearable({
+    id: 14,
+    start_time: BASE_MS,
+    transcriptions: [
+      {
+        utterances: [
+          { text: "Zero start.", speaker: "0", start: 0, spoken_at: BASE_MS + 120_000 },
+        ],
+      },
+    ],
+  });
+  assert.equal(conversation.segments.length, 1);
+  const segment = conversation.segments[0];
+  assert.equal(segment.startIso, new Date(BASE_MS + 120_000).toISOString());
+  assert.equal(segment.endIso, undefined);
+});

@@ -35,12 +35,18 @@ export function conversationToWearable(
         typeof utterance.speaker === "string" && utterance.speaker.trim().length > 0
           ? utterance.speaker.trim()
           : "unknown";
-      // Prefer Bee's explicit utterance `start`/`end` when present; fall
-      // back to `spoken_at` for the start (issue #1811). Carrying `end`
-      // keeps per-utterance timing on the segment and lets the cleanup
-      // pass reason about real gaps instead of treating every utterance
-      // as a point in time.
-      const startIso = msToIso(utterance.start ?? utterance.spoken_at);
+      // Prefer Bee's explicit utterance `start`/`end` when a real
+      // (positive) timestamp is present; otherwise fall back to
+      // `spoken_at` for the start (issue #1811). A `start` of 0 is not a
+      // valid epoch, so it is treated as absent and yields the
+      // `spoken_at` fallback. Carrying `end` keeps per-utterance timing
+      // on the segment and lets the cleanup pass reason about real gaps
+      // instead of treating every utterance as a point in time.
+      const startMs =
+        typeof utterance.start === "number" && utterance.start > 0
+          ? utterance.start
+          : utterance.spoken_at;
+      const startIso = msToIso(startMs);
       const endIso = msToIso(utterance.end ?? undefined);
       segments.push({
         text,
