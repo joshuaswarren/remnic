@@ -4443,13 +4443,18 @@ function oauthResolveBaseUrl(): string {
 }
 
 /**
- * Resolve the operator bearer token. Priority matches the offline-sync
- * path: explicit `server.authToken` in the config, then
- * `REMNIC_AUTH_TOKEN` (with `ENGRAM_AUTH_TOKEN` as legacy alias). Returns
- * `undefined` when no token is configured; callers should fail loudly
- * rather than auto-pick a default.
+ * Resolve the operator bearer token, matching the daemon's precedence
+ * exactly. `startServer()` merges `REMNIC_AUTH_TOKEN` (env) OVER
+ * `server.authToken` (file), so the running daemon accepts the env token
+ * when both are set. This resolver therefore checks env FIRST, then the
+ * file value (with `ENGRAM_AUTH_TOKEN` as the legacy env alias). A file
+ * that still holds the literal `${REMNIC_AUTH_TOKEN}` placeholder no
+ * longer shadows the real env token. Returns `undefined` when no token is
+ * configured; callers fail loudly rather than auto-pick a default.
  */
 function oauthResolveOperatorToken(): string | undefined {
+  const envToken = readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN");
+  if (typeof envToken === "string" && envToken.length > 0) return envToken;
   const raw = oauthReadConfigRecord(resolveConfigPath());
   if (raw && "server" in raw) {
     const server = raw.server;
@@ -4460,8 +4465,6 @@ function oauthResolveOperatorToken(): string | undefined {
       }
     }
   }
-  const envToken = readCompatEnv("REMNIC_AUTH_TOKEN", "ENGRAM_AUTH_TOKEN");
-  if (typeof envToken === "string" && envToken.length > 0) return envToken;
   return undefined;
 }
 

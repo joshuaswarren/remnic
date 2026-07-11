@@ -705,3 +705,39 @@ test("oauth config parsing rejects invalid input and applies env overrides", asy
     "https://chatgpt.com/connector/oauth/b",
   ]);
 });
+
+test("rate limiting: decision bucket returns JSON 429 when exhausted; poll bucket stays independent", async () => {
+  const h = await startHarness();
+  try {
+    // The decision limiter is 30/min. Fire 31 approve attempts against a
+    // non-existent ref (each would otherwise be a 404) — the 31st must be
+    // a 429 from the limiter, proving the operator mutation route is
+    // rate-limited.
+    let sawRateLimit = false;
+    let rateLimitBody: { error?: string } | undefined;
+    for (let i = 0; i < 31; i++) {
+      const resp = await fetch(`${h.issuer}/oauth/pending/no-such-ref/approve`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${OPERATOR_TOKEN}` },
+      });
+      if (resp.status === 429) {
+        sawRateLimit = true;
+        rateLimitBody = (await resp.json()) as { error?: string };
+        break;
+      }
+    }
+    assert.equal(sawRateLimit, true, "decision route must 429 once its bucket is exhausted");
+    assert.equal(rateLimitBody?.error, "rate_limited", "429 body must be deterministic JSON");
+
+    // The poll bucket is independent: even after the decision limiter
+    // tripped, a poll still gets a normal (non-429) response.
+    const poll = await fetch(`${h.issuer}/oauth/authorize/poll`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ txn: "f".repeat(32), pollSecret: "0".repeat(32) }),
+    });
+    assert.notEqual(poll.status, 429, "poll bucket must not be consumed by decision traffic");
+  } finally {
+    await h.cleanup();
+  }
+});

@@ -109,7 +109,6 @@ const MCP_READ_ONLY_TOOL_SUFFIXES: Readonly<Record<string, true>> = {
   entity_get: true,
   review_queue_list: true,
   lcm_search: true,
-  continuity_audit_generate: true,
   continuity_incident_list: true,
   identity_anchor_get: true,
   memory_identity: true,

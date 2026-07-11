@@ -620,7 +620,12 @@ test("HTTP /engram/v1/graph/snapshot forwards filters to the service", async () 
 test("MCP graph_snapshot tool is exposed under both prefixes", async () => {
   const service = createFakeService();
   const mcp = new EngramMcpServer(service);
-  const init = await mcp.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  const init = await mcp.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18" },
+  });
   assert.ok(init);
   const tools = await mcp.handleRequest({
     jsonrpc: "2.0",
@@ -654,7 +659,12 @@ test("MCP graph_snapshot tool dispatches to the service", async () => {
     },
   } as unknown as Partial<EngramAccessService>);
   const mcp = new EngramMcpServer(service);
-  await mcp.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  await mcp.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18" },
+  });
   const result = await mcp.handleRequest({
     jsonrpc: "2.0",
     id: 2,
@@ -678,7 +688,12 @@ test("MCP graph_snapshot tool dispatches to the service", async () => {
 test("MCP graph_snapshot rejects non-numeric limit at the boundary", async () => {
   const service = createFakeService();
   const mcp = new EngramMcpServer(service);
-  await mcp.handleRequest({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18" } });
+  await mcp.handleRequest({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: { protocolVersion: "2025-06-18" },
+  });
   const result = await mcp.handleRequest({
     jsonrpc: "2.0",
     id: 2,

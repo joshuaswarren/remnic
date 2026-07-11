@@ -461,9 +461,11 @@ test("oauth with no operator token configured exits 1 with a clear error", async
   }
 });
 
-test("oauth prefers server.authToken from the config over REMNIC_AUTH_TOKEN", async () => {
-  // Write a config with server.authToken = "config-token" and confirm the
-  // CLI uses it (and not REMNIC_AUTH_TOKEN = "test-operator-token").
+test("oauth uses REMNIC_AUTH_TOKEN over server.authToken (matches daemon env-over-file)", async () => {
+  // beforeEach sets REMNIC_AUTH_TOKEN = "test-operator-token". Even with a
+  // file token present, the daemon accepts the env token, so the CLI must
+  // too — otherwise approve/deny 401s against a daemon that merged env
+  // over file.
   await writeFile(
     process.env.REMNIC_CONFIG_PATH ?? "",
     JSON.stringify({ server: { authToken: "config-token", port: 4318 } }),
@@ -474,7 +476,57 @@ test("oauth prefers server.authToken from the config over REMNIC_AUTH_TOKEN", as
     const result = await runCli(["oauth", "pending"]);
     assert.equal(result.exitCode, 0, `unexpected stderr: ${result.stderr}`);
     assert.equal(requests.length, 1);
+    assert.equal(requests[0].authorization, "Bearer test-operator-token");
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("oauth falls back to server.authToken when no env token is set", async () => {
+  delete process.env.REMNIC_AUTH_TOKEN;
+  delete process.env.ENGRAM_AUTH_TOKEN;
+  await writeFile(
+    process.env.REMNIC_CONFIG_PATH ?? "",
+    JSON.stringify({ server: { authToken: "config-token", port: 4318 } }),
+    "utf8",
+  );
+  const { requests } = installFetchMock(() => ({ status: 200, body: { pending: [] } }));
+  try {
+    const result = await runCli(["oauth", "pending"]);
+    assert.equal(result.exitCode, 0, `unexpected stderr: ${result.stderr}`);
     assert.equal(requests[0].authorization, "Bearer config-token");
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("oauth uses ENGRAM_AUTH_TOKEN legacy alias only when REMNIC_AUTH_TOKEN is absent", async () => {
+  delete process.env.REMNIC_AUTH_TOKEN;
+  process.env.ENGRAM_AUTH_TOKEN = "legacy-token";
+  const { requests } = installFetchMock(() => ({ status: 200, body: { pending: [] } }));
+  try {
+    const result = await runCli(["oauth", "pending"]);
+    assert.equal(result.exitCode, 0, `unexpected stderr: ${result.stderr}`);
+    assert.equal(requests[0].authorization, "Bearer legacy-token");
+  } finally {
+    delete process.env.ENGRAM_AUTH_TOKEN;
+    restoreFetch();
+  }
+});
+
+test("oauth env token wins over a config still holding the ${REMNIC_AUTH_TOKEN} placeholder", async () => {
+  // A config initialized before the env was exported can hold the literal
+  // placeholder; the real env token must not be shadowed by it.
+  await writeFile(
+    process.env.REMNIC_CONFIG_PATH ?? "",
+    JSON.stringify({ server: { authToken: "${REMNIC_AUTH_TOKEN}", port: 4318 } }),
+    "utf8",
+  );
+  const { requests } = installFetchMock(() => ({ status: 200, body: { pending: [] } }));
+  try {
+    const result = await runCli(["oauth", "pending"]);
+    assert.equal(result.exitCode, 0, `unexpected stderr: ${result.stderr}`);
+    assert.equal(requests[0].authorization, "Bearer test-operator-token");
   } finally {
     restoreFetch();
   }

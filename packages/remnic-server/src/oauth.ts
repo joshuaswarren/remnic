@@ -48,6 +48,7 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import express, { type Express, type Request, type Response } from "express";
+import { rateLimit } from "express-rate-limit";
 import { authorizationHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/authorize.js";
 import { tokenHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/token.js";
 import { createOAuthMetadata, mcpAuthMetadataRouter } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -848,9 +849,34 @@ export function buildOAuthApp(
 
   // Remnic-specific endpoints below parse JSON bodies.
   app.use(express.json({ limit: "32kb" }));
+  // Rate limiters for the Remnic-owned endpoints (the SDK already
+  // rate-limits /authorize and /token). Two policies:
+  //  - pollLimiter: generous. The approval page polls every ~3 s for up
+  //    to approvalTtlSeconds, so a full flow is ~200 polls; 120/min per IP
+  //    leaves headroom for several concurrent flows without locking the
+  //    browser out of its own approval.
+  //  - operatorReadLimiter / operatorDecisionLimiter: operator list vs
+  //    approve/deny. Both are low-frequency, so tight bounds blunt
+  //    brute-forcing an approval ref while never impeding a human
+  //    operator; separate buckets keep listing from starving decisions.
+  // Shared limiter shape: deterministic JSON 429 (stable `error` code) so
+  // ChatGPT and the CLI get a machine-parseable body, never default HTML.
+  const makeLimiter = (max: number) =>
+    rateLimit({
+      windowMs: 60_000,
+      max,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: "rate_limited", error_description: "too many requests; retry later" },
+    });
+  const pollLimiter = makeLimiter(120);
+  // Read listing gets its own bucket so polling `pending` can never
+  // exhaust the decision (approve/deny) capacity below.
+  const operatorReadLimiter = makeLimiter(60);
+  const operatorDecisionLimiter = makeLimiter(30);
 
   // ── Poll endpoint (public; gated by txn id + pollSecret) ──────────────
-  app.post("/oauth/authorize/poll", (req: Request, res: Response) => {
+  app.post("/oauth/authorize/poll", pollLimiter, (req: Request, res: Response) => {
     const body: unknown = req.body;
     if (
       !isPlainObject(body) ||
@@ -877,7 +903,7 @@ export function buildOAuthApp(
     return false;
   }
 
-  app.get("/oauth/pending", (req: Request, res: Response) => {
+  app.get("/oauth/pending", operatorReadLimiter, (req: Request, res: Response) => {
     if (!operatorGuard(req, res)) return;
     const pending = state.listPending().map((txn) => ({
       ref: txn.ref,
@@ -923,8 +949,8 @@ export function buildOAuthApp(
     };
   }
 
-  app.post("/oauth/pending/:ref/approve", decisionHandler("approve"));
-  app.post("/oauth/pending/:ref/deny", decisionHandler("deny"));
+  app.post("/oauth/pending/:ref/approve", operatorDecisionLimiter, decisionHandler("approve"));
+  app.post("/oauth/pending/:ref/deny", operatorDecisionLimiter, decisionHandler("deny"));
 
   return {
     app,
