@@ -708,6 +708,29 @@ export interface StartupReadinessState {
 
 export type StartupReadinessOutcome = "warmed" | "cancelled" | "overridden";
 
+class StartupWarmupDegradationError extends Error {
+  constructor(code: string) {
+    super(`startup search degraded: ${code}`);
+    this.name = "StartupWarmupDegradationError";
+  }
+}
+
+export async function runStartupSearchWarmup(options: {
+  signal: AbortSignal;
+  isAvailable: () => boolean;
+  search: (onDegradation: (code: string) => void) => Promise<unknown>;
+}): Promise<void> {
+  let degradationCode: string | undefined;
+  await options.search((code) => {
+    degradationCode = code;
+  });
+  if (options.signal.aborted) return;
+  if (degradationCode) throw new StartupWarmupDegradationError(degradationCode);
+  if (!options.isAvailable()) {
+    throw new StartupWarmupDegradationError("backend_unavailable");
+  }
+}
+
 export async function completeStartupReadiness(options: {
   deferredReady: Promise<void>;
   warmup: (signal: AbortSignal) => Promise<unknown>;
@@ -923,13 +946,21 @@ export async function startServer(options?: {
   void completeStartupReadiness({
     deferredReady: orchestrator.deferredReady,
     warmup: (signal) =>
-      orchestrator.qmd.search(
-        "remnic startup readiness",
-        config.defaultNamespace,
-        1,
-        undefined,
-        { signal },
-      ),
+      runStartupSearchWarmup({
+        signal,
+        isAvailable: () => orchestrator.qmd.isAvailable(),
+        search: (onDegradation) =>
+          orchestrator.qmd.search(
+            "remnic startup readiness",
+            config.defaultNamespace,
+            1,
+            undefined,
+            {
+              signal,
+              onDegradation: (degradation) => onDegradation(degradation.code),
+            },
+          ),
+      }),
     state: readiness,
     override: parsedServerConfig.readinessOverride,
     openGate: () => {

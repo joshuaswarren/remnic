@@ -5,6 +5,7 @@ import { type EngramAccessService, EngramAccessHttpServer } from "@remnic/core";
 import {
   completeStartupReadiness,
   parseServerConfig,
+  runStartupSearchWarmup,
 } from "../packages/remnic-server/src/index.js";
 
 async function fetchHealth(port: number, authorization?: string): Promise<Response> {
@@ -169,6 +170,36 @@ test("shutdown during retry delay never opens readiness", async () => {
   assert.equal(await readinessTask, "cancelled");
   assert.equal(gateOpenCount, 0);
   assert.equal(readiness.ready, false);
+});
+
+test("a fail-open degraded search result stays cold and retries", async () => {
+  const readiness = { ready: false, warmupAttempts: 0 };
+  let searches = 0;
+
+  const outcome = await completeStartupReadiness({
+    deferredReady: Promise.resolve(),
+    warmup: async (signal) =>
+      runStartupSearchWarmup({
+        signal,
+        isAvailable: () => true,
+        search: async (onDegradation) => {
+          searches += 1;
+          if (searches === 1) onDegradation("daemon_loading");
+          return [];
+        },
+      }),
+    timeoutMs: 100,
+    retryIntervalMs: 1,
+    state: readiness,
+    openGate: () => {
+      readiness.ready = true;
+    },
+  });
+
+  assert.equal(outcome, "warmed");
+  assert.equal(searches, 2);
+  assert.equal(readiness.warmupAttempts, 2);
+  assert.equal(readiness.ready, true);
 });
 
 test("the emergency override opens readiness at once and logs the exposure", async () => {
