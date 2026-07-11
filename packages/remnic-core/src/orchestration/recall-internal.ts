@@ -792,10 +792,17 @@ export class RecallInternalCoordinator {
         codingNamespaces.has(namespace) ? principalSelfNamespace : namespace
       );
     })();
-    const timingScopeContext =
-      scopeProfilePlan && codingContext && scopePlan.codingOverlay
-        ? { codingContext, codingOverlay: scopePlan.codingOverlay }
-        : undefined;
+    const timingScopeContext = scopeProfilePlan
+      ? {
+          codingContext,
+          codingOverlay: scopePlan.codingOverlay
+            ? {
+                namespace: scopePlan.codingOverlay.namespace,
+                readFallbacks: [...scopePlan.codingOverlay.readFallbacks],
+              }
+            : null,
+        }
+      : undefined;
     // Query an LCM-backed read across the ordered read key set and return the
     // FIRST non-empty result (#1505 fallback-namespace unification). The primary
     // overlay key is tried first; if a branch-scoped session has no rows under its

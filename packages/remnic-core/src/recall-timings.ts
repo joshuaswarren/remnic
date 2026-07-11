@@ -18,11 +18,11 @@ export interface RecallTimingStatus {
 }
 
 export interface RecallTimingScopeContext {
-  readonly codingContext: CodingContext;
+  readonly codingContext: CodingContext | null;
   readonly codingOverlay: {
     readonly namespace: string;
     readonly readFallbacks: readonly string[];
-  };
+  } | null;
 }
 
 interface RecallTimingHistoryEntry {
@@ -71,10 +71,12 @@ export function getRecallTimings(
             config,
             principal: authenticatedPrincipal,
             codingContext: entry.scopeContext.codingContext,
-            codingOverlay: {
-              namespace: entry.scopeContext.codingOverlay.namespace,
-              readFallbacks: [...entry.scopeContext.codingOverlay.readFallbacks],
-            },
+            codingOverlay: entry.scopeContext.codingOverlay
+              ? {
+                  namespace: entry.scopeContext.codingOverlay.namespace,
+                  readFallbacks: [...entry.scopeContext.codingOverlay.readFallbacks],
+                }
+              : null,
           })
         : null;
       const readableProfileNamespaces = new Set(

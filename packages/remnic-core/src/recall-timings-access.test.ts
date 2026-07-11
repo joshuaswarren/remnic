@@ -196,3 +196,51 @@ test("scope-profile project timing stays visible to its principal only", async (
   assert.equal(getRecallTimingStatus(config, "reader").count, 1);
   assert.equal(getRecallTimingStatus(config, "intruder").count, 0);
 });
+
+test("scope-profile timing without a coding overlay stays visible to its owner", async () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-profile-global"), {
+    namespacesEnabled: true,
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "owner:", principal: "owner" }],
+    scopeProfiles: {
+      globals: {
+        readOrder: ["userGlobal"],
+        writeDefault: "userGlobal",
+      },
+    },
+    defaultScopeProfile: "globals",
+  });
+  const orchestrator = new Orchestrator(config);
+
+  await orchestrator.recall("skip retrieval", "owner:chat", { mode: "no_recall" });
+
+  assert.equal(getRecallTimingStatus(config, "owner").count, 1);
+  assert.equal(getRecallTimingStatus(config, "outsider").count, 0);
+});
+
+test("scope-profile timing honors every readable global layer", async () => {
+  const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-profile-layers"), {
+    namespacesEnabled: true,
+    principalFromSessionKeyMode: "prefix",
+    principalFromSessionKeyRules: [{ match: "owner:", principal: "owner" }],
+    sharedNamespace: "server-shared",
+    namespacePolicies: [{
+      name: "server-shared",
+      readPrincipals: ["owner"],
+      writePrincipals: [],
+    }],
+    scopeProfiles: {
+      globals: {
+        readOrder: ["userGlobal", "serverShared"],
+        writeDefault: "userGlobal",
+      },
+    },
+    defaultScopeProfile: "globals",
+  });
+  const orchestrator = new Orchestrator(config);
+
+  await orchestrator.recall("skip retrieval", "owner:chat", { mode: "no_recall" });
+
+  assert.equal(getRecallTimingStatus(config, "owner").count, 1);
+  assert.equal(getRecallTimingStatus(config, "outsider").count, 0);
+});
