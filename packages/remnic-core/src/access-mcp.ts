@@ -207,6 +207,8 @@ const T_NUMBER = { type: "number" } as const;
 const T_BOOLEAN = { type: "boolean" } as const;
 const T_ARRAY = { type: "array" } as const;
 const T_OBJECT = { type: "object" } as const;
+const T_NULLABLE_OBJECT = { type: ["object", "null"] } as const;
+const T_NULLABLE_STRING = { type: ["string", "null"] } as const;
 
 /** Build a JSON Schema object type with the given properties. */
 function objectSchema(properties: Record<string, Readonly<Record<string, unknown>>>): Record<string, unknown> {
@@ -232,18 +234,18 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   transcript_memories: objectSchema({ memories: T_ARRAY, total: T_NUMBER }),
   action_confidence: objectSchema({ schemaVersion: T_NUMBER, decision: T_STRING, confidence: T_NUMBER, risk: T_STRING, contextReadiness: T_STRING, intendedAction: T_STRING, attentionPolicy: T_STRING, principle: T_STRING, reasons: T_ARRAY, blockers: T_ARRAY, factors: T_ARRAY, retrievedMemoryCount: T_NUMBER, matchedRules: T_ARRAY, scopeMismatchCount: T_NUMBER, safeToAct: T_BOOLEAN }),
   day_summary: objectSchema({ summary: T_STRING, sections: T_ARRAY }),
-  capsule_export: objectSchema({ archivePath: T_STRING, manifestPath: T_STRING, encryptedArchivePath: T_OBJECT, manifest: T_OBJECT }),
+  capsule_export: objectSchema({ archivePath: T_STRING, manifestPath: T_STRING, encryptedArchivePath: T_NULLABLE_STRING, manifest: T_NULLABLE_OBJECT }),
   capsule_import: objectSchema({ imported: T_ARRAY, skipped: T_ARRAY, manifest: T_OBJECT }),
   capsule_list: objectSchema({ namespace: T_STRING, capsulesDir: T_STRING, capsules: T_ARRAY }),
   memory_governance_run: objectSchema({ namespace: T_STRING, runId: T_STRING, traceId: T_STRING, mode: T_STRING, reviewQueueCount: T_NUMBER, proposedActionCount: T_NUMBER, appliedActionCount: T_NUMBER, summaryPath: T_STRING, reportPath: T_STRING }),
   procedure_mining_run: objectSchema({ namespace: T_STRING, clustersProcessed: T_NUMBER, proceduresWritten: T_NUMBER }),
   pattern_reinforcement_run: objectSchema({ namespace: T_STRING, clustersProcessed: T_NUMBER, promoted: T_NUMBER, superseded: T_NUMBER }),
   procedural_stats: objectSchema({ namespace: T_STRING, counts: T_OBJECT, recentWrites: T_ARRAY }),
-  memory_get: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, memory: T_OBJECT }),
+  memory_get: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, memory: T_NULLABLE_OBJECT }),
   memory_timeline: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, count: T_NUMBER, timeline: T_ARRAY }),
   memory_store: objectSchema({ schemaVersion: T_NUMBER, operation: T_STRING, namespace: T_STRING, dryRun: T_BOOLEAN, accepted: T_BOOLEAN, queued: T_BOOLEAN, status: T_STRING, memoryId: T_STRING }),
   suggestion_submit: objectSchema({ schemaVersion: T_NUMBER, operation: T_STRING, namespace: T_STRING, dryRun: T_BOOLEAN, accepted: T_BOOLEAN, queued: T_BOOLEAN, status: T_STRING, memoryId: T_STRING }),
-  entity_get: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, entity: T_OBJECT }),
+  entity_get: objectSchema({ found: T_BOOLEAN, namespace: T_STRING, entity: T_NULLABLE_OBJECT }),
   review_queue_list: objectSchema({ found: T_BOOLEAN, runId: T_STRING, reviewQueue: T_ARRAY }),
   observe: objectSchema({ accepted: T_NUMBER, sessionKey: T_STRING, namespace: T_STRING, effectiveNamespace: T_STRING, lcmArchived: T_BOOLEAN, extractionQueued: T_BOOLEAN }),
   lcm_search: objectSchema({ query: T_STRING, namespace: T_STRING, results: T_ARRAY, count: T_NUMBER, lcmEnabled: T_BOOLEAN }),
@@ -255,7 +257,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   continuity_incident_list: objectSchema({ incidents: T_ARRAY }),
   continuity_loop_add_or_update: objectSchema({ id: T_STRING, title: T_STRING, ok: T_BOOLEAN }),
   continuity_loop_review: objectSchema({ id: T_STRING, status: T_STRING, ok: T_BOOLEAN }),
-  identity_anchor_get: objectSchema({ found: T_BOOLEAN, anchor: T_OBJECT }),
+  identity_anchor_get: objectSchema({ found: T_BOOLEAN, anchor: T_NULLABLE_OBJECT }),
   identity_anchor_update: objectSchema({ ok: T_BOOLEAN, updated: T_ARRAY }),
   memory_identity: objectSchema({ found: T_BOOLEAN, content: T_STRING }),
   work_task: objectSchema({ ok: T_BOOLEAN, tasks: T_ARRAY }),
@@ -271,7 +273,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   compression_guidelines_optimize: objectSchema({ ok: T_BOOLEAN, guidelines: T_ARRAY }),
   compression_guidelines_activate: objectSchema({ ok: T_BOOLEAN, activated: T_BOOLEAN }),
   memory_search: objectSchema({ query: T_STRING, results: T_ARRAY, count: T_NUMBER }),
-  memory_profile: objectSchema({ preferences: T_OBJECT, habits: T_ARRAY }),
+  memory_profile: objectSchema({ profile: T_STRING }),
   memory_entities_list: objectSchema({ entities: T_ARRAY, count: T_NUMBER }),
   memory_questions: objectSchema({ questions: T_ARRAY, count: T_NUMBER }),
   memory_last_recall: objectSchema({ found: T_BOOLEAN }),
@@ -294,8 +296,8 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   graph_edge_decay_run: objectSchema({ ok: T_BOOLEAN, decayed: T_NUMBER }),
   live_connectors_run: objectSchema({ ranAt: T_STRING, force: T_BOOLEAN, totalDocsImported: T_NUMBER, ranCount: T_NUMBER, skippedCount: T_NUMBER, errorCount: T_NUMBER, results: T_ARRAY }),
   peer_list: objectSchema({ peers: T_ARRAY }),
-  peer_get: objectSchema({ found: T_BOOLEAN, peer: T_OBJECT }),
-  peer_set: objectSchema({ ok: T_BOOLEAN, created: T_BOOLEAN, peer: T_OBJECT }),
+  peer_get: objectSchema({ found: T_BOOLEAN, peer: T_NULLABLE_OBJECT }),
+  peer_set: objectSchema({ ok: T_BOOLEAN, created: T_BOOLEAN, peer: T_NULLABLE_OBJECT }),
   peer_delete: objectSchema({ ok: T_BOOLEAN, deleted: T_BOOLEAN }),
   peer_profile_get: objectSchema({ found: T_BOOLEAN }),
   peer_forget: objectSchema({ ok: T_BOOLEAN, purged: T_BOOLEAN }),
