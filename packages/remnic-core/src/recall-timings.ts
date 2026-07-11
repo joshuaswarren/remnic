@@ -1,6 +1,7 @@
 import { resolveNamespaceCapabilities } from "./capabilities.js";
+import { resolveScopeProfilePlan } from "./namespaces/scope-profiles.js";
 import { canReadNamespace } from "./namespaces/principal.js";
-import type { PluginConfig } from "./types.js";
+import type { CodingContext, PluginConfig } from "./types.js";
 
 export interface RecallTimingRecord {
   readonly timestamp: string;
@@ -16,10 +17,19 @@ export interface RecallTimingStatus {
   readonly records: RecallTimingRecord[];
 }
 
+export interface RecallTimingScopeContext {
+  readonly codingContext: CodingContext;
+  readonly codingOverlay: {
+    readonly namespace: string;
+    readonly readFallbacks: readonly string[];
+  };
+}
+
 interface RecallTimingHistoryEntry {
   readonly record: RecallTimingRecord;
   readonly searchedNamespaces: readonly string[];
   readonly aclNamespaces: readonly string[];
+  readonly scopeContext?: RecallTimingScopeContext;
 }
 
 const RECALL_TIMING_HISTORY_LIMIT = 50;
@@ -30,6 +40,7 @@ export function recordRecallTiming(
   record: RecallTimingRecord,
   searchedNamespaces: readonly string[] = [record.namespace],
   aclNamespaces: readonly string[] = searchedNamespaces,
+  scopeContext?: RecallTimingScopeContext,
 ): void {
   const history = histories.get(config) ?? [];
   const effectiveSearchedNamespaces =
@@ -42,6 +53,7 @@ export function recordRecallTiming(
     record: { ...record },
     searchedNamespaces: [...effectiveSearchedNamespaces],
     aclNamespaces: [...effectiveAclNamespaces],
+    ...(scopeContext ? { scopeContext } : {}),
   });
   if (history.length > RECALL_TIMING_HISTORY_LIMIT) history.shift();
   histories.set(config, history);
@@ -53,11 +65,28 @@ export function getRecallTimings(
 ): RecallTimingRecord[] {
   const history = histories.get(config) ?? [];
   const readable = resolveNamespaceCapabilities(config).namespaces
-    ? history.filter((entry) =>
-      entry.aclNamespaces.every((namespace) =>
+    ? history.filter((entry) => {
+      const profilePlan = entry.scopeContext
+        ? resolveScopeProfilePlan({
+            config,
+            principal: authenticatedPrincipal,
+            codingContext: entry.scopeContext.codingContext,
+            codingOverlay: {
+              namespace: entry.scopeContext.codingOverlay.namespace,
+              readFallbacks: [...entry.scopeContext.codingOverlay.readFallbacks],
+            },
+          })
+        : null;
+      const readableProfileNamespaces = new Set(
+        profilePlan?.layers.flatMap((layer) =>
+          layer.readable && layer.namespace ? [layer.namespace] : []
+        ) ?? [],
+      );
+      return entry.aclNamespaces.every((namespace) =>
         canReadNamespace(authenticatedPrincipal, namespace, config)
-      )
-    )
+        || readableProfileNamespaces.has(namespace)
+      );
+    })
     : history;
   return readable.slice().reverse().map(({ record }) => ({ ...record }));
 }

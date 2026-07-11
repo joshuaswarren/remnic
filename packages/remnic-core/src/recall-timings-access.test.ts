@@ -151,7 +151,7 @@ test("empty searched namespace metadata falls back to the record namespace ACL",
   assert.deepEqual(getRecallTimings(config, "intruder"), []);
 });
 
-test("coding overlay recall timings remain visible to the owning principal", async () => {
+test("scope-profile project timing stays visible to its principal only", async () => {
   const config = makeConfig(path.join(os.tmpdir(), "remnic-recall-timing-overlay"), {
     namespacesEnabled: true,
     principalFromSessionKeyMode: "prefix",
@@ -163,6 +163,24 @@ test("coding overlay recall timings remain visible to the owning principal", asy
       writePrincipals: ["reader"],
     }],
     codingMode: { projectScope: true, branchScope: true },
+    scopeProfiles: {
+      teamOnly: {
+        readOrder: ["teamProject"],
+        writeDefault: "userProject",
+        teamProject: {
+          namespaceTemplate: "team-{teamId}-project-{projectHash}",
+        },
+      },
+    },
+    defaultScopeProfile: "teamOnly",
+    teams: {
+      ops: {
+        principals: ["reader"],
+        read: ["reader"],
+        write: ["reader"],
+        promote: ["reader"],
+      },
+    },
   });
   const orchestrator = new Orchestrator(config);
   const sessionKey = "reader:chat";

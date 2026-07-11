@@ -754,6 +754,9 @@ export class RecallInternalCoordinator {
     // Catalog read touch (issue #1499) is recorded LATER — after the Phase 1
     // abort gate — so it fires only when retrieval actually runs, not for
     // aborted / short-circuited recalls.
+    const codingContext = sessionKey
+      ? this.deps.getCodingContextForSession(sessionKey)
+      : null;
     const scopePlan = resolveScopePlan({
       config: this.deps.config,
       sessionKey,
@@ -763,9 +766,7 @@ export class RecallInternalCoordinator {
           && options.principalOverride.length > 0
           ? options.principalOverride
           : undefined,
-      codingContext: sessionKey
-        ? this.deps.getCodingContextForSession(sessionKey)
-        : null,
+      codingContext,
       namespacesEnabled,
     });
     const {
@@ -791,6 +792,10 @@ export class RecallInternalCoordinator {
         codingNamespaces.has(namespace) ? principalSelfNamespace : namespace
       );
     })();
+    const timingScopeContext =
+      scopeProfilePlan && codingContext && scopePlan.codingOverlay
+        ? { codingContext, codingOverlay: scopePlan.codingOverlay }
+        : undefined;
     // Query an LCM-backed read across the ordered read key set and return the
     // FIRST non-empty result (#1505 fallback-namespace unification). The primary
     // overlay key is tried first; if a branch-scoped session has no rows under its
@@ -893,7 +898,7 @@ export class RecallInternalCoordinator {
         total: timings.total,
         recallPlan: timings.recallPlan,
         queryPolicy: timings.queryPolicy,
-      }, recallNamespaces, timingAclNamespaces);
+      }, recallNamespaces, timingAclNamespaces, timingScopeContext);
       // X-ray capture for the `no_recall` early-return path
       // (issue #570 PR 1).  `no_recall` skips retrieval entirely, so
       // the snapshot carries zero results and an empty-budget accounting
@@ -5180,7 +5185,7 @@ export class RecallInternalCoordinator {
       total: timings.total,
       recallPlan: timings.recallPlan,
       queryPolicy: timings.queryPolicy,
-    }, recallNamespaces, timingAclNamespaces);
+    }, recallNamespaces, timingAclNamespaces, timingScopeContext);
 
     const assembledRecall = this.deps.assembleRecallSections(
       sectionBuckets,
