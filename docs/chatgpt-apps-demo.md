@@ -6,6 +6,12 @@ submission package.
 
 Archetype: `vanilla-widget`.
 
+For the public ChatGPT-developer-mode MCP + OAuth flow (the path you use
+to actually connect chatgpt.com to a Remnic server over the public
+internet), see [integration/chatgpt.md](./integration/chatgpt.md). This
+demo is the local bearer-token flow against the same `/mcp` endpoint; the
+integration guide is the OAuth-funnel flow ChatGPT itself drives.
+
 ## What It Adds
 
 - MCP widget resource: `ui://remnic/memory-inspector.v1.html`

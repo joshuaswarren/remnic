@@ -45,6 +45,8 @@ enables the admin console explicitly and serves it at `/engram/ui/`. Package
 installs keep the console disabled unless `server.adminConsoleEnabled` or
 `REMNIC_ADMIN_CONSOLE_ENABLED=true` is set with a public asset directory.
 
+For the public ChatGPT developer-mode flow (Tailscale Funnel / Cloudflare Tunnel + OAuth 2.1 with local operator approval), see [docs/integration/chatgpt.md](../../docs/integration/chatgpt.md).
+
 The package also ships the legacy `engram-server` binary for compatibility.
 The bin wrappers are source-controlled so package managers can link them during
 workspace installs; release builds verify that both targets have Node shebangs
