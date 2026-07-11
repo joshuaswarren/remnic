@@ -512,18 +512,18 @@ test("defineOperation run(): under scoped ALS, listed op passes, unlisted reject
   const ctx = mockCtx();
 
   // Under a scoped ALS that DOES list the op → handler runs.
-  const allowsOp = { version: 1, ops: ["memory_get"] } as const;
+  const allowsOp: TokenCapabilities = { version: 1, ops: ["memory_get"] };
   const resultAllowed = await tokenCapabilityStore.run(allowsOp, () => op.run({}, ctx));
   assert.deepEqual(resultAllowed, { ok: true });
   assert.equal(handlerCalls, 1);
 
   // Under a scoped ALS that does NOT list the op → EngramAccessForbiddenError.
-  const deniesOp = { version: 1, ops: ["recall"] } as const;
+  const deniesOp: TokenCapabilities = { version: 1, ops: ["recall"] };
   await assert.rejects(() => tokenCapabilityStore.run(deniesOp, () => op.run({}, ctx)), EngramAccessForbiddenError);
   assert.equal(handlerCalls, 1, "handler must not run for denied op");
 
   // Under empty-ops (deny-all) ALS → EngramAccessForbiddenError.
-  const denyAll = { version: 1, ops: [] as string[] } as const;
+  const denyAll: TokenCapabilities = { version: 1, ops: [] };
   await assert.rejects(() => tokenCapabilityStore.run(denyAll, () => op.run({}, ctx)), EngramAccessForbiddenError);
   assert.equal(handlerCalls, 1, "handler must not run under deny-all");
 });
@@ -543,7 +543,7 @@ test("defineOperation run(): legacy/unrestricted ALS → handler runs", async ()
   assert.deepEqual(result, { ok: true });
 
   // Explicit-unrestricted capabilities ({version:1}) → handler runs.
-  const unrestricted = { version: 1 } as const;
+  const unrestricted: TokenCapabilities = { version: 1 };
   const result2 = await tokenCapabilityStore.run(unrestricted, () => op.run({}, ctx));
   assert.deepEqual(result2, { ok: true });
 });
