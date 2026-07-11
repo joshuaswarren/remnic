@@ -147,6 +147,7 @@ export type OperationName =
   | "offline_sync_apply"
   | "lcm_status"
   | "memory_list"
+  | "recall_timings"
   | "entity_list"
   | "maintenance_status"
   | "quality_status"

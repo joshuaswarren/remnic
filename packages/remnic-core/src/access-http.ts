@@ -29,6 +29,7 @@ import {
 import { expandTildePath } from "./utils/path.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation } from "./access-boundary.js";
+import { getRecallTimings } from "./recall-timings.js";
 // Importing access-operations registers the pilot boundary operations
 // (memory_get / memory_store) as a side effect; the HTTP handlers below
 // dispatch the migrated routes through the registry (issue #1525).
@@ -1618,6 +1619,16 @@ export class EngramAccessHttpServer {
         limit,
         offset,
       });
+      this.respondJson(res, 200, response);
+      return;
+    }
+
+    if (req.method === "GET" && pathname === "/engram/v1/recall/timings") {
+      void getOperation("recall_timings"); // boundary dispatch (issue #1830)
+      const response = getRecallTimings(
+        this.service.configRef,
+        this.resolveRequestPrincipal(req),
+      );
       this.respondJson(res, 200, response);
       return;
     }
