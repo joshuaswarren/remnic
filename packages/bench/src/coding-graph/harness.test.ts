@@ -207,35 +207,48 @@ test("regression gate: passes when metrics match the baseline", async () => {
   assert.equal(result.regressions.length, 0);
 });
 
-test("regression gate: passes within 30% tolerance on natural variance", async () => {
-  const report1 = await runCodingGraphBenchmark({
-    fixture: { fileCount: 10, symbolsPerFile: 5 },
-    iterations: 20,
-  });
-  // Run again — natural timing variance should stay within 30%.
-  const report2 = await runCodingGraphBenchmark({
+test("regression gate: tolerates a slowdown strictly below the tolerance bound", async () => {
+  const report = await runCodingGraphBenchmark({
     fixture: { fileCount: 10, symbolsPerFile: 5 },
     iterations: 20,
   });
 
-  const baseline = buildBaselineFromReport(report1, "run 1");
-  const result = checkCodingGraphRegression(report2, baseline, 30);
-  // Natural back-to-back variance must not trip the gate as a GROSS
-  // regression. The sub-ms p95 metrics (incrementalUpdate /
-  // incrementalModifiedUpdate / tracePath / searchGraph) are excluded from
-  // this check: their p95 over ~20 sub-ms samples is outlier-dominated — a
-  // single GC/scheduler spike swings a 0.2 ms p95 by 10×+ — so a relative
-  // bound is meaningless there (a known property of micro-benchmark p95, not
-  // a gate defect). Only metrics with a baseline ≥ 2 ms (fullIndexMs) are
-  // stable enough for a relative-variance comparison. dbBytesPerKloc is
-  // deterministic on the same machine and never regresses. A REAL regression
-  // on the stable metrics is ~10× (see the prove-fail test), well above the
-  // 50% bound used here (#1688).
-  const stableRegressions = result.regressions.filter((r) => r.baseline >= 2);
-  assert.ok(
-    result.passed || stableRegressions.every((r) => r.percentChange < 50),
-    "natural variance should not trigger gross regression on stable (≥2ms) metrics",
+  // History (#1688, #1838): this test used to run the benchmark TWICE and
+  // assert the two wall-clock reports stayed within tolerance. That asserts
+  // a statistical property of a shared CI runner, not a property of the
+  // gate, and it flaked on untouched branches AND blocked two release runs
+  // on 2026-07-11 even after the #1688 hardening. The tolerance contract is
+  // deterministic when tested like the prove-fail test below: perturb the
+  // BASELINE by a known factor and assert the gate's verdict. Scaling every
+  // baseline metric by 1/1.2 makes each measured metric read as exactly a
+  // +20% change - ratio math, independent of absolute wall-clock values -
+  // which sits strictly below the 30% tolerance, so the gate MUST pass
+  // outright. No stable-metric filtering, no waiver.
+  const realMetrics = extractMetrics(report);
+  const scaled = Object.fromEntries(
+    Object.entries(realMetrics).map(([key, value]) => [
+      key,
+      typeof value === "number" ? Math.max(0.001, value / 1.2) : value,
+    ]),
+  ) as typeof realMetrics;
+  const moderateBaseline: CodingGraphBaseline = {
+    schemaVersion: report.schemaVersion,
+    machine: report.machine,
+    fixtureConfig: report.fixture.config,
+    metrics: scaled,
+    createdAt: report.timestamp,
+    note: "synthetic: every metric 1.2x faster than measured (+20% apparent change)",
+  };
+
+  const result = checkCodingGraphRegression(report, moderateBaseline, 30);
+  assert.equal(
+    result.passed,
+    true,
+    "a uniform +20% change must pass a 30% tolerance gate",
   );
+  assert.equal(result.regressions.length, 0, "no metric may be flagged");
+  // The bracket around this middle case: identical metrics pass at any
+  // tolerance (smoke test above); a 10x slowdown fails (prove-fail below).
 });
 
 // ──────────────────────────────────────────────────────────────────────────
