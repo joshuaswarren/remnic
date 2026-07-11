@@ -257,7 +257,7 @@ const TOOL_OUTPUT_SCHEMAS: Readonly<Record<string, Record<string, unknown>>> = {
   continuity_incident_list: objectSchema({ incidents: T_ARRAY }),
   continuity_loop_add_or_update: objectSchema({ saved: T_BOOLEAN, loop: T_NULLABLE_OBJECT }),
   continuity_loop_review: objectSchema({ reviewed: T_BOOLEAN, loop: T_NULLABLE_OBJECT }),
-  identity_anchor_get: objectSchema({ found: T_BOOLEAN, anchor: T_NULLABLE_OBJECT }),
+  identity_anchor_get: objectSchema({ found: T_BOOLEAN, anchor: T_NULLABLE_STRING }),
   identity_anchor_update: objectSchema({ updated: T_BOOLEAN, sections: T_ARRAY }),
   memory_identity: objectSchema({ found: T_BOOLEAN, identity: T_NULLABLE_OBJECT }),
   work_task: objectSchema({ action: T_STRING, task: T_NULLABLE_OBJECT, tasks: T_ARRAY, count: T_NUMBER, deleted: T_BOOLEAN }),
@@ -2628,8 +2628,7 @@ export class EngramMcpServer {
           error: {
             code: -32602,
             message:
-              "initialize requires params.protocolVersion (string); " +
-              `supported versions: ${MCP_SUPPORTED_PROTOCOL_VERSIONS.join(", ")}`,
+              `initialize requires params.protocolVersion (string); supported versions: ${MCP_SUPPORTED_PROTOCOL_VERSIONS.join(", ")}`,
           },
         };
       }
