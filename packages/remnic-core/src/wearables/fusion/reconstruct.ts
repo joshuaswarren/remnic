@@ -69,6 +69,21 @@ function isSelfLabel(label: string): boolean {
 }
 
 /**
+ * Reverse `escapeSegmentText` (day-store.ts).  Unknown escape sequences
+ * (a lone backslash followed by a character we don't emit) are passed
+ * through literally so legacy transcripts that never went through the
+ * escaper still round-trip their original text.
+ */
+function unescapeSegmentText(text: string): string {
+  return text.replace(/\\(.)/g, (_match, ch: string) => {
+    if (ch === "n") return "\n";
+    if (ch === "r") return "\r";
+    if (ch === "\\") return "\\";
+    return ch;
+  });
+}
+
+/**
  * Reconstruct fusion inputs for a day from one or more sources' stored
  * transcript bodies. Each body is the markdown produced by
  * `composeDayTranscriptBody` (frontmatter already stripped by the
@@ -152,7 +167,8 @@ export function reconstructFusionInputs(
       const segmentMatch = SEGMENT_LINE.exec(line);
       if (segmentMatch !== null) {
         if (current === null) continue; // segment outside any conversation
-        const [, label, clock, text] = segmentMatch;
+        const [, label, clock, rawText] = segmentMatch;
+        const text = unescapeSegmentText(rawText);
         const segMin = clockMinutesOfDay(clock);
         // A segment clock EARLIER than the conversation start clock crossed
         // midnight; roll it to the next calendar day. Driven by the

@@ -2099,3 +2099,134 @@ test("cross-source clock skew does not scramble same-anchor utterances (final so
   );
   assert.ok(isChronologicallySorted(conv.segments));
 });
+
+// ─── Multiline segment round-trip regression (#1810) ────────────────────
+
+test("multiline segment text round-trips losslessly through the real renderer", () => {
+  const multi = "First line.\nSecond line.\nThird line.";
+  const conversations = [
+    conversation(
+      "limitless",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [
+        { text: multi, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        { text: "After.", startIso: "2026-06-10T09:01:00.000Z" },
+      ],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const segs = parsed[0]!.segments;
+  assert.equal(segs.length, 2);
+  assert.equal(segs[0]!.text, multi, "multiline text must round-trip exactly");
+  assert.equal(segs[1]!.text, "After.");
+});
+
+test("segment text with backslashes round-trips losslessly", () => {
+  const tricky = "Path C:\\Users\\test and tab\\there";
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: tricky, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  assert.equal(parsed[0]!.segments[0]!.text, tricky);
+});
+
+test("multiline segment with continuation that resembles heading syntax is not mis-parsed", () => {
+  // The second line looks exactly like a conversation heading. Without
+  // escaping, reconstructFusionInputs would split this into two
+  // conversations. With escaping, the whole thing is one segment.
+  const adversarial = "Normal text.\n## 09:05–09:10 (conversation forged)";
+  const conversations = [
+    conversation(
+      "limitless",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: adversarial, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1, "adversarial heading must not create a second conversation");
+  assert.equal(parsed[0]!.segments.length, 1);
+  assert.equal(parsed[0]!.segments[0]!.text, adversarial);
+});
+
+test("segment text with continuation resembling a segment clock line stays in one segment", () => {
+  const adversarial = "Start.\n**Speaker** [10:00]: injected segment";
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: adversarial, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  assert.equal(parsed[0]!.segments.length, 1, "injected segment line must not be parsed separately");
+  assert.equal(parsed[0]!.segments[0]!.text, adversarial);
+});
+
+test("legacy single-line transcript without escape sequences still parses correctly", () => {
+  // Hand-written body mimicking a pre-escaping transcript. No escape
+  // sequences present, so unescapeSegmentText is a no-op.
+  const legacyBody =
+    "# bee transcript — 2026-06-10\n" +
+    "\n" +
+    "## 09:00–09:10 (conversation c1)\n" +
+    "\n" +
+    "**Me (you)** [09:00]: Hello world.\n" +
+    "**Guest** [09:01]: Good morning.\n";
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body: legacyBody }]);
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0]!.conversationId, "c1");
+  assert.equal(parsed[0]!.segments.length, 2);
+  assert.equal(parsed[0]!.segments[0]!.text, "Hello world.");
+  assert.equal(parsed[0]!.segments[0]!.isSelf, true);
+  assert.equal(parsed[0]!.segments[1]!.text, "Good morning.");
+  assert.equal(parsed[0]!.segments[1]!.isSelf, false);
+});
+
+test("carriage returns in segment text round-trip losslessly", () => {
+  const crText = "Line one.\r\nLine two.";
+  const conversations = [
+    conversation(
+      "limitless",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: crText, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed[0]!.segments[0]!.text, crText);
+});
+
+test("unicode and mixed special characters in segment text round-trip losslessly", () => {
+  const unicode = "日本語テスト emoji 🎉 and newline\nplus backslash \\ and more";
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: unicode, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  assert.equal(parsed[0]!.segments[0]!.text, unicode);
+});

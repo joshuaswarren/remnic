@@ -69,6 +69,24 @@ function conversationDurationMinutes(conversation: WearableConversation): number
   return (end - start) / 60_000;
 }
 
+/**
+ * Escape segment text for the line-based markdown format so that embedded
+ * newlines, carriage returns, and backslashes survive the serialize →
+ * reconstruct round-trip losslessly.  Reversed by `unescapeSegmentText`
+ * in `fusion/reconstruct.ts`.
+ *
+ * Without this, a segment whose text contains a newline is split across
+ * multiple physical lines; the reconstruct path treats each line
+ * independently and the continuation is silently dropped (or worse, a
+ * continuation line that looks like a heading/clock is mis-parsed).
+ */
+function escapeSegmentText(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
+}
+
 /** Compose the markdown body (no frontmatter) for one source/day. */
 export function composeDayTranscriptBody(
   sourceId: string,
@@ -101,7 +119,7 @@ export function composeDayTranscriptBody(
     for (const segment of conversation.segments) {
       const { label } = resolveSpeaker(sourceId, segment, registry);
       const at = formatClockTime(segment.startIso, timezone);
-      lines.push(`**${label}** [${at}]: ${segment.text}`);
+      lines.push(`**${label}** [${at}]: ${escapeSegmentText(segment.text)}`);
     }
     lines.push("");
   }
