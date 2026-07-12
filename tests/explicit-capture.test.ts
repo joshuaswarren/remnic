@@ -95,7 +95,7 @@ test("explicit capture validation rejects likely secrets", () => {
       validateExplicitCaptureInput({
         content: "api_key=supersecretvalue123 remember this forever",
       }),
-    /secret or credential/,
+    /secret or credential/
   );
 });
 
@@ -115,7 +115,7 @@ test("explicit capture validation rejects credential-like metadata", () => {
           content: "This safe explicit capture has unsafe metadata.",
           ...input,
         }),
-      new RegExp(`${field} appears to contain a secret or credential`),
+      new RegExp(`${field} appears to contain a secret or credential`)
     );
   }
 });
@@ -127,7 +127,7 @@ test("explicit capture validation rejects invalid ttl values before persistence"
         content: "This memory should fail validation before any write attempt.",
         ttl: "garbage",
       }),
-    /ttl must be an ISO-8601 timestamp or relative duration/,
+    /ttl must be an ISO-8601 timestamp or relative duration/
   );
 });
 
@@ -137,15 +137,16 @@ test("memory_store can preserve legacy short-content writes while strict explici
       {
         content: "uses vim",
       },
-      "legacy_tool",
-    ));
+      "legacy_tool"
+    )
+  );
 
   assert.throws(
     () =>
       validateExplicitCaptureInput({
         content: "uses vim",
       }),
-    /at least 10 characters/,
+    /at least 10 characters/
   );
 });
 
@@ -188,7 +189,7 @@ test("persistExplicitCapture writes lifecycle events and dedupes active duplicat
       sourceReason: "user-request",
       ttl: "2d",
     }),
-    "memory_capture",
+    "memory_capture"
   );
   assert.equal(first.duplicateOf, undefined);
   assert.equal(lifecycleEvents.length, 1);
@@ -203,7 +204,7 @@ test("persistExplicitCapture writes lifecycle events and dedupes active duplicat
       content: "The user prefers concise responses in technical reviews.",
       category: "preference",
     }),
-    "memory_capture",
+    "memory_capture"
   );
   assert.equal(second.duplicateOf, first.id);
   assert.equal(memories.length, 1);
@@ -229,7 +230,9 @@ test("persistExplicitCapture records a catalog write for the DEFAULT namespace",
     },
     appendMemoryLifecycleEvents: async () => 1,
   };
-  storage.onCatalogWrite = () => { catalogTouched = true; };
+  storage.onCatalogWrite = () => {
+    catalogTouched = true;
+  };
   const orchestrator = {
     config: {
       defaultNamespace: "default",
@@ -246,13 +249,103 @@ test("persistExplicitCapture records a catalog write for the DEFAULT namespace",
       content: "A default-namespace explicit capture must still touch the catalog.",
       category: "fact",
     }),
-    "memory_capture",
+    "memory_capture"
   );
 
   // #1522: the catalog touch is now handled at the storage chokepoint. The
   // StorageManager's onCatalogWrite hook fires after writeMemory, recording
   // the namespace write automatically.
   assert.equal(catalogTouched, true, "default explicit capture must touch the catalog via the storage chokepoint");
+});
+
+function makeDedupFixture() {
+  const memories: Array<{
+    frontmatter: { id: string; category: string; status?: string; sourceConnector?: string };
+    content: string;
+  }> = [];
+  let nextId = 1;
+  const storage = {
+    hasFactContentHash: async () => memories.length > 0,
+    readAllMemories: async () => memories,
+    writeMemory: async (category: string, content: string, options: { sourceConnector?: string }) => {
+      const id = `fact-${nextId++}`;
+      memories.push({
+        frontmatter: {
+          id,
+          category,
+          status: "active",
+          sourceConnector: options.sourceConnector,
+        },
+        content,
+      });
+      return { id, tombstoneBlocked: false };
+    },
+    appendMemoryLifecycleEvents: async () => 1,
+  };
+  return { memories, orchestrator: { getStorage: async () => storage } as never };
+}
+
+function dedupCapture(orch: unknown, connector?: string) {
+  return persistExplicitCapture(
+    orch as never,
+    validateExplicitCaptureInput({
+      content: "prefers dark mode",
+      category: "preference",
+      ...(connector !== undefined ? { sourceConnector: connector } : {}),
+    }),
+    "memory_capture"
+  );
+}
+
+test("dedup: same content + same connector dedupes", async () => {
+  const { memories, orchestrator } = makeDedupFixture();
+  const first = await dedupCapture(orchestrator, "chatgpt");
+  const second = await dedupCapture(orchestrator, "chatgpt");
+  assert.equal(first.duplicateOf, undefined);
+  assert.equal(second.duplicateOf, first.id);
+  assert.equal(memories.length, 1);
+});
+
+test("dedup: same content + different connector does NOT dedupe", async () => {
+  const { memories, orchestrator } = makeDedupFixture();
+  const first = await dedupCapture(orchestrator, "chatgpt");
+  const second = await dedupCapture(orchestrator, "codex-cli");
+  assert.equal(first.duplicateOf, undefined);
+  assert.equal(second.duplicateOf, undefined);
+  assert.equal(memories.length, 2);
+  assert.notEqual(first.id, second.id);
+  assert.equal(memories[0]?.frontmatter.sourceConnector, "chatgpt");
+  assert.equal(memories[1]?.frontmatter.sourceConnector, "codex-cli");
+});
+
+test("dedup: connector vs operator does NOT dedupe", async () => {
+  const { memories, orchestrator } = makeDedupFixture();
+  const first = await dedupCapture(orchestrator, "chatgpt");
+  const second = await dedupCapture(orchestrator);
+  assert.equal(first.duplicateOf, undefined);
+  assert.equal(second.duplicateOf, undefined);
+  assert.equal(memories.length, 2);
+  assert.notEqual(first.id, second.id);
+  assert.equal(memories[0]?.frontmatter.sourceConnector, "chatgpt");
+  assert.equal(memories[1]?.frontmatter.sourceConnector, undefined);
+});
+
+test("dedup: operator vs operator dedupes", async () => {
+  const { memories, orchestrator } = makeDedupFixture();
+  const first = await dedupCapture(orchestrator);
+  const second = await dedupCapture(orchestrator);
+  assert.equal(first.duplicateOf, undefined);
+  assert.equal(second.duplicateOf, first.id);
+  assert.equal(memories.length, 1);
+});
+
+test("dedup: whitespace-only connector normalizes to operator", async () => {
+  const { memories, orchestrator } = makeDedupFixture();
+  const first = await dedupCapture(orchestrator);
+  const second = await dedupCapture(orchestrator, "   ");
+  assert.equal(first.duplicateOf, undefined);
+  assert.equal(second.duplicateOf, first.id);
+  assert.equal(memories.length, 1);
 });
 
 // ── Round 6 (codex P2 — NAUf4): the review-queue path has the same default-write
@@ -278,7 +371,9 @@ test("queueExplicitCaptureForReview records a catalog write for the DEFAULT name
     },
     appendMemoryLifecycleEvents: async () => 1,
   };
-  storage.onCatalogWrite = () => { catalogTouched = true; };
+  storage.onCatalogWrite = () => {
+    catalogTouched = true;
+  };
   const orchestrator = {
     config: {
       defaultNamespace: "default",
@@ -297,7 +392,7 @@ test("queueExplicitCaptureForReview records a catalog write for the DEFAULT name
       tags: ["operator-review"],
     },
     "inline",
-    new Error("queued for review"),
+    new Error("queued for review")
   );
 
   // #1522: the catalog touch fires at the storage chokepoint after writeMemory.
@@ -328,7 +423,9 @@ test("queueExplicitCaptureForReview records a catalog write when a post-write fr
     },
     appendMemoryLifecycleEvents: async () => 1,
   };
-  storage.onCatalogWrite = () => { catalogTouched = true; };
+  storage.onCatalogWrite = () => {
+    catalogTouched = true;
+  };
   const orchestrator = {
     config: {
       defaultNamespace: "default",
@@ -350,9 +447,9 @@ test("queueExplicitCaptureForReview records a catalog write when a post-write fr
           tags: ["operator-review"],
         },
         "inline",
-        new Error("queued for review"),
+        new Error("queued for review")
       ),
-    /frontmatter write failed/,
+    /frontmatter write failed/
   );
 
   // #1522: the catalog touch fires at the storage chokepoint during writeMemory,
@@ -361,7 +458,7 @@ test("queueExplicitCaptureForReview records a catalog write when a post-write fr
   assert.equal(
     catalogTouched,
     true,
-    "a failed post-write frontmatter update must still touch the catalog via the storage chokepoint",
+    "a failed post-write frontmatter update must still touch the catalog via the storage chokepoint"
   );
   assert.equal(memories.length, 1, "precondition: writeMemory created a durable memory before the failure");
 });
@@ -391,9 +488,9 @@ test("persistExplicitCapture rejects namespaces outside the configured policy", 
           content: "Store this in a namespace that is not configured.",
           namespace: "team",
         }),
-        "memory_capture",
+        "memory_capture"
       ),
-    /unsupported namespace: team/,
+    /unsupported namespace: team/
   );
 });
 
@@ -417,14 +514,13 @@ test("queueExplicitCaptureForReview stores a pending-review memory and lifecycle
       return { id: id, tombstoneBlocked: false };
     },
     getMemoryById: async (id: string) => memories.find((memory) => memory.frontmatter.id === id) ?? null,
-    writeMemoryFrontmatter: async (
-      memory: { frontmatter: { status?: string } },
-      patch: { status: string },
-    ) => {
+    writeMemoryFrontmatter: async (memory: { frontmatter: { status?: string } }, patch: { status: string }) => {
       memory.frontmatter.status = patch.status;
       return memory;
     },
-    appendMemoryLifecycleEvents: async (events: Array<{ eventType: string; reasonCode?: string; memoryId: string }>) => {
+    appendMemoryLifecycleEvents: async (
+      events: Array<{ eventType: string; reasonCode?: string; memoryId: string }>
+    ) => {
       lifecycleEvents.push(...events);
       return events.length;
     },
@@ -446,20 +542,20 @@ test("queueExplicitCaptureForReview stores a pending-review memory and lifecycle
       tags: ["operator-review"],
     },
     "inline",
-    new Error("content appears to contain a secret or credential"),
+    new Error("content appears to contain a secret or credential")
   );
 
   assert.equal(queued.duplicateOf, undefined);
   assert.equal(memories.length, 1);
   assert.equal(memories[0]?.frontmatter.status, "pending_review");
-  assert.deepEqual(
-    memories[0]?.frontmatter.tags,
-    ["explicit-capture", "queued-review", "operator-review"],
-  );
+  assert.deepEqual(memories[0]?.frontmatter.tags, ["explicit-capture", "queued-review", "operator-review"]);
   assert.match(memories[0]?.content ?? "", /Explicit capture queued for review/);
   assert.doesNotMatch(memories[0]?.content ?? "", /supersecretvalue123/);
   assert.match(memories[0]?.content ?? "", /\[redacted credential\]/);
-  assert.equal(lifecycleEvents.some((event) => event.eventType === "explicit_capture_queued"), true);
+  assert.equal(
+    lifecycleEvents.some((event) => event.eventType === "explicit_capture_queued"),
+    true
+  );
 });
 
 test("queueExplicitCaptureForReview redacts credential-like review metadata", async () => {
@@ -475,11 +571,7 @@ test("queueExplicitCaptureForReview redacts credential-like review metadata", as
   const lifecycleReasons: string[] = [];
   const storage = {
     readAllMemories: async () => memories,
-    writeMemory: async (
-      category: string,
-      content: string,
-      options: { tags?: string[]; entityRef?: string },
-    ) => {
+    writeMemory: async (category: string, content: string, options: { tags?: string[]; entityRef?: string }) => {
       memories.push({
         frontmatter: {
           id: "fact-1",
@@ -497,7 +589,7 @@ test("queueExplicitCaptureForReview redacts credential-like review metadata", as
     writeMemoryFrontmatter: async (
       memory: { frontmatter: { status?: string } },
       patch: { status: string },
-      options: { reasonCode?: string },
+      options: { reasonCode?: string }
     ) => {
       memory.frontmatter.status = patch.status;
       frontmatterReasons.push(options.reasonCode ?? "");
@@ -528,7 +620,7 @@ test("queueExplicitCaptureForReview redacts credential-like review metadata", as
       sourceReason: "token=sourceReasonSecret12345",
     },
     "memory_capture",
-    new Error("Bearer abcdefghijklmnop"),
+    new Error("Bearer abcdefghijklmnop")
   );
 
   assert.equal(memories.length, 1);
@@ -578,28 +670,29 @@ test("queueExplicitCaptureForReview preserves requested namespace isolation when
   };
 
   await assert.rejects(
-    () => queueExplicitCaptureForReview(
-      {
-        config: {
-          defaultNamespace: "default",
-          sharedNamespace: "shared",
-          namespacesEnabled: true,
-          namespacePolicies: [],
+    () =>
+      queueExplicitCaptureForReview(
+        {
+          config: {
+            defaultNamespace: "default",
+            sharedNamespace: "shared",
+            namespacesEnabled: true,
+            namespacePolicies: [],
+          },
+          getStorage: async (namespace?: string) => {
+            requestedNamespaces.push(namespace ?? "default");
+            return storage;
+          },
+        } as never,
+        {
+          content: "This explicit note targeted a private namespace and should stay isolated while queued.",
+          category: "fact",
+          namespace: "team",
         },
-        getStorage: async (namespace?: string) => {
-          requestedNamespaces.push(namespace ?? "default");
-          return storage;
-        },
-      } as never,
-      {
-        content: "This explicit note targeted a private namespace and should stay isolated while queued.",
-        category: "fact",
-        namespace: "team",
-      },
-      "inline",
-      new Error("unsupported namespace: team"),
-    ),
-    /unsupported namespace: team/,
+        "inline",
+        new Error("unsupported namespace: team")
+      ),
+    /unsupported namespace: team/
   );
 
   // Security fix: rejected namespace now throws instead of silently
@@ -629,22 +722,22 @@ test("persistExplicitCapture attributes lifecycle actors to the correct tool sou
   await persistExplicitCapture(
     orchestrator as never,
     validateExplicitCaptureInput({ content: "Store this using the memory_store tool path." }),
-    "memory_store",
+    "memory_store"
   );
   await persistExplicitCapture(
     orchestrator as never,
     validateExplicitCaptureInput({ content: "Store this using the memory_capture tool path." }),
-    "memory_capture",
+    "memory_capture"
   );
   await persistExplicitCapture(
     orchestrator as never,
     validateExplicitCaptureInput({ content: "Store this using the suggestion_submit tool path." }),
-    "suggestion_submit",
+    "suggestion_submit"
   );
 
   assert.deepEqual(
     lifecycleEvents.map((event) => event.actor),
-    ["tool.memory_store", "tool.memory_capture", "tool.suggestion_submit"],
+    ["tool.memory_store", "tool.memory_capture", "tool.suggestion_submit"]
   );
   assert.deepEqual(sources, ["explicit", "explicit", "explicit"]);
 });
@@ -663,7 +756,7 @@ test("queueExplicitCaptureForReview attributes queued suggestion submissions to 
     writeMemoryFrontmatter: async (
       _memory: { frontmatter: { status?: string } },
       _patch: { status: string; updated: string },
-      options: { actor?: string },
+      options: { actor?: string }
     ) => {
       frontmatterActors.push(options.actor ?? "");
       return undefined;
@@ -689,17 +782,17 @@ test("queueExplicitCaptureForReview attributes queued suggestion submissions to 
       category: "fact",
     },
     "suggestion_submit",
-    new Error("submitted via engram suggestion_submit"),
+    new Error("submitted via engram suggestion_submit")
   );
 
   assert.deepEqual(frontmatterActors, ["tool.suggestion_submit"]);
   assert.deepEqual(
     lifecycleEvents.map((event) => event.actor),
-    ["tool.suggestion_submit"],
+    ["tool.suggestion_submit"]
   );
   assert.deepEqual(
     lifecycleEvents.map((event) => event.eventType),
-    ["explicit_capture_queued"],
+    ["explicit_capture_queued"]
   );
 });
 
@@ -718,7 +811,7 @@ test("fact duplicate checks short-circuit without a full corpus scan when author
       content: "This fact should miss the hash gate and skip the full scan.",
       category: "fact",
     }),
-    "memory_capture",
+    "memory_capture"
   );
 
   assert.equal(duplicate.duplicateOf, undefined);
@@ -749,7 +842,7 @@ test("fact duplicate checks fall back to the full corpus scan when hash index co
       content: "Legacy fact content that predates the hash index.",
       category: "fact",
     }),
-    "memory_capture",
+    "memory_capture"
   );
 
   assert.equal(duplicate.duplicateOf, "fact-legacy");
@@ -782,7 +875,7 @@ test("fact duplicate checks fail open to the full corpus scan when hash index ac
       content: "Legacy fact content that predates the hash index.",
       category: "fact",
     }),
-    "memory_capture",
+    "memory_capture"
   );
 
   assert.equal(duplicate.duplicateOf, "fact-legacy");
@@ -792,10 +885,7 @@ test("fact duplicate checks fail open to the full corpus scan when hash index ac
 test("explicit capture duplicate normalization stays aligned with fact hash normalization", () => {
   const a = "User prefers: pourover coffee.";
   const b = "user prefers pourover coffee";
-  assert.equal(
-    ContentHashIndex.normalizeContent(a),
-    ContentHashIndex.normalizeContent(b),
-  );
+  assert.equal(ContentHashIndex.normalizeContent(a), ContentHashIndex.normalizeContent(b));
 });
 
 test("explicit capture duplicate checks preserve punctuation that changes technical meaning", async () => {
@@ -818,7 +908,7 @@ test("explicit capture duplicate checks preserve punctuation that changes techni
       content: "User prefers C",
       category: "fact",
     }),
-    "memory_capture",
+    "memory_capture"
   );
 
   assert.equal(result.duplicateOf, undefined);
@@ -829,20 +919,18 @@ test("memory_store and memory_capture share explicit validation and duplicate ha
   type RegisteredTool = {
     execute: (
       toolCallId: string,
-      params: Record<string, unknown>,
+      params: Record<string, unknown>
     ) => Promise<{ content: Array<{ type: string; text: string }>; details: undefined }>;
   };
   const tools = new Map<string, RegisteredTool>();
   const api = {
-    registerTool(
-      spec: {
-        name: string;
-        execute: (
-          toolCallId: string,
-          params: Record<string, unknown>,
-        ) => Promise<{ content: Array<{ type: string; text: string }>; details: undefined }>;
-      },
-    ) {
+    registerTool(spec: {
+      name: string;
+      execute: (
+        toolCallId: string,
+        params: Record<string, unknown>
+      ) => Promise<{ content: Array<{ type: string; text: string }>; details: undefined }>;
+    }) {
       tools.set(spec.name, { execute: spec.execute });
     },
   };
@@ -881,10 +969,7 @@ test("memory_store and memory_capture share explicit validation and duplicate ha
         return { id: id, tombstoneBlocked: false };
       },
       getMemoryById: async (id: string) => memories.find((memory) => memory.frontmatter.id === id) ?? null,
-      writeMemoryFrontmatter: async (
-        memory: { frontmatter: { status?: string } },
-        patch: { status: string },
-      ) => {
+      writeMemoryFrontmatter: async (memory: { frontmatter: { status?: string } }, patch: { status: string }) => {
         memory.frontmatter.status = patch.status;
         return memory;
       },
@@ -960,7 +1045,7 @@ test("memory_capture fails gracefully when review queue fallback also errors", a
     {
       execute: (
         toolCallId: string,
-        params: Record<string, unknown>,
+        params: Record<string, unknown>
       ) => Promise<{ content: Array<{ type: string; text: string }>; details: undefined }>;
     }
   >();
@@ -969,7 +1054,7 @@ test("memory_capture fails gracefully when review queue fallback also errors", a
       name: string;
       execute: (
         toolCallId: string,
-        params: Record<string, unknown>,
+        params: Record<string, unknown>
       ) => Promise<{ content: Array<{ type: string; text: string }>; details: undefined }>;
     }) {
       tools.set(spec.name, { execute: spec.execute });
@@ -1042,5 +1127,8 @@ test("memory_capture fails gracefully when review queue fallback also errors", a
     content: "sk-1234567890abcdef1234567890abcdef should never be stored",
   });
 
-  assert.match(result.content[0]?.text ?? "", /Memory capture failed: content appears to contain a secret or credential/);
+  assert.match(
+    result.content[0]?.text ?? "",
+    /Memory capture failed: content appears to contain a secret or credential/
+  );
 });

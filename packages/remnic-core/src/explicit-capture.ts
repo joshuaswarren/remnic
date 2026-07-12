@@ -413,7 +413,14 @@ async function findDuplicateExplicitCapture(
     const status = memory.frontmatter.status ?? "active";
     if (status !== "active") return false;
     if (memory.frontmatter.category !== candidate.category) return false;
-    return normalizeCaptureContent(memory.content) === normalizedCandidate;
+    if (normalizeCaptureContent(memory.content) !== normalizedCandidate) return false;
+    // Connector-aware dedup: same content from different connectors is NOT
+    // a duplicate. Operator (undefined) and connector-tagged memories are
+    // always distinct. Normalize empty strings to undefined.
+    const existingConnector = memory.frontmatter.sourceConnector?.trim() || undefined;
+    const newConnector = candidate.sourceConnector?.trim() || undefined;
+    if (existingConnector !== newConnector) return false;
+    return true;
   });
   return match?.frontmatter.id ?? null;
 }
