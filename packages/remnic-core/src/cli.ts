@@ -5376,6 +5376,31 @@ export function registerCli(
           .action(async (...args: unknown[]) =>
             forwardWearables(["corrections", "remove", String(args[0] ?? "")]),
           );
+        wearablesCmd
+          .command("fuse <date>")
+          .description("Fuse (cross-source merge) wearable transcripts for a day")
+          .option("--json", "JSON output")
+          .action(async (...args: unknown[]) => {
+            const options = (args[1] ?? {}) as Record<string, unknown>;
+            await forwardWearables([
+              "fuse",
+              String(args[0] ?? ""),
+              ...(options.json === true ? ["--json"] : []),
+            ]);
+          });
+
+        wearablesCmd
+          .command("fused <date>")
+          .description("List fused conversations for a day")
+          .option("--json", "JSON output")
+          .action(async (...args: unknown[]) => {
+            const options = (args[1] ?? {}) as Record<string, unknown>;
+            await forwardWearables([
+              "fused",
+              String(args[0] ?? ""),
+              ...(options.json === true ? ["--json"] : []),
+            ]);
+          });
       }
 
       cmd

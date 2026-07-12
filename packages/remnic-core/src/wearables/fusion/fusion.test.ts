@@ -149,6 +149,52 @@ test("partial overlap: adjacent conversations still cluster into one fused conve
   assert.equal(clusters.length, 1);
 });
 
+test("explicit end earlier than start is clamped to start so a within-gap neighbor still clusters (#1849)", () => {
+  // A parseable endIso that precedes the start (malformed/cross-day input)
+  // must collapse to the start: effectiveInterval returns [09:00, 09:00]
+  // instead of the negative-length [09:00, 08:55]. Without the clamp the
+  // malformed end (08:55) sits 8 min before the neighbor's 09:03 start —
+  // outside the 5-min gap — and the two split; with the clamp the 09:00 end
+  // keeps the 09:03 neighbor within the gap so they merge into one cluster.
+  const clusters = clusterConversations(
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation(
+            "limitless",
+            "c1",
+            "2026-06-10T09:00:00.000Z",
+            [{ text: "Clamped window topic.", isWearer: true }],
+            { endIso: "2026-06-10T08:55:00.000Z" },
+          ),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation(
+            "bee",
+            "c1",
+            "2026-06-10T09:03:00.000Z",
+            [{ text: "Neighbor topic.", isWearer: true }],
+            { endIso: "2026-06-10T09:10:00.000Z" },
+          ),
+        ],
+      },
+    ),
+  );
+  assert.equal(
+    clusters.length,
+    1,
+    "clamped-to-start end keeps the within-gap neighbor in one cluster",
+  );
+  assert.deepEqual(
+    clusters[0]!.map((c) => c.source).sort(),
+    ["bee", "limitless"],
+  );
+});
+
 test("conflicting ASR text for the same window is recorded as a disagreement", () => {
   const fused = fuseDay(
     DATE,

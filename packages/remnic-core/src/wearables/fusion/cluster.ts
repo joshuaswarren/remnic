@@ -46,24 +46,30 @@ function effectiveInterval(conversation: FusionConversationInput): Interval {
   const start = Date.parse(conversation.startIso);
   const endRaw =
     conversation.endIso !== undefined ? Date.parse(conversation.endIso) : NaN;
+  let end: number;
   if (Number.isFinite(endRaw)) {
-    return { start, end: endRaw as number };
-  }
-  // No conversation-level end: derive the window from each segment's own
-  // extent (its end when known, otherwise its start). The latest extent
-  // spans the actual segments; falling back only to `start` would produce a
-  // zero/negative-length window that drops or mis-clusters the conversation.
-  let maxExtent = NaN;
-  for (const segment of conversation.segments) {
-    const iso = segment.endIso ?? segment.startIso;
-    if (iso === undefined) continue;
-    const ms = Date.parse(iso);
-    if (Number.isFinite(ms) && (Number.isNaN(maxExtent) || ms > maxExtent)) {
-      maxExtent = ms;
+    end = endRaw as number;
+  } else {
+    // No conversation-level end: derive the window from each segment's own
+    // extent (its end when known, otherwise its start). The latest extent
+    // spans the actual segments; falling back only to `start` would produce a
+    // zero/negative-length window that drops or mis-clusters the conversation.
+    let maxExtent = NaN;
+    for (const segment of conversation.segments) {
+      const iso = segment.endIso ?? segment.startIso;
+      if (iso === undefined) continue;
+      const ms = Date.parse(iso);
+      if (Number.isFinite(ms) && (Number.isNaN(maxExtent) || ms > maxExtent)) {
+        maxExtent = ms;
+      }
     }
+    end = Number.isFinite(maxExtent) ? (maxExtent as number) : start;
   }
-  const derivedEnd = Number.isFinite(maxExtent) ? (maxExtent as number) : start;
-  return { start, end: Math.max(derivedEnd, start) };
+  // Clamp universally so the window is always non-negative. An explicit
+  // conversation end that precedes the start (malformed/cross-day input)
+  // would otherwise yield a negative-length window that shrinks the merge
+  // horizon and can split a within-gap cluster.
+  return { start, end: Math.max(end, start) };
 }
 
 function compareConversation(
