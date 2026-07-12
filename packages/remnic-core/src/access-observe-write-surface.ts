@@ -499,6 +499,7 @@ export class AccessObserveWriteSurface {
         namespace,
         tags: request.tags,
         entityRef: request.entityRef,
+        ttl: request.ttl,
         sourceReason: request.sourceReason,
         sourceConnector: request.sourceConnector,
       },

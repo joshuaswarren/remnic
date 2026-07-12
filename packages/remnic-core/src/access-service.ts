@@ -2961,6 +2961,7 @@ export class EngramAccessService {
         entityRef: request.entityRef,
         ttl: request.ttl,
         sourceReason: request.sourceReason,
+        sourceConnector: request.sourceConnector,
       },
       skip: request.dryRun === true,
     });
@@ -2997,6 +2998,7 @@ export class EngramAccessService {
         entityRef: request.entityRef,
         ttl: request.ttl,
         sourceReason: request.sourceReason,
+        sourceConnector: request.sourceConnector,
       },
       skip: request.dryRun === true,
     });
