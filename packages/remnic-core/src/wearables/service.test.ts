@@ -872,3 +872,118 @@ test("fuseDay rewrites a corrupt body even when the expected conversation count 
   }
 });
 
+test("fuseDay rewrites an artifact whose body has malformed elements despite matching hash + bodyHash + count", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."]);
+    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."]);
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    const first = await service.fuseDay("2026-06-10");
+    assert.equal(first.written, true);
+    assert.ok(first.conversationCount >= 1);
+    const hash = first.contentHash;
+
+    // Replace ONLY the body with a parseable-but-malformed array `[{}]`,
+    // leaving every frontmatter field (contentHash, bodyHash, count)
+    // intact. The body parses as JSON and is an array, but its element is
+    // not a well-formed FusedWearableConversation — element validation
+    // must drive parseOk:false so fuseDay rewrites rather than trusting
+    // the matching hashes + count.
+    const fusionStore = storage.fusionArtifactStore();
+    const validRaw = await fusionStore.readFusedDay("2026-06-10");
+    assert.ok(validRaw);
+    const closeIdx = validRaw!.indexOf("\n---\n", 4);
+    assert.ok(closeIdx !== -1);
+    await fusionStore.writeFusedDay("2026-06-10", `${validRaw!.slice(0, closeIdx + 5)}\n[{}]`);
+
+    // The malformed body reads as zero conversations.
+    assert.equal((await service.fusedConversations("2026-06-10")).length, 0);
+
+    // Re-fuse: matching hash + bodyHash + count but parseOk:false => rewrite.
+    const repaired = await service.fuseDay("2026-06-10");
+    assert.equal(repaired.written, true, "a malformed-element body must be rewritten");
+    assert.equal(repaired.contentHash, hash);
+    assert.equal(repaired.conversationCount, first.conversationCount);
+
+    // Repaired body is valid again, so the next run skips idempotently.
+    const idempotent = await service.fuseDay("2026-06-10");
+    assert.equal(idempotent.written, false, "a repaired artifact must skip on the next run");
+    assert.equal(idempotent.contentHash, hash);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
+test("fuseDay rewrites an artifact whose body bytes drifted despite matching contentHash + count", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."]);
+    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."]);
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    const first = await service.fuseDay("2026-06-10");
+    assert.equal(first.written, true);
+    assert.ok(first.conversationCount >= 1);
+    const hash = first.contentHash;
+
+    // Tamper: keep the body structurally valid (parses, every element is a
+    // well-formed conversation, same conversation count) but ALTER its
+    // bytes, leaving the frontmatter (contentHash + bodyHash + count)
+    // untouched. parseOk stays true and contentHash still matches, so only
+    // the body-hash recompute over the stored body can catch the drift.
+    const fusionStore = storage.fusionArtifactStore();
+    const validRaw = await fusionStore.readFusedDay("2026-06-10");
+    assert.ok(validRaw);
+    const closeIdx = validRaw!.indexOf("\n---\n", 4);
+    assert.ok(closeIdx !== -1);
+    const header = validRaw!.slice(0, closeIdx + 5);
+    const bodyJson = validRaw!.slice(closeIdx + 5).replace(/^\n/, "").trimEnd();
+    const convs = JSON.parse(bodyJson) as Array<{ segments: Array<{ text: string }> }>;
+    convs[0]!.segments[0]!.text += " [tampered]";
+    await fusionStore.writeFusedDay(
+      "2026-06-10",
+      `${header}\n${JSON.stringify(convs, null, 2)}\n`,
+    );
+
+    // The tampered body still parses cleanly (valid structure + elements),
+    // so it is served until the next fuseDay repairs it.
+    const tampered = await service.fusedConversations("2026-06-10");
+    assert.equal(tampered.length, first.conversationCount);
+    assert.ok(tampered[0]!.segments[0]!.text.includes("[tampered]"));
+
+    // Re-fuse: contentHash matches + parseOk true, but the stored body
+    // hash no longer matches a recompute over the stored body => rewrite.
+    const repaired = await service.fuseDay("2026-06-10");
+    assert.equal(
+      repaired.written,
+      true,
+      "a byte-drifted body must be rewritten via the body-hash check",
+    );
+    assert.equal(repaired.contentHash, hash);
+    assert.equal(repaired.conversationCount, first.conversationCount);
+
+    // The repaired body no longer carries the tampered text.
+    const restored = await service.fusedConversations("2026-06-10");
+    assert.ok(!restored[0]!.segments[0]!.text.includes("[tampered]"));
+
+    const idempotent = await service.fuseDay("2026-06-10");
+    assert.equal(idempotent.written, false);
+    assert.equal(idempotent.contentHash, hash);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+

@@ -44,6 +44,7 @@ export function composeFusionDayMeta(
     sourceCount: sources.length,
     conversationCount: conversations.length,
     contentHash,
+    bodyHash: hashFusionBody(conversations),
     fusedAt,
   };
 }
@@ -59,6 +60,7 @@ export function serializeFusionDay(
   lines.push(`sourceCount: ${meta.sourceCount}`);
   lines.push(`conversationCount: ${meta.conversationCount}`);
   lines.push(`contentHash: ${JSON.stringify(meta.contentHash)}`);
+  lines.push(`bodyHash: ${JSON.stringify(meta.bodyHash)}`);
   lines.push(`fusedAt: ${JSON.stringify(meta.fusedAt)}`);
   lines.push("---");
   lines.push("");
@@ -85,14 +87,129 @@ function parseNonNegativeInt(value: string | undefined): number {
   return Math.floor(parsed);
 }
 
+const FUSED_SEGMENT_PICK_REASONS: Record<string, true> = {
+  "only-source": true,
+  "higher-trust": true,
+  "more-complete": true,
+  "tie-break": true,
+};
+
+const FUSED_DISAGREEMENT_KINDS: Record<string, true> = {
+  "asr-text": true,
+  speaker: true,
+  timestamp: true,
+};
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+/** Structural guard for a parsed segment-provenance record. */
+function isFusedSegmentProvenance(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  if (typeof value.source !== "string") return false;
+  if (typeof value.conversationId !== "string") return false;
+  if (typeof value.sourceTrust !== "number") return false;
+  if (typeof value.reason !== "string") return false;
+  if (!(value.reason in FUSED_SEGMENT_PICK_REASONS)) return false;
+  return (
+    Array.isArray(value.alternatives) &&
+    value.alternatives.every(
+      (alt) =>
+        isPlainObject(alt) && typeof alt.source === "string" && typeof alt.text === "string",
+    )
+  );
+}
+
+/** Structural guard for a parsed fused segment. */
+function isFusedSegment(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  if (typeof value.speaker !== "string") return false;
+  if (typeof value.isSelf !== "boolean") return false;
+  if (typeof value.text !== "string") return false;
+  if (typeof value.confidence !== "number") return false;
+  return isFusedSegmentProvenance(value.provenance);
+}
+
+/** Structural guard for a parsed fused speaker. */
+function isFusedSpeaker(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  if (typeof value.label !== "string") return false;
+  if (typeof value.isSelf !== "boolean") return false;
+  if (typeof value.confidence !== "number") return false;
+  return isStringArray(value.sources);
+}
+
+/** Structural guard for a parsed fused disagreement. */
+function isFusedDisagreement(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  if (typeof value.kind !== "string") return false;
+  if (!(value.kind in FUSED_DISAGREEMENT_KINDS)) return false;
+  if (typeof value.subject !== "string") return false;
+  return (
+    Array.isArray(value.candidates) &&
+    value.candidates.every(
+      (cand) =>
+        isPlainObject(cand) && typeof cand.source === "string" && typeof cand.value === "string",
+    )
+  );
+}
+
+/** Structural guard for a parsed fused-conversation contribution record. */
+function isFusedContribution(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  if (typeof value.source !== "string") return false;
+  if (typeof value.conversationId !== "string") return false;
+  if (typeof value.startIso !== "string") return false;
+  return typeof value.segmentCount === "number";
+}
+
+/** Structural guard for a parsed fused-conversation provenance record. */
+function isFusedConversationProvenance(value: unknown): boolean {
+  if (!isPlainObject(value)) return false;
+  if (!Array.isArray(value.contributions) || !value.contributions.every(isFusedContribution)) {
+    return false;
+  }
+  if (typeof value.proximityGapMs !== "number") return false;
+  if (typeof value.windowToleranceMs !== "number") return false;
+  return value.method === "time-proximity";
+}
+
+/**
+ * Structural guard for a parsed fused conversation. Every required field of
+ * `FusedWearableConversation` (and its nested segments / speakers /
+ * disagreements / provenance) must be present with the right shape, so a
+ * null, wrong-typed, or partial element (`[{}]`, `[null]`, `[{id:1}]`) is
+ * rejected and the caller treats the body as corrupt (parseOk:false →
+ * self-repair rewrite) rather than trusting it.
+ */
+function isFusedWearableConversation(value: unknown): value is FusedWearableConversation {
+  if (!isPlainObject(value)) return false;
+  if (typeof value.id !== "string") return false;
+  if (typeof value.date !== "string") return false;
+  if (typeof value.startIso !== "string") return false;
+  if (!isStringArray(value.sources)) return false;
+  if (!Array.isArray(value.speakers) || !value.speakers.every(isFusedSpeaker)) return false;
+  if (!Array.isArray(value.segments) || !value.segments.every(isFusedSegment)) return false;
+  if (!Array.isArray(value.disagreements) || !value.disagreements.every(isFusedDisagreement)) {
+    return false;
+  }
+  return isFusedConversationProvenance(value.provenance);
+}
+
 /**
  * Parse a persisted fused-day file. Returns null when the content does
  * not look like a fusion artifact (wrong kind / missing frontmatter) so
  * callers can distinguish "not fused" from a malformed file. A non-null
- * result carries `parseOk`: false when the JSON body was truncated/corrupt
- * (conversations is empty in that case), true for a legitimately-empty
- * `[]` body — so the skip-unchanged path can force a self-repair rewrite
- * regardless of the recomputed conversation count.
+ * result carries `parseOk`: false when the JSON body failed to parse, was
+ * not an array, or held a malformed element (conversations is empty in
+ * that case), true for a well-formed (incl. legitimately-empty `[]`)
+ * body — so the skip-unchanged path can force a self-repair rewrite
+ * regardless of the recomputed conversation count or body hash.
  */
 export function parseFusionDay(raw: string): FusedDayFile | null {
   if (!raw.startsWith("---\n")) return null;
@@ -117,11 +234,14 @@ export function parseFusionDay(raw: string): FusedDayFile | null {
   if (bodyTrimmed.length > 0) {
     try {
       const parsed: unknown = JSON.parse(bodyTrimmed);
-      if (Array.isArray(parsed)) {
-        conversations = parsed as FusedWearableConversation[];
+      if (Array.isArray(parsed) && parsed.every(isFusedWearableConversation)) {
+        conversations = parsed;
       } else {
-        // Valid JSON but not the expected array shape — flag as corrupt so
-        // callers recompute fusion rather than trusting an empty read.
+        // Valid JSON but not a well-formed FusedWearableConversation[]
+        // (non-array, or an array carrying a null / wrong-typed /
+        // missing-required-field element) — flag corrupt so callers
+        // recompute fusion rather than trusting a partial read. A
+        // legitimately-empty [] is accepted with parseOk left true.
         parseOk = false;
       }
     } catch {
@@ -138,6 +258,7 @@ export function parseFusionDay(raw: string): FusedDayFile | null {
     sourceCount: parseNonNegativeInt(scalars.get("sourceCount")),
     conversationCount: parseNonNegativeInt(scalars.get("conversationCount")),
     contentHash: scalars.get("contentHash") ?? "",
+    bodyHash: scalars.get("bodyHash") ?? "",
     fusedAt: scalars.get("fusedAt") ?? "",
   };
   return { meta, conversations, parseOk };

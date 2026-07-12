@@ -18,6 +18,7 @@ import {
   composeFusionDayMeta,
   type FusionArtifactStore,
   fuseDay as fuseDayInputs,
+  hashFusionBody,
   parseFusionDay,
   reconstructFusionInputs,
   serializeFusionDay,
@@ -516,26 +517,28 @@ export class WearablesService {
       windowToleranceMs: this.deps.config.fusion.windowToleranceMs,
       sourceTrust,
     });
-    // Idempotent skip-unchanged: do not rewrite when the content hash
-    // matches the stored artifact AND the stored body parsed cleanly into
-    // the expected conversation set. A truncated/corrupt body fails to
-    // parse (parseOk:false) even when the frontmatter hash matches and the
-    // recomputed conversation count is also zero, so we rewrite to
-    // self-repair instead of trusting the hash alone (mirrors the
-    // raw-transcript fast path otherwise).
+    // Idempotent skip-unchanged: do not rewrite when the input content
+    // hash matches the stored artifact, the stored body parsed cleanly
+    // into a well-formed conversation set, AND the stored body hash still
+    // matches a recompute over the stored body itself. A
+    // truncated/corrupt/malformed-element body fails to parse
+    // (parseOk:false) even when the frontmatter hash matches, and a body
+    // whose bytes drifted fails the body-hash recompute even when the
+    // input hash + conversation count still match — so either forces a
+    // self-repair rewrite instead of trusting the hashes alone.
     const existingRaw = await storage.fusionArtifactStore().readFusedDay(date);
     const existing = parseFusionDay(existingRaw ?? "");
     // parseOk is bound to a local so the skip condition can keep the
-    // explicit `existing !== null` guard for the `.meta`/`.conversations`
-    // accesses below — an inline `existing.parseOk` member check there
-    // trips useOptionalChain (whose suggested fix would drop the guard and
-    // null-deref the later accesses), so we read it via optional chain.
+    // explicit `existing !== null` guard for the `.meta` access below —
+    // an inline `existing.parseOk` member check there trips
+    // useOptionalChain (whose suggested fix would drop the guard and
+    // null-deref the later access), so we read it via optional chain.
     const parsedCleanly = existing?.parseOk === true;
     const skipUnchanged =
       existing !== null &&
       parsedCleanly &&
       existing.meta.contentHash === result.contentHash &&
-      existing.conversations.length === result.conversations.length;
+      existing.meta.bodyHash === hashFusionBody(existing.conversations);
     const written = !skipUnchanged;
     if (written) {
       const meta = composeFusionDayMeta(

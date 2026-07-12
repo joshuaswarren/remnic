@@ -195,6 +195,13 @@ export interface FusedDayMeta {
   sourceCount: number;
   conversationCount: number;
   contentHash: string;
+  /**
+   * SHA-256 over the canonical serialized body (`hashFusionBody`). Stored
+   * so the skip-unchanged path can detect a body whose bytes drifted from
+   * the recomputed artifact even when `contentHash` + conversation count
+   * still match — forcing a self-repair rewrite on body-level corruption.
+   */
+  bodyHash: string;
   fusedAt: string;
 }
 

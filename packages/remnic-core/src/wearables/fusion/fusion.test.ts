@@ -8,8 +8,10 @@ import {
   DEFAULT_PROXIMITY_GAP_MS,
   DEFAULT_WINDOW_TOLERANCE_MS,
   clusterConversations,
+  composeFusionDayMeta,
   fuseDay,
   fusionInputsFromConversations,
+  hashFusionBody,
   reconstructFusionInputs,
   serializeFusionDay,
   parseFusionDay,
@@ -446,21 +448,20 @@ test("serialize/parse round-trips a fused day file", () => {
       ],
     }),
   );
-  const serialized = serializeFusionDay(
-    {
-      kind: "wearable-fusion",
-      date: DATE,
-      sourceCount: fused.sources.length,
-      conversationCount: fused.conversations.length,
-      contentHash: fused.contentHash,
-      fusedAt: "2026-06-11T00:00:00.000Z",
-    },
+  const meta = composeFusionDayMeta(
+    DATE,
     fused.conversations,
+    fused.sources,
+    fused.contentHash,
+    "2026-06-11T00:00:00.000Z",
   );
+  const serialized = serializeFusionDay(meta, fused.conversations);
   const parsed = parseFusionDay(serialized);
   assert.ok(parsed);
   assert.equal(parsed!.meta.kind, "wearable-fusion");
   assert.equal(parsed!.meta.date, DATE);
+  assert.equal(parsed!.meta.bodyHash, hashFusionBody(fused.conversations));
+  assert.equal(parsed!.parseOk, true);
   assert.equal(parsed!.conversations.length, 1);
   assert.equal(parsed!.conversations[0]!.segments[0]!.text, "Round trip.");
 });
@@ -468,6 +469,77 @@ test("serialize/parse round-trips a fused day file", () => {
 test("parseFusionDay returns null for non-fusion content", () => {
   assert.equal(parseFusionDay("---\nkind: wearable-transcript\n---\n\nbody\n"), null);
   assert.equal(parseFusionDay("not a transcript at all"), null);
+});
+
+test("parseFusionDay accepts a well-formed conversation array", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs({
+      source: "limitless",
+      conversations: [
+        conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+          { text: "Well formed.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        ]),
+      ],
+    }),
+  );
+  const serialized = serializeFusionDay(
+    composeFusionDayMeta(DATE, fused.conversations, fused.sources, fused.contentHash, "2026-06-11T00:00:00.000Z"),
+    fused.conversations,
+  );
+  const parsed = parseFusionDay(serialized);
+  assert.ok(parsed);
+  assert.equal(parsed!.parseOk, true);
+  assert.equal(parsed!.conversations.length, fused.conversations.length);
+});
+
+test("parseFusionDay accepts a legitimately-empty body", () => {
+  const serialized = serializeFusionDay(
+    composeFusionDayMeta(DATE, [], [], "abc", "2026-06-11T00:00:00.000Z"),
+    [],
+  );
+  const parsed = parseFusionDay(serialized);
+  assert.ok(parsed);
+  assert.equal(parsed!.parseOk, true);
+  assert.equal(parsed!.conversations.length, 0);
+});
+
+test("parseFusionDay rejects corrupt bodies even with matching hash + count", () => {
+  // Frontmatter carries a hash + count that would otherwise "match"; the
+  // body itself must drive parseOk:false so fuseDay force-rewrites.
+  const header = [
+    "---",
+    "kind: wearable-fusion",
+    `date: ${JSON.stringify(DATE)}`,
+    "sourceCount: 1",
+    "conversationCount: 1",
+    'contentHash: "matches"',
+    'bodyHash: "matches"',
+    'fusedAt: "2026-06-11T00:00:00.000Z"',
+    "---",
+    "",
+  ].join("\n");
+  // Non-array JSON, empty object, null, wrong-typed, and partial elements
+  // are all rejected; a legitimately-empty [] is accepted.
+  for (const [body, expectOk] of [
+    ['{"not":"array"}', false],
+    ["[{}]", false],
+    ["[null]", false],
+    ['[{"id":1}]', false],
+    ['[{"id":"x"}]', false],
+    ["[]", true],
+  ] as const) {
+    const parsed = parseFusionDay(`${header}${body}\n`);
+    assert.ok(parsed, `expected a non-null parse for body ${body}`);
+    assert.equal(
+      parsed!.parseOk,
+      expectOk,
+      `expected parseOk:${expectOk} for body ${body}`,
+    );
+    if (!expectOk) {
+      assert.equal(parsed!.conversations.length, 0, `expected empty convs for body ${body}`);
+    }
+  }
 });
 
 test("reconstructFusionInputs parses a rendered transcript body", () => {
