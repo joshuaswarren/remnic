@@ -382,20 +382,54 @@ function openProjectionReadonly(memoryDir: string): BetterSqlite3Database | null
   }
 }
 
-export type ProjectionHealthState = "absent" | "openable" | "unopenable";
+export type ProjectionHealthState = "absent" | "openable" | "present-but-invalid" | "unopenable";
 
 export interface ProjectionHealthProbe {
   state: ProjectionHealthState;
-  /** Path-free detail (class + code) when state === "unopenable"; "" otherwise. */
+  /** Path-free detail (class + code) when state !== "absent"/"openable"; "" otherwise. */
   detail: string;
   /** true when the open failure is classified as a native-binding ABI mismatch. */
   nativeBindingMismatch: boolean;
 }
 
 /**
- * Stat + attempt-open the memory projection WITHOUT keeping a handle, for the
- * `remnic doctor` health check (issue #1829). Distinguishes the three states a
- * projection can be in so operators can tell "not built yet" (normal) from
+ * Confirm the projection schema is present and queryable, not just that the
+ * sqlite file opens (issue #1848 round 2). A file that opens but has the
+ * projection tables missing — or is corrupt and only fails on first statement
+ * — previously reported `openable`/ok, so `remnic doctor` said healthy while
+ * browse silently fell back to full-corpus scans. `memory_current` is the
+ * core browse table; if it is absent or unreadable the projection cannot
+ * serve any query. Throws so the probe can report a distinct state.
+ */
+// Named so displayErrorDetail surfaces a clear, path-free identifier in the
+// doctor report rather than a generic "Error".
+class ProjectionSchemaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProjectionSchemaError";
+  }
+}
+
+function assertProjectionSchemaReadable(db: BetterSqlite3Database): void {
+  const row = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_current'",
+    )
+    .get() as { name: string } | undefined;
+  if (!row?.name) {
+    throw new ProjectionSchemaError(
+      "projection schema is missing or was not initialized (memory_current table not found)",
+    );
+  }
+  // Also confirm the table is queryable — catches physical corruption that
+  // only surfaces on first read (the file opens but statements fail).
+  db.prepare("SELECT 1 FROM memory_current LIMIT 1").get();
+}
+
+/**
+ * Stat + attempt-open + schema-validate the memory projection WITHOUT keeping
+ * a handle, for the `remnic doctor` health check (issue #1829 / #1848).
+ * Distinguishes four states so operators can tell "not built yet" (normal) from
  * "exists but broken" (needs a rebuild / native-binding rebuild). Never throws.
  */
 export function probeProjectionHealth(memoryDir: string): ProjectionHealthProbe {
@@ -406,8 +440,22 @@ export function probeProjectionHealth(memoryDir: string): ProjectionHealthProbe 
   let db: BetterSqlite3Database | null = null;
   try {
     db = projectionReadonlyOpener(dbPath, { readonly: true, fileMustExist: true });
+    // Validate the projection is actually USABLE, not just that the file
+    // opens (issue #1848 round 2): a file that opens but has the schema
+    // missing/corrupt previously reported ok, so doctor said healthy while
+    // browse silently fell back to full-corpus scans.
+    assertProjectionSchemaReadable(db);
     return { state: "openable", detail: "", nativeBindingMismatch: false };
   } catch (error) {
+    // If the file OPENED (db assigned) but the schema query failed, the
+    // native binding is fine — the projection itself is stale/corrupt.
+    if (db) {
+      return {
+        state: "present-but-invalid",
+        detail: displayErrorDetail(error),
+        nativeBindingMismatch: false,
+      };
+    }
     return {
       state: "unopenable",
       detail: displayErrorDetail(error),

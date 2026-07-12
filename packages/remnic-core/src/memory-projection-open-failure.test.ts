@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -13,6 +13,8 @@ import {
   probeProjectionHealth,
   readProjectedMemoryBrowse,
 } from "./memory-projection-store.js";
+import { summarizeProjectionHealth } from "./operator-toolkit.js";
+import { openBetterSqlite3 } from "./runtime/better-sqlite.js";
 import { StorageManager } from "./storage.js";
 
 // Serialized: every test mutates the process-global logger backend and the
@@ -232,13 +234,50 @@ test("full-scan fallback still returns results when the projection cannot serve"
   }
 });
 
-test("probeProjectionHealth reports openable for a freshly built, healthy projection", SERIAL, async () => {
+test("present + valid projection → probe openable + doctor ok (schema validation passes)", SERIAL, async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-healthy-"));
   try {
     await rebuildMemoryProjection({ memoryDir: dir, dryRun: false });
     const probe = probeProjectionHealth(dir);
     assert.equal(probe.state, "openable");
     assert.equal(probe.nativeBindingMismatch, false);
+    // Doctor lens reports OK for a schema-valid projection (issue #1848 round 2).
+    const check = summarizeProjectionHealth({ memoryDir: dir });
+    assert.equal(check.status, "ok");
+    assert.match(check.summary, /opens cleanly/i);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("present projection with MISSING schema tables → probe present-but-invalid (doctor non-ok, rebuild hint)", SERIAL, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-no-tables-"));
+  try {
+    // Create a sqlite file that OPENS cleanly but has NO projection tables
+    // (mirrors a half-built / stale / externally-created .sqlite that opens
+    // but cannot serve any browse query — issue #1848 round 2 root cause).
+    const dbPath = getMemoryProjectionPath(dir);
+    await mkdir(path.dirname(dbPath), { recursive: true });
+    const empty = openBetterSqlite3(dbPath); // creates a valid empty db
+    empty.close();
+
+    // Before #1848 round 2 this reported "openable" → doctor said ok while
+    // browse silently fell back to full-corpus scans on every memory list.
+    const probe = probeProjectionHealth(dir);
+    assert.equal(probe.state, "present-but-invalid");
+    assert.equal(probe.nativeBindingMismatch, false);
+    assert.ok(probe.detail, "expected a path-free detail for the schema failure");
+
+    // Doctor lens surfaces this as an ERROR with a rebuild hint — NOT ok.
+    const check = summarizeProjectionHealth({ memoryDir: dir });
+    assert.equal(check.status, "error");
+    assert.match(check.summary, /missing or unreadable/i);
+    assert.ok(check.remediation);
+    assert.match(check.remediation, /rebuild-memory-projection/);
+
+    // Browse still returns null (full-scan fallback trigger) — the projection
+    // is unusable, so the access layer must reach the full corpus.
+    assert.equal(readProjectedMemoryBrowse(dir, { limit: 5, offset: 0 }), null);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -1123,6 +1123,17 @@ export function summarizeProjectionHealth(
       details: { state: probe.state },
     };
   }
+  if (probe.state === "present-but-invalid") {
+    const schemaDetailSuffix = probe.detail ? ` (${probe.detail})` : "";
+    return {
+      key: "memory_projection",
+      status: "error",
+      summary: `Memory projection index exists but its schema is missing or unreadable${schemaDetailSuffix}; memory browse is falling back to full-corpus scans.`,
+      remediation:
+        "Rebuild the projection with `remnic rebuild-memory-projection --write`.",
+      details: { state: probe.state, detail: probe.detail },
+    };
+  }
   const nativeSuffix = probe.nativeBindingMismatch
     ? " Native binding appears built for the wrong Node.js ABI."
     : "";
