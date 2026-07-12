@@ -2230,3 +2230,20 @@ test("unicode and mixed special characters in segment text round-trip losslessly
   const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
   assert.equal(parsed[0]!.segments[0]!.text, unicode);
 });
+
+test("legacy transcript with unknown backslash sequences preserves them losslessly", () => {
+  // Pre-escaper transcripts may contain arbitrary backslash sequences
+  // (Windows paths, regex) that the escaper would never emit.  These
+  // must round-trip: unescapeSegmentText keeps the backslash for any
+  // escape it does not recognise, while \n / \r / \\ still decode.
+  const legacyBody =
+    "# bee transcript — 2026-06-10\n" +
+    "\n" +
+    "## 09:00–09:10 (conversation c1)\n" +
+    "\n" +
+    '**Me (you)** [09:00]: Path is C:\\Users\\josh and config at D:\\data\n' +
+    "**Guest** [09:01]: Regex \\d+ matches digits, \\w+ matches words\n";
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body: legacyBody }]);
+  assert.equal(parsed[0]!.segments[0]!.text, "Path is C:\\Users\\josh and config at D:\\data");
+  assert.equal(parsed[0]!.segments[1]!.text, "Regex \\d+ matches digits, \\w+ matches words");
+});

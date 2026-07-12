@@ -79,7 +79,7 @@ function unescapeSegmentText(text: string): string {
     if (ch === "n") return "\n";
     if (ch === "r") return "\r";
     if (ch === "\\") return "\\";
-    return ch;
+    return "\\" + ch;
   });
 }
 
