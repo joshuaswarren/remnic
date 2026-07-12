@@ -4387,6 +4387,7 @@ const pluginDefinition = {
                   cfg.codexCompat.fingerprintDedup === true &&
                   cfg.codexCompat.threadIdBufferKeying !== false &&
                   !!sessionIdentity.providerThreadId,
+                sourceConnector: "openclaw",
               });
               persistedTurnIndex += 1;
             }
