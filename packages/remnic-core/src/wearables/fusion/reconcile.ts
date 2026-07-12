@@ -119,6 +119,22 @@ function isWordPrefix(short: string[], long: string[]): boolean {
   return true;
 }
 
+/** Whether two normalized word sequences corroborate the SAME utterance.
+ * Exact match always corroborates; a leading-word-prefix (truncation)
+ * corroborates only when `allowPrefix` is set (timestamped alignment),
+ * so the more-complete-wins override can reunite a clipped transcript
+ * with its full wording. Untimed alignment passes `allowPrefix = false`
+ * and demands an exact word match. */
+function wordsCorroborate(
+  a: string[],
+  b: string[],
+  allowPrefix: boolean,
+): boolean {
+  if (wordsEqual(a, b)) return true;
+  if (!allowPrefix) return false;
+  return isWordPrefix(a, b) || isWordPrefix(b, a);
+}
+
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(1, Math.max(0, value));
@@ -278,17 +294,20 @@ export function fuseCluster(
       if (!groupMissing && Math.abs(seg.startMs - group.anchorMs) > toleranceMs) {
         continue;
       }
-      // Untimestamped (missing-start) segments cannot be aligned by time,
-      // so merging two of them on speaker key alone would collapse two
-      // DISTINCT utterances into one and silently drop a source. Require
-      // text corroboration before such a cross-source merge.
-      if (groupMissing && segMissing) {
-        const segWords = normalizeWords(seg.text);
-        const corroborated = group.members.some((member) =>
-          wordsEqual(normalizeWords(member.text), segWords),
-        );
-        if (!corroborated) continue;
-      }
+      // Cross-source corroboration gate. A segment only joins an existing
+      // group when it corroborates the SAME utterance as a member. Without
+      // this, distinct utterances that merely share a speaker and a time
+      // window (timestamped) — or a speaker key alone (untimed) — collapse
+      // into one segment and silently lose a source's content. Timestamped
+      // alignment accepts an exact word match OR a leading-word prefix
+      // (truncation) so the more-complete-wins override can still reunite a
+      // clipped transcript with its full wording; untimed alignment has no
+      // time anchor, so it requires an exact word match.
+      const segWords = normalizeWords(seg.text);
+      const corroborated = group.members.some((member) =>
+        wordsCorroborate(normalizeWords(member.text), segWords, !groupMissing),
+      );
+      if (!corroborated) continue;
       chosen = group;
       break;
     }
@@ -326,6 +345,13 @@ export function fuseCluster(
       disagreements.push(reconciled.disagreement);
     }
   }
+  // Cross-segment ASR disagreements: distinct utterances kept as separate
+  // segments (never collapsed) yet sharing a speaker + time window and
+  // disagreeing on wording. Neither side's content is lost — both remain
+  // visible segments — but the unresolved conflict is still surfaced for
+  // review and each involved segment's confidence is lowered, matching
+  // how an in-group conflict is flagged.
+  detectCrossSegmentDisagreements(segments, toleranceMs, disagreements);
 
   const result: FuseClusterResult = {
     sources,
@@ -465,6 +491,91 @@ function reconcileGroup(group: AlignGroup): ReconciledGroup {
   }
 
   return { segment, disagreement };
+}
+
+/**
+ * Detect ASR-text disagreements BETWEEN segments that were intentionally
+ * kept separate (distinct utterances) yet share a speaker and a time
+ * window and disagree on wording. Unlike an in-group conflict (same
+ * utterance bridged by a truncation), these never merged — so neither
+ * side's content is lost — but the unresolved disagreement is still
+ * surfaced for review and each involved segment's confidence is lowered.
+ *
+ * Timestamped only: untimestamped segments have no window anchor to compare
+ * against. Mutates `confidence` on involved segments and appends to `out`.
+ */
+function detectCrossSegmentDisagreements(
+  segments: FusedSegment[],
+  toleranceMs: number,
+  out: FusedDisagreement[],
+): void {
+  const n = segments.length;
+  if (n < 2) return;
+  const claimed = new Array<boolean>(n).fill(false);
+  for (let i = 0; i < n; i++) {
+    if (claimed[i]) continue;
+    const seed = segments[i]!;
+    const seedMs =
+      seed.startIso !== undefined ? Date.parse(seed.startIso) : NaN;
+    if (!Number.isFinite(seedMs)) continue;
+    const seedWords = normalizeWords(seed.text);
+    const clusterIdx: number[] = [];
+    for (let j = i + 1; j < n; j++) {
+      if (claimed[j]) continue;
+      const cand = segments[j]!;
+      if (cand.isSelf !== seed.isSelf || cand.speaker !== seed.speaker) {
+        continue;
+      }
+      if (cand.provenance.source === seed.provenance.source) continue;
+      const candMs =
+        cand.startIso !== undefined ? Date.parse(cand.startIso) : NaN;
+      if (!Number.isFinite(candMs)) continue;
+      if (Math.abs(candMs - seedMs) > toleranceMs) continue;
+      if (wordsCorroborate(seedWords, normalizeWords(cand.text), true)) {
+        continue;
+      }
+      clusterIdx.push(j);
+    }
+    if (clusterIdx.length === 0) continue;
+    clusterIdx.unshift(i);
+    for (const idx of clusterIdx) claimed[idx] = true;
+
+    const involved = clusterIdx.map((idx) => segments[idx]!);
+    // Rank the provisional winner: higher trust, then longer text, then
+    // stable source order — mirrors reconcileGroup's member ranking.
+    involved.sort((a, b) => {
+      if (
+        Math.abs(b.provenance.sourceTrust - a.provenance.sourceTrust) >
+        TRUST_DECISION_EPSILON
+      ) {
+        return b.provenance.sourceTrust - a.provenance.sourceTrust;
+      }
+      if (b.text.length !== a.text.length) return b.text.length - a.text.length;
+      return a.provenance.source < b.provenance.source ? -1 : 1;
+    });
+    const provisional = involved[0]!;
+    const anchorIso = involved
+      .map((s) => s.startIso)
+      .filter((v): v is string => v !== undefined)
+      .sort()[0];
+
+    for (const seg of involved) {
+      seg.confidence = clamp01(seg.provenance.sourceTrust * 0.7);
+    }
+
+    out.push({
+      kind: "asr-text",
+      subject: anchorIso ?? "(no timestamp)",
+      candidates: involved.map((s) => ({
+        source: s.provenance.source,
+        value: s.text,
+      })),
+      provisional: {
+        source: provisional.provenance.source,
+        value: provisional.text,
+      },
+    });
+  }
 }
 
 /**

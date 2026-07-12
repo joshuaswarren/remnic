@@ -621,6 +621,63 @@ test("distinct untimestamped same-speaker utterances do not collapse across sour
   ]);
 });
 
+test("distinct timestamped same-window utterances stay separate, not collapsed", () => {
+  // Two sources capture genuinely different utterances inside the same
+  // time window (within the alignment tolerance). They must NOT merge into
+  // one segment — that would silently drop one source's content. Each
+  // stays its own segment with its own provenance (consistent with the
+  // untimestamped-collapse guard); the cross-source conflict is still
+  // surfaced for review rather than silently resolved.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Meeting with Sarah at noon.",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Lunch with the design team.",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:31.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  assert.equal(
+    conv.segments.length,
+    2,
+    "distinct same-window utterances stay separate, not collapsed",
+  );
+  const texts = conv.segments.map((s) => s.text).sort();
+  assert.deepEqual(texts, [
+    "Lunch with the design team.",
+    "Meeting with Sarah at noon.",
+  ]);
+  // Provenance is preserved per segment — no source's content is lost.
+  assert.deepEqual(
+    conv.segments.map((s) => s.provenance.source).sort(),
+    ["bee", "limitless"],
+  );
+  // The cross-source conflict is surfaced for review (not silently dropped).
+  assert.equal(conv.disagreements.length, 1);
+  assert.equal(conv.disagreements[0]!.candidates.length, 2);
+});
+
 test("raw diarization keys like SPEAKER_00 are treated as generic speakers", () => {
   const fused = fuseDay(
     DATE,
