@@ -34,7 +34,7 @@ import { type ReplayTurn, normalizeReplaySessionKey } from "../replay/types.js";
 import { SessionObserverState } from "../session-observer-state.js";
 import { CODEX_THREAD_KEY_PREFIX } from "../thread-key.js";
 import { TranscriptManager } from "../transcript.js";
-import type { BufferTurn, PluginConfig } from "../types.js";
+import type { BufferTurn, PluginConfig, SourceConnectorProvenance } from "../types.js";
 import {
   BulkImportBatchPartialFailureError,
   splitTurnsBySourceValidAt,
@@ -102,6 +102,17 @@ export interface TurnIngestionDeps {
   readonly transcript: TranscriptManager;
 }
 
+/**
+ * Options for {@link TurnIngestionCoordinator.processTurn}.
+ * Extends {@link SourceConnectorProvenance} to thread trusted connector identity.
+ */
+export interface TurnIngestionOptions extends SourceConnectorProvenance {
+  bufferKey?: string;
+  logicalSessionKey?: string;
+  providerThreadId?: string | null;
+  turnFingerprint?: string;
+}
+
 export class TurnIngestionCoordinator {
   constructor(
     private readonly deps: TurnIngestionDeps,
@@ -111,13 +122,7 @@ export class TurnIngestionCoordinator {
     role: "user" | "assistant",
     content: string,
     sessionKey?: string,
-    options: {
-      bufferKey?: string;
-      logicalSessionKey?: string;
-      providerThreadId?: string | null;
-      turnFingerprint?: string;
-      sourceConnector?: string;
-    } = {},
+    options: TurnIngestionOptions = {},
   ): Promise<void> {
     if (role !== "user" && role !== "assistant") {
       log.debug(`processTurn: ignoring unsupported role=${String(role)}`);

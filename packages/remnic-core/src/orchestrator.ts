@@ -111,7 +111,7 @@ import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.j
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
-import { TurnIngestionCoordinator } from "./orchestration/turn-ingestion.js";
+import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
 import { RecallIntrospectionCoordinator } from "./orchestration/recall-introspection.js";
 import { OrchestratorInitCoordinator } from "./orchestration/orchestrator-init.js";
 import { PersistenceIndexCoordinator } from "./orchestration/persistence-index.js";
@@ -2828,14 +2828,7 @@ export class Orchestrator {
     role: "user" | "assistant",
     content: string,
     sessionKey?: string,
-    options: {
-      bufferKey?: string;
-      logicalSessionKey?: string;
-      providerThreadId?: string | null;
-      turnFingerprint?: string;
-      persistProcessedFingerprint?: boolean;
-      sourceConnector?: string;
-    } = {},
+    options: TurnIngestionOptions & { persistProcessedFingerprint?: boolean } = {},
   ): Promise<void> {
     return this.turnIngestionCoordinator.processTurn(
       role,

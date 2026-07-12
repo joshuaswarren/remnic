@@ -180,7 +180,7 @@ import type {
   EntityFile,
   MemoryFile,
   MemoryActionOutcome,
-  CodingContext,
+  CodingContext, SourceConnectorProvenance,
   MemoryActionType,
   MemoryLifecycleEvent,
   MemoryStatus,
@@ -1019,7 +1019,7 @@ export interface EngramAccessObserveMessage {
   sourceFormat?: MessagePartSourceFormat;
 }
 
-export interface EngramAccessObserveRequest {
+export interface EngramAccessObserveRequest extends SourceConnectorProvenance {
   sessionKey: string;
   messages: EngramAccessObserveMessage[];
   namespace?: string;
@@ -1039,8 +1039,6 @@ export interface EngramAccessObserveRequest {
    * Creates a `CodingContext` with `projectId: "tag:<projectTag>"`.
    */
   projectTag?: string;
-  /** Trusted connector identity, set from ctx.sourceConnector by the operation handler. */
-  sourceConnector?: string;
 }
 
 /**
