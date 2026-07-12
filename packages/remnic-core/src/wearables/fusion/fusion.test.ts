@@ -542,6 +542,46 @@ test("reconstruct rolls a cross-midnight conversation end into the next day", ()
   );
 });
 
+test("reconstruct rolls a post-midnight segment even when the heading end clock is missing", () => {
+  // A stored transcript whose heading end is unparseable (e.g. "--:--",
+  // the rendered form of a missing endIso) must still roll a subsequent
+  // segment whose clock precedes the start clock into the next calendar
+  // day. The roll decision is driven by the segment-vs-start comparison,
+  // not gated on a parseable heading end clock.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 23:55–--:-- · Late call (conversation c1)",
+    "",
+    "**Me (you)** [23:58]: Still talking.",
+    "**Jane** [00:05]: After midnight.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T23:55:00.000Z");
+  // No parseable end clock -> no endIso is reconstructed.
+  assert.equal(conv.endIso, undefined);
+  const isos = conv.segments.map((s) => s.startIso);
+  assert.ok(
+    isos.includes("2026-06-10T23:58:00.000Z"),
+    "pre-midnight segment stays on the rendered date",
+  );
+  assert.ok(
+    isos.includes("2026-06-11T00:05:00.000Z"),
+    "post-midnight segment rolls to the next day despite a missing heading end",
+  );
+  // The rolled segment must sort AFTER the conversation start so the
+  // timeline ordering stays correct.
+  const rolled = conv.segments.find((s) => s.startIso === "2026-06-11T00:05:00.000Z");
+  assert.ok(rolled, "rolled segment present");
+  assert.ok(
+    Date.parse(rolled!.startIso!) > Date.parse(conv.startIso!),
+    "segment ISO must sort after the start ISO",
+  );
+});
+
 test("truncated high-trust text yields to a longer corroborating transcript", () => {
   // bee is the MORE trusted source but its text is a clipped prefix of
   // omi's full wording; the more-complete wording must win (not the trust).

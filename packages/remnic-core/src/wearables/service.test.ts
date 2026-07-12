@@ -807,3 +807,68 @@ test("fuseDay rewrites an artifact whose body is corrupt despite a matching cont
   }
 });
 
+test("fuseDay rewrites a corrupt body even when the expected conversation count is zero", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    // No stored transcripts for this day -> fusion yields ZERO conversations.
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: {
+        enabled: true,
+        proximityGapMs: 300_000,
+        windowToleranceMs: 30_000,
+      },
+    });
+
+    // First fuse writes a valid (empty) artifact.
+    const first = await service.fuseDay("2026-06-10");
+    assert.equal(first.written, true);
+    assert.equal(first.conversationCount, 0);
+    const hash = first.contentHash;
+
+    // A legitimately-empty ([] body) artifact must SKIP on re-run: same
+    // inputs + config, clean parse, 0 == 0 -> not rewritten.
+    const idempotent = await service.fuseDay("2026-06-10");
+    assert.equal(idempotent.written, false, "a valid empty body must skip");
+    assert.equal(idempotent.contentHash, hash);
+
+    // Corrupt the stored body while leaving the frontmatter (incl.
+    // contentHash) intact: truncated JSON that the lenient read parser
+    // reduces to zero conversations.
+    const fusionStore = storage.fusionArtifactStore();
+    const validRaw = await fusionStore.readFusedDay("2026-06-10");
+    assert.ok(validRaw);
+    const closeIdx = validRaw!.indexOf("\n---\n", 4);
+    assert.ok(closeIdx !== -1, "fused artifact has a closing frontmatter delimiter");
+    const corruptRaw = `${validRaw!.slice(0, closeIdx + 5)}\n{ this is not valid JSON`;
+    await fusionStore.writeFusedDay("2026-06-10", corruptRaw);
+
+    // The corrupted body reads as zero conversations, and the recomputed
+    // result is ALSO zero — without the parseOk signal this 0 == 0 match
+    // plus a matching hash would silently skip and leave the bad file.
+    assert.equal((await service.fusedConversations("2026-06-10")).length, 0);
+
+    // Re-fuse: matching hash + 0 == 0 but a corrupt body (parseOk:false)
+    // => self-repair (written: true), not a silent skip.
+    const repaired = await service.fuseDay("2026-06-10");
+    assert.equal(
+      repaired.written,
+      true,
+      "a corrupt body must be rewritten even when the expected count is zero",
+    );
+    assert.equal(repaired.contentHash, hash);
+    assert.equal(repaired.conversationCount, 0);
+
+    // A final re-run is idempotent again: the repaired body parses cleanly,
+    // so it skips (written: false), proving the rewrite was a one-off
+    // self-repair rather than a permanent forced write.
+    const final = await service.fuseDay("2026-06-10");
+    assert.equal(final.written, false, "a repaired artifact must skip on the next run");
+    assert.equal(final.contentHash, hash);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+

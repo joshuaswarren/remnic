@@ -88,8 +88,9 @@ export function reconstructFusionInputs(
       startIso?: string;
       endIso?: string;
       segments: FusionSegmentInput[];
-      /** True when this conversation's end clock precedes its start clock
-       * (it wraps past midnight); post-midnight clocks roll to next day. */
+      /** True when the heading end clock precedes the start clock (the
+       * conversation window wrapped past midnight); rolls `endIso` forward.
+       * Post-midnight SEGMENTS roll independently via `wrapStartMin`. */
       wrapped: boolean;
       wrapStartMin?: number;
     } | null = null;
@@ -123,9 +124,11 @@ export function reconstructFusionInputs(
         const startMin = clockMinutesOfDay(startClock);
         const endMin = clockMinutesOfDay(endClock);
         // A conversation whose end clock reads EARLIER than its start
-        // clock wrapped past midnight; roll its end (and any post-midnight
-        // segment) to the next calendar day so endIso >= startIso and the
-        // timeline sorts correctly.
+        // clock wrapped past midnight; roll its end to the next calendar
+        // day so endIso >= startIso and the timeline sorts correctly.
+        // Post-midnight SEGMENTS roll independently below: a segment whose
+        // clock precedes the start clock crossed midnight regardless of
+        // whether the heading end clock was parseable.
         const wrapped =
           startMin !== undefined && endMin !== undefined && endMin < startMin;
         const startIso = clockToIso(startClock, date);
@@ -151,8 +154,12 @@ export function reconstructFusionInputs(
         if (current === null) continue; // segment outside any conversation
         const [, label, clock, text] = segmentMatch;
         const segMin = clockMinutesOfDay(clock);
+        // A segment clock EARLIER than the conversation start clock crossed
+        // midnight; roll it to the next calendar day. Driven by the
+        // segment-vs-start comparison directly — NOT gated on `wrapped` —
+        // so a heading whose end is missing/unparseable (e.g.
+        // `## 23:55–--:--`) still rolls its `[00:05]` segment forward.
         const segDate =
-          current.wrapped &&
           current.wrapStartMin !== undefined &&
           segMin !== undefined &&
           segMin < current.wrapStartMin

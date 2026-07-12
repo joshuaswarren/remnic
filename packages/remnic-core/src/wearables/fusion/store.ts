@@ -88,7 +88,11 @@ function parseNonNegativeInt(value: string | undefined): number {
 /**
  * Parse a persisted fused-day file. Returns null when the content does
  * not look like a fusion artifact (wrong kind / missing frontmatter) so
- * callers can distinguish "not fused" from a malformed file.
+ * callers can distinguish "not fused" from a malformed file. A non-null
+ * result carries `parseOk`: false when the JSON body was truncated/corrupt
+ * (conversations is empty in that case), true for a legitimately-empty
+ * `[]` body — so the skip-unchanged path can force a self-repair rewrite
+ * regardless of the recomputed conversation count.
  */
 export function parseFusionDay(raw: string): FusedDayFile | null {
   if (!raw.startsWith("---\n")) return null;
@@ -108,17 +112,23 @@ export function parseFusionDay(raw: string): FusedDayFile | null {
   if (date === undefined) return null;
 
   let conversations: FusedWearableConversation[] = [];
+  let parseOk = true;
   const bodyTrimmed = body.trim();
   if (bodyTrimmed.length > 0) {
     try {
       const parsed: unknown = JSON.parse(bodyTrimmed);
       if (Array.isArray(parsed)) {
         conversations = parsed as FusedWearableConversation[];
+      } else {
+        // Valid JSON but not the expected array shape — flag as corrupt so
+        // callers recompute fusion rather than trusting an empty read.
+        parseOk = false;
       }
     } catch {
-      // A truncated/corrupt body parses to no conversations rather than
-      // throwing — callers recompute fusion rather than crashing reads.
-      conversations = [];
+      // A truncated/corrupt body fails to parse; flag parseOk:false so the
+      // skip-unchanged path forces a self-repair rewrite (even when the
+      // frontmatter hash matches and the recomputed count is also zero).
+      parseOk = false;
     }
   }
 
@@ -130,7 +140,7 @@ export function parseFusionDay(raw: string): FusedDayFile | null {
     contentHash: scalars.get("contentHash") ?? "",
     fusedAt: scalars.get("fusedAt") ?? "",
   };
-  return { meta, conversations };
+  return { meta, conversations, parseOk };
 }
 
 /** Reserved underscore-prefixed subdir for derived fusion artifacts. */

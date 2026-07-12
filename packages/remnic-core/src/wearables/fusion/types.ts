@@ -202,4 +202,12 @@ export interface FusedDayMeta {
 export interface FusedDayFile {
   meta: FusedDayMeta;
   conversations: FusedWearableConversation[];
+  /**
+   * False when the JSON body failed to parse (truncated/corrupt). A
+   * legitimately empty (`[]`) body parses fine — parseOk stays true — so
+   * callers can distinguish "nothing to fuse" from a broken file and force
+   * a self-repair rewrite even when the frontmatter hash matches and the
+   * parsed conversation count is also zero.
+   */
+  parseOk: boolean;
 }
