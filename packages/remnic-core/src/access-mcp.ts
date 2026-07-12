@@ -2839,6 +2839,19 @@ export class EngramMcpServer {
   }
 
   /**
+   * Whether a tool accepts a `namespace` argument — i.e. it is a
+   * namespace-scoped operation whose effective namespace MUST be gated by the
+   * per-token allow-list. Exposed (public) so the HTTP MCP transport can run
+   * the SAME effective-namespace enforcement the REST surface runs, without
+   * duplicating the tool-schema introspection (issue #1850). Namespace-
+   * agnostic tools (peer/wearables/etc.) return false and stay ungated,
+   * matching the REST surface where those routes never call resolveNamespace.
+   */
+  toolAcceptsNamespace(name: string): boolean {
+    return this.toolAcceptsArgument(name, "namespace");
+  }
+
+  /**
    * Determine whether oai-mem-citation guidance should be appended to recall.
    * Returns true when explicitly enabled via config OR when auto-detect is
    * active and the current MCP session belongs to a Codex adapter client.

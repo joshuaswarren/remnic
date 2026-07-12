@@ -2013,3 +2013,224 @@ test("HTTP scoped-token namespace allow-list gates id-loaded contradiction route
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ===========================================================================
+// Issue #1850 round 4 — uniform effective-namespace chokepoint coverage.
+// One helper (enforceNamespaceAllowList) gates every surface; these tests
+// prove the gate fires on the surfaces round 3 missed: MCP tools/call, HTTP
+// body-namespace (coding) routes, and the legacy undefined-namespace pair.
+// ===========================================================================
+
+test("HTTP-MCP tools/call enforces the token namespace allow-list (issue #1850 finding 1)", async () => {
+  // MCP `tools/call` previously never applied the namespace allow-list, so a
+  // scoped bearer could reach another tenant via tool args. capsule_list is a
+  // namespace-scoped MCP tool (accepts a `namespace` argument), so the gate
+  // must fire on it. The 403 is thrown BEFORE op.run, so the denied case never
+  // reaches the service.
+  const capsuleCalls: Array<Record<string, unknown>> = [];
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-mcp-ns", namespacesEnabled: true, defaultNamespace: "default" }),
+    capsuleList: async (args: Record<string, unknown>) => {
+      capsuleCalls.push(args);
+      return { capsules: [] };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "scoped-ns-a", capabilities: { version: 1, namespaces: ["ns_a"] } },
+      { token: "operator", capabilities: { version: 1 } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const mcpCall = (token: string, namespace: string) =>
+    fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "engram.capsule_list", arguments: { namespace } },
+      }),
+    });
+  try {
+    // scoped: an unlisted namespace is rejected with 403 BEFORE op.run.
+    assert.equal(
+      (await mcpCall("scoped-ns-a", "ns_b")).status,
+      403,
+      "scoped MCP: an unlisted namespace must be denied (403) before op.run",
+    );
+    assert.equal(capsuleCalls.length, 0, "scoped MCP: the service must NOT be reached for a denied namespace");
+    // scoped: the allowed namespace proceeds past the gate (200, not 403).
+    const allowed = await mcpCall("scoped-ns-a", "ns_a");
+    assert.notEqual(allowed.status, 403, "scoped MCP: the allowed namespace must proceed past the gate");
+    assert.equal(capsuleCalls.at(-1)?.namespace, "ns_a", "scoped MCP: the allowed namespace reaches the service");
+    // unrestricted: an unlisted namespace is a no-op (proceeds, not 403).
+    const unrestricted = await mcpCall("operator", "ns_b");
+    assert.notEqual(unrestricted.status, 403, "unrestricted MCP: namespace scoping must be a no-op");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP coding POST routes gate the body namespace through the allow-list (issue #1850 finding 2)", async () => {
+  // coding_decision passes `body` straight to op.run; a scoped bearer setting
+  // body.namespace to another tenant must be rejected. The gate fires on the
+  // body namespace field via the same resolveNamespace chokepoint as query
+  // routes. 403 before op.run; the allowed namespace reaches the service.
+  const decisionCalls: Array<Record<string, unknown>> = [];
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-coding-ns", namespacesEnabled: true, defaultNamespace: "default" }),
+    codingDecision: async (input: Record<string, unknown>) => {
+      decisionCalls.push(input);
+      return { subcommand: "list", records: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "scoped-ns-a", capabilities: { version: 1, namespaces: ["ns_a"] } },
+      { token: "operator", capabilities: { version: 1 } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const postDecision = (token: string, namespace: string | undefined) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/coding/decisions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ subcommand: "list", ...(namespace ? { namespace } : {}) }),
+    });
+  try {
+    // scoped: body.namespace to an unlisted tenant → 403 before op.run.
+    assert.equal(
+      (await postDecision("scoped-ns-a", "ns_b")).status,
+      403,
+      "scoped coding: body.namespace to an unlisted namespace must be denied (403)",
+    );
+    assert.equal(decisionCalls.length, 0, "scoped coding: the service must NOT be reached for a denied namespace");
+    // scoped: the allowed body.namespace reaches the service.
+    const allowed = await postDecision("scoped-ns-a", "ns_a");
+    assert.notEqual(allowed.status, 403, "scoped coding: the allowed namespace must proceed past the gate");
+    assert.equal(decisionCalls.at(-1)?.namespace, "ns_a", "scoped coding: the allowed namespace reaches the service");
+    // unrestricted: any body.namespace is a no-op.
+    assert.notEqual(
+      (await postDecision("operator", "ns_b")).status,
+      403,
+      "unrestricted coding: namespace scoping must be a no-op",
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("Legacy undefined-namespace contradiction pair: default-allow-list token reads+resolves; non-default denied (issue #1850 findings 3+4)", async () => {
+  // A legacy pair carries namespace:undefined, which downstream storage maps to
+  // the server DEFAULT. Round 3's assertNamespaceAllowed(caps, undefined)
+  // wrongly denied a scoped token whose allow-list INCLUDES the default. The
+  // effective-namespace chokepoint maps undefined → default, so:
+  //   - namespaces:['default'] (== server default) ⇒ ALLOWED read + resolve;
+  //   - namespaces:['ns_a'] (not default) ⇒ DENIED.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-http-scoped-legacy-pair-"));
+  const legacyPair = writePair(dir, {
+    memoryIds: ["legacy-x", "legacy-y"],
+    verdict: "contradicts",
+    rationale: "legacy pair with no namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  // Sanity: the fixture really is a legacy unscoped pair.
+  assert.equal(readPair(dir, legacyPair.pairId)?.namespace, undefined);
+  const storage = { dir } as unknown as StorageManager;
+  const baseService = {
+    configRef: parseConfig({ memoryDir: dir, namespacesEnabled: true, defaultNamespace: "default" }),
+    memoryDir: dir,
+    storageRef: storage,
+    getReadableStorageForNamespace: async (namespace: string | undefined) => ({
+      namespace: namespace ?? "default",
+      storage,
+    }),
+    getWritableStorageForNamespace: async (namespace: string | undefined) => ({
+      namespace: namespace ?? "default",
+      storage,
+    }),
+  };
+  const mkServer = (scopedToken: string, allowList: string[]) => {
+    const service = { ...baseService } as unknown as EngramAccessService;
+    return new EngramAccessHttpServer({
+      service,
+      port: 0,
+      authTokenEntriesGetter: () => [{ token: scopedToken, capabilities: { version: 1, namespaces: allowList } }],
+      adminConsoleEnabled: false,
+    });
+  };
+
+  // ── default-allow-list token: legacy pair is reachable + resolvable ──
+  const defaultServer = mkServer("allow-default", ["default"]);
+  const defaultStatus = await defaultServer.start();
+  try {
+    const detail = await fetch(
+      `http://127.0.0.1:${defaultStatus.port}/engram/v1/review/contradictions/${legacyPair.pairId}`,
+      { headers: { authorization: "Bearer allow-default" } },
+    );
+    assert.equal(detail.status, 200, "default-allow token: legacy undefined pair must be readable (undefined→default)");
+    const resolve = await fetch(`http://127.0.0.1:${defaultStatus.port}/engram/v1/review/resolve`, {
+      method: "POST",
+      headers: { authorization: "Bearer allow-default", "content-type": "application/json" },
+      body: JSON.stringify({ pairId: legacyPair.pairId, verb: "both-valid" }),
+    });
+    assert.equal(resolve.status, 200, "default-allow token: legacy undefined pair must be resolvable");
+    assert.equal(
+      readPair(dir, legacyPair.pairId)?.resolution,
+      "both-valid",
+      "default-allow token: the legacy pair is marked resolved",
+    );
+  } finally {
+    await defaultServer.stop();
+  }
+
+  // A fresh legacy pair for the deny case — independent of the pair the
+  // default-allow token already resolved above, so "must remain unresolved"
+  // is a clean assertion.
+  const deniedLegacyPair = writePair(dir, {
+    memoryIds: ["legacy-deny-x", "legacy-deny-y"],
+    verdict: "contradicts",
+    rationale: "legacy pair for the deny case",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  assert.equal(readPair(dir, deniedLegacyPair.pairId)?.namespace, undefined);
+
+  // ── non-default-allow-list token: legacy pair is DENIED (undefined→default not listed) ──
+  const deniedServer = mkServer("allow-ns-a", ["ns_a"]);
+  const deniedStatus = await deniedServer.start();
+  try {
+    const detail = await fetch(
+      `http://127.0.0.1:${deniedStatus.port}/engram/v1/review/contradictions/${deniedLegacyPair.pairId}`,
+      { headers: { authorization: "Bearer allow-ns-a" } },
+    );
+    assert.equal(
+      detail.status,
+      403,
+      "non-default token: legacy undefined pair must be denied (undefined→default not in allow-list)",
+    );
+    const resolve = await fetch(`http://127.0.0.1:${deniedStatus.port}/engram/v1/review/resolve`, {
+      method: "POST",
+      headers: { authorization: "Bearer allow-ns-a", "content-type": "application/json" },
+      body: JSON.stringify({ pairId: deniedLegacyPair.pairId, verb: "both-valid" }),
+    });
+    assert.equal(resolve.status, 403, "non-default token: legacy undefined pair must not be resolvable");
+    assert.notEqual(
+      readPair(dir, deniedLegacyPair.pairId)?.resolution,
+      "both-valid",
+      "non-default token: the legacy pair must remain unresolved",
+    );
+  } finally {
+    await deniedServer.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

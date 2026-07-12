@@ -290,6 +290,53 @@ export function assertNamespaceAllowed(
 }
 
 /**
+ * Resolve the EFFECTIVE namespace an operation runs against: a present,
+ * non-empty request namespace wins, otherwise the server default — the same
+ * resolution downstream storage applies
+ * (`getWritableStorageForNamespace(undefined)` → `defaultNamespace`). Empty
+ * strings are treated as absent. Centralized so every invocation surface
+ * (HTTP query/body, MCP `tools/call`, id-loaded records, legacy pairs that
+ * carry no namespace) applies ONE rule and none can dodge the check by
+ * dropping the param. (issue #1850)
+ */
+export function resolveEffectiveNamespace(
+  namespace: string | undefined,
+  defaultNamespace: string | undefined,
+): string | undefined {
+  const normalized = namespace !== undefined && namespace.length > 0 ? namespace : undefined;
+  return normalized ?? defaultNamespace;
+}
+
+/**
+ * The single effective-namespace allow-list chokepoint (issues #1837/#1850).
+ * Throws {@link EngramAccessForbiddenError} when `caps` carries a namespaces
+ * allow-list and the EFFECTIVE namespace (request value OR server default) is
+ * not a member. FAIL CLOSED:
+ *   - a scoped token whose allow-list does not cover the effective namespace
+ *     (explicit OR defaulted) is rejected;
+ *   - an absent server default (unconfigured) is also rejected for scoped
+ *     tokens, so omitting `?namespace=` can never bypass the allow-list.
+ * No-op for unrestricted tokens (no namespaces axis) so legacy/unrestricted
+ * behavior is unchanged. Both the HTTP transport (`resolveNamespace`) and the
+ * MCP dispatch route through this ONE function so no surface is missed.
+ */
+export function enforceNamespaceAllowList(
+  caps: TokenCapabilities | undefined | null,
+  namespace: string | undefined,
+  defaultNamespace: string | undefined,
+): void {
+  if (caps?.namespaces === undefined) return; // unrestricted token — unchanged
+  const effective = resolveEffectiveNamespace(namespace, defaultNamespace);
+  if (effective === undefined || !caps.namespaces.includes(effective)) {
+    throw new EngramAccessForbiddenError(
+      namespace === undefined
+        ? "token is scoped to specific namespaces; the server default namespace is not permitted — supply an allowed namespace"
+        : `token is not permitted to access namespace: ${namespace}`,
+    );
+  }
+}
+
+/**
  * Per-request AsyncLocalStorage carrying the presenting token's resolved
  * capabilities. The HTTP surface calls `.enterWith()` once per authorized
  * request; the access boundary reads `.getStore()` inside `run()` to enforce

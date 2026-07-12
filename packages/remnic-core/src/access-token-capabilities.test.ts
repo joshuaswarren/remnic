@@ -37,6 +37,8 @@ import {
   assertOperationAllowed,
   capabilityAllowsNamespace,
   capabilityAllowsOp,
+  enforceNamespaceAllowList,
+  resolveEffectiveNamespace,
   isCapabilityRestricted,
   isValidNamespaceValue,
   normalizeCapabilities,
@@ -176,6 +178,73 @@ test("empty namespaces: deny all (fail-closed)", () => {
   assert.deepEqual(caps.namespaces, []);
   assert.equal(capabilityAllowsNamespace(caps, "default"), false);
   assert.equal(capabilityAllowsNamespace(caps, undefined), false);
+});
+
+// -------------------------------------------------------------------------
+// 4b. Effective-namespace chokepoint (issue #1850) — the SINGLE function the
+//     HTTP query/body routes, MCP dispatch, and id-loaded contradiction routes
+//     all route through. Models undefined→default mapping, fail-closed, and
+//     no-op-for-unrestricted.
+// -------------------------------------------------------------------------
+
+test("resolveEffectiveNamespace: present value wins; empty/undefined → default", () => {
+  assert.equal(resolveEffectiveNamespace("team", "default"), "team");
+  assert.equal(resolveEffectiveNamespace("", "default"), "default", "empty string is treated as absent");
+  assert.equal(resolveEffectiveNamespace(undefined, "default"), "default");
+  assert.equal(resolveEffectiveNamespace(undefined, undefined), undefined, "no value and no default → undefined");
+});
+
+test("enforceNamespaceAllowList: no-op for unrestricted tokens (absent + explicit-unrestricted)", () => {
+  const scoped = validateCapabilitiesForMint({ namespaces: ["default"] }, OPERATION_NAMES);
+  // Legacy token (absent capabilities record) — unrestricted.
+  assert.doesNotThrow(() => enforceNamespaceAllowList(undefined, "anything", "default"));
+  assert.doesNotThrow(() => enforceNamespaceAllowList(null, undefined, "default"));
+  // Explicit-unrestricted record ({version:1}, no namespaces axis).
+  const explicitUnrestricted = validateCapabilitiesForMint(undefined, OPERATION_NAMES);
+  assert.doesNotThrow(() => enforceNamespaceAllowList(explicitUnrestricted, "anything", "default"));
+  // Sanity: the scoped token IS restricted (control for the tests below).
+  assert.equal(isCapabilityRestricted(scoped), true);
+});
+
+test("enforceNamespaceAllowList: scoped token — explicit allowed namespace passes", () => {
+  const caps = validateCapabilitiesForMint({ namespaces: ["ns_a", "default"] }, OPERATION_NAMES);
+  assert.doesNotThrow(() => enforceNamespaceAllowList(caps, "ns_a", "default"));
+});
+
+test("enforceNamespaceAllowList: scoped token — explicit unlisted namespace rejected (fail closed)", () => {
+  const caps = validateCapabilitiesForMint({ namespaces: ["ns_a"] }, OPERATION_NAMES);
+  assert.throws(
+    () => enforceNamespaceAllowList(caps, "ns_b", "default"),
+    (err: unknown) => err instanceof EngramAccessForbiddenError && /ns_b/.test(err.message),
+  );
+});
+
+test("enforceNamespaceAllowList: undefined maps to default — allow-list INCLUDING default passes (legacy pair fix)", () => {
+  // The round-4 bug: a legacy pair carries namespace:undefined, which
+  // downstream storage maps to the server default. A scoped token whose
+  // allow-list INCLUDES the default must be permitted; the prior
+  // assertNamespaceAllowed(caps, undefined) wrongly denied it.
+  const caps = validateCapabilitiesForMint({ namespaces: ["default"] }, OPERATION_NAMES);
+  assert.doesNotThrow(() => enforceNamespaceAllowList(caps, undefined, "default"));
+});
+
+test("enforceNamespaceAllowList: undefined maps to default — allow-list NOT including default rejected", () => {
+  const caps = validateCapabilitiesForMint({ namespaces: ["ns_a"] }, OPERATION_NAMES);
+  assert.throws(
+    () => enforceNamespaceAllowList(caps, undefined, "default"),
+    (err: unknown) => err instanceof EngramAccessForbiddenError && /server default namespace is not permitted/.test(err.message),
+  );
+});
+
+test("enforceNamespaceAllowList: absent server default + scoped token → fail closed", () => {
+  // No request namespace AND no configured default ⇒ an undefined effective
+  // namespace cannot satisfy any allow-list; fail closed rather than let an
+  // unconfigured server silently admit the default tenant.
+  const caps = validateCapabilitiesForMint({ namespaces: ["default"] }, OPERATION_NAMES);
+  assert.throws(
+    () => enforceNamespaceAllowList(caps, undefined, undefined),
+    EngramAccessForbiddenError,
+  );
 });
 
 // ===========================================================================

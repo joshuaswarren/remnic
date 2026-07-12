@@ -37,8 +37,8 @@ import { expandTildePath } from "./utils/path.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation, type OperationName } from "./access-boundary.js";
 import {
-  assertNamespaceAllowed,
   assertOperationAllowed,
+  enforceNamespaceAllowList,
   isCapabilityRestricted,
   tokenCapabilityStore,
   type TokenCapabilities,
@@ -669,26 +669,40 @@ export class EngramAccessHttpServer {
    *  should default to the server's global namespace, not silently scope to an adapter. */
   private resolveNamespace(_req: IncomingMessage, bodyNamespace?: string): string | undefined {
     const namespace = bodyNamespace || undefined;
-    // Per-token namespace enforcement (issue #1837): when the presenting
-    // token carries a namespaces allow-list, the EFFECTIVE namespace MUST be
-    // a member. The effective namespace is the explicit value when supplied,
-    // OR the server's default namespace when the client omits it — omitting
-    // `?namespace=` MUST NOT bypass the allow-list and silently reach the
-    // default tenant. Fail closed: an unlisted effective namespace (explicit
-    // OR defaulted) is rejected here, and every namespace-scoped route routes
-    // through this helper so none can dodge the check by dropping the param.
-    const caps = tokenCapabilityStore.getStore();
-    if (caps?.namespaces !== undefined) {
-      const effective = namespace ?? this.service.configRef?.defaultNamespace;
-      if (effective === undefined || !caps.namespaces.includes(effective)) {
-        throw new EngramAccessForbiddenError(
-          namespace === undefined
-            ? "token is scoped to specific namespaces; the server default namespace is not permitted — supply an allowed namespace"
-            : `token is not permitted to access namespace: ${namespace}`,
-        );
-      }
-    }
+    // Per-token namespace enforcement (issues #1837/#1850): every HTTP
+    // namespace-scoped route routes through this helper so none can dodge the
+    // allow-list by dropping the param. The check is delegated to the SINGLE
+    // chokepoint (`enforceNamespaceAllowList`) shared with the MCP dispatch
+    // and the id-loaded contradiction routes — one rule, every surface. The
+    // effective namespace (explicit OR server default) must be a member; fail
+    // closed. No-op for unrestricted tokens (no namespaces allow-list).
+    enforceNamespaceAllowList(
+      tokenCapabilityStore.getStore(),
+      namespace,
+      this.service.configRef?.defaultNamespace,
+    );
     return namespace;
+  }
+
+  /**
+   * Resolve + enforce the `namespace` field carried in a POST request body,
+   * returning a shallow-copied envelope with the gated namespace stamped on.
+   * Used by the coding/correction POST routes that pass `body` straight to
+   * `op.run`: the body `namespace` is a user-controlled field that MUST flow
+   * through the same effective-namespace allow-list gate as the query-param
+   * routes, otherwise a scoped bearer can scope its call to another tenant
+   * by setting `body.namespace` (issue #1850 finding 2). Throws 403 for a
+   * scoped token whose allow-list does not cover the effective namespace.
+   */
+  private gatedBodyNamespace(
+    req: IncomingMessage,
+    body: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const namespace = this.resolveNamespace(
+      req,
+      typeof body.namespace === "string" ? body.namespace : undefined,
+    );
+    return { ...body, namespace };
   }
 
   /**
@@ -1653,7 +1667,7 @@ export class EngramAccessHttpServer {
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: coding_decision");
       }
-      const output = (await op.run(body, {
+      const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
@@ -1677,7 +1691,7 @@ export class EngramAccessHttpServer {
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: coding_architecture");
       }
-      const output = (await op.run(body, {
+      const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
@@ -1699,7 +1713,7 @@ export class EngramAccessHttpServer {
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: coding_delta");
       }
-      const output = (await op.run(body, {
+      const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
@@ -1722,7 +1736,7 @@ export class EngramAccessHttpServer {
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: memory_correct_plan");
       }
-      const output = (await op.run(body, {
+      const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
@@ -1738,7 +1752,7 @@ export class EngramAccessHttpServer {
       if (!op) {
         throw new EngramAccessInputError("access-boundary: operation not registered: memory_correct_apply");
       }
-      const output = (await op.run(body, {
+      const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
       })) as { result: unknown };
@@ -2151,15 +2165,23 @@ export class EngramAccessHttpServer {
         this.respondJson(res, 404, { error: "pair_not_found" });
         return;
       }
-      // Per-token namespace enforcement (issue #1850 round 2): the pair is
-      // fetched BY ID, so its namespace comes from the record — NOT a query
-      // param that resolveNamespace() already gates. A namespace-scoped
+      // Per-token namespace enforcement (issues #1850 round 2 / round 4): the
+      // pair is fetched BY ID, so its namespace comes from the record — NOT a
+      // query param that resolveNamespace() already gates. A namespace-scoped
       // bearer that knows a pair id must not read contradiction data in a
       // namespace outside its allow-list. Fail closed (403) before the
       // principal-storage check so the token's declared scope is the
-      // outermost gate (assertNamespaceAllowed is a no-op for unrestricted
-      // tokens).
-      assertNamespaceAllowed(tokenCapabilityStore.getStore(), pair.namespace);
+      // outermost gate. Legacy pairs carry no namespace (undefined), which
+      // downstream storage maps to the server DEFAULT — route the record
+      // namespace through the SAME effective-namespace chokepoint
+      // (enforceNamespaceAllowList maps undefined → default) so a scoped token
+      // whose allow-list INCLUDES the default can read/resolve a legacy pair,
+      // while one that does NOT is still denied. No-op for unrestricted tokens.
+      enforceNamespaceAllowList(
+        tokenCapabilityStore.getStore(),
+        pair.namespace,
+        this.service.configRef?.defaultNamespace,
+      );
       try {
         await this.service.getReadableStorageForNamespace(pair.namespace, this.resolveRequestPrincipal(req));
       } catch {
@@ -2183,18 +2205,27 @@ export class EngramAccessHttpServer {
         this.respondJson(res, 400, { error: `Invalid verb: ${verb}. Must be one of: keep-a, keep-b, merge, both-valid, needs-more-context` });
         return;
       }
-      // Per-token namespace enforcement (issue #1850 round 2): the resolution
-      // target is selected BY pairId, so the affected namespace comes from the
-      // record — NOT a request param that resolveNamespace() already gates.
-      // A namespace-scoped bearer must not mutate a contradiction pair in a
-      // namespace outside its allow-list. Load the pair to learn its
-      // namespace, enforce the token's scope, and fail closed (403) BEFORE
-      // dispatching the (mutating) resolution. A missing pair falls through
-      // to executeResolution's existing not-found result. No-op for
-      // unrestricted tokens.
+      // Per-token namespace enforcement (issues #1850 round 2 / round 4): the
+      // resolution target is selected BY pairId, so the affected namespace
+      // comes from the record — NOT a request param that resolveNamespace()
+      // already gates. A namespace-scoped bearer must not mutate a
+      // contradiction pair in a namespace outside its allow-list. Load the
+      // pair to learn its namespace, enforce the token's scope, and fail
+      // closed (403) BEFORE dispatching the (mutating) resolution. Legacy
+      // pairs carry no namespace (undefined), which downstream storage maps to
+      // the server DEFAULT — use the SAME effective-namespace chokepoint
+      // (enforceNamespaceAllowList maps undefined → default) as the detail
+      // route so a scoped token whose allow-list INCLUDES the default can
+      // resolve a legacy pair. A missing pair falls through to
+      // executeResolution's existing not-found result. No-op for unrestricted
+      // tokens.
       const targetPair = readPair(this.service.memoryDir, pairId);
       if (targetPair) {
-        assertNamespaceAllowed(tokenCapabilityStore.getStore(), targetPair.namespace);
+        enforceNamespaceAllowList(
+          tokenCapabilityStore.getStore(),
+          targetPair.namespace,
+          this.service.configRef?.defaultNamespace,
+        );
       }
       const principal = this.resolveRequestPrincipal(req);
       const result = await executeResolution(this.service.memoryDir, this.service.storageRef, pairId, verb, {
@@ -2994,6 +3025,29 @@ export class EngramAccessHttpServer {
     })();
     const mcpCorrelationId = correlationIdStore.getStore() ?? randomUUID();
     const requestIdentity = this.resolveRequestIdentity(req);
+    // Per-token namespace enforcement on the MCP dispatch path (issue #1850
+    // finding 1): MCP `tools/call` previously never applied the namespace
+    // allow-list, so a namespace-scoped bearer could reach another tenant via
+    // tool args or the adapter `namespaceOverride`. Run the SAME effective-
+    // namespace chokepoint the REST surface runs. The effective namespace is
+    // the explicit tool arg, else the adapter override, else the server
+    // default (op.run with no namespace reaches the default tenant). Only
+    // namespace-scoped tools are gated — namespace-agnostic tools (peer/
+    // wearables) stay ungated, matching the REST surface. Fail closed (403)
+    // BEFORE op.run; no-op for unrestricted tokens.
+    if (request.method === "tools/call" && this.mcpServer.toolAcceptsNamespace(toolName)) {
+      const mcpExplicitNamespace =
+        toolArgs !== null && typeof toolArgs === "object" && !Array.isArray(toolArgs)
+          && typeof (toolArgs as Record<string, unknown>).namespace === "string"
+          && ((toolArgs as Record<string, unknown>).namespace as string).length > 0
+          ? ((toolArgs as Record<string, unknown>).namespace as string)
+          : undefined;
+      enforceNamespaceAllowList(
+        tokenCapabilityStore.getStore(),
+        mcpExplicitNamespace ?? requestIdentity.namespace,
+        this.service.configRef?.defaultNamespace,
+      );
+    }
     const response = await this.mcpServer.handleRequest(request, {
       principalOverride: requestIdentity.principal,
       namespaceOverride: requestIdentity.namespace,
