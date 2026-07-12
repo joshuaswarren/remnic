@@ -22,6 +22,7 @@
  */
 
 import { resolveSpeaker, type SpeakerRegistry } from "../speakers.js";
+import { maxSegmentExtent } from "./cluster.js";
 import type { WearableConversation } from "../types.js";
 import type {
   FusionConversationInput,
@@ -210,7 +211,15 @@ export function fuseCluster(
     }
   }
 
-  // Earliest start / latest end across the cluster.
+  // Earliest start / latest end across the cluster. The fused END considers
+  // BOTH every conversation's explicit endIso AND every segment's own extent
+  // (endIso ?? startIso) across ALL members: a stored transcript whose
+  // heading end renders as "--:--" rebuilds segments with only a start, so
+  // its later segment starts must still extend the fused window — otherwise
+  // a source with an explicit SHORT end would clip the fused conversation
+  // before the missing-end source's last utterance (issue #1849). Segment
+  // extents use the SAME `maxSegmentExtent` primitive as the cluster
+  // interval, so there is one coherent end derivation in the pipeline.
   let startMs = Number.POSITIVE_INFINITY;
   let endMs = Number.NEGATIVE_INFINITY;
   let startIso: string | undefined;
@@ -228,6 +237,22 @@ export function fuseCluster(
         endIso = conv.endIso;
       }
     }
+  }
+  // Fall back to / extend with the latest segment extent across ALL members
+  // so a missing-end ("--:--") source's later segment starts are not lost.
+  const segmentExtent = maxSegmentExtent(
+    cluster.flatMap((conv) => conv.segments),
+  );
+  if (segmentExtent !== undefined && segmentExtent.ms > endMs) {
+    endMs = segmentExtent.ms;
+    endIso = segmentExtent.iso;
+  }
+  // Clamp the fused window end to >= start so it is always valid, mirroring
+  // cluster.ts. A malformed explicit/derived end preceding the cluster start
+  // would otherwise yield a negative-length window.
+  if (endIso !== undefined && Number.isFinite(startMs) && endMs < startMs) {
+    endIso = startIso;
+    endMs = startMs;
   }
   if (startIso === undefined) {
     // No parseable start in the cluster — fall back to the first conv's

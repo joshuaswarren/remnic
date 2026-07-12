@@ -21,6 +21,42 @@ interface Interval {
   end: number;
 }
 
+/** The latest extent of a set of segments as an epoch-ms value + its ISO.
+ * Each segment contributes its OWN extent — its `endIso` when known,
+ * otherwise its `startIso` — and the result is the maximum. Reconstructed
+ * `--:--` transcripts rebuild segments with only a start, so this reaches
+ * the last segment start; segment ISOs are already cross-midnight-rolled by
+ * the reconstruct layer, so the derived end is consistent with the segment
+ * timeline. Returns undefined when no segment carries a parseable extent.
+ *
+ * This is the SINGLE shared primitive behind every end/interval derivation
+ * in the fusion pipeline (cluster interval, fused conversation end): when a
+ * conversation-level end is missing, the window falls back to the latest
+ * segment extent instead of collapsing to a zero-length point at the start.
+ */
+export interface SegmentExtent {
+  /** Epoch ms of the latest extent. */
+  ms: number;
+  /** ISO string that produced `ms` (a segment endIso, else its startIso). */
+  iso: string;
+}
+
+export function maxSegmentExtent(
+  segments: readonly { endIso?: string; startIso?: string }[],
+): SegmentExtent | undefined {
+  let best: SegmentExtent | undefined;
+  for (const seg of segments) {
+    const iso = seg.endIso ?? seg.startIso;
+    if (iso === undefined) continue;
+    const ms = Date.parse(iso);
+    if (!Number.isFinite(ms)) continue;
+    if (best === undefined || ms > best.ms) {
+      best = { ms, iso };
+    }
+  }
+  return best;
+}
+
 /**
  * Resolve a conversation's effective [start, end] window in epoch ms.
  *
@@ -46,25 +82,14 @@ function effectiveInterval(conversation: FusionConversationInput): Interval {
   const start = Date.parse(conversation.startIso);
   const endRaw =
     conversation.endIso !== undefined ? Date.parse(conversation.endIso) : NaN;
-  let end: number;
-  if (Number.isFinite(endRaw)) {
-    end = endRaw as number;
-  } else {
-    // No conversation-level end: derive the window from each segment's own
-    // extent (its end when known, otherwise its start). The latest extent
-    // spans the actual segments; falling back only to `start` would produce a
-    // zero/negative-length window that drops or mis-clusters the conversation.
-    let maxExtent = NaN;
-    for (const segment of conversation.segments) {
-      const iso = segment.endIso ?? segment.startIso;
-      if (iso === undefined) continue;
-      const ms = Date.parse(iso);
-      if (Number.isFinite(ms) && (Number.isNaN(maxExtent) || ms > maxExtent)) {
-        maxExtent = ms;
-      }
-    }
-    end = Number.isFinite(maxExtent) ? (maxExtent as number) : start;
-  }
+  // No conversation-level end ("--:--"): derive the window from the latest
+  // SEGMENT extent via the shared primitive, so every end/interval derivation
+  // in the pipeline uses ONE coherent implementation. Falling back only to
+  // `start` would produce a zero/negative-length window that drops or
+  // mis-clusters the conversation (issue #1810).
+  const end = Number.isFinite(endRaw)
+    ? (endRaw as number)
+    : (maxSegmentExtent(conversation.segments)?.ms ?? start);
   // Clamp universally so the window is always non-negative. An explicit
   // conversation end that precedes the start (malformed/cross-day input)
   // would otherwise yield a negative-length window that shrinks the merge

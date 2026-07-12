@@ -1610,6 +1610,147 @@ test("derived interval is clamped to end >= start for a missing-end conversation
   assert.equal(clusters[0]!.length, 1);
 });
 
+test("fused conversation end spans a missing-end source's later segments, not the short explicit end (issue #1849)", () => {
+  // Source A (bee) carries an explicit SHORT end (09:05); source B
+  // (limitless) is a stored transcript whose heading end renders as
+  // "--:--" (no endIso) with later utterances — its last segment starts at
+  // 09:30. Reconstructed segments carry only a startIso, so a fused end
+  // derived from conversation-level ends ALONE would stop at A's 09:05,
+  // clipping the conversation before B's later segments. The fused end must
+  // span B's last segment start (issue #1849: segment-extent derivation).
+  const bBody = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 09:00–--:-- · Sync (conversation c1)",
+    "",
+    "**Me (you)** [09:00]: Plan A.",
+    "**Jane** [09:30]: Later topic.",
+    "",
+  ].join("\n");
+  const bInputs = reconstructFusionInputs(DATE, [{ source: "limitless", body: bBody }]);
+  assert.equal(bInputs.length, 1);
+  assert.equal(bInputs[0]!.endIso, undefined, "B has no heading end");
+  const a: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    endIso: "2026-06-10T09:05:00.000Z",
+    segments: [
+      { speaker: "Me (you)", isSelf: true, text: "Plan A.", startIso: "2026-06-10T09:00:00.000Z" },
+    ],
+  };
+  const fused = fuseDay(DATE, [...bInputs, a]);
+  assert.equal(fused.conversations.length, 1, "A + B cluster into one conversation");
+  // B's "Later topic." (09:30) is B-only and must survive as a segment.
+  assert.ok(
+    fused.conversations[0]!.segments.some((s) => s.text === "Later topic."),
+    "B's later segment is preserved",
+  );
+  assert.equal(
+    fused.conversations[0]!.endIso,
+    "2026-06-10T09:30:00.000Z",
+    "fused end spans B's last segment start, not A's short explicit end",
+  );
+});
+
+test("fused conversation end keeps the latest explicit conversation end when no missing-end source extends past it (issue #1849)", () => {
+  // No over-extension: when every source carries an explicit conversation
+  // end and all segments sit within those ends, the segment-extent fallback
+  // must NOT override the latest explicit conversation end. Here A ends at
+  // 09:40 and B at 09:35; segment ends are far earlier (09:00:30 / 09:05:30),
+  // so the fused end stays 09:40.
+  const a: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    endIso: "2026-06-10T09:40:00.000Z",
+    segments: [
+      {
+        speaker: "Me (you)",
+        isSelf: true,
+        text: "Hello.",
+        startIso: "2026-06-10T09:00:00.000Z",
+        endIso: "2026-06-10T09:00:30.000Z",
+      },
+    ],
+  };
+  const b: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:05:00.000Z",
+    endIso: "2026-06-10T09:35:00.000Z",
+    segments: [
+      {
+        speaker: "Jane",
+        isSelf: false,
+        text: "Hi back.",
+        startIso: "2026-06-10T09:05:00.000Z",
+        endIso: "2026-06-10T09:05:30.000Z",
+      },
+    ],
+  };
+  const fused = fuseDay(DATE, [a, b]);
+  assert.equal(fused.conversations.length, 1);
+  assert.equal(
+    fused.conversations[0]!.endIso,
+    "2026-06-10T09:40:00.000Z",
+    "latest explicit conversation end wins; segment extents do not shrink it",
+  );
+});
+
+test("fused conversation end is clamped to >= start when a missing-end source's segments precede the start (issue #1849)", () => {
+  // Mirrors the cluster interval clamp (cluster.ts): a missing-end
+  // conversation whose only segment parses BEFORE the conversation start
+  // must still yield a fused end >= start — never a negative-length window.
+  const anomalous: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    segments: [
+      { speaker: "Jane", isSelf: false, text: "Early.", startIso: "2026-06-10T08:30:00.000Z" },
+    ],
+  };
+  const fused = fuseDay(DATE, [anomalous]);
+  assert.equal(fused.conversations.length, 1);
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.endIso, "2026-06-10T09:00:00.000Z", "end clamped to the cluster start");
+  assert.ok(Date.parse(conv.endIso!) >= Date.parse(conv.startIso!));
+});
+
+test("fused conversation end spans rolled cross-midnight segments of a missing-end source (issue #1849)", () => {
+  // A missing-end ("--:--") conversation whose segments wrap past midnight
+  // are rolled to the next calendar day by reconstruct. The fused end must
+  // reach the rolled last segment (2026-06-11T00:05), not a short explicit
+  // end from a corroborating source (bee ends at 00:00).
+  const bBody = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 23:55–--:-- · Late call (conversation c1)",
+    "",
+    "**Me (you)** [23:58]: Still talking.",
+    "**Jane** [00:05]: After midnight.",
+    "",
+  ].join("\n");
+  const bInputs = reconstructFusionInputs(DATE, [{ source: "limitless", body: bBody }]);
+  assert.equal(bInputs[0]!.endIso, undefined);
+  const a: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T23:55:00.000Z",
+    endIso: "2026-06-11T00:00:00.000Z",
+    segments: [
+      { speaker: "Me (you)", isSelf: true, text: "Still talking.", startIso: "2026-06-10T23:58:00.000Z" },
+    ],
+  };
+  const fused = fuseDay(DATE, [...bInputs, a]);
+  assert.equal(fused.conversations.length, 1);
+  assert.equal(
+    fused.conversations[0]!.endIso,
+    "2026-06-11T00:05:00.000Z",
+    "fused end spans B's rolled post-midnight segment start",
+  );
+});
+
 /** True when every timestamped segment precedes any later-timestamped one
  * and untimestamped segments trail (non-decreasing startIso). The fused
  * output must always satisfy this — the group-anchor emission + defensive
