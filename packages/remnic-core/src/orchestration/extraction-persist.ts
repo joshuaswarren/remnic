@@ -2120,6 +2120,7 @@ export class ExtractionPersistCoordinator {
                   // the verified span (chatgpt-codex-connector thread Ocvmo).
                   ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
                   ...(fact.provenance ? { provenance: fact.provenance } : {}),
+                  ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
                 },
               );
             }

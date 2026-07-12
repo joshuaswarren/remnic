@@ -350,3 +350,150 @@ test("runExtraction: mixed tagged+untagged turns → persistExtraction receives 
     await rm(baseDir, { recursive: true, force: true });
   }
 });
+
+test("runExtraction: context-only turns without sourceConnector do not affect attribution", async () => {
+  // QMnY3: deriveSourceConnector was called on the full turns array including
+  // extractionContextOnly turns. Context-only turns without sourceConnector
+  // caused deriveSourceConnector to return undefined (mixed tagged+untagged)
+  // even when every contributing turn shared one connector.
+  StorageManager.clearAllStaticCaches();
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-ctx-"));
+  try {
+    const storage = new StorageManager(baseDir);
+    await storage.ensureDirectories();
+    const config = makeMinimalConfig();
+    const buffer = new SmartBuffer(config, storage);
+    await buffer.load();
+
+    let capturedConnector: string | undefined = "SENTINEL";
+    const coordinator = new ExtractionRunCoordinator({
+      config,
+      getBuffer: () => buffer,
+      getExtraction: () => ({
+        extract: async (..._args: Parameters<ExtractionEngine["extract"]>): Promise<ExtractionResult> => ({
+          facts: [{ content: "test fact", category: "fact", confidence: 0.8, tags: [] }],
+          entities: [],
+          questions: [],
+          profileUpdates: [],
+        }),
+      }),
+      getStorageRouter: () => ({
+        storageFor: async () => storage,
+      }),
+      getThreading: () => ({
+        processTurn: async (..._args: Parameters<ThreadingManager["processTurn"]>) => "thread-1",
+        updateThreadTitle: async (..._args: Parameters<ThreadingManager["updateThreadTitle"]>) => {},
+      }),
+      persistExtraction: async (
+        _result: ExtractionResult,
+        _storage: StorageManager,
+        _threadId?: string | null,
+        sourceContext?: {
+          sessionKey?: string;
+          principal?: string;
+          validAt?: string;
+          sourceConnector?: string;
+        }
+      ): Promise<string[]> => {
+        capturedConnector = sourceContext?.sourceConnector;
+        return ["fact-1"];
+      },
+      maybeCapturePassiveCorrections: async () => {},
+      resolveSelfNamespace: () => "default",
+      getCodingContextForSession: () => null,
+      applyCodingNamespaceOverlay: (_sk: string, ns: string) => ns,
+      boxBuilderFor: () => {
+        throw new Error("unexpected boxBuilderFor");
+      },
+      appendPersistedThreadEpisodes: async () => {},
+      maybeScheduleConsolidation: () => {},
+      requestQmdMaintenance: () => {},
+      runTierMigrationCycle: async () => {
+        throw new Error("unexpected runTierMigrationCycle");
+      },
+      getLastPersistExtractionDeferredCount: () => 0,
+      recordProcessedExtractionFingerprint: async () => {},
+    });
+
+    // Two real turns with the same connector, plus one context-only turn
+    // without sourceConnector. Before the fix, deriveSourceConnector saw
+    // the context-only turn as "untagged" and returned undefined.
+    await coordinator.runExtraction(
+      [
+        makeTurn({ content: "hello from chatgpt", sourceConnector: "chatgpt" }),
+        makeTurn({ role: "assistant", content: "response", sourceConnector: "chatgpt" }),
+        makeTurn({
+          content: "context-only background",
+          extractionContextOnly: true,
+        }),
+      ],
+      { skipCharThreshold: true, skipUserTurnThreshold: true }
+    );
+    assert.equal(
+      capturedConnector,
+      "chatgpt",
+      "context-only turns must not cause sourceConnector to be undefined when all contributing turns share a connector"
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("StorageManager.writeChunk: sourceConnector preserved on chunk memories", async () => {
+  // QMo7g: chunked writes must carry sourceConnector so independently
+  // surfaced chunks preserve provenance.
+  StorageManager.clearAllStaticCaches();
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-chunk-"));
+  try {
+    const storage = new StorageManager(baseDir);
+    await storage.ensureDirectories();
+
+    const parentId = "test-parent-1";
+    const chunkId = await storage.writeChunk(parentId, 0, 2, "fact", "First chunk of a large fact", {
+      confidence: 0.8,
+      tags: ["chunked"],
+      source: "chunking",
+      sourceConnector: "chatgpt",
+    });
+
+    const chunk = await storage.getMemoryById(chunkId);
+    if (!chunk) assert.fail("chunk memory must exist");
+    assert.equal(
+      chunk.frontmatter.sourceConnector,
+      "chatgpt",
+      "chunk memory must preserve sourceConnector from write options"
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("StorageManager.writeMemory: sourceConnector preserved for inline capture path", async () => {
+  // QMo7i: OpenClaw inline captures call persistExplicitCapture /
+  // queueExplicitCaptureForReview, which both call writeMemory.
+  // This test verifies writeMemory accepts and preserves sourceConnector
+  // when called with the "openclaw" connector (as the inline capture path does).
+  StorageManager.clearAllStaticCaches();
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-inline-"));
+  try {
+    const storage = new StorageManager(baseDir);
+    await storage.ensureDirectories();
+
+    const { id } = await storage.writeMemory("fact", "inline captured note", {
+      sourceConnector: "openclaw",
+    });
+
+    const memory = await storage.getMemoryById(id);
+    if (!memory) assert.fail("memory must exist");
+    assert.equal(
+      memory.frontmatter.sourceConnector,
+      "openclaw",
+      "inline-captured memory must preserve sourceConnector='openclaw'"
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});

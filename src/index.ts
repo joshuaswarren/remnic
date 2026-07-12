@@ -2148,7 +2148,7 @@ const pluginDefinition = {
         try {
           await persistExplicitCapture(
             orchestrator,
-            validateExplicitCaptureInput(note),
+            { ...validateExplicitCaptureInput(note), sourceConnector: "openclaw" },
             "inline",
           );
           orchestrator.requestQmdMaintenanceForTool("inline.memory_note");
@@ -2160,7 +2160,7 @@ const pluginDefinition = {
           try {
             const queued = await queueExplicitCaptureForReview(
               orchestrator,
-              note,
+              { ...note, sourceConnector: "openclaw" },
               "inline",
               error,
             );

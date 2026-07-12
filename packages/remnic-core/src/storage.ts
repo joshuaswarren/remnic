@@ -1,15 +1,25 @@
-import { access, lstat, readdir, readFile, realpath, stat, writeFile, mkdir, unlink, rename, appendFile, open } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  readdir,
+  readFile,
+  realpath,
+  stat,
+  writeFile,
+  mkdir,
+  unlink,
+  rename,
+  appendFile,
+  open,
+} from "node:fs/promises";
 import { appendFileSync, createReadStream, mkdirSync, readFileSync, statSync, type Dirent } from "node:fs";
-import { createHash } from "node:crypto"
-import { normalizeContent, computeContentHash } from "./content-hash.js";;
+import { createHash } from "node:crypto";
+import { normalizeContent, computeContentHash } from "./content-hash.js";
 import path from "node:path";
 import { log } from "./logger.js";
 import { assertMemoryFrontmatterId, warnProjectionFallback } from "./storage-guards.js";
 import { MemoryReadStore } from "./storage/memory-read-store.js";
-import {
-  readMaybeEncryptedLines,
-  readMemoryActionEventRowsFromLines,
-} from "./storage/secure-line-reader.js";
+import { readMaybeEncryptedLines, readMemoryActionEventRowsFromLines } from "./storage/secure-line-reader.js";
 import { selfDeps } from "./orchestration/self-deps.js";
 import { EntityStore } from "./storage/entity-store.js";
 import { IdentityContinuityStore } from "./storage/identity-continuity-store.js";
@@ -20,7 +30,12 @@ import { decodeYamlScalar } from "./utils/yaml-scalar.js";
 import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
-import { serializeProvenanceFields, parseProvenanceSources, parseProvenanceTag, reconcileProvenanceRead } from "./provenance.js";
+import {
+  serializeProvenanceFields,
+  parseProvenanceSources,
+  parseProvenanceTag,
+  reconcileProvenanceRead,
+} from "./provenance.js";
 import { serializeFaithfulnessFields, parseFaithfulnessField } from "./extraction-faithfulness.js";
 import { createVersion as createPageVersion, type VersioningConfig, type VersionTrigger } from "./page-versioning.js";
 import { isValidTranscriptDate, WEARABLES_DIR_NAME } from "./wearables/day-store.js";
@@ -105,11 +120,13 @@ import type {
 import { confidenceTier, SPECULATIVE_TTL_DAYS } from "./types.js";
 import {
   type ProjectedMemoryBrowseOptions,
-  type ProjectedMemoryBrowsePage, markProjectedMemoryPathInvalid,
+  type ProjectedMemoryBrowsePage,
+  markProjectedMemoryPathInvalid,
   readProjectedMemoryState,
   readProjectedMemoryBrowse,
   readProjectedGovernanceRecord,
-  readProjectedMemoryTimeline, updateProjectedMemoryPath,
+  readProjectedMemoryTimeline,
+  updateProjectedMemoryPath,
 } from "./memory-projection-store.js";
 import {
   inferMemoryStatus,
@@ -117,10 +134,7 @@ import {
   sortMemoryLifecycleEvents,
   toMemoryPathRel,
 } from "./memory-lifecycle-ledger-utils.js";
-import {
-  normalizeProjectionPreview,
-  normalizeProjectionTags,
-} from "./memory-projection-format.js";
+import { normalizeProjectionPreview, normalizeProjectionTags } from "./memory-projection-format.js";
 import { parseFlexibleIsoTimestamp } from "./utils/iso-timestamp.js";
 // stripCitation import removed: legacy rebuild fallback was replaced by a
 // skip-with-warning strategy (Finding 1 — Uhol).  See ensureFactHashIndexAuthoritative.
@@ -208,10 +222,7 @@ function assertMemoryWorthCounter(field: "mw_success" | "mw_fail", value: number
   }
 }
 
-function normalizeMemoryWriteTimestamp(
-  field: string,
-  value: string | undefined,
-): string | undefined {
+function normalizeMemoryWriteTimestamp(field: string, value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string") {
     throw new Error(`${field} must be an ISO timestamp string, got ${String(value)}`);
@@ -310,7 +321,6 @@ function stripCitationMarkersForHashRemoval(value: string, template: string): st
   return removed ? trimLeadingSpacesAndTabs(result) : value;
 }
 
-
 function serializeFrontmatter(fm: MemoryFrontmatter): string {
   assertMemoryFrontmatterId(fm);
   const lines = [
@@ -363,7 +373,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
   if (fm.eventTimeSource) {
     if (fm.eventTimeSource !== "extracted" && fm.eventTimeSource !== "assumed") {
       throw new Error(
-        `serializeFrontmatter: invalid eventTimeSource ${JSON.stringify(fm.eventTimeSource)} — expected "extracted" | "assumed"`,
+        `serializeFrontmatter: invalid eventTimeSource ${JSON.stringify(fm.eventTimeSource)} — expected "extracted" | "assumed"`
       );
     }
     lines.push(`eventTimeSource: ${fm.eventTimeSource}`);
@@ -402,7 +412,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
       lines.push(
         `importanceReasons: [${fm.importance.reasons
           .map((r) => `"${r.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
-          .join(", ")}]`,
+          .join(", ")}]`
       );
     }
     if (fm.importance.keywords.length > 0) {
@@ -444,29 +454,25 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
   // permissive; only writes go through the validator.
   if (fm.derived_from !== undefined) {
     if (!Array.isArray(fm.derived_from)) {
-      throw new Error(
-        `serializeFrontmatter: derived_from must be an array of "<path>:<version>" strings`,
-      );
+      throw new Error(`serializeFrontmatter: derived_from must be an array of "<path>:<version>" strings`);
     }
     for (const entry of fm.derived_from) {
       if (!isValidDerivedFromEntry(entry)) {
         throw new Error(
-          `serializeFrontmatter: invalid derived_from entry ${JSON.stringify(entry)} — expected "<path>:<version>" with version >= 0`,
+          `serializeFrontmatter: invalid derived_from entry ${JSON.stringify(entry)} — expected "<path>:<version>" with version >= 0`
         );
       }
     }
     if (fm.derived_from.length > 0) {
       lines.push(
-        `derived_from: [${fm.derived_from
-          .map((e) => `"${e.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
-          .join(", ")}]`,
+        `derived_from: [${fm.derived_from.map((e) => `"${e.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ")}]`
       );
     }
   }
   if (fm.derived_via !== undefined) {
     if (!isConsolidationOperator(fm.derived_via)) {
       throw new Error(
-        `serializeFrontmatter: invalid derived_via ${JSON.stringify(fm.derived_via)} — expected one of "split" | "merge" | "update" | "pattern-reinforcement"`,
+        `serializeFrontmatter: invalid derived_via ${JSON.stringify(fm.derived_via)} — expected one of "split" | "merge" | "update" | "pattern-reinforcement"`
       );
     }
     lines.push(`derived_via: ${fm.derived_via}`);
@@ -475,12 +481,9 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
   // present so memories never touched by reinforcement round-trip
   // unchanged; matches the `archivedAt` / `forgottenAt` precedent.
   if (fm.reinforcement_count !== undefined) {
-    if (
-      !Number.isInteger(fm.reinforcement_count) ||
-      fm.reinforcement_count <= 0
-    ) {
+    if (!Number.isInteger(fm.reinforcement_count) || fm.reinforcement_count <= 0) {
       throw new Error(
-        `serializeFrontmatter: reinforcement_count must be a positive integer (got ${JSON.stringify(fm.reinforcement_count)})`,
+        `serializeFrontmatter: reinforcement_count must be a positive integer (got ${JSON.stringify(fm.reinforcement_count)})`
       );
     }
     lines.push(`reinforcement_count: ${fm.reinforcement_count}`);
@@ -577,9 +580,7 @@ function parseReinforcementCountField(raw: string | undefined): number | undefin
   return n;
 }
 
-export function parseFrontmatter(
-  raw: string,
-): { frontmatter: MemoryFrontmatter; content: string } | null {
+export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter; content: string } | null {
   const match = raw.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!match) return null;
 
@@ -618,10 +619,7 @@ export function parseFrontmatter(
         //   single-quoted: `''` → `'` (YAML's native escape)
         let item = m[2].trim();
         if (item.startsWith('"') && item.endsWith('"') && item.length >= 2) {
-          item = item
-            .slice(1, -1)
-            .replace(/\\"/g, '"')
-            .replace(/\\\\/g, "\\");
+          item = item.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, "\\");
         } else if (item.startsWith("'") && item.endsWith("'") && item.length >= 2) {
           item = item.slice(1, -1).replace(/''/g, "'");
         }
@@ -629,9 +627,7 @@ export function parseFrontmatter(
         j++;
       }
       if (items.length > 0) {
-        const inline = items
-          .map((v) => `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`)
-          .join(", ");
+        const inline = items.map((v) => `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`).join(", ");
         lines.push(`${line.slice(0, colonIdx + 1)} [${inline}]`);
         i = j;
         continue;
@@ -869,9 +865,7 @@ export function parseFrontmatter(
       // Issue #1578 — bi-temporal ingestion provenance round-trip.
       observedAt: fm.observedAt || undefined,
       eventTimeSource:
-        fm.eventTimeSource === "extracted" || fm.eventTimeSource === "assumed"
-          ? fm.eventTimeSource
-          : undefined,
+        fm.eventTimeSource === "extracted" || fm.eventTimeSource === "assumed" ? fm.eventTimeSource : undefined,
       forgottenAt: fm.forgottenAt || undefined,
       forgottenReason: parseFrontmatterStringValue(fm.forgottenReason),
       lifecycleState: (fm.lifecycleState as LifecycleState) || undefined,
@@ -924,7 +918,7 @@ export function parseFrontmatter(
   if (fmBlock.includes("links:")) {
     const links: MemoryLink[] = [];
     const linkMatches = fmBlock.matchAll(
-      /- targetId: (\S+)\s+linkType: (\S+)\s+strength: ([\d.]+)(?:\s+reason: "((?:\\.|[^"\\])*)")?/g,
+      /- targetId: (\S+)\s+linkType: (\S+)\s+strength: ([\d.]+)(?:\s+reason: "((?:\\.|[^"\\])*)")?/g
     );
     for (const match of linkMatches) {
       links.push({
@@ -943,19 +937,14 @@ export function parseFrontmatter(
 }
 
 function inferEntityTypeFromContent(content: string): string | undefined {
-  const typeMatch = content.match(/^\*\*Type:\*\*\s*([^\n]+)/m)?.[1]?.trim().toLowerCase();
+  const typeMatch = content
+    .match(/^\*\*Type:\*\*\s*([^\n]+)/m)?.[1]
+    ?.trim()
+    .toLowerCase();
   return typeMatch || undefined;
 }
 
-const KNOWN_ENTITY_FILENAME_PREFIXES = new Set([
-  "company",
-  "other",
-  "person",
-  "place",
-  "project",
-  "tool",
-  "topic",
-]);
+const KNOWN_ENTITY_FILENAME_PREFIXES = new Set(["company", "other", "person", "place", "project", "tool", "topic"]);
 
 function inferEntityTypeFromFilename(pathRel: string): string | undefined {
   const basename = path.basename(pathRel, ".md").toLowerCase();
@@ -965,19 +954,28 @@ function inferEntityTypeFromFilename(pathRel: string): string | undefined {
   return KNOWN_ENTITY_FILENAME_PREFIXES.has(candidate) ? candidate : undefined;
 }
 
-export function normalizeFrontmatterForPath(frontmatter: MemoryFrontmatter, pathRel: string, content: string = ""): MemoryFrontmatter {
+export function normalizeFrontmatterForPath(
+  frontmatter: MemoryFrontmatter,
+  pathRel: string,
+  content: string = ""
+): MemoryFrontmatter {
   const normalizedPath = pathRel.split(path.sep).join("/");
   let normalizedFrontmatter = frontmatter;
 
-  if (normalizedPath === "entities" || normalizedPath.startsWith("entities/") || normalizedPath.includes("/entities/")) {
+  if (
+    normalizedPath === "entities" ||
+    normalizedPath.startsWith("entities/") ||
+    normalizedPath.includes("/entities/")
+  ) {
     const basename = path.basename(pathRel, ".md");
     const inferredType = inferEntityTypeFromContent(content) || inferEntityTypeFromFilename(pathRel) || "entity";
     const existingTags = Array.isArray(frontmatter.tags) ? frontmatter.tags : [];
     normalizedFrontmatter = {
       ...normalizedFrontmatter,
-      id: typeof normalizedFrontmatter.id === "string" && normalizedFrontmatter.id.trim().length > 0
-        ? normalizedFrontmatter.id
-        : basename,
+      id:
+        typeof normalizedFrontmatter.id === "string" && normalizedFrontmatter.id.trim().length > 0
+          ? normalizedFrontmatter.id
+          : basename,
       category: "entity",
       tags: existingTags.includes(inferredType) ? existingTags : [...existingTags, inferredType],
     };
@@ -996,7 +994,7 @@ export function normalizeFrontmatterForPath(frontmatter: MemoryFrontmatter, path
 function inferCurrentStateStatus(
   frontmatter: MemoryFrontmatter,
   pathRel: string,
-  fallbackStatus: MemoryStatus,
+  fallbackStatus: MemoryStatus
 ): MemoryStatus {
   return inferMemoryStatus(frontmatter, pathRel, fallbackStatus);
 }
@@ -1018,11 +1016,7 @@ const BUILTIN_ALIASES: Record<string, string> = {
  * store, or pass `storageManager.entityAliases` explicitly. Without an
  * aliases argument only the built-in structural aliases apply.
  */
-export function normalizeEntityName(
-  raw: string,
-  type: string,
-  aliases?: Readonly<Record<string, string>>,
-): string {
+export function normalizeEntityName(raw: string, type: string, aliases?: Readonly<Record<string, string>>): string {
   // Strip type prefix if present (e.g. name="person-jane-doe", type="person")
   const rawStr = typeof raw === "string" ? raw : "";
   const typeStr = typeof type === "string" && type.trim().length > 0 ? type : "entity";
@@ -1042,8 +1036,7 @@ export function normalizeEntityName(
   // Check caller-provided user aliases first, then built-in. Own-property and
   // string guards keep inherited object keys (e.g. an entity literally named
   // "constructor") and malformed alias values from corrupting canonical ids.
-  const userAlias =
-    aliases !== undefined && Object.hasOwn(aliases, normalized) ? aliases[normalized] : undefined;
+  const userAlias = aliases !== undefined && Object.hasOwn(aliases, normalized) ? aliases[normalized] : undefined;
   if (typeof userAlias === "string" && userAlias.length > 0) {
     normalized = userAlias;
   } else if (Object.hasOwn(BUILTIN_ALIASES, normalized)) {
@@ -1068,9 +1061,7 @@ function levenshtein(a: string, b: string): number {
 
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1]
-        ? dp[i - 1][j - 1]
-        : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
+      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]);
     }
   }
   return dp[m][n];
@@ -1099,7 +1090,7 @@ export class ContentHashIndex {
     stateDir: string,
     secureStoreKeyProvider: () => Buffer | null = () => null,
     secureStoreWriteKeyProvider: () => Buffer | null = secureStoreKeyProvider,
-    memoryDir: string = path.dirname(stateDir),
+    memoryDir: string = path.dirname(stateDir)
   ) {
     this.filePath = path.join(stateDir, "fact-hashes.txt");
     this.secureStoreKeyProvider = secureStoreKeyProvider;
@@ -1160,7 +1151,7 @@ export class ContentHashIndex {
       [...this.hashes].join("\n") + "\n",
       this.secureStoreWriteKeyProvider(),
       {},
-      this.memoryDir,
+      this.memoryDir
     );
     this.dirty = false;
     log.debug(`content-hash index: saved ${this.hashes.size} hashes`);
@@ -1254,9 +1245,7 @@ export function normalizeAttributePairs(pairs: Record<string, string>): string {
 // Entity file parsing / serialization (Knowledge Graph v7.0)
 // ---------------------------------------------------------------------------
 
-function parseEntityFrontmatter(
-  raw: string,
-): {
+function parseEntityFrontmatter(raw: string): {
   frontmatter: {
     created?: string;
     updated?: string;
@@ -1313,7 +1302,9 @@ function parseEntityFrontmatter(
       updated: values.updated || undefined,
       synthesisUpdatedAt: values.synthesis_updated_at || undefined,
       synthesisTimelineCount: Number.isFinite(synthesisTimelineCount) ? synthesisTimelineCount : undefined,
-      synthesisStructuredFactCount: Number.isFinite(synthesisStructuredFactCount) ? synthesisStructuredFactCount : undefined,
+      synthesisStructuredFactCount: Number.isFinite(synthesisStructuredFactCount)
+        ? synthesisStructuredFactCount
+        : undefined,
       synthesisStructuredFactDigest: values.synthesis_structured_fact_digest || undefined,
       synthesisVersion: Number.isFinite(synthesisVersion) ? synthesisVersion : undefined,
       extraLines,
@@ -1358,7 +1349,7 @@ function readEntitySectionText(
   options: {
     preserveBullets?: boolean;
     skipTimelineBullets?: boolean;
-  } = {},
+  } = {}
 ): string | undefined {
   const normalizedSections = new Set(sectionNames.map((name) => name.toLowerCase()));
   let section = "";
@@ -1379,9 +1370,9 @@ function readEntitySectionText(
       continue;
     }
     if (
-      options.skipTimelineBullets === true
-      && trimmed.startsWith("- ")
-      && isEntitySynthesisTimelinePromotionBullet(trimmed.slice(2))
+      options.skipTimelineBullets === true &&
+      trimmed.startsWith("- ") &&
+      isEntitySynthesisTimelinePromotionBullet(trimmed.slice(2))
     ) {
       continue;
     }
@@ -1395,10 +1386,7 @@ function readEntitySectionText(
   return sectionLines.join(options.preserveBullets === true ? "\n" : " ");
 }
 
-function parseEntityTimelineBullet(
-  bullet: string,
-  fallbackTimestamp: string,
-): EntityTimelineEntry | null {
+function parseEntityTimelineBullet(bullet: string, fallbackTimestamp: string): EntityTimelineEntry | null {
   const trimmed = bullet.trim();
   if (!trimmed) return null;
 
@@ -1451,10 +1439,10 @@ function parseEntityTimelineBullet(
         break;
       case "source":
         if (
-          consumedMetadataSegments.length === 0
-          && !nextRest.startsWith("[")
-          && nextRest.length > 0
-          && !isManagedEntityTimelineSource(value)
+          consumedMetadataSegments.length === 0 &&
+          !nextRest.startsWith("[") &&
+          nextRest.length > 0 &&
+          !isManagedEntityTimelineSource(value)
         ) {
           literalSingleSourceSegment = rawSegment;
           rest = nextRest;
@@ -1653,11 +1641,7 @@ function serializeEntityTimelineEntry(entry: EntityTimelineEntry): string {
 }
 
 function dedupeEntityTimelineFacts(timeline: EntityTimelineEntry[]): string[] {
-  return [...new Set(
-    timeline
-      .map((entry) => entry.text.trim())
-      .filter((entry) => entry.length > 0),
-  )];
+  return [...new Set(timeline.map((entry) => entry.text.trim()).filter((entry) => entry.length > 0))];
 }
 
 function normalizeEntitySectionFact(value: string): string {
@@ -1665,11 +1649,7 @@ function normalizeEntitySectionFact(value: string): string {
 }
 
 export function normalizeStructuredSectionFacts(facts: string[]): string[] {
-  return [...new Set(
-    facts
-      .map((fact) => normalizeEntitySectionFact(fact))
-      .filter((fact) => fact.length > 0),
-  )];
+  return [...new Set(facts.map((fact) => normalizeEntitySectionFact(fact)).filter((fact) => fact.length > 0))];
 }
 
 function collectStructuredSectionFacts(structuredSections: EntityStructuredSection[]): string[] {
@@ -1686,7 +1666,7 @@ function collectStructuredSectionFacts(structuredSections: EntityStructuredSecti
 
 export function compileEntityFacts(
   timeline: EntityTimelineEntry[],
-  structuredSections: EntityStructuredSection[],
+  structuredSections: EntityStructuredSection[]
 ): string[] {
   const facts: string[] = [];
   const seen = new Set<string>();
@@ -1739,7 +1719,7 @@ function looksLikeStructuredSectionFactList(lines: string[]): boolean {
 function partitionEntityStructuredSections(
   entityType: string,
   extraSections: Array<{ title: string; lines: string[] }>,
-  entitySchemas?: PluginConfig["entitySchemas"],
+  entitySchemas?: PluginConfig["entitySchemas"]
 ): {
   structuredSections: EntityStructuredSection[];
   remainingExtraSections: Array<{ title: string; lines: string[] }>;
@@ -1761,11 +1741,7 @@ function partitionEntityStructuredSections(
     }
     const normalizedSection = matchedSection
       ? { key: matchedSection.key, title: matchedSection.title }
-      : normalizeEntityStructuredSection(
-        entityType,
-        { key: section.title, title: section.title },
-        entitySchemas,
-      );
+      : normalizeEntityStructuredSection(entityType, { key: section.title, title: section.title }, entitySchemas);
     if (facts.length === 0) {
       remainingExtraSections.push(section);
       continue;
@@ -1833,13 +1809,17 @@ export function fingerprintEntityStructuredFacts(entity: Pick<EntityFile, "struc
     .map((section) => ({
       key: section.key.trim().toLowerCase(),
       title: section.title.replace(/\s+/g, " ").trim(),
-      facts: normalizeStructuredSectionFacts(section.facts).slice().sort((left, right) => left.localeCompare(right)),
+      facts: normalizeStructuredSectionFacts(section.facts)
+        .slice()
+        .sort((left, right) => left.localeCompare(right)),
     }))
     .filter((section) => section.facts.length > 0)
-    .sort((left, right) =>
-      left.key.localeCompare(right.key)
-      || left.title.localeCompare(right.title)
-      || left.facts.join("\n").localeCompare(right.facts.join("\n")));
+    .sort(
+      (left, right) =>
+        left.key.localeCompare(right.key) ||
+        left.title.localeCompare(right.title) ||
+        left.facts.join("\n").localeCompare(right.facts.join("\n"))
+    );
   if (normalizedSections.length === 0) return undefined;
   return createHash("sha256").update(JSON.stringify(normalizedSections)).digest("hex");
 }
@@ -1855,26 +1835,27 @@ export function isEntitySynthesisStale(entity: EntityFile): boolean {
   if (structuredFactCount > 0 && !storedStructuredFactDigest) return true;
   const latestTimelineTimestamp = latestEntityTimelineTimestamp(entity);
   if (!latestTimelineTimestamp) {
-    return entity.timeline.length > entity.synthesisTimelineCount
-      || structuredFactCount > (entity.synthesisStructuredFactCount ?? 0)
-      || structuredFactDigest !== storedStructuredFactDigest;
+    return (
+      entity.timeline.length > entity.synthesisTimelineCount ||
+      structuredFactCount > (entity.synthesisStructuredFactCount ?? 0) ||
+      structuredFactDigest !== storedStructuredFactDigest
+    );
   }
   if (!entity.synthesisUpdatedAt?.trim()) return true;
   const timelineFreshness = compareEntityTimestamps(latestTimelineTimestamp, entity.synthesisUpdatedAt);
   if (timelineFreshness > 0) return true;
-  return entity.timeline.length > entity.synthesisTimelineCount
-    || structuredFactCount > (entity.synthesisStructuredFactCount ?? 0)
-    || structuredFactDigest !== storedStructuredFactDigest;
+  return (
+    entity.timeline.length > entity.synthesisTimelineCount ||
+    structuredFactCount > (entity.synthesisStructuredFactCount ?? 0) ||
+    structuredFactDigest !== storedStructuredFactDigest
+  );
 }
 
 /**
  * Parse an entity markdown file into a structured EntityFile.
  * Backward compatible: old files without new sections get empty arrays.
  */
-export function parseEntityFile(
-  content: string,
-  entitySchemas?: PluginConfig["entitySchemas"],
-): EntityFile {
+export function parseEntityFile(content: string, entitySchemas?: PluginConfig["entitySchemas"]): EntityFile {
   const { frontmatter, body } = parseEntityFrontmatter(content);
   const lines = body.split("\n");
   const recognizedSections = new Set([
@@ -1916,11 +1897,10 @@ export function parseEntityFile(
   const headingLineIndex = lines.findIndex((l) => l.startsWith("# "));
   const firstSectionIndex = lines.findIndex((l) => l.startsWith("## "));
   const preSectionStartIndex = headingLineIndex > -1 ? headingLineIndex + 1 : 0;
-  const preSectionCandidates = firstSectionIndex > -1
-    ? lines.slice(preSectionStartIndex, firstSectionIndex)
-    : lines.slice(preSectionStartIndex);
+  const preSectionCandidates =
+    firstSectionIndex > -1 ? lines.slice(preSectionStartIndex, firstSectionIndex) : lines.slice(preSectionStartIndex);
   const preSectionLines = preSectionCandidates.filter(
-    (line) => !line.startsWith("**Type:**") && !line.startsWith("**Updated:**"),
+    (line) => !line.startsWith("**Type:**") && !line.startsWith("**Updated:**")
   );
   const normalizedPreSectionLines = [...preSectionLines];
   while (normalizedPreSectionLines[0] === "") {
@@ -1960,20 +1940,14 @@ export function parseEntityFile(
         legacyFacts.push(bullet);
         break;
       case "timeline": {
-        const parsed = parseEntityTimelineBullet(
-          bullet,
-          fallbackTimestamp,
-        );
+        const parsed = parseEntityTimelineBullet(bullet, fallbackTimestamp);
         if (parsed) timeline.push(parsed);
         break;
       }
       case "summary":
       case "synthesis":
         if (isEntitySynthesisTimelinePromotionBullet(bullet)) {
-          const parsed = parseEntityTimelineBullet(
-            bullet,
-            fallbackTimestamp,
-          );
+          const parsed = parseEntityTimelineBullet(bullet, fallbackTimestamp);
           if (parsed) timeline.push(parsed);
         }
         // Summary/synthesis is typically a paragraph after the heading, not a bullet.
@@ -2017,9 +1991,7 @@ export function parseEntityFile(
 
   if (legacyFactTimelineEntries.length > 0) {
     const existingTimelineFacts = new Set(
-      timeline
-        .map((entry) => entry.text.trim())
-        .filter((entry) => entry.length > 0),
+      timeline.map((entry) => entry.text.trim()).filter((entry) => entry.length > 0)
     );
     for (const fact of legacyFactTimelineEntries) {
       const normalizedFact = fact.text.trim();
@@ -2030,8 +2002,8 @@ export function parseEntityFile(
   }
 
   const synthesis =
-    readEntitySectionText(lines, ["Synthesis"], { preserveBullets: true, skipTimelineBullets: true })
-    ?? readEntitySectionText(lines, ["Summary"], { preserveBullets: true, skipTimelineBullets: true });
+    readEntitySectionText(lines, ["Synthesis"], { preserveBullets: true, skipTimelineBullets: true }) ??
+    readEntitySectionText(lines, ["Summary"], { preserveBullets: true, skipTimelineBullets: true });
   const synthesisUpdatedAt = frontmatter.synthesisUpdatedAt || undefined;
   const synthesisTimelineCount = frontmatter.synthesisTimelineCount;
   const synthesisStructuredFactCount = frontmatter.synthesisStructuredFactCount;
@@ -2039,7 +2011,7 @@ export function parseEntityFile(
   const { structuredSections, remainingExtraSections } = partitionEntityStructuredSections(
     type,
     extraSections,
-    entitySchemas,
+    entitySchemas
   );
   const facts = compileEntityFacts(timeline, structuredSections);
 
@@ -2072,30 +2044,32 @@ export function parseEntityFile(
  * Writes the compiled-truth + timeline format while remaining parse-compatible
  * with the legacy in-memory `summary` and `facts` fields.
  */
-export function serializeEntityFile(
-  entity: EntityFile,
-  entitySchemas?: PluginConfig["entitySchemas"],
-): string {
+export function serializeEntityFile(entity: EntityFile, entitySchemas?: PluginConfig["entitySchemas"]): string {
   const synthesis = entity.synthesis || entity.summary || "";
   const created = entity.created?.trim() || entity.updated || new Date().toISOString();
   const updated = entity.updated || created;
   const timeline = entity.timeline;
   const structuredSections = sortStructuredSectionsBySchema(
     entity.type,
-    (entity.structuredSections ?? []).map((section) => ({
-      ...section,
-      facts: normalizeStructuredSectionFacts(section.facts),
-    })).filter((section) => section.facts.length > 0),
-    entitySchemas,
+    (entity.structuredSections ?? [])
+      .map((section) => ({
+        ...section,
+        facts: normalizeStructuredSectionFacts(section.facts),
+      }))
+      .filter((section) => section.facts.length > 0),
+    entitySchemas
   );
   const sectionFacts = new Set(collectStructuredSectionFacts(structuredSections));
-  const legacyFacts = timeline.length === 0
-    ? [...new Set(
-      entity.facts
-        .map((fact) => normalizeEntitySectionFact(fact))
-        .filter((fact) => fact.length > 0 && !sectionFacts.has(fact)),
-    )]
-    : [];
+  const legacyFacts =
+    timeline.length === 0
+      ? [
+          ...new Set(
+            entity.facts
+              .map((fact) => normalizeEntitySectionFact(fact))
+              .filter((fact) => fact.length > 0 && !sectionFacts.has(fact))
+          ),
+        ]
+      : [];
   const synthesisUpdatedAt = entity.synthesisUpdatedAt?.trim() || "";
   const synthesisTimelineCount = entity.synthesisTimelineCount;
   const synthesisStructuredFactCount = entity.synthesisStructuredFactCount;
@@ -2107,15 +2081,11 @@ export function serializeEntityFile(
     `created: ${created}`,
     `updated: ${updated}`,
     `synthesis_updated_at: "${synthesisUpdatedAt}"`,
-    ...(synthesisTimelineCount === undefined
-      ? []
-      : [`synthesis_timeline_count: ${synthesisTimelineCount}`]),
+    ...(synthesisTimelineCount === undefined ? [] : [`synthesis_timeline_count: ${synthesisTimelineCount}`]),
     ...(synthesisStructuredFactCount === undefined
       ? []
       : [`synthesis_structured_fact_count: ${synthesisStructuredFactCount}`]),
-    ...(synthesisStructuredFactDigest
-      ? [`synthesis_structured_fact_digest: "${synthesisStructuredFactDigest}"`]
-      : []),
+    ...(synthesisStructuredFactDigest ? [`synthesis_structured_fact_digest: "${synthesisStructuredFactDigest}"`] : []),
     `synthesis_version: ${synthesisVersion}`,
     ...(entity.extraFrontmatterLines ?? []),
     "---",
@@ -2308,7 +2278,10 @@ export class StorageManager {
   /** Read by storage/memory-read-store.ts (decomposition). */
   static readonly COLD_SCAN_CACHE_TTL_MS = 30_000; // 30 seconds
   /** Read by storage/memory-read-store.ts (decomposition). */
-  static readonly coldMemoriesCache = new Map<string, { memories: MemoryFile[]; loadedAt: number; coldVersion: number }>();
+  static readonly coldMemoriesCache = new Map<
+    string,
+    { memories: MemoryFile[]; loadedAt: number; coldVersion: number }
+  >();
 
   // Cache for readQuestions() — avoids serially re-reading tens of thousands of
   // question files on every recall.  60-second TTL is intentionally short so that
@@ -2345,7 +2318,11 @@ export class StorageManager {
   /** Post-write catalog hook (#1522). Installed by the namespace router; fire-and-forget. */
   onCatalogWrite?: () => void;
   private notifyCatalogWrite(): void {
-    try { this.onCatalogWrite?.(); } catch { /* gotcha #13 */ }
+    try {
+      this.onCatalogWrite?.();
+    } catch {
+      /* gotcha #13 */
+    }
   }
 
   // ── Tombstone store (issue #1579) ───────────────────────────────────────
@@ -2456,7 +2433,7 @@ export class StorageManager {
     if (this._secureStoreRequired) {
       throw new SecureStoreLockedError(
         "secure-store is locked — cannot write memory file. " +
-          "Run `remnic secure-store unlock` to decrypt, or restart the daemon after unlocking.",
+          "Run `remnic secure-store unlock` to decrypt, or restart the daemon after unlocking."
       );
     }
     return null;
@@ -2508,13 +2485,13 @@ export class StorageManager {
         this._versioningConfig,
         log,
         undefined,
-        this.baseDir,
+        this.baseDir
       );
       const rel = path.relative(this.baseDir, filePath).split(path.sep).join("/");
       return `${rel}:${version.versionId}`;
     } catch (err) {
       log.warn(
-        `storage.snapshotForProvenance: failed to snapshot ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+        `storage.snapshotForProvenance: failed to snapshot ${filePath}: ${err instanceof Error ? err.message : String(err)}`
       );
       return null;
     }
@@ -2522,7 +2499,7 @@ export class StorageManager {
 
   constructor(
     private readonly baseDir: string,
-    private readonly entitySchemas?: PluginConfig["entitySchemas"],
+    private readonly entitySchemas?: PluginConfig["entitySchemas"]
   ) {
     // Load this store's alias table at construction (#1534): StorageManager
     // is created in a dozen places (namespace router, operator toolkit,
@@ -2551,9 +2528,7 @@ export class StorageManager {
 
   private get memoryReadStore(): MemoryReadStore {
     if (!this._memoryReadStore) {
-      this._memoryReadStore = new MemoryReadStore(
-        selfDeps<ConstructorParameters<typeof MemoryReadStore>[0]>(this),
-      );
+      this._memoryReadStore = new MemoryReadStore(selfDeps<ConstructorParameters<typeof MemoryReadStore>[0]>(this));
     }
     return this._memoryReadStore;
   }
@@ -2563,9 +2538,7 @@ export class StorageManager {
 
   private get entityStore(): EntityStore {
     if (!this._entityStore) {
-      this._entityStore = new EntityStore(
-        selfDeps<ConstructorParameters<typeof EntityStore>[0]>(this),
-      );
+      this._entityStore = new EntityStore(selfDeps<ConstructorParameters<typeof EntityStore>[0]>(this));
     }
     return this._entityStore;
   }
@@ -2576,7 +2549,7 @@ export class StorageManager {
   private get identityContinuityStore(): IdentityContinuityStore {
     if (!this._identityContinuityStore) {
       this._identityContinuityStore = new IdentityContinuityStore(
-        selfDeps<ConstructorParameters<typeof IdentityContinuityStore>[0]>(this),
+        selfDeps<ConstructorParameters<typeof IdentityContinuityStore>[0]>(this)
       );
     }
     return this._identityContinuityStore;
@@ -2605,7 +2578,7 @@ export class StorageManager {
 
   private bumpSharedVersion(
     kind: "memory-status" | "artifact-write" | "cold-write",
-    fallbackMap: Map<string, number>,
+    fallbackMap: Map<string, number>
   ): number {
     const filePath = this.versionFilePath(kind);
     try {
@@ -2623,7 +2596,7 @@ export class StorageManager {
 
   private readSharedVersion(
     kind: "memory-status" | "artifact-write" | "cold-write",
-    fallbackMap: Map<string, number>,
+    fallbackMap: Map<string, number>
   ): number {
     const filePath = this.versionFilePath(kind);
     try {
@@ -2678,32 +2651,23 @@ export class StorageManager {
   wearableTranscriptPath(sourceId: string, date: string): string {
     if (typeof sourceId !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(sourceId)) {
       throw new Error(
-        `invalid wearable source id '${String(sourceId)}' — expected lowercase letters, digits, and dashes`,
+        `invalid wearable source id '${String(sourceId)}' — expected lowercase letters, digits, and dashes`
       );
     }
     if (!isValidTranscriptDate(date)) {
-      throw new Error(
-        `invalid wearable transcript date '${String(date)}' — expected YYYY-MM-DD`,
-      );
+      throw new Error(`invalid wearable transcript date '${String(date)}' — expected YYYY-MM-DD`);
     }
     return path.join(this.wearablesDir, sourceId, `${date}.md`);
   }
 
-  async writeWearableDayTranscript(
-    sourceId: string,
-    date: string,
-    serialized: string,
-  ): Promise<void> {
+  async writeWearableDayTranscript(sourceId: string, date: string, serialized: string): Promise<void> {
     const targetPath = this.wearableTranscriptPath(sourceId, date);
     // writeMaybeEncryptedFile handles mkdir + atomic temp→rename.
     await this.writeStorageSecureFile(targetPath, serialized);
   }
 
   /** Read a stored day transcript; null when the day has no file. */
-  async readWearableDayTranscript(
-    sourceId: string,
-    date: string,
-  ): Promise<string | null> {
+  async readWearableDayTranscript(sourceId: string, date: string): Promise<string | null> {
     const targetPath = this.wearableTranscriptPath(sourceId, date);
     try {
       return await readMaybeEncryptedFile(targetPath, this._secureStoreKey, this.baseDir);
@@ -2713,12 +2677,8 @@ export class StorageManager {
     }
   }
 
-  async listWearableTranscriptDays(
-    sourceId?: string,
-  ): Promise<Array<{ source: string; date: string }>> {
-    return this.memoryReadStore.listWearableTranscriptDays(
-      sourceId,
-    );
+  async listWearableTranscriptDays(sourceId?: string): Promise<Array<{ source: string; date: string }>> {
+    return this.memoryReadStore.listWearableTranscriptDays(sourceId);
   }
 
   private _fusionStore?: FusionArtifactStore;
@@ -2743,9 +2703,7 @@ export class StorageManager {
    * smart trust pipeline to find an earlier borderline write when the
    * same fact re-extracts with stronger evidence.
    */
-  async findWearableMemoryByContent(
-    content: string,
-  ): Promise<{ id: string; status: MemoryStatus | undefined } | null> {
+  async findWearableMemoryByContent(content: string): Promise<{ id: string; status: MemoryStatus | undefined } | null> {
     const needle = stripAttributesSuffix(content);
     const memories = await this.readAllMemories();
     for (const memory of memories) {
@@ -2772,7 +2730,7 @@ export class StorageManager {
   async promoteWearableMemory(
     id: string,
     attributeUpdates: Record<string, string>,
-    confidence?: number,
+    confidence?: number
   ): Promise<boolean> {
     const memories = await this.readAllMemories();
     const memory = memories.find((entry) => entry.frontmatter.id === id);
@@ -2803,10 +2761,7 @@ export class StorageManager {
    * approvals and accrued recall signals win; contradiction scans and
    * supersession own active-row retirement).
    */
-  async demoteWearableMemory(
-    id: string,
-    attributeUpdates: Record<string, string>,
-  ): Promise<boolean> {
+  async demoteWearableMemory(id: string, attributeUpdates: Record<string, string>): Promise<boolean> {
     const memories = await this.readAllMemories();
     const memory = memories.find((entry) => entry.frontmatter.id === id);
     if (!memory) return false;
@@ -2848,12 +2803,14 @@ export class StorageManager {
     return readMaybeEncryptedFile(filePath, this._secureStoreKey, this.baseDir);
   }
   private writeStorageSecureFile(filePath: string, content: string | Buffer): Promise<void> {
-    return writeMaybeEncryptedFile(filePath, content, this.resolveWriteKey(), {}, this.baseDir)
-      .then(() => this.notifyCatalogWrite());
+    return writeMaybeEncryptedFile(filePath, content, this.resolveWriteKey(), {}, this.baseDir).then(() =>
+      this.notifyCatalogWrite()
+    );
   }
   private writeStorageSecureFileChunks(filePath: string, chunks: AsyncIterable<Buffer>): Promise<void> {
-    return writeMaybeEncryptedFileFromChunks(filePath, chunks, this.resolveWriteKey(), {}, this.baseDir)
-      .then(() => this.notifyCatalogWrite());
+    return writeMaybeEncryptedFileFromChunks(filePath, chunks, this.resolveWriteKey(), {}, this.baseDir).then(() =>
+      this.notifyCatalogWrite()
+    );
   }
 
   private assertManagedStoragePath(filePath: string, method: string): string {
@@ -2962,7 +2919,7 @@ export class StorageManager {
     } catch (err) {
       if (!isErrnoCode(err, "ENOENT")) {
         log.warn(
-          `storage.offlineSyncDigestCache: ignoring unreadable cache: ${err instanceof Error ? err.message : String(err)}`,
+          `storage.offlineSyncDigestCache: ignoring unreadable cache: ${err instanceof Error ? err.message : String(err)}`
         );
       }
     }
@@ -2972,7 +2929,7 @@ export class StorageManager {
   private rememberOfflineSyncDigest(
     relPath: string,
     st: { size: number; mtimeMs: number; ctimeMs: number },
-    digest: { sha256: string; bytes: number },
+    digest: { sha256: string; bytes: number }
   ): void {
     const cache = this.offlineSyncDigestCache;
     if (!cache) return;
@@ -3008,15 +2965,11 @@ export class StorageManager {
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([entryPath, entry]) => ({ path: entryPath, ...entry }));
         await mkdir(path.dirname(this.offlineSyncDigestCachePath), { recursive: true });
-        await writeFile(
-          this.offlineSyncDigestCachePath,
-          `${JSON.stringify({ version: 1, entries })}\n`,
-          "utf-8",
-        );
+        await writeFile(this.offlineSyncDigestCachePath, `${JSON.stringify({ version: 1, entries })}\n`, "utf-8");
       })
       .catch((err) => {
         log.warn(
-          `storage.offlineSyncDigestCache: failed to write cache: ${err instanceof Error ? err.message : String(err)}`,
+          `storage.offlineSyncDigestCache: failed to write cache: ${err instanceof Error ? err.message : String(err)}`
         );
       });
   }
@@ -3082,15 +3035,13 @@ export class StorageManager {
       this.stateDir,
       () => this._secureStoreKey,
       () => this.resolveWriteKey(),
-      this.baseDir,
+      this.baseDir
     );
   }
 
   private async appendStorageSecureFile(filePath: string, content: string): Promise<void> {
     const previous = this.secureAppendChains.get(filePath) ?? Promise.resolve();
-    const current = previous
-      .catch(() => undefined)
-      .then(() => this.appendStorageSecureFileUnlocked(filePath, content));
+    const current = previous.catch(() => undefined).then(() => this.appendStorageSecureFileUnlocked(filePath, content));
     const next = current.catch(() => undefined);
     this.secureAppendChains.set(filePath, next);
     try {
@@ -3195,12 +3146,7 @@ export class StorageManager {
       // stat lets the store own its cross-process staleness probe (#1579).
       stat: (filePath) => statSync(filePath),
     };
-    return new TombstoneStore(
-      this.tombstonesPath,
-      this.tombstonesConfig.namespace,
-      options,
-      io,
-    );
+    return new TombstoneStore(this.tombstonesPath, this.tombstonesConfig.namespace, options, io);
   }
 
   /**
@@ -3408,9 +3354,7 @@ export class StorageManager {
         const stripped = stripCitationForTemplate(content, this.citationTemplate);
         if (stripped !== content) {
           // Citation was stripped — index the bare body.
-          factHashIndex.addByHash(
-            ContentHashIndex.computeHash(sanitizeMemoryContent(stripped).text),
-          );
+          factHashIndex.addByHash(ContentHashIndex.computeHash(sanitizeMemoryContent(stripped).text));
           continue;
         }
         // No citation was removed. Decide whether to index or skip.
@@ -3421,9 +3365,7 @@ export class StorageManager {
         // means the citation is from an unknown/custom template we cannot strip.
         if (!hasCitation(content)) {
           // Content has no recognisable citation marker — index raw body.
-          factHashIndex.addByHash(
-            ContentHashIndex.computeHash(sanitizeMemoryContent(content).text),
-          );
+          factHashIndex.addByHash(ContentHashIndex.computeHash(sanitizeMemoryContent(content).text));
           continue;
         }
         // Content carries a citation from an unknown/custom template
@@ -3433,7 +3375,7 @@ export class StorageManager {
       }
       if (legacyRecovered > 0) {
         log.info(
-          `ensureFactHashIndexAuthoritative: skipped ${legacyRecovered} legacy fact(s) with no contentHash in frontmatter`,
+          `ensureFactHashIndexAuthoritative: skipped ${legacyRecovered} legacy fact(s) with no contentHash in frontmatter`
         );
       }
       await factHashIndex.save();
@@ -3520,10 +3462,7 @@ export class StorageManager {
   private userAliases: Record<string, string> = {};
 
   normalizeEntityName(raw: string, type: string): string {
-    return this.entityStore.normalizeEntityName(
-      raw,
-      type,
-    );
+    return this.entityStore.normalizeEntityName(raw, type);
   }
 
   /**
@@ -3563,9 +3502,7 @@ export class StorageManager {
         this.userAliases = cleaned;
         log.debug(`loaded ${Object.keys(cleaned).length} entity aliases from ${aliasPath}`);
       } else {
-        log.warn(
-          `ignoring ${aliasPath}: payload must be a JSON object mapping variant → canonical strings`,
-        );
+        log.warn(`ignoring ${aliasPath}: payload must be a JSON object mapping variant → canonical strings`);
       }
     } catch {
       // No aliases file — that's fine, use built-in only
@@ -3602,11 +3539,7 @@ export class StorageManager {
    * as `<dir>/<date>/`. Read/scan/reindex already iterate every category dir
    * (RECALL_FALLBACK_DIRS; QMD scans baseDir recursively), so writes stay found.
    */
-  private async resolveCategoryWritePath(
-    category: MemoryCategory,
-    id: string,
-    today: string,
-  ): Promise<string> {
+  private async resolveCategoryWritePath(category: MemoryCategory, id: string, today: string): Promise<string> {
     if (category === "correction") {
       await mkdir(this.correctionsDir, { recursive: true });
       return path.join(this.correctionsDir, `${id}.md`);
@@ -3683,7 +3616,7 @@ export class StorageManager {
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
       sourceConnector?: string;
-    } = {},
+    } = {}
   ): Promise<MemoryWriteResult> {
     await this.ensureDirectories();
     const now = new Date();
@@ -3692,10 +3625,7 @@ export class StorageManager {
     const conf = options.confidence ?? 0.8;
     const tier = confidenceTier(conf);
     const validAt = normalizeMemoryWriteTimestamp("validAt", options.validAt);
-    const observedAt = normalizeMemoryWriteTimestamp(
-      "observedAt",
-      options.observedAt,
-    );
+    const observedAt = normalizeMemoryWriteTimestamp("observedAt", options.observedAt);
 
     // Auto-set TTL for speculative memories
     let expiresAt: string | undefined;
@@ -3845,7 +3775,7 @@ export class StorageManager {
           fm.blockedBy = match.tombstoneId;
           fm.tombstoneBlockTier = match.matchedTier;
           log.info(
-            `tombstone: blocked resurrection of fact ${id} (tier=${match.matchedTier}, tombstone=${match.tombstoneId}, reason=${match.reason})`,
+            `tombstone: blocked resurrection of fact ${id} (tier=${match.matchedTier}, tombstone=${match.tombstoneId}, reason=${match.reason})`
           );
         }
       } catch (err) {
@@ -3871,7 +3801,7 @@ export class StorageManager {
       after: this.summarizeLifecycleState(fm, filePath),
       relatedMemoryIds: [
         ...(options.supersedes ? [options.supersedes] : []),
-        ...((options.lineage ?? []).filter(Boolean)),
+        ...(options.lineage ?? []).filter(Boolean),
       ],
     });
     if (category === "fact" && !tombstoneBlocked) {
@@ -3972,7 +3902,7 @@ export class StorageManager {
     const removedIds = new Set(
       memories
         .map((memory) => memory.frontmatter.id)
-        .filter((id): id is string => typeof id === "string" && id.length > 0),
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
     );
     const removedHashes = new Map<MemoryFile, string>();
     for (const memory of memories) {
@@ -3984,10 +3914,7 @@ export class StorageManager {
     if (removedHashes.size === 0) return;
 
     const remainingActiveHashes = new Set<string>();
-    const remainingMemories = [
-      ...await this.readAllMemories(),
-      ...await this.readAllColdMemories(),
-    ];
+    const remainingMemories = [...(await this.readAllMemories()), ...(await this.readAllColdMemories())];
     for (const memory of remainingMemories) {
       if (memory.frontmatter.category !== "fact") continue;
       if (removedIds.has(memory.frontmatter.id)) continue;
@@ -4023,7 +3950,7 @@ export class StorageManager {
       intentGoal?: string;
       intentActionType?: string;
       intentEntityTypes?: string[];
-    } = {},
+    } = {}
   ): Promise<string> {
     await this.ensureDirectories();
     const now = new Date();
@@ -4057,9 +3984,7 @@ export class StorageManager {
     const filePath = path.join(dir, `${id}.md`);
     await this.writeStorageSecureFile(filePath, `${serializeFrontmatter(fm)}\n\n${sanitized.text}\n`);
     const actor =
-      typeof options.actor === "string" && options.actor.length > 0
-        ? options.actor
-        : "storage.writeArtifact";
+      typeof options.actor === "string" && options.actor.length > 0 ? options.actor : "storage.writeArtifact";
     await this.appendGeneratedMemoryLifecycleEventFailOpen("storage.writeArtifact", {
       memoryId: id,
       eventType: "created",
@@ -4076,8 +4001,7 @@ export class StorageManager {
   }
 
   private async readAllArtifactsCached(): Promise<MemoryFile[]> {
-    return this.memoryReadStore.readAllArtifactsCached(
-    );
+    return this.memoryReadStore.readAllArtifactsCached();
   }
 
   async searchArtifacts(query: string, maxResults: number): Promise<MemoryFile[]> {
@@ -4088,7 +4012,7 @@ export class StorageManager {
     const hits: Array<{ score: number; memory: MemoryFile }> = [];
     for (const memory of artifacts) {
       const indexedTokens = new Set(
-        tokenizeArtifactSearchText(`${memory.content} ${(memory.frontmatter.tags ?? []).join(" ")}`),
+        tokenizeArtifactSearchText(`${memory.content} ${(memory.frontmatter.tags ?? []).join(" ")}`)
       );
       const score = tokens.reduce((sum, t) => sum + (indexedTokens.has(t) ? 1 : 0), 0);
       if (score > 0) {
@@ -4109,14 +4033,9 @@ export class StorageManager {
       sessionKey?: string;
       principal?: string;
       structuredSections?: EntityStructuredSection[];
-    } = {},
+    } = {}
   ): Promise<string> {
-    return this.entityStore.writeEntity(
-      name,
-      type,
-      facts,
-      options,
-    );
+    return this.entityStore.writeEntity(name, type, facts, options);
   }
 
   async readProfile(): Promise<string> {
@@ -4176,9 +4095,7 @@ export class StorageManager {
     const existing = await this.readProfile();
 
     const lines = existing ? existing.split("\n") : [];
-    const existingBulletRaw = lines
-      .filter((l) => l.startsWith("- "))
-      .map((l) => l.slice(2).trim());
+    const existingBulletRaw = lines.filter((l) => l.startsWith("- ")).map((l) => l.slice(2).trim());
     const existingNorms = existingBulletRaw.map(StorageManager.normalizeForDedup);
 
     const newBullets = updates.filter((u) => {
@@ -4198,10 +4115,7 @@ export class StorageManager {
       ].join("\n");
       await this.writeProfile(content);
     } else {
-      const updatedTimestamp = existing.replace(
-        /\*Last updated:.*\*/,
-        `*Last updated: ${new Date().toISOString()}*`,
-      );
+      const updatedTimestamp = existing.replace(/\*Last updated:.*\*/, `*Last updated: ${new Date().toISOString()}*`);
       const withBullets = updatedTimestamp.trimEnd() + "\n" + newBullets.map((b) => `- ${b}`).join("\n") + "\n";
       await this.writeProfile(withBullets);
     }
@@ -4212,9 +4126,8 @@ export class StorageManager {
     const profile = await this.readProfile();
     if (!profile) return false;
     const lineCount = profile.split("\n").length;
-    const threshold = typeof triggerLines === "number"
-      ? Math.max(0, Math.floor(triggerLines))
-      : StorageManager.PROFILE_MAX_LINES;
+    const threshold =
+      typeof triggerLines === "number" ? Math.max(0, Math.floor(triggerLines)) : StorageManager.PROFILE_MAX_LINES;
     return lineCount > threshold;
   }
 
@@ -4348,14 +4261,10 @@ export class StorageManager {
   }
 
   private async collectActiveMemoryPaths(): Promise<string[]> {
-    return this.memoryReadStore.collectActiveMemoryPaths(
-    );
+    return this.memoryReadStore.collectActiveMemoryPaths();
   }
 
-  private async readParsedMemoriesFromPaths(
-    filePaths: string[],
-    batchSize?: number,
-  ): Promise<MemoryFile[]> {
+  private async readParsedMemoriesFromPaths(filePaths: string[], batchSize?: number): Promise<MemoryFile[]> {
     if (filePaths.length === 0) return [];
 
     const normalizedBatchSize = this.normalizeMemoryReadBatchSize(batchSize);
@@ -4373,7 +4282,7 @@ export class StorageManager {
               frontmatter: normalizeFrontmatterForPath(
                 parsed.frontmatter,
                 toMemoryPathRel(this.baseDir, fullPath),
-                parsed.content,
+                parsed.content
               ),
               content: parsed.content,
             } satisfies MemoryFile;
@@ -4384,7 +4293,7 @@ export class StorageManager {
             if (err instanceof SecureStoreLockedError) throw err;
             return null;
           }
-        }),
+        })
       );
       for (const memory of results) {
         if (memory !== null) memories.push(memory);
@@ -4400,9 +4309,9 @@ export class StorageManager {
       if (!match) return null;
       const frontmatterBlock = match[1];
       const rawUpdated =
-        frontmatterBlock.match(/^updated:\s*"?([^"\n]*)"?/m)?.[1]
-        ?? frontmatterBlock.match(/^created:\s*"?([^"\n]*)"?/m)?.[1]
-        ?? null;
+        frontmatterBlock.match(/^updated:\s*"?([^"\n]*)"?/m)?.[1] ??
+        frontmatterBlock.match(/^created:\s*"?([^"\n]*)"?/m)?.[1] ??
+        null;
       const updatedMs = rawUpdated ? Date.parse(rawUpdated) : Number.NaN;
       return Number.isFinite(updatedMs) ? updatedMs : null;
     } catch {
@@ -4411,18 +4320,20 @@ export class StorageManager {
   }
 
   private async filterWindowPathsByUpdatedAfter(filePaths: string[], updatedAfterMs: number): Promise<string[]> {
-    const results = await Promise.all(filePaths.map(async (filePath) => {
-      const updatedMs = await this.readWindowUpdatedMs(filePath);
-      if (updatedMs !== null) {
-        return updatedMs >= updatedAfterMs ? filePath : null;
-      }
-      try {
-        const fileStat = await stat(filePath);
-        return fileStat.mtimeMs >= updatedAfterMs ? filePath : null;
-      } catch {
-        return filePath;
-      }
-    }));
+    const results = await Promise.all(
+      filePaths.map(async (filePath) => {
+        const updatedMs = await this.readWindowUpdatedMs(filePath);
+        if (updatedMs !== null) {
+          return updatedMs >= updatedAfterMs ? filePath : null;
+        }
+        try {
+          const fileStat = await stat(filePath);
+          return fileStat.mtimeMs >= updatedAfterMs ? filePath : null;
+        } catch {
+          return filePath;
+        }
+      })
+    );
     return results.filter((filePath): filePath is string => filePath !== null);
   }
 
@@ -4459,7 +4370,7 @@ export class StorageManager {
     candidateBatchPaths: string[],
     remainingSlots: number,
     remainingInspectionBudget: number,
-    readBatchSize: number,
+    readBatchSize: number
   ): Promise<{ memories: MemoryFile[]; filePaths: string[] }> {
     const memories: MemoryFile[] = [];
     const filePaths: string[] = [];
@@ -4470,12 +4381,10 @@ export class StorageManager {
       const availableSlots = remainingSlots - memories.length;
       const availableInspectionBudget = remainingInspectionBudget - filePaths.length;
       const parallelWindow =
-        availableSlots >= 4 && availableInspectionBudget >= 4
-          ? Math.min(normalizedReadBatchSize, 4)
-          : 1;
+        availableSlots >= 4 && availableInspectionBudget >= 4 ? Math.min(normalizedReadBatchSize, 4) : 1;
       const candidatePaths = candidateBatchPaths.slice(
         index,
-        index + Math.min(parallelWindow, availableInspectionBudget),
+        index + Math.min(parallelWindow, availableInspectionBudget)
       );
       index += candidatePaths.length;
       if (candidatePaths.length === 0) break;
@@ -4488,14 +4397,14 @@ export class StorageManager {
     return { memories, filePaths };
   }
 
-  async readMemoriesWindow(options: {
-    maxMemories?: number;
-    batchSize?: number;
-    updatedAfter?: Date;
-  } = {}): Promise<{ memories: MemoryFile[]; filePaths: string[] }> {
-    return this.memoryReadStore.readMemoriesWindow(
-      options,
-    );
+  async readMemoriesWindow(
+    options: {
+      maxMemories?: number;
+      batchSize?: number;
+      updatedAfter?: Date;
+    } = {}
+  ): Promise<{ memories: MemoryFile[]; filePaths: string[] }> {
+    return this.memoryReadStore.readMemoriesWindow(options);
   }
 
   private async _readAllMemoriesFromDisk(): Promise<MemoryFile[]> {
@@ -4504,8 +4413,7 @@ export class StorageManager {
   }
 
   async readAllColdMemories(): Promise<MemoryFile[]> {
-    return this.memoryReadStore.readAllColdMemories(
-    );
+    return this.memoryReadStore.readAllColdMemories();
   }
 
   /**
@@ -4533,7 +4441,7 @@ export class StorageManager {
                   frontmatter: normalizeFrontmatterForPath(
                     parsed.frontmatter,
                     toMemoryPathRel(this.baseDir, fullPath),
-                    parsed.content,
+                    parsed.content
                   ),
                   content: parsed.content,
                 });
@@ -4556,9 +4464,7 @@ export class StorageManager {
   }
 
   async readMemoryByPath(filePath: string): Promise<MemoryFile | null> {
-    return this.memoryReadStore.readMemoryByPath(
-      filePath,
-    );
+    return this.memoryReadStore.readMemoryByPath(filePath);
   }
 
   private resolveTierRootDir(tier: "hot" | "cold"): string {
@@ -4568,9 +4474,7 @@ export class StorageManager {
   private resolveMemoryDateDir(memory: MemoryFile): string {
     const preferred = memory.frontmatter.created || memory.frontmatter.updated;
     const dateToken = (preferred ?? "").slice(0, 10);
-    return /^\d{4}-\d{2}-\d{2}$/.test(dateToken)
-      ? dateToken
-      : new Date().toISOString().slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(dateToken) ? dateToken : new Date().toISOString().slice(0, 10);
   }
 
   private isArtifactMemory(memory: MemoryFile): boolean {
@@ -4626,7 +4530,7 @@ export class StorageManager {
 
   async migrateMemoryToTier(
     memory: MemoryFile,
-    targetTier: "hot" | "cold",
+    targetTier: "hot" | "cold"
   ): Promise<{ changed: boolean; targetPath: string }> {
     const targetPath = this.buildTierMemoryPath(memory, targetTier);
     const sourcePath = path.resolve(memory.path);
@@ -4670,10 +4574,7 @@ export class StorageManager {
    * Updates frontmatter with archived status before moving.
    * Returns the new file path on success, null on failure.
    */
-  async archiveMemory(
-    memory: MemoryFile,
-    lifecycle?: MemoryLifecycleEventWriteOptions,
-  ): Promise<string | null> {
+  async archiveMemory(memory: MemoryFile, lifecycle?: MemoryLifecycleEventWriteOptions): Promise<string | null> {
     try {
       const now = lifecycle?.at ?? new Date();
       const today = now.toISOString().slice(0, 10);
@@ -4693,7 +4594,8 @@ export class StorageManager {
 
       // Write to archive location first (encrypted if applicable), then remove original.
       await this.writeStorageSecureFile(destPath, fileContent);
-      await unlink(memory.path); markProjectedMemoryPathInvalid(this.baseDir, memory.frontmatter.id);
+      await unlink(memory.path);
+      markProjectedMemoryPathInvalid(this.baseDir, memory.frontmatter.id);
       this.invalidateAllMemoriesCache();
       await this.appendGeneratedMemoryLifecycleEventFailOpen(
         "storage.archiveMemory",
@@ -4708,7 +4610,7 @@ export class StorageManager {
           relatedMemoryIds: lifecycle?.relatedMemoryIds,
           correlationId: lifecycle?.correlationId,
         },
-        lifecycle?.ruleVersion,
+        lifecycle?.ruleVersion
       );
       this.bumpMemoryStatusVersion();
 
@@ -4730,14 +4632,11 @@ export class StorageManager {
   }
 
   async readEntity(name: string): Promise<string> {
-    return this.entityStore.readEntity(
-      name,
-    );
+    return this.entityStore.readEntity(name);
   }
 
   async listEntityNames(): Promise<string[]> {
-    return this.entityStore.listEntityNames(
-    );
+    return this.entityStore.listEntityNames();
   }
 
   /**
@@ -4757,9 +4656,7 @@ export class StorageManager {
     const typePrefix = `${type.toLowerCase()}-`;
     // Extract the name part from the proposed normalized name
     const proposedFull = this.normalizeEntityName(proposedName, type);
-    const proposedNamePart = proposedFull.startsWith(typePrefix)
-      ? proposedFull.slice(typePrefix.length)
-      : proposedFull;
+    const proposedNamePart = proposedFull.startsWith(typePrefix) ? proposedFull.slice(typePrefix.length) : proposedFull;
     const proposedDehyph = dehyphenate(proposedNamePart);
 
     // Only compare against entities of the same type
@@ -4798,7 +4695,8 @@ export class StorageManager {
     if (!memory) return false;
 
     try {
-      await unlink(memory.path); markProjectedMemoryPathInvalid(this.baseDir, id);
+      await unlink(memory.path);
+      markProjectedMemoryPathInvalid(this.baseDir, id);
       this.invalidateAllMemoriesCache();
       this.bumpMemoryStatusVersion();
       log.debug(`invalidated memory ${id}`);
@@ -4811,16 +4709,15 @@ export class StorageManager {
   async updateMemory(
     id: string,
     newContent: string,
-    options?: { supersedes?: string; lineage?: string[]; actor?: string },
+    options?: { supersedes?: string; lineage?: string[]; actor?: string }
   ): Promise<boolean> {
     const memories = await this.readAllMemories();
     const memory = memories.find((m) => m.frontmatter.id === id);
     if (!memory) return false;
 
-    const mergedLineage = [
-      ...(memory.frontmatter.lineage ?? []),
-      ...(options?.lineage ?? []),
-    ].filter((v, i, a) => a.indexOf(v) === i); // dedupe
+    const mergedLineage = [...(memory.frontmatter.lineage ?? []), ...(options?.lineage ?? [])].filter(
+      (v, i, a) => a.indexOf(v) === i
+    ); // dedupe
 
     const updated: MemoryFrontmatter = {
       ...memory.frontmatter,
@@ -4844,7 +4741,7 @@ export class StorageManager {
       after: this.summarizeLifecycleState(updated, memory.path),
       relatedMemoryIds: [
         ...(updated.supersedes ? [updated.supersedes] : []),
-        ...((updated.lineage ?? []).filter(Boolean)),
+        ...(updated.lineage ?? []).filter(Boolean),
       ],
     });
     log.debug(`updated memory ${id}`);
@@ -4858,7 +4755,7 @@ export class StorageManager {
   async writeMemoryFrontmatter(
     memory: MemoryFile,
     patch: Partial<MemoryFrontmatter>,
-    lifecycle?: MemoryLifecycleEventWriteOptions,
+    lifecycle?: MemoryLifecycleEventWriteOptions
   ): Promise<boolean> {
     const beforeStatus = memory.frontmatter.status ?? "active";
     const updated: MemoryFrontmatter = {
@@ -4877,13 +4774,10 @@ export class StorageManager {
       this.invalidateColdMemoriesCache();
     }
     try {
-      await this.syncFactHashIndexAfterRewrite(
-        memory,
-        {
-          ...memory,
-          frontmatter: updated,
-        },
-      );
+      await this.syncFactHashIndexAfterRewrite(memory, {
+        ...memory,
+        frontmatter: updated,
+      });
     } catch (err) {
       log.warn(`storage.writeMemoryFrontmatter completed but failed to update fact hash index: ${err}`);
     }
@@ -4904,7 +4798,7 @@ export class StorageManager {
         ],
         correlationId: lifecycle?.correlationId,
       },
-      lifecycle?.ruleVersion,
+      lifecycle?.ruleVersion
     );
     if (beforeStatus !== afterStatus) {
       this.bumpMemoryStatusVersion();
@@ -4916,10 +4810,7 @@ export class StorageManager {
    * Update frontmatter by memory ID.
    * Prefer writeMemoryFrontmatter(memory, patch) in batch loops to avoid full-corpus rescans.
    */
-  async updateMemoryFrontmatter(
-    id: string,
-    patch: Partial<MemoryFrontmatter>,
-  ): Promise<boolean> {
+  async updateMemoryFrontmatter(id: string, patch: Partial<MemoryFrontmatter>): Promise<boolean> {
     const memories = await this.readAllMemories();
     const memory = memories.find((m) => m.frontmatter.id === id);
     if (!memory) return false;
@@ -4937,7 +4828,8 @@ export class StorageManager {
       const expiresAt = new Date(m.frontmatter.expiresAt).getTime();
       if (expiresAt < now) {
         try {
-          await unlink(m.path); markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
+          await unlink(m.path);
+          markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
           deleted.push(m);
           log.debug(`cleaned expired memory ${m.frontmatter.id} (TTL expired)`);
         } catch {
@@ -4978,26 +4870,19 @@ export class StorageManager {
       const raw = await this.readStorageSecureFile(metaPath);
       const parsed = JSON.parse(raw) as MetaState;
       return {
-        extractionCount:
-          typeof parsed.extractionCount === "number" ? parsed.extractionCount : 0,
+        extractionCount: typeof parsed.extractionCount === "number" ? parsed.extractionCount : 0,
         lastExtractionAt: parsed.lastExtractionAt ?? null,
         lastConsolidationAt: parsed.lastConsolidationAt ?? null,
-        totalMemories:
-          typeof parsed.totalMemories === "number" ? parsed.totalMemories : 0,
-        totalEntities:
-          typeof parsed.totalEntities === "number" ? parsed.totalEntities : 0,
-        processedExtractionFingerprints: Array.isArray(
-          parsed.processedExtractionFingerprints,
-        )
+        totalMemories: typeof parsed.totalMemories === "number" ? parsed.totalMemories : 0,
+        totalEntities: typeof parsed.totalEntities === "number" ? parsed.totalEntities : 0,
+        processedExtractionFingerprints: Array.isArray(parsed.processedExtractionFingerprints)
           ? parsed.processedExtractionFingerprints
               .filter(
                 (entry) =>
                   entry &&
                   typeof entry === "object" &&
-                  typeof (entry as { fingerprint?: unknown }).fingerprint ===
-                    "string" &&
-                  typeof (entry as { observedAt?: unknown }).observedAt ===
-                    "string",
+                  typeof (entry as { fingerprint?: unknown }).fingerprint === "string" &&
+                  typeof (entry as { observedAt?: unknown }).observedAt === "string"
               )
               .map((entry) => ({
                 fingerprint: (entry as { fingerprint: string }).fingerprint,
@@ -5030,13 +4915,15 @@ export class StorageManager {
     await this.ensureDirectories();
 
     const nowIso = new Date().toISOString();
-    const payload = events.map((event) => {
-      const normalized: MemoryActionEvent = {
-        ...event,
-        timestamp: event.timestamp && event.timestamp.length > 0 ? event.timestamp : nowIso,
-      };
-      return `${JSON.stringify(normalized)}\n`;
-    }).join("");
+    const payload = events
+      .map((event) => {
+        const normalized: MemoryActionEvent = {
+          ...event,
+          timestamp: event.timestamp && event.timestamp.length > 0 ? event.timestamp : nowIso,
+        };
+        return `${JSON.stringify(normalized)}\n`;
+      })
+      .join("");
 
     await this.appendStorageSecureFile(this.memoryActionsPath, payload);
     return events.length;
@@ -5047,32 +4934,26 @@ export class StorageManager {
     await this.ensureDirectories();
 
     const nowIso = new Date().toISOString();
-    const payload = events.map((event) => {
-      const normalized: MemoryLifecycleEvent = {
-        ...event,
-        timestamp: event.timestamp && event.timestamp.length > 0 ? event.timestamp : nowIso,
-      };
-      return `${JSON.stringify(normalized)}\n`;
-    }).join("");
+    const payload = events
+      .map((event) => {
+        const normalized: MemoryLifecycleEvent = {
+          ...event,
+          timestamp: event.timestamp && event.timestamp.length > 0 ? event.timestamp : nowIso,
+        };
+        return `${JSON.stringify(normalized)}\n`;
+      })
+      .join("");
 
     await this.appendStorageSecureFile(this.memoryLifecycleLedgerPath, payload);
     return events.length;
   }
 
-  async appendBufferSurpriseEvents(
-    events: BufferSurpriseEvent[],
-  ): Promise<number> {
-    return this.memoryReadStore.appendBufferSurpriseEvents(
-      events,
-    );
+  async appendBufferSurpriseEvents(events: BufferSurpriseEvent[]): Promise<number> {
+    return this.memoryReadStore.appendBufferSurpriseEvents(events);
   }
 
-  async readBufferSurpriseEvents(
-    options: { limit?: number } = {},
-  ): Promise<BufferSurpriseEvent[]> {
-    return this.memoryReadStore.readBufferSurpriseEvents(
-      options,
-    );
+  async readBufferSurpriseEvents(options: { limit?: number } = {}): Promise<BufferSurpriseEvent[]> {
+    return this.memoryReadStore.readBufferSurpriseEvents(options);
   }
 
   async appendBehaviorSignals(events: BehaviorSignalEvent[]): Promise<number> {
@@ -5221,11 +5102,8 @@ export class StorageManager {
 
     try {
       return await readMemoryActionEventRowsFromLines(
-        readMaybeEncryptedLines(
-          this.memoryActionsPath,
-          () => this.readStorageSecureFile(this.memoryActionsPath),
-        ),
-        cappedLimit,
+        readMaybeEncryptedLines(this.memoryActionsPath, () => this.readStorageSecureFile(this.memoryActionsPath)),
+        cappedLimit
       );
     } catch (err) {
       if (err instanceof SecureStoreLockedError) throw err;
@@ -5237,9 +5115,8 @@ export class StorageManager {
   async readAllMemoryLifecycleEvents(): Promise<MemoryLifecycleEvent[]> {
     try {
       const out: MemoryLifecycleEvent[] = [];
-      for await (const line of readMaybeEncryptedLines(
-        this.memoryLifecycleLedgerPath,
-        () => this.readStorageSecureFile(this.memoryLifecycleLedgerPath),
+      for await (const line of readMaybeEncryptedLines(this.memoryLifecycleLedgerPath, () =>
+        this.readStorageSecureFile(this.memoryLifecycleLedgerPath)
       )) {
         const row = line.trim();
         if (!row) continue;
@@ -5304,16 +5181,12 @@ export class StorageManager {
     }
   }
 
-  async writeCompressionGuidelineOptimizerState(
-    state: CompressionGuidelineOptimizerState,
-  ): Promise<void> {
+  async writeCompressionGuidelineOptimizerState(state: CompressionGuidelineOptimizerState): Promise<void> {
     await this.ensureDirectories();
     await this.writeStorageSecureFile(this.compressionGuidelineStatePath, `${JSON.stringify(state, null, 2)}\n`);
   }
 
-  async writeCompressionGuidelineDraftState(
-    state: CompressionGuidelineOptimizerState,
-  ): Promise<void> {
+  async writeCompressionGuidelineDraftState(state: CompressionGuidelineOptimizerState): Promise<void> {
     await this.ensureDirectories();
     await this.writeStorageSecureFile(this.compressionGuidelineDraftStatePath, `${JSON.stringify(state, null, 2)}\n`);
   }
@@ -5367,11 +5240,9 @@ export class StorageManager {
   }
 
   private async readCompressionGuidelineStateFile(
-    filePath: string,
+    filePath: string
   ): Promise<CompressionGuidelineOptimizerState | null> {
-    return this.memoryReadStore.readCompressionGuidelineStateFile(
-      filePath,
-    );
+    return this.memoryReadStore.readCompressionGuidelineStateFile(filePath);
   }
 
   async writeIdentityAnchor(content: string): Promise<void> {
@@ -5388,14 +5259,14 @@ export class StorageManager {
 
   async readContinuityIncidents(
     limit: number = 200,
-    state: "open" | "closed" | "all" = "all",
+    state: "open" | "closed" | "all" = "all"
   ): Promise<ContinuityIncidentRecord[]> {
     return this.identityContinuityStore.readContinuityIncidents(limit, state);
   }
 
   async closeContinuityIncident(
     id: string,
-    closure: ContinuityIncidentCloseInput,
+    closure: ContinuityIncidentCloseInput
   ): Promise<ContinuityIncidentRecord | null> {
     return this.identityContinuityStore.closeContinuityIncident(id, closure);
   }
@@ -5426,7 +5297,7 @@ export class StorageManager {
 
   async reviewIdentityImprovementLoop(
     id: string,
-    input: ContinuityLoopReviewInput,
+    input: ContinuityLoopReviewInput
   ): Promise<ContinuityImprovementLoop | null> {
     return this.identityContinuityStore.reviewIdentityImprovementLoop(id, input);
   }
@@ -5441,11 +5312,7 @@ export class StorageManager {
     return `${prefix}-${ts}-${rand}`;
   }
 
-  async writeQuestion(
-    question: string,
-    context: string,
-    priority: number,
-  ): Promise<string> {
+  async writeQuestion(question: string, context: string, priority: number): Promise<string> {
     await mkdir(this.questionsDir, { recursive: true });
 
     const id = this.generateId("q");
@@ -5456,7 +5323,9 @@ export class StorageManager {
       resolved: false,
     };
 
-    const content = `---\n${Object.entries(frontmatter).map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join("\n")}\n---\n\n${question}\n\n**Context:** ${context}\n`;
+    const content = `---\n${Object.entries(frontmatter)
+      .map(([k, v]) => `${k}: ${JSON.stringify(v)}`)
+      .join("\n")}\n---\n\n${question}\n\n**Context:** ${context}\n`;
 
     const filePath = path.join(this.questionsDir, `${id}.md`);
     await this.writeStorageSecureFile(filePath, content);
@@ -5466,9 +5335,7 @@ export class StorageManager {
     return id;
   }
 
-  async readQuestions(
-    opts?: { unresolvedOnly?: boolean },
-  ): Promise<
+  async readQuestions(opts?: { unresolvedOnly?: boolean }): Promise<
     Array<{
       id: string;
       question: string;
@@ -5489,7 +5356,7 @@ export class StorageManager {
 
   private parseQuestionFile(
     raw: string,
-    filePath: string,
+    filePath: string
   ): {
     id: string;
     question: string;
@@ -5506,34 +5373,21 @@ export class StorageManager {
     const body = match[2].trim();
 
     // Parse frontmatter
-    const id =
-      this.extractFrontmatterValue(frontmatterStr, "id") ??
-      path.basename(filePath, ".md");
-    const created =
-      this.extractFrontmatterValue(frontmatterStr, "created") ?? "";
-    const priority = parseFloat(
-      this.extractFrontmatterValue(frontmatterStr, "priority") ?? "0.5",
-    );
-    const resolved =
-      this.extractFrontmatterValue(frontmatterStr, "resolved") === "true";
+    const id = this.extractFrontmatterValue(frontmatterStr, "id") ?? path.basename(filePath, ".md");
+    const created = this.extractFrontmatterValue(frontmatterStr, "created") ?? "";
+    const priority = parseFloat(this.extractFrontmatterValue(frontmatterStr, "priority") ?? "0.5");
+    const resolved = this.extractFrontmatterValue(frontmatterStr, "resolved") === "true";
 
     // Extract question and context from body
     const contextMatch = body.match(/\*\*Context:\*\*\s*(.*)/);
-    const question = contextMatch
-      ? body.slice(0, contextMatch.index).trim()
-      : body;
+    const question = contextMatch ? body.slice(0, contextMatch.index).trim() : body;
     const context = contextMatch ? contextMatch[1].trim() : "";
 
     return { id, question, context, priority, resolved, created, filePath };
   }
 
-  private extractFrontmatterValue(
-    frontmatter: string,
-    key: string,
-  ): string | null {
-    const match = frontmatter.match(
-      new RegExp(`^${key}:\\s*"?([^"\\n]*)"?`, "m"),
-    );
+  private extractFrontmatterValue(frontmatter: string, key: string): string | null {
+    const match = frontmatter.match(new RegExp(`^${key}:\\s*"?([^"\\n]*)"?`, "m"));
     return match ? match[1] : null;
   }
 
@@ -5544,10 +5398,7 @@ export class StorageManager {
 
     let raw = await this.readStorageSecureFile(q.filePath);
     raw = raw.replace(/resolved: false/, "resolved: true");
-    raw = raw.replace(
-      /---\n\n/,
-      `resolvedAt: "${new Date().toISOString()}"\n---\n\n`,
-    );
+    raw = raw.replace(/---\n\n/, `resolvedAt: "${new Date().toISOString()}"\n---\n\n`);
     await this.writeStorageSecureFile(q.filePath, raw);
     this.invalidateQuestionsCache();
     log.debug(`resolved question ${id}`);
@@ -5581,7 +5432,7 @@ export class StorageManager {
   async appendToIdentity(
     workspaceDir: string,
     reflection: string,
-    opts?: { hygiene?: FileHygieneConfig; namespace?: string },
+    opts?: { hygiene?: FileHygieneConfig; namespace?: string }
   ): Promise<void> {
     const identityPath = this.identityFilePath(workspaceDir, opts?.namespace);
 
@@ -5612,14 +5463,14 @@ export class StorageManager {
         });
         await writeFile(identityPath, newContent, "utf-8");
         existing = newContent;
-        log.info(
-          `rotated IDENTITY.md to archive (size=${existing.length} chars, maxBytes=${maxBytes})`,
-        );
+        log.info(`rotated IDENTITY.md to archive (size=${existing.length} chars, maxBytes=${maxBytes})`);
       }
     } else {
       // Legacy behavior: skip if file is too large
       if (existing.length > StorageManager.IDENTITY_MAX_BYTES) {
-        log.debug(`IDENTITY.md is ${existing.length} chars (limit ${StorageManager.IDENTITY_MAX_BYTES}); skipping reflection`);
+        log.debug(
+          `IDENTITY.md is ${existing.length} chars (limit ${StorageManager.IDENTITY_MAX_BYTES}); skipping reflection`
+        );
         return;
       }
     }
@@ -5633,7 +5484,9 @@ export class StorageManager {
         const lastTimestamp = allMatches[allMatches.length - 1][1];
         const elapsed = Date.now() - new Date(lastTimestamp).getTime();
         if (elapsed < StorageManager.REFLECTION_COOLDOWN_MS) {
-          log.debug(`reflection cooldown: ${Math.round(elapsed / 1000)}s since last (need ${StorageManager.REFLECTION_COOLDOWN_MS / 1000}s)`);
+          log.debug(
+            `reflection cooldown: ${Math.round(elapsed / 1000)}s since last (need ${StorageManager.REFLECTION_COOLDOWN_MS / 1000}s)`
+          );
           return;
         }
       }
@@ -5671,7 +5524,7 @@ export class StorageManager {
 
     if (existing.length > StorageManager.IDENTITY_MAX_BYTES) {
       log.debug(
-        `identity/reflections.md is ${existing.length} chars (limit ${StorageManager.IDENTITY_MAX_BYTES}); skipping reflection`,
+        `identity/reflections.md is ${existing.length} chars (limit ${StorageManager.IDENTITY_MAX_BYTES}); skipping reflection`
       );
       return;
     }
@@ -5682,7 +5535,7 @@ export class StorageManager {
       const elapsed = Date.now() - new Date(lastTimestamp).getTime();
       if (elapsed < StorageManager.REFLECTION_COOLDOWN_MS) {
         log.debug(
-          `reflection cooldown: ${Math.round(elapsed / 1000)}s since last (need ${StorageManager.REFLECTION_COOLDOWN_MS / 1000}s)`,
+          `reflection cooldown: ${Math.round(elapsed / 1000)}s since last (need ${StorageManager.REFLECTION_COOLDOWN_MS / 1000}s)`
         );
         return;
       }
@@ -5717,9 +5570,7 @@ export class StorageManager {
     }
 
     // Dedupe by target+label
-    const exists = entity.relationships.some(
-      (r) => r.target === rel.target && r.label === rel.label,
-    );
+    const exists = entity.relationships.some((r) => r.target === rel.target && r.label === rel.label);
     if (exists) return;
 
     entity.relationships.push(rel);
@@ -5732,11 +5583,7 @@ export class StorageManager {
    * Add an activity entry to an entity file.
    * Prepends to the beginning, prunes oldest entries beyond maxEntries.
    */
-  async addEntityActivity(
-    name: string,
-    entry: EntityActivityEntry,
-    maxEntries: number,
-  ): Promise<void> {
+  async addEntityActivity(name: string, entry: EntityActivityEntry, maxEntries: number): Promise<void> {
     const filePath = path.join(this.entitiesDir, `${name}.md`);
     let entity: EntityFile;
     try {
@@ -5791,13 +5638,9 @@ export class StorageManager {
       synthesisTimelineCount?: number;
       updatedAt?: string;
       incrementVersion?: boolean;
-    } = {},
+    } = {}
   ): Promise<void> {
-    return this.entityStore.updateEntitySynthesis(
-      name,
-      synthesis,
-      options,
-    );
+    return this.entityStore.updateEntitySynthesis(name, synthesis, options);
   }
 
   /**
@@ -5846,7 +5689,7 @@ export class StorageManager {
           entityName,
           entity: parseEntityFile(raw, this.entitySchemas),
         };
-      }),
+      })
     );
     const staleEntityNames = entityQueueEntries
       .filter((entry): entry is { entityName: string; entity: EntityFile } => entry !== null)
@@ -5867,8 +5710,8 @@ export class StorageManager {
           entityNames: staleEntityNames,
         },
         null,
-        2,
-      ) + "\n",
+        2
+      ) + "\n"
     );
     return staleEntityNames;
   }
@@ -5888,8 +5731,8 @@ export class StorageManager {
           entityNames: nextQueue,
         },
         null,
-        2,
-      ) + "\n",
+        2
+      ) + "\n"
     );
   }
 
@@ -5922,8 +5765,7 @@ export class StorageManager {
   // ---------------------------------------------------------------------------
 
   async readAllEntityFiles(): Promise<EntityFile[]> {
-    return this.entityStore.readAllEntityFiles(
-    );
+    return this.entityStore.readAllEntityFiles();
   }
 
   /**
@@ -5958,23 +5800,14 @@ export class StorageManager {
     // Relationship density: min(relationships.length / 8, 1.0)
     const relDensity = Math.min(entity.relationships.length / 8, 1.0);
 
-    return (
-      recency * 0.40 +
-      frequency * 0.25 +
-      activityScore * 0.15 +
-      typePriority * 0.10 +
-      relDensity * 0.10
-    );
+    return recency * 0.4 + frequency * 0.25 + activityScore * 0.15 + typePriority * 0.1 + relDensity * 0.1;
   }
 
   async buildKnowledgeIndex(
     config: PluginConfig,
-    overrides?: { maxEntities?: number; maxChars?: number },
+    overrides?: { maxEntities?: number; maxChars?: number }
   ): Promise<{ result: string; cached: boolean }> {
-    return this.entityStore.buildKnowledgeIndex(
-      config,
-      overrides,
-    );
+    return this.entityStore.buildKnowledgeIndex(config, overrides);
   }
 
   /** Invalidate the Knowledge Index cache (call after entity mutations). */
@@ -5990,8 +5823,7 @@ export class StorageManager {
   private static readonly PROFILE_MAX_LINES = 300;
 
   async mergeFragmentedEntities(): Promise<number> {
-    return this.entityStore.mergeFragmentedEntities(
-    );
+    return this.entityStore.mergeFragmentedEntities();
   }
 
   async cleanExpiredCommitments(decayDays: number): Promise<MemoryFile[]> {
@@ -6003,16 +5835,15 @@ export class StorageManager {
       if (m.frontmatter.category !== "commitment") continue;
       // Only decay commitments that have been marked as resolved/expired
       // (indicated by tags containing "fulfilled" or "expired")
-      const isResolved = m.frontmatter.tags.some(
-        (t) => t === "fulfilled" || t === "expired",
-      );
+      const isResolved = m.frontmatter.tags.some((t) => t === "fulfilled" || t === "expired");
       if (!isResolved) continue;
 
       const updatedAt = new Date(m.frontmatter.updated).getTime();
       if (updatedAt < cutoff) {
         // Remove the file
         try {
-          await unlink(m.path); markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
+          await unlink(m.path);
+          markProjectedMemoryPathInvalid(this.baseDir, m.frontmatter.id);
           deleted.push(m);
           log.debug(`cleaned expired commitment ${m.frontmatter.id}`);
         } catch {
@@ -6103,7 +5934,8 @@ export class StorageManager {
 
   async getProjectedMemoryState(id: string): Promise<MemoryProjectionCurrentState | null> {
     const projected = readProjectedMemoryState(this.baseDir, id);
-    if (projected) return projected; warnProjectionFallback(this.baseDir, "getProjectedMemoryState");
+    if (projected) return projected;
+    warnProjectionFallback(this.baseDir, "getProjectedMemoryState");
     const active = await this.getMemoryById(id);
     if (active) return this.toProjectedCurrentState(active, "active");
 
@@ -6113,21 +5945,18 @@ export class StorageManager {
     return this.toProjectedCurrentState(archived, "archived");
   }
 
-  async browseProjectedMemories(
-    options: ProjectedMemoryBrowseOptions,
-  ): Promise<ProjectedMemoryBrowsePage | null> {
-    return readProjectedMemoryBrowse(this.baseDir, options)
-      ?? warnProjectionFallback(this.baseDir, "browseProjectedMemories");
+  async browseProjectedMemories(options: ProjectedMemoryBrowseOptions): Promise<ProjectedMemoryBrowsePage | null> {
+    return (
+      readProjectedMemoryBrowse(this.baseDir, options) ??
+      warnProjectionFallback(this.baseDir, "browseProjectedMemories")
+    );
   }
 
   async getProjectedGovernanceRecord(): Promise<ReturnType<typeof readProjectedGovernanceRecord>> {
     return readProjectedGovernanceRecord(this.baseDir);
   }
 
-  private toProjectedCurrentState(
-    memory: MemoryFile,
-    fallbackStatus: MemoryStatus,
-  ): MemoryProjectionCurrentState {
+  private toProjectedCurrentState(memory: MemoryFile, fallbackStatus: MemoryStatus): MemoryProjectionCurrentState {
     const pathRel = toMemoryPathRel(this.baseDir, memory.path);
     return {
       memoryId: memory.frontmatter.id,
@@ -6157,7 +5986,8 @@ export class StorageManager {
     if (cappedLimit === 0) return [];
 
     const projected = readProjectedMemoryTimeline(this.baseDir, memoryId, cappedLimit);
-    if (projected && projected.length > 0) return projected; warnProjectionFallback(this.baseDir, "getMemoryTimeline");
+    if (projected && projected.length > 0) return projected;
+    warnProjectionFallback(this.baseDir, "getMemoryTimeline");
     const events = await this.readAllMemoryLifecycleEvents();
     return events.filter((event) => event.memoryId === memoryId).slice(-cappedLimit);
   }
@@ -6208,7 +6038,8 @@ export class StorageManager {
       invalidAt?: string;
       observedAt?: string;
       eventTimeSource?: "extracted" | "assumed";
-    } = {},
+      sourceConnector?: string;
+    } = {}
   ): Promise<string> {
     await this.ensureDirectories();
     const now = new Date();
@@ -6247,6 +6078,7 @@ export class StorageManager {
       ...(options.faithfulness ? { faithfulness: options.faithfulness } : {}),
       ...(options.sources ? { sources: options.sources } : {}),
       ...(options.provenance ? { provenance: options.provenance } : {}),
+      ...(options.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
     };
 
     const sanitized = sanitizeMemoryContent(content);
@@ -6281,11 +6113,7 @@ export class StorageManager {
    * Mark a memory as superseded by another.
    * Updates the old memory's status and adds the supersededBy link.
    */
-  async supersedeMemory(
-    oldMemoryId: string,
-    newMemoryId: string,
-    reason: string,
-  ): Promise<boolean> {
+  async supersedeMemory(oldMemoryId: string, newMemoryId: string, reason: string): Promise<boolean> {
     const memories = await this.readAllMemories();
     const oldMemory = memories.find((m) => m.frontmatter.id === oldMemoryId);
     if (!oldMemory) return false;
@@ -6332,7 +6160,12 @@ export class StorageManager {
             entityRef: oldMemory.frontmatter.entityRef,
             structuredAttributes: oldMemory.frontmatter.structuredAttributes,
           },
-          { reason: "contradiction_resolution", createdBy: "contradiction_resolution", createdAt: now, supersessionKeysForFact },
+          {
+            reason: "contradiction_resolution",
+            createdBy: "contradiction_resolution",
+            createdAt: now,
+            supersessionKeysForFact,
+          }
         )) {
           await this.appendTombstone(input);
         }
@@ -6450,7 +6283,10 @@ export class StorageManager {
   async saveTopics(topics: TopicScore[]): Promise<void> {
     const metaPath = path.join(this.stateDir, "topics.json");
     await mkdir(this.stateDir, { recursive: true });
-    await this.writeStorageSecureFile(metaPath, JSON.stringify({ topics, updatedAt: new Date().toISOString() }, null, 2));
+    await this.writeStorageSecureFile(
+      metaPath,
+      JSON.stringify({ topics, updatedAt: new Date().toISOString() }, null, 2)
+    );
     log.debug(`saved ${topics.length} topic scores`);
   }
 
@@ -6475,7 +6311,7 @@ export class StorageManager {
   async addLinksToMemory(
     memoryId: string,
     links: MemoryLink[],
-    lifecycle?: MemoryLifecycleEventWriteOptions,
+    lifecycle?: MemoryLifecycleEventWriteOptions
   ): Promise<boolean> {
     const memories = await this.readAllMemories();
     const memory = memories.find((m) => m.frontmatter.id === memoryId);
@@ -6498,7 +6334,7 @@ export class StorageManager {
           links: mergedLinks,
           updated: new Date().toISOString(),
         },
-        lifecycle,
+        lifecycle
       );
       log.debug(`added ${links.length} links to memory ${memoryId}`);
       return true;
@@ -6508,10 +6344,7 @@ export class StorageManager {
     }
   }
 
-  private summarizeLifecycleState(
-    frontmatter: MemoryFrontmatter,
-    filePath: string,
-  ): MemoryLifecycleStateSummary {
+  private summarizeLifecycleState(frontmatter: MemoryFrontmatter, filePath: string): MemoryLifecycleStateSummary {
     return {
       category: frontmatter.category,
       path: filePath,
@@ -6520,10 +6353,7 @@ export class StorageManager {
     };
   }
 
-  private frontmatterPatchEventType(
-    before: MemoryFrontmatter,
-    after: MemoryFrontmatter,
-  ): MemoryLifecycleEventType {
+  private frontmatterPatchEventType(before: MemoryFrontmatter, after: MemoryFrontmatter): MemoryLifecycleEventType {
     const beforeStatus = before.status ?? "active";
     const afterStatus = after.status ?? "active";
     if (beforeStatus !== "archived" && afterStatus === "archived") return "archived";
@@ -6537,7 +6367,7 @@ export class StorageManager {
 
   private async appendGeneratedMemoryLifecycleEvent(
     input: Omit<MemoryLifecycleEvent, "eventId" | "ruleVersion">,
-    ruleVersion = "memory-lifecycle-ledger.v1",
+    ruleVersion = "memory-lifecycle-ledger.v1"
   ): Promise<void> {
     await this.appendMemoryLifecycleEvents([
       {
@@ -6551,7 +6381,7 @@ export class StorageManager {
   private async appendGeneratedMemoryLifecycleEventFailOpen(
     operation: string,
     input: Omit<MemoryLifecycleEvent, "eventId" | "ruleVersion">,
-    ruleVersion?: string,
+    ruleVersion?: string
   ): Promise<void> {
     try {
       await this.appendGeneratedMemoryLifecycleEvent(input, ruleVersion);
