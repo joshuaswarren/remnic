@@ -20,6 +20,7 @@ import {
 } from "./orchestration/extraction-run.js";
 import { TurnIngestionCoordinator, type TurnIngestionDeps } from "./orchestration/turn-ingestion.js";
 import { StorageManager } from "./storage.js";
+import { hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import type { ExtractionEngine } from "./extraction.js";
 import type { ThreadingManager } from "./threading.js";
 import type { BufferTurn, ExtractionResult, PluginConfig } from "./types.js";
@@ -496,4 +497,43 @@ test("StorageManager.writeMemory: sourceConnector preserved for inline capture p
     StorageManager.clearAllStaticCaches();
     await rm(baseDir, { recursive: true, force: true });
   }
+});
+
+test("hashAccessIdempotencyPayload: different sourceConnector yields different fingerprint", () => {
+  // QMx3S: two writes with identical content but different sourceConnector
+  // must produce different idempotency fingerprints so they are not
+  // treated as duplicates.
+  const base = {
+    operation: "memory_store",
+    request: {
+      schemaVersion: 1,
+      content: "test fact",
+      category: "fact",
+      confidence: 0.8,
+      namespace: "default",
+      tags: [],
+      entityRef: undefined,
+      ttl: undefined,
+      sourceReason: undefined,
+    },
+  };
+  const withChatgpt = { ...base, request: { ...base.request, sourceConnector: "chatgpt" } };
+  const withCodex = { ...base, request: { ...base.request, sourceConnector: "codex-cli" } };
+  const noConnector = { ...base, request: { ...base.request, sourceConnector: undefined } };
+
+  const hashChatgpt = hashAccessIdempotencyPayload(withChatgpt);
+  const hashCodex = hashAccessIdempotencyPayload(withCodex);
+  const hashNone = hashAccessIdempotencyPayload(noConnector);
+
+  assert.notEqual(hashChatgpt, hashCodex, "different connectors must yield different fingerprints");
+  assert.notEqual(hashChatgpt, hashNone, "connector vs no-connector must yield different fingerprints");
+  assert.notEqual(hashCodex, hashNone, "connector vs no-connector must yield different fingerprints");
+
+  // Same connector + key order must be stable (stableStringify sorts keys)
+  const withChatgptReordered = {
+    request: { ...base.request, sourceConnector: "chatgpt" },
+    operation: "memory_store",
+  };
+  const hashReordered = hashAccessIdempotencyPayload(withChatgptReordered);
+  assert.equal(hashChatgpt, hashReordered, "key order must not affect fingerprint");
 });
