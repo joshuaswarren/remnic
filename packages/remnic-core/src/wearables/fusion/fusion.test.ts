@@ -916,3 +916,129 @@ test("reconstruct round-trips through the real composeDayTranscriptBody renderer
   assert.equal(conv.segments[1]!.isSelf, false);
   assert.equal(conv.segments[1]!.startIso, "2026-06-10T09:01:00.000Z");
 });
+
+test("equal-key comparator inputs keep stable input order (deterministic across runs)", () => {
+  // Two cross-source conflicts where the bee source contributes TWO same-
+  // speaker, same-length cands. bee1 and bee2 tie on every comparator key
+  // (trust, text length, source) — only a STABLE secondary key keeps them
+  // in input order. A comparator that returns nonzero for equal items (the
+  // `a < b ? -1 : 1` antipattern) leaves their order undefined.
+  const textSeed = "Limitless seed text.";
+  const textBee1 = "Bee conflict one xyz.";
+  const textBee2 = "Bee conflict two xyz.";
+  const build = () =>
+    fuseDay(
+      DATE,
+      inputs(
+        {
+          source: "limitless",
+          conversations: [
+            conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+              {
+                text: textSeed,
+                speakerName: "Jane",
+                startIso: "2026-06-10T09:00:30.000Z",
+              },
+            ]),
+          ],
+        },
+        {
+          source: "bee",
+          conversations: [
+            conversation("bee", "c1", "2026-06-10T09:00:05.000Z", [
+              {
+                text: textBee1,
+                speakerName: "Jane",
+                startIso: "2026-06-10T09:00:30.000Z",
+              },
+              {
+                text: textBee2,
+                speakerName: "Jane",
+                startIso: "2026-06-10T09:00:30.000Z",
+              },
+            ]),
+          ],
+        },
+      ),
+    );
+
+  const fused = build();
+  // Deterministic: re-running produces identical output.
+  assert.deepEqual(build(), fused);
+
+  const conv = fused.conversations[0]!;
+  // The three distinct same-window utterances stay separate and surface one
+  // cross-segment ASR conflict.
+  assert.equal(conv.segments.length, 3);
+  const disagreement = conv.disagreements.find((d) => d.kind === "asr-text");
+  assert.ok(disagreement, "a cross-segment asr-text disagreement is recorded");
+  const values = disagreement!.candidates.map((c) => c.value);
+  assert.equal(values.length, 3);
+  // Stable: the two equal-key bee cands keep input order (bee1 before bee2),
+  // never swapped by an unstable comparator.
+  assert.ok(
+    values.indexOf(textBee1) < values.indexOf(textBee2),
+    "equal-key cands keep stable input order",
+  );
+});
+
+test("same window + same text + different speaker fuses to one segment with a recorded speaker conflict", () => {
+  // Two sources capture the same utterance in the same window but DISAGREE
+  // on the speaker (Jane vs John). The same-speaker gate must not split
+  // these into two segments: they corroborate on time+text, so they fuse
+  // into ONE utterance and the speaker disagreement is recorded with
+  // provenance for each label. (The r2 separation is about DIFFERENT text;
+  // this is SAME text, different speaker.)
+  const text = "Let's ship the launch on Friday.";
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            { text, speakerName: "Jane", startIso: "2026-06-10T09:00:30.000Z" },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text, speakerName: "John", startIso: "2026-06-10T09:00:30.000Z" },
+          ]),
+        ],
+      },
+    ),
+    { sourceTrust: { limitless: 0.9 } },
+  );
+  const conv = fused.conversations[0]!;
+  // ONE fused segment — not two separate ones.
+  assert.equal(conv.segments.length, 1);
+  const segment = conv.segments[0]!;
+  assert.equal(segment.text, text);
+  // The higher-trust source's attribution wins provisionally.
+  assert.equal(segment.speaker, "Jane");
+  assert.equal(segment.isSelf, false);
+  // A speaker conflict is recorded (not silently dropped).
+  const speakerDisagreement = conv.disagreements.find(
+    (d) => d.kind === "speaker",
+  );
+  assert.ok(speakerDisagreement, "a speaker disagreement is recorded");
+  const labeled = speakerDisagreement!.candidates.map(
+    (c) => `${c.source}=${c.value}`,
+  );
+  assert.deepEqual([...labeled].sort(), ["bee=John", "limitless=Jane"]);
+  assert.deepEqual(speakerDisagreement!.provisional, {
+    source: "limitless",
+    value: "Jane",
+  });
+  // Confidence is lowered by the unresolved speaker conflict.
+  assert.ok(segment.confidence < 0.8);
+  // No attribution is lost: both labels still appear in the speaker list.
+  const labels = conv.speakers.filter((s) => !s.isSelf).map((s) => s.label);
+  assert.ok(
+    labels.includes("Jane") && labels.includes("John"),
+    "both speaker labels are retained",
+  );
+});

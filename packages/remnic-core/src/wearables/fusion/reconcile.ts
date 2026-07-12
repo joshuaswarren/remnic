@@ -281,40 +281,56 @@ export function fuseCluster(
   });
 
   // Greedy cross-source alignment: a group holds at most one segment per
-  // source (so two sequential same-source utterances never collapse),
-  // and accepts a new segment only when speaker matches and the start is
-  // within the tolerance window of the group anchor.
+  // source (so two sequential same-source utterances never collapse). A
+  // segment joins an existing group when their time windows match (or both
+  // are untimestamped) AND the text corroborates the SAME utterance.
+  // Speaker is matched in two tiers: first an exact same-speaker group;
+  // only when none exists does a segment join a group whose utterance
+  // corroborates but whose speaker label DISAGREES. That is a speaker
+  // conflict on the same utterance — fused into one segment and recorded
+  // as a disagreement (see reconcileGroup) rather than emitted as two
+  // separate segments. This does NOT collapse distinct utterances: the
+  // text must corroborate, so different-worded same-window segments
+  // (the r2 separation) still stay apart.
   const groups: AlignGroup[] = [];
   for (const seg of tagged) {
     const key = speakerKey(seg.speakerLabel, seg.isSelf);
     const segMissing = !Number.isFinite(seg.startMs);
-    let chosen: AlignGroup | undefined;
-    for (const group of groups) {
-      if (group.key !== key) continue;
-      if (group.members.some((member) => member.source === seg.source)) continue;
+    const segWords = normalizeWords(seg.text);
+
+    // True when `group` has room for `seg`'s source and corroborates the
+    // same utterance (matching time window + corroborating text). Speaker
+    // is intentionally NOT tested here — the caller decides whether a
+    // same-speaker match or a speaker-conflict match is acceptable.
+    const corroborates = (group: AlignGroup): boolean => {
+      if (group.members.some((member) => member.source === seg.source)) {
+        return false;
+      }
       // Missing-start segments only align with other missing-start groups.
       const groupMissing = !Number.isFinite(group.anchorMs);
-      if (groupMissing !== segMissing) continue;
+      if (groupMissing !== segMissing) return false;
       if (!groupMissing && Math.abs(seg.startMs - group.anchorMs) > toleranceMs) {
-        continue;
+        return false;
       }
-      // Cross-source corroboration gate. A segment only joins an existing
-      // group when it corroborates the SAME utterance as a member. Without
-      // this, distinct utterances that merely share a speaker and a time
-      // window (timestamped) — or a speaker key alone (untimed) — collapse
-      // into one segment and silently lose a source's content. Timestamped
-      // alignment accepts an exact word match OR a leading-word prefix
-      // (truncation) so the more-complete-wins override can still reunite a
-      // clipped transcript with its full wording; untimed alignment has no
-      // time anchor, so it requires an exact word match.
-      const segWords = normalizeWords(seg.text);
-      const corroborated = group.members.some((member) =>
+      // Cross-source corroboration gate: distinct utterances that merely
+      // share a speaker and a time window (timestamped) — or a speaker key
+      // alone (untimed) — must NOT collapse. Timestamped alignment accepts
+      // an exact word match OR a leading-word prefix (truncation) so the
+      // more-complete-wins override can reunite a clipped transcript with
+      // its full wording; untimed alignment has no anchor, so exact only.
+      return group.members.some((member) =>
         wordsCorroborate(normalizeWords(member.text), segWords, !groupMissing),
       );
-      if (!corroborated) continue;
-      chosen = group;
-      break;
+    };
+
+    // Prefer an exact same-speaker corroborating group.
+    let chosen = groups.find((group) => group.key === key && corroborates(group));
+    if (chosen === undefined) {
+      // Fall back: same utterance (time+text corroborate) but a different
+      // speaker label -> speaker conflict, aligned into one segment.
+      chosen = groups.find((group) => group.key !== key && corroborates(group));
     }
+
     if (chosen !== undefined) {
       chosen.members.push(seg);
       if (seg.originalIndex < chosen.originalIndex) {
@@ -349,9 +365,7 @@ export function fuseCluster(
   for (const group of groups) {
     const reconciled = reconcileGroup(group);
     segments.push(reconciled.segment);
-    if (reconciled.disagreement !== undefined) {
-      disagreements.push(reconciled.disagreement);
-    }
+    disagreements.push(...reconciled.disagreements);
   }
   // Cross-segment ASR disagreements: distinct utterances kept as separate
   // segments (never collapsed) yet sharing a speaker + time window and
@@ -376,19 +390,25 @@ export function fuseCluster(
 
 interface ReconciledGroup {
   segment: FusedSegment;
-  disagreement?: FusedDisagreement;
+  disagreements: FusedDisagreement[];
 }
 
 function reconcileGroup(group: AlignGroup): ReconciledGroup {
   const members = group.members;
-  // Rank: higher trust, then more-complete (longer), then stable source order.
+  // Rank: higher trust, then more-complete (longer), then stable source
+  // order, finally the original transcript index — a total order so the
+  // comparator returns 0 only for an identical item (never nonzero on a
+  // tie), keeping the sort stable and contract-compliant.
   const ranked = [...members].sort((a, b) => {
     if (Math.abs(b.sourceTrust - a.sourceTrust) > TRUST_DECISION_EPSILON) {
       return b.sourceTrust - a.sourceTrust;
     }
     if (b.text.length !== a.text.length) return b.text.length - a.text.length;
     if (a.source !== b.source) return a.source < b.source ? -1 : 1;
-    return a.conversationId < b.conversationId ? -1 : 1;
+    if (a.conversationId !== b.conversationId) {
+      return a.conversationId < b.conversationId ? -1 : 1;
+    }
+    return a.originalIndex - b.originalIndex;
   });
   const top = ranked[0];
   const topWords = normalizeWords(top.text);
@@ -454,22 +474,35 @@ function reconcileGroup(group: AlignGroup): ReconciledGroup {
     disagree.push({ source: candidate.source, value: candidate.text });
   }
 
+  // Speaker-attribution conflict: members of the same utterance disagree
+  // on who spoke (same time window + corroborating text, different label).
+  // Detected from member labels — not the group key — so a group that
+  // absorbed a conflicting speaker is handled identically. The chosen
+  // (top-ranked) member's attribution wins the segment provisionally;
+  // every source's label is surfaced as a disagreement with full
+  // provenance so no attribution is silently lost.
+  const distinctSpeakerKeys = new Set(
+    members.map((m) => speakerKey(m.speakerLabel, m.isSelf)),
+  );
+  const speakerConflict = distinctSpeakerKeys.size > 1;
+
   const alternatives = others.map((candidate) => ({
     source: candidate.source,
     text: candidate.text,
   }));
 
-  // Confidence: single source -> its trust; corroboration boosts;
-  // a recorded conflict lowers it.
-  const confidence = conflict
-    ? clamp01(chosen.sourceTrust * 0.7)
-    : members.length > 1
-      ? clamp01(chosen.sourceTrust + 0.1 * (members.length - 1))
-      : clamp01(chosen.sourceTrust);
+  // Confidence: single source -> its trust; corroboration boosts; a
+  // recorded text OR speaker conflict lowers it.
+  const confidence =
+    conflict || speakerConflict
+      ? clamp01(chosen.sourceTrust * 0.7)
+      : members.length > 1
+        ? clamp01(chosen.sourceTrust + 0.1 * (members.length - 1))
+        : clamp01(chosen.sourceTrust);
 
   const segment: FusedSegment = {
-    speaker: group.speakerLabel,
-    isSelf: group.isSelf,
+    speaker: chosen.speakerLabel,
+    isSelf: chosen.isSelf,
     text: chosen.text,
     confidence,
     provenance: {
@@ -483,22 +516,37 @@ function reconcileGroup(group: AlignGroup): ReconciledGroup {
     ...(chosen.endIso !== undefined ? { endIso: chosen.endIso } : {}),
   };
 
-  let disagreement: FusedDisagreement | undefined;
+  const disagreements: FusedDisagreement[] = [];
+  const anchorIso =
+    chosen.startIso ??
+    (Number.isFinite(group.anchorMs)
+      ? new Date(group.anchorMs).toISOString()
+      : undefined);
   if (conflict) {
-    const anchorIso =
-      chosen.startIso ??
-      (Number.isFinite(group.anchorMs)
-        ? new Date(group.anchorMs).toISOString()
-        : undefined);
-    disagreement = {
+    disagreements.push({
       kind: "asr-text",
       subject: anchorIso ?? "(no timestamp)",
       candidates: [{ source: chosen.source, value: chosen.text }, ...disagree],
       provisional: { source: chosen.source, value: chosen.text },
-    };
+    });
+  }
+  if (speakerConflict) {
+    // One candidate per source (a group holds one member per source),
+    // sorted by source for determinism; the chosen source is provisional.
+    const speakerCandidates = members
+      .map((m) => ({ source: m.source, value: m.speakerLabel }))
+      .sort((a, b) =>
+        a.source < b.source ? -1 : a.source > b.source ? 1 : 0,
+      );
+    disagreements.push({
+      kind: "speaker",
+      subject: anchorIso ?? "(no timestamp)",
+      candidates: speakerCandidates,
+      provisional: { source: chosen.source, value: chosen.speakerLabel },
+    });
   }
 
-  return { segment, disagreement };
+  return { segment, disagreements };
 }
 
 /**
@@ -549,8 +597,13 @@ function detectCrossSegmentDisagreements(
     for (const idx of clusterIdx) claimed[idx] = true;
 
     const involved = clusterIdx.map((idx) => segments[idx]!);
-    // Rank the provisional winner: higher trust, then longer text, then
-    // stable source order — mirrors reconcileGroup's member ranking.
+    // Stable secondary key: each involved segment's position in the
+    // reconciled segment array (clusterIdx is ascending). Two cands can
+    // share a source, so source alone is NOT a total order here; the
+    // position tie-break makes the comparator return 0 only for an
+    // identical item and keeps the ranking deterministic — mirroring
+    // reconcileGroup's originalIndex tie-break.
+    const involvedOrder = new Map(involved.map((seg, i) => [seg, i]));
     involved.sort((a, b) => {
       if (
         Math.abs(b.provenance.sourceTrust - a.provenance.sourceTrust) >
@@ -559,7 +612,10 @@ function detectCrossSegmentDisagreements(
         return b.provenance.sourceTrust - a.provenance.sourceTrust;
       }
       if (b.text.length !== a.text.length) return b.text.length - a.text.length;
-      return a.provenance.source < b.provenance.source ? -1 : 1;
+      if (a.provenance.source !== b.provenance.source) {
+        return a.provenance.source < b.provenance.source ? -1 : 1;
+      }
+      return involvedOrder.get(a)! - involvedOrder.get(b)!;
     });
     const provisional = involved[0]!;
     const anchorIso = involved
