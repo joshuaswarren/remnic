@@ -1898,3 +1898,118 @@ test("HTTP scoped-token namespace allow-list is enforced on every namespace rout
     await server.stop();
   }
 });
+
+test("HTTP scoped-token namespace allow-list gates id-loaded contradiction routes (issue #1850 round 2)", async () => {
+  // The contradiction detail GET and review/resolve routes load the pair BY
+  // ID — its namespace comes from the record, NOT a ?namespace= query param
+  // that resolveNamespace() already gates. A namespace-scoped bearer that
+  // knows a pair id in a namespace outside its allow-list must NOT be able to
+  // read (GET) or mutate (resolve) it. Fail closed (403) everywhere; the pair
+  // in the allowed namespace is reachable.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-http-scoped-contradiction-"));
+  const allowedPair = writePair(dir, {
+    namespace: "ns_a",
+    memoryIds: ["a-1", "a-2"],
+    verdict: "contradicts",
+    rationale: "pair in the allowed namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  const deniedPair = writePair(dir, {
+    namespace: "ns_b",
+    memoryIds: ["b-1", "b-2"],
+    verdict: "contradicts",
+    rationale: "pair in a denied namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  const storage = { dir } as unknown as StorageManager;
+  const service = {
+    configRef: parseConfig({
+      memoryDir: dir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryDir: dir,
+    storageRef: storage,
+    getReadableStorageForNamespace: async (namespace: string | undefined) => ({
+      namespace: namespace ?? "default",
+      storage,
+    }),
+    getWritableStorageForNamespace: async (namespace: string | undefined) => ({
+      namespace: namespace ?? "default",
+      storage,
+    }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "scoped-ns-a", capabilities: { version: 1, namespaces: ["ns_a"] } },
+      { token: "operator", capabilities: { version: 1 } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const getDetail = (token: string, pairId: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/review/contradictions/${pairId}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  const resolve = (token: string, pairId: string, verb: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/review/resolve`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ pairId, verb }),
+    });
+  try {
+    // ── GET detail: scoped token, denied namespace → 403 (fail closed, no leak) ──
+    assert.equal(
+      (await getDetail("scoped-ns-a", deniedPair.pairId)).status,
+      403,
+      "scoped GET: a pair in an unlisted namespace must be denied (403), not leaked",
+    );
+    // ── GET detail: scoped token, allowed namespace → 200 ──
+    assert.equal(
+      (await getDetail("scoped-ns-a", allowedPair.pairId)).status,
+      200,
+      "scoped GET: a pair in the allowed namespace must succeed",
+    );
+
+    // ── review/resolve: scoped token, denied namespace → 403 before any mutation ──
+    const deniedResolve = await resolve("scoped-ns-a", deniedPair.pairId, "both-valid");
+    assert.equal(
+      deniedResolve.status,
+      403,
+      "scoped resolve: a pair in an unlisted namespace must be denied (403) before any mutation",
+    );
+    // The denied pair must NOT have been mutated (no resolution leak).
+    assert.notEqual(
+      readPair(dir, deniedPair.pairId)?.resolution,
+      "both-valid",
+      "scoped resolve: the denied pair must remain unresolved",
+    );
+
+    // ── review/resolve: scoped token, allowed namespace → succeeds (not 403) ──
+    const allowedResolve = await resolve("scoped-ns-a", allowedPair.pairId, "both-valid");
+    assert.equal(
+      allowedResolve.status,
+      200,
+      "scoped resolve: a pair in the allowed namespace must succeed",
+    );
+    assert.equal(
+      readPair(dir, allowedPair.pairId)?.resolution,
+      "both-valid",
+      "scoped resolve: the allowed pair is marked resolved",
+    );
+
+    // ── unrestricted operator token: the denied-namespace pair is reachable ──
+    assert.equal(
+      (await getDetail("operator", deniedPair.pairId)).status,
+      200,
+      "unrestricted GET: the denied-namespace pair is reachable for an unrestricted token",
+    );
+  } finally {
+    await server.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

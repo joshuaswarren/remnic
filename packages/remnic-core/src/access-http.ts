@@ -37,6 +37,7 @@ import { expandTildePath } from "./utils/path.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { getOperation, type OperationName } from "./access-boundary.js";
 import {
+  assertNamespaceAllowed,
   assertOperationAllowed,
   isCapabilityRestricted,
   tokenCapabilityStore,
@@ -50,6 +51,8 @@ import { handleChatMessage, handleChatEventsSSE } from "./chat/chat-http.js";
 // cleanupExpiredChatSessions wires the chat session TTL sweep into the
 // server lifecycle (issue #1685 item 1 / #1687 Thread 21).
 import { cleanupExpiredChatSessions } from "./chat/chat-session.js";
+import { isDefaultReviewNamespace, listPairs, readPair } from "./contradiction/contradiction-review.js";
+import { isValidResolutionVerb, executeResolution } from "./contradiction/resolution.js";
 
 export interface AccessHttpReadinessState {
   ready: boolean;
@@ -2124,10 +2127,6 @@ export class EngramAccessHttpServer {
       }
       const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
       const limit = parseStrictIntegerQuery(parsed.searchParams.get("limit"), "limit", 50, 1);
-      const {
-        isDefaultReviewNamespace,
-        listPairs,
-      } = await import("./contradiction/contradiction-review.js");
       const principal = this.resolveRequestPrincipal(req);
       const resolved = await this.service.getReadableStorageForNamespace(namespace, principal);
       const reviewNamespace = this.service.configRef.namespacesEnabled ? resolved.namespace : undefined;
@@ -2147,12 +2146,20 @@ export class EngramAccessHttpServer {
     if (req.method === "GET" && pathname.startsWith("/engram/v1/review/contradictions/")) {
       this.enforceTokenOp("contradiction_detail"); // boundary dispatch (issue #1525)
       const pairId = pathname.split("/").pop() ?? "";
-      const { readPair } = await import("./contradiction/contradiction-review.js");
       const pair = readPair(this.service.memoryDir, pairId);
       if (!pair) {
         this.respondJson(res, 404, { error: "pair_not_found" });
         return;
       }
+      // Per-token namespace enforcement (issue #1850 round 2): the pair is
+      // fetched BY ID, so its namespace comes from the record — NOT a query
+      // param that resolveNamespace() already gates. A namespace-scoped
+      // bearer that knows a pair id must not read contradiction data in a
+      // namespace outside its allow-list. Fail closed (403) before the
+      // principal-storage check so the token's declared scope is the
+      // outermost gate (assertNamespaceAllowed is a no-op for unrestricted
+      // tokens).
+      assertNamespaceAllowed(tokenCapabilityStore.getStore(), pair.namespace);
       try {
         await this.service.getReadableStorageForNamespace(pair.namespace, this.resolveRequestPrincipal(req));
       } catch {
@@ -2172,10 +2179,22 @@ export class EngramAccessHttpServer {
         this.respondJson(res, 400, { error: "pairId and verb are required" });
         return;
       }
-      const { isValidResolutionVerb, executeResolution } = await import("./contradiction/resolution.js");
       if (!isValidResolutionVerb(verb)) {
         this.respondJson(res, 400, { error: `Invalid verb: ${verb}. Must be one of: keep-a, keep-b, merge, both-valid, needs-more-context` });
         return;
+      }
+      // Per-token namespace enforcement (issue #1850 round 2): the resolution
+      // target is selected BY pairId, so the affected namespace comes from the
+      // record — NOT a request param that resolveNamespace() already gates.
+      // A namespace-scoped bearer must not mutate a contradiction pair in a
+      // namespace outside its allow-list. Load the pair to learn its
+      // namespace, enforce the token's scope, and fail closed (403) BEFORE
+      // dispatching the (mutating) resolution. A missing pair falls through
+      // to executeResolution's existing not-found result. No-op for
+      // unrestricted tokens.
+      const targetPair = readPair(this.service.memoryDir, pairId);
+      if (targetPair) {
+        assertNamespaceAllowed(tokenCapabilityStore.getStore(), targetPair.namespace);
       }
       const principal = this.resolveRequestPrincipal(req);
       const result = await executeResolution(this.service.memoryDir, this.service.storageRef, pairId, verb, {
