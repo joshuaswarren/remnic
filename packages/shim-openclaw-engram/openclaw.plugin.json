@@ -5563,6 +5563,11 @@
                       "type": "boolean",
                       "default": true,
                       "description": "Drop segments that look like ASR garbage."
+                    },
+                    "preserveUtteranceBoundaries": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Keep utterance-level boundaries (one segment per utterance) instead of merging consecutive same-speaker segments. Defaults off; Bee enables this by default. (issue #1811)"
                     }
                   }
                 }
