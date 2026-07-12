@@ -2426,6 +2426,99 @@ test("HTTP per-request token capabilities never bleed across concurrent async re
   }
 });
 
+test("HTTP allow-capability is never inherited by a concurrent deny token across the async yield (issue #1850 r8 ALS non-inheritance)", async () => {
+  // The r7 run() fix guarantees each request observes its OWN caps. The sharper
+  // property: a token whose caps ALLOW the op+namespace (→ 200) interleaved
+  // with deny tokens (→ 403) must NEVER let a deny request inherit the allow
+  // token's capabilities — i.e. in the SAME batch where allow requests returned
+  // 200, NO deny request ever returned 200. Distinct (op, namespace) per token
+  // so the result can only come from each request's own resolved caps.
+  const observed: Array<TokenCapabilities | undefined> = [];
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-http-als-noninherit",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryBrowse: async () => {
+      // Real wall-clock yield — the LEGITIMATE timer exception: this test
+      // exercises ALS async-scope isolation across CONCURRENT requests, so the
+      // await must produce a genuine overlap window where an enterWith-based
+      // store would read another request's caps. Deterministic fake timers
+      // cannot force that cross-request overlap (mirrors the r7 sibling test).
+      await new Promise<void>((resolve) => setTimeout(resolve, 8));
+      observed.push(tokenCapabilityStore.getStore());
+      return { total: 0, memories: [] };
+    },
+    memoryGet: async () => ({ found: true }),
+    peerList: async () => ({ peers: [] }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      // ALLOW: op + namespace both permitted → 200.
+      { token: "allow", capabilities: { version: 1, ops: ["memory_list"], namespaces: ["ns_allow"] } },
+      // DENY (op-level): empty ops → 403 at the op-gate.
+      { token: "deny-all", capabilities: { version: 1, ops: [] } },
+      // DENY (namespace-level): op permitted but scoped to a DIFFERENT
+      // namespace ("ns_other") than the request ("ns_allow") → 403 at the
+      // namespace-gate. The ONLY way this becomes 200 is by inheriting the
+      // allow token's ns_allow cap — exactly the bleed run() prevents.
+      { token: "deny-ns", capabilities: { version: 1, ops: ["memory_list"], namespaces: ["ns_other"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const get = (token: string, namespace: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories?namespace=${namespace}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  try {
+    const REPEATS = 15;
+    const batch: Promise<Response>[] = [];
+    for (let i = 0; i < REPEATS; i++) {
+      batch.push(get("allow", "ns_allow")); // 3i   → 200
+      batch.push(get("deny-all", "ns_allow")); // 3i+1 → 403 (op-gate)
+      batch.push(get("deny-ns", "ns_allow")); // 3i+2 → 403 (namespace-gate)
+    }
+    const responses = await Promise.all(batch);
+    const allowStatuses = responses.filter((_, i) => i % 3 === 0).map((r) => r.status);
+    const denyAllStatuses = responses.filter((_, i) => i % 3 === 1).map((r) => r.status);
+    const denyNsStatuses = responses.filter((_, i) => i % 3 === 2).map((r) => r.status);
+
+    // ALLOW requests succeed (200) — the caps DID resolve correctly and the
+    // service read happened under the allow scope.
+    assert.ok(allowStatuses.every((s) => s === 200), `allow token should all be 200: ${JSON.stringify(allowStatuses)}`);
+
+    // NON-INHERITANCE: in the SAME interleaved batch where allow got 200, every
+    // deny request stayed 403 — neither deny token ever inherited the allow
+    // token's capabilities (which would have been 200). Covers BOTH op-level
+    // and namespace-level denial.
+    assert.ok(
+      denyAllStatuses.every((s) => s === 403),
+      `deny-all token must never be 200 (never inherits allow caps): ${JSON.stringify(denyAllStatuses)}`,
+    );
+    assert.ok(
+      denyNsStatuses.every((s) => s === 403),
+      `deny-ns token must never be 200 (never inherits allow namespace): ${JSON.stringify(denyNsStatuses)}`,
+    );
+    // Both deny arrays are ALL 403 ⟹ neither contains a 200: in the same
+    // interleaved batch where the allow token returned 200, no deny request
+    // ever inherited the allow token's capabilities.
+
+    // Only allow requests reached the service; the store read after the async
+    // yield carried the allow token's namespace every time — zero deny bleed.
+    assert.equal(observed.length, REPEATS, "only allow requests reached the service");
+    assert.ok(
+      observed.every((c) => c?.namespaces?.includes("ns_allow")),
+      "every service read carried the allow token's namespace — no deny bleed",
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
 test("HTTP chat/message gates the NEW session's namespace — scoped token cannot start a chat in a disallowed namespace (issue #1850 r7)", async () => {
   // A NEW chat turn (no chatSessionId) previously never hit the effective-
   // namespace chokepoint, so a namespace-scoped token could start a chat in the

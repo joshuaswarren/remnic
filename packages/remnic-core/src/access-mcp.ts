@@ -5,7 +5,7 @@ import type { Readable, Writable } from "node:stream";
 // (memory_get / memory_search / memory_store) as a side effect; callTool
 // dispatches migrated tools through the registry (issue #1525).
 import { type OperationName, getOperation } from "./access-boundary.js";
-import { assertOperationAllowed, capabilityAllowsOp, tokenCapabilityStore } from "./access-token-capabilities.js";
+import { assertOperationAllowed, capabilityAllowsOp, enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   type ActionConfidenceRequest,
   type CapsuleExportRequest,
@@ -2892,7 +2892,24 @@ export class EngramMcpServer {
       const message = typeof args.message === "string" ? args.message : "";
       if (!message) throw new EngramAccessInputError("message is required");
       const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId : undefined;
-      if (chatSessionId) await enforceChatSessionNamespace(this.service, chatSessionId);
+      if (chatSessionId) {
+        await enforceChatSessionNamespace(this.service, chatSessionId);
+      } else {
+        // NEW chat session (no chatSessionId): processChatMessage mints a fresh
+        // session under the EFFECTIVE namespace (scope.namespace OR server
+        // default). Unlike the HTTP chat handler (which forwards no namespace),
+        // the MCP scope CAN carry one (Thread 17), so route it through the SAME
+        // effective-namespace chokepoint as the HTTP new-chat path
+        // (enforceNamespaceAllowList maps undefined → default) — a namespace-
+        // scoped token CANNOT start a chat in a namespace outside its allow-
+        // list, including an unconfigured/forbidden server default. Fail closed;
+        // no-op for unrestricted/legacy tokens (issue #1850 round 8).
+        enforceNamespaceAllowList(
+          tokenCapabilityStore.getStore(),
+          scope?.namespace,
+          this.service.configRef?.defaultNamespace,
+        );
+      }
       const chatResult = await processChatMessage({
         service: this.service,
         config: this.service.configRef?.chat,
