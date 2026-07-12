@@ -3950,6 +3950,7 @@ export class StorageManager {
       intentGoal?: string;
       intentActionType?: string;
       intentEntityTypes?: string[];
+      sourceConnector?: string;
     } = {}
   ): Promise<string> {
     await this.ensureDirectories();
@@ -3974,6 +3975,7 @@ export class StorageManager {
       intentGoal: options.intentGoal,
       intentActionType: options.intentActionType,
       intentEntityTypes: options.intentEntityTypes,
+      ...(options.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
     };
 
     const sanitized = sanitizeMemoryContent(quote);

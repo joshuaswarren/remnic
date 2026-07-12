@@ -521,6 +521,7 @@ export class ExtractionPersistCoordinator {
               contentHashSource: options.category === "fact" ? dedupContent : rawContent,
               ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
               ...(options.provenance ? { provenance: options.provenance } : {}),
+              ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
             },
           );
           const promotedId = targetPromotion.id;
@@ -849,6 +850,7 @@ export class ExtractionPersistCoordinator {
             // Claim-level provenance spans (issue #1575 PR 2).
             ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
             ...(options.provenance ? { provenance: options.provenance } : {}),
+            ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
           },
         );
         const promotedId = sharedPromotion.id;
@@ -2265,6 +2267,7 @@ export class ExtractionPersistCoordinator {
                 intentGoal: inferredIntent?.goal,
                 intentActionType: inferredIntent?.actionType,
                 intentEntityTypes: inferredIntent?.entityTypes,
+                ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
               });
             }
             // v8.2: graph edge building for chunked memories. #1576: skip pending_review.
@@ -2564,6 +2567,7 @@ export class ExtractionPersistCoordinator {
             intentGoal: inferredIntent?.goal,
             intentActionType: inferredIntent?.actionType,
             intentEntityTypes: inferredIntent?.entityTypes,
+            ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
           });
         }
         // Register in the target storage content-hash index after successful
