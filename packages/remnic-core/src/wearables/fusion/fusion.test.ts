@@ -197,6 +197,110 @@ test("explicit end earlier than start is clamped to start so a within-gap neighb
   );
 });
 
+test("same-source conversations within the proximity gap stay separate without a cross-source bridge (issue #1849)", () => {
+  // The proximity gap bridges the SAME real-world conversation recorded by
+  // DIFFERENT sources. Two conversations from the SAME source within the
+  // gap must NOT merge: no other source corroborates that they are the
+  // same event, so the source's own conversation boundaries are preserved.
+  const a: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    endIso: "2026-06-10T09:10:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "First meeting." }],
+  };
+  const b: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c2",
+    startIso: "2026-06-10T09:12:00.000Z",
+    endIso: "2026-06-10T09:20:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Second meeting." }],
+  };
+  // 2-minute gap < 5-minute default, but SAME source => two clusters.
+  const clusters = clusterConversations([a, b]);
+  assert.equal(
+    clusters.length,
+    2,
+    "same-source conversations stay separate without a cross-source bridge",
+  );
+  assert.deepEqual(
+    clusters.map((c) => c[0]!.conversationId),
+    ["c1", "c2"],
+    "each conversation is its own cluster, in chronological order",
+  );
+});
+
+test("different-source conversations within the proximity gap still merge (cross-source bridge)", () => {
+  // Cross-source proximity bridging is the INTENDED use of the gap —
+  // verify it is preserved by the cross-source bridge rule.
+  const a: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    endIso: "2026-06-10T09:10:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "First meeting." }],
+  };
+  const b: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:12:00.000Z",
+    endIso: "2026-06-10T09:20:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "First meeting." }],
+  };
+  // 2-minute gap < 5-minute default, DIFFERENT sources => one cluster.
+  const clusters = clusterConversations([a, b]);
+  assert.equal(clusters.length, 1, "different-source conversations within the gap merge");
+  assert.deepEqual(clusters[0]!.map((c) => c.source).sort(), ["bee", "limitless"]);
+});
+
+test("same-source conversations bridged by a different-source chain merge into one cluster (issue #1849)", () => {
+  // A(src1) and C(src1) are the SAME source. B(src2) sits within the gap
+  // of both and bridges them: A→B→C is a valid cross-source chain. Without
+  // B, A and C would stay separate (same source, no bridge).
+  //
+  // Chosen behavior: a same-source pair that would NOT merge on its own
+  // MAY share a cluster when a different-source conversation within the gap
+  // corroborates the bridge — the union-find transitive closure links them
+  // through B. This preserves source boundaries when no bridge exists while
+  // still fusing corroborated chains.
+  const a: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    endIso: "2026-06-10T09:03:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Topic one." }],
+  };
+  const b: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:06:00.000Z",
+    endIso: "2026-06-10T09:10:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Topic one." }],
+  };
+  const c: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c2",
+    startIso: "2026-06-10T09:09:00.000Z",
+    endIso: "2026-06-10T09:20:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Topic two." }],
+  };
+  // A-B: diff source, 3-min gap (< 5 min) => bridge.
+  // A-C: same source, and C is 6 min past A.end (outside the gap) anyway.
+  // B-C: diff source, C overlaps B => bridge.
+  // => one cluster {A, B, C}, sorted by (start, source, id).
+  const clusters = clusterConversations([a, b, c]);
+  assert.equal(
+    clusters.length,
+    1,
+    "the bee conversation bridges the two limitless conversations into one cluster",
+  );
+  assert.deepEqual(
+    clusters[0]!.map((conv) => conv.conversationId),
+    ["c1", "c1", "c2"],
+    "cluster is sorted by (start, source, id): limitless c1, bee c1, limitless c2",
+  );
+});
+
 test("conflicting ASR text for the same window is recorded as a disagreement", () => {
   const fused = fuseDay(
     DATE,

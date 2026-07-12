@@ -626,8 +626,12 @@ export class WearablesService {
 
   /**
    * List fused conversations for a date (the fusion listing surface).
-   * Returns the persisted derived artifact, or an empty array when no
-   * fused artifact has been written for that day.
+   * Returns the persisted derived artifact's conversations, or an empty
+   * array when no fused artifact has been written for that day. When a
+   * file EXISTS but its body is corrupt (parseOk:false), throws
+   * WearablesInputError so the caller can distinguish a broken artifact
+   * from a day that was never fused — never silently returns an empty
+   * list that looks identical to "no artifact" (issue #1849).
    */
   async fusedConversations(
     date: string,
@@ -638,7 +642,14 @@ export class WearablesService {
     const storage = await this.deps.getStorage();
     const raw = await storage.fusionArtifactStore().readFusedDay(date);
     if (raw === null) return [];
-    return parseFusionDay(raw)?.conversations ?? [];
+    const parsed = parseFusionDay(raw);
+    if (parsed === null) return [];
+    if (!parsed.parseOk) {
+      throw new WearablesInputError(
+        `fused artifact for ${date} is corrupt — re-run \`wearables fuse ${date}\` to repair`,
+      );
+    }
+    return parsed.conversations;
   }
 
   /** List dates with stored fused artifacts, newest first. */

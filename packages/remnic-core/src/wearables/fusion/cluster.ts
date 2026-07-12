@@ -1,14 +1,18 @@
 /**
  * Wearable cross-source fusion — deterministic conversation clustering.
  *
- * Conversations from multiple sources recording the same real-world
- * event overlap or sit within a proximity gap. This module groups them
- * into clusters using a classic interval-merge-with-gap sweep, which is
- * fully deterministic: the only inputs are start/end times, source ids,
- * and conversation ids (no randomness, no LLM).
+ * Conversations from multiple sources recording the same real-world event
+ * overlap or sit within a proximity gap. This module groups them into
+ * clusters that are fully deterministic: the only inputs are start/end
+ * times, source ids, and conversation ids (no randomness, no LLM).
  *
- * Partial overlap is tolerated: a conversation that begins before the
- * current cluster's end (+ gap) joins it even if it extends well past.
+ * Cross-source time proximity BRIDGES the same real-world conversation
+ * recorded by DIFFERENT sources. A single source's own distinct
+ * conversations are never merged by time proximity alone — that would
+ * collapse the source's conversation boundaries. Two same-source
+ * conversations may end up in one cluster only when a different-source
+ * conversation within the gap corroborates that they are part of the same
+ * real-world event (a cross-source chain/bridge).
  */
 
 import type { FusionConversationInput } from "./types.js";
@@ -114,6 +118,25 @@ function compareConversation(
  * Conversations whose start time is unparseable are emitted as
  * single-element clusters at the tail (sorted by source then id) so no
  * data is lost.
+ *
+ * ## Cross-source bridging rule (issue #1849)
+ *
+ * Time proximity is meant to bridge the SAME real-world conversation
+ * recorded by DIFFERENT sources — not to merge one source's own distinct
+ * conversations. Two conversations from the SAME source are therefore
+ * never directly joined by time proximity alone; they may end up in the
+ * same cluster only through a cross-source chain where a different-source
+ * conversation within the gap corroborates the bridge. This preserves the
+ * source's own conversation boundaries when no other source corroborates
+ * a merge.
+ *
+ * Concretely, a union-find pass links every pair of conversations that
+ * (a) come from DIFFERENT sources and (b) sit within the proximity gap
+ * (the later start ≤ the earlier end + gap). The transitive closure then
+ * groups same-source conversations that are bridged by at least one
+ * intervening different-source conversation. A single source with two
+ * near-back-to-back conversations and no other source recording the same
+ * window stays in two separate clusters.
  */
 export function clusterConversations(
   inputs: readonly FusionConversationInput[],
@@ -130,6 +153,7 @@ export function clusterConversations(
     }
   }
 
+  // Deterministic processing + output ordering: (start, source, id).
   finite.sort((a, b) => {
     if (a.interval.start !== b.interval.start) {
       return a.interval.start - b.interval.start;
@@ -137,38 +161,62 @@ export function clusterConversations(
     return compareConversation(a.conv, b.conv);
   });
 
-  const clusters: FusionConversationInput[][] = [];
-  let current: FusionConversationInput[] = [];
-  let currentEnd = NaN;
-  const flush = () => {
-    if (current.length > 0) {
-      clusters.push(current);
-      current = [];
+  const n = finite.length;
+
+  // Union-find so that same-source pairs are never directly joined by time
+  // proximity alone; they may share a cluster only through a cross-source
+  // bridge (transitive closure over different-source proximity edges).
+  const parent = new Array<number>(n);
+  for (let i = 0; i < n; i++) parent[i] = i;
+
+  const find = (x: number): number => {
+    let root = x;
+    while (parent[root] !== root) root = parent[root];
+    // Path compression.
+    let cur = x;
+    while (parent[cur] !== root) {
+      const next = parent[cur]!;
+      parent[cur] = root;
+      cur = next;
     }
+    return root;
   };
 
-  for (const { conv, interval } of finite) {
-    if (current.length === 0) {
-      current = [conv];
-      currentEnd = interval.end;
-      continue;
-    }
-    // Overlap or within-gap adjacency -> join the cluster.
-    const joins =
-      interval.start <= currentEnd + proximityGapMs ||
-      Number.isNaN(currentEnd);
-    if (joins) {
-      current.push(conv);
-      if (Number.isNaN(currentEnd) || interval.end > currentEnd) {
-        currentEnd = interval.end;
-      }
-    } else {
-      flush();
-      current = [conv];
-      currentEnd = interval.end;
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+
+  // Link every cross-source pair within the proximity gap. `finite` is
+  // sorted by start, so once j's start exceeds i's end + gap, every later
+  // j is also out of reach — break early.
+  for (let i = 0; i < n; i++) {
+    const endGap = finite[i]!.interval.end + proximityGapMs;
+    for (let j = i + 1; j < n; j++) {
+      if (finite[j]!.interval.start > endGap) break;
+      // Only DIFFERENT sources may be directly joined by proximity.
+      if (finite[i]!.conv.source === finite[j]!.conv.source) continue;
+      union(i, j);
     }
   }
-  flush();
+
+  // Group conversations by union-find root. Because `finite` is sorted and
+  // we iterate in index order, each group's conversations stay in (start,
+  // source, id) order, and groups are discovered in chronological order
+  // (the first root seen belongs to the earliest-starting conversation).
+  const clusters: FusionConversationInput[][] = [];
+  const rootToCluster = new Map<number, number>();
+  for (let i = 0; i < n; i++) {
+    const root = find(i);
+    let idx = rootToCluster.get(root);
+    if (idx === undefined) {
+      idx = clusters.length;
+      rootToCluster.set(root, idx);
+      clusters.push([]);
+    }
+    clusters[idx]!.push(finite[i]!.conv);
+  }
 
   // Conversations with no parseable start can't be ordered in time, so
   // each becomes its own cluster, appended after the time-ordered ones.

@@ -915,8 +915,9 @@ test("fuseDay rewrites an artifact whose body is corrupt despite a matching cont
     const corruptRaw = `${validRaw!.slice(0, closeIdx + 5)}\n{ this is not valid JSON`;
     await fusionStore.writeFusedDay("2026-06-10", corruptRaw);
 
-    // The corrupted artifact now reads as zero conversations.
-    assert.equal((await service.fusedConversations("2026-06-10")).length, 0);
+    // The corrupted artifact surfaces as a corrupt-artifact error, not a
+    // clean empty list (issue #1849).
+    await assert.rejects(service.fusedConversations("2026-06-10"), /corrupt/);
 
     // Re-fuse: matching contentHash but a corrupt body => self-repair
     // (written: true), not a silent skip that leaves the bad file in place.
@@ -983,10 +984,11 @@ test("fuseDay rewrites a corrupt body even when the expected conversation count 
     const corruptRaw = `${validRaw!.slice(0, closeIdx + 5)}\n{ this is not valid JSON`;
     await fusionStore.writeFusedDay("2026-06-10", corruptRaw);
 
-    // The corrupted body reads as zero conversations, and the recomputed
-    // result is ALSO zero — without the parseOk signal this 0 == 0 match
-    // plus a matching hash would silently skip and leave the bad file.
-    assert.equal((await service.fusedConversations("2026-06-10")).length, 0);
+    // The corrupted body surfaces as a corrupt-artifact error (not a clean
+    // empty), and the recomputed result is ALSO zero — without the parseOk
+    // signal this 0 == 0 match plus a matching hash would silently skip
+    // and leave the bad file.
+    await assert.rejects(service.fusedConversations("2026-06-10"), /corrupt/);
 
     // Re-fuse: matching hash + 0 == 0 but a corrupt body (parseOk:false)
     // => self-repair (written: true), not a silent skip.
@@ -1041,8 +1043,8 @@ test("fuseDay rewrites an artifact whose body has malformed elements despite mat
     assert.ok(closeIdx !== -1);
     await fusionStore.writeFusedDay("2026-06-10", `${validRaw!.slice(0, closeIdx + 5)}\n[{}]`);
 
-    // The malformed body reads as zero conversations.
-    assert.equal((await service.fusedConversations("2026-06-10")).length, 0);
+    // The malformed body surfaces as a corrupt-artifact error (issue #1849).
+    await assert.rejects(service.fusedConversations("2026-06-10"), /corrupt/);
 
     // Re-fuse: matching hash + bodyHash + count but parseOk:false => rewrite.
     const repaired = await service.fuseDay("2026-06-10");
@@ -1054,6 +1056,52 @@ test("fuseDay rewrites an artifact whose body has malformed elements despite mat
     const idempotent = await service.fuseDay("2026-06-10");
     assert.equal(idempotent.written, false, "a repaired artifact must skip on the next run");
     assert.equal(idempotent.contentHash, hash);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
+test("fusedConversations surfaces a corrupt artifact distinctly, not as a clean empty (issue #1849)", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."]);
+    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."]);
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    // Initial fuse writes a valid artifact with >= 1 conversation.
+    const first = await service.fuseDay("2026-06-10");
+    assert.ok(first.conversationCount >= 1);
+
+    // A day that was never fused returns [] — the "no artifact" path.
+    assert.deepEqual(await service.fusedConversations("2026-07-01"), []);
+
+    // Corrupt the body: valid frontmatter, garbled JSON body.
+    const fusionStore = storage.fusionArtifactStore();
+    const validRaw = await fusionStore.readFusedDay("2026-06-10");
+    assert.ok(validRaw);
+    const closeIdx = validRaw!.indexOf("\n---\n", 4);
+    assert.ok(closeIdx !== -1);
+    await fusionStore.writeFusedDay(
+      "2026-06-10",
+      `${validRaw!.slice(0, closeIdx + 5)}\n{ this is not valid JSON`,
+    );
+
+    // The corrupt artifact must NOT look like "no conversations" — it must
+    // throw so the caller/CLI can distinguish corruption from absence and
+    // prompt a re-fuse, rather than silently returning an empty list.
+    await assert.rejects(
+      service.fusedConversations("2026-06-10"),
+      /corrupt/,
+    );
+
+    // The "never fused" path is unchanged — still returns [].
+    assert.deepEqual(await service.fusedConversations("2026-07-01"), []);
   } finally {
     rmSync(storage.dir, { recursive: true, force: true });
   }
