@@ -509,3 +509,59 @@ test("promotion dedup (QOjlD): readAllMemories throws on target → promotion pr
     "promotion must proceed (fail open) when target scan throws",
   );
 });
+
+test("promotion dedup (QOjlD): cited fact canonicalized before connector-aware dedup", async () => {
+  // When inlineSourceAttributionEnabled is true, the orchestrator appends a
+  // citation tag to every persisted fact. A second extraction that arrives
+  // already carrying that citation must still be deduped: normalizeStoredHashSource
+  // strips the citation from the STORED content before the connector-aware scan
+  // compares it to the canonical incoming body. Without this, the cited body
+  // would never match and the fact would be re-persisted (and re-promoted)
+  // on every relay cycle.
+  const { orchestrator, storage } = await makeDedupOrchestrator({
+    inlineSourceAttributionEnabled: true,
+  });
+  const rawBody =
+    "The deployment manifest pins container digests for reproducible builds.";
+
+  // First persist: orchestrator appends an inline citation and writes the fact.
+  const firstIds = await orchestrator.persistExtraction(
+    factResult(rawBody),
+    storage,
+    null,
+    { sourceConnector: "chatgpt" },
+  );
+  assert.equal(firstIds.length, 1, "first write must succeed");
+
+  // Read back the persisted body — it now carries the citation tag.
+  const memories = await storage.readAllMemories();
+  const firstMemory = memories.find(
+    (m: MemoryFile) => m.frontmatter.id === firstIds[0],
+  );
+  assert.ok(firstMemory, "first memory must be readable");
+  assert.notEqual(
+    firstMemory.content,
+    rawBody,
+    "content must have a citation appended",
+  );
+
+  // Second persist: submit the ALREADY-CITED body with the same connector.
+  // normalizeStoredHashSource strips the citation before comparing, so the
+  // connector-aware scan finds the matching fact and dedupes at the source
+  // gate — promotion never fires.
+  const secondIds = await orchestrator.persistExtraction(
+    factResult(firstMemory.content),
+    storage,
+    null,
+    { sourceConnector: "chatgpt" },
+  );
+  assert.equal(
+    secondIds.length,
+    0,
+    "cited duplicate must be deduped after canonicalization",
+  );
+
+  // Only one copy of the fact exists on disk.
+  const all = await storage.readAllMemories();
+  assert.equal(all.length, 1, "only one memory on disk");
+});

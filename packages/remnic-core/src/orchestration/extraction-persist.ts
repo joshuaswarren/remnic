@@ -230,6 +230,17 @@ export class ExtractionPersistCoordinator {
     // see zero behavioral change.
     const citationEnabled = resolvePipelineProcessingCapabilities(this.deps.config).inlineSourceAttribution === true;
     const citationTemplate = this.deps.config.inlineSourceAttributionFormat;
+
+  // Canonicalize stored content for dedup comparison: strip citations
+  // (using the same template), sanitize, then normalize whitespace.
+  const normalizeStoredHashSource = (raw: string): string =>
+    ContentHashIndex.normalizeContent(
+      sanitizeMemoryContent(
+        citationEnabled && hasCitationForTemplate(raw, citationTemplate)
+          ? stripCitationForTemplate(raw, citationTemplate)
+          : raw,
+      ).text,
+    );
     // The stable fields (agent, session) are computed once; `ts` is intentionally
     // omitted here and added fresh per invocation so each fact in a large batch
     // gets its own insertion timestamp rather than sharing a single batch-start time.
@@ -487,8 +498,8 @@ export class ExtractionPersistCoordinator {
               skipPromotion = allMems.some((m) => {
                 if (m.frontmatter.category !== options.category) return false;
                 if ((m.frontmatter.status ?? "active") !== "active") return false;
-                const norm = ContentHashIndex.normalizeContent;
-                if (norm(m.content ?? "") !== norm(dedupContent)) return false;
+                if (normalizeStoredHashSource(m.content ?? "") !==
+                  ContentHashIndex.normalizeContent(dedupContent)) return false;
                 return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
               });
             } catch (err) {
@@ -764,7 +775,7 @@ export class ExtractionPersistCoordinator {
                 // (including any appended "[Attributes: ...]" suffix) against the
                 // enriched normalizedIncoming so the candidate selected is the one
                 // whose hash actually matched in hasFactContentHash.
-                if (ContentHashIndex.normalizeContent(m.content ?? "") !== normalizedIncoming) return false;
+                if (normalizeStoredHashSource(m.content ?? "") !== normalizedIncoming) return false;
                 // Connector-aware dedup: same content from different connectors
                 // is NOT a duplicate (review thread QOjlD).
                 const existingConnector = m.frontmatter.sourceConnector?.trim() || undefined;
@@ -1616,8 +1627,8 @@ export class ExtractionPersistCoordinator {
           exactDuplicate = allMems.some((m) => {
             if (m.frontmatter.category !== writeCategory) return false;
             if ((m.frontmatter.status ?? "active") !== "active") return false;
-            const norm = ContentHashIndex.normalizeContent;
-            if (norm(m.content ?? "") !== norm(canonicalContentForHash)) return false;
+            if (normalizeStoredHashSource(m.content ?? "") !==
+              ContentHashIndex.normalizeContent(canonicalContentForHash)) return false;
             return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
           });
         } catch (err) {
