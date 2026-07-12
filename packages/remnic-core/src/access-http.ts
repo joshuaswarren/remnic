@@ -1699,6 +1699,7 @@ export class EngramAccessHttpServer {
       const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        sourceConnector: this.resolveConnector(req),
       })) as { result: unknown };
       if (isWriteSubcommand) {
         this.recordWriteRateLimitHit();
@@ -1723,6 +1724,7 @@ export class EngramAccessHttpServer {
       const output = (await op.run(this.gatedBodyNamespace(req, body), {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
+        sourceConnector: this.resolveConnector(req),
       })) as { result: unknown };
       if (isWriteSubcommand) {
         this.recordWriteRateLimitHit();

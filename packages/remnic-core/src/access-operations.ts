@@ -263,7 +263,7 @@ export const codingArchitectureOperation = defineOperation<
     "Get or refresh the architecture card for the session's coding namespace (issue #1548 Track A PR 3).",
   schema: codingArchitectureSchema as z.ZodType<CodingArchitectureInput>,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codingArchitecture(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codingArchitecture(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });

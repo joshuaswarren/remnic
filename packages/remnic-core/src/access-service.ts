@@ -3176,6 +3176,7 @@ export class EngramAccessService {
   async codingArchitecture(
     request: ArchitectureSurfaceRequest,
     authenticatedPrincipal?: string,
+    sourceConnector?: string,
   ): Promise<ArchitectureSurfaceResponse> {
     const resolvedConfig = this.orchestrator.config;
     return handleCodingArchitecture(request, {
@@ -3210,6 +3211,7 @@ export class EngramAccessService {
         createVersion,
       ),
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+      sourceConnector,
     });
   }
 
