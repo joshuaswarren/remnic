@@ -50,7 +50,7 @@ import "./access-operations.js";
 import { handleChatMessage, handleChatEventsSSE } from "./chat/chat-http.js";
 // cleanupExpiredChatSessions wires the chat session TTL sweep into the
 // server lifecycle (issue #1685 item 1 / #1687 Thread 21).
-import { cleanupExpiredChatSessions, loadChatSession } from "./chat/chat-session.js";
+import { cleanupExpiredChatSessions, enforceChatSessionNamespace } from "./chat/chat-session.js";
 import { isDefaultReviewNamespace, listPairs, readPair } from "./contradiction/contradiction-review.js";
 import { isValidResolutionVerb, executeResolution } from "./contradiction/resolution.js";
 
@@ -2403,9 +2403,7 @@ export class EngramAccessHttpServer {
       // id-loaded record whose namespace bypassed the token allow-list. Gate
       // its stored namespace before posting (fail closed; no-op unrestricted).
       const resumeChatSessionId = typeof body.chatSessionId === "string" ? body.chatSessionId : undefined;
-      if (resumeChatSessionId) {
-        await this.enforceChatSessionNamespace(resumeChatSessionId);
-      }
+      if (resumeChatSessionId) await enforceChatSessionNamespace(this.service, resumeChatSessionId);
       await handleChatMessage(
         req, res, body,
         { service: this.service, config: this.service.configRef?.chat, memoryDir: this.service.memoryDir },
@@ -2419,7 +2417,7 @@ export class EngramAccessHttpServer {
       // Issue #1850 round 5 (finding 2): the SSE target is an id-loaded chat
       // session whose namespace bypassed the token allow-list. Gate its stored
       // namespace before streaming (fail closed; no-op unrestricted).
-      await this.enforceChatSessionNamespace(chatEventsMatch[1] ?? "");
+      await enforceChatSessionNamespace(this.service, chatEventsMatch[1] ?? "");
       await handleChatEventsSSE(
         req, res, chatEventsMatch[1] ?? "",
         {
@@ -3534,29 +3532,6 @@ export class EngramAccessHttpServer {
     assertOperationAllowed(tokenCapabilityStore.getStore(), op);
   }
  
-  /**
-   * Issue #1850 round 5 (finding 2): a chat session is an id-loaded record —
-   * its namespace comes from the STORED session header, NOT a ?namespace=
-   * query param that resolveNamespace() already gates. A namespace-scoped
-   * bearer that knows a chatSessionId must not post to / stream a session in
-   * a namespace outside its allow-list (same class as the id-loaded
-   * contradiction bypass). Load the session and run the SAME effective-
-   * namespace chokepoint (enforceNamespaceAllowList maps undefined → default)
-   * so a scoped token whose allow-list covers the session's namespace passes,
-   * while one that does not is denied (403). No-op for unrestricted tokens.
-   * A missing session is left to the downstream handler (404 /
-   * chat_session_not_found) — only FOUND sessions carry a namespace to gate.
-   */
-  private async enforceChatSessionNamespace(chatSessionId: string): Promise<void> {
-    const session = await loadChatSession(this.service.memoryDir, chatSessionId);
-    if (!session) return;
-    enforceNamespaceAllowList(
-      tokenCapabilityStore.getStore(),
-      session.namespace,
-      this.service.configRef?.defaultNamespace,
-    );
-  }
-
   /**
    * Operator/admin routes are unrestricted-only surfaces: a scoped
    * (least-privileged) token must NOT reach them (issue #1837). Legacy and

@@ -5,7 +5,7 @@ import type { Readable, Writable } from "node:stream";
 // (memory_get / memory_search / memory_store) as a side effect; callTool
 // dispatches migrated tools through the registry (issue #1525).
 import { type OperationName, getOperation } from "./access-boundary.js";
-import { capabilityAllowsOp, tokenCapabilityStore } from "./access-token-capabilities.js";
+import { assertOperationAllowed, capabilityAllowsOp, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   type ActionConfidenceRequest,
   type CapsuleExportRequest,
@@ -21,6 +21,7 @@ import { EngramAccessInputError, type EngramAccessRecallResponse, type EngramAcc
 import "./access-operations.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { processChatMessage } from "./chat/chat-factory.js";
+import { enforceChatSessionNamespace } from "./chat/chat-session.js";
 import { type CitationMetadata, buildCitationGuidance } from "./citations.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import {
@@ -2947,10 +2948,12 @@ export class EngramMcpServer {
     } else if (migrated.startsWith("codegraph_")) {
       envelope = { ...args, tool: migrated.slice("codegraph_".length) };
     } else if (migrated === "chat_message") {
-      // memory_chat dispatches to processChatMessage, not a pure service call.
+      // memory_chat bypasses op.run(); gate op + resumed-session namespace like the HTTP route (#1850 r6).
+      assertOperationAllowed(tokenCapabilityStore.getStore(), migrated);
       const message = typeof args.message === "string" ? args.message : "";
       if (!message) throw new EngramAccessInputError("message is required");
       const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId : undefined;
+      if (chatSessionId) await enforceChatSessionNamespace(this.service, chatSessionId);
       const chatResult = await processChatMessage({
         service: this.service,
         config: this.service.configRef?.chat,
