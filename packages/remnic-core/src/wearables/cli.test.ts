@@ -225,6 +225,43 @@ test("fuse command requires a date and renders the fuseDay result", async () => 
   );
 });
 
+test("fuse command prints a distinct skip line when fusion is skipped, not '(unchanged)'", async () => {
+  // written:false has two meanings (issue #1849): a skip (e.g. conflicting
+  // source timezones, which also clears any existing fused artifact) must
+  // NOT be mislabeled as an idempotent "(unchanged)" no-op.
+  const { io, out } = makeIo();
+  const service = stubService({
+    fuseDay: async () => ({
+      date: "2026-06-10",
+      sources: [],
+      conversationCount: 0,
+      contentHash: "",
+      written: false,
+      skipped: { reason: "conflicting-timezones" },
+    }),
+  });
+  assert.equal(await runWearablesCliCommand(service, ["fuse", "2026-06-10"], io), 0);
+  const text = out.join("");
+  assert.match(text, /Skipped fusing 2026-06-10: conflicting-timezones/);
+  assert.match(text, /cleared/);
+  assert.doesNotMatch(text, /unchanged/, "a skip must not look idempotent");
+});
+
+test("fuse command keeps '(unchanged)' for written:false without a skip reason", async () => {
+  const { io, out } = makeIo();
+  const service = stubService({
+    fuseDay: async () => ({
+      date: "2026-06-10",
+      sources: ["bee", "limitless"],
+      conversationCount: 2,
+      contentHash: "abc123",
+      written: false,
+    }),
+  });
+  assert.equal(await runWearablesCliCommand(service, ["fuse", "2026-06-10"], io), 0);
+  assert.match(out.join(""), /\(unchanged\)/);
+});
+
 test("fused command lists conversations and surfaces disagreements (--json)", async () => {
   const { io, out } = makeIo();
   const service = stubService({

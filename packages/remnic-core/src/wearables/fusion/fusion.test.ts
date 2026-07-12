@@ -781,6 +781,108 @@ test("distinct untimestamped same-speaker utterances do not collapse across sour
   ]);
 });
 
+test("repeated short utterance attaches to the closest matching group, not the first (issue #1849)", () => {
+  // Source A (limitless) says "yes" twice — at 09:00:00 and 09:00:20.
+  // Source B (bee) says "yes" once at 09:00:21, which is within
+  // windowToleranceMs (30s) of BOTH of A's utterances. First-match would
+  // attach B to the 09:00:00 group (found first); closest-match must attach
+  // it to 09:00:20 (nearest), so B corroborates the utterance it actually
+  // overlaps and provenance stays correct.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:20.000Z" },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c2", "2026-06-10T09:00:00.000Z", [
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:21.000Z" },
+          ]),
+        ],
+      },
+    ),
+    { sourceTrust: { limitless: 0.9, bee: 0.7 } },
+  );
+
+  assert.equal(fused.conversations.length, 1);
+  const conv = fused.conversations[0]!;
+  // Two distinct utterances stay separate (same source never collapses).
+  assert.equal(conv.segments.length, 2);
+
+  const byStart = [...conv.segments].sort((a, b) =>
+    (a.startIso ?? "").localeCompare(b.startIso ?? ""),
+  );
+  // The early "yes" carries ONLY limitless — B did not corroborate it.
+  assert.equal(byStart[0]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(
+    byStart[0]!.provenance.alternatives.length,
+    0,
+    "B must not corroborate the 09:00:00 utterance under closest-match",
+  );
+  // The later "yes" carries BOTH sources — B corroborated the nearest group.
+  assert.equal(byStart[1]!.startIso, "2026-06-10T09:00:20.000Z");
+  assert.ok(
+    byStart[1]!.provenance.alternatives.some((a) => a.source === "bee"),
+    "B must corroborate the 09:00:20 utterance (closest match)",
+  );
+});
+
+test("equal-distance candidate groups tie-break to the earlier anchor (issue #1849)", () => {
+  // B's "yes" at 09:00:15 is 15s from A's 09:00:00 and 15s from A's
+  // 09:00:30 — an exact tie. The documented tie-break prefers the smaller
+  // anchor, so B corroborates the earlier (09:00:00) utterance.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c2", "2026-06-10T09:00:00.000Z", [
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:15.000Z" },
+          ]),
+        ],
+      },
+    ),
+    { sourceTrust: { limitless: 0.9, bee: 0.7 } },
+  );
+
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 2);
+  const byStart = [...conv.segments].sort((a, b) =>
+    (a.startIso ?? "").localeCompare(b.startIso ?? ""),
+  );
+  // The 09:00:00 utterance gets B's corroboration (smaller anchor wins tie).
+  assert.equal(byStart[0]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.ok(
+    byStart[0]!.provenance.alternatives.some((a) => a.source === "bee"),
+    "tie-break must attach B to the earlier anchor (09:00:00)",
+  );
+  // The 09:00:30 utterance stays limitless-only.
+  assert.equal(byStart[1]!.startIso, "2026-06-10T09:00:30.000Z");
+  assert.equal(
+    byStart[1]!.provenance.alternatives.length,
+    0,
+    "B must not corroborate the 09:00:30 utterance",
+  );
+});
+
 test("distinct timestamped same-window utterances stay separate, not collapsed", () => {
   // Two sources capture genuinely different utterances inside the same
   // time window (within the alignment tolerance). They must NOT merge into

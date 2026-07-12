@@ -323,12 +323,52 @@ export function fuseCluster(
       );
     };
 
+    // Choose the CLOSEST corroborating group instead of the first match
+    // (issue #1849). Within windowToleranceMs several groups can corroborate
+    // the same short utterance — e.g. a speaker repeating "yes" at 10:00 and
+    // 10:20 with a 30s window — so a later source segment at 10:21
+    // corroborates BOTH. First-match would attach it to the earliest (10:00)
+    // group even though 10:20 is nearer, misattributing provenance and
+    // potentially reordering the fused timeline. Scan every candidate and
+    // keep the one whose anchor is nearest to this segment by
+    // |anchorMs - startMs|; ties break on the smaller anchor, then on the
+    // order the group was created (stable, never dependent on key order).
+    // Single-occurrence behavior is unchanged: the lone corroborating group
+    // is trivially the closest.
+    const closestCorroborating = (
+      wantSameSpeaker: boolean,
+    ): AlignGroup | undefined => {
+      let best: AlignGroup | undefined;
+      let bestDelta = Infinity;
+      for (const group of groups) {
+        if (
+          (group.key === key) !== wantSameSpeaker ||
+          !corroborates(group)
+        ) {
+          continue;
+        }
+        const delta =
+          !segMissing && Number.isFinite(group.anchorMs)
+            ? Math.abs(seg.startMs - group.anchorMs)
+            : 0;
+        if (
+          best === undefined ||
+          delta < bestDelta ||
+          (delta === bestDelta && group.anchorMs < best.anchorMs)
+        ) {
+          best = group;
+          bestDelta = delta;
+        }
+      }
+      return best;
+    };
+
     // Prefer an exact same-speaker corroborating group.
-    let chosen = groups.find((group) => group.key === key && corroborates(group));
+    let chosen = closestCorroborating(true);
     if (chosen === undefined) {
       // Fall back: same utterance (time+text corroborate) but a different
       // speaker label -> speaker conflict, aligned into one segment.
-      chosen = groups.find((group) => group.key !== key && corroborates(group));
+      chosen = closestCorroborating(false);
     }
 
     if (chosen !== undefined) {

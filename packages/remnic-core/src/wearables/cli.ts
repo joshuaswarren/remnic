@@ -434,9 +434,25 @@ export async function runWearablesCliCommand(
           io.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
           return 0;
         }
-        io.stdout.write(
-          `Fused ${date}: ${result.conversationCount} conversation${result.conversationCount === 1 ? "" : "s"} from ${result.sources.length} source${result.sources.length === 1 ? "" : "s"}.${result.written ? "" : " (unchanged)"}\n`,
-        );
+        // `written:false` has two distinct meanings (issue #1849): a genuine
+        // idempotent no-op (inputs unchanged) OR a deliberate SKIP — e.g.
+        // mixed source timezones — where fusion was refused and any
+        // previously-fused artifact for the day was cleared. The JSON path
+        // carries `skipped`, but the text path collapsed both into
+        // "(unchanged)", hiding a skip (and a possible artifact deletion)
+        // behind an idempotent-looking label. Check `skipped` first and emit
+        // a distinct skip line; reserve "(unchanged)" for written:false
+        // WITHOUT a skip reason. Mirrors the `skipped` field the JSON path
+        // serializes.
+        if (result.skipped) {
+          io.stdout.write(
+            `Skipped fusing ${date}: ${result.skipped.reason} — no fused artifact written; any existing fused artifact for the day was cleared.\n`,
+          );
+        } else {
+          io.stdout.write(
+            `Fused ${date}: ${result.conversationCount} conversation${result.conversationCount === 1 ? "" : "s"} from ${result.sources.length} source${result.sources.length === 1 ? "" : "s"}.${result.written ? "" : " (unchanged)"}\n`,
+          );
+        }
         return 0;
       }
       case "fused": {
