@@ -15,6 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parseConfig, isOpenaiApiKeyDisabled, resolveRemnicConfigRecord, Orchestrator, EngramAccessService, EngramAccessHttpServer, initLogger, log, getAllValidTokens, getAllValidTokensCached, getAllValidTokenEntriesCached, expandTildePath, type PluginConfig, type RemnicAdminControls, type RemnicAdminDashboardStatus, type RemnicAdminModelOption, type RemnicAdminConfigPatch } from "@remnic/core";
+import { probeBetterSqlite3Driver } from "@remnic/core/runtime/better-sqlite";
 import { applyOAuthEnvOverrides, buildOAuthRequestHandler } from "./oauth.js";
 
 // ── Config loading ──────────────────────────────────────────────────────────
@@ -912,6 +913,24 @@ export async function startServer(options?: {
   authToken?: string;
 }): Promise<ServerResult> {
   initLogger();
+
+  // Startup driver-load check (issue #1829): attempt to load the better-sqlite3
+  // native binding under THIS process. A wrong-ABI build previously threw inside
+  // each projection open, was caught, and returned the same silent null as a
+  // missing file — so every memory list fell back to a full-corpus scan with no
+  // visible error. Probe once at startup and log LOUDLY. Do not crash: the
+  // full-corpus fallback still serves, and the projection-open path records the
+  // distinct rate-limited signal + doctor entry on its own.
+  const driverProbe = probeBetterSqlite3Driver();
+  if (!driverProbe.ok) {
+    const detailSuffix = driverProbe.detail ? ` (${driverProbe.detail})` : "";
+    const abiSuffix = driverProbe.nativeBindingMismatch
+      ? " — the binding was built for a different Node.js ABI; rebuild it (`node scripts/ensure-better-sqlite3.mjs` or `pnpm rebuild better-sqlite3`)"
+      : "";
+    log.error(
+      `better-sqlite3 native driver failed to load under the running process${detailSuffix}${abiSuffix}. SQLite-backed features (memory projection) will fall back to slower full-corpus scans until fixed.`,
+    );
+  }
 
   const resolvedConfigPath = resolveConfigPath(options?.configPath);
   const fileConfig = loadResolvedConfig(resolvedConfigPath);

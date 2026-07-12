@@ -12,7 +12,10 @@ import type {
   MemoryProjectionCurrentState,
   MemoryStatus,
 } from "./types.js";
+import { log } from "./logger.js";
 import {
+  displayErrorDetail,
+  isLikelyBetterSqlite3NativeBindingError,
   openBetterSqlite3,
   type BetterSqlite3Database,
 } from "./runtime/better-sqlite.js";
@@ -314,12 +317,186 @@ export function initializeMemoryProjectionDb(db: BetterSqlite3Database): void {
     .run("schemaVersion", String(MEMORY_PROJECTION_SCHEMA_VERSION));
 }
 
+// Test seam (issue #1829): the readonly projection opener is overridable so
+// tests can inject an ABI-style throw against a PRESENT file without faking a
+// corrupt native binding. Default delegates to the shared opener.
+type ProjectionReadonlyOpener = typeof openBetterSqlite3;
+let projectionReadonlyOpener: ProjectionReadonlyOpener = openBetterSqlite3;
+
+/** @internal Test seam: override the readonly projection opener; returns a restore fn. */
+export function __setProjectionReadonlyOpenerForTest(
+  opener: ProjectionReadonlyOpener | null,
+): () => void {
+  const previous = projectionReadonlyOpener;
+  projectionReadonlyOpener = opener ?? openBetterSqlite3;
+  return () => {
+    projectionReadonlyOpener = previous;
+  };
+}
+
+// Rate-limited suppression for open failures — mirrors warnProjectionFallback
+// in storage-guards.ts (5-min dedup per memoryDir). A present-but-unopenable
+// projection is a real failure that must surface, but it repeats on every
+// browse, so the log is throttled to keep output actionable (issue #1829).
+const PROJECTION_OPEN_FAILURE_LOG_INTERVAL_MS = 5 * 60_000;
+const projectionOpenFailureLoggedAt = new Map<string, number>();
+
+/** @internal Test seam: clear the rate-limit dedup map. */
+export function __resetProjectionOpenFailureSuppressionForTest(): void {
+  projectionOpenFailureLoggedAt.clear();
+}
+
+function logProjectionOpenFailure(memoryDir: string, error: unknown): void {
+  const now = Date.now();
+  const warnedAt = projectionOpenFailureLoggedAt.get(memoryDir) ?? 0;
+  if (now - warnedAt < PROJECTION_OPEN_FAILURE_LOG_INTERVAL_MS) return;
+  projectionOpenFailureLoggedAt.set(memoryDir, now);
+  // Path-free detail only (rule 11 / CodeQL js/stack-trace-exposure): the raw
+  // message can embed absolute loader paths; displayErrorDetail returns class +
+  // code. This is the DISTINCT signal that was missing before #1829, when a
+  // wrong-ABI build collapsed into the same silent null as a missing file.
+  const detail = displayErrorDetail(error);
+  const nativeMismatch = isLikelyBetterSqlite3NativeBindingError(error);
+  const detailSuffix = detail ? ` (${detail})` : "";
+  const abiSuffix = nativeMismatch
+    ? " — native binding built for the wrong Node.js ABI; rebuild better-sqlite3 for this process"
+    : "";
+  log.warn(
+    `storage.memory-projection: index present but could not be opened${detailSuffix}${abiSuffix}; falling back to full-corpus scan`,
+  );
+}
+
 function openProjectionReadonly(memoryDir: string): BetterSqlite3Database | null {
   const dbPath = getMemoryProjectionPath(memoryDir);
+  // A MISSING file is a normal fallback (cold install, never built). A file
+  // that EXISTS but cannot open (wrong ABI / corrupt / bad perms) is a real
+  // failure that must surface (issue #1829): previously both collapsed into
+  // the same silent null, hiding native-binding mismatches behind 17-27s
+  // full-corpus scans on every memory list.
+  if (!fs.existsSync(dbPath)) return null;
   try {
-    return openBetterSqlite3(dbPath, { readonly: true, fileMustExist: true });
-  } catch {
+    return projectionReadonlyOpener(dbPath, { readonly: true, fileMustExist: true });
+  } catch (error) {
+    logProjectionOpenFailure(memoryDir, error);
     return null;
+  }
+}
+
+export type ProjectionHealthState = "absent" | "openable" | "present-but-invalid" | "unopenable";
+
+export interface ProjectionHealthProbe {
+  state: ProjectionHealthState;
+  /** Path-free detail (class + code) when state !== "absent"/"openable"; "" otherwise. */
+  detail: string;
+  /** true when the open failure is classified as a native-binding ABI mismatch. */
+  nativeBindingMismatch: boolean;
+}
+
+/**
+ * Confirm the projection schema is present and queryable, not just that the
+ * sqlite file opens (issue #1848 round 2). A file that opens but has the
+ * projection tables missing — or is corrupt and only fails on first statement
+ * — previously reported `openable`/ok, so `remnic doctor` said healthy while
+ * browse silently fell back to full-corpus scans. `memory_current` is the
+ * core browse table; if it is absent or unreadable the projection cannot
+ * serve any query. Throws so the probe can report a distinct state.
+ */
+// Named so displayErrorDetail surfaces a clear, path-free identifier in the
+// doctor report rather than a generic "Error".
+class ProjectionSchemaError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProjectionSchemaError";
+  }
+}
+
+/**
+ * Columns `readProjectedMemoryBrowse` SELECTs from `memory_current` with no
+ * graceful fallback. `tags_json`/`preview_text` fall back via
+ * memoryCurrentSelectExpressions and `path_valid` falls back via the legacy
+ * full-scan branch — none of those make a browse query throw. A projection
+ * whose `memory_current` lacks any of these columns cannot serve browse
+ * queries: the SELECT throws and browse silently falls back to a full-corpus
+ * scan. Enumerated directly from readProjectedMemoryBrowse's SELECT list +
+ * ORDER BY references (issue #1848 round 3).
+ */
+const REQUIRED_MEMORY_CURRENT_COLUMNS = [
+  "memory_id",
+  "path_rel",
+  "category",
+  "status",
+  "created_at",
+  "updated_at",
+  "entity_ref",
+] as const;
+
+function assertProjectionSchemaReadable(db: BetterSqlite3Database): void {
+  const row = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_current'",
+    )
+    .get() as { name: string } | undefined;
+  if (!row?.name) {
+    throw new ProjectionSchemaError(
+      "projection schema is missing or was not initialized (memory_current table not found)",
+    );
+  }
+  // Round 3 (issue #1848): verify the columns readProjectedMemoryBrowse
+  // actually SELECT are present, not just that the table exists. A file like
+  // `CREATE TABLE memory_current (x INTEGER)` passed the round-2 table-existence
+  // + SELECT-1 check but cannot serve browse queries, so browse silently fell
+  // back to full-corpus scans while `remnic doctor` reported healthy. Classify
+  // such a stale/half-built table as present-but-invalid so the operator gets a
+  // rebuild hint instead of a false-clean bill of health.
+  const columns = listTableColumns(db, "memory_current");
+  const missing = REQUIRED_MEMORY_CURRENT_COLUMNS.filter((c) => !columns.has(c));
+  if (missing.length > 0) {
+    throw new ProjectionSchemaError(
+      `projection memory_current table is missing required column(s): ${missing.join(", ")}`,
+    );
+  }
+  // Also confirm the table is queryable — catches physical corruption that
+  // only surfaces on first read (the file opens but statements fail).
+  db.prepare("SELECT 1 FROM memory_current LIMIT 1").get();
+}
+
+/**
+ * Stat + attempt-open + schema-validate the memory projection WITHOUT keeping
+ * a handle, for the `remnic doctor` health check (issue #1829 / #1848).
+ * Distinguishes four states so operators can tell "not built yet" (normal) from
+ * "exists but broken" (needs a rebuild / native-binding rebuild). Never throws.
+ */
+export function probeProjectionHealth(memoryDir: string): ProjectionHealthProbe {
+  const dbPath = getMemoryProjectionPath(memoryDir);
+  if (!fs.existsSync(dbPath)) {
+    return { state: "absent", detail: "", nativeBindingMismatch: false };
+  }
+  let db: BetterSqlite3Database | null = null;
+  try {
+    db = projectionReadonlyOpener(dbPath, { readonly: true, fileMustExist: true });
+    // Validate the projection is actually USABLE, not just that the file
+    // opens (issue #1848 round 2): a file that opens but has the schema
+    // missing/corrupt previously reported ok, so doctor said healthy while
+    // browse silently fell back to full-corpus scans.
+    assertProjectionSchemaReadable(db);
+    return { state: "openable", detail: "", nativeBindingMismatch: false };
+  } catch (error) {
+    // If the file OPENED (db assigned) but the schema query failed, the
+    // native binding is fine — the projection itself is stale/corrupt.
+    if (db) {
+      return {
+        state: "present-but-invalid",
+        detail: displayErrorDetail(error),
+        nativeBindingMismatch: false,
+      };
+    }
+    return {
+      state: "unopenable",
+      detail: displayErrorDetail(error),
+      nativeBindingMismatch: isLikelyBetterSqlite3NativeBindingError(error),
+    };
+  } finally {
+    db?.close();
   }
 }
 function updateProjectionBestEffort(

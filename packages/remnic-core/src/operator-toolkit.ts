@@ -11,6 +11,7 @@ import {
   resolveOpenClawWorkspaceStatePath,
 } from "./native-knowledge.js";
 import { StorageManager } from "./storage.js";
+import { probeProjectionHealth } from "./memory-projection-store.js";
 import { listNamespaces } from "./namespaces/migrate.js";
 import { summarizeNamespaceMaintenanceHealth } from "./maintenance/namespace-maintenance-fanout.js";
 import {
@@ -1094,6 +1095,64 @@ export function summarizeProvenanceCoverage(
   return { counts, total: memories.length };
 }
 
+/**
+ * Memory projection health (issue #1829). A present-but-unopenable projection
+ * (wrong ABI / corrupt / bad perms) previously collapsed into the same silent
+ * null as a missing file, hiding native-binding mismatches behind full-corpus
+ * scans. This check stats + attempt-opens the projection so `remnic doctor`
+ * distinguishes "not built yet" (normal) from "exists but broken" (needs a
+ * rebuild / native-binding rebuild). Never throws.
+ */
+export function summarizeProjectionHealth(
+  config: Pick<PluginConfig, "memoryDir">,
+): OperatorDoctorCheck {
+  const probe = probeProjectionHealth(config.memoryDir);
+  if (probe.state === "absent") {
+    return {
+      key: "memory_projection",
+      status: "ok",
+      summary: "Memory projection index not built yet (normal until first maintenance run).",
+      details: { state: probe.state },
+    };
+  }
+  if (probe.state === "openable") {
+    return {
+      key: "memory_projection",
+      status: "ok",
+      summary: "Memory projection index opens cleanly.",
+      details: { state: probe.state },
+    };
+  }
+  if (probe.state === "present-but-invalid") {
+    const schemaDetailSuffix = probe.detail ? ` (${probe.detail})` : "";
+    return {
+      key: "memory_projection",
+      status: "error",
+      summary: `Memory projection index exists but its schema is missing or unreadable${schemaDetailSuffix}; memory browse is falling back to full-corpus scans.`,
+      remediation:
+        "Rebuild the projection with `remnic rebuild-memory-projection --write`.",
+      details: { state: probe.state, detail: probe.detail },
+    };
+  }
+  const nativeSuffix = probe.nativeBindingMismatch
+    ? " Native binding appears built for the wrong Node.js ABI."
+    : "";
+  const detailSuffix = probe.detail ? ` (${probe.detail})` : "";
+  return {
+    key: "memory_projection",
+    status: "error",
+    summary: `Memory projection index exists but could not be opened${detailSuffix}.${nativeSuffix}`,
+    remediation: probe.nativeBindingMismatch
+      ? "Rebuild the better-sqlite3 native binding for this Node.js (`node scripts/ensure-better-sqlite3.mjs` or `pnpm rebuild better-sqlite3`), then restart."
+      : "Rebuild the projection with `remnic rebuild-memory-projection --write`; check file permissions and integrity.",
+    details: {
+      state: probe.state,
+      detail: probe.detail,
+      nativeBindingMismatch: probe.nativeBindingMismatch,
+    },
+  };
+}
+
 export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise<OperatorDoctorReport> {
   const now = options.now ?? new Date();
   const configStatus = await loadCliPluginConfig(options.configPath);
@@ -1210,6 +1269,11 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
       : "Run a normal agent turn or `openclaw engram consolidate` after seeding memory.",
     details: meta,
   });
+
+  // Memory projection health (issue #1829). Surfaces a present-but-unopenable
+  // projection (wrong ABI / corrupt) that previously degraded every memory
+  // list to a silent full-corpus scan. Absent and openable are both "ok".
+  checks.push(summarizeProjectionHealth(config));
 
   // Provenance coverage (issue #1575 PR 3). Operators need to see the
   // verified/unverified/none distribution grow as extraction backfills.
