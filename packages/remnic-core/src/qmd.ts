@@ -277,25 +277,34 @@ function isVectorDimensionMismatchError(err: unknown): boolean {
 
 /**
  * Classify a `qmd --version` probe failure so the preflight can distinguish a
- * slow/overloaded binary (timeout or abort mid-spawn) from a genuine
+ * slow/overloaded binary (a genuine deadline timeout) from a real
  * misconfiguration (ENOENT/EACCES — the configured path is missing or not
  * executable). Only transient failures are retried; missing binaries fail fast.
- * Issue #1841.
+ *
+ * Classification keys on STRUCTURED signals, never the error *message*: a
+ * non-zero-exit failure embeds the child's stderr in its message, so scanning
+ * that text for "abort"/"timed out"/"not found" would misclassify a healthy
+ * binary. The structured signals are: `code` (ENOENT/EACCES) for missing; the
+ * `timedOut` flag set by `runCommandWithTimeout` for a genuine timeout; an
+ * AbortError name for a deadline/abort under load. Issue #1841.
  */
 type QmdProbeFailureKind = "transient" | "missing" | "other";
 function classifyProbeFailure(err: unknown): QmdProbeFailureKind {
-  // Caller-cancelled or deadline-aborted spawns are transient under load.
+  if (err && typeof err === "object") {
+    // Node spawn failures carry a structured `code`: ENOENT (not found) /
+    // EACCES (not executable).
+    if ("code" in err) {
+      const code = err.code;
+      if (code === "ENOENT" || code === "EACCES") return "missing";
+    }
+    // runCommandWithTimeout flags a genuine deadline breach with `timedOut`.
+    if ("timedOut" in err && err.timedOut === true) return "transient";
+  }
+  // An AbortError reaching here is a deadline/abort under load → transient.
+  // (Caller cancellation is intercepted by the retry loop before this runs.)
   if (isAbortError(err)) return "transient";
-  const msg = err instanceof Error ? err.message : String(err);
-  if (/timed?[\s-]?out|deadline|abort/i.test(msg)) return "transient";
-  // Node spawn failures carry `code` = ENOENT (not found) / EACCES (not executable).
-  if (err && typeof err === "object" && "code" in err) {
-    const code = err.code;
-    if (code === "ENOENT" || code === "EACCES") return "missing";
-  }
-  if (/enoent|eacces|not executable|no such file|not found|permission denied/i.test(msg)) {
-    return "missing";
-  }
+  // Anything else — including a non-zero exit whose message embeds stderr — is
+  // a generic failure: never scan the message to upgrade/downgrade it.
   return "other";
 }
 
@@ -701,7 +710,13 @@ function runCommandWithTimeout(
       settled = true;
       cleanup();
       child.kill("SIGKILL");
-      reject(new Error(`${label} timed out after ${options.timeoutMs}ms`));
+      // Flag the deadline breach so classifyProbeFailure can tell a genuine
+      // timeout from a non-zero-exit error whose message merely embeds stderr.
+      reject(
+        Object.assign(new Error(`${label} timed out after ${options.timeoutMs}ms`), {
+          timedOut: true as const,
+        }),
+      );
     }, options.timeoutMs);
     const onAbort = () => {
       if (settled) return;
@@ -1539,21 +1554,29 @@ export class QmdClient implements SearchBackend {
       // Issue #1841.
       let failureKind: QmdProbeFailureKind = "other";
       let retries = 0;
+      let callerCancelled = false;
       for (let attempt = 0; attempt <= QMD_PROBE_RETRY_BACKOFF_MS.length; attempt += 1) {
         try {
           const result = await this.runVersionProbe(configuredPath, options.signal);
           await recordProbeSuccess(result, configuredPath, "configured");
           return true;
         } catch (err) {
-          failureKind = classifyProbeFailure(err);
           markProbeFailure(err);
           configuredProbeFailure = this.lastCliProbeError;
-          // Never retry once the caller has cancelled, and never retry a hard
-          // misconfiguration (missing/not-executable) — only transient slowness.
+          // Detect CALLER cancellation FIRST: an aborted signal / AbortError is
+          // non-actionable noise — the caller chose to stop. Other QMD paths
+          // treat it via `isCallerCancellation`; do the same here so a cancelled
+          // probe never reads as a transient host-load failure. Issue #1841.
+          if (isCallerCancellation(err, options.signal)) {
+            callerCancelled = true;
+            break;
+          }
+          failureKind = classifyProbeFailure(err);
+          // Never retry a hard misconfiguration (missing/not-executable) — only
+          // transient slowness. (Caller cancellation is handled above.)
           if (
             failureKind === "transient" &&
-            attempt < QMD_PROBE_RETRY_BACKOFF_MS.length &&
-            options.signal?.aborted !== true
+            attempt < QMD_PROBE_RETRY_BACKOFF_MS.length
           ) {
             try {
               await sleepWithSignal(
@@ -1561,7 +1584,8 @@ export class QmdClient implements SearchBackend {
                 options.signal,
               );
             } catch {
-              // Aborted mid-backoff: stop retrying, fall through to the warning.
+              // Aborted mid-backoff: caller cancelled — stop, emit no warning.
+              callerCancelled = true;
               break;
             }
             retries += 1;
@@ -1573,20 +1597,23 @@ export class QmdClient implements SearchBackend {
       // Distinct operator-facing warnings so a slow binary is not mistaken for
       // a misconfiguration (and vice versa). Do not hard-fail here: fall through
       // to PATH/fallback probing so recall stays healthy when config is stale.
-      // Issue #1841.
-      if (failureKind === "transient") {
-        this.logCliProbeWarning(
-          `QMD: qmdPath ${configuredPath} version check timed out (host may be under load); retried ${retries} time${retries === 1 ? "" : "s"}`,
-        );
-      } else if (failureKind === "missing") {
-        this.logCliProbeWarning(
-          `QMD: configured qmdPath not found or not executable (${configuredPath}): ${this.lastCliProbeError}`,
-        );
-      } else {
-        // Preserve the historical generic message for exit-code/other failures.
-        this.logCliProbeWarning(
-          `QMD: configured qmdPath failed (${configuredPath}): ${this.lastCliProbeError}`,
-        );
+      // Caller cancellation is silent noise (issue #1841): suppress all warnings
+      // for it exactly as the other QMD paths do.
+      if (!callerCancelled) {
+        if (failureKind === "transient") {
+          this.logCliProbeWarning(
+            `QMD: qmdPath ${configuredPath} version check timed out (host may be under load); retried ${retries} time${retries === 1 ? "" : "s"}`,
+          );
+        } else if (failureKind === "missing") {
+          this.logCliProbeWarning(
+            `QMD: configured qmdPath not found or not executable (${configuredPath}): ${this.lastCliProbeError}`,
+          );
+        } else {
+          // Preserve the historical generic message for exit-code/other failures.
+          this.logCliProbeWarning(
+            `QMD: configured qmdPath failed (${configuredPath}): ${this.lastCliProbeError}`,
+          );
+        }
       }
     }
 

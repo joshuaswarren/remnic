@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
+import { abortError } from "./abort-error.js";
 import { QmdClient } from "./qmd.js";
 
 /**
@@ -28,9 +28,13 @@ function spawnENOENT(qmdPath: string): Error & { code: string } {
   });
 }
 
-function timeoutError(): Error {
-  // Mirrors the message runCommandWithTimeout rejects with on deadline.
-  return new Error("qmd --version timed out after 8000ms");
+function timeoutError(): Error & { timedOut: true } {
+  // Mirrors the error runCommandWithTimeout rejects with on deadline: a plain
+  // Error flagged with `timedOut: true` — the structured signal classifyProbeFailure
+  // keys on (never the message text). Issue #1841.
+  return Object.assign(new Error("qmd --version timed out after 8000ms"), {
+    timedOut: true as const,
+  });
 }
 
 /** Wire a fresh client whose probe runner + warning sink are fully scripted. */
@@ -143,5 +147,51 @@ test("QmdClient preflight: non-timeout exit-code failure keeps the generic confi
     msg,
     /timed out|under load|not found or not executable/,
     "must not be misclassified as timeout or missing"
+  );
+});
+
+test("QmdClient preflight: caller abort emits NO warning and does not retry", async () => {
+  // The caller cancelled (aborted signal + AbortError). Other QMD paths treat
+  // this as non-actionable noise via isCallerCancellation; the configured-path
+  // probe must do the same — no under-load warning, no transient retry. #1841.
+  const controller = new AbortController();
+  controller.abort();
+  const { internals, warnings, configuredProbeCalls } = harness({
+    configuredBehavior: async () => {
+      // A real probe rejects with an AbortError when the caller's signal fires.
+      throw abortError("qmd --version aborted");
+    },
+  });
+
+  const ok = await internals.probeCli({ allowAutoUpgrade: false, signal: controller.signal });
+
+  assert.equal(ok, false, "aborted configured probe falls through to unavailable");
+  assert.equal(configuredProbeCalls(), 1, "caller cancellation never retries");
+  assert.deepEqual(warnings, [], "caller cancellation is silent noise: no operator-facing warning");
+});
+
+test("QmdClient preflight: non-zero exit whose stderr says 'timed out'/'not found' is classified 'other' (not transient/missing)", async () => {
+  // Mirrors runCommandWithTimeout's non-zero-exit rejection: the child's stderr
+  // (here containing "timed out" and "not found") is embedded in the message.
+  // A healthy binary can emit those words in error text; they must NOT upgrade
+  // the failure to transient/missing. classifyProbeFailure keys on structured
+  // signals, so this generic exit-code failure stays 'other'. Issue #1841.
+  const { internals, warnings, configuredProbeCalls } = harness({
+    configuredBehavior: async () => {
+      throw new Error("qmd --version failed (code 2): error: model timed out while loading; config not found");
+    },
+  });
+
+  const ok = await internals.probeCli({ allowAutoUpgrade: false });
+
+  assert.equal(ok, false, "exit-code failure is unavailable");
+  assert.equal(configuredProbeCalls(), 1, "embedded-stderr failure is not transient — no retry");
+  assert.equal(warnings.length, 1, "exactly one failure warning");
+  const msg = warnings[0] ?? "";
+  assert.match(msg, /configured qmdPath failed/, "classified as generic 'other'");
+  assert.doesNotMatch(
+    msg,
+    /under load|not found or not executable/,
+    "must not misclassify embedded-stderr words as transient/missing"
   );
 });
