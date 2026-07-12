@@ -310,11 +310,21 @@ CONNECTING OTHER AGENTS
   remnic connectors install replit
   pip install remnic-hermes
 
-CHATGPT DEVELOPER MODE (public OAuth + MCP flow):
-  docs/integration/chatgpt.md     chatgpt.com developer mode -> Remnic via
+CHATGPT DEVELOPER MODE (headline integration):
+  ChatGPT can now persist memories across conversations using YOUR
+  infrastructure, not OpenAI's cloud. OpenAI no longer disables built-in
+  memory/tools when you connect a custom MCP server. Remnic plugs into
+  that gap as an MCP + OAuth 2.1 integration, giving ChatGPT a
+  persistent, governed, local-first memory store.
+
+  docs/integration/chatgpt.md     Full setup guide with Quick Start,
+                                  Overview, Requirements, step-by-step OAuth
+                                  flow, troubleshooting, and security notes.
+                                  chatgpt.com developer mode -> Remnic via
                                   Tailscale Funnel or Cloudflare Tunnel, with
                                   server.oauth config and local operator
                                   approval (`remnic oauth pending|approve|deny`).
                                   The OAuth facade in @remnic/server is the
                                   authorization server; the connector id is
                                   `chatgpt` (token prefix remnic_cg_).
+                                  Every MCP tool ships an outputSchema (PR #1844).
