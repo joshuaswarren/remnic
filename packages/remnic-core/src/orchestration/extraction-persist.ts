@@ -215,7 +215,7 @@ export class ExtractionPersistCoordinator {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
+    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
     /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */
@@ -1841,6 +1841,7 @@ export class ExtractionPersistCoordinator {
         (fact as any).source === "proactive"
           ? "extraction-proactive"
           : "extraction";
+      const extractionSourceConnector = sourceContext?.sourceConnector;
 
       // Check for contradictions before writing (Phase 2B).
       // NOTE: This block was moved above the chunking branch so that the
@@ -2025,6 +2026,7 @@ export class ExtractionPersistCoordinator {
               tags: [...fact.tags, "chunked"],
               entityRef: fact.entityRef,
               source: extractionWriteSource,
+              ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
               importance,
               supersedes,
               links: links.length > 0 ? links : undefined,
@@ -2207,6 +2209,7 @@ export class ExtractionPersistCoordinator {
                 }
               : {}),
             source: extractionWriteSource,
+            ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
             ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
             ...(fact.provenance ? { provenance: fact.provenance } : {}),
           });
@@ -2377,6 +2380,7 @@ export class ExtractionPersistCoordinator {
               ? (fact as any).entityRef
               : undefined,
           source: extractionWriteSource,
+          ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
           importance,
           supersedes,
           links: links.length > 0 ? links : undefined,
@@ -2498,6 +2502,7 @@ export class ExtractionPersistCoordinator {
               }
             : {}),
           source: extractionWriteSource,
+          ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
         });

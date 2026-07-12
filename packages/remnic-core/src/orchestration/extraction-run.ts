@@ -75,7 +75,7 @@ export interface ExtractionRunCoordinatorDeps {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
+    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
     sourceText?: string,
@@ -642,7 +642,7 @@ export class ExtractionRunCoordinator {
       result,
       storage,
       threadIdForExtraction,
-      { sessionKey, principal, validAt: sourceValidAt },
+      { sessionKey, principal, validAt: sourceValidAt, sourceConnector: deriveSourceConnector(turns) },
       // Pass the KNOWN base namespace (NHIdx) so the catalog write touch records the
       // real namespace rather than a guess decoded from the storage dir.
       selfNamespace,
@@ -842,3 +842,21 @@ export class ExtractionRunCoordinator {
   }
 }
 
+
+/**
+ * Derive a single `sourceConnector` from a batch of turns.
+ * Returns the connector ONLY when all turns that carry one agree.
+ * Mixed-connector batches return undefined — extraction facts from
+ * mixed sources must NOT be attributed to a single connector.
+ * Turns without a sourceConnector are ignored (they may be legacy
+ * turns from before this feature existed, or internal/system turns).
+ */
+function deriveSourceConnector(turns: readonly BufferTurn[]): string | undefined {
+  const connectors = new Set<string>();
+  for (const turn of turns) {
+    if (typeof turn.sourceConnector === "string" && turn.sourceConnector.length > 0) {
+      connectors.add(turn.sourceConnector);
+    }
+  }
+  return connectors.size === 1 ? [...connectors][0] : undefined;
+}

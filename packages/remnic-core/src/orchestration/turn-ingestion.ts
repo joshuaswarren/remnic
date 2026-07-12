@@ -116,7 +116,7 @@ export class TurnIngestionCoordinator {
       logicalSessionKey?: string;
       providerThreadId?: string | null;
       turnFingerprint?: string;
-      persistProcessedFingerprint?: boolean;
+      sourceConnector?: string;
     } = {},
   ): Promise<void> {
     if (role !== "user" && role !== "assistant") {
@@ -158,7 +158,7 @@ export class TurnIngestionCoordinator {
       logicalSessionKey: options.logicalSessionKey ?? bufferKey,
       providerThreadId: options.providerThreadId ?? null,
       turnFingerprint: options.turnFingerprint,
-      persistProcessedFingerprint: options.persistProcessedFingerprint === true,
+      ...(options.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
     };
 
     const outcome =

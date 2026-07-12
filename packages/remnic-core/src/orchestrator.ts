@@ -2834,6 +2834,7 @@ export class Orchestrator {
       providerThreadId?: string | null;
       turnFingerprint?: string;
       persistProcessedFingerprint?: boolean;
+      sourceConnector?: string;
     } = {},
   ): Promise<void> {
     return this.turnIngestionCoordinator.processTurn(
@@ -3085,7 +3086,7 @@ export class Orchestrator {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
+    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
     /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */

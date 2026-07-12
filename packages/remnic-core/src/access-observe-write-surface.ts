@@ -666,6 +666,7 @@ export class AccessObserveWriteSurface {
         rawContent: m.rawContent,
         sourceFormat: m.sourceFormat,
         timestamp: new Date().toISOString(),
+        ...(request.sourceConnector ? { sourceConnector: request.sourceConnector } : {}),
       }));
       // Pin extraction STORAGE to the effective namespace rather than letting the
       // orchestrator re-derive one from the session key + coding overlay — that

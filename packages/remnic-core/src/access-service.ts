@@ -1039,6 +1039,8 @@ export interface EngramAccessObserveRequest {
    * Creates a `CodingContext` with `projectId: "tag:<projectTag>"`.
    */
   projectTag?: string;
+  /** Trusted connector identity, set from ctx.sourceConnector by the operation handler. */
+  sourceConnector?: string;
 }
 
 /**
