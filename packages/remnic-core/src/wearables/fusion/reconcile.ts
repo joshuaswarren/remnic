@@ -66,6 +66,10 @@ interface TaggedSegment {
   startIso?: string;
   endIso?: string;
   sourceTrust: number;
+  /** Original position in the flattened input (sources in first-appearance
+   * order, then segment order within each source). Carried through
+   * alignment so equal-time segments keep their transcript sequence. */
+  originalIndex: number;
 }
 
 interface AlignGroup {
@@ -75,6 +79,9 @@ interface AlignGroup {
   isSelf: boolean;
   members: TaggedSegment[];
   anchorMs: number;
+  /** Earliest original sequence index among members — the secondary sort
+   * key so equal-anchorMs groups keep transcript/source order. */
+  originalIndex: number;
 }
 
 /** Match key that unifies the wearer across sources. */
@@ -256,24 +263,21 @@ export function fuseCluster(
         ...(segment.startIso !== undefined ? { startIso: segment.startIso } : {}),
         ...(segment.endIso !== undefined ? { endIso: segment.endIso } : {}),
         sourceTrust,
+        originalIndex: tagged.length,
       });
     }
   }
 
-  // Deterministic order: time, then source, then speaker label.
+  // Deterministic order: time first. Equal-time (and both-missing)
+  // segments keep their ORIGINAL transcript/source sequence instead of
+  // being scrambled by source or speaker label, so minute-precision and
+  // untimestamped utterances are not reordered relative to their input.
   tagged.sort((a, b) => {
     const aFinite = Number.isFinite(a.startMs);
     const bFinite = Number.isFinite(b.startMs);
     if (aFinite && bFinite && a.startMs !== b.startMs) return a.startMs - b.startMs;
     if (aFinite !== bFinite) return aFinite ? -1 : 1;
-    if (a.source !== b.source) return a.source < b.source ? -1 : 1;
-    if (a.speakerLabel !== b.speakerLabel) {
-      return a.speakerLabel < b.speakerLabel ? -1 : 1;
-    }
-    if (a.conversationId !== b.conversationId) {
-      return a.conversationId < b.conversationId ? -1 : 1;
-    }
-    return 0;
+    return a.originalIndex - b.originalIndex;
   });
 
   // Greedy cross-source alignment: a group holds at most one segment per
@@ -313,6 +317,9 @@ export function fuseCluster(
     }
     if (chosen !== undefined) {
       chosen.members.push(seg);
+      if (seg.originalIndex < chosen.originalIndex) {
+        chosen.originalIndex = seg.originalIndex;
+      }
     } else {
       groups.push({
         key,
@@ -320,20 +327,21 @@ export function fuseCluster(
         isSelf: seg.isSelf,
         members: [seg],
         anchorMs: seg.startMs,
+        originalIndex: seg.originalIndex,
       });
     }
   }
 
-  // Output groups in time order (missing-start groups last, stable).
+  // Output groups in time order; missing-start groups last. Equal-anchorMs
+  // (and all-missing) groups tie-break on original transcript/source
+  // sequence — not source/speaker label — so equal-time utterances keep
+  // the order they appeared in their input transcripts.
   groups.sort((a, b) => {
     const aMissing = !Number.isFinite(a.anchorMs);
     const bMissing = !Number.isFinite(b.anchorMs);
     if (aMissing !== bMissing) return aMissing ? 1 : -1;
     if (!aMissing && a.anchorMs !== b.anchorMs) return a.anchorMs - b.anchorMs;
-    const am = a.members[0];
-    const bm = b.members[0];
-    if (am.source !== bm.source) return am.source < bm.source ? -1 : 1;
-    return am.speakerLabel < bm.speakerLabel ? -1 : am.speakerLabel > bm.speakerLabel ? 1 : 0;
+    return a.originalIndex - b.originalIndex;
   });
 
   const segments: FusedSegment[] = [];

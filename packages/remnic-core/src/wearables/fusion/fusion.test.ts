@@ -27,6 +27,7 @@ function conversation(
   segments: Array<{
     text: string;
     speakerKey?: string;
+    speakerName?: string;
     isWearer?: boolean;
     startIso?: string;
     endIso?: string;
@@ -40,6 +41,7 @@ function conversation(
     segments: segments.map((segment) => ({
       text: segment.text,
       speakerKey: segment.speakerKey ?? "user",
+      ...(segment.speakerName !== undefined ? { speakerName: segment.speakerName } : {}),
       ...(segment.isWearer !== undefined ? { isWearer: segment.isWearer } : {}),
       ...(segment.startIso !== undefined ? { startIso: segment.startIso } : {}),
       ...(segment.endIso !== undefined ? { endIso: segment.endIso } : {}),
@@ -716,6 +718,70 @@ test("distinct timestamped same-window utterances stay separate, not collapsed",
   // The cross-source conflict is surfaced for review (not silently dropped).
   assert.equal(conv.disagreements.length, 1);
   assert.equal(conv.disagreements[0]!.candidates.length, 2);
+});
+
+test("equal-time same-source utterances keep original transcript order, not label order", () => {
+  // From stored transcripts, segment times are minute-precision, so several
+  // utterances from one source can share an identical anchorMs. The
+  // alignment tie-break must preserve the ORIGINAL transcript sequence:
+  // sorting equal-time segments by speaker label would scramble them
+  // ("Amy" before "Zoe" even though Zoe spoke first).
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Zoe spoke first.",
+              speakerName: "Zoe",
+              startIso: "2026-06-10T09:00:00.000Z",
+            },
+            {
+              text: "Amy spoke second.",
+              speakerName: "Amy",
+              startIso: "2026-06-10T09:00:00.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 2);
+  assert.deepEqual(
+    conv.segments.map((s) => s.text),
+    ["Zoe spoke first.", "Amy spoke second."],
+    "equal-time utterances keep original transcript order, not label order",
+  );
+  assert.deepEqual(conv.segments.map((s) => s.speaker), ["Zoe", "Amy"]);
+});
+
+test("untimestamped same-source utterances keep original transcript order", () => {
+  // Missing times all share the missing-anchor group; the tie-break must
+  // still preserve original transcript sequence rather than speaker label.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "Zoe untimestamped first.", speakerName: "Zoe" },
+            { text: "Amy untimestamped second.", speakerName: "Amy" },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 2);
+  assert.deepEqual(
+    conv.segments.map((s) => s.text),
+    ["Zoe untimestamped first.", "Amy untimestamped second."],
+  );
+  assert.deepEqual(conv.segments.map((s) => s.speaker), ["Zoe", "Amy"]);
 });
 
 test("raw diarization keys like SPEAKER_00 are treated as generic speakers", () => {
