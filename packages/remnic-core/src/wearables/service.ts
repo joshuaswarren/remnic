@@ -13,7 +13,7 @@ import {
 } from "./corrections.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { isValidTranscriptDate, parseDayTranscript } from "./day-store.js";
+import { isValidTranscriptDate, parseDayTranscript, utcOffsetMinutesForDate } from "./day-store.js";
 import {
   composeFusionDayMeta,
   type FusionArtifactStore,
@@ -25,6 +25,7 @@ import {
   type FusedWearableConversation,
 } from "./fusion/index.js";
 import { stripAttributesSuffix } from "../storage.js";
+import { log } from "../logger.js";
 import type { MemoryFrontmatter } from "../types.js";
 import type { WearableMemoryGenDeps } from "./memory-gen.js";
 import { WEARABLE_SOURCE_PREFIX, wearableSourceLabel } from "./memory-gen.js";
@@ -491,6 +492,7 @@ export class WearablesService {
     conversationCount: number;
     contentHash: string;
     written: boolean;
+    skipped?: { reason: string };
   }> {
     if (!this.deps.config.fusion.enabled) {
       throw new WearablesInputError(
@@ -503,10 +505,43 @@ export class WearablesService {
     const storage = await this.deps.getStorage();
     const enabled = this.enabledSources();
     const bodies: Array<{ source: string; body: string }> = [];
+    const sourceTimezones: string[] = [];
     for (const [source] of enabled) {
       const raw = await storage.readWearableDayTranscript(source, date);
       if (raw === null) continue;
-      bodies.push({ source, body: parseDayTranscript(raw)?.body ?? raw });
+      const parsed = parseDayTranscript(raw);
+      bodies.push({ source, body: parsed?.body ?? raw });
+      sourceTimezones.push(parsed?.meta.timezone ?? "UTC");
+    }
+    // Mixed-timezone guard (codex P2): reconstructFusionInputs rebuilds every
+    // clock as `${date}T${HH}:${MM}:00Z` assuming all sources share one tz.
+    // Sources rendered under DIFFERENT UTC offsets would misalign on the
+    // fused timeline; detect that and skip the day with a logged reason
+    // rather than silently producing misaligned ISO. Full cross-tz offset
+    // normalization is deferred (see the precision caveat in reconstruct.ts).
+    if (bodies.length > 1) {
+      const offsets = sourceTimezones.map((tz) => utcOffsetMinutesForDate(date, tz));
+      const allKnown = offsets.every((offset) => offset !== null);
+      const allEqual = allKnown && offsets.every((offset) => offset === offsets[0]);
+      if (!allEqual) {
+        const detail = bodies
+          .map(
+            (entry, i) =>
+              `${entry.source}=${sourceTimezones[i]}(${offsets[i] === null ? "?" : offsets[i]}m)`,
+          )
+          .join(", ");
+        log.warn(
+          `wearables fusion: skipping ${date} — sources were rendered under conflicting timezones (${detail}); full cross-tz normalization is deferred`,
+        );
+        return {
+          date,
+          sources: [],
+          conversationCount: 0,
+          contentHash: "",
+          written: false,
+          skipped: { reason: "conflicting-timezones" },
+        };
+      }
     }
     const sourceTrust: Record<string, number> = {};
     for (const [id, settings] of enabled) {

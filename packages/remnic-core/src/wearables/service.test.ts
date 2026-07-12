@@ -134,6 +134,7 @@ function storeDay(
   sourceId: string,
   date: string,
   texts: string[],
+  timezone = "UTC",
 ): void {
   const registry = emptySpeakerRegistry();
   const conversations: WearableConversation[] = [
@@ -150,11 +151,11 @@ function storeDay(
       })),
     },
   ];
-  const body = composeDayTranscriptBody(sourceId, date, "UTC", conversations, registry);
+  const body = composeDayTranscriptBody(sourceId, date, timezone, conversations, registry);
   const meta = composeDayTranscriptMeta(
     sourceId,
     date,
-    "UTC",
+    timezone,
     conversations,
     registry,
     body,
@@ -984,6 +985,83 @@ test("fuseDay rewrites an artifact whose body bytes drifted despite matching con
     const idempotent = await service.fuseDay("2026-06-10");
     assert.equal(idempotent.written, false);
     assert.equal(idempotent.contentHash, hash);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
+test("fuseDay skips a day whose sources were rendered under conflicting timezones", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    // Two enabled sources recorded the same window but in DIFFERENT
+    // timezones whose UTC offsets genuinely differ on this date
+    // (America/Los_Angeles is UTC-7 in summer; Asia/Tokyo is UTC+9).
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    storeDay(
+      storage,
+      "bee",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "Asia/Tokyo",
+    );
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    const result = await service.fuseDay("2026-06-10");
+    // Fail-safe: the day is skipped with a reason, not silently misaligned.
+    assert.equal(result.written, false);
+    assert.equal(result.skipped?.reason, "conflicting-timezones");
+    assert.equal(result.sources.length, 0);
+    // No artifact is written for the conflicting day.
+    assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
+test("fuseDay still fuses sources whose timezones share one UTC offset", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    // Two sources with DIFFERENT tz names but the SAME offset on this
+    // summer date (America/Los_Angeles and America/Tijuana are both
+    // UTC-7 on 2026-06-10) must still fuse — they sit on one timeline.
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    storeDay(
+      storage,
+      "bee",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Tijuana",
+    );
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    const result = await service.fuseDay("2026-06-10");
+    assert.equal(result.written, true, "same-offset sources fuse normally");
+    assert.equal(result.skipped, undefined);
+    assert.ok(result.conversationCount >= 1);
   } finally {
     rmSync(storage.dir, { recursive: true, force: true });
   }
