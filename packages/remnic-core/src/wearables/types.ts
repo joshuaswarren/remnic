@@ -210,6 +210,18 @@ export interface WearableCleanupSettings {
    * sync summary and excluded from memory extraction.
    */
   dropLowQuality: boolean;
+  /**
+   * Keep utterance-level boundaries for segments whose speaker label
+   * carries no real diarization signal (generic labels like "Unknown"
+   * or empty). When `mergeSameSpeaker` is also on, such segments are
+   * left distinct instead of collapsing into one block — a whole
+   * conversation of per-utterance text under a single generic label
+   * otherwise merges into one mega-segment (issue #1811). Sources whose
+   * provider emits reliable per-utterance text but unreliable speaker
+   * labels (Bee) default this on; others default off so existing merge
+   * behavior is unchanged unless explicitly configured.
+   */
+  preserveUtteranceBoundaries?: boolean;
 }
 
 /** A single user-specific transcript correction rule. */
@@ -337,4 +349,3 @@ export interface WearableSourceStatus {
   lastDateSynced: string | null;
   transcriptDays: number;
 }
-

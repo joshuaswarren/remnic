@@ -48,16 +48,35 @@ const DEFAULT_SOURCE_TRUST = 0.8;
 const DEFAULT_AUTO_APPROVE_TRUST = 0.7;
 const DEFAULT_REVIEW_TRUST = 0.45;
 
-export function defaultWearableCleanupSettings(): WearableCleanupSettings {
+// Sources whose provider emits per-utterance text but unreliable
+// speaker labels (Bee falls back to a generic "unknown" label when
+// diarization is unavailable). For those, the cleanup default keeps
+// utterance-level boundaries so a whole conversation does not collapse
+// into one mega-segment (issue #1811). Other sources keep the legacy
+// merge-everything default unless explicitly configured.
+const BOUNDARY_PRESERVING_SOURCE_IDS = new Set<string>(["bee"]);
+
+/**
+ * Default cleanup settings. `sourceId` (the connector id this block
+ * belongs to) only adjusts the `preserveUtteranceBoundaries` default —
+ * every other toggle is identical across sources.
+ */
+export function defaultWearableCleanupSettings(
+  sourceId?: string,
+): WearableCleanupSettings {
   return {
     mergeSameSpeaker: true,
     stripFillers: true,
     collapseRepeats: true,
     dropLowQuality: true,
+    preserveUtteranceBoundaries:
+      sourceId !== undefined && BOUNDARY_PRESERVING_SOURCE_IDS.has(sourceId),
   };
 }
 
-export function defaultWearableSourceSettings(): WearableSourceSettings {
+export function defaultWearableSourceSettings(
+  sourceId?: string,
+): WearableSourceSettings {
   return {
     enabled: false,
     memoryMode: "smart",
@@ -68,7 +87,7 @@ export function defaultWearableSourceSettings(): WearableSourceSettings {
     minImportance: DEFAULT_MIN_IMPORTANCE,
     maxMemoriesPerDay: DEFAULT_MAX_MEMORIES_PER_DAY,
     importNativeMemories: "smart",
-    cleanup: defaultWearableCleanupSettings(),
+    cleanup: defaultWearableCleanupSettings(sourceId),
   };
 }
 
@@ -184,9 +203,10 @@ function parseCorrectionRules(
 function parseSourceSettings(
   value: unknown,
   keyPath: string,
+  sourceId: string,
 ): WearableSourceSettings {
   const raw = requireObject(value, keyPath);
-  const defaults = defaultWearableSourceSettings();
+  const defaults = defaultWearableSourceSettings(sourceId);
 
   const minConfidenceRaw = coerceNumber(raw.minConfidence);
   // Out-of-range values reject loudly instead of clamping — silently
@@ -265,6 +285,12 @@ function parseSourceSettings(
       rawCleanup.dropLowQuality,
       `${keyPath}.cleanup.dropLowQuality`,
       defaults.cleanup.dropLowQuality,
+    ),
+    preserveUtteranceBoundaries: parseBool(
+      rawCleanup.preserveUtteranceBoundaries,
+      `${keyPath}.cleanup.preserveUtteranceBoundaries`,
+      // Optional on the type; the per-source default is always concrete.
+      defaults.cleanup.preserveUtteranceBoundaries ?? false,
     ),
   };
 
@@ -397,6 +423,7 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
       sources[sourceId] = parseSourceSettings(
         sourceValue,
         `wearables.sources.${sourceId}`,
+        sourceId,
       );
     }
   }

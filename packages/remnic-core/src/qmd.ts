@@ -18,6 +18,33 @@ import {
 } from "./search/port.js";
 import { launchProcess, type CommandChildProcess } from "./runtime/child-process.js";
 import { mergeEnv } from "./runtime/env.js";
+import {
+  classifyProbeFailure,
+  compareQmdVersions,
+  getQmdPostInstallProbeTargets,
+  parseQmdVersion,
+  parseQmdVersionOutput,
+  QMD_PROBE_RETRY_BACKOFF_MS,
+  QMD_PROBE_TIMEOUT_MS,
+  QMD_SUPPORTED_VERSION,
+  qmdVersionToString,
+  resolveQmdCapabilities,
+  shouldAutoUpgradeQmd,
+  versionAtLeast,
+  type QmdProbeFailureKind,
+} from "./qmd-preflight.js";
+// Re-export version-check / probe-preflight helpers (moved to qmd-preflight.ts,
+// issue #1841) so existing imports from "./qmd.js" keep resolving.
+export {
+  compareQmdVersions,
+  getQmdPostInstallProbeTargets,
+  parseQmdVersion,
+  parseQmdVersionOutput,
+  QMD_SUPPORTED_VERSION,
+  resolveQmdCapabilities,
+  shouldAutoUpgradeQmd,
+  versionAtLeast,
+};
 
 export interface QmdClientOptions {
   slowLog?: { enabled: boolean; thresholdMs: number };
@@ -133,11 +160,9 @@ const QMD_TIMEOUT_MS = 30_000;
 // `qmdDaemonTimeoutMs` config knob (issue #1335), e.g. to give CPU-only HyDE
 // queries more headroom. The effective value lives in `this.daemonTimeoutMs`.
 const QMD_DAEMON_TIMEOUT_MS = 8_000;
-const QMD_PROBE_TIMEOUT_MS = 8_000;
 const QMD_UPDATE_BACKOFF_MS = 15 * 60 * 1000; // 15m
 const QMD_EMBED_BACKOFF_MS = 60 * 60 * 1000; // 60m
 const QMD_CLI_WARN_THROTTLE_MS = 15 * 60 * 1000; // 15m
-export const QMD_SUPPORTED_VERSION = "2.5.3";
 const QMD_PACKAGE_NAME = "@tobilu/qmd";
 const QMD_AUTO_UPGRADE_TIMEOUT_MS = 120_000;
 const QMD_AUTO_UPGRADE_CHECK_INTERVAL_MS = 24 * 60 * 60_000;
@@ -267,118 +292,6 @@ function isVectorDimensionMismatchError(err: unknown): boolean {
     (/vectors?_vec/i.test(msg) && /float\[\d+\]/i.test(msg)) ||
     (/embedding/i.test(msg) && /dimensions?/i.test(msg))
   );
-}
-
-export function parseQmdVersion(version: string | null): QmdVersionTuple | null {
-  if (!version) return null;
-  const match = version.match(/v?(\d{1,10})\.(\d{1,10})\.(\d{1,10})/i);
-  if (!match) return null;
-  return [
-    Number.parseInt(match[1] ?? "0", 10),
-    Number.parseInt(match[2] ?? "0", 10),
-    Number.parseInt(match[3] ?? "0", 10),
-  ];
-}
-
-export function parseQmdVersionOutput(stdout: string, stderr: string): string | null {
-  const lines = `${stdout}\n${stderr}`
-    .split("\n")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-  if (lines.length === 0) return null;
-  const semanticLines = lines.filter((line) => parseQmdVersion(line) !== null);
-  if (semanticLines.length === 0) return lines[0] ?? null;
-  return semanticLines.find((line) => /\bqmd\b/i.test(line)) ?? semanticLines[0] ?? null;
-}
-
-export function compareQmdVersions(
-  left: QmdVersionTuple | null,
-  right: QmdVersionTuple | null,
-): number {
-  if (!left && !right) return 0;
-  if (!left) return -1;
-  if (!right) return 1;
-  for (let i = 0; i < 3; i += 1) {
-    if ((left[i] ?? 0) > (right[i] ?? 0)) return 1;
-    if ((left[i] ?? 0) < (right[i] ?? 0)) return -1;
-  }
-  return 0;
-}
-
-export function versionAtLeast(
-  current: QmdVersionTuple | null,
-  target: QmdVersionTuple,
-): boolean {
-  return compareQmdVersions(current, target) >= 0;
-}
-
-export function resolveQmdCapabilities(version: string | null): QmdCapabilities {
-  const parsedVersion = parseQmdVersion(version);
-  const atLeast = (target: QmdVersionTuple): boolean => versionAtLeast(parsedVersion, target);
-  return {
-    version,
-    parsedVersion,
-    stableSdk: atLeast([2, 0, 0]),
-    unifiedSearch: atLeast([2, 0, 0]),
-    getDocumentBody: atLeast([2, 0, 0]),
-    maintenanceApi: atLeast([2, 0, 0]),
-    legacySkillInstall: atLeast([2, 0, 1]),
-    intentHints: atLeast([1, 1, 5]),
-    explainTraces: atLeast([1, 1, 2]),
-    candidateLimit: atLeast([1, 1, 2]),
-    v2McpQueryTool: atLeast([2, 0, 0]),
-    structuredSearches: atLeast([2, 0, 0]),
-    queryRerankToggle: atLeast([2, 1, 0]),
-    chunkStrategy: atLeast([2, 1, 0]),
-    qmdBench: atLeast([2, 1, 0]),
-    perCollectionModels: atLeast([2, 1, 0]),
-    jsonLineNumbers: atLeast([2, 1, 0]),
-    editorLinks: atLeast([2, 1, 0]),
-    doctor: atLeast([2, 5, 0]),
-    versionedSkills: atLeast([2, 5, 0]),
-    absoluteSnippetLines: atLeast([2, 5, 0]),
-    fullQueryOutput: atLeast([2, 5, 0]),
-    forceCpu: atLeast([2, 5, 0]),
-    gpuBackendOverride: atLeast([2, 5, 0]),
-    embedParallelism: atLeast([2, 5, 0]),
-    modelEnvConsistency: atLeast([2, 5, 0]),
-    scopedEmbed: atLeast([2, 5, 0]),
-    safeStatusDeviceProbe: atLeast([2, 5, 0]),
-    mcpIndexSelection: atLeast([2, 5, 0]),
-    outputFormatFlag: atLeast([2, 5, 3]),
-  };
-}
-
-export function shouldAutoUpgradeQmd(
-  installedVersion: string | null,
-  supportedVersion: string = QMD_SUPPORTED_VERSION,
-): boolean {
-  const installed = parseQmdVersion(installedVersion);
-  const supported = parseQmdVersion(supportedVersion);
-  if (!installed || !supported) return false;
-  return compareQmdVersions(installed, supported) < 0;
-}
-
-export function getQmdPostInstallProbeTargets(
-  qmdPath: string,
-  qmdPathSource: "configured" | "auto-path" | "auto-fallback",
-): Array<{ qmdPath: string; source: "auto-path" | "auto-fallback" }> {
-  const targets: Array<{ qmdPath: string; source: "auto-path" | "auto-fallback" }> = [
-    { qmdPath: "qmd", source: "auto-path" },
-  ];
-  const normalizedPath = qmdPath.trim();
-  if (
-    qmdPathSource === "auto-fallback" &&
-    normalizedPath.length > 0 &&
-    normalizedPath !== "qmd"
-  ) {
-    targets.push({ qmdPath: normalizedPath, source: "auto-fallback" });
-  }
-  return targets;
-}
-
-function qmdVersionToString(version: QmdVersionTuple): string {
-  return `${version[0]}.${version[1]}.${version[2]}`;
 }
 
 function normalizeSearchOptions(options?: SearchQueryOptions): SearchQueryOptions | undefined {
@@ -671,7 +584,13 @@ function runCommandWithTimeout(
       settled = true;
       cleanup();
       child.kill("SIGKILL");
-      reject(new Error(`${label} timed out after ${options.timeoutMs}ms`));
+      // Flag the deadline breach so classifyProbeFailure can tell a genuine
+      // timeout from a non-zero-exit error whose message merely embeds stderr.
+      reject(
+        Object.assign(new Error(`${label} timed out after ${options.timeoutMs}ms`), {
+          timedOut: true as const,
+        }),
+      );
     }, options.timeoutMs);
     const onAbort = () => {
       if (settled) return;
@@ -1437,6 +1356,18 @@ export class QmdClient implements SearchBackend {
     }
   }
 
+  /**
+   * Run a single `qmd --version` probe against `qmdPath`. Extracted as its own
+   * method so tests can inject a fake probe runner that exercises the preflight
+   * retry/classification paths without spawning a real qmd binary. Issue #1841.
+   */
+  private runVersionProbe(
+    qmdPath: string,
+    signal?: AbortSignal,
+  ): Promise<{ stdout: string; stderr: string }> {
+    return runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, qmdPath, signal, this.qmdRuntimeEnv);
+  }
+
   private async probeCli(
     options: {
       allowAutoUpgrade?: boolean;
@@ -1490,24 +1421,79 @@ export class QmdClient implements SearchBackend {
     };
 
     if (this.configuredQmdPath) {
-      try {
-        const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, this.configuredQmdPath, options.signal, this.qmdRuntimeEnv);
-        await recordProbeSuccess(result, this.configuredQmdPath, "configured");
-        return true;
-      } catch (err) {
-        markProbeFailure(err);
-        configuredProbeFailure = this.lastCliProbeError;
-        // Do not hard-fail here: fall through to PATH/fallback probing.
-        // This keeps recall healthy even when configured path is stale.
-        this.logCliProbeWarning(
-          `QMD: configured qmdPath failed (${this.configuredQmdPath}): ${this.lastCliProbeError}`,
-        );
+      const configuredPath = this.configuredQmdPath;
+      // Retry only TRANSIENT (timeout/abort) probes of the configured path: a
+      // binary that resolved and ran before is more likely slow under load than
+      // gone. ENOENT/EACCES is a hard misconfiguration and must fail fast.
+      // Issue #1841.
+      let failureKind: QmdProbeFailureKind = "other";
+      let retries = 0;
+      let callerCancelled = false;
+      for (let attempt = 0; attempt <= QMD_PROBE_RETRY_BACKOFF_MS.length; attempt += 1) {
+        try {
+          const result = await this.runVersionProbe(configuredPath, options.signal);
+          await recordProbeSuccess(result, configuredPath, "configured");
+          return true;
+        } catch (err) {
+          markProbeFailure(err);
+          configuredProbeFailure = this.lastCliProbeError;
+          // Detect CALLER cancellation FIRST: an aborted signal / AbortError is
+          // non-actionable noise — the caller chose to stop. Other QMD paths
+          // treat it via `isCallerCancellation`; do the same here so a cancelled
+          // probe never reads as a transient host-load failure. Issue #1841.
+          if (isCallerCancellation(err, options.signal)) {
+            callerCancelled = true;
+            break;
+          }
+          failureKind = classifyProbeFailure(err);
+          // Never retry a hard misconfiguration (missing/not-executable) — only
+          // transient slowness. (Caller cancellation is handled above.)
+          if (
+            failureKind === "transient" &&
+            attempt < QMD_PROBE_RETRY_BACKOFF_MS.length
+          ) {
+            try {
+              await sleepWithSignal(
+                QMD_PROBE_RETRY_BACKOFF_MS[attempt] ?? 500,
+                options.signal,
+              );
+            } catch {
+              // Aborted mid-backoff: caller cancelled — stop, emit no warning.
+              callerCancelled = true;
+              break;
+            }
+            retries += 1;
+            continue;
+          }
+          break;
+        }
+      }
+      // Distinct operator-facing warnings so a slow binary is not mistaken for
+      // a misconfiguration (and vice versa). Do not hard-fail here: fall through
+      // to PATH/fallback probing so recall stays healthy when config is stale.
+      // Caller cancellation is silent noise (issue #1841): suppress all warnings
+      // for it exactly as the other QMD paths do.
+      if (!callerCancelled) {
+        if (failureKind === "transient") {
+          this.logCliProbeWarning(
+            `QMD: qmdPath ${configuredPath} version check timed out (host may be under load); retried ${retries} time${retries === 1 ? "" : "s"}`,
+          );
+        } else if (failureKind === "missing") {
+          this.logCliProbeWarning(
+            `QMD: configured qmdPath not found or not executable (${configuredPath}): ${this.lastCliProbeError}`,
+          );
+        } else {
+          // Preserve the historical generic message for exit-code/other failures.
+          this.logCliProbeWarning(
+            `QMD: configured qmdPath failed (${configuredPath}): ${this.lastCliProbeError}`,
+          );
+        }
       }
     }
 
     // Try PATH first
     try {
-      const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, "qmd", options.signal, this.qmdRuntimeEnv);
+      const result = await this.runVersionProbe("qmd", options.signal);
       await recordProbeSuccess(result, "qmd", "auto-path");
       return true;
     } catch (err) {
@@ -1515,7 +1501,7 @@ export class QmdClient implements SearchBackend {
       // Try fallback paths
       for (const fallbackPath of this.qmdFallbackPaths) {
         try {
-          const result = await runQmd(["--version"], QMD_PROBE_TIMEOUT_MS, fallbackPath, options.signal, this.qmdRuntimeEnv);
+          const result = await this.runVersionProbe(fallbackPath, options.signal);
           await recordProbeSuccess(result, fallbackPath, "auto-fallback");
           log.info(`QMD: found at ${fallbackPath}`);
           return true;

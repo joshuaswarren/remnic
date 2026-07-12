@@ -1,7 +1,7 @@
 {
   "id": "openclaw-remnic",
   "name": "Remnic OpenClaw Plugin",
-  "version": "9.3.770",
+  "version": "9.4.0",
   "kind": "memory",
   "description": "Local semantic memory for OpenClaw with bundled Remnic core runtime. Requires plugins.slots.memory set to this plugin id for hooks to fire.",
   "setup": {
@@ -5563,6 +5563,11 @@
                       "type": "boolean",
                       "default": true,
                       "description": "Drop segments that look like ASR garbage."
+                    },
+                    "preserveUtteranceBoundaries": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Keep utterance-level boundaries (one segment per utterance) instead of merging consecutive same-speaker segments. Defaults off; Bee enables this by default. (issue #1811)"
                     }
                   }
                 }
