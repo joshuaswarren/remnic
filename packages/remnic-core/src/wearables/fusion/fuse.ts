@@ -48,18 +48,33 @@ function canonicalInputsKey(
     }
     return 0;
   });
-  const lines: string[] = [`date:${date}`];
-  for (const conv of sorted) {
-    lines.push(
-      `conv|${conv.source}|${conv.conversationId}|${conv.startIso}|${conv.endIso ?? ""}|${conv.title ?? ""}|${conv.summary ?? ""}`,
-    );
-    for (const segment of conv.segments) {
-      lines.push(
-        `seg|${segment.speaker}|${segment.isSelf ? "self" : "other"}|${segment.startIso ?? ""}|${segment.endIso ?? ""}|${segment.text}`,
-      );
-    }
-  }
-  return createHash("sha256").update(lines.join("\n"), "utf-8").digest("hex");
+  // Serialize the structured tuples UNAMBIGUOUSLY before hashing. The old
+  // `|`/newline-delimited form could collide: a speaker label or segment
+  // text containing `|` (or a newline plus a forged `seg|…`/`conv|…`
+  // prefix) could make two DISTINCT inputs serialize to identical bytes,
+  // hashing alike — so fuseDay wrongly took the idempotent-skip path and
+  // kept serving a stale artifact. JSON string quoting makes every field
+  // boundary unforgeable, and the positional array order is the
+  // deterministic key order (no object keys to sort).
+  const record = [
+    date,
+    sorted.map((conv) => [
+      conv.source,
+      conv.conversationId,
+      conv.startIso,
+      conv.endIso ?? "",
+      conv.title ?? "",
+      conv.summary ?? "",
+      conv.segments.map((segment) => [
+        segment.speaker,
+        segment.isSelf ? "self" : "other",
+        segment.startIso ?? "",
+        segment.endIso ?? "",
+        segment.text,
+      ]),
+    ]),
+  ];
+  return createHash("sha256").update(JSON.stringify(record), "utf-8").digest("hex");
 }
 
 /**
@@ -78,16 +93,14 @@ function configFingerprint(
   const proximityGapMs = options.proximityGapMs ?? DEFAULT_PROXIMITY_GAP_MS;
   const windowToleranceMs =
     options.windowToleranceMs ?? DEFAULT_WINDOW_TOLERANCE_MS;
-  const lines: string[] = [
-    `gap:${proximityGapMs}`,
-    `tol:${windowToleranceMs}`,
-  ];
   const trustMap = options.sourceTrust ?? {};
-  for (const source of [...new Set(sources)].sort()) {
-    const trust = trustMap[source] ?? DEFAULT_SOURCE_TRUST;
-    lines.push(`trust|${source}|${trust}`);
-  }
-  return lines.join("\n");
+  // JSON form so a source id (or future field) containing `|` cannot forge
+  // a trust-entry boundary and collide two distinct effective configs into
+  // one day hash.
+  const trustEntries = [...new Set(sources)]
+    .sort()
+    .map((source) => [source, trustMap[source] ?? DEFAULT_SOURCE_TRUST]);
+  return JSON.stringify([proximityGapMs, windowToleranceMs, trustEntries]);
 }
 
 /**

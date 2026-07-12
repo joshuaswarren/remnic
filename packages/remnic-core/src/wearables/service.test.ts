@@ -1239,3 +1239,96 @@ test("fuseDay skips when a source lacks a resolvable timezone id", async () => {
   }
 });
 
+test("fuseDay ignores a zero-conversation source when checking timezone identity (issue #1849)", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    // limitless CONTRIBUTES a real conversation under one timezone.
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    // bee is an EMPTY (all-elided / zero-conversation) transcript — the
+    // sync path writes one explicitly for days whose segments were all
+    // dropped. It carries a DIFFERENT timezone, but contributes NO
+    // conversations/clocks, so it must not block the fusion.
+    const registry = emptySpeakerRegistry();
+    const beeBody = composeDayTranscriptBody(
+      "bee",
+      "2026-06-10",
+      "Asia/Tokyo",
+      [],
+      registry,
+    );
+    const beeMeta = composeDayTranscriptMeta(
+      "bee",
+      "2026-06-10",
+      "Asia/Tokyo",
+      [],
+      registry,
+      beeBody,
+      "2026-06-11T01:00:00.000Z",
+    );
+    storage.files.set("bee/2026-06-10", serializeDayTranscript(beeMeta, beeBody));
+
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    const result = await service.fuseDay("2026-06-10");
+    // The zero-conversation source is ignored; the single contributing
+    // source fuses normally (NOT skipped).
+    assert.equal(result.written, true, "a zero-conversation source must not block fusion");
+    assert.equal(result.skipped, undefined);
+    assert.ok(result.conversationCount >= 1, "the contributing source still fuses");
+    assert.deepEqual([...result.sources].sort(), ["limitless"]);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
+test("fuseDay still skips when two CONTRIBUTING sources disagree on timezone (issue #1849)", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    // Both sources CONTRIBUTE a real conversation but under DIFFERENT
+    // timezones — the guard must still skip. This is the contrasting case
+    // to ignoring zero-conversation sources: only sources that actually
+    // contribute clocks are compared, and two disagreeing contributors skip.
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    storeDay(
+      storage,
+      "bee",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "Asia/Tokyo",
+    );
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    const result = await service.fuseDay("2026-06-10");
+    assert.equal(result.written, false, "two disagreeing contributing sources must skip");
+    assert.equal(result.skipped?.reason, "conflicting-timezones");
+    assert.equal(result.sources.length, 0);
+    assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
+    assert.equal((await service.fusedConversations("2026-06-10")).length, 0);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});

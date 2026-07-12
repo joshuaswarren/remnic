@@ -513,25 +513,44 @@ export class WearablesService {
       bodies.push({ source, body: parsed?.body ?? raw });
       sourceTimezones.push(parsed?.meta.timezone ?? "");
     }
+    // Reconstruct the normalized inputs once and derive the sources that
+    // actually CONTRIBUTE conversations/clocks for the day. The sync path
+    // can persist an explicit EMPTY (all-elided / zero-conversation)
+    // transcript for days whose segments were all dropped; such a file
+    // contributes no clocks, so it must not influence the timezone guard
+    // below.
+    const reconstructed = reconstructFusionInputs(date, bodies);
+    const contributing = bodies
+      .map((entry, i) => ({
+        source: entry.source,
+        timezone: sourceTimezones[i] ?? "",
+      }))
+      .filter((entry) =>
+        reconstructed.some((input) => input.source === entry.source),
+      );
     // Mixed-timezone guard: reconstructFusionInputs rebuilds every clock as
     // `${date}T${HH}:${MM}:00Z` and compares local HH:MM clocks across sources
     // as if they shared one timezone. That comparison is ONLY valid when every
-    // source present for the day carries the SAME explicit IANA timezone id
-    // (meta.timezone). Sampling one UTC offset per source is insufficient: on
-    // DST-transition dates two different zones can share a noon offset yet
-    // differ during recorded hours (e.g. America/Los_Angeles vs America/Phoenix
-    // on 2026-03-08 — both UTC-7 by noon, an hour apart before LA's
-    // spring-forward). A source whose timezone id is missing/empty is treated
-    // as unresolvable rather than silently coerced to a default, so any unknown
-    // tz fails safe. Require exact tz-id identity across all present sources.
-    if (bodies.length > 1) {
-      const referenceTz = sourceTimezones[0]!;
+    // CONTRIBUTING source (one that reconstructs to >=1 conversation) carries
+    // the SAME explicit IANA timezone id (meta.timezone). Sources that
+    // reconstruct to zero conversations contribute no clocks and are ignored,
+    // so an empty/all-elided transcript rendered under a different (or
+    // missing) timezone cannot block a genuine same-zone fusion. Sampling one
+    // UTC offset per source is insufficient: on DST-transition dates two
+    // different zones can share a noon offset yet differ during recorded hours
+    // (e.g. America/Los_Angeles vs America/Phoenix on 2026-03-08 — both UTC-7
+    // by noon, an hour apart before LA's spring-forward). A source whose
+    // timezone id is missing/empty is treated as unresolvable rather than
+    // silently coerced to a default, so any unknown tz fails safe. Require
+    // exact tz-id identity across all contributing sources.
+    if (contributing.length > 1) {
+      const referenceTz = contributing[0]!.timezone;
       const allSameExplicitTz =
         referenceTz.trim().length > 0 &&
-        sourceTimezones.every((tz) => tz === referenceTz);
+        contributing.every((entry) => entry.timezone === referenceTz);
       if (!allSameExplicitTz) {
-        const detail = bodies
-          .map((entry, i) => `${entry.source}=${sourceTimezones[i] || "?"}`)
+        const detail = contributing
+          .map((entry) => `${entry.source}=${entry.timezone || "?"}`)
           .join(", ");
         log.warn(
           `wearables fusion: skipping ${date} — sources were rendered under differing timezones (${detail}); reconstructFusionInputs only compares local clocks correctly when every source shares one explicit IANA timezone id`,
@@ -554,7 +573,7 @@ export class WearablesService {
     for (const [id, settings] of enabled) {
       sourceTrust[id] = settings.sourceTrust;
     }
-    const result = fuseDayInputs(date, reconstructFusionInputs(date, bodies), {
+    const result = fuseDayInputs(date, reconstructed, {
       proximityGapMs: this.deps.config.fusion.proximityGapMs,
       windowToleranceMs: this.deps.config.fusion.windowToleranceMs,
       sourceTrust,

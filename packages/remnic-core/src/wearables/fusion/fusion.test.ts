@@ -482,6 +482,93 @@ test("content hash folds fusion config: same inputs, changed knob => new hash", 
   );
 });
 
+test("hash encoding is delimiter-injection-safe: distinct inputs differing only by where a `|`/newline falls never collide (issue #1849)", () => {
+  // The conversation id + day contentHash are computed from a serialization
+  // of the structured fusion inputs. That serialization must be UNAMBIGUOUS:
+  // a user-defined speaker label or segment text containing `|` (or a
+  // newline plus a forged `seg|…` line) must not be able to forge a
+  // field/record boundary — otherwise two DISTINCT inputs would serialize to
+  // identical bytes, hash alike, and fuseDay would wrongly take the
+  // idempotent-skip path, keeping a stale artifact.
+  const startIso = "2026-06-10T09:00:00.000Z";
+
+  // Collision pair over the OLD `|`/newline-delimited form:
+  //  - "split": ONE segment whose text embeds a newline plus a forged
+  //    `seg|…` line, so its serialized bytes looked like two segment lines.
+  //  - "two": TWO real segments whose serialized lines are byte-identical
+  //    to "split" once the old delimiter joins ran.
+  const split: FusionConversationInput[] = [
+    {
+      source: "limitless",
+      conversationId: "c1",
+      startIso,
+      segments: [
+        { speaker: "Alice", isSelf: false, text: "Bob\nseg|Carol|other|||Dave" },
+      ],
+    },
+  ];
+  const two: FusionConversationInput[] = [
+    {
+      source: "limitless",
+      conversationId: "c1",
+      startIso,
+      segments: [
+        { speaker: "Alice", isSelf: false, text: "Bob" },
+        { speaker: "Carol", isSelf: false, text: "Dave" },
+      ],
+    },
+  ];
+
+  const fusedSplit = fuseDay(DATE, split);
+  const fusedTwo = fuseDay(DATE, two);
+
+  // The two distinct inputs must NOT collide.
+  assert.notEqual(
+    fusedSplit.contentHash,
+    fusedTwo.contentHash,
+    "a segment text containing a forged delimiter must not collide with two real segments",
+  );
+  assert.notEqual(
+    fusedSplit.conversations[0]!.id,
+    fusedTwo.conversations[0]!.id,
+    "the per-conversation id must also be collision-safe",
+  );
+
+  // A `|` inside a speaker label must not be confused with one inside the
+  // text field (field-boundary forgery).
+  const labelPipe: FusionConversationInput[] = [
+    {
+      source: "limitless",
+      conversationId: "c1",
+      startIso,
+      segments: [{ speaker: "Alice|Bob", isSelf: false, text: "Carol" }],
+    },
+  ];
+  const textPipe: FusionConversationInput[] = [
+    {
+      source: "limitless",
+      conversationId: "c1",
+      startIso,
+      segments: [{ speaker: "Alice", isSelf: false, text: "Bob|Carol" }],
+    },
+  ];
+  assert.notEqual(
+    fuseDay(DATE, labelPipe).contentHash,
+    fuseDay(DATE, textPipe).contentHash,
+    "a `|` in a speaker label vs in the text must hash differently",
+  );
+
+  // Idempotency is preserved for genuine no-ops: the same logical input
+  // (built twice, independently) still produces the SAME hash, so the
+  // idempotent-skip path keeps working for unchanged inputs.
+  assert.equal(
+    fuseDay(DATE, split).contentHash,
+    fuseDay(DATE, JSON.parse(JSON.stringify(split))).contentHash,
+    "identical logical inputs must hash identically (idempotent skip still works)",
+  );
+});
+
+
 test("serialize/parse round-trips a fused day file", () => {
   const fused = fuseDay(
     DATE,
