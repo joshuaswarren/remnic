@@ -132,3 +132,59 @@ test("input conversation is not mutated", () => {
   cleanConversation(input, ALL_ON);
   assert.equal(JSON.stringify(input), before);
 });
+
+
+test("merges consecutive same-speaker runs across diarized speakers", () => {
+  const result = cleanConversation(
+    conversation([
+      { speakerKey: "0", text: "Hello there.", startIso: "2026-06-10T10:00:00Z", endIso: "2026-06-10T10:00:03Z" },
+      { speakerKey: "0", text: "How are you?", startIso: "2026-06-10T10:00:04Z", endIso: "2026-06-10T10:00:07Z" },
+      { speakerKey: "1", text: "Good, thanks.", startIso: "2026-06-10T10:00:08Z", endIso: "2026-06-10T10:00:11Z" },
+      { speakerKey: "1", text: "And you?", startIso: "2026-06-10T10:00:12Z", endIso: "2026-06-10T10:00:14Z" },
+      { speakerKey: "0", text: "Busy day.", startIso: "2026-06-10T10:00:15Z", endIso: "2026-06-10T10:00:18Z" },
+    ]),
+    ALL_ON,
+  );
+  // Three runs: 0+0, 1+1, 0. Generic-label protection is off here, so
+  // diarized same-speaker adjacency merges within the gap.
+  assert.equal(result.conversation.segments.length, 3);
+  assert.equal(result.conversation.segments[0].text, "Hello there. How are you?");
+  assert.equal(result.conversation.segments[1].text, "Good, thanks. And you?");
+  assert.equal(result.conversation.segments[2].text, "Busy day.");
+  assert.equal(result.mergedSegments, 2);
+});
+
+test("preserveUtteranceBoundaries keeps generic-labeled utterances distinct (#1811)", () => {
+  const settings: WearableCleanupSettings = { ...ALL_ON, preserveUtteranceBoundaries: true };
+  const result = cleanConversation(
+    conversation([
+      { speakerKey: "unknown", text: "First.", startIso: "2026-06-10T10:00:00Z", endIso: "2026-06-10T10:00:02Z" },
+      { speakerKey: "unknown", text: "Second.", startIso: "2026-06-10T10:00:03Z", endIso: "2026-06-10T10:00:05Z" },
+      { speakerKey: "Unknown", text: "Third.", startIso: "2026-06-10T10:00:06Z", endIso: "2026-06-10T10:00:08Z" },
+      { speakerKey: "0", text: "Diarized A.", startIso: "2026-06-10T10:00:09Z", endIso: "2026-06-10T10:00:11Z" },
+      { speakerKey: "0", text: "Diarized B.", startIso: "2026-06-10T10:00:12Z", endIso: "2026-06-10T10:00:14Z" },
+    ]),
+    settings,
+  );
+  // Generic "unknown"/"Unknown" utterances are NOT merged into one block.
+  assert.equal(result.conversation.segments.length, 4);
+  assert.deepEqual(
+    result.conversation.segments.map((segment) => segment.text),
+    ["First.", "Second.", "Third.", "Diarized A. Diarized B."],
+  );
+  assert.equal(result.mergedSegments, 1);
+});
+
+test("preserveUtteranceBoundaries default (off) still collapses generic labels", () => {
+  // The flag is opt-in: without it the legacy merge-everything behavior
+  // is unchanged for sources that never set it.
+  const result = cleanConversation(
+    conversation([
+      { speakerKey: "unknown", text: "First.", startIso: "2026-06-10T10:00:00Z", endIso: "2026-06-10T10:00:02Z" },
+      { speakerKey: "unknown", text: "Second.", startIso: "2026-06-10T10:00:03Z", endIso: "2026-06-10T10:00:05Z" },
+    ]),
+    ALL_ON,
+  );
+  assert.equal(result.conversation.segments.length, 1);
+  assert.equal(result.conversation.segments[0].text, "First. Second.");
+});
