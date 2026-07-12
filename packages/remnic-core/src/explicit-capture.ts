@@ -13,6 +13,7 @@ export type ExplicitCaptureInput = {
   namespace?: string;
   tags?: string[];
   entityRef?: string;
+  sourceConnector?: string;
   ttl?: string;
   sourceReason?: string;
 };
@@ -24,6 +25,7 @@ export type ValidExplicitCapture = {
   namespace?: string;
   tags: string[];
   entityRef?: string;
+  sourceConnector?: string;
   expiresAt?: string;
   sourceReason?: string;
   /**
@@ -371,8 +373,9 @@ export function validateExplicitCaptureInput(
     namespace: asTrimmed(input.namespace),
     tags: Array.from(new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean))),
     entityRef: asTrimmed(input.entityRef),
-    expiresAt,
     sourceReason: asTrimmed(input.sourceReason),
+    sourceConnector: input.sourceConnector,
+    expiresAt,
   };
 }
 
@@ -438,6 +441,7 @@ export async function persistExplicitCapture(
     entityRef: candidate.entityRef,
     expiresAt: candidate.expiresAt,
     source: source === "inline" ? "explicit-inline" : "explicit",
+    ...(candidate.sourceConnector ? { sourceConnector: candidate.sourceConnector } : {}),
   });
   // #1522: catalog touch handled at the storage chokepoint — the StorageManager's
   // post-write hook records the namespace touch automatically.

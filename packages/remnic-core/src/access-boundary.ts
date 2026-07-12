@@ -193,6 +193,8 @@ export interface OperationContext {
   readonly service: EngramAccessService;
   readonly authenticatedPrincipal?: string;
   readonly operatorPrincipal?: string;
+  /** Server-resolved connector identity (Phase 1 provenance). Set by the HTTP auth boundary from the matched token's connector; flows to write handlers so frontmatter records which connector submitted the memory. Client-supplied values are always overridden. */
+  readonly sourceConnector?: string;
   readonly hooks?: OperationHooks;
 }
 

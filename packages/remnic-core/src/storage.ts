@@ -323,6 +323,7 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     `tags: [${fm.tags.map((t) => `"${t}"`).join(", ")}]`,
   ];
   if (fm.entityRef) lines.push(`entityRef: ${fm.entityRef}`);
+  if (fm.sourceConnector) lines.push(`sourceConnector: ${fm.sourceConnector}`);
   if (fm.supersedes) lines.push(`supersedes: ${fm.supersedes}`);
   if (fm.expiresAt) lines.push(`expiresAt: ${fm.expiresAt}`);
   if (fm.lineage && fm.lineage.length > 0) {
@@ -835,6 +836,7 @@ export function parseFrontmatter(
       confidenceTier: (fm.confidenceTier as ConfidenceTier) || confidenceTier(conf),
       tags,
       entityRef: fm.entityRef || undefined,
+      sourceConnector: fm.sourceConnector || undefined,
       supersedes: fm.supersedes || undefined,
       expiresAt: fm.expiresAt || undefined,
       lineage: lineage && lineage.length > 0 ? lineage : undefined,
@@ -3671,6 +3673,7 @@ export class StorageManager {
        */
       sources?: ProvenanceSource[];
       provenance?: "verified" | "unverified" | "none";
+      sourceConnector?: string;
     } = {},
   ): Promise<MemoryWriteResult> {
     await this.ensureDirectories();
@@ -3752,6 +3755,9 @@ export class StorageManager {
     }
     if (options.provenance !== undefined) {
       fm.provenance = options.provenance;
+    }
+    if (options.sourceConnector !== undefined) {
+      fm.sourceConnector = options.sourceConnector;
     }
 
     // Append structured attributes as searchable suffix so QMD indexes them.

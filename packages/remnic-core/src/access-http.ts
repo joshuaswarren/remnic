@@ -3106,6 +3106,7 @@ export class EngramAccessHttpServer {
       enforceWriteQuota: observeSelfEnforcesQuota
         ? () => this.ensureWriteRateLimitAvailable()
         : undefined,
+      sourceConnector: this.resolveConnector(req),
     });
 
     if (isMcpWrite && response !== null) {
@@ -3577,6 +3578,34 @@ export class EngramAccessHttpServer {
         "token is scoped and may not access operator/admin routes",
       );
     }
+  }
+  /**
+   * Resolve the connector identity for the request's bearer token (Phase 1
+   * provenance). When `authTokenEntriesGetter` is configured, finds the entry
+   * whose token matches the request's Authorization header and returns its
+   * `connector`. Returns `undefined` for operator-supplied static tokens or
+   * when no entry getter is configured — those writes are operator-initiated.
+   */
+  private resolveConnector(req: IncomingMessage): string | undefined {
+    if (!this.authTokenEntriesGetter) return undefined;
+    const raw = req.headers.authorization;
+    let candidate: string | null = null;
+    if (raw) {
+      const separator = raw.indexOf(" ");
+      if (separator > 0) {
+        const scheme = raw.slice(0, separator).toLowerCase();
+        if (scheme === "bearer") {
+          candidate = raw.slice(separator + 1).trim();
+        }
+      }
+    }
+    if (!candidate) return undefined;
+    const token = candidate;
+    for (const entry of this.authTokenEntriesGetter()) {
+      if (!this.timingSafeStringEqual(token, entry.token)) continue;
+      return entry.connector;
+    }
+    return undefined;
   }
 
   private timingSafeStringEqual(a: string, b: string): boolean {

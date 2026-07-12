@@ -2610,6 +2610,8 @@ export interface MemoryFrontmatter {
   confidenceTier: ConfidenceTier;
   tags: string[];
   entityRef?: string;
+  /** Server-resolved identity of the connector that submitted this memory (Phase 1 provenance). */
+  sourceConnector?: string;
   supersedes?: string;
   /** ISO 8601 date — memory expires and gets cleaned up after this date */
   expiresAt?: string;

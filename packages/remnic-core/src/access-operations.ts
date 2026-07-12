@@ -156,6 +156,7 @@ export const memoryStoreOperation = defineOperation<MemoryStoreInput, MemoryStor
       {
         ...input,
         authenticatedPrincipal: ctx.authenticatedPrincipal,
+        ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
       },
       // Forward transport-level hooks (e.g. HTTP's atomic write-quota gate)
       // so the hook still fires inside the service's idempotent-write lock —
