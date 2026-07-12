@@ -17,7 +17,7 @@
 
 import { z } from "zod";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
-import { assertOperationAllowed, tokenCapabilityStore } from "./access-token-capabilities.js";
+import { assertFleetWideOperationAllowed, assertOperationAllowed, tokenCapabilityStore } from "./access-token-capabilities.js";
 import { expandTildePath } from "./utils/path.js";
 
 // ---------------------------------------------------------------------------
@@ -219,6 +219,16 @@ export interface OperationSpec<In, Out> {
   readonly schema: z.ZodType<In>;
   /** Handler invoked with the parsed input; throws EngramAccessInputError for domain faults. */
   readonly handler: (input: In, ctx: OperationContext) => Promise<Out>;
+  /**
+   * Marks an operation as inherently FLEET-WIDE / global — it runs across ALL
+   * namespaces (or against a single non-namespaced global layer) and carries no
+   * `namespace` argument, so the MCP `tools/call` effective-namespace chokepoint
+   * never applies. When set, {@link defineOperation}'s run wrapper rejects any
+   * namespace-SCOPED token (fail closed) via assertFleetWideOperationAllowed
+   * BEFORE the handler — no side effect on denial. Unrestricted/legacy tokens
+   * (cron, internal callers, no capability record) are unaffected (issue #1850).
+   */
+  readonly fleetWide?: boolean;
 }
 
 export interface BoundOperation<In = unknown, Out = unknown> {
@@ -393,6 +403,14 @@ export function defineOperation<In, Out>(spec: OperationSpec<In, Out>): BoundOpe
       // tokens (absent record) and explicit-unrestricted new tokens are
       // unaffected.
       assertOperationAllowed(tokenCapabilityStore.getStore(), spec.name);
+      // Fleet-wide / global maintenance ops (issue #1850 round 10): these run
+      // across all namespaces with no `namespace` arg, so the tools/call
+      // effective-namespace gate never fires. A namespace-SCOPED token must not
+      // trigger cross-namespace maintenance — fail closed BEFORE the handler so
+      // a denial never leaks a partial mutation. No-op for unrestricted/legacy.
+      if (spec.fleetWide) {
+        assertFleetWideOperationAllowed(tokenCapabilityStore.getStore());
+      }
       return spec.handler(parseResult.data, ctx);
     },
   };

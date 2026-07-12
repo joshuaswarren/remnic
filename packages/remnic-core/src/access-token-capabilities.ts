@@ -337,6 +337,39 @@ export function enforceNamespaceAllowList(
 }
 
 /**
+ * Fleet-wide / global maintenance operation guard (issue #1850 round 10).
+ *
+ * A distinct escalation class from the id-addressed routes (round 9) and the
+ * param-namespace ops (round 4): some boundary operations inherently run
+ * ACROSS ALL namespaces — or against a single global layer (compression
+ * guidelines, shared context, compounding) that is not namespace-partitioned
+ * — and carry NO `namespace` argument, so the MCP `tools/call` effective-
+ * namespace chokepoint ({@link enforceNamespaceAllowList}, which only fires
+ * when `toolAcceptsNamespace`) never applies. Without this guard a bearer
+ * scoped to ONE tenant could trigger maintenance that mutates state in EVERY
+ * namespace (privilege escalation).
+ *
+ * Fail CLOSED exactly like the other shared guards: a namespace-SCOPED token
+ * (namespaces axis present) is rejected; unrestricted / legacy tokens (absent
+ * record or no namespaces axis — i.e. cron and internal callers that never
+ * bind a capability record) are unaffected. Reuses the EXISTING capability
+ * model via {@link capabilityAllowsNamespace} — no new "all"/"*" scope concept.
+ * Must run BEFORE any side effect so a denial never leaks a partial mutation.
+ */
+export function assertFleetWideOperationAllowed(
+  caps: TokenCapabilities | undefined | null,
+): void {
+  // capabilityAllowsNamespace returns false for ANY scoped token when the
+  // namespace is undefined (a fleet-wide op has no single namespace), and
+  // true for unrestricted/legacy tokens — exactly the desired policy.
+  if (!capabilityAllowsNamespace(caps, undefined)) {
+    throw new EngramAccessForbiddenError(
+      "token is scoped to specific namespaces; this maintenance operation runs across all namespaces and is not permitted for a namespace-scoped token",
+    );
+  }
+}
+
+/**
  * Per-request AsyncLocalStorage carrying the presenting token's resolved
  * capabilities. The HTTP surface binds the resolved capabilities with
  * `.run(caps, handler)` for the WHOLE authorized request dispatch (NOT

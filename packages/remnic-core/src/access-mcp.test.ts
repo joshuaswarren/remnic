@@ -1136,3 +1136,110 @@ test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disal
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ===========================================================================
+// Issue #1850 round 10 — fleet-wide maintenance ops namespace gate.
+// These ops run ACROSS ALL namespaces (or a global non-namespaced layer) and
+// carry NO `namespace` arg, so the MCP tools/call effective-namespace
+// chokepoint (toolAcceptsNamespace) never fires. The `fleetWide` flag on each
+// op makes defineOperation's run wrapper reject a namespace-scoped token
+// BEFORE the handler — no side effect on denial; unrestricted/legacy allowed.
+// Both canonical (remnic.*) and legacy (engram.*) aliases route through the
+// SAME gate.
+// ===========================================================================
+
+function readCallToolOutcome(response: unknown): { isError: boolean; text: string } {
+  if (typeof response !== "object" || response === null || !("result" in response)) {
+    return { isError: false, text: "" };
+  }
+  const result = response.result;
+  if (typeof result !== "object" || result === null) return { isError: false, text: "" };
+  const isError = "isError" in result && result.isError === true;
+  let text = "";
+  if ("content" in result && Array.isArray(result.content)) {
+    const entry = result.content[0];
+    if (entry != null && typeof entry === "object" && "text" in entry && typeof entry.text === "string") {
+      text = entry.text;
+    }
+  }
+  return { isError, text };
+}
+
+const FLEET_WIDE_MAINTENANCE_TOOLS = [
+  "graph_edge_decay_run",
+  "memory_summarize_hourly",
+  "conversation_index_update",
+  "live_connectors_run",
+  "continuity_audit_generate",
+  "shared_context_cross_signals_run",
+  "shared_context_curate_daily",
+  "compounding_weekly_synthesize",
+  "compounding_promote_candidate",
+  "compression_guidelines_optimize",
+  "compression_guidelines_activate",
+] as const;
+
+test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op, no side effect (issue #1850 round 10)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-mcp-fleetwide-scoped-"));
+  let sideEffects = 0;
+  // Every fleet-wide op that dispatches to a service method routes through
+  // this tracker; graph_edge_decay_run short-circuits via graphEdgeDecayEnabled
+  // false. Under a scoped token NONE may run — the guard throws first.
+  const track = (): Promise<{ ok: true }> => { sideEffects += 1; return Promise.resolve({ ok: true }); };
+  const service = {
+    ...makeMockService(),
+    configRef: parseConfig({ memoryDir: dir, graphEdgeDecayEnabled: false }),
+    memoryDir: dir,
+    memorySummarizeHourly: track,
+    conversationIndexUpdate: track,
+    liveConnectorsRun: track,
+    continuityAuditGenerate: track,
+    sharedContextCrossSignalsRun: track,
+    sharedContextCurateDaily: track,
+    compoundingWeeklySynthesize: track,
+    compoundingPromoteCandidate: track,
+    compressionGuidelinesOptimize: track,
+    compressionGuidelinesActivate: track,
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service, { principal: "ops" });
+  try {
+    for (const tool of FLEET_WIDE_MAINTENANCE_TOOLS) {
+      // Legacy alias (engra.*).
+      const legacy = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
+        readCallToolOutcome(await server.handleRequest(makeToolRequest("engram." + tool))),
+      );
+      assert.equal(legacy.isError, true, `engram.${tool}: a namespace-scoped token must be denied`);
+      assert.match(legacy.text, /across all namespaces/, `engram.${tool}: denial names the fleet-wide restriction`);
+      // Canonical alias (remnic.*) routes through the SAME gate.
+      const canonical = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
+        readCallToolOutcome(await server.handleRequest(makeToolRequest("remnic." + tool))),
+      );
+      assert.equal(canonical.isError, true, `remnic.${tool}: canonical alias must also be gated`);
+    }
+    assert.equal(sideEffects, 0, "no fleet-wide maintenance service method may run for a namespace-scoped token");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("MCP graph_edge_decay_run: unrestricted and legacy tokens reach the handler (issue #1850 round 10)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-mcp-decay-unrestricted-"));
+  try {
+    const service = {
+      ...makeMockService(),
+      configRef: parseConfig({ memoryDir: dir, graphEdgeDecayEnabled: false }),
+      memoryDir: dir,
+    } as unknown as EngramAccessService;
+    const server = new EngramMcpServer(service, { principal: "ops" });
+    // Explicit-unrestricted record (version present, no namespaces axis).
+    const unrestricted = await tokenCapabilityStore.run({ version: 1 }, async () =>
+      readCallToolOutcome(await server.handleRequest(makeToolRequest("engram.graph_edge_decay_run"))),
+    );
+    assert.equal(unrestricted.isError, false, "unrestricted token reaches the handler");
+    // Legacy / no ALS at all (cron, internal caller) — same path.
+    const legacy = readCallToolOutcome(await server.handleRequest(makeToolRequest("remnic.graph_edge_decay_run")));
+    assert.equal(legacy.isError, false, "legacy token (no ALS) reaches the handler");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

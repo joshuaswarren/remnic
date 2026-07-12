@@ -33,6 +33,7 @@ import { EngramAccessInputError, type EngramAccessService } from "./access-servi
 import {
   TOKEN_CAPABILITIES_VERSION,
   type TokenCapabilities,
+  assertFleetWideOperationAllowed,
   assertNamespaceAllowed,
   assertOperationAllowed,
   capabilityAllowsNamespace,
@@ -731,4 +732,55 @@ test("CRITICAL: boundary enforcement reads from tokenCapabilityStore ALS", async
 
   // Allowed under no ALS (undefined).
   assert.deepEqual(await op.run({}, ctx), { ran: true });
+});
+
+// ===========================================================================
+// assertFleetWideOperationAllowed — fleet-wide maintenance guard (issue #1850 round 10).
+// Distinct class from the id-addressed routes (round 9) and param-namespace
+// ops (round 4): maintenance ops that run ACROSS ALL namespaces carry no
+// `namespace` arg, so the tools/call effective-namespace gate never fires. A
+// namespace-scoped token must not trigger cross-namespace maintenance.
+// ===========================================================================
+
+test("assertFleetWideOperationAllowed: no-op for unrestricted / legacy tokens", () => {
+  // Legacy (absent record) — unrestricted.
+  assert.doesNotThrow(() => assertFleetWideOperationAllowed(undefined));
+  assert.doesNotThrow(() => assertFleetWideOperationAllowed(null));
+  // Explicit-unrestricted (version present, no namespaces axis).
+  const explicitUnrestricted = validateCapabilitiesForMint(undefined, OPERATION_NAMES);
+  assert.doesNotThrow(() => assertFleetWideOperationAllowed(explicitUnrestricted));
+  // Op-scoped but namespace-UNrestricted ⇒ still allowed: the fleet-wide
+  // concern is the namespaces axis; the ops axis is enforced separately by
+  // assertOperationAllowed. A token with only an ops allow-list may run the
+  // op (it cannot exceed its op scope, and has no namespace restriction).
+  const opScoped = validateCapabilitiesForMint({ ops: ["graph_edge_decay_run"] }, OPERATION_NAMES);
+  assert.doesNotThrow(() => assertFleetWideOperationAllowed(opScoped));
+});
+
+test("assertFleetWideOperationAllowed: namespace-SCOPED token is denied (fail closed)", () => {
+  const scoped = validateCapabilitiesForMint({ namespaces: ["ns_a"] }, OPERATION_NAMES);
+  assert.throws(
+    () => assertFleetWideOperationAllowed(scoped),
+    (err: unknown) => err instanceof EngramAccessForbiddenError && /across all namespaces/.test(err.message),
+  );
+});
+
+test("assertFleetWideOperationAllowed: scoped token whose allow-list INCLUDES the default is STILL denied (fleet-wide ≠ default)", () => {
+  // A fleet-wide op affects EVERY namespace — it is not equivalent to an op
+  // scoped to the default namespace. enforceNamespaceAllowList maps undefined
+  // → default and would wrongly PASS such a token; the fleet-wide guard must
+  // NOT (that is the whole point of a dedicated guard for this class).
+  const scopedWithDefault = validateCapabilitiesForMint({ namespaces: ["default"] }, OPERATION_NAMES);
+  assert.throws(
+    () => assertFleetWideOperationAllowed(scopedWithDefault),
+    EngramAccessForbiddenError,
+  );
+});
+
+test("assertFleetWideOperationAllowed: deny-all namespaces ([]) is denied", () => {
+  const denyAll = validateCapabilitiesForMint({ namespaces: [] }, OPERATION_NAMES);
+  assert.throws(
+    () => assertFleetWideOperationAllowed(denyAll),
+    EngramAccessForbiddenError,
+  );
 });
