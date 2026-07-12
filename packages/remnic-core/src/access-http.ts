@@ -791,11 +791,28 @@ export class EngramAccessHttpServer {
     }
 
     // Bind the presenting token's capabilities to this request's async
-    // context so the access boundary (op allow-list) and namespace
-    // enforcement observe the SAME resolved capabilities for the whole
-    // request (issue #1837). Unrestricted tokens ⇒ undefined ⇒ no-op.
-    tokenCapabilityStore.enterWith(this.resolveTokenCapabilities(req, pathname));
+    // context via run() (NOT enterWith). enterWith mutates the CURRENT async
+    // resource and does NOT reliably isolate the store across the awaits and
+    // concurrent requests that fill this handler — the store could read
+    // undefined mid-handler, and undefined caps == unrestricted/legacy,
+    // which would SILENTLY FAIL OPEN, bypassing the op + namespace gates.
+    // run() establishes a fresh, request-private async scope for the WHOLE
+    // dispatch so concurrent requests never bleed capabilities and the store
+    // stays bound across every await (issue #1850 round 7).
+    const caps = this.resolveTokenCapabilities(req, pathname);
+    await tokenCapabilityStore.run(caps, async () => {
+      await this.dispatchAuthorizedRequest(req, res, parsed, pathname, correlationId, abortSignal);
+    });
+  }
 
+  private async dispatchAuthorizedRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parsed: URL,
+    pathname: string,
+    correlationId: string,
+    abortSignal: AbortSignal,
+  ): Promise<void> {
     // Method-conformance for the streamable-HTTP MCP endpoint:
     // GET/DELETE on /mcp must return 405 + Allow: POST instead of
     // silently falling through to the generic 404. POST continues
@@ -2403,7 +2420,24 @@ export class EngramAccessHttpServer {
       // id-loaded record whose namespace bypassed the token allow-list. Gate
       // its stored namespace before posting (fail closed; no-op unrestricted).
       const resumeChatSessionId = typeof body.chatSessionId === "string" ? body.chatSessionId : undefined;
-      if (resumeChatSessionId) await enforceChatSessionNamespace(this.service, resumeChatSessionId);
+      if (resumeChatSessionId) {
+        await enforceChatSessionNamespace(this.service, resumeChatSessionId);
+      } else {
+        // NEW chat session (no chatSessionId): processChatMessage will mint a
+        // fresh session under the effective namespace. The HTTP chat handler
+        // does not forward a request namespace, so the new session inherits
+        // the server DEFAULT — route that effective namespace through the
+        // SAME chokepoint as the resume path (enforceNamespaceAllowList maps
+        // undefined → default) so a namespace-scoped token CANNOT start a
+        // chat in a namespace outside its allow-list (its server default may
+        // be unlisted, or the server may carry no configured default). Fail
+        // closed; no-op for unrestricted/legacy tokens (issue #1850 round 7).
+        enforceNamespaceAllowList(
+          tokenCapabilityStore.getStore(),
+          undefined,
+          this.service.configRef?.defaultNamespace,
+        );
+      }
       await handleChatMessage(
         req, res, body,
         { service: this.service, config: this.service.configRef?.chat, memoryDir: this.service.memoryDir },

@@ -338,10 +338,14 @@ export function enforceNamespaceAllowList(
 
 /**
  * Per-request AsyncLocalStorage carrying the presenting token's resolved
- * capabilities. The HTTP surface calls `.enterWith()` once per authorized
- * request; the access boundary reads `.getStore()` inside `run()` to enforce
- * the ops allow-list for every boundary operation without each dispatch site
- * threading the value explicitly. Unset (CLI, direct boundary callers,
- * tests) ⇒ undefined ⇒ unrestricted.
+ * capabilities. The HTTP surface binds the resolved capabilities with
+ * `.run(caps, handler)` for the WHOLE authorized request dispatch (NOT
+ * `.enterWith()`, which mutates the current async resource and does not
+ * reliably isolate the store across the handler's awaits / concurrent
+ * requests — risking a fail-open read of undefined mid-handler); the
+ * access boundary reads `.getStore()` to enforce the ops allow-list for
+ * every boundary operation without each dispatch site threading the value
+ * explicitly. Unset (CLI, direct boundary callers, tests) ⇒ undefined ⇒
+ * unrestricted (issue #1850 round 7).
  */
 export const tokenCapabilityStore = new AsyncLocalStorage<TokenCapabilities | undefined>();

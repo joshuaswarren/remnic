@@ -7,9 +7,11 @@ import { gzipSync } from "node:zlib";
 
 import { EngramAccessHttpServer, type RemnicAdminControls, type RemnicAdminDashboardStatus } from "./access-http.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { tokenCapabilityStore, type TokenCapabilities } from "./access-token-capabilities.js";
 import { parseConfig } from "./config.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
 import { createChatSession } from "./chat/chat-session.js";
+import { DEFAULT_CHAT_CONFIG } from "./chat/chat-config.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { OFFLINE_SYNC_MAX_MTIME_MS } from "./offline-sync.js";
 import type { StorageManager } from "./storage.js";
@@ -2341,6 +2343,152 @@ test("HTTP chat routes gate the resumed session's STORED namespace (issue #1850 
     assert.notEqual(sameEvents.status, 403, "scoped-ns-a must pass the namespace gate for its own session");
   } finally {
     await server.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP per-request token capabilities never bleed across concurrent async requests (issue #1850 r7 ALS run fix)", async () => {
+  // The capability store must be bound via run() (NOT enterWith) so each
+  // request's async scope observes its OWN resolved capabilities across every
+  // await. Interleave concurrent requests with DIFFERENT scopes against an
+  // op+namespace-gated route whose service read yields, then assert:
+  //   (1) a deny-all op token is ALWAYS rejected — never fail-opens to 200
+  //       because its caps leaked to undefined/unrestricted mid-handler;
+  //   (2) the store read AFTER an async yield inside the service still carries
+  //       the REQUESTING token's scope on every call — zero cross-request bleed.
+  const observed: Array<TokenCapabilities | undefined> = [];
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-http-als-concurrency",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryBrowse: async () => {
+      // Yield so concurrent requests overlap at this await — the exact window
+      // where an enterWith-based store would read another request's caps (or
+      // undefined). run() keeps each request in its own scope across the yield.
+      await new Promise<void>((resolve) => setTimeout(resolve, 8));
+      observed.push(tokenCapabilityStore.getStore());
+      return { total: 0, memories: [] };
+    },
+    memoryGet: async () => ({ found: true }),
+    peerList: async () => ({ peers: [] }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "deny-all", capabilities: { version: 1, ops: [] } },
+      { token: "scoped-ns-a", capabilities: { version: 1, ops: ["memory_list"], namespaces: ["ns_a"] } },
+      { token: "scoped-ns-b", capabilities: { version: 1, ops: ["memory_list"], namespaces: ["ns_b"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const get = (token: string, namespace: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories?namespace=${namespace}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  try {
+    const REPEATS = 15;
+    const batch: Promise<Response>[] = [];
+    for (let i = 0; i < REPEATS; i++) {
+      batch.push(get("deny-all", "ns_a")); // op-gate must reject (ops: [])
+      batch.push(get("scoped-ns-a", "ns_a")); // passes op + ns gate, reaches service
+      batch.push(get("scoped-ns-b", "ns_b")); // passes op + ns gate, reaches service
+    }
+    const responses = await Promise.all(batch);
+
+    // (1) Op-gate holds under concurrency: every deny-all request is 403, never
+    //     fail-open 200 (which would mean its caps bled to unrestricted).
+    const denyAllStatuses = responses.filter((_, i) => i % 3 === 0).map((r) => r.status);
+    assert.ok(
+      denyAllStatuses.every((s) => s === 403),
+      `deny-all token must always be 403, got: ${JSON.stringify(denyAllStatuses)}`,
+    );
+
+    // scoped tokens reach the service (200) — op + namespace gates both pass.
+    const nsAStatuses = responses.filter((_, i) => i % 3 === 1).map((r) => r.status);
+    const nsBStatuses = responses.filter((_, i) => i % 3 === 2).map((r) => r.status);
+    assert.ok(nsAStatuses.every((s) => s === 200), `scoped-ns-a should all be 200: ${JSON.stringify(nsAStatuses)}`);
+    assert.ok(nsBStatuses.every((s) => s === 200), `scoped-ns-b should all be 200: ${JSON.stringify(nsBStatuses)}`);
+
+    // (2) No cross-request bleed: the store read AFTER the async yield carried
+    //     the REQUESTING token's namespace on every service call. memoryBrowse
+    //     ran once per scoped request (2 * REPEATS).
+    assert.equal(observed.length, 2 * REPEATS, "memoryBrowse called once per scoped request");
+    const nsAObserved = observed.filter((c) => c?.namespaces?.includes("ns_a")).length;
+    const nsBObserved = observed.filter((c) => c?.namespaces?.includes("ns_b")).length;
+    assert.equal(nsAObserved, REPEATS, "every ns_a request observed its own scope — no bleed");
+    assert.equal(nsBObserved, REPEATS, "every ns_b request observed its own scope — no bleed");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP chat/message gates the NEW session's namespace — scoped token cannot start a chat in a disallowed namespace (issue #1850 r7)", async () => {
+  // A NEW chat turn (no chatSessionId) previously never hit the effective-
+  // namespace chokepoint, so a namespace-scoped token could start a chat in the
+  // server DEFAULT namespace even when "default" was outside its allow-list.
+  // The new-session path must resolve the effective namespace (the server
+  // default, since the HTTP chat handler forwards no namespace) and fail closed
+  // against the token allow-list — same as the resume path.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-chat-new-ns-"));
+  try {
+    const service = {
+      configRef: parseConfig({
+        memoryDir: dir,
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+        chat: { ...DEFAULT_CHAT_CONFIG, enabled: true },
+      }),
+      memoryDir: dir,
+      fallbackLlmRef: { chatCompletion: async () => ({ content: "stub reply" }) },
+      localLlmRef: null,
+      memoryGet: () => Promise.resolve(null),
+      memoryTimeline: () => Promise.resolve([]),
+      memorySearch: () => Promise.resolve({ results: [], count: 0 }),
+      recallExplain: () => Promise.resolve(null),
+      entityGet: () => Promise.resolve(null),
+      memoryProfile: () => Promise.resolve({}),
+      memoryEntitiesList: () => Promise.resolve({ items: [] }),
+      memoryQuestions: () => Promise.resolve({ items: [] }),
+      reviewQueue: () => Promise.resolve({ items: [] }),
+    } as unknown as EngramAccessService;
+    const server = new EngramAccessHttpServer({
+      service,
+      port: 0,
+      authTokenEntriesGetter: () => [
+        // scoped to ns_a (NOT the server default) — must be denied a new chat.
+        { token: "scoped-ns-a", capabilities: { version: 1, ops: ["chat_message"], namespaces: ["ns_a"] } },
+        // scoped to the server default — may start a new chat there.
+        { token: "scoped-default", capabilities: { version: 1, ops: ["chat_message"], namespaces: ["default"] } },
+      ],
+      adminConsoleEnabled: false,
+    });
+    const status = await server.start();
+    const post = (token: string) =>
+      fetch(`http://127.0.0.1:${status.port}/engram/v1/chat/message`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ message: "hi" }), // no chatSessionId → NEW session
+      });
+    try {
+      // DISALLOWED: token scoped to ns_a; the new session would land in the
+      // server default ("default"), which is not in ["ns_a"] → 403.
+      const denied = await post("scoped-ns-a");
+      assert.equal(denied.status, 403, "scoped-to-ns_a must not start a new chat in the default namespace");
+
+      // ALLOWED: token scoped to the server default → gate passes → chat runs
+      // and returns 200 with a reply.
+      const allowed = await post("scoped-default");
+      assert.equal(allowed.status, 200, "scoped-to-default may start a new chat in the default namespace");
+      const allowedBody = (await allowed.json()) as { reply?: string };
+      assert.ok(allowedBody.reply && allowedBody.reply.length > 0, "allowed new chat returns a reply");
+    } finally {
+      await server.stop();
+    }
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });
