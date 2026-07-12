@@ -4,6 +4,8 @@ import { test } from "node:test";
 import { emptySpeakerRegistry } from "../speakers.js";
 import type { WearableConversation } from "../types.js";
 import {
+  DEFAULT_PROXIMITY_GAP_MS,
+  DEFAULT_WINDOW_TOLERANCE_MS,
   clusterConversations,
   fuseDay,
   fusionInputsFromConversations,
@@ -366,6 +368,67 @@ test("idempotency: identical inputs produce a stable id and content hash", () =>
 
   assert.equal(a.conversations[0]!.id, b.conversations[0]!.id);
   assert.equal(a.contentHash, b.contentHash);
+});
+
+test("content hash folds fusion config: same inputs, changed knob => new hash", () => {
+  // Two contributing sources so per-source trust is part of the fingerprint.
+  const day = inputs(
+    {
+      source: "limitless",
+      conversations: [
+        conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+          { text: "Config-sensitive hash.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        ]),
+      ],
+    },
+    {
+      source: "bee",
+      conversations: [
+        conversation("bee", "c2", "2026-06-10T09:00:20.000Z", [
+          { text: "Second source.", isWearer: false, startIso: "2026-06-10T09:00:40.000Z" },
+        ]),
+      ],
+    },
+  );
+
+  const base = fuseDay(DATE, day);
+
+  // A change to any clustering/reconciliation knob must invalidate the hash.
+  const widerGap = fuseDay(DATE, day, { proximityGapMs: 600_000 });
+  assert.notEqual(
+    base.contentHash,
+    widerGap.contentHash,
+    "proximityGapMs change must invalidate the content hash",
+  );
+  const tighterTol = fuseDay(DATE, day, { windowToleranceMs: 5_000 });
+  assert.notEqual(
+    base.contentHash,
+    tighterTol.contentHash,
+    "windowToleranceMs change must invalidate the content hash",
+  );
+  const reweighted = fuseDay(DATE, day, { sourceTrust: { limitless: 0.95 } });
+  assert.notEqual(
+    base.contentHash,
+    reweighted.contentHash,
+    "per-source trust change must invalidate the content hash",
+  );
+
+  // Idempotency is preserved: explicit defaults hash identically to omission,
+  // and the per-conversation id stays stable across a config change.
+  const withDefaults = fuseDay(DATE, day, {
+    proximityGapMs: DEFAULT_PROXIMITY_GAP_MS,
+    windowToleranceMs: DEFAULT_WINDOW_TOLERANCE_MS,
+  });
+  assert.equal(
+    base.contentHash,
+    withDefaults.contentHash,
+    "explicit defaults must hash identically to omission",
+  );
+  assert.equal(
+    base.conversations[0]!.id,
+    widerGap.conversations[0]!.id,
+    "conversation id is input-only and stable across a config change",
+  );
 });
 
 test("serialize/parse round-trips a fused day file", () => {

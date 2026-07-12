@@ -184,7 +184,7 @@ export interface FusionDayResult {
   conversations: FusedWearableConversation[];
   /** Distinct source ids that contributed any conversation. */
   sources: string[];
-  /** SHA-256 of the canonical input serialization (idempotency key). */
+  /** SHA-256 over the canonical input serialization + effective fusion config (idempotency key). */
   contentHash: string;
 }
 

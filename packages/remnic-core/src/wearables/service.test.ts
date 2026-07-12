@@ -673,3 +673,60 @@ test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcrip
     rmSync(storage.dir, { recursive: true, force: true });
   }
 });
+
+test("fuseDay rebuilds the artifact when fusion config changes (not skipped)", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    // Two enabled sources recorded the same overlapping window.
+    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."]);
+    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."]);
+
+    const baseSources = {
+      limitless: { ...defaultWearableSourceSettings(), enabled: true },
+      bee: { ...defaultWearableSourceSettings(), enabled: true },
+    };
+
+    const serviceGap5m = makeService(storage, {
+      sources: baseSources,
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    // Initial fuse writes the artifact.
+    const first = await serviceGap5m.fuseDay("2026-06-10");
+    assert.equal(first.written, true);
+    const firstHash = first.contentHash;
+
+    // Unchanged inputs + config => idempotent skip.
+    const rerun = await serviceGap5m.fuseDay("2026-06-10");
+    assert.equal(rerun.written, false, "unchanged inputs+config must not rewrite");
+    assert.equal(rerun.contentHash, firstHash);
+
+    // Tune proximityGapMs => new content hash => artifact rebuilt, not skipped.
+    const serviceGap10m = makeService(storage, {
+      sources: baseSources,
+      fusion: { enabled: true, proximityGapMs: 600_000, windowToleranceMs: 30_000 },
+    });
+    const afterGap = await serviceGap10m.fuseDay("2026-06-10");
+    assert.equal(afterGap.written, true, "proximityGapMs change must trigger a rebuild");
+    assert.notEqual(afterGap.contentHash, firstHash);
+
+    // Re-run under the new config => idempotent skip again.
+    const afterGapRerun = await serviceGap10m.fuseDay("2026-06-10");
+    assert.equal(afterGapRerun.written, false);
+    assert.equal(afterGapRerun.contentHash, afterGap.contentHash);
+
+    // Tune per-source trust => new content hash => artifact rebuilt.
+    const serviceTrust = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true, sourceTrust: 0.95 },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 600_000, windowToleranceMs: 30_000 },
+    });
+    const afterTrust = await serviceTrust.fuseDay("2026-06-10");
+    assert.equal(afterTrust.written, true, "per-source trust change must trigger a rebuild");
+    assert.notEqual(afterTrust.contentHash, afterGap.contentHash);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});

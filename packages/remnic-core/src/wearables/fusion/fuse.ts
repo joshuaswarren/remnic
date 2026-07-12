@@ -14,6 +14,7 @@
 import { createHash } from "node:crypto";
 import { clusterConversations } from "./cluster.js";
 import {
+  DEFAULT_SOURCE_TRUST,
   DEFAULT_WINDOW_TOLERANCE_MS,
   fuseCluster,
   type FuseClusterResult,
@@ -30,9 +31,11 @@ import type {
 const FUSION_ID_PREFIX = "fusion";
 
 /**
- * Canonical, stable serialization of a set of fusion inputs. Used both
- * for the per-conversation id and the day content hash — so identical
- * inputs always produce identical hashes regardless of input order.
+ * Canonical, stable serialization of a set of fusion inputs — the base
+ * for the per-conversation id. Input-only so a conversation keeps a
+ * stable identity across re-runs regardless of input order. The day
+ * content hash additionally folds the effective fusion config (see
+ * `canonicalDayKey`) so a config change invalidates the cached artifact.
  */
 function canonicalInputsKey(
   date: string,
@@ -57,6 +60,56 @@ function canonicalInputsKey(
     }
   }
   return createHash("sha256").update(lines.join("\n"), "utf-8").digest("hex");
+}
+
+/**
+ * Effective-config fingerprint folded into the day content hash so a
+ * change to any clustering/reconciliation knob (proximity gap, window
+ * tolerance, or per-source trust) invalidates the cached artifact.
+ * Defaults are resolved so an explicit default hashes identically to an
+ * omission, keeping the skip-unchanged path deterministic. Only sources
+ * that actually contribute to the day are included, so a trust change
+ * for an absent source cannot spuriously trigger a rebuild.
+ */
+function configFingerprint(
+  options: FusionOptions,
+  sources: readonly string[],
+): string {
+  const proximityGapMs = options.proximityGapMs ?? DEFAULT_PROXIMITY_GAP_MS;
+  const windowToleranceMs =
+    options.windowToleranceMs ?? DEFAULT_WINDOW_TOLERANCE_MS;
+  const lines: string[] = [
+    `gap:${proximityGapMs}`,
+    `tol:${windowToleranceMs}`,
+  ];
+  const trustMap = options.sourceTrust ?? {};
+  for (const source of [...new Set(sources)].sort()) {
+    const trust = trustMap[source] ?? DEFAULT_SOURCE_TRUST;
+    lines.push(`trust|${source}|${trust}`);
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Day idempotency key: the input-only hash combined with the effective
+ * fusion-config fingerprint. Same inputs + same config => same hash
+ * (no duplicate rewrite); a config change => new hash => rebuild.
+ */
+function canonicalDayKey(
+  date: string,
+  inputs: readonly FusionConversationInput[],
+  options: FusionOptions,
+): string {
+  const inputsKey = canonicalInputsKey(date, inputs);
+  const fingerprint = configFingerprint(
+    options,
+    inputs.map((conv) => conv.source),
+  );
+  return createHash("sha256")
+    .update(inputsKey)
+    .update("\n")
+    .update(fingerprint)
+    .digest("hex");
 }
 
 function buildProvenance(
@@ -130,6 +183,6 @@ export function fuseDay(
     date,
     conversations,
     sources,
-    contentHash: canonicalInputsKey(date, inputs),
+    contentHash: canonicalDayKey(date, inputs, options),
   };
 }

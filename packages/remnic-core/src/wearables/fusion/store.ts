@@ -6,8 +6,9 @@
  * the day-transcript convention: YAML frontmatter (`kind:
  * wearable-fusion`) + a JSON body carrying the structured
  * `FusedWearableConversation[]`. The frontmatter `contentHash` is the
- * idempotency key derived purely from inputs, so an unchanged re-run
- * produces a byte-identical file.
+ * idempotency key derived from inputs plus the effective fusion config,
+ * so an unchanged re-run (same inputs AND config) produces a
+ * byte-identical file.
  */
 
 import { createHash } from "node:crypto";

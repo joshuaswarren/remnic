@@ -480,8 +480,8 @@ export class WearablesService {
   /**
    * Fuse all enabled sources' stored transcripts for one day into a
    * derived `FusedWearableConversation[]` artifact. Deterministic and
-   * idempotent: unchanged inputs produce a stable content hash and the
-   * derived file is left untouched on re-run. Requires
+   * idempotent: unchanged inputs and fusion config produce a stable
+   * content hash and the derived file is left untouched on re-run. Requires
    * `wearables.fusion.enabled`; otherwise it throws. Raw per-source
    * transcripts are never modified.
    */
