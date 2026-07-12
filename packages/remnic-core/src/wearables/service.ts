@@ -517,11 +517,18 @@ export class WearablesService {
       sourceTrust,
     });
     // Idempotent skip-unchanged: do not rewrite when the content hash
-    // matches the stored artifact (mirrors the raw-transcript fast path).
+    // matches the stored artifact AND the stored body still parses into
+    // the expected conversation set. A truncated/corrupt body parses to
+    // an empty (or count-mismatched) list even when the frontmatter hash
+    // matches, so we rewrite to self-repair instead of trusting the hash
+    // alone (mirrors the raw-transcript fast path otherwise).
     const existingRaw = await storage.fusionArtifactStore().readFusedDay(date);
-    const existingHash =
-      parseFusionDay(existingRaw ?? "")?.meta.contentHash ?? null;
-    const written = existingHash !== result.contentHash;
+    const existing = parseFusionDay(existingRaw ?? "");
+    const skipUnchanged =
+      existing !== null &&
+      existing.meta.contentHash === result.contentHash &&
+      existing.conversations.length === result.conversations.length;
+    const written = !skipUnchanged;
     if (written) {
       const meta = composeFusionDayMeta(
         date,
