@@ -23,9 +23,24 @@ interface Interval {
 
 /**
  * Resolve a conversation's effective [start, end] window in epoch ms.
- * Falls back to the latest segment end, then to the start, so a
- * conversation with no end still contributes a (possibly point) interval
- * rather than being dropped.
+ *
+ * When the conversation carries no explicit end (`endIso` undefined — the
+ * reconstructed form of a stored transcript whose heading end renders as
+ * `--:--`), the window is derived from the segments so it spans the actual
+ * utterances instead of collapsing to a zero-length point at the start:
+ *
+ *   1. conversation `endIso`, when known;
+ *   2. the latest segment END (`segment.endIso`);
+ *   3. the latest segment START (`segment.startIso`) — reconstructed
+ *      transcripts rebuild segments with only a start, so the window must
+ *      reach the last segment start;
+ *   4. the conversation start itself (no segments at all).
+ *
+ * Each segment contributes its own extent (end when known, otherwise its
+ * start); the window end is the maximum extent. Segment ISOs are already
+ * rolled for cross-midnight by the reconstruct layer, so the derived end is
+ * consistent with the segment timeline. The end is clamped to `>= start` so
+ * the window is always valid regardless of input anomalies.
  */
 function effectiveInterval(conversation: FusionConversationInput): Interval {
   const start = Date.parse(conversation.startIso);
@@ -34,16 +49,21 @@ function effectiveInterval(conversation: FusionConversationInput): Interval {
   if (Number.isFinite(endRaw)) {
     return { start, end: endRaw as number };
   }
-  let maxSegEnd = NaN;
+  // No conversation-level end: derive the window from each segment's own
+  // extent (its end when known, otherwise its start). The latest extent
+  // spans the actual segments; falling back only to `start` would produce a
+  // zero/negative-length window that drops or mis-clusters the conversation.
+  let maxExtent = NaN;
   for (const segment of conversation.segments) {
-    if (segment.endIso !== undefined) {
-      const ms = Date.parse(segment.endIso);
-      if (Number.isFinite(ms) && (Number.isNaN(maxSegEnd) || ms > maxSegEnd)) {
-        maxSegEnd = ms;
-      }
+    const iso = segment.endIso ?? segment.startIso;
+    if (iso === undefined) continue;
+    const ms = Date.parse(iso);
+    if (Number.isFinite(ms) && (Number.isNaN(maxExtent) || ms > maxExtent)) {
+      maxExtent = ms;
     }
   }
-  return { start, end: Number.isFinite(maxSegEnd) ? (maxSegEnd as number) : start };
+  const derivedEnd = Number.isFinite(maxExtent) ? (maxExtent as number) : start;
+  return { start, end: Math.max(derivedEnd, start) };
 }
 
 function compareConversation(

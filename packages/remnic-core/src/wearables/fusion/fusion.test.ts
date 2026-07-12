@@ -1042,3 +1042,160 @@ test("same window + same text + different speaker fuses to one segment with a re
     "both speaker labels are retained",
   );
 });
+
+test("cluster interval spans to the latest segment start when the conversation end is missing", () => {
+  // A stored transcript renders a missing conversation end as "--:--".
+  // reconstructFusionInputs rebuilds segments with only a startIso, so the
+  // cluster interval must DERIVE its end from the latest segment start —
+  // not collapse to a zero-length point at the conversation start. A later
+  // conversation that sits within the proximity gap of the LAST segment
+  // (but far past the start) must join the same cluster.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 09:00–--:-- · Morning (conversation c1)",
+    "",
+    "**Me (you)** [09:00]: First.",
+    "**Jane** [09:15]: Second.",
+    "**Jane** [09:30]: Third.",
+    "",
+  ].join("\n");
+  const reconstructed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(reconstructed.length, 1);
+  assert.equal(reconstructed[0]!.endIso, undefined, "no end clock -> no endIso");
+  // bee starts 3 min after the last limitless segment (09:33) — within the
+  // 5-minute gap of 09:30, so it clusters. The old zero-length bug measured
+  // the gap from 09:00 (33 min) and split them into two clusters.
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:33:00.000Z",
+    endIso: "2026-06-10T09:40:00.000Z",
+    segments: [
+      { speaker: "Bee", isSelf: false, text: "Follow up.", startIso: "2026-06-10T09:33:00.000Z" },
+    ],
+  };
+  const clusters = clusterConversations([...reconstructed, bee]);
+  assert.equal(
+    clusters.length,
+    1,
+    "missing-end conversation clusters by its last segment start, not its conversation start",
+  );
+});
+
+test("missing-end interval does not over-extend: a neighbor past the gap of the last segment stays separate", () => {
+  // The derived interval must be exactly [start, last segment start], not
+  // unbounded. A neighbor 10 min past the last segment (> 5 min gap) must
+  // NOT cluster with the missing-end conversation.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 09:00–--:-- · Morning (conversation c1)",
+    "",
+    "**Me (you)** [09:00]: First.",
+    "**Jane** [09:30]: Last segment.",
+    "",
+  ].join("\n");
+  const reconstructed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:40:00.000Z",
+    endIso: "2026-06-10T09:50:00.000Z",
+    segments: [
+      { speaker: "Bee", isSelf: false, text: "Later.", startIso: "2026-06-10T09:40:00.000Z" },
+    ],
+  };
+  const clusters = clusterConversations([...reconstructed, bee]);
+  assert.equal(clusters.length, 2, "10 min past the last segment is outside the gap");
+});
+
+test("cluster interval spans rolled cross-midnight segments when the conversation end is missing", () => {
+  // Cross-midnight segments in a missing-end conversation are rolled to the
+  // next calendar day by reconstruct; the cluster interval end must reach
+  // the rolled last segment so a post-midnight neighbor clusters correctly.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 23:55–--:-- · Late call (conversation c1)",
+    "",
+    "**Me (you)** [23:58]: Still talking.",
+    "**Jane** [00:05]: After midnight.",
+    "",
+  ].join("\n");
+  const reconstructed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(reconstructed.length, 1);
+  assert.equal(reconstructed[0]!.endIso, undefined);
+  // The latest segment rolled to 2026-06-11T00:05; a bee conversation at
+  // 00:08 (3 min later) must cluster with it.
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-11T00:08:00.000Z",
+    endIso: "2026-06-11T00:15:00.000Z",
+    segments: [
+      { speaker: "Bee", isSelf: false, text: "Late.", startIso: "2026-06-11T00:08:00.000Z" },
+    ],
+  };
+  const clusters = clusterConversations([...reconstructed, bee]);
+  assert.equal(
+    clusters.length,
+    1,
+    "cross-midnight missing-end conversation clusters by its rolled last segment",
+  );
+});
+
+test("derived interval uses max(segment ends or segment starts) for mixed-segment inputs", () => {
+  // Directly constructed input proving the coherent model: when the
+  // conversation end is absent and segments carry a MIX of endIso and
+  // startIso, the window end is the maximum segment EXTENT (each segment's
+  // end when known, else its start). Here the second segment's start
+  // (09:20) must beat the first segment's end (09:10).
+  const mixed: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    segments: [
+      {
+        speaker: "Jane",
+        isSelf: false,
+        text: "First.",
+        startIso: "2026-06-10T09:00:00.000Z",
+        endIso: "2026-06-10T09:10:00.000Z",
+      },
+      { speaker: "Jane", isSelf: false, text: "Second.", startIso: "2026-06-10T09:20:00.000Z" },
+    ],
+  };
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:23:00.000Z",
+    endIso: "2026-06-10T09:30:00.000Z",
+    segments: [
+      { speaker: "Bee", isSelf: false, text: "After.", startIso: "2026-06-10T09:23:00.000Z" },
+    ],
+  };
+  // bee at 09:23 is within the 5-min gap of the derived end 09:20 -> one
+  // cluster. If the interval had stopped at the first segment's END (09:10)
+  // the gap would be 13 min and they would split.
+  const clusters = clusterConversations([mixed, bee]);
+  assert.equal(clusters.length, 1, "max segment extent (start beats earlier end) spans the window");
+});
+
+test("derived interval is clamped to end >= start for a missing-end conversation", () => {
+  // Guarantee the [start, end] window is always valid: a conversation with
+  // no end and only segments that somehow parse before the start still
+  // yields end >= start (a point interval), never a negative-length window.
+  const anomalous: FusionConversationInput = {
+    source: "limitless",
+    conversationId: "c1",
+    startIso: "2026-06-10T09:00:00.000Z",
+    segments: [
+      { speaker: "Jane", isSelf: false, text: "Early.", startIso: "2026-06-10T08:30:00.000Z" },
+    ],
+  };
+  const clusters = clusterConversations([anomalous]);
+  assert.equal(clusters.length, 1);
+  // The conversation is emitted (not dropped) and forms a valid cluster.
+  assert.equal(clusters[0]!.length, 1);
+});
