@@ -223,7 +223,7 @@ export const codingDecisionOperation = defineOperation<
     "List, get, record, or supersede decision records in the session's coding namespace (issue #1548 Track A).",
   schema: codingDecisionSchema as z.ZodType<CodingDecisionInput>,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codingDecision(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codingDecision(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -488,7 +488,7 @@ export const codegraphIndexOperation = defineOperation<
     "Codegraph parity tool (issue #1554): index. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -502,7 +502,7 @@ export const codegraphListProjectsOperation = defineOperation<
     "Codegraph parity tool (issue #1554): list_projects. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -516,7 +516,7 @@ export const codegraphDeleteProjectOperation = defineOperation<
     "Codegraph parity tool (issue #1554): delete_project. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -530,7 +530,7 @@ export const codegraphIndexStatusOperation = defineOperation<
     "Codegraph parity tool (issue #1554): index_status. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -544,7 +544,7 @@ export const codegraphSearchGraphOperation = defineOperation<
     "Codegraph parity tool (issue #1554): search_graph. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -558,7 +558,7 @@ export const codegraphTracePathOperation = defineOperation<
     "Codegraph parity tool (issue #1554): trace_path. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -572,7 +572,7 @@ export const codegraphDetectChangesOperation = defineOperation<
     "Codegraph parity tool (issue #1554): detect_changes. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -586,7 +586,7 @@ export const codegraphQueryGraphOperation = defineOperation<
     "Codegraph parity tool (issue #1554): query_graph. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -600,7 +600,7 @@ export const codegraphGetSchemaOperation = defineOperation<
     "Codegraph parity tool (issue #1554): get_schema. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -614,7 +614,7 @@ export const codegraphGetSnippetOperation = defineOperation<
     "Codegraph parity tool (issue #1554): get_snippet. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -628,7 +628,7 @@ export const codegraphGetArchitectureOperation = defineOperation<
     "Codegraph parity tool (issue #1554): get_architecture. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -642,7 +642,7 @@ export const codegraphSearchCodeOperation = defineOperation<
     "Codegraph parity tool (issue #1554): search_code. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -656,7 +656,7 @@ export const codegraphManageAdrOperation = defineOperation<
     "Codegraph parity tool (issue #1554): manage_adr. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });
@@ -670,7 +670,7 @@ export const codegraphIngestTracesOperation = defineOperation<
     "Codegraph parity tool (issue #1554): ingest_traces. Delegates to the shared codegraph surface handler.",
   schema: codegraphSurfaceSchema,
   handler: async (input, ctx) => {
-    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal);
+    const result = await ctx.service.codegraphTool(input, ctx.authenticatedPrincipal, ctx.sourceConnector);
     return { result };
   },
 });

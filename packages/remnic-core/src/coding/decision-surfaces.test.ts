@@ -73,6 +73,7 @@ function makeMockService(
     codingDecision(
       req: DecisionSurfaceRequest,
       _authenticatedPrincipal?: string,
+      _sourceConnector?: string,
     ): Promise<DecisionSurfaceResponse> {
       calls.push(req);
       return Promise.resolve(response);

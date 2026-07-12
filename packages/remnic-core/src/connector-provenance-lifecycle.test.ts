@@ -24,6 +24,8 @@ import { hashAccessIdempotencyPayload } from "./access-idempotency.js";
 import type { ExtractionEngine } from "./extraction.js";
 import type { ThreadingManager } from "./threading.js";
 import type { BufferTurn, ExtractionResult, PluginConfig } from "./types.js";
+import { handleCodingDecision } from "./coding/decision-surfaces.js";
+import type { DecisionSurfaceContext } from "./coding/decision-surfaces.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -536,4 +538,81 @@ test("hashAccessIdempotencyPayload: different sourceConnector yields different f
   };
   const hashReordered = hashAccessIdempotencyPayload(withChatgptReordered);
   assert.equal(hashChatgpt, hashReordered, "key order must not affect fingerprint");
+});
+
+test("handleCodingDecision: sourceConnector='chatgpt' reaches stored frontmatter", async () => {
+  StorageManager.clearAllStaticCaches();
+  const baseDir = await mkdtemp(path.join(os.tmpdir(), "prov-decision-"));
+  try {
+    const storage = new StorageManager(baseDir);
+    await storage.ensureDirectories();
+
+    const ctx: DecisionSurfaceContext = {
+      codingKnowledge: {
+        enabled: true,
+        decisionRecords: true,
+        architectureCard: false,
+        sessionDelta: false,
+        architectureCardLlmSummary: false,
+        structuralProvider: "none",
+        structuralProviderCommand: "",
+        codegraphTools: false,
+        codegraphDbDir: "",
+      },
+      getCodingContext: () => ({
+        projectId: "test",
+        branch: "main",
+        rootPath: baseDir,
+        defaultBranch: "main",
+      }),
+      resolveStorage: async () => Object.assign(storage, { namespace: "default" }),
+      throwInputError: (msg: string): never => {
+        throw new Error(msg);
+      },
+      sourceConnector: "chatgpt",
+    };
+
+    const result = await handleCodingDecision(
+      { subcommand: "record", title: "Test Decision", decision: "We adopt SQLite for local dev.", status: "accepted", sessionKey: "s1" },
+      ctx
+    );
+
+    assert.equal(result.subcommand, "record");
+    if (!("memoryId" in result)) assert.fail("expected record result with memoryId");
+    const memory = await storage.getMemoryById(result.memoryId);
+    if (!memory) assert.fail("decision memory must exist");
+    assert.equal(
+      memory.frontmatter.sourceConnector,
+      "chatgpt",
+      "decision record must persist sourceConnector in frontmatter"
+    );
+  } finally {
+    StorageManager.clearAllStaticCaches();
+    await rm(baseDir, { recursive: true, force: true });
+  }
+});
+
+test("codegraph_manage_adr operation: ctx.sourceConnector forwarded to codegraphTool", async () => {
+  // Tests the operation handler directly — no MCP server needed.
+  // Proves ctx.sourceConnector reaches service.codegraphTool as the 3rd arg.
+  const { codegraphManageAdrOperation } = await import("./access-operations.js");
+  let capturedConnector: string | undefined = "SENTINEL";
+  const result = await codegraphManageAdrOperation.spec.handler(
+    { tool: "manage_adr", subcommand: "record", title: "Test", status: "accepted", sessionKey: "s1" },
+    {
+      service: {
+        codegraphTool: async (_req: unknown, _principal?: string, sourceConnector?: string) => {
+          capturedConnector = sourceConnector;
+          return { tool: "manage_adr", ok: true, result: { subcommand: "record" } };
+        },
+      } as never,
+      authenticatedPrincipal: "test-user",
+      sourceConnector: "chatgpt",
+    } as never
+  );
+  assert.equal(
+    capturedConnector,
+    "chatgpt",
+    "operation handler must forward ctx.sourceConnector='chatgpt' to codegraphTool"
+  );
 });

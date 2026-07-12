@@ -3063,6 +3063,7 @@ export class EngramAccessService {
   async codegraphTool(
     request: CodegraphSurfaceRequest,
     authenticatedPrincipal?: string,
+    sourceConnector?: string,
   ): Promise<CodegraphSurfaceResponse> {
     const principal = authenticatedPrincipal ?? "default";
     const memoryDir = this.orchestrator.config.memoryDir;
@@ -3099,7 +3100,7 @@ export class EngramAccessService {
         throw new EngramAccessInputError(msg);
       },
       delegateDecisionRecord: async (decisionRequest) => {
-        return this.codingDecision(decisionRequest, authenticatedPrincipal);
+        return this.codingDecision(decisionRequest, authenticatedPrincipal, sourceConnector);
       },
       buildArchitectureCard: async (repoRoot) => {
         return buildArchitectureCard(repoRoot, {
@@ -3127,6 +3128,7 @@ export class EngramAccessService {
   async codingDecision(
     request: DecisionSurfaceRequest,
     authenticatedPrincipal?: string,
+    sourceConnector?: string,
   ): Promise<DecisionSurfaceResponse> {
     return handleCodingDecision(request, {
       codingKnowledge: this.orchestrator.config.codingKnowledge,
@@ -3148,6 +3150,7 @@ export class EngramAccessService {
         return Object.assign(storage, { namespace: ns });
       },
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+      sourceConnector,
     });
   }
 
