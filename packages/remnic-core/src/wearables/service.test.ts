@@ -8,9 +8,19 @@ import { test } from "node:test";
 import {
   composeDayTranscriptBody,
   composeDayTranscriptMeta,
+  parseDayTranscript,
   serializeDayTranscript,
 } from "./day-store.js";
-import { FusionArtifactStore } from "./fusion/index.js";
+import {
+  DEFAULT_SOURCE_TRUST,
+  FUSION_ALGO_VERSION,
+  FusionArtifactStore,
+  canonicalDayKey,
+  composeFusionDayMeta,
+  parseFusionDay,
+  reconstructFusionInputs,
+  serializeFusionDay,
+} from "./fusion/index.js";
 import { emptySpeakerRegistry } from "./speakers.js";
 import {
   createWearableMemoryWriter,
@@ -639,6 +649,35 @@ test("fuseDay is gated by wearables.fusion.enabled", async () => {
   }
 });
 
+test("fuseDay honors the wearables master gate before the fusion gate (issue #1849)", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    storeDay(storage, "limitless", "2026-06-10", ["Hello world."]);
+    // wearables.enabled=false but fusion.enabled=true — fuseDay must refuse
+    // at the master gate (the same assertEnabled() sync/checkAuth use),
+    // before reading any source or touching the derived artifact store.
+    const service = makeService(storage, {
+      enabled: false,
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+    await assert.rejects(
+      () => service.fuseDay("2026-06-10"),
+      /wearables are not enabled/,
+    );
+    // The master-gate refusal must not write or delete any fusion artifact.
+    assert.equal(
+      await storage.fusionArtifactStore().readFusedDay("2026-06-10"),
+      null,
+      "master-gate refusal must not mutate derived fusion state",
+    );
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
 test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcripts untouched", async () => {
   const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
   try {
@@ -748,6 +787,95 @@ test("fuseDay rebuilds the artifact when fusion config changes (not skipped)", a
     const afterTrust = await serviceTrust.fuseDay("2026-06-10");
     assert.equal(afterTrust.written, true, "per-source trust change must trigger a rebuild");
     assert.notEqual(afterTrust.contentHash, afterGap.contentHash);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
+test("fuseDay regenerates a stale artifact written under an older algorithm version (issue #1849)", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    storeDay(storage, "limitless", "2026-06-10", ["We agreed to ship Friday."]);
+    storeDay(storage, "bee", "2026-06-10", ["We agreed to ship Friday."]);
+    const baseSources = {
+      limitless: { ...defaultWearableSourceSettings(), enabled: true },
+      bee: { ...defaultWearableSourceSettings(), enabled: true },
+    };
+    const fusionConfig = { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 };
+    const service = makeService(storage, { sources: baseSources, fusion: fusionConfig });
+
+    // Initial fuse writes the artifact under the current algorithm version.
+    const first = await service.fuseDay("2026-06-10");
+    assert.equal(first.written, true);
+    const currentHash = first.contentHash;
+
+    // Unchanged inputs + same version => idempotent skip.
+    const rerun = await service.fuseDay("2026-06-10");
+    assert.equal(rerun.written, false, "same version must be idempotent");
+
+    // Simulate a pre-bump artifact: reconstruct the same inputs the service
+    // fuses and compute the day hash under a STALE algorithm version, then
+    // overwrite the stored artifact with the SAME body but that stale hash.
+    const bodies = await Promise.all(
+      ["limitless", "bee"].map(async (source) => {
+        const raw = await storage.readWearableDayTranscript(source, "2026-06-10");
+        const parsed = parseDayTranscript(raw ?? "");
+        return { source, body: parsed?.body ?? raw ?? "" };
+      }),
+    );
+    const reconstructed = reconstructFusionInputs("2026-06-10", bodies);
+    const staleHash = canonicalDayKey(
+      "2026-06-10",
+      reconstructed,
+      {
+        proximityGapMs: 300_000,
+        windowToleranceMs: 30_000,
+        sourceTrust: { limitless: DEFAULT_SOURCE_TRUST, bee: DEFAULT_SOURCE_TRUST },
+      },
+      "2000-01-01-stale",
+    );
+    assert.notEqual(staleHash, currentHash, "sanity: stale-version hash differs");
+    // Sanity: the current-version hash matches what the service produced —
+    // the only difference between staleHash and currentHash is the version.
+    assert.equal(
+      canonicalDayKey(
+        "2026-06-10",
+        reconstructed,
+        {
+          proximityGapMs: 300_000,
+          windowToleranceMs: 30_000,
+          sourceTrust: { limitless: DEFAULT_SOURCE_TRUST, bee: DEFAULT_SOURCE_TRUST },
+        },
+        FUSION_ALGO_VERSION,
+      ),
+      currentHash,
+      "sanity: canonicalDayKey with the current version matches fuseDay output",
+    );
+
+    // Overwrite the stored artifact with the SAME conversations but the stale
+    // contentHash (same body => same bodyHash; only the version-derived
+    // contentHash differs).
+    const store = storage.fusionArtifactStore();
+    const rawArtifact = await store.readFusedDay("2026-06-10");
+    const parsedArtifact = parseFusionDay(rawArtifact ?? "");
+    assert.ok(parsedArtifact, "artifact must exist after initial fuse");
+    const staleMeta = composeFusionDayMeta(
+      "2026-06-10",
+      parsedArtifact!.conversations,
+      [...first.sources].sort(),
+      staleHash,
+      parsedArtifact!.meta.fusedAt,
+    );
+    await store.writeFusedDay(
+      "2026-06-10",
+      serializeFusionDay(staleMeta, parsedArtifact!.conversations),
+    );
+
+    // Re-fuse: the recomputed hash (current version) != stale stored hash, so
+    // the artifact is regenerated rather than skipped.
+    const afterStale = await service.fuseDay("2026-06-10");
+    assert.equal(afterStale.written, true, "stale algo-version artifact must be regenerated");
+    assert.equal(afterStale.contentHash, currentHash, "regenerated hash matches the current algorithm");
   } finally {
     rmSync(storage.dir, { recursive: true, force: true });
   }

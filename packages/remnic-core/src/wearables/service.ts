@@ -494,6 +494,7 @@ export class WearablesService {
     written: boolean;
     skipped?: { reason: string };
   }> {
+    this.assertEnabled();
     if (!this.deps.config.fusion.enabled) {
       throw new WearablesInputError(
         "wearables fusion is not enabled — set `wearables.fusion.enabled: true` in the plugin config",

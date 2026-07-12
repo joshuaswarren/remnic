@@ -36,7 +36,7 @@ export {
   fusionInputsFromConversations,
   type FuseClusterResult,
 } from "./reconcile.js";
-export { fuseDay } from "./fuse.js";
+export { FUSION_ALGO_VERSION, canonicalDayKey, fuseDay } from "./fuse.js";
 export {
   FUSION_DIR_NAME,
   FUSION_KIND,

@@ -29,6 +29,17 @@ import type {
 } from "./types.js";
 
 const FUSION_ID_PREFIX = "fusion";
+/**
+ * Fusion algorithm/schema version. Folded into the day content hash (the
+ * idempotency key) so a change to the clustering, reconciliation, or
+ * reconstruction algorithm invalidates cached artifacts even when the raw
+ * inputs and fusion config are byte-identical — pre-existing `_fusion/`
+ * files are regenerated rather than served stale. Bump this whenever the
+ * fusion algorithm meaningfully changes (this PR changed it repeatedly).
+ * The per-conversation id (`canonicalInputsKey`) is intentionally NOT
+ * folded with the version, so a conversation keeps a stable identity.
+ */
+export const FUSION_ALGO_VERSION = "2026-07-12-1";
 
 /**
  * Canonical, stable serialization of a set of fusion inputs — the base
@@ -105,13 +116,17 @@ function configFingerprint(
 
 /**
  * Day idempotency key: the input-only hash combined with the effective
- * fusion-config fingerprint. Same inputs + same config => same hash
- * (no duplicate rewrite); a config change => new hash => rebuild.
+ * fusion-config fingerprint AND the fusion algorithm version. Same inputs +
+ * same config + same version => same hash (no duplicate rewrite); a config
+ * change OR an algorithm-version bump => new hash => rebuild. The version
+ * is what forces regeneration when the ALGORITHM itself changes but the
+ * inputs and config are byte-identical (issue #1849).
  */
-function canonicalDayKey(
+export function canonicalDayKey(
   date: string,
   inputs: readonly FusionConversationInput[],
   options: FusionOptions,
+  algoVersion: string = FUSION_ALGO_VERSION,
 ): string {
   const inputsKey = canonicalInputsKey(date, inputs);
   const fingerprint = configFingerprint(
@@ -122,6 +137,8 @@ function canonicalDayKey(
     .update(inputsKey)
     .update("\n")
     .update(fingerprint)
+    .update("\n")
+    .update(algoVersion)
     .digest("hex");
 }
 

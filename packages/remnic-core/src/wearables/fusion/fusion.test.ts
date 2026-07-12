@@ -7,6 +7,8 @@ import type { WearableConversation } from "../types.js";
 import {
   DEFAULT_PROXIMITY_GAP_MS,
   DEFAULT_WINDOW_TOLERANCE_MS,
+  FUSION_ALGO_VERSION,
+  canonicalDayKey,
   clusterConversations,
   composeFusionDayMeta,
   fuseDay,
@@ -479,6 +481,56 @@ test("content hash folds fusion config: same inputs, changed knob => new hash", 
     base.conversations[0]!.id,
     widerGap.conversations[0]!.id,
     "conversation id is input-only and stable across a config change",
+  );
+});
+
+test("content hash folds the fusion algorithm version (issue #1849)", () => {
+  // The day contentHash is the idempotency key. When the fusion ALGORITHM
+  // changes (clustering/reconciliation/reconstruction fixes) with byte-
+  // identical inputs and config, the hash must still differ so a stale
+  // artifact is regenerated rather than skipped — contentHash + bodyHash
+  // alone only prove the stored body is self-consistent, not that it was
+  // produced by the current algorithm.
+  const day = inputs(
+    {
+      source: "limitless",
+      conversations: [
+        conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+          { text: "Algorithm-sensitive hash.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        ]),
+      ],
+    },
+    {
+      source: "bee",
+      conversations: [
+        conversation("bee", "c2", "2026-06-10T09:00:20.000Z", [
+          { text: "Second source.", isWearer: false, startIso: "2026-06-10T09:00:40.000Z" },
+        ]),
+      ],
+    },
+  );
+
+  const current = fuseDay(DATE, day);
+
+  // A stale algorithm version must produce a DIFFERENT day hash.
+  const staleHash = canonicalDayKey(DATE, day, {}, "2000-01-01-stale");
+  assert.notEqual(
+    current.contentHash,
+    staleHash,
+    "a different algorithm version must invalidate the content hash",
+  );
+
+  // Same version => identical hash (idempotency preserved).
+  assert.equal(
+    current.contentHash,
+    canonicalDayKey(DATE, day, {}, FUSION_ALGO_VERSION),
+    "same version must produce the same hash",
+  );
+
+  // The per-conversation id is input-only and unaffected by the version.
+  assert.ok(
+    current.conversations[0]!.id.startsWith("fusion-"),
+    "conversation id is unaffected by the algorithm version",
   );
 });
 
