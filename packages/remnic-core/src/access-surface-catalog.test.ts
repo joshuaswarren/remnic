@@ -169,7 +169,10 @@ function normalizeHttpRegexRoute(src: string): string {
 /**
  * Statically extract a route-specific dispatch map from `access-http.ts`:
  * `"${method} ${pathname}"` → set of operations dispatched via
- * `getOperation("…")` within that route's handler block. Keying by
+ * `getOperation("…")` or `enforceTokenOp("…")` within that route's handler
+ * block. The latter wraps `getOperation(op)` (the same registration
+ * assertion) plus token-capability enforcement and is the sanctioned dispatch
+ * marker for token-scoped routes (issue #1837). Keying by
  * method+pathname (not just pathname) prevents cross-method contamination
  * when GET and POST share a path — a dispatch in the POST block must not
  * satisfy a GET catalog entry (review P2: key HTTP dispatch coverage by
@@ -254,8 +257,9 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
     // Detect method changes within a shared route block (e.g. a single
     // regex match with GET/PUT/DELETE branches). When a new method check
     // appears after a route pattern was already detected, update currentKey
-    // to the new method + the same pathname so per-method getOperation
-    // calls are tracked against the right route key.
+    // to the new method + the same pathname so per-method boundary dispatch
+    // markers (getOperation/enforceTokenOp) are tracked against the right
+    // route key.
     const methodChange = line.match(/req\.method\s*===\s*"(\w+)"/);
     if (methodChange && lastSeenPathname) {
       const newKey = methodChange[1]! + " " + lastSeenPathname;
@@ -265,9 +269,13 @@ function extractHttpRouteDispatchMap(): Map<string, Set<string>> {
       currentKey = newKey;
     }
 
-    // Collect getOperation calls within the current route block.
+    // Collect boundary dispatch markers within the current route block. A
+    // plain `getOperation("op")` call OR an `enforceTokenOp("op")` call counts
+    // — enforceTokenOp wraps getOperation(op) (the same registration assertion
+    // the old marker gave) plus token-capability enforcement, and is the
+    // sanctioned dispatch marker for token-scoped routes (issue #1837).
     if (currentKey) {
-      const opMatch = line.match(/getOperation\("(\w+)"\)/);
+      const opMatch = line.match(/(?:getOperation|enforceTokenOp)\("(\w+)"\)/);
       if (opMatch) {
         routeOps.get(currentKey)!.add(opMatch[1]!);
       }
@@ -315,8 +323,8 @@ function validateDispatchCoverage(
   }
   for (const entry of httpCatalog) {
     if (entry.operation === null) continue;
-    // Method+path specific: the getOperation("…") call must be in THIS
-    // method's handler block for THIS pathname. No pathname-only fallback —
+    // Method+path specific: a boundary dispatch marker (getOperation("…") or
+    // enforceTokenOp("…")) must be in THIS method's handler block. No pathname-only fallback —
     // if the extractor could not determine the method, the route block is
     // ambiguous and the catalog entry must not be counted as migrated
     // (review P2: require exact method keys; do not fall back).
@@ -325,7 +333,7 @@ function validateDispatchCoverage(
     if (!routeOps || !routeOps.has(entry.operation)) {
       violations.push({
         kind: "http-no-dispatch",
-        detail: `HTTP ${entry.method} ${entry.pathname} claims migration to ${entry.operation} but no getOperation("${entry.operation}") found in its route block in access-http.ts`,
+        detail: `HTTP ${entry.method} ${entry.pathname} claims migration to ${entry.operation} but no boundary dispatch marker (getOperation("${entry.operation}") or enforceTokenOp("${entry.operation}")) found in its route block in access-http.ts`,
       });
     }
   }
@@ -413,7 +421,7 @@ test("dispatch validator catches an HTTP route whose operation is dispatched by 
   // Seed: catalog claims `GET /engram/v1/synthetic` migrated to `memory_get`.
   // The operation IS registered, and `memory_get` IS dispatched — but by a
   // DIFFERENT route (`/engram/v1/memories/:id`). The route-specific check must
-  // catch that `/engram/v1/synthetic` itself has no `getOperation("memory_get")`
+  // catch that `/engram/v1/synthetic` itself has no dispatch marker
   // in its handler block. A global set would pass this false migration.
   // (review P2: bind dispatch validation to method/path routes)
   const lyingHttpCatalog: readonly HttpRouteEntry[] = [
@@ -648,8 +656,8 @@ test("every migrated MCP/HTTP entry resolves to a registered AND dispatched boun
   // dispatch is a false migration. The ratchet would lower the unmigrated
   // count while the handler still uses its old direct service branch.
   // MCP dispatch is verified against MCP_MIGRATED_OPERATIONS; HTTP dispatch is
-  // verified route-specifically (getOperation("…") must be in the entry's own
-  // handler block, not just anywhere in the file).
+  // verified route-specifically (getOperation("…") or enforceTokenOp("…") must
+  // be in the entry's own handler block, not just anywhere in the file).
   // (review P2: verify dispatch before counting handlers as migrated;
   //  review P2: bind dispatch validation to method/path routes)
   const mcpDispatch = extractMcpDispatchMap();
