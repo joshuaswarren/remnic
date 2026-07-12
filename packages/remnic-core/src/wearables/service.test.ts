@@ -1092,12 +1092,14 @@ test("fuseDay clears a stale fused artifact when a later run skips on conflictin
   }
 });
 
-test("fuseDay still fuses sources whose timezones share one UTC offset", async () => {
+test("fuseDay skips sources that share a UTC offset but differ in timezone id", async () => {
   const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
   try {
-    // Two sources with DIFFERENT tz names but the SAME offset on this
-    // summer date (America/Los_Angeles and America/Tijuana are both
-    // UTC-7 on 2026-06-10) must still fuse — they sit on one timeline.
+    // America/Los_Angeles and America/Tijuana are both UTC-7 on this
+    // summer date, so the OLD noon-offset guard fused them. Under the
+    // tz-identity model their DIFFERENT IANA ids must skip instead:
+    // reconstructFusionInputs only compares local HH:MM clocks safely
+    // when every source carries one explicit, identical tz id.
     storeDay(
       storage,
       "limitless",
@@ -1121,9 +1123,117 @@ test("fuseDay still fuses sources whose timezones share one UTC offset", async (
     });
 
     const result = await service.fuseDay("2026-06-10");
-    assert.equal(result.written, true, "same-offset sources fuse normally");
-    assert.equal(result.skipped, undefined);
-    assert.ok(result.conversationCount >= 1);
+    assert.equal(result.written, false, "differing tz ids skip even at equal offset");
+    assert.equal(result.skipped?.reason, "conflicting-timezones");
+    assert.equal(result.sources.length, 0);
+    assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
+    assert.equal((await service.fusedConversations("2026-06-10")).length, 0);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
+test("fuseDay skips a DST-date pair whose noon offsets coincide (LA vs Phoenix on 2026-03-08)", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    // Regression for the codex finding: on 2026-03-08 America/Los_Angeles
+    // springs forward (UTC-8 -> UTC-7) at 02:00 while America/Phoenix
+    // stays UTC-7 all day. Both zones are UTC-7 by local NOON, so the old
+    // single-offset guard fused the day — yet recordings before LA's
+    // switch sat an hour apart and were misaligned on the fused timeline.
+    // Exact tz-id identity now refuses this pair up front.
+    storeDay(
+      storage,
+      "limitless",
+      "2026-03-08",
+      ["Morning standup before the DST switch."],
+      "America/Los_Angeles",
+    );
+    storeDay(
+      storage,
+      "bee",
+      "2026-03-08",
+      ["Morning standup before the DST switch."],
+      "America/Phoenix",
+    );
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    const result = await service.fuseDay("2026-03-08");
+    assert.equal(result.written, false, "DST-date coincident-offset pair skips");
+    assert.equal(result.skipped?.reason, "conflicting-timezones");
+    assert.equal(result.sources.length, 0);
+    assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-03-08"), null);
+    assert.equal((await service.fusedConversations("2026-03-08")).length, 0);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
+test("fuseDay skips when a source lacks a resolvable timezone id", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    // limitless carries an explicit tz id; bee's transcript is missing the
+    // timezone field entirely. The guard must NOT coerce the missing id to
+    // a default and silently match — any unresolvable tz fails safe.
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    // Build bee's transcript the normal way, then strip the timezone line
+    // so the persisted frontmatter has no resolvable tz id.
+    const registry = emptySpeakerRegistry();
+    const conversations: WearableConversation[] = [
+      {
+        id: "bee-2026-06-10",
+        source: "bee",
+        title: "Stored conversation",
+        startIso: "2026-06-10T10:00:00.000Z",
+        endIso: "2026-06-10T10:30:00.000Z",
+        segments: [{ speakerKey: "user", isWearer: true, text: "We agreed to ship Friday." }],
+      },
+    ];
+    const beeBody = composeDayTranscriptBody(
+      "bee",
+      "2026-06-10",
+      "UTC",
+      conversations,
+      registry,
+    );
+    const beeMeta = composeDayTranscriptMeta(
+      "bee",
+      "2026-06-10",
+      "UTC",
+      conversations,
+      registry,
+      beeBody,
+      "2026-06-11T01:00:00.000Z",
+    );
+    const beeRaw = serializeDayTranscript(beeMeta, beeBody).replace(/^timezone: .*\n/m, "");
+    storage.files.set("bee/2026-06-10", beeRaw);
+
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    const result = await service.fuseDay("2026-06-10");
+    assert.equal(result.written, false, "a missing tz id fails safe");
+    assert.equal(result.skipped?.reason, "conflicting-timezones");
+    assert.equal(result.sources.length, 0);
+    assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
+    assert.equal((await service.fusedConversations("2026-06-10")).length, 0);
   } finally {
     rmSync(storage.dir, { recursive: true, force: true });
   }

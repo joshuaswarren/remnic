@@ -13,7 +13,7 @@ import {
 } from "./corrections.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { isValidTranscriptDate, parseDayTranscript, utcOffsetMinutesForDate } from "./day-store.js";
+import { isValidTranscriptDate, parseDayTranscript } from "./day-store.js";
 import {
   composeFusionDayMeta,
   type FusionArtifactStore,
@@ -511,27 +511,30 @@ export class WearablesService {
       if (raw === null) continue;
       const parsed = parseDayTranscript(raw);
       bodies.push({ source, body: parsed?.body ?? raw });
-      sourceTimezones.push(parsed?.meta.timezone ?? "UTC");
+      sourceTimezones.push(parsed?.meta.timezone ?? "");
     }
-    // Mixed-timezone guard (codex P2): reconstructFusionInputs rebuilds every
-    // clock as `${date}T${HH}:${MM}:00Z` assuming all sources share one tz.
-    // Sources rendered under DIFFERENT UTC offsets would misalign on the
-    // fused timeline; detect that and skip the day with a logged reason
-    // rather than silently producing misaligned ISO. Full cross-tz offset
-    // normalization is deferred (see the precision caveat in reconstruct.ts).
+    // Mixed-timezone guard: reconstructFusionInputs rebuilds every clock as
+    // `${date}T${HH}:${MM}:00Z` and compares local HH:MM clocks across sources
+    // as if they shared one timezone. That comparison is ONLY valid when every
+    // source present for the day carries the SAME explicit IANA timezone id
+    // (meta.timezone). Sampling one UTC offset per source is insufficient: on
+    // DST-transition dates two different zones can share a noon offset yet
+    // differ during recorded hours (e.g. America/Los_Angeles vs America/Phoenix
+    // on 2026-03-08 — both UTC-7 by noon, an hour apart before LA's
+    // spring-forward). A source whose timezone id is missing/empty is treated
+    // as unresolvable rather than silently coerced to a default, so any unknown
+    // tz fails safe. Require exact tz-id identity across all present sources.
     if (bodies.length > 1) {
-      const offsets = sourceTimezones.map((tz) => utcOffsetMinutesForDate(date, tz));
-      const allKnown = offsets.every((offset) => offset !== null);
-      const allEqual = allKnown && offsets.every((offset) => offset === offsets[0]);
-      if (!allEqual) {
+      const referenceTz = sourceTimezones[0]!;
+      const allSameExplicitTz =
+        referenceTz.trim().length > 0 &&
+        sourceTimezones.every((tz) => tz === referenceTz);
+      if (!allSameExplicitTz) {
         const detail = bodies
-          .map(
-            (entry, i) =>
-              `${entry.source}=${sourceTimezones[i]}(${offsets[i] === null ? "?" : offsets[i]}m)`,
-          )
+          .map((entry, i) => `${entry.source}=${sourceTimezones[i] || "?"}`)
           .join(", ");
         log.warn(
-          `wearables fusion: skipping ${date} — sources were rendered under conflicting timezones (${detail}); full cross-tz normalization is deferred`,
+          `wearables fusion: skipping ${date} — sources were rendered under differing timezones (${detail}); reconstructFusionInputs only compares local clocks correctly when every source shares one explicit IANA timezone id`,
         );
         // Clear any previously-fused artifact for this day: a day that
         // fused successfully before must not keep serving a stale view

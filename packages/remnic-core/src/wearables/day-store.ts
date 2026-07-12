@@ -44,54 +44,6 @@ export function hashTranscriptBody(body: string): string {
   return createHash("sha256").update(body, "utf-8").digest("hex");
 }
 
-/**
- * UTC offset (minutes east of UTC) for `timeZone` on the given calendar
- * date, or null when the zone is not a recognized IANA identifier. Evaluated
- * at local noon to stay clear of DST transition boundaries near midnight;
- * the wearable fusion path only needs date-level, minute-precision offsets.
- *
- * Used by the fusion path to detect sources rendered under conflicting
- * timezones (codex P2): reconstructFusionInputs rebuilds every clock as
- * `${date}T${HH}:${MM}:00Z` assuming all sources share one timezone, so
- * mixed-offset sources must be detected and refused rather than silently
- * misaligned on the fused timeline.
- */
-export function utcOffsetMinutesForDate(date: string, timeZone: string): number | null {
-  const noonUtcMs = Date.parse(`${date}T12:00:00Z`);
-  if (Number.isNaN(noonUtcMs)) return null;
-  let parts: Intl.DateTimeFormatPart[];
-  try {
-    parts = new Intl.DateTimeFormat("en-US", {
-      timeZone,
-      hour12: false,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }).formatToParts(new Date(noonUtcMs));
-  } catch {
-    return null;
-  }
-  const part = (type: string): string | undefined =>
-    parts.find((entry) => entry.type === type)?.value;
-  const hourRaw = part("hour");
-  if (hourRaw === undefined) return null;
-  // ICU en-US hour12:false renders the zeroth hour as 24 on some builds.
-  const hour = Number.parseInt(hourRaw === "24" ? "0" : hourRaw, 10);
-  const zonedUtcMs = Date.UTC(
-    Number.parseInt(part("year") ?? "", 10),
-    Number.parseInt(part("month") ?? "", 10) - 1,
-    Number.parseInt(part("day") ?? "", 10),
-    hour,
-    Number.parseInt(part("minute") ?? "", 10),
-    Number.parseInt(part("second") ?? "", 10),
-  );
-  if (Number.isNaN(zonedUtcMs)) return null;
-  return Math.round((zonedUtcMs - noonUtcMs) / 60_000);
-}
-
 function formatClockTime(iso: string | undefined, timezone: string): string {
   if (!iso) return "--:--";
   const ms = Date.parse(iso);
@@ -254,7 +206,10 @@ export function parseDayTranscript(raw: string): WearableDayTranscript | null {
     kind: "wearable-transcript",
     source,
     date,
-    timezone: scalars.get("timezone") ?? "UTC",
+    // Preserve a missing timezone field as "" rather than coercing to a
+    // default: the fusion identity guard must see "no resolvable tz id"
+    // and skip, never silently match a known zone.
+    timezone: scalars.get("timezone") ?? "",
     conversationCount: parseNonNegativeInt(scalars.get("conversationCount")),
     segmentCount: parseNonNegativeInt(scalars.get("segmentCount")),
     speakers,
