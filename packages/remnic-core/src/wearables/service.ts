@@ -533,6 +533,10 @@ export class WearablesService {
         log.warn(
           `wearables fusion: skipping ${date} — sources were rendered under conflicting timezones (${detail}); full cross-tz normalization is deferred`,
         );
+        // Clear any previously-fused artifact for this day: a day that
+        // fused successfully before must not keep serving a stale view
+        // now that this run explicitly refuses to fuse (issue #1849).
+        await storage.fusionArtifactStore().deleteFusedDay(date);
         return {
           date,
           sources: [],

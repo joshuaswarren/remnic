@@ -281,11 +281,14 @@ export interface FusionFileIo {
   readFile(filePath: string): Promise<string>;
   /** Directory entries; rejects with ENOENT when the directory is absent. */
   readDir(dirPath: string): Promise<string[]>;
+  /** Remove a file; rejects with ENOENT when it is absent. */
+  deleteFile(filePath: string): Promise<void>;
   /**
    * Resolve a path through symlinks (node:fs/promises realpath); rejects
    * with ENOENT when the path is absent. Used by the symlink-containment
-   * guard so a symlinked `_fusion` dir (or parent) that resolves outside
-   * the wearables root is rejected before any read/write (AGENTS.md #3).
+   * guard so a symlinked `_fusion` dir (or a symlinked wearables root)
+   * that resolves outside the memory dir is rejected before any
+   * read/write/delete (AGENTS.md #3).
    */
   realpath(filePath: string): Promise<string>;
 }
@@ -300,6 +303,7 @@ export interface FusionFileIo {
 export class FusionArtifactStore {
   constructor(
     private readonly wearablesDir: string,
+    private readonly memoryDir: string,
     private readonly io: FusionFileIo,
   ) {}
 
@@ -330,6 +334,24 @@ export class FusionArtifactStore {
     }
   }
 
+  /**
+   * Remove a stored fused-day artifact. Idempotent: a no-op when the
+   * artifact is already absent. Used to clear a now-stale derived file
+   * before a fusion run that deliberately refuses to fuse (e.g. a day
+   * whose sources later conflict on timezone) so fusedConversations()
+   * does not keep serving a stale view (issue #1849).
+   */
+  async deleteFusedDay(date: string): Promise<void> {
+    const filePath = this.fusedDayPath(date);
+    await this.assertPathContained(filePath);
+    try {
+      await this.io.deleteFile(filePath);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+  }
+
   /** List dates with stored fused artifacts, newest first. */
   async listFusedDays(): Promise<string[]> {
     const fusionDir = path.join(this.wearablesDir, FUSION_DIR_NAME);
@@ -356,36 +378,55 @@ export class FusionArtifactStore {
    * Reject a symlinked/traversing fusion artifact path before any IO. The
    * fusion dir (`<wearablesDir>/_fusion`) and its parents are followed
    * directly by the secure IO; a symlink placed there (attacker-writable
-   * or a malformed memory dir) would otherwise be followed and read/write
-   * outside the allowed root (AGENTS.md pattern #3). Resolve the candidate
-   * and the wearables root through realpath and refuse anything that
-   * escapes — mirroring `assertPathInsideRoot` in the storage walkers.
-   * Absent paths are allowed (the secure write creates them lexically
-   * under the root; a missing path cannot yet be a followable symlink).
+   * or a malformed memory dir) would otherwise be followed and
+   * read/write/delete outside the allowed root (AGENTS.md pattern #3).
+   *
+   * Containment is anchored to the real MEMORY-DIR root, not the
+   * wearables dir, AND the wearables root is checked explicitly: if
+   * `wearablesDir` itself is a symlink that resolves outside memoryDir, a
+   * leaf candidate like `<wearablesDir>/_fusion/<date>.md` may not yet
+   * exist (so its realpath ENOENT-skips) and the write would silently
+   * create the file inside the symlinked escape target. Checking
+   * `wearablesDir` itself — which resolves through the symlink when it
+   * exists — closes that gap, while the per-leaf checks catch a nested
+   * `_fusion` or per-file symlink. Absent paths are allowed (a fresh
+   * write creates them lexically under the root; only a path that
+   * resolves to an existing target can redirect IO). Mirrors
+   * `assertPathInsideRoot` in the storage walkers.
    */
   private async assertPathContained(targetPath: string): Promise<void> {
     let rootReal: string;
     try {
-      rootReal = await this.io.realpath(this.wearablesDir);
+      rootReal = await this.io.realpath(this.memoryDir);
     } catch {
-      // Fresh dir not yet on disk — no symlink can resolve through a
-      // missing root, so fall back to a lexical resolve.
-      rootReal = path.resolve(this.wearablesDir);
+      // Fresh memory dir not yet on disk — no symlink can resolve through
+      // a missing root, so fall back to a lexical resolve.
+      rootReal = path.resolve(this.memoryDir);
     }
-    // Guard both the fusion directory (the entry a writer controls) and,
-    // when present, the target file itself.
-    for (const candidate of [path.dirname(targetPath), targetPath]) {
-      let candidateReal: string;
-      try {
-        candidateReal = await this.io.realpath(candidate);
-      } catch {
-        continue; // absent — nothing to follow
-      }
-      if (!pathIsInside(rootReal, candidateReal)) {
-        throw new Error(
-          "wearable fusion artifact path resolves outside the wearables root — refusing to follow a symlink/traversal (AGENTS.md pattern #3)",
-        );
-      }
+    // The wearables root first (catches a symlinked wearables dir even
+    // when the leaf artifact does not yet exist), then the fusion dir and
+    // the target file itself.
+    await this.assertNoEscape(rootReal, this.wearablesDir);
+    await this.assertNoEscape(rootReal, path.dirname(targetPath));
+    await this.assertNoEscape(rootReal, targetPath);
+  }
+
+  /**
+   * Refuse a candidate whose realpath escapes the memory root. Absent
+   * candidates are allowed: a missing path cannot yet redirect IO, and
+   * the secure write creates it lexically under the root.
+   */
+  private async assertNoEscape(rootReal: string, candidate: string): Promise<void> {
+    let candidateReal: string;
+    try {
+      candidateReal = await this.io.realpath(candidate);
+    } catch {
+      return; // absent — nothing to follow
+    }
+    if (!pathIsInside(rootReal, candidateReal)) {
+      throw new Error(
+        "wearable fusion artifact path resolves outside the memory dir — refusing to follow a symlink/traversal (AGENTS.md pattern #3)",
+      );
     }
   }
 }

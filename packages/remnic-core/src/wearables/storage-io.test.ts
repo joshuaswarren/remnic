@@ -235,20 +235,60 @@ test("a symlinked _fusion dir that escapes the memory dir is refused, not follow
     // Write must be refused — never followed into the escape dir.
     await assert.rejects(
       store.writeFusedDay("2026-06-10", "---\nkind: wearable-fusion\n---\n\n[]\n"),
-      /resolves outside the wearables root/,
+      /resolves outside the memory dir/,
     );
     // Read and list are refused for the same reason.
     await assert.rejects(
       store.readFusedDay("2026-06-10"),
-      /resolves outside the wearables root/,
+      /resolves outside the memory dir/,
     );
     await assert.rejects(
       store.listFusedDays(),
-      /resolves outside the wearables root/,
+      /resolves outside the memory dir/,
     );
     // Nothing was written into the escape target.
     const leaked = await readdir(escapeDir).catch(() => []);
     assert.equal(leaked.length, 0, "no fused artifact must leak into the symlink target");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(escapeDir, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked wearables root that escapes the memory dir is refused, not followed", async () => {
+  const { storage, dir } = makeStorage();
+  // Outside target: a sibling temp dir NOT under the memory dir root.
+  const escapeDir = mkdtempSync(path.join(tmpdir(), "remnic-wearables-escape-"));
+  try {
+    // The memory dir root exists (makeStorage created it); plant a
+    // wearables ROOT that is itself a symlink pointing outside memoryDir.
+    // Containment is anchored to realpath(memoryDir), so this must be
+    // rejected for every fusion IO — never followed (issue #1849).
+    await symlink(escapeDir, path.join(dir, "wearables"), "dir");
+
+    const store = storage.fusionArtifactStore();
+    // Write must be refused even though the leaf artifact does not yet
+    // exist — never followed into the symlinked escape root.
+    await assert.rejects(
+      store.writeFusedDay("2026-06-10", "---\nkind: wearable-fusion\n---\n\n[]\n"),
+      /resolves outside the memory dir/,
+    );
+    // Read, list, and delete are refused for the same reason.
+    await assert.rejects(
+      store.readFusedDay("2026-06-10"),
+      /resolves outside the memory dir/,
+    );
+    await assert.rejects(
+      store.listFusedDays(),
+      /resolves outside the memory dir/,
+    );
+    await assert.rejects(
+      store.deleteFusedDay("2026-06-10"),
+      /resolves outside the memory dir/,
+    );
+    // Nothing was written into the escape target.
+    const leaked = await readdir(escapeDir).catch(() => []);
+    assert.equal(leaked.length, 0, "no fused artifact must leak into the symlinked wearables root");
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(escapeDir, { recursive: true, force: true });

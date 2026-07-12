@@ -37,7 +37,7 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
   }>;
 } {
   const fusedFiles = new Map<string, string>();
-  const fusionStore = new FusionArtifactStore(path.join(memoryDir, "wearables"), {
+  const fusionStore = new FusionArtifactStore(path.join(memoryDir, "wearables"), memoryDir, {
     writeFile: async (filePath, content) => {
       fusedFiles.set(filePath, content);
     },
@@ -53,6 +53,13 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
       [...fusedFiles.keys()]
         .filter((key) => path.dirname(key) === dirPath)
         .map((key) => path.basename(key)),
+    deleteFile: async (filePath) => {
+      if (!fusedFiles.delete(filePath)) {
+        const err = new Error(`ENOENT: ${filePath}`) as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      }
+    },
     realpath: (filePath) => fsRealpath(filePath),
   });
   const files = new Map<string, string>();
@@ -1025,6 +1032,61 @@ test("fuseDay skips a day whose sources were rendered under conflicting timezone
     assert.equal(result.sources.length, 0);
     // No artifact is written for the conflicting day.
     assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
+  } finally {
+    rmSync(storage.dir, { recursive: true, force: true });
+  }
+});
+
+test("fuseDay clears a stale fused artifact when a later run skips on conflicting timezones", async () => {
+  const storage = makeStorage(mkdtempSync(path.join(tmpdir(), "remnic-fusion-")));
+  try {
+    // First, both sources share one timezone -> the day fuses successfully.
+    storeDay(
+      storage,
+      "limitless",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    storeDay(
+      storage,
+      "bee",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "America/Los_Angeles",
+    );
+    const service = makeService(storage, {
+      sources: {
+        limitless: { ...defaultWearableSourceSettings(), enabled: true },
+        bee: { ...defaultWearableSourceSettings(), enabled: true },
+      },
+      fusion: { enabled: true, proximityGapMs: 300_000, windowToleranceMs: 30_000 },
+    });
+
+    const first = await service.fuseDay("2026-06-10");
+    assert.equal(first.written, true);
+    assert.ok(first.conversationCount >= 1, "same-timezone sources fuse");
+    // A fused artifact now exists and is served by the listing surface.
+    assert.notEqual(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
+    assert.ok((await service.fusedConversations("2026-06-10")).length >= 1);
+
+    // Later sync: bee's source is re-rendered under a DIFFERENT timezone
+    // (Asia/Tokyo, UTC+9), conflicting with limitless (UTC-7 in summer).
+    storeDay(
+      storage,
+      "bee",
+      "2026-06-10",
+      ["We agreed to ship Friday."],
+      "Asia/Tokyo",
+    );
+
+    // Re-fuse: the day is now skipped, and the stale artifact MUST be
+    // cleared so fusedConversations() stops serving it (issue #1849).
+    const result = await service.fuseDay("2026-06-10");
+    assert.equal(result.written, false);
+    assert.equal(result.skipped?.reason, "conflicting-timezones");
+    assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
+    assert.equal((await service.fusedConversations("2026-06-10")).length, 0);
   } finally {
     rmSync(storage.dir, { recursive: true, force: true });
   }

@@ -2715,10 +2715,11 @@ export class StorageManager {
   /** Derived fusion-day IO; file IO lives in wearables/fusion (#1810). */
   fusionArtifactStore(): FusionArtifactStore {
     if (this._fusionStore) return this._fusionStore;
-    return (this._fusionStore = new FusionArtifactStore(this.wearablesDir, {
+    return (this._fusionStore = new FusionArtifactStore(this.wearablesDir, this.baseDir, {
       writeFile: (p, c) => this.writeStorageSecureFile(p, c),
       readFile: (p) => readMaybeEncryptedFile(p, this._secureStoreKey, this.baseDir),
       readDir: (d) => readdir(d),
+      deleteFile: (p) => unlink(p),
       realpath: (p) => realpath(p),
     }));
   }
