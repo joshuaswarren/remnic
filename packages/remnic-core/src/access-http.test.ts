@@ -9,6 +9,7 @@ import { EngramAccessHttpServer, type RemnicAdminControls, type RemnicAdminDashb
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import { parseConfig } from "./config.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
+import { createChatSession } from "./chat/chat-session.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { OFFLINE_SYNC_MAX_MTIME_MS } from "./offline-sync.js";
 import type { StorageManager } from "./storage.js";
@@ -2231,6 +2232,115 @@ test("Legacy undefined-namespace contradiction pair: default-allow-list token re
     );
   } finally {
     await deniedServer.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Issue #1850 round 5: comprehensive access-surface coverage
+// ──────────────────────────────────────────────────────────────────────────
+
+test("HTTP adapters route is op-gated: deny-all → 403, unrestricted → 200 (issue #1850 finding 1)", async () => {
+  // The adapters route serves adapter metadata after auth but previously had
+  // NO enforceTokenOp, so a deny-all / narrow-ops token reached it. It now
+  // dispatches through the adapters_status op; a scoped token is rejected.
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-http-adapters-opgate", defaultNamespace: "default" }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "denyall", capabilities: { version: 1, ops: [] } },
+      { token: "narrow", capabilities: { version: 1, ops: ["memory_get"] } },
+      { token: "operator", capabilities: { version: 1 } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const request = (token: string, urlPath: string) =>
+    fetch(`http://127.0.0.1:${status.port}${urlPath}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  try {
+    assert.equal(
+      (await request("denyall", "/engram/v1/adapters")).status,
+      403,
+      "deny-all token must be rejected by the op gate",
+    );
+    assert.equal(
+      (await request("narrow", "/engram/v1/adapters")).status,
+      403,
+      "narrow-ops token without adapters_status must be rejected",
+    );
+    const ok = await request("operator", "/engram/v1/adapters");
+    assert.equal(ok.status, 200, "unrestricted token must reach adapter metadata");
+    const body = (await ok.json()) as { adaptersEnabled?: boolean };
+    assert.equal(typeof body.adaptersEnabled, "boolean", "adapter metadata body shape preserved");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP chat routes gate the resumed session's STORED namespace (issue #1850 finding 2)", async () => {
+  // A chat session is an id-loaded record: its namespace comes from the stored
+  // session header, NOT a ?namespace= query param. A namespace-scoped bearer
+  // that knows a chatSessionId must not post to / stream a session in a
+  // namespace outside its allow-list. The gate runs before delegation.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-chat-ns-gate-"));
+  // Session bound to ns_a (no principal ⇒ accessible to anyone per
+  // sessionBelongsToPrincipal, so the namespace gate is the ONLY gate in play).
+  const session = await createChatSession(dir, { namespace: "ns_a" });
+  const service = {
+    configRef: parseConfig({ memoryDir: dir, namespacesEnabled: true, defaultNamespace: "default" }),
+    memoryDir: dir,
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "scoped-ns-b", capabilities: { version: 1, namespaces: ["ns_b"] } },
+      { token: "scoped-ns-a", capabilities: { version: 1, namespaces: ["ns_a"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const authed = (token: string) => ({ headers: { authorization: `Bearer ${token}` } });
+  try {
+    // ── POST chat/message resuming a CROSS-namespace session → 403 ──
+    const cross = await fetch(`http://127.0.0.1:${status.port}/engram/v1/chat/message`, {
+      method: "POST",
+      ...authed("scoped-ns-b"),
+      headers: { ...authed("scoped-ns-b").headers, "content-type": "application/json" },
+      body: JSON.stringify({ message: "hi", chatSessionId: session.id }),
+    });
+    assert.equal(cross.status, 403, "scoped-ns-b must NOT post to a session bound to ns_a");
+
+    // ── POST chat/message resuming a SAME-namespace session → passes the gate ──
+    // (Chat is unconfigured here so the handler returns chat_disabled 404; the
+    //  point is it is NOT 403 — the namespace gate let it through.)
+    const same = await fetch(`http://127.0.0.1:${status.port}/engram/v1/chat/message`, {
+      method: "POST",
+      headers: { authorization: "Bearer scoped-ns-a", "content-type": "application/json" },
+      body: JSON.stringify({ message: "hi", chatSessionId: session.id }),
+    });
+    assert.notEqual(same.status, 403, "scoped-ns-a must pass the namespace gate for its own session");
+
+    // ── GET chat/events for a CROSS-namespace session → 403 ──
+    const crossEvents = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/chat/events/${session.id}`,
+      authed("scoped-ns-b"),
+    );
+    assert.equal(crossEvents.status, 403, "scoped-ns-b must NOT stream a session bound to ns_a");
+
+    // ── GET chat/events for a SAME-namespace session → passes the gate ──
+    const sameEvents = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/chat/events/${session.id}`,
+      authed("scoped-ns-a"),
+    );
+    assert.notEqual(sameEvents.status, 403, "scoped-ns-a must pass the namespace gate for its own session");
+  } finally {
+    await server.stop();
     await rm(dir, { recursive: true, force: true });
   }
 });

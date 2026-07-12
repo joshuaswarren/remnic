@@ -5,6 +5,7 @@ import type { Readable, Writable } from "node:stream";
 // (memory_get / memory_search / memory_store) as a side effect; callTool
 // dispatches migrated tools through the registry (issue #1525).
 import { type OperationName, getOperation } from "./access-boundary.js";
+import { capabilityAllowsOp, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   type ActionConfidenceRequest,
   type CapsuleExportRequest,
@@ -2592,13 +2593,15 @@ export class EngramMcpServer {
       };
     }
     if (method === "tools/list") {
-      return {
-        jsonrpc: "2.0",
-        id,
-        result: {
-          tools: this.tools,
-        },
-      };
+      // Issue #1850 round 5 (finding 3): a scoped/deny-all token must not
+      // enumerate the full tool surface — filter advertised tools by the
+      // token's ops allow-list via the same map callTool uses. Unrestricted
+      // tokens (ops axis absent) see everything; unmapped tool ⇒ "" ⇒ hidden.
+      const caps = tokenCapabilityStore.getStore();
+      const tools = caps?.ops === undefined
+        ? this.tools
+        : this.tools.filter((t) => capabilityAllowsOp(caps, MCP_MIGRATED_OPERATIONS[toLegacyToolName(t.name)] ?? ""));
+      return { jsonrpc: "2.0", id, result: { tools } };
     }
     if (method === "resources/list") {
       return {

@@ -140,6 +140,7 @@ export const OPERATION_NAMES = [
   "dreams_status",
   "dreams_run",
   // HTTP-only routes (no direct MCP tool equivalent).
+  "adapters_status",
   "offline_sync_snapshot",
   "offline_sync_snapshot_stream",
   "offline_sync_files",

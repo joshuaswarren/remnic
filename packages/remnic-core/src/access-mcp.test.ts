@@ -13,6 +13,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngramMcpServer } from "./access-mcp.js";
+import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import { parseConfig } from "./config.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
@@ -978,4 +979,40 @@ test("emitLegacyTools=false still allows calling tools under BOTH names (adverti
     true,
     "legacy engram.recall call still works (callability preserved)",
   );
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Issue #1850 round 5 (finding 3): tools/list must reflect the token's ops scope
+// ──────────────────────────────────────────────────────────────────────────
+
+test("tools/list: deny-all (ops:[]) token sees NO tools (issue #1850 finding 3)", async () => {
+  const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
+  const names = await tokenCapabilityStore.run({ version: 1, ops: [] }, async () =>
+    listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST)),
+  );
+  assert.deepEqual(names, [], "a deny-all token must enumerate zero tools");
+});
+
+test("tools/list: ops-scoped token sees ONLY its permitted tools (issue #1850 finding 3)", async () => {
+  const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
+  const names = await tokenCapabilityStore.run({ version: 1, ops: ["recall", "memory_get"] }, async () =>
+    listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST)),
+  );
+  assert.ok(names.includes("remnic.recall"), "permitted recall tool advertised");
+  assert.ok(names.includes("remnic.memory_get"), "permitted memory_get tool advertised");
+  assert.ok(!names.includes("remnic.memory_store"), "non-permitted tool must NOT be advertised");
+  assert.ok(!names.includes("remnic.observe"), "non-permitted tool must NOT be advertised");
+  assert.equal(names.length, 2, "exactly the two permitted tools advertised");
+});
+
+test("tools/list: unrestricted token (ops axis absent) sees the FULL surface (unchanged)", async () => {
+  const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
+  // No capability context at all (stdio / direct call) ⇒ full surface.
+  const noContext = listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST));
+  // Explicit-unrestricted record (version present, no ops axis) ⇒ same surface.
+  const explicitUnrestricted = await tokenCapabilityStore.run({ version: 1 }, async () =>
+    listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST)),
+  );
+  assert.deepEqual(explicitUnrestricted, noContext, "unrestricted record sees the same surface as legacy/no-context");
+  assert.ok(noContext.length > 10, "sanity: the full tool surface is non-trivial");
 });
