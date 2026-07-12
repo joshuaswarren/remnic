@@ -79,9 +79,49 @@ function rawErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error ?? "");
 }
 
-export function isLikelyBetterSqlite3NativeBindingError(error: unknown): boolean {
-  // Classify on the RAW message so redaction can't strip detection markers
-  // (e.g. the path containing "better_sqlite3.node").
+/**
+ * Iterate an error and every node reachable along its `cause` chain and any
+ * `AggregateError.errors` siblings (depth-first), cycle-safe via a visited set.
+ *
+ * Native-binding failures thrown from openBetterSqlite3 /
+ * probeBetterSqlite3Driver are caught and re-thrown as a sanitized
+ * `unavailableError` WRAPPER: the wrapper's message drops the ABI markers
+ * (NODE_MODULE_VERSION, better_sqlite3.node, …) that live on the ORIGINAL
+ * error. So classification must walk `.cause` (and aggregate siblings) instead
+ * of inspecting only the top wrapper's message — otherwise startup logs, browse
+ * warnings, and the memory_projection doctor check all MISS the native-binding
+ * hint (issue #1848).
+ */
+function* errorChain(error: unknown): Generator<unknown> {
+  const seen = new Set<unknown>();
+  const stack: unknown[] = [error];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (node === null || node === undefined) continue;
+    if (typeof node !== "object") continue;
+    if (seen.has(node)) continue;
+    seen.add(node);
+    yield node;
+    // Narrow with `in` (not a cast) so the property access is compiler-checked.
+    if ("cause" in node) {
+      const cause = node.cause;
+      if (cause !== null && cause !== undefined) stack.push(cause);
+    }
+    if ("errors" in node) {
+      const errors = node.errors;
+      if (Array.isArray(errors)) {
+        for (const member of errors) {
+          if (member !== null && member !== undefined) stack.push(member);
+        }
+      }
+    }
+  }
+}
+
+// True when a single error's RAW message carries a native-binding ABI marker.
+// Raw (not displayErrorDetail) so redaction can't strip detection markers
+// (e.g. the loader path containing "better_sqlite3.node").
+function messageHasNativeBindingMarker(error: unknown): boolean {
   const detail = rawErrorMessage(error);
   return (
     detail.includes("Could not locate the bindings file") ||
@@ -90,6 +130,17 @@ export function isLikelyBetterSqlite3NativeBindingError(error: unknown): boolean
     (detail.includes("NODE_MODULE_VERSION") && detail.includes("better-sqlite3")) ||
     detail.includes("was compiled against a different Node.js version")
   );
+}
+
+export function isLikelyBetterSqlite3NativeBindingError(error: unknown): boolean {
+  // Walk the full cause / aggregate chain so a SANITIZED wrapper
+  // (unavailableError) — whose message drops the ABI markers that live on the
+  // original error — is still classified. Inspecting only the top-level message
+  // misses the real mismatch when the failure was wrapped (issue #1848).
+  for (const node of errorChain(error)) {
+    if (messageHasNativeBindingMarker(node)) return true;
+  }
+  return false;
 }
 
 function unavailableError(error: unknown): Error {

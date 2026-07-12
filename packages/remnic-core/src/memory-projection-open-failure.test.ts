@@ -114,6 +114,47 @@ test("present index + ABI-style open failure → distinct rate-limited warn + nu
   }
 });
 
+test("present index + WRAPPED ABI open failure (cause = native-binding error) → still reports the native-binding hint", SERIAL, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-wrapped-abi-"));
+  const { warns, restore } = captureLogs();
+  __resetProjectionOpenFailureSuppressionForTest();
+  try {
+    await rebuildMemoryProjection({ memoryDir: dir, dryRun: false });
+    // Mirrors the production path: loadBetterSqlite3() catches the ABI error
+    // and re-throws a sanitized unavailableError WRAPPER whose message drops
+    // the ABI markers. The original error survives only on .cause. Before
+    // #1848 the classifier inspected only the wrapper's message and MISSED the
+    // mismatch, so the warn and doctor check wrongly suggested rebuilding the
+    // projection instead of better-sqlite3.
+    const throwingOpener: ProjectionOpener = () => {
+      throw new Error(
+        "better-sqlite3 is unavailable. Remnic attempted to load the native SQLite binding and could not.",
+        { cause: abiStyleError() },
+      );
+    };
+    const restoreOpener = __setProjectionReadonlyOpenerForTest(throwingOpener);
+
+    try {
+      // Browse warn carries the native-binding ABI hint (not the projection-rebuild hint).
+      const first = readProjectedMemoryBrowse(dir, { limit: 5, offset: 0 });
+      assert.equal(first, null);
+      assert.equal(warns.length, 1);
+      assert.match(warns[0], /wrong Node\.js ABI/);
+      assert.doesNotMatch(warns[0], /rebuild-memory-projection/);
+
+      // Doctor lens classifies the SAME wrapped failure as a native-binding mismatch.
+      const probe = probeProjectionHealth(dir);
+      assert.equal(probe.state, "unopenable");
+      assert.equal(probe.nativeBindingMismatch, true);
+    } finally {
+      restoreOpener();
+    }
+  } finally {
+    restore();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("present index + non-ABI open failure → distinct warn without the native-binding hint", SERIAL, async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-cantopen-"));
   const { warns, restore } = captureLogs();
