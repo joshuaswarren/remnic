@@ -477,6 +477,27 @@ export class ExtractionPersistCoordinator {
             options.category === "fact" &&
             (await targetStorage.hasFactContentHash(dedupContent))
           ) {
+            // Connector-aware dedup (QOjlD): verify a same-connector
+            // active fact exists before skipping the promotion write.
+            // Different connectors with same content should NOT be deduped.
+            let skipPromotion = true;
+            try {
+              const allMems = await targetStorage.readAllMemories();
+              const nc = sourceContext?.sourceConnector?.trim() || undefined;
+              skipPromotion = allMems.some((m) => {
+                if (m.frontmatter.category !== options.category) return false;
+                if ((m.frontmatter.status ?? "active") !== "active") return false;
+                const norm = ContentHashIndex.normalizeContent;
+                if (norm(m.content ?? "") !== norm(dedupContent)) return false;
+                return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
+              });
+            } catch (err) {
+              log.warn(
+                `connector-aware promotion dedup scan failed; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
+              );
+              skipPromotion = false;
+            }
+            if (skipPromotion) {
             // #1671 — backfill bi-temporal bounds the existing promoted copy
             // lacks (re-extraction with a now-resolved invalidAt). Best-effort,
             // fail-open; the helper gates on invalidAt to avoid I/O when no
@@ -496,6 +517,7 @@ export class ExtractionPersistCoordinator {
               );
             }
             continue;
+            }
           }
           const targetPromotion = await targetStorage.writeMemory(
             options.category as any,
@@ -742,7 +764,13 @@ export class ExtractionPersistCoordinator {
                 // (including any appended "[Attributes: ...]" suffix) against the
                 // enriched normalizedIncoming so the candidate selected is the one
                 // whose hash actually matched in hasFactContentHash.
-                return ContentHashIndex.normalizeContent(m.content ?? "") === normalizedIncoming;
+                if (ContentHashIndex.normalizeContent(m.content ?? "") !== normalizedIncoming) return false;
+                // Connector-aware dedup: same content from different connectors
+                // is NOT a duplicate (review thread QOjlD).
+                const existingConnector = m.frontmatter.sourceConnector?.trim() || undefined;
+                const newConnector = sourceContext?.sourceConnector?.trim() || undefined;
+                if (existingConnector !== newConnector) return false;
+                return true;
               });
               hashDedupLookupComplete = true;
               if (hashDedupMatchingFact) {
@@ -1575,6 +1603,29 @@ export class ExtractionPersistCoordinator {
         log.warn(
           `content-hash dedup lookup failed for storage ${targetStorage.dir}; writing fact fail-open: ${err}`,
         );
+      }
+      // Connector-aware dedup (QOjlB): if the hash says duplicate, verify
+      // a same-content, same-connector active fact exists. Different
+      // connectors with same content should NOT be deduped. Fail open
+      // (write) on scan failure so an unverifiable hash hit cannot
+      // silently drop content.
+      if (exactDuplicate) {
+        try {
+          const allMems = await targetStorage.readAllMemories();
+          const nc = sourceContext?.sourceConnector?.trim() || undefined;
+          exactDuplicate = allMems.some((m) => {
+            if (m.frontmatter.category !== writeCategory) return false;
+            if ((m.frontmatter.status ?? "active") !== "active") return false;
+            const norm = ContentHashIndex.normalizeContent;
+            if (norm(m.content ?? "") !== norm(canonicalContentForHash)) return false;
+            return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
+          });
+        } catch (err) {
+          log.warn(
+            `connector-aware dedup scan failed for storage ${targetStorage.dir}; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          exactDuplicate = false;
+        }
       }
       if (exactDuplicate) {
         // #1671 — before short-circuiting, backfill bi-temporal bounds

@@ -503,6 +503,7 @@ async function findQueuedExplicitCaptureDuplicate(
   orchestrator: Orchestrator,
   namespace: string | undefined,
   content: string,
+  sourceConnector?: string,
 ): Promise<string | null> {
   const storage = await orchestrator.getStorage(namespace);
   const existing = await storage.readAllMemories();
@@ -511,7 +512,11 @@ async function findQueuedExplicitCaptureDuplicate(
     const status = memory.frontmatter.status ?? "active";
     if (status !== "pending_review") return false;
     if (!(memory.frontmatter.tags ?? []).includes("queued-review")) return false;
-    return normalizeCaptureContent(memory.content) === normalized;
+    if (normalizeCaptureContent(memory.content) !== normalized) return false;
+    const existingConnector = memory.frontmatter.sourceConnector?.trim() || undefined;
+    const newConnector = sourceConnector?.trim() || undefined;
+    if (existingConnector !== newConnector) return false;
+    return true;
   });
   return match?.frontmatter.id ?? null;
 }
@@ -531,7 +536,7 @@ export async function queueExplicitCaptureForReview(
     ? requestedNamespace
     : resolveExplicitCaptureReviewNamespace(orchestrator, requestedNamespace);
   const content = buildExplicitCaptureReviewContent(input, reason);
-  const duplicateOf = await findQueuedExplicitCaptureDuplicate(orchestrator, queueNamespace, content);
+  const duplicateOf = await findQueuedExplicitCaptureDuplicate(orchestrator, queueNamespace, content, input.sourceConnector);
   if (duplicateOf) {
     return { id: duplicateOf, duplicateOf };
   }

@@ -348,6 +348,87 @@ test("dedup: whitespace-only connector normalizes to operator", async () => {
   assert.equal(memories.length, 1);
 });
 
+// QOjlC: queued-review connector-aware dedup matrix
+function makeQueueFixture() {
+  const memories: Array<{
+    frontmatter: { id: string; status?: string; tags?: string[]; sourceConnector?: string };
+    content: string;
+  }> = [];
+  let nextId = 1;
+  const storage = {
+    readAllMemories: async () => memories,
+    getMemoryById: async (id: string) =>
+      memories.find((m) => m.frontmatter.id === id) ?? null,
+    writeMemory: async (_cat: string, content: string, opts: { sourceConnector?: string }) => {
+      const id = `rev-${nextId++}`;
+      memories.push({
+        frontmatter: {
+          id,
+          status: "pending_review",
+          tags: ["queued-review"],
+          sourceConnector: opts.sourceConnector,
+        },
+        content,
+      });
+      return { id, tombstoneBlocked: false };
+    },
+    onCatalogWrite: () => {},
+    writeMemoryFrontmatter: async () => {},
+    appendMemoryLifecycleEvents: async () => 1,
+  };
+  return { memories, orchestrator: { getStorage: async () => storage } as never };
+}
+
+function queueCapture(orch: unknown, connector?: string) {
+  return queueExplicitCaptureForReview(
+    orch as never,
+    {
+      content: "prefers dark mode",
+      category: "preference",
+      ...(connector !== undefined ? { sourceConnector: connector } : {}),
+    } as never,
+    "suggestion_submit",
+    new Error("test")
+  );
+}
+
+test("queue dedup: same connector dedupes", async () => {
+  const { memories, orchestrator } = makeQueueFixture();
+  const first = await queueCapture(orchestrator, "chatgpt");
+  const second = await queueCapture(orchestrator, "chatgpt");
+  assert.equal(first.duplicateOf, undefined);
+  assert.equal(second.duplicateOf, first.id);
+  assert.equal(memories.length, 1);
+});
+
+test("queue dedup: different connector does NOT dedupe", async () => {
+  const { memories, orchestrator } = makeQueueFixture();
+  const first = await queueCapture(orchestrator, "chatgpt");
+  const second = await queueCapture(orchestrator, "codex-cli");
+  assert.equal(first.duplicateOf, undefined);
+  assert.equal(second.duplicateOf, undefined);
+  assert.equal(memories.length, 2);
+  assert.notEqual(first.id, second.id);
+  assert.equal(memories[0]?.frontmatter.sourceConnector, "chatgpt");
+  assert.equal(memories[1]?.frontmatter.sourceConnector, "codex-cli");
+});
+
+test("queue dedup: connector vs operator does NOT dedupe", async () => {
+  const { memories, orchestrator } = makeQueueFixture();
+  const first = await queueCapture(orchestrator, "chatgpt");
+  const second = await queueCapture(orchestrator);
+  assert.equal(second.duplicateOf, undefined);
+  assert.equal(memories.length, 2);
+});
+
+test("queue dedup: operator vs operator dedupes", async () => {
+  const { memories, orchestrator } = makeQueueFixture();
+  const first = await queueCapture(orchestrator);
+  const second = await queueCapture(orchestrator);
+  assert.equal(second.duplicateOf, first.id);
+  assert.equal(memories.length, 1);
+});
+
 // ── Round 6 (codex P2 — NAUf4): the review-queue path has the same default-write
 // gap — a queued review capture without a namespace writes to the default root,
 // so it must also record a catalog write for the default namespace.
