@@ -16,7 +16,11 @@
  * follow-up (see PR body).
  */
 
-import { isValidTranscriptDate } from "../day-store.js";
+import {
+  isValidTranscriptDate,
+  TRANSCRIPT_SEGMENT_LINE,
+  unescapeSegmentText,
+} from "../day-store.js";
 import type {
   FusionConversationInput,
   FusionSegmentInput,
@@ -25,8 +29,23 @@ import type {
 const CONVERSATION_HEADING =
   /^## (.+?)\u2013(.+?)(?:\s\u00b7\s(.*))?\s\(conversation (.+)\)$/;
 const LOCATION_LINE = /^\*Location: (.+)\*$/;
-const SEGMENT_LINE = /^\*\*(.+?)\*\*\s\[(.+?)\]:\s(.*)$/;
 const CLOCK_PATTERN = /^(\d{2}):(\d{2})$/;
+
+/** Minutes in a 24-hour day. */
+const MINUTES_PER_DAY = 24 * 60;
+
+/**
+ * Upper bound on a plausible single-conversation duration, used to decide
+ * whether an earlier heading end clock is a genuine midnight wrap (start
+ * -> midnight -> end within this bound) versus a malformed/ordinary
+ * earlier clock that should stay on the same date and be clamped
+ * downstream. Generous enough that any legitimate overnight wrap a
+ * wearable source would emit still rolls forward; tight enough that a
+ * near-24h implied span (e.g. 14:00 -> 13:00) is treated as the error it
+ * almost certainly is instead of producing a day-spanning window that
+ * broadly clusters unrelated neighbors (#1849).
+ */
+const MAX_PLAUSIBLE_WRAP_MINUTES = 12 * 60;
 
 /** Rendered clock ("HH:MM") -> timezone-normalized ISO; "--:--" -> undefined. */
 function clockToIso(clock: string, date: string): string | undefined {
@@ -66,21 +85,6 @@ function nextCalendarDay(date: string): string {
 
 function isSelfLabel(label: string): boolean {
   return /\(you\)\s*$/.test(label.trim());
-}
-
-/**
- * Reverse `escapeSegmentText` (day-store.ts).  Unknown escape sequences
- * (a lone backslash followed by a character we don't emit) are passed
- * through literally so legacy transcripts that never went through the
- * escaper still round-trip their original text.
- */
-function unescapeSegmentText(text: string): string {
-  return text.replace(/\\(.)/g, (_match, ch: string) => {
-    if (ch === "n") return "\n";
-    if (ch === "r") return "\r";
-    if (ch === "\\") return "\\";
-    return "\\" + ch;
-  });
 }
 
 /**
@@ -139,15 +143,30 @@ export function reconstructFusionInputs(
         const startMin = clockMinutesOfDay(startClock);
         const endMin = clockMinutesOfDay(endClock);
         // A conversation whose end clock reads EARLIER than its start
-        // clock wrapped past midnight; roll its end to the next calendar
-        // day so endIso >= startIso and the timeline sorts correctly.
+        // clock MAY have wrapped past midnight. Roll its end to the next
+        // calendar day ONLY when the implied wrap duration (start ->
+        // midnight -> end) is within a plausible single-conversation
+        // bound; a near-24h implied span (e.g. start 14:00, end 13:00)
+        // is almost certainly a malformed/ordinary earlier clock, not a
+        // midnight crossing. Leaving that end on the SAME date keeps
+        // endIso < startIso so the downstream cluster clamp collapses it
+        // to the start instead of stretching the window across most of
+        // the day and broadly clustering unrelated neighbors (#1849).
         // Post-midnight SEGMENTS roll independently below: a segment whose
         // clock precedes the start clock crossed midnight regardless of
-        // whether the heading end clock was parseable.
+        // whether the heading end clock was parseable or rolled.
         const wrapped =
           startMin !== undefined && endMin !== undefined && endMin < startMin;
+        const wrapDuration =
+          startMin !== undefined && endMin !== undefined
+            ? MINUTES_PER_DAY - startMin + endMin
+            : undefined;
+        const plausibleWrap =
+          wrapped &&
+          wrapDuration !== undefined &&
+          wrapDuration <= MAX_PLAUSIBLE_WRAP_MINUTES;
         const startIso = clockToIso(startClock, date);
-        const endIso = wrapped
+        const endIso = plausibleWrap
           ? clockToIso(endClock, nextCalendarDay(date))
           : clockToIso(endClock, date);
         current = {
@@ -164,7 +183,7 @@ export function reconstructFusionInputs(
 
       if (LOCATION_LINE.exec(line) !== null) continue;
 
-      const segmentMatch = SEGMENT_LINE.exec(line);
+      const segmentMatch = TRANSCRIPT_SEGMENT_LINE.exec(line);
       if (segmentMatch !== null) {
         if (current === null) continue; // segment outside any conversation
         const [, label, clock, rawText] = segmentMatch;

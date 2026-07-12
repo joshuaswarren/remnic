@@ -34,6 +34,15 @@ export const WEARABLES_DIR_NAME = "wearables";
 
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
+/**
+ * A rendered transcript segment line: `**label** [clock]: text`. Shared
+ * by the composer (escape), the display/search decoder
+ * (`decodeTranscriptBody`), and the fusion reconstruct parser so all
+ * three agree on what a segment line is — no divergent parsing across
+ * the view/search/index surfaces (#1849).
+ */
+export const TRANSCRIPT_SEGMENT_LINE = /^\*\*(.+?)\*\*\s\[(.+?)\]:\s(.*)$/;
+
 export function isValidTranscriptDate(date: string): boolean {
   if (!DATE_PATTERN.test(date)) return false;
   const parsed = new Date(`${date}T00:00:00Z`);
@@ -73,7 +82,8 @@ function conversationDurationMinutes(conversation: WearableConversation): number
  * Escape segment text for the line-based markdown format so that embedded
  * newlines, carriage returns, and backslashes survive the serialize →
  * reconstruct round-trip losslessly.  Reversed by `unescapeSegmentText`
- * in `fusion/reconstruct.ts`.
+ * (this module — the single decode primitive shared with the fusion
+ * reconstruct path and every view/search/index surface).
  *
  * Without this, a segment whose text contains a newline is split across
  * multiple physical lines; the reconstruct path treats each line
@@ -85,6 +95,48 @@ function escapeSegmentText(text: string): string {
     .replace(/\\/g, "\\\\")
     .replace(/\n/g, "\\n")
     .replace(/\r/g, "\\r");
+}
+
+/**
+ * Reverse `escapeSegmentText`. Unknown escape sequences (a lone
+ * backslash followed by a character the escaper never emits) are passed
+ * through literally so legacy transcripts that never went through the
+ * escaper still round-trip their original text. This is the SINGLE
+ * decode primitive: the fusion reconstruct path and every user-facing
+ * view/search/index surface call it so escaped storage never leaks to
+ * display (#1849).
+ */
+export function unescapeSegmentText(text: string): string {
+  return text.replace(/\\(.)/g, (_match, ch: string) => {
+    if (ch === "n") return "\n";
+    if (ch === "r") return "\r";
+    if (ch === "\\") return "\\";
+    return "\\" + ch;
+  });
+}
+
+/**
+ * Decode the escaped segment text of a stored transcript body into the
+ * ORIGINAL text for user-facing view/search/index surfaces. Only the
+ * text portion of segment lines is decoded; headings, locations, and
+ * the H1 header are NOT escaped on write and pass through unchanged, so
+ * a title or location containing a literal backslash is never altered.
+ * The fusion reconstruct path does NOT use this — it decodes each
+ * segment once during parse — so callers feeding bodies back into
+ * reconstruct must pass the RAW stored body, not a decoded one, to
+ * avoid double-decoding.
+ */
+export function decodeTranscriptBody(body: string): string {
+  const lines = body.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const match = TRANSCRIPT_SEGMENT_LINE.exec(lines[i]);
+    if (match === null) continue;
+    const [, label, clock, rawText] = match;
+    const decoded = unescapeSegmentText(rawText);
+    if (decoded === rawText) continue;
+    lines[i] = `**${label}** [${clock}]: ${decoded}`;
+  }
+  return lines.join("\n");
 }
 
 /** Compose the markdown body (no frontmatter) for one source/day. */

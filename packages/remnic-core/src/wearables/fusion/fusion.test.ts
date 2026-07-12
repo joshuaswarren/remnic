@@ -2247,3 +2247,78 @@ test("legacy transcript with unknown backslash sequences preserves them lossless
   assert.equal(parsed[0]!.segments[0]!.text, "Path is C:\\Users\\josh and config at D:\\data");
   assert.equal(parsed[0]!.segments[1]!.text, "Regex \\d+ matches digits, \\w+ matches words");
 });
+
+
+test("reconstruct rolls a long-but-plausible cross-midnight wrap into the next day (#1849)", () => {
+  // start 22:00 -> end 02:00 wraps 4h (240 min) — well within the
+  // plausible-conversation bound, so the end still rolls to the next day.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 22:00–02:00 · Overnight (conversation c1)",
+    "",
+    "**Me (you)** [23:30]: Still awake.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T22:00:00.000Z");
+  assert.equal(conv.endIso, "2026-06-11T02:00:00.000Z");
+  assert.ok(conv.endIso! >= conv.startIso!, "plausible wrap rolls end forward");
+});
+
+test("reconstruct does NOT roll an implausible near-24h earlier end clock (#1849)", () => {
+  // start 14:00 -> end 13:00 implies a ~23h wrap, almost certainly a
+  // malformed/ordinary earlier clock, not a midnight crossing. The end must
+  // STAY on the same date (earlier than the start) so the downstream cluster
+  // clamp collapses it to the start instead of spanning the whole day and
+  // broadly clustering unrelated neighbors.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 14:00–13:00 · Sync (conversation c1)",
+    "",
+    "**Me (you)** [14:05]: Discussed the roadmap.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T14:00:00.000Z");
+  // NOT rolled: end stays on the same date, preceding the start.
+  assert.equal(conv.endIso, "2026-06-10T13:00:00.000Z");
+  assert.ok(conv.endIso! < conv.startIso!, "implausible earlier end is left for the clamp");
+  // The segment clock (14:05 >= start 14:00) is unaffected and stays put.
+  assert.equal(conv.segments[0]!.startIso, "2026-06-10T14:05:00.000Z");
+});
+
+test("implausible earlier end does not span the day: cluster clamps it to the start (#1849)", () => {
+  // Reconstructed from a 14:00->13:00 heading (implausible wrap, not rolled),
+  // the conversation end precedes its start exactly like a direct malformed
+  // input, so effectiveInterval clamps it to [14:00, 14:00] instead of a
+  // ~23h window. A different-source neighbor at 14:03 (within the 5-min gap)
+  // therefore clusters with it rather than being swallowed by a day-long span.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 14:00–13:00 · Sync (conversation c1)",
+    "",
+    "**Me (you)** [14:00]: Roadmap.",
+    "",
+  ].join("\n");
+  const limitless = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T14:03:00.000Z",
+    endIso: "2026-06-10T14:08:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Neighbor." }],
+  };
+  const clusters = clusterConversations([...limitless, bee]);
+  assert.equal(
+    clusters.length,
+    1,
+    "clamped point-window keeps the within-gap neighbor in one cluster (no broad clustering)",
+  );
+});

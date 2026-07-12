@@ -13,7 +13,11 @@ import {
 } from "./corrections.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { isValidTranscriptDate, parseDayTranscript } from "./day-store.js";
+import {
+  decodeTranscriptBody,
+  isValidTranscriptDate,
+  parseDayTranscript,
+} from "./day-store.js";
 import {
   composeFusionDayMeta,
   type FusionArtifactStore,
@@ -455,7 +459,13 @@ export class WearablesService {
         source,
         date,
         meta: parsed?.meta ?? null,
-        body: parsed?.body ?? raw,
+        // Decode escaped segment text for display: the stored body is an
+        // internal line-based serialization (newlines/backslashes escaped
+        // so segment text survives the serialize -> reconstruct round
+        // trip); user-facing view surfaces must show the original text.
+        // The fusion reconstruct path reads raw bodies separately and
+        // decodes once during parse, so this never double-decodes (#1849).
+        body: decodeTranscriptBody(parsed?.body ?? raw),
         overlapsWith: [],
       });
     }
@@ -714,7 +724,9 @@ export class WearablesService {
             source: located.source,
             date: located.date,
             score: hit.score,
-            snippet: hit.preview,
+            // Decode the escaped serialization so the snippet shows the
+            // original segment text (#1849).
+            snippet: decodeTranscriptBody(hit.preview),
             backend: "indexed",
           });
           if (results.length >= limit) break;
@@ -740,7 +752,10 @@ export class WearablesService {
       if (!matchesScope(source, date)) continue;
       const raw = await storage.readWearableDayTranscript(source, date);
       if (raw === null) continue;
-      const body = parseDayTranscript(raw)?.body ?? raw;
+      // Decode escaped segment text so searches match AND snippets show
+      // the ORIGINAL text (e.g. a real newline or backslash), not the
+      // internal escape serialization (#1849).
+      const body = decodeTranscriptBody(parseDayTranscript(raw)?.body ?? raw);
       const lower = body.toLowerCase();
       const index = lower.indexOf(needle);
       if (index === -1) continue;

@@ -1508,3 +1508,46 @@ test("fuseDay still skips when two CONTRIBUTING sources disagree on timezone (is
     rmSync(storage.dir, { recursive: true, force: true });
   }
 });
+
+
+test("dayTranscript returns decoded segment text, not the escaped storage form (#1849)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
+  try {
+    const storage = makeStorage(dir);
+    // Segment text carries a real newline + a literal backslash. The stored
+    // file escapes both; the user-facing view must decode them back.
+    const original = "Line one.\nLine two with a backslash \\ path.";
+    storeDay(storage, "limitless", "2026-06-10", [original]);
+    const service = makeService(storage);
+    const views = await service.dayTranscript("2026-06-10");
+    assert.equal(views.length, 1);
+    assert.ok(views[0].body.includes(original), "view shows the original (decoded) text");
+    assert.ok(
+      views[0].body.includes("Line one.\\nLine two") === false,
+      "no escaped-newline leak in the user-facing view",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("searchTranscripts scan decodes segment text so snippets show the original (#1849)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
+  try {
+    const storage = makeStorage(dir);
+    // Segment text spans a newline; the escaped storage form would leak a
+    // literal backslash-n into the snippet unless the scan decodes first.
+    storeDay(storage, "limitless", "2026-06-10", ["Alpha part.\nBeta GAPWORD here."]);
+    const service = makeService(storage);
+    const results = await service.searchTranscripts("GAPWORD");
+    assert.equal(results.length, 1);
+    assert.equal(results[0].backend, "scan");
+    assert.ok(results[0].snippet.includes("GAPWORD"));
+    assert.ok(
+      results[0].snippet.includes("Alpha part.\\nBeta") === false,
+      "snippet has no escaped-newline leak",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

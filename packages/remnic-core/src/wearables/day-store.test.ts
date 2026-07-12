@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   composeDayTranscriptBody,
   composeDayTranscriptMeta,
+  decodeTranscriptBody,
   hashTranscriptBody,
   isValidTranscriptDate,
   parseDayTranscript,
@@ -140,4 +141,48 @@ test("invalid timezone falls back to UTC clock rendering instead of crashing", (
     REGISTRY,
   );
   assert.match(body, /## \d{2}:\d{2}–\d{2}:\d{2} · Morning coffee/);
+});
+
+
+test("decodeTranscriptBody decodes segment text but leaves headings/locations untouched (#1849)", () => {
+  // Hand-written stored body: segment text carries the escaped forms
+  // (backslash-n for a newline) exactly as composeDayTranscriptBody
+  // serializes them, while the title/location are NOT escaped on write.
+  const body =
+    "# bee transcript — 2026-06-10\n" +
+    "\n" +
+    "## 09:00–09:10 · C:\\roadmap (conversation c1)\n" +
+    "\n" +
+    "*Location: D:\\data*\n" +
+    "\n" +
+    '**Me (you)** [09:00]: Line one.\\nLine two.\n';
+  const decoded = decodeTranscriptBody(body);
+  // Segment text IS decoded: backslash-n -> real newline.
+  assert.ok(decoded.includes("Line one.\nLine two."), "segment newline decoded");
+  assert.ok(!decoded.includes("Line one.\\nLine two."), "no escaped-newline leak in segment");
+  // Title and location are NOT escaped on write, so a literal backslash
+  // there must pass through verbatim (only segment text is decoded).
+  assert.ok(decoded.includes("· C:\\roadmap (conversation c1)"), "title backslash untouched");
+  assert.ok(decoded.includes("*Location: D:\\data*"), "location backslash untouched");
+});
+
+test("decodeTranscriptBody recovers original segment text from a composed body (#1849)", () => {
+  const original = "First line.\nSecond line with a backslash \\ here.";
+  const conversations: WearableConversation[] = [
+    {
+      id: "c1",
+      source: "bee",
+      startIso: "2026-06-10T09:00:00Z",
+      segments: [{ speakerKey: "user", isWearer: true, text: original }],
+    },
+  ];
+  const body = composeDayTranscriptBody("bee", "2026-06-10", "UTC", conversations, REGISTRY);
+  // The stored body carries the ESCAPED form, not the original...
+  assert.ok(!body.includes(original), "stored body is escaped, not the raw original");
+  assert.ok(body.includes("First line.\\nSecond line"), "stored body has the escaped newline");
+  // ...and decoding recovers the original utterance verbatim.
+  assert.ok(
+    decodeTranscriptBody(body).includes(original),
+    "decoded body recovers the original segment text",
+  );
 });
