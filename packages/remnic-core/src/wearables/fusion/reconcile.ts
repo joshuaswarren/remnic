@@ -678,7 +678,17 @@ function detectCrossSegmentDisagreements(
     for (let j = i + 1; j < n; j++) {
       if (claimed[j]) continue;
       const cand = segments[j]!;
-      if (cand.isSelf !== seed.isSelf || cand.speaker !== seed.speaker) {
+      // Speaker identity is matched via speakerKey() — the SAME
+      // normalization grouping uses (line 305) — not the raw display
+      // label. The wearer is often labeled differently per source (e.g.
+      // "Me (you)" vs an override "Alex (you)"); both normalize to
+      // "self". Matching on the raw label would skip them, leaving a real
+      // same-window ASR-text disagreement undetected and both confidences
+      // wrongly high. (Issue #1849.)
+      if (
+        speakerKey(cand.speaker, cand.isSelf) !==
+        speakerKey(seed.speaker, seed.isSelf)
+      ) {
         continue;
       }
       if (cand.provenance.source === seed.provenance.source) continue;

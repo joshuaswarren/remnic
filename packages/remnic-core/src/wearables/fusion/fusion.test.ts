@@ -1027,6 +1027,129 @@ test("distinct timestamped same-window utterances stay separate, not collapsed",
   assert.equal(conv.disagreements[0]!.candidates.length, 2);
 });
 
+test("cross-segment ASR disagreement detected for differently-labeled self speakers (#1849)", () => {
+  // Two sources both record the WEARER but label them differently:
+  // limitless uses the default "Me (you)" while bee has an override
+  // naming the wearer "Alex" -> "Alex (you)". Both normalize to the SAME
+  // speakerKey ("self"), so grouping treats them as one identity. The
+  // cross-segment ASR-disagreement pass MUST use that same identity — not
+  // the raw display label — or a real same-window ASR conflict between
+  // them is silently missed and both confidences wrongly stay high.
+  const beeRegistry = {
+    ...REGISTRY,
+    speakers: {
+      "bee:user": {
+        name: "Alex",
+        isSelf: true,
+        updatedAt: "2026-06-10T00:00:00.000Z",
+      },
+    },
+  };
+  const limitless = fusionInputsFromConversations(
+    "limitless",
+    [
+      conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+        {
+          text: "Meeting with Sarah at noon.",
+          isWearer: true,
+          startIso: "2026-06-10T09:00:30.000Z",
+        },
+      ]),
+    ],
+    REGISTRY,
+  );
+  const bee = fusionInputsFromConversations(
+    "bee",
+    [
+      conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+        {
+          text: "Lunch with the design team.",
+          isWearer: true,
+          startIso: "2026-06-10T09:00:31.000Z",
+        },
+      ]),
+    ],
+    beeRegistry,
+  );
+  const fused = fuseDay(DATE, [...limitless, ...bee]);
+  const conv = fused.conversations[0]!;
+  // The two utterances disagree on text, so they stay separate segments.
+  assert.equal(conv.segments.length, 2);
+  // Precondition: different display labels but the same self identity.
+  assert.ok(conv.segments.every((s) => s.isSelf), "both are the wearer");
+  assert.notEqual(
+    conv.segments[0]!.speaker,
+    conv.segments[1]!.speaker,
+    "the wearer is labeled differently across the two sources",
+  );
+  // The cross-segment ASR-text disagreement IS recorded (was skipped).
+  const disagreement = conv.disagreements.find((d) => d.kind === "asr-text");
+  assert.ok(
+    disagreement,
+    "a same-self different-label ASR disagreement is recorded, not skipped",
+  );
+  assert.equal(disagreement!.candidates.length, 2);
+  // Both involved segments carry lowered confidence.
+  assert.ok(
+    conv.segments.every((s) => s.confidence < 0.8),
+    "both disagreeing segments carry lowered confidence",
+  );
+});
+
+test("differently-labeled self speakers that agree still merge into one segment (#1849)", () => {
+  // Same two-source setup as above, but the text AGREES. Since both
+  // normalize to speakerKey "self" and the text corroborates, they merge
+  // into ONE segment (no cross-segment disagreement) — the fix must not
+  // over-trigger and split an agreeing utterance.
+  const beeRegistry = {
+    ...REGISTRY,
+    speakers: {
+      "bee:user": {
+        name: "Alex",
+        isSelf: true,
+        updatedAt: "2026-06-10T00:00:00.000Z",
+      },
+    },
+  };
+  const text = "Let's ship the launch on Friday.";
+  const limitless = fusionInputsFromConversations(
+    "limitless",
+    [
+      conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+        { text, isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+      ]),
+    ],
+    REGISTRY,
+  );
+  const bee = fusionInputsFromConversations(
+    "bee",
+    [
+      conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+        { text, isWearer: true, startIso: "2026-06-10T09:00:31.000Z" },
+      ]),
+    ],
+    beeRegistry,
+  );
+  const fused = fuseDay(DATE, [...limitless, ...bee]);
+  const conv = fused.conversations[0]!;
+  // The agreeing utterances merge into ONE segment, not two.
+  assert.equal(conv.segments.length, 1);
+  assert.equal(conv.segments[0]!.text, text);
+  assert.equal(conv.segments[0]!.isSelf, true);
+  // No cross-segment ASR disagreement for corroborating text.
+  const asrDisagreement = conv.disagreements.find((d) => d.kind === "asr-text");
+  assert.equal(
+    asrDisagreement,
+    undefined,
+    "agreeing utterances produce no cross-segment ASR disagreement",
+  );
+  // Corroboration BOOSTS confidence — it is not lowered.
+  assert.ok(
+    conv.segments[0]!.confidence > 0.8,
+    "corroborated utterance keeps boosted confidence",
+  );
+});
+
 test("equal-time same-source utterances keep original transcript order, not label order", () => {
   // From stored transcripts, segment times are minute-precision, so several
   // utterances from one source can share an identical anchorMs. The
