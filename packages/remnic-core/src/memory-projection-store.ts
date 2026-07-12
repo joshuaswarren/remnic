@@ -410,6 +410,26 @@ class ProjectionSchemaError extends Error {
   }
 }
 
+/**
+ * Columns `readProjectedMemoryBrowse` SELECTs from `memory_current` with no
+ * graceful fallback. `tags_json`/`preview_text` fall back via
+ * memoryCurrentSelectExpressions and `path_valid` falls back via the legacy
+ * full-scan branch — none of those make a browse query throw. A projection
+ * whose `memory_current` lacks any of these columns cannot serve browse
+ * queries: the SELECT throws and browse silently falls back to a full-corpus
+ * scan. Enumerated directly from readProjectedMemoryBrowse's SELECT list +
+ * ORDER BY references (issue #1848 round 3).
+ */
+const REQUIRED_MEMORY_CURRENT_COLUMNS = [
+  "memory_id",
+  "path_rel",
+  "category",
+  "status",
+  "created_at",
+  "updated_at",
+  "entity_ref",
+] as const;
+
 function assertProjectionSchemaReadable(db: BetterSqlite3Database): void {
   const row = db
     .prepare(
@@ -419,6 +439,20 @@ function assertProjectionSchemaReadable(db: BetterSqlite3Database): void {
   if (!row?.name) {
     throw new ProjectionSchemaError(
       "projection schema is missing or was not initialized (memory_current table not found)",
+    );
+  }
+  // Round 3 (issue #1848): verify the columns readProjectedMemoryBrowse
+  // actually SELECT are present, not just that the table exists. A file like
+  // `CREATE TABLE memory_current (x INTEGER)` passed the round-2 table-existence
+  // + SELECT-1 check but cannot serve browse queries, so browse silently fell
+  // back to full-corpus scans while `remnic doctor` reported healthy. Classify
+  // such a stale/half-built table as present-but-invalid so the operator gets a
+  // rebuild hint instead of a false-clean bill of health.
+  const columns = listTableColumns(db, "memory_current");
+  const missing = REQUIRED_MEMORY_CURRENT_COLUMNS.filter((c) => !columns.has(c));
+  if (missing.length > 0) {
+    throw new ProjectionSchemaError(
+      `projection memory_current table is missing required column(s): ${missing.join(", ")}`,
     );
   }
   // Also confirm the table is queryable — catches physical corruption that

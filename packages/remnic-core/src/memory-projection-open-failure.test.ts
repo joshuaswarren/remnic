@@ -282,3 +282,41 @@ test("present projection with MISSING schema tables → probe present-but-invali
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("present projection with memory_current MISSING required columns → probe present-but-invalid (doctor non-ok, rebuild hint)", SERIAL, async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-proj-no-cols-"));
+  try {
+    // A sqlite file that opens cleanly AND has a `memory_current` table, but
+    // the table is stale/half-built with none of the columns
+    // readProjectedMemoryBrowse SELECTs (issue #1848 round 3 root cause). The
+    // round-2 check only verified the table exists + answers `SELECT 1`, so a
+    // file like `CREATE TABLE memory_current (x INTEGER)` was reported
+    // "openable" → doctor said healthy while browse threw on the missing
+    // memory_id/path_rel/category/... columns and silently fell back.
+    const dbPath = getMemoryProjectionPath(dir);
+    await mkdir(path.dirname(dbPath), { recursive: true });
+    const stale = openBetterSqlite3(dbPath); // creates a valid db
+    stale.exec("CREATE TABLE memory_current (x INTEGER)");
+    stale.close();
+
+    // Before round 3 this reported "openable" → doctor said ok.
+    const probe = probeProjectionHealth(dir);
+    assert.equal(probe.state, "present-but-invalid");
+    assert.equal(probe.nativeBindingMismatch, false);
+    // displayErrorDetail surfaces only the path-free error class (ProjectionSchemaError).
+    assert.ok(probe.detail, "expected a path-free detail for the missing-column schema failure");
+
+    // Doctor lens surfaces this as an ERROR with a rebuild hint — NOT ok.
+    const check = summarizeProjectionHealth({ memoryDir: dir });
+    assert.equal(check.status, "error");
+    assert.match(check.summary, /missing or unreadable/i);
+    assert.ok(check.remediation);
+    assert.match(check.remediation, /rebuild-memory-projection/);
+
+    // Browse still returns null (full-scan fallback trigger) — the projection
+    // cannot serve queries missing the browse columns.
+    assert.equal(readProjectedMemoryBrowse(dir, { limit: 5, offset: 0 }), null);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
