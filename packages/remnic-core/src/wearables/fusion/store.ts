@@ -12,6 +12,8 @@
  */
 
 import { createHash } from "node:crypto";
+import * as path from "node:path";
+import { isValidTranscriptDate } from "../day-store.js";
 import type {
   FusedDayFile,
   FusedDayMeta,
@@ -129,4 +131,81 @@ export function parseFusionDay(raw: string): FusedDayFile | null {
     fusedAt: scalars.get("fusedAt") ?? "",
   };
   return { meta, conversations };
+}
+
+/** Reserved underscore-prefixed subdir for derived fusion artifacts. */
+export const FUSION_DIR_NAME = "_fusion";
+
+/**
+ * Encrypted-at-rest + atomic file IO the fusion artifact store needs.
+ * Satisfied by StorageManager (which owns the secure-store key + atomic
+ * write path) and injected so this module performs NO direct fs — the
+ * derived files inherit the same encrypted-at-rest + atomic-write
+ * semantics as raw day transcripts without this module knowing the key.
+ */
+export interface FusionFileIo {
+  writeFile(filePath: string, content: string): Promise<void>;
+  /** Read a file; rejects with ENOENT when it is absent. */
+  readFile(filePath: string): Promise<string>;
+  /** Directory entries; rejects with ENOENT when the directory is absent. */
+  readDir(dirPath: string): Promise<string[]>;
+}
+
+/**
+ * Owns the derived fused-day artifact files under
+ * `<wearablesDir>/_fusion/<YYYY-MM-DD>.md`. Path construction, date
+ * validation, and newest-first listing live here (relocated out of the
+ * root storage module — issue #1810 ratchet); the bytes flow through the
+ * injected secure IO.
+ */
+export class FusionArtifactStore {
+  constructor(
+    private readonly wearablesDir: string,
+    private readonly io: FusionFileIo,
+  ) {}
+
+  fusedDayPath(date: string): string {
+    if (!isValidTranscriptDate(date)) {
+      throw new Error(
+        `invalid wearable fusion date '${String(date)}' — expected YYYY-MM-DD`,
+      );
+    }
+    return path.join(this.wearablesDir, FUSION_DIR_NAME, `${date}.md`);
+  }
+
+  async writeFusedDay(date: string, serialized: string): Promise<void> {
+    await this.io.writeFile(this.fusedDayPath(date), serialized);
+  }
+
+  /** Read a stored fused-day artifact; null when absent. */
+  async readFusedDay(date: string): Promise<string | null> {
+    try {
+      return await this.io.readFile(this.fusedDayPath(date));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw err;
+    }
+  }
+
+  /** List dates with stored fused artifacts, newest first. */
+  async listFusedDays(): Promise<string[]> {
+    let entries: string[];
+    try {
+      entries = await this.io.readDir(
+        path.join(this.wearablesDir, FUSION_DIR_NAME),
+      );
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw err;
+    }
+    const days: string[] = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".md")) continue;
+      const date = entry.slice(0, -3);
+      if (!isValidTranscriptDate(date)) continue;
+      days.push(date);
+    }
+    days.sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
+    return days;
+  }
 }

@@ -16,6 +16,7 @@ import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { isValidTranscriptDate, parseDayTranscript } from "./day-store.js";
 import {
   composeFusionDayMeta,
+  type FusionArtifactStore,
   fuseDay as fuseDayInputs,
   parseFusionDay,
   reconstructFusionInputs,
@@ -67,9 +68,7 @@ export interface WearableStorageIo {
   listWearableTranscriptDays(
     sourceId?: string,
   ): Promise<Array<{ source: string; date: string }>>;
-  writeWearableFusedDay(date: string, serialized: string): Promise<void>;
-  readWearableFusedDay(date: string): Promise<string | null>;
-  listWearableFusedDays(): Promise<string[]>;
+  fusionArtifactStore(): FusionArtifactStore;
   readAllMemories(): Promise<
     Array<{
       path: string;
@@ -519,7 +518,7 @@ export class WearablesService {
     });
     // Idempotent skip-unchanged: do not rewrite when the content hash
     // matches the stored artifact (mirrors the raw-transcript fast path).
-    const existingRaw = await storage.readWearableFusedDay(date);
+    const existingRaw = await storage.fusionArtifactStore().readFusedDay(date);
     const existingHash =
       parseFusionDay(existingRaw ?? "")?.meta.contentHash ?? null;
     const written = existingHash !== result.contentHash;
@@ -531,7 +530,7 @@ export class WearablesService {
         result.contentHash,
         new Date().toISOString(),
       );
-      await storage.writeWearableFusedDay(
+      await storage.fusionArtifactStore().writeFusedDay(
         date,
         serializeFusionDay(meta, result.conversations),
       );
@@ -557,7 +556,7 @@ export class WearablesService {
       throw new WearablesInputError(`invalid date '${date}' — expected YYYY-MM-DD`);
     }
     const storage = await this.deps.getStorage();
-    const raw = await storage.readWearableFusedDay(date);
+    const raw = await storage.fusionArtifactStore().readFusedDay(date);
     if (raw === null) return [];
     return parseFusionDay(raw)?.conversations ?? [];
   }
@@ -565,7 +564,7 @@ export class WearablesService {
   /** List dates with stored fused artifacts, newest first. */
   async listFusedDays(): Promise<string[]> {
     const storage = await this.deps.getStorage();
-    return storage.listWearableFusedDays();
+    return storage.fusionArtifactStore().listFusedDays();
   }
 
   /**

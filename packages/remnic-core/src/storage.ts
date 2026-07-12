@@ -23,6 +23,7 @@ import { serializeProvenanceFields, parseProvenanceSources, parseProvenanceTag, 
 import { serializeFaithfulnessFields, parseFaithfulnessField } from "./extraction-faithfulness.js";
 import { createVersion as createPageVersion, type VersioningConfig, type VersionTrigger } from "./page-versioning.js";
 import { isValidTranscriptDate, WEARABLES_DIR_NAME } from "./wearables/day-store.js";
+import { FusionArtifactStore } from "./wearables/fusion/index.js";
 import {
   SecureStoreLockedError,
   MAGIC_HEADER_SIZE,
@@ -2709,71 +2710,16 @@ export class StorageManager {
     );
   }
 
-  // Wearable cross-source fusion derived artifacts (#1810) -----------------
-  //
-  // Stored under `<baseDir>/wearables/_fusion/<YYYY-MM-DD>.md` — a reserved
-  // underscore-prefixed subdir that the per-source listing regex skips, so
-  // fused artifacts sit alongside raw transcripts without polluting source
-  // listings or transcript-search hit mapping. IO lives here so the derived
-  // files inherit the same encrypted-at-rest + atomic-write semantics as
-  // raw day transcripts.
-  // -------------------------------------------------------------------------
+  private _fusionStore?: FusionArtifactStore;
 
-  private static readonly FUSION_DIR_NAME = "_fusion";
-
-  wearableFusedDayPath(date: string): string {
-    if (!isValidTranscriptDate(date)) {
-      throw new Error(
-        `invalid wearable fusion date '${String(date)}' — expected YYYY-MM-DD`,
-      );
-    }
-    return path.join(
-      this.wearablesDir,
-      StorageManager.FUSION_DIR_NAME,
-      `${date}.md`,
-    );
-  }
-
-  async writeWearableFusedDay(date: string, serialized: string): Promise<void> {
-    const targetPath = this.wearableFusedDayPath(date);
-    // writeMaybeEncryptedFile handles mkdir + atomic temp→rename.
-    await this.writeStorageSecureFile(targetPath, serialized);
-  }
-
-  /** Read a stored fused-day artifact; null when absent. */
-  async readWearableFusedDay(date: string): Promise<string | null> {
-    const targetPath = this.wearableFusedDayPath(date);
-    try {
-      return await readMaybeEncryptedFile(
-        targetPath,
-        this._secureStoreKey,
-        this.baseDir,
-      );
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw err;
-    }
-  }
-
-  /** List dates with stored fused artifacts, newest first. */
-  async listWearableFusedDays(): Promise<string[]> {
-    const dir = path.join(this.wearablesDir, StorageManager.FUSION_DIR_NAME);
-    let entries: string[];
-    try {
-      entries = await readdir(dir);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw err;
-    }
-    const days: string[] = [];
-    for (const entry of entries) {
-      if (!entry.endsWith(".md")) continue;
-      const date = entry.slice(0, -3);
-      if (!isValidTranscriptDate(date)) continue;
-      days.push(date);
-    }
-    days.sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
-    return days;
+  /** Derived fusion-day IO; file IO lives in wearables/fusion (#1810). */
+  fusionArtifactStore(): FusionArtifactStore {
+    if (this._fusionStore) return this._fusionStore;
+    return (this._fusionStore = new FusionArtifactStore(this.wearablesDir, {
+      writeFile: (p, c) => this.writeStorageSecureFile(p, c),
+      readFile: (p) => readMaybeEncryptedFile(p, this._secureStoreKey, this.baseDir),
+      readDir: (d) => readdir(d),
+    }));
   }
 
   /**

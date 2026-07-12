@@ -9,6 +9,7 @@ import {
   composeDayTranscriptMeta,
   serializeDayTranscript,
 } from "./day-store.js";
+import { FusionArtifactStore } from "./fusion/index.js";
 import { emptySpeakerRegistry } from "./speakers.js";
 import {
   createWearableMemoryWriter,
@@ -35,6 +36,23 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
   }>;
 } {
   const fusedFiles = new Map<string, string>();
+  const fusionStore = new FusionArtifactStore(path.join(memoryDir, "wearables"), {
+    writeFile: async (filePath, content) => {
+      fusedFiles.set(filePath, content);
+    },
+    readFile: async (filePath) => {
+      if (!fusedFiles.has(filePath)) {
+        const err = new Error(`ENOENT: ${filePath}`) as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      }
+      return fusedFiles.get(filePath)!;
+    },
+    readDir: async (dirPath) =>
+      [...fusedFiles.keys()]
+        .filter((key) => path.dirname(key) === dirPath)
+        .map((key) => path.basename(key)),
+  });
   const files = new Map<string, string>();
   const storage = {
     dir: memoryDir,
@@ -66,14 +84,8 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
         .filter((entry) => sourceId === undefined || entry.source === sourceId)
         .sort((a, b) => (a.date > b.date ? -1 : a.date < b.date ? 1 : 0));
     },
-    async writeWearableFusedDay(date: string, serialized: string) {
-      fusedFiles.set(date, serialized);
-    },
-    async readWearableFusedDay(date: string) {
-      return fusedFiles.get(date) ?? null;
-    },
-    async listWearableFusedDays() {
-      return [...fusedFiles.keys()].sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
+    fusionArtifactStore() {
+      return fusionStore;
     },
     async readAllMemories() {
       return storage.memories;
@@ -636,7 +648,7 @@ test("fuseDay writes a derived artifact, is idempotent, and leaves raw transcrip
     });
 
     // No fused artifact yet.
-    assert.equal(await storage.readWearableFusedDay("2026-06-10"), null);
+    assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
 
     const first = await service.fuseDay("2026-06-10");
     assert.equal(first.written, true);

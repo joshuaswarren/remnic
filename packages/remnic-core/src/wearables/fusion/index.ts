@@ -38,7 +38,10 @@ export {
 } from "./reconcile.js";
 export { fuseDay } from "./fuse.js";
 export {
+  FUSION_DIR_NAME,
   FUSION_KIND,
+  FusionArtifactStore,
+  type FusionFileIo,
   composeFusionDayMeta,
   hashFusionBody,
   parseFusionDay,

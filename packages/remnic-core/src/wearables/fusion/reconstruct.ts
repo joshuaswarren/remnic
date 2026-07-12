@@ -32,7 +32,36 @@ const CLOCK_PATTERN = /^(\d{2}):(\d{2})$/;
 function clockToIso(clock: string, date: string): string | undefined {
   const match = CLOCK_PATTERN.exec(clock.trim());
   if (match === null) return undefined;
-  return `${date}T${match[1]}:${match[2]}:00.000Z`;
+  // en-US hour12:false renders the first wall-clock hour (00:xx) as 24:xx
+  // on some ICU builds. CLOCK_PATTERN matches "24", which would build an
+  // invalid ISO (24:01-24:59 => NaN) or a next-day instant (24:00 => start
+  // of next day). Normalize to 00:xx on the SAME rendered date; cross-
+  // midnight conversation windows are rolled forward by the caller.
+  const hour = match[1] === "24" ? "00" : match[1];
+  return `${date}T${hour}:${match[2]}:00.000Z`;
+}
+
+/**
+ * Minutes-of-day for a rendered clock (24:xx normalized to 0), or
+ * undefined when the clock is not parseable (e.g. "--:--"). Used to
+ * detect conversations that wrap past midnight.
+ */
+function clockMinutesOfDay(clock: string): number | undefined {
+  const match = CLOCK_PATTERN.exec(clock.trim());
+  if (match === null) return undefined;
+  const hour = match[1] === "24" ? 0 : Number.parseInt(match[1], 10);
+  return hour * 60 + Number.parseInt(match[2], 10);
+}
+
+/** Increment a YYYY-MM-DD date string by one calendar day (UTC arithmetic). */
+function nextCalendarDay(date: string): string {
+  const [y, m, d] = date.split("-").map((part) => Number.parseInt(part, 10));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + 1);
+  const yy = dt.getUTCFullYear();
+  const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(dt.getUTCDate()).padStart(2, "0");
+  return `${yy}-${mm}-${dd}`;
 }
 
 function isSelfLabel(label: string): boolean {
@@ -59,6 +88,10 @@ export function reconstructFusionInputs(
       startIso?: string;
       endIso?: string;
       segments: FusionSegmentInput[];
+      /** True when this conversation's end clock precedes its start clock
+       * (it wraps past midnight); post-midnight clocks roll to next day. */
+      wrapped: boolean;
+      wrapStartMin?: number;
     } | null = null;
 
     const flushCurrent = () => {
@@ -87,15 +120,25 @@ export function reconstructFusionInputs(
       if (heading !== null) {
         flushCurrent();
         const [, startClock, endClock, title, id] = heading;
+        const startMin = clockMinutesOfDay(startClock);
+        const endMin = clockMinutesOfDay(endClock);
+        // A conversation whose end clock reads EARLIER than its start
+        // clock wrapped past midnight; roll its end (and any post-midnight
+        // segment) to the next calendar day so endIso >= startIso and the
+        // timeline sorts correctly.
+        const wrapped =
+          startMin !== undefined && endMin !== undefined && endMin < startMin;
+        const startIso = clockToIso(startClock, date);
+        const endIso = wrapped
+          ? clockToIso(endClock, nextCalendarDay(date))
+          : clockToIso(endClock, date);
         current = {
           conversationId: id,
           segments: [],
-          ...(clockToIso(startClock, date) !== undefined
-            ? { startIso: clockToIso(startClock, date) }
-            : {}),
-          ...(clockToIso(endClock, date) !== undefined
-            ? { endIso: clockToIso(endClock, date) }
-            : {}),
+          wrapped,
+          ...(startMin !== undefined ? { wrapStartMin: startMin } : {}),
+          ...(startIso !== undefined ? { startIso } : {}),
+          ...(endIso !== undefined ? { endIso } : {}),
           ...(title !== undefined && title.length > 0 ? { title } : {}),
         };
         continue;
@@ -107,13 +150,20 @@ export function reconstructFusionInputs(
       if (segmentMatch !== null) {
         if (current === null) continue; // segment outside any conversation
         const [, label, clock, text] = segmentMatch;
+        const segMin = clockMinutesOfDay(clock);
+        const segDate =
+          current.wrapped &&
+          current.wrapStartMin !== undefined &&
+          segMin !== undefined &&
+          segMin < current.wrapStartMin
+            ? nextCalendarDay(date)
+            : date;
+        const startIso = clockToIso(clock, segDate);
         const segment: FusionSegmentInput = {
           speaker: label.trim(),
           isSelf: isSelfLabel(label),
           text,
-          ...(clockToIso(clock, date) !== undefined
-            ? { startIso: clockToIso(clock, date) }
-            : {}),
+          ...(startIso !== undefined ? { startIso } : {}),
         };
         current.segments.push(segment);
       }

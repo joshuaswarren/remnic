@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { composeDayTranscriptBody } from "../day-store.js";
 import { emptySpeakerRegistry } from "../speakers.js";
 import type { WearableConversation } from "../types.js";
 import {
@@ -487,4 +488,196 @@ test("reconstructFusionInputs parses a rendered transcript body", () => {
   assert.equal(conv.segments[0]!.isSelf, true);
   assert.equal(conv.segments[1]!.speaker, "Jane");
   assert.equal(conv.segments[1]!.isSelf, false);
+});
+
+test("reconstruct normalizes renderer 24:xx midnight clocks to valid 00:xx ISO", () => {
+  // en-US hour12:false renders the first wall-clock hour as 24:xx on some
+  // ICU builds; reconstruct must never emit an invalid/next-day timestamp.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 24:00–24:30 · Late night (conversation c1)",
+    "",
+    "**Me (you)** [24:05]: Hello world.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  // 24:00 -> 00:00 on the SAME date (not the next day); valid + parseable.
+  assert.equal(conv.startIso, "2026-06-10T00:00:00.000Z");
+  assert.equal(conv.endIso, "2026-06-10T00:30:00.000Z");
+  assert.ok(Number.isFinite(Date.parse(conv.startIso!)), "startIso is a valid timestamp");
+  assert.equal(conv.segments.length, 1);
+  const segIso = conv.segments[0]!.startIso!;
+  assert.equal(segIso, "2026-06-10T00:05:00.000Z");
+  assert.ok(Number.isFinite(Date.parse(segIso)), "24:05 -> valid 00:05 ISO");
+});
+
+test("reconstruct rolls a cross-midnight conversation end into the next day", () => {
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 23:55–00:10 · Late call (conversation c1)",
+    "",
+    "**Me (you)** [23:58]: Still talking.",
+    "**Jane** [00:05]: After midnight.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T23:55:00.000Z");
+  // end clock 00:10 < start clock 23:55 -> rolled to the next calendar day.
+  assert.equal(conv.endIso, "2026-06-11T00:10:00.000Z");
+  assert.ok(conv.endIso! >= conv.startIso!, "endIso must not precede startIso");
+  const isos = conv.segments.map((s) => s.startIso);
+  assert.ok(
+    isos.includes("2026-06-10T23:58:00.000Z"),
+    "pre-midnight segment stays on the rendered date",
+  );
+  assert.ok(
+    isos.includes("2026-06-11T00:05:00.000Z"),
+    "post-midnight segment rolls to the next day",
+  );
+});
+
+test("truncated high-trust text yields to a longer corroborating transcript", () => {
+  // bee is the MORE trusted source but its text is a clipped prefix of
+  // omi's full wording; the more-complete wording must win (not the trust).
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "The deploy window opens at",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+      {
+        source: "omi",
+        conversations: [
+          conversation("omi", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "The deploy window opens at three and closes at five.",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+    { sourceTrust: { bee: 0.95, omi: 0.6 } },
+  );
+  const conv = fused.conversations[0]!;
+  const segment = conv.segments[0]!;
+  assert.equal(
+    segment.text,
+    "The deploy window opens at three and closes at five.",
+  );
+  assert.equal(segment.provenance.reason, "more-complete");
+  assert.equal(segment.provenance.source, "omi");
+  assert.equal(conv.disagreements.length, 0, "a truncation is not a disagreement");
+});
+
+test("distinct untimestamped same-speaker utterances do not collapse across sources", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "First distinct untimestamped thought.", isWearer: true },
+          ]),
+        ],
+      },
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "Second distinct untimestamped thought.", isWearer: true },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  assert.equal(
+    conv.segments.length,
+    2,
+    "distinct untimestamped utterances stay separate, not collapsed",
+  );
+  const texts = conv.segments.map((s) => s.text).sort();
+  assert.deepEqual(texts, [
+    "First distinct untimestamped thought.",
+    "Second distinct untimestamped thought.",
+  ]);
+});
+
+test("raw diarization keys like SPEAKER_00 are treated as generic speakers", () => {
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "omi",
+        conversations: [
+          conversation("omi", "c1", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "Hello there.",
+              speakerKey: "SPEAKER_00",
+              startIso: "2026-06-10T09:00:30.000Z",
+            },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  const speaker = conv.speakers.find((s) => !s.isSelf);
+  assert.ok(speaker, "a non-self speaker is present");
+  assert.equal(speaker!.label, "SPEAKER_00");
+  assert.ok(
+    speaker!.confidence <= 0.5,
+    "raw diarization key is generic (<=0.5), not a confident attribution",
+  );
+});
+
+test("reconstruct round-trips through the real composeDayTranscriptBody renderer", () => {
+  // Feed the actual renderer's output through reconstruct (not a hand-
+  // written body) so renderer/parser drift is caught. The renderer emits
+  // minute-precision clocks, so reconstructed ISOs zero the seconds.
+  const conversations = [
+    conversation(
+      "limitless",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [
+        { text: "Hello world.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        { text: "Good to see you.", startIso: "2026-06-10T09:01:00.000Z" },
+      ],
+      { title: "Morning sync", endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.conversationId, "c1");
+  assert.equal(conv.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(conv.endIso, "2026-06-10T09:10:00.000Z");
+  assert.equal(conv.title, "Morning sync");
+  assert.equal(conv.segments.length, 2);
+  assert.equal(conv.segments[0]!.text, "Hello world.");
+  assert.equal(conv.segments[0]!.isSelf, true);
+  assert.equal(conv.segments[0]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(conv.segments[1]!.text, "Good to see you.");
+  assert.equal(conv.segments[1]!.isSelf, false);
+  assert.equal(conv.segments[1]!.startIso, "2026-06-10T09:01:00.000Z");
 });

@@ -39,8 +39,11 @@ export const DEFAULT_WINDOW_TOLERANCE_MS = 30_000;
 export const DEFAULT_SOURCE_TRUST = 0.8;
 /** Trust prior at which a source is considered "more trusted" than another. */
 const TRUST_DECISION_EPSILON = 1e-9;
-/** Labels that cannot be confidently cross-matched between sources. */
-const GENERIC_LABEL_PATTERN = /^(Speaker \d+|Unknown speaker)$/;
+/** Labels that cannot be confidently cross-matched between sources.
+ * Raw provider diarization keys (e.g. Omi `SPEAKER_00`) are generic too:
+ * they carry no cross-source identity, so they get the same lowered
+ * confidence as bare "Speaker N". */
+const GENERIC_LABEL_PATTERN = /^(Speaker \d+|Unknown speaker|SPEAKER_\d+)$/i;
 
 export interface FuseClusterResult {
   sources: string[];
@@ -275,6 +278,17 @@ export function fuseCluster(
       if (!groupMissing && Math.abs(seg.startMs - group.anchorMs) > toleranceMs) {
         continue;
       }
+      // Untimestamped (missing-start) segments cannot be aligned by time,
+      // so merging two of them on speaker key alone would collapse two
+      // DISTINCT utterances into one and silently drop a source. Require
+      // text corroboration before such a cross-source merge.
+      if (groupMissing && segMissing) {
+        const segWords = normalizeWords(seg.text);
+        const corroborated = group.members.some((member) =>
+          wordsEqual(normalizeWords(member.text), segWords),
+        );
+        if (!corroborated) continue;
+      }
       chosen = group;
       break;
     }
@@ -342,31 +356,63 @@ function reconcileGroup(group: AlignGroup): ReconciledGroup {
     if (a.source !== b.source) return a.source < b.source ? -1 : 1;
     return a.conversationId < b.conversationId ? -1 : 1;
   });
-  const winner = ranked[0];
-  const rest = ranked.slice(1);
+  const top = ranked[0];
+  const topWords = normalizeWords(top.text);
+
+  // Truncation override: the top-ranked (highest-trust) member may be a
+  // CLIPPED version of a corroborating candidate — e.g. a summary source
+  // clipped at "The deploy window opens at" while a verbatim source has
+  // the full sentence. Trust dominates the rank, so without this the
+  // truncated high-trust text would win despite the documented
+  // "more-complete wins" rule. When the top's words are a strict prefix of
+  // another member's words, adopt the LONGEST such more-complete member's
+  // text + provenance.
+  let chosen = top;
+  if (topWords.length > 0) {
+    let bestLen = -1;
+    for (const candidate of ranked) {
+      if (candidate === top) continue;
+      const candidateWords = normalizeWords(candidate.text);
+      if (
+        isWordPrefix(topWords, candidateWords) &&
+        candidateWords.length > topWords.length &&
+        candidateWords.length > bestLen
+      ) {
+        chosen = candidate;
+        bestLen = candidateWords.length;
+      }
+    }
+  }
+  const truncatedOverride = chosen !== top;
+  const others = ranked.filter((member) => member !== chosen);
+
+  const chosenWords = normalizeWords(chosen.text);
 
   const reason: SegmentPickReason =
     members.length === 1
       ? "only-source"
-      : rest.some((r) => winner.sourceTrust - r.sourceTrust > TRUST_DECISION_EPSILON)
-        ? "higher-trust"
-        : rest.some((r) => winner.text.length - r.text.length > 0)
-          ? "more-complete"
-          : "tie-break";
+      : truncatedOverride
+        ? "more-complete"
+        : others.some(
+            (r) => chosen.sourceTrust - r.sourceTrust > TRUST_DECISION_EPSILON,
+          )
+          ? "higher-trust"
+          : others.some((r) => chosen.text.length - r.text.length > 0)
+            ? "more-complete"
+            : "tie-break";
 
-  // Conflict detection: a candidate whose word sequence differs from
-  // the winner AND is not a containment (one a prefix/truncation of the
+  // Conflict detection: a candidate whose word sequence differs from the
+  // chosen text AND is not a containment (one a prefix/truncation of the
   // other). Containment is "more-complete wins" with no disagreement.
-  const winnerWords = normalizeWords(winner.text);
   const disagree: Array<{ source: string; value: string }> = [];
   let conflict = false;
-  for (const candidate of rest) {
+  for (const candidate of others) {
     const candidateWords = normalizeWords(candidate.text);
-    if (winnerWords.length === 0 && candidateWords.length === 0) continue;
-    if (wordsEqual(winnerWords, candidateWords)) continue;
+    if (chosenWords.length === 0 && candidateWords.length === 0) continue;
+    if (wordsEqual(chosenWords, candidateWords)) continue;
     if (
-      isWordPrefix(candidateWords, winnerWords) ||
-      isWordPrefix(winnerWords, candidateWords)
+      isWordPrefix(candidateWords, chosenWords) ||
+      isWordPrefix(chosenWords, candidateWords)
     ) {
       continue;
     }
@@ -374,7 +420,7 @@ function reconcileGroup(group: AlignGroup): ReconciledGroup {
     disagree.push({ source: candidate.source, value: candidate.text });
   }
 
-  const alternatives = rest.map((candidate) => ({
+  const alternatives = others.map((candidate) => ({
     source: candidate.source,
     text: candidate.text,
   }));
@@ -382,39 +428,39 @@ function reconcileGroup(group: AlignGroup): ReconciledGroup {
   // Confidence: single source -> its trust; corroboration boosts;
   // a recorded conflict lowers it.
   const confidence = conflict
-    ? clamp01(winner.sourceTrust * 0.7)
+    ? clamp01(chosen.sourceTrust * 0.7)
     : members.length > 1
-      ? clamp01(winner.sourceTrust + 0.1 * (members.length - 1))
-      : clamp01(winner.sourceTrust);
+      ? clamp01(chosen.sourceTrust + 0.1 * (members.length - 1))
+      : clamp01(chosen.sourceTrust);
 
   const segment: FusedSegment = {
     speaker: group.speakerLabel,
     isSelf: group.isSelf,
-    text: winner.text,
+    text: chosen.text,
     confidence,
     provenance: {
-      source: winner.source,
-      conversationId: winner.conversationId,
-      sourceTrust: winner.sourceTrust,
+      source: chosen.source,
+      conversationId: chosen.conversationId,
+      sourceTrust: chosen.sourceTrust,
       reason,
       alternatives,
     },
-    ...(winner.startIso !== undefined ? { startIso: winner.startIso } : {}),
-    ...(winner.endIso !== undefined ? { endIso: winner.endIso } : {}),
+    ...(chosen.startIso !== undefined ? { startIso: chosen.startIso } : {}),
+    ...(chosen.endIso !== undefined ? { endIso: chosen.endIso } : {}),
   };
 
   let disagreement: FusedDisagreement | undefined;
   if (conflict) {
     const anchorIso =
-      winner.startIso ??
+      chosen.startIso ??
       (Number.isFinite(group.anchorMs)
         ? new Date(group.anchorMs).toISOString()
         : undefined);
     disagreement = {
       kind: "asr-text",
       subject: anchorIso ?? "(no timestamp)",
-      candidates: [{ source: winner.source, value: winner.text }, ...disagree],
-      provisional: { source: winner.source, value: winner.text },
+      candidates: [{ source: chosen.source, value: chosen.text }, ...disagree],
+      provisional: { source: chosen.source, value: chosen.text },
     };
   }
 

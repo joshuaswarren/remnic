@@ -195,14 +195,14 @@ test("fused-day artifacts write/read/list and stay out of transcript listings", 
       "---\nkind: wearable-transcript\n---\n\nbody\n",
     );
     // Write a fused-day artifact.
-    assert.equal(await storage.readWearableFusedDay("2026-06-10"), null);
-    await storage.writeWearableFusedDay(
+    assert.equal(await storage.fusionArtifactStore().readFusedDay("2026-06-10"), null);
+    await storage.fusionArtifactStore().writeFusedDay(
       "2026-06-10",
       "---\nkind: wearable-fusion\n---\n\n[]\n",
     );
-    const raw = await storage.readWearableFusedDay("2026-06-10");
+    const raw = await storage.fusionArtifactStore().readFusedDay("2026-06-10");
     assert.ok(raw?.includes("wearable-fusion"));
-    assert.deepEqual(await storage.listWearableFusedDays(), ["2026-06-10"]);
+    assert.deepEqual(await storage.fusionArtifactStore().listFusedDays(), ["2026-06-10"]);
 
     // The reserved _fusion dir must NOT show up as a pseudo-source in
     // the per-source transcript listing.
@@ -212,7 +212,7 @@ test("fused-day artifacts write/read/list and stay out of transcript listings", 
 
     // Malformed dates are rejected before path math (no traversal).
     await assert.rejects(
-      storage.readWearableFusedDay("../../etc/passwd"),
+      storage.fusionArtifactStore().readFusedDay("../../etc/passwd"),
       /invalid wearable fusion date/,
     );
   } finally {
