@@ -236,6 +236,7 @@ export class TurnIngestionCoordinator {
         parts: turn.parts,
         rawContent: turn.rawContent,
         sourceFormat: turn.sourceFormat,
+        sourceConnector: turn.sourceConnector,
       });
       bySession.set(key, list);
     }

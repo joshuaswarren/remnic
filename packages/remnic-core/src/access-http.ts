@@ -1566,6 +1566,9 @@ export class EngramAccessHttpServer {
           // Forward cwd/projectTag for auto git-context resolution (issue #569).
           cwd: body.cwd,
           projectTag: body.projectTag,
+          // Phase 1 provenance: server-resolved connector identity from the
+          // bearer token (REST path, mirroring the MCP tools/call dispatch).
+          sourceConnector: this.resolveConnector(req),
         },
         // Enforce the write-quota INSIDE the service's idempotency lock
         // (beforeExecute, only on a real miss). A retried observe that hits the
@@ -1663,6 +1666,9 @@ export class EngramAccessHttpServer {
         service: this.service,
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
         hooks: { enforceWriteQuota: () => this.ensureWriteRateLimitAvailable() },
+        // Phase 1 provenance: server-resolved connector identity from the
+        // bearer token (REST path, mirroring the MCP tools/call dispatch).
+        sourceConnector: this.resolveConnector(req),
       })) as { result: EngramAccessWriteResponse };
       const response = output.result;
       if (this.shouldCountWriteRateLimit(response as { dryRun?: boolean; idempotencyReplay?: boolean })) {
@@ -1824,6 +1830,9 @@ export class EngramAccessHttpServer {
         sourceReason: body.sourceReason,
         cwd: body.cwd,
         projectTag: body.projectTag,
+        // Phase 1 provenance: server-resolved connector identity from the
+        // bearer token (REST path, mirroring the MCP tools/call dispatch).
+        sourceConnector: this.resolveConnector(req),
       };
       // Quota enforcement is solely authoritative inside suggestionSubmit
       // (enforceWriteQuota), atomic with the real miss and never on a replay; no
@@ -3601,9 +3610,25 @@ export class EngramAccessHttpServer {
     }
     if (!candidate) return undefined;
     const token = candidate;
-    for (const entry of this.authTokenEntriesGetter()) {
-      if (!this.timingSafeStringEqual(token, entry.token)) continue;
-      return entry.connector;
+    // Static (operator-supplied) tokens never carry connector provenance.
+    // Short-circuit BEFORE touching the token store so a corrupt or
+    // unreadable tokens.json cannot crash an already-authenticated operator
+    // request. Connector provenance is optional — it must never block an
+    // authenticated request (review thread QMPsO).
+    if (this.authToken && this.timingSafeStringEqual(token, this.authToken)) return undefined;
+    for (const valid of this.authTokens) {
+      if (this.timingSafeStringEqual(token, valid)) return undefined;
+    }
+    // Dynamic entry-based tokens: resolve connector identity. A corrupt
+    // or unreadable tokens.json must not crash the request — return
+    // undefined (no provenance) rather than propagating the error.
+    try {
+      for (const entry of this.authTokenEntriesGetter()) {
+        if (!this.timingSafeStringEqual(token, entry.token)) continue;
+        return entry.connector;
+      }
+    } catch {
+      return undefined;
     }
     return undefined;
   }

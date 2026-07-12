@@ -540,6 +540,7 @@ export async function queueExplicitCaptureForReview(
     tags: Array.from(new Set([...EXPLICIT_CAPTURE_REVIEW_TAGS, ...requestedTags])),
     entityRef: sanitizeReviewMetadata(input.entityRef),
     source: source === "inline" ? "explicit-inline-review" : "explicit-review",
+    ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
   });
   try {
     const created = await storage.getMemoryById(id);

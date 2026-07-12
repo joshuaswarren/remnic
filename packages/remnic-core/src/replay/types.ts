@@ -1,9 +1,10 @@
 import { parseIsoUtcTimestamp } from "../utils/iso-timestamp.js";
+import type { SourceConnectorProvenance } from "../types.js";
 
 export type ReplaySource = "openclaw" | "claude" | "chatgpt";
 export type ReplayRole = "user" | "assistant";
 
-export interface ReplayTurn {
+export interface ReplayTurn extends SourceConnectorProvenance {
   source: ReplaySource;
   sessionKey: string;
   role: ReplayRole;

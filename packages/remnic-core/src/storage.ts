@@ -16,6 +16,7 @@ import { IdentityContinuityStore } from "./storage/identity-continuity-store.js"
 import { isErrnoCode } from "./utils/errno.js";
 import { RECALL_FALLBACK_DIRS, getCategoryDir, categoryDirName } from "./utils/category-dir.js";
 import { assertPathInsideRoot } from "./utils/path-containment.js";
+import { decodeYamlScalar } from "./utils/yaml-scalar.js";
 import { getCachedEntities, invalidateAllForDir, setCachedEntities } from "./memory-cache.js";
 import { rotateMarkdownFileToArchive } from "./hygiene.js";
 import { sanitizeMemoryContent } from "./sanitize.js";
@@ -309,6 +310,7 @@ function stripCitationMarkersForHashRemoval(value: string, template: string): st
   return removed ? trimLeadingSpacesAndTabs(result) : value;
 }
 
+
 function serializeFrontmatter(fm: MemoryFrontmatter): string {
   assertMemoryFrontmatterId(fm);
   const lines = [
@@ -323,7 +325,14 @@ function serializeFrontmatter(fm: MemoryFrontmatter): string {
     `tags: [${fm.tags.map((t) => `"${t}"`).join(", ")}]`,
   ];
   if (fm.entityRef) lines.push(`entityRef: ${fm.entityRef}`);
-  if (fm.sourceConnector) lines.push(`sourceConnector: ${fm.sourceConnector}`);
+  if (fm.sourceConnector) {
+    // YAML-injection guard (review thread QMPsP): emit unquoted for
+    // safe connector IDs (matching the connectors/index.ts validator),
+    // or JSON.stringify for values with special characters so newlines,
+    // colons, and spaces cannot inject extra frontmatter lines.
+    const safe = /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(fm.sourceConnector);
+    lines.push(`sourceConnector: ${safe ? fm.sourceConnector : JSON.stringify(fm.sourceConnector)}`);
+  }
   if (fm.supersedes) lines.push(`supersedes: ${fm.supersedes}`);
   if (fm.expiresAt) lines.push(`expiresAt: ${fm.expiresAt}`);
   if (fm.lineage && fm.lineage.length > 0) {
@@ -836,7 +845,7 @@ export function parseFrontmatter(
       confidenceTier: (fm.confidenceTier as ConfidenceTier) || confidenceTier(conf),
       tags,
       entityRef: fm.entityRef || undefined,
-      sourceConnector: fm.sourceConnector || undefined,
+      sourceConnector: fm.sourceConnector ? decodeYamlScalar(fm.sourceConnector) || undefined : undefined,
       supersedes: fm.supersedes || undefined,
       expiresAt: fm.expiresAt || undefined,
       lineage: lineage && lineage.length > 0 ? lineage : undefined,

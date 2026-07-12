@@ -807,6 +807,7 @@ function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn): bool
     left.sessionKey === right.sessionKey &&
     left.logicalSessionKey === right.logicalSessionKey &&
     left.providerThreadId === right.providerThreadId &&
+    left.turnFingerprint === right.turnFingerprint &&
     left.persistProcessedFingerprint === right.persistProcessedFingerprint &&
     left.sourceConnector === right.sourceConnector
   );
