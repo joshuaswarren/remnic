@@ -79,6 +79,14 @@ interface AlignGroup {
   isSelf: boolean;
   members: TaggedSegment[];
   anchorMs: number;
+  /** The anchor member's ORIGINAL start ISO — the canonical utterance
+   * time the fused segment is emitted at (groups are sorted by anchorMs,
+   * so the emitted startIso must come from here, not from the chosen
+   * higher-trust source's later clock, or pre-sorted chronology breaks).
+   * Undefined for untimestamped (missing-start) groups. */
+  anchorStartIso?: string;
+  /** The anchor member's ORIGINAL end ISO, when known. */
+  anchorEndIso?: string;
   /** Earliest original sequence index among members — the secondary sort
    * key so equal-anchorMs groups keep transcript/source order. */
   originalIndex: number;
@@ -383,6 +391,11 @@ export function fuseCluster(
         isSelf: seg.isSelf,
         members: [seg],
         anchorMs: seg.startMs,
+        // The creating segment is the EARLIEST member (tagged is
+        // time-sorted), so its clock IS the group anchor that groups are
+        // sorted by and that the fused segment must be emitted at.
+        anchorStartIso: seg.startIso,
+        anchorEndIso: seg.endIso,
         originalIndex: seg.originalIndex,
       });
     }
@@ -407,6 +420,33 @@ export function fuseCluster(
     segments.push(reconciled.segment);
     disagreements.push(...reconciled.disagreements);
   }
+  // Belt-and-suspenders: segments are built from anchor-sorted groups with
+  // each segment's startIso pinned to its group anchor, so the array is
+  // already chronological. This explicit, STABLE re-sort guarantees that
+  // invariant end to end — no trust-based text/content swap can ever
+  // reorder the timeline, even if a future change alters how a fused
+  // segment's timestamp is derived. Stability contract:
+  //   - timestamped segments sort by startMs ascending;
+  //   - missing/invalid timestamps keep their position (timestamped before
+  //     missing, preserving original relative order among missing ones);
+  //   - equal timestamps preserve prior order via a deterministic secondary
+  //     key (the pre-sort index), never reordering by source/speaker — so
+  //     cross-source clock skew does not scramble same-anchor utterances.
+  const preSortOrder = new Map(segments.map((seg, i) => [seg, i]));
+  segments.sort((a, b) => {
+    const aMs = a.startIso !== undefined ? Date.parse(a.startIso) : Number.NaN;
+    const bMs = b.startIso !== undefined ? Date.parse(b.startIso) : Number.NaN;
+    const aFinite = Number.isFinite(aMs);
+    const bFinite = Number.isFinite(bMs);
+    if (aFinite && bFinite) {
+      if (aMs !== bMs) return aMs - bMs;
+    } else if (aFinite !== bFinite) {
+      return aFinite ? -1 : 1;
+    }
+    // Equal timestamp (or both missing): preserve prior order — never let
+    // a naive ts-only comparator scramble equal/missing-time entries.
+    return (preSortOrder.get(a) ?? 0) - (preSortOrder.get(b) ?? 0);
+  });
   // Cross-segment ASR disagreements: distinct utterances kept as separate
   // segments (never collapsed) yet sharing a speaker + time window and
   // disagreeing on wording. Neither side's content is lost — both remain
@@ -540,6 +580,16 @@ function reconcileGroup(group: AlignGroup): ReconciledGroup {
         ? clamp01(chosen.sourceTrust + 0.1 * (members.length - 1))
         : clamp01(chosen.sourceTrust);
 
+  // TIMELINE POSITION (startIso/endIso) comes from the group/window ANCHOR
+  // — the canonical utterance time the groups are sorted by — NOT from the
+  // chosen (higher-trust) source's clock. The chosen source may be LATER
+  // than the anchor (a low-trust utterance at 10:00 corroborated by a
+  // high-trust source at 10:25 within tolerance); emitting chosen.startIso
+  // would print the fused segment at 10:25 even though the group sits at
+  // the 10:00 anchor, jumping it past an intervening 10:10 utterance and
+  // corrupting the chronology. The chosen source still provides the TEXT;
+  // only the timeline position is anchored. Its original clock is kept in
+  // provenance so the source's recording time stays traceable.
   const segment: FusedSegment = {
     speaker: chosen.speakerLabel,
     isSelf: chosen.isSelf,
@@ -551,14 +601,23 @@ function reconcileGroup(group: AlignGroup): ReconciledGroup {
       sourceTrust: chosen.sourceTrust,
       reason,
       alternatives,
+      ...(chosen.startIso !== undefined
+        ? { sourceStartIso: chosen.startIso }
+        : {}),
+      ...(chosen.endIso !== undefined ? { sourceEndIso: chosen.endIso } : {}),
     },
-    ...(chosen.startIso !== undefined ? { startIso: chosen.startIso } : {}),
-    ...(chosen.endIso !== undefined ? { endIso: chosen.endIso } : {}),
+    ...(group.anchorStartIso !== undefined
+      ? { startIso: group.anchorStartIso }
+      : {}),
+    ...(group.anchorEndIso !== undefined ? { endIso: group.anchorEndIso } : {}),
   };
 
   const disagreements: FusedDisagreement[] = [];
+  // The disagreement subject is the EMITTED timeline position (the group
+  // anchor), coherent with segment.startIso — not the chosen source's
+  // possibly-later clock.
   const anchorIso =
-    chosen.startIso ??
+    group.anchorStartIso ??
     (Number.isFinite(group.anchorMs)
       ? new Date(group.anchorMs).toISOString()
       : undefined);

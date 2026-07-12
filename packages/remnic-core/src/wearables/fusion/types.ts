@@ -70,6 +70,14 @@ export interface FusedSegmentProvenance {
   reason: SegmentPickReason;
   /** Other sources that offered a candidate text for this window/speaker. */
   alternatives: Array<{ source: string; text: string }>;
+  /** The chosen source's ORIGINAL start time (ISO), when known. The fused
+   * segment is emitted on the group/window ANCHOR timeline position so
+   * pre-sorted chronology stays valid even when the higher-trust source's
+   * clock is later than the anchor; this preserves WHERE the chosen text
+   * was actually recorded for provenance/traceability. */
+  sourceStartIso?: string;
+  /** The chosen source's ORIGINAL end time (ISO), when known (see sourceStartIso). */
+  sourceEndIso?: string;
 }
 
 /** One reconciled utterance in a fused conversation. */

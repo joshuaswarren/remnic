@@ -1347,3 +1347,248 @@ test("derived interval is clamped to end >= start for a missing-end conversation
   // The conversation is emitted (not dropped) and forms a valid cluster.
   assert.equal(clusters[0]!.length, 1);
 });
+
+/** True when every timestamped segment precedes any later-timestamped one
+ * and untimestamped segments trail (non-decreasing startIso). The fused
+ * output must always satisfy this — the group-anchor emission + defensive
+ * final sort guarantee it. */
+function isChronologicallySorted(
+  segments: { startIso?: string }[],
+): boolean {
+  let last = -Infinity;
+  for (const seg of segments) {
+    const ms = seg.startIso !== undefined ? Date.parse(seg.startIso) : NaN;
+    if (!Number.isFinite(ms)) continue; // untimestamped trails; checked elsewhere
+    if (ms < last) return false;
+    last = ms;
+  }
+  return true;
+}
+
+test("fused segment keeps the group anchor clock, not the higher-trust source's later clock (issue #1849 chronology)", () => {
+  // bee (low-trust) captures "yes" at 09:00:00; limitless (high-trust)
+  // captures a DIFFERENT utterance "standup notes" at 09:00:10, then
+  // corroborates "yes" at 09:00:25 (within the 30s tolerance of 09:00:00).
+  // The fused "yes" group's anchor is 09:00:00; the high-trust chosen
+  // member's clock is 09:00:25. Emitting chosen.startIso would place the
+  // "yes" segment at 09:00:25 — AFTER the 09:00:10 "standup notes" segment
+  // — yet the group sorts at the 09:00:00 anchor (first), so the printed
+  // timeline would read 09:00:25 before 09:00:10: corrupted chronology.
+  // The fix emits the anchor clock for the timeline position while the
+  // high-trust source still provides the text; its original clock is kept
+  // in provenance for traceability.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+          ]),
+        ],
+      },
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c2", "2026-06-10T09:00:00.000Z", [
+            {
+              text: "standup notes",
+              isWearer: true,
+              startIso: "2026-06-10T09:00:10.000Z",
+            },
+            { text: "yes", isWearer: true, startIso: "2026-06-10T09:00:25.000Z" },
+          ]),
+        ],
+      },
+    ),
+    { sourceTrust: { bee: 0.6, limitless: 0.9 } },
+  );
+
+  const conv = fused.conversations[0]!;
+  // The two "yes" utterances fuse; "standup notes" stays separate.
+  assert.equal(conv.segments.length, 2);
+
+  const yes = conv.segments.find((s) => s.text === "yes")!;
+  const notes = conv.segments.find((s) => s.text === "standup notes")!;
+  assert.ok(yes, "the fused yes segment is present");
+  assert.ok(notes, "the standup notes segment is present");
+
+  // Timeline position is the GROUP ANCHOR (09:00:00), not the chosen
+  // source's 09:00:25 clock.
+  assert.equal(yes.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(notes.startIso, "2026-06-10T09:00:10.000Z");
+
+  // The higher-trust source (limitless) still provides the TEXT — provenance
+  // records it — but the emitted chronology uses the anchor, so the
+  // high-trust "yes" does NOT jump ahead of the 09:00:10 segment.
+  assert.equal(yes.provenance.source, "limitless");
+  assert.equal(yes.provenance.reason, "higher-trust");
+  // The source's ORIGINAL recording clock is preserved in provenance.
+  assert.equal(
+    yes.provenance.sourceStartIso,
+    "2026-06-10T09:00:25.000Z",
+    "provenance keeps the higher-trust source's original time",
+  );
+
+  // The fused "yes" sits at the anchor (09:00:00) which is BEFORE the
+  // 09:00:10 "standup notes" — chronologically correct. Before the fix the
+  // high-trust segment's 09:00:25 clock would have printed it after 09:10.
+  assert.ok(
+    conv.segments.indexOf(yes) < conv.segments.indexOf(notes),
+    "the anchor-clock fused segment precedes the later intervening segment",
+  );
+  assert.ok(
+    Date.parse(yes.startIso!) <= Date.parse(notes.startIso!),
+    "emitted timestamps are non-decreasing across the two segments",
+  );
+
+  // Final-output-sorted assertion: the whole fused conversation is
+  // chronologically ordered by startIso.
+  assert.ok(
+    isChronologicallySorted(conv.segments),
+    "the fused output is sorted by timestamp (non-decreasing startIso)",
+  );
+});
+
+test("equal-anchor fused segments keep their source/cluster sequence, not trust order (final sort stability)", () => {
+  // Two distinct utterances from two sources at the SAME timestamp land at
+  // the same anchor. Clustering orders conversations by (start, source, id),
+  // so bee precedes limitless here regardless of the inputs() call order.
+  // The defensive final sort must keep that deterministic sequence via the
+  // pre-sort index tie-break — NOT reorder by trust. bee is the LOWER-trust
+  // source, so a trust-based tie-break would put limitless first; the test
+  // asserts bee stays first, proving the tie-break is sequence, not trust.
+  const build = () =>
+    fuseDay(
+      DATE,
+      inputs(
+        {
+          source: "limitless",
+          conversations: [
+            conversation("limitless", "c1", "2026-06-10T09:00:00.000Z", [
+              {
+                text: "Limitless same-anchor utterance.",
+                isWearer: true,
+                startIso: "2026-06-10T09:00:00.000Z",
+              },
+            ]),
+          ],
+        },
+        {
+          source: "bee",
+          conversations: [
+            conversation("bee", "c2", "2026-06-10T09:00:00.000Z", [
+              {
+                text: "Bee same-anchor utterance.",
+                isWearer: true,
+                startIso: "2026-06-10T09:00:00.000Z",
+              },
+            ]),
+          ],
+        },
+      ),
+      { sourceTrust: { bee: 0.6, limitless: 0.9 } },
+    );
+
+  const fused = build();
+  // Deterministic: re-running produces identical output.
+  assert.deepEqual(build(), fused);
+
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 2);
+  // bee precedes limitless by the (start, source) cluster sequence — NOT by
+  // trust, which would put the higher-trust limitless first.
+  assert.deepEqual(
+    conv.segments.map((s) => s.text),
+    ["Bee same-anchor utterance.", "Limitless same-anchor utterance."],
+    "equal-anchor segments keep source/cluster sequence, not trust order",
+  );
+  assert.deepEqual(
+    conv.segments.map((s) => s.provenance.source),
+    ["bee", "limitless"],
+    "bee (lower-trust) precedes limitless (higher-trust) — sequence wins",
+  );
+  // Both share the anchor; equal timestamps did not reorder them.
+  assert.equal(conv.segments[0]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(conv.segments[1]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.ok(isChronologicallySorted(conv.segments));
+});
+
+test("missing-timestamp segments keep their position after the timed ones (final sort)", () => {
+  // A MIX of timestamped and untimestamped utterances. The defensive final
+  // sort must place timed segments first (in time order) and let
+  // untimestamped ones trail in their original relative order — never
+  // interspersing or scrambling the missing-time entries.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "Timed one.", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+            { text: "Untimed one.", isWearer: true },
+            { text: "Untimed two.", isWearer: true },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  assert.equal(conv.segments.length, 3);
+  // The timed segment leads; the two untimestamped segments follow in
+  // their original transcript order (one before two).
+  assert.equal(conv.segments[0]!.text, "Timed one.");
+  assert.notEqual(conv.segments[0]!.startIso, undefined);
+  assert.equal(conv.segments[1]!.text, "Untimed one.");
+  assert.equal(conv.segments[1]!.startIso, undefined);
+  assert.equal(conv.segments[2]!.text, "Untimed two.");
+  assert.equal(conv.segments[2]!.startIso, undefined);
+  assert.ok(isChronologicallySorted(conv.segments));
+});
+
+test("cross-source clock skew does not scramble same-anchor utterances (final sort)", () => {
+  // Two distinct utterances, each corroborated across two sources whose
+  // clocks are skewed (bee at 09:00:00, limitless +4s at 09:00:04). Each
+  // utterance fuses to one segment at the bee anchor (09:00:00). The
+  // defensive final sort sees two segments sharing the anchor timestamp;
+  // it must keep their input order (first topic before second topic), not
+  // let the skew or any source key reorder them.
+  const fused = fuseDay(
+    DATE,
+    inputs(
+      {
+        source: "bee",
+        conversations: [
+          conversation("bee", "c1", "2026-06-10T09:00:00.000Z", [
+            { text: "First topic.", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+            { text: "Second topic.", isWearer: true, startIso: "2026-06-10T09:00:00.000Z" },
+          ]),
+        ],
+      },
+      {
+        source: "limitless",
+        conversations: [
+          conversation("limitless", "c2", "2026-06-10T09:00:00.000Z", [
+            { text: "First topic.", isWearer: true, startIso: "2026-06-10T09:00:04.000Z" },
+            { text: "Second topic.", isWearer: true, startIso: "2026-06-10T09:00:04.000Z" },
+          ]),
+        ],
+      },
+    ),
+  );
+  const conv = fused.conversations[0]!;
+  // Two distinct utterances, each corroborated -> two fused segments.
+  assert.equal(conv.segments.length, 2);
+  // Both emitted at the bee anchor (earliest); the +4s skew is absorbed.
+  assert.equal(conv.segments[0]!.startIso, "2026-06-10T09:00:00.000Z");
+  assert.equal(conv.segments[1]!.startIso, "2026-06-10T09:00:00.000Z");
+  // Input order preserved across the shared anchor — not scrambled by skew.
+  assert.deepEqual(
+    conv.segments.map((s) => s.text),
+    ["First topic.", "Second topic."],
+    "same-anchor utterances keep input order despite cross-source skew",
+  );
+  assert.ok(isChronologicallySorted(conv.segments));
+});
