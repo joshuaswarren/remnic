@@ -50,6 +50,9 @@ import { buildTokenEntry, generateToken, loadTokenStore } from "./tokens.js";
 // Importing access-operations registers the boundary operations as a side
 // effect — we enumerate them in the critical-coverage test below.
 import "./access-operations.js";
+import { readPair, writePair } from "./contradiction/contradiction-review.js";
+import { parseConfig } from "./config.js";
+import type { StorageManager } from "./storage.js";
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -557,6 +560,83 @@ test("CRITICAL: ops that reach the gate are individually denied under scoped ALS
         );
       }
     });
+  }
+});
+
+test("CRITICAL: review_resolve enforces token namespace allow-list on the loaded pair (issue #1850 round 9)", async () => {
+  // Direct boundary-handler test (the "batch-ops" path). review_resolve selects
+  // its target BY pairId, so the pair's namespace comes from the record — NOT
+  // a request param. A namespace-scoped bearer must NOT mutate a pair in a
+  // namespace outside its allow-list. The handler must load the pair, assert
+  // its intrinsic namespace via enforceNamespaceAllowList, and fail closed
+  // BEFORE executeResolution. Runs before the registry reset below so the
+  // module-registered op is present.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-batch-review-resolve-scoped-"));
+  const allowedPair = writePair(dir, {
+    namespace: "ns_a",
+    memoryIds: ["a-1", "a-2"],
+    verdict: "contradicts",
+    rationale: "pair in the allowed namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  const deniedPair = writePair(dir, {
+    namespace: "ns_b",
+    memoryIds: ["b-1", "b-2"],
+    verdict: "contradicts",
+    rationale: "pair in a denied namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  const storage = { dir } as unknown as StorageManager;
+  const ctx: OperationContext = {
+    service: {
+      configRef: parseConfig({ memoryDir: dir, namespacesEnabled: true, defaultNamespace: "default" }),
+      memoryDir: dir,
+      storageRef: storage,
+      getWritableStorageForNamespace: async (namespace: string | undefined) => ({
+        namespace: namespace ?? "default",
+        storage,
+      }),
+    } as unknown as EngramAccessService,
+    authenticatedPrincipal: "writer",
+  };
+  const op = getOperation("review_resolve");
+  if (!op) { assert.fail("review_resolve must be registered"); }
+  try {
+    // ── scoped to ns_a (ops axis absent ⇒ op-gate no-op): denied-namespace pair
+    //    rejects EngramAccessForbiddenError BEFORE mutation ──
+    await assert.rejects(
+      () => tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, () =>
+        op.run({ pairId: deniedPair.pairId, verb: "both-valid" }, ctx)),
+      (err: unknown) => err instanceof EngramAccessForbiddenError && /ns_b/.test(err.message),
+      "scoped resolve: a pair in an unlisted namespace must be denied before mutation",
+    );
+    assert.notEqual(
+      readPair(dir, deniedPair.pairId)?.resolution,
+      "both-valid",
+      "the denied pair must remain unresolved (no mutation leak)",
+    );
+
+    // ── scoped to ns_a: allowed-namespace pair resolves and is mutated ──
+    await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, () =>
+      op.run({ pairId: allowedPair.pairId, verb: "both-valid" }, ctx));
+    assert.equal(
+      readPair(dir, allowedPair.pairId)?.resolution,
+      "both-valid",
+      "the allowed pair is marked resolved",
+    );
+
+    // ── unrestricted (namespaces axis absent): the denied-namespace pair is reachable ──
+    await tokenCapabilityStore.run({ version: 1 }, () =>
+      op.run({ pairId: deniedPair.pairId, verb: "both-valid" }, ctx));
+    assert.equal(
+      readPair(dir, deniedPair.pairId)?.resolution,
+      "both-valid",
+      "unrestricted token resolves the previously-denied pair",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
 

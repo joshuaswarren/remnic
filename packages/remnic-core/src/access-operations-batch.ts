@@ -16,6 +16,7 @@ import type { RemnicChatGptMemoryInspectorInput } from "./mcp-memory-inspector-a
 import { defineOperation } from "./access-boundary.js";
 import { EngramAccessForbiddenError } from "./access-errors.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { expandTildePath } from "./utils/path.js";
 import { resolvePrincipal } from "./namespaces/principal.js";
@@ -25,7 +26,7 @@ import {
   buildChatGptMemoryInspectorActionRequest,
   buildChatGptMemoryInspectorResult,
 } from "./mcp-memory-inspector-app.js";
-import { listPairs, isDefaultReviewNamespace } from "./contradiction/contradiction-review.js";
+import { listPairs, isDefaultReviewNamespace, readPair } from "./contradiction/contradiction-review.js";
 import { executeResolution, isValidResolutionVerb } from "./contradiction/resolution.js";
 import { runContradictionScan } from "./contradiction/contradiction-scan.js";
 import { runGraphEdgeDecayMaintenanceAcrossNamespaces } from "./maintenance/graph-edge-decay.js";
@@ -225,6 +226,27 @@ defineOperation({ name: "review_resolve", description: "Resolve pair.", schema: 
     if (!pid) throw new EngramAccessInputError("pairId is required");
     if (!vb) throw new EngramAccessInputError("verb is required");
     if (!isValidResolutionVerb(vb)) throw new EngramAccessInputError("Invalid verb: " + vb);
+    // Per-token namespace enforcement (issue #1850 round 9): review_resolve
+    // selects its target BY pairId, so the affected namespace comes from the
+    // record — NOT a request param that the MCP-over-HTTP tools/call gate
+    // (toolAcceptsNamespace) already enforces (this tool's schema carries no
+    // `namespace` property). A namespace-scoped bearer must not mutate a
+    // contradiction pair in a namespace outside its allow-list. Load the pair
+    // to learn its namespace, enforce the token's scope via the SAME
+    // effective-namespace chokepoint the HTTP review/resolve route uses
+    // (enforceNamespaceAllowList maps undefined → default, so a scoped token
+    // whose allow-list INCLUDES the default can resolve a legacy pair), and
+    // fail closed BEFORE dispatching the (mutating) resolution. A missing pair
+    // falls through to executeResolution's existing not-found result. No-op for
+    // unrestricted/legacy tokens. Mirrors access-http.ts review/resolve exactly.
+    const targetPair = readPair(ctx.service.memoryDir, pid);
+    if (targetPair) {
+      enforceNamespaceAllowList(
+        tokenCapabilityStore.getStore(),
+        targetPair.namespace,
+        ctx.service.configRef?.defaultNamespace,
+      );
+    }
     return { result: await executeResolution(ctx.service.memoryDir, ctx.service.storageRef, pid, vb, { mergedMemoryId: optStr(input.mergedMemoryId), mergedContent: optStr(input.mergedContent), storageForNamespace: async (namespace) => { const r = await ctx.service.getWritableStorageForNamespace(namespace, ctx.authenticatedPrincipal); return r.storage; }, onMergedMemoryWritten: () => {} }) };
   },
 });

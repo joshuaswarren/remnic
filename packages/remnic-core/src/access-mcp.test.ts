@@ -1016,3 +1016,123 @@ test("tools/list: unrestricted token (ops axis absent) sees the FULL surface (un
   assert.deepEqual(explicitUnrestricted, noContext, "unrestricted record sees the same surface as legacy/no-context");
   assert.ok(noContext.length > 10, "sanity: the full tool surface is non-trivial");
 });
+
+// ===========================================================================
+// Issue #1850 round 9 — MCP review_resolve namespace allow-list gate.
+// Mirror of the HTTP review/resolve namespace gate (access-http.test.ts).
+// review_resolve selects its target BY pairId, so the pair's namespace comes
+// from the record — NOT a request param the MCP-over-HTTP tools/call gate
+// (toolAcceptsNamespace) already enforces, because this tool's schema carries
+// no `namespace` property. A namespace-scoped bearer must NOT mutate a pair in
+// a namespace outside its allow-list. Both canonical (remnic.*) and legacy
+// (engram.*) tool-name aliases route through the SAME handler/gate.
+// ===========================================================================
+
+test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disallowed namespace (issue #1850 round 9)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-mcp-review-resolve-scoped-"));
+  const allowedPair = writePair(dir, {
+    namespace: "ns_a",
+    memoryIds: ["a-1", "a-2"],
+    verdict: "contradicts",
+    rationale: "pair in the allowed namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  const deniedPair = writePair(dir, {
+    namespace: "ns_b",
+    memoryIds: ["b-1", "b-2"],
+    verdict: "contradicts",
+    rationale: "pair in a denied namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  const storage = { dir } as unknown as StorageManager;
+  const service = {
+    ...makeMockService(),
+    configRef: parseConfig({
+      memoryDir: dir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryDir: dir,
+    storageRef: storage,
+    getWritableStorageForNamespace: async (namespace: string | undefined) => ({
+      namespace: namespace ?? "default",
+      storage,
+    }),
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service, { principal: "writer" });
+  const readOutcome = (response: unknown): { isError: boolean; text: string } => {
+    if (typeof response !== "object" || response === null || !("result" in response)) {
+      return { isError: false, text: "" };
+    }
+    const result = response.result;
+    if (typeof result !== "object" || result === null) return { isError: false, text: "" };
+    const isError = "isError" in result && result.isError === true;
+    let text = "";
+    if ("content" in result && Array.isArray(result.content)) {
+      const entry = result.content[0];
+      if (entry != null && typeof entry === "object" && "text" in entry && typeof entry.text === "string") {
+        text = entry.text;
+      }
+    }
+    return { isError, text };
+  };
+  try {
+    // ── scoped to ns_a: denied-namespace pair → isError (fail closed), NOT mutated ──
+    const denied = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
+      readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: deniedPair.pairId, verb: "both-valid" }))),
+    );
+    assert.equal(denied.isError, true, "scoped resolve: a pair in an unlisted namespace must be denied");
+    assert.match(denied.text, /ns_b/, "denial message names the forbidden namespace");
+    assert.notEqual(
+      readPair(dir, deniedPair.pairId)?.resolution,
+      "both-valid",
+      "scoped resolve: the denied pair must remain unresolved (no mutation leak)",
+    );
+
+    // ── scoped to ns_a: allowed-namespace pair → resolves, mutated ──
+    const allowed = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
+      readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: allowedPair.pairId, verb: "both-valid" }))),
+    );
+    assert.equal(allowed.isError, false, "scoped resolve: a pair in the allowed namespace must succeed");
+    assert.equal(
+      readPair(dir, allowedPair.pairId)?.resolution,
+      "both-valid",
+      "scoped resolve: the allowed pair is marked resolved",
+    );
+
+    // ── canonical alias (remnic.review_resolve) routes through the SAME gate ──
+    const deniedCanonical = writePair(dir, {
+      namespace: "ns_b",
+      memoryIds: ["b-3", "b-4"],
+      verdict: "contradicts",
+      rationale: "pair for canonical-alias denial",
+      confidence: 0.9,
+      detectedAt: new Date().toISOString(),
+    });
+    const deniedViaCanonical = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
+      readOutcome(await server.handleRequest(makeToolRequest("remnic.review_resolve", { pairId: deniedCanonical.pairId, verb: "both-valid" }))),
+    );
+    assert.equal(deniedViaCanonical.isError, true, "canonical alias remnic.review_resolve must also be gated");
+    assert.match(deniedViaCanonical.text, /ns_b/, "canonical-alias denial names the forbidden namespace");
+    assert.notEqual(
+      readPair(dir, deniedCanonical.pairId)?.resolution,
+      "both-valid",
+      "canonical-alias denied pair must remain unresolved",
+    );
+
+    // ── unrestricted token (no namespaces axis): the denied-namespace pair is reachable ──
+    const unrestrictedDenied = await tokenCapabilityStore.run({ version: 1 }, async () =>
+      readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: deniedPair.pairId, verb: "both-valid" }))),
+    );
+    assert.equal(unrestrictedDenied.isError, false, "unrestricted token: the denied-namespace pair is reachable");
+    assert.equal(
+      readPair(dir, deniedPair.pairId)?.resolution,
+      "both-valid",
+      "unrestricted token resolves the previously-denied pair",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
