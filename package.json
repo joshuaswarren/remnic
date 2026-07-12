@@ -1036,11 +1036,5 @@
     "turbo": "2.9.14",
     "typescript": "^5.9.3",
     "ajv": "^8.20.0"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": ["better-sqlite3", "esbuild", "sharp", "koffi", "protobufjs"],
-    "overrides": {
-      "esbuild@>=0.27.3 <0.28.1": "~0.28.1"
-    }
   }
 }
