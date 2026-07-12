@@ -2471,6 +2471,7 @@ export interface BufferTurn {
   rawContent?: unknown;
   sourceFormat?: import("./message-parts/index.js").MessagePartSourceFormat;
   importProvenance?: import("./bulk-import/types.js").ImportTurnProvenance;
+  sourceConnector?: string;
 }
 
 export interface BufferEntryState {
