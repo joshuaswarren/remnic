@@ -1804,3 +1804,97 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
     await server.stop();
   }
 });
+
+test("HTTP scoped-token namespace allow-list is enforced on every namespace route (issue #1837 bypass fix)", async () => {
+  // A scoped token may touch ONLY ns_a. The server default tenant is "default"
+  // (≠ ns_a), so OMITTING ?namespace= must NOT silently fall through to the
+  // default tenant — the EFFECTIVE namespace (explicit OR defaulted) must be a
+  // member of the token's allow-list on every namespace-scoped route. Fail
+  // closed everywhere; the previous behavior let a scoped bearer drop the
+  // param and reach the server default tenant (memory_list / memory_get).
+  const browseCalls: { namespace?: string }[] = [];
+  const getCalls: { memoryId: string; namespace: string | undefined }[] = [];
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-http-scoped-namespace-allow-list",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryBrowse: async (request: { namespace?: string }) => {
+      browseCalls.push(request);
+      return { total: 0, memories: [] };
+    },
+    memoryGet: async (memoryId: string, namespace: string | undefined) => {
+      getCalls.push({ memoryId, namespace });
+      return { found: true };
+    },
+    peerList: async () => ({ peers: [] }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    // Entry-based tokens with a capabilities record. The scoped token carries
+    // a namespaces allow-list; the operator token is explicit-unrestricted.
+    authTokenEntriesGetter: () => [
+      { token: "scoped-ns-a", capabilities: { version: 1, namespaces: ["ns_a"] } },
+      { token: "operator", capabilities: { version: 1 } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const request = (token: string, urlPath: string) =>
+    fetch(`http://127.0.0.1:${status.port}${urlPath}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  try {
+    // ── memory_list: the named bypass route ──
+    assert.equal(
+      (await request("scoped-ns-a", "/engram/v1/memories")).status,
+      403,
+      "scoped: omitting namespace must be rejected — server default is not in the allow-list",
+    );
+    assert.equal(
+      (await request("scoped-ns-a", "/engram/v1/memories?namespace=ns_b")).status,
+      403,
+      "scoped: an unlisted namespace must be rejected",
+    );
+    const okList = await request("scoped-ns-a", "/engram/v1/memories?namespace=ns_a");
+    assert.equal(okList.status, 200, "scoped: an allowed namespace must succeed");
+    assert.equal(browseCalls.at(-1)?.namespace, "ns_a", "scoped: the allowed namespace is forwarded to the service");
+
+    // ── memory_get: the other named bypass route (dispatches via the op registry) ──
+    assert.equal(
+      (await request("scoped-ns-a", "/engram/v1/memories/m_1")).status,
+      403,
+      "scoped memory_get: omitting namespace must be rejected",
+    );
+    assert.equal(
+      (await request("scoped-ns-a", "/engram/v1/memories/m_1?namespace=ns_b")).status,
+      403,
+      "scoped memory_get: an unlisted namespace must be rejected",
+    );
+    const okGet = await request("scoped-ns-a", "/engram/v1/memories/m_1?namespace=ns_a");
+    assert.equal(okGet.status, 200, "scoped memory_get: an allowed namespace must succeed");
+    assert.deepEqual(
+      getCalls.at(-1),
+      { memoryId: "m_1", namespace: "ns_a" },
+      "scoped memory_get: the allowed namespace reaches the service",
+    );
+
+    // ── a non-namespace-scoped route is unaffected by namespace scoping ──
+    assert.equal(
+      (await request("scoped-ns-a", "/engram/v1/peers")).status,
+      200,
+      "a non-namespace-scoped route must be unaffected",
+    );
+
+    // ── unrestricted token: omitting namespace still reaches the default tenant ──
+    assert.equal(
+      (await request("operator", "/engram/v1/memories")).status,
+      200,
+      "unrestricted: omitting namespace must still reach the default tenant",
+    );
+  } finally {
+    await server.stop();
+  }
+});

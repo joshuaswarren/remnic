@@ -667,18 +667,23 @@ export class EngramAccessHttpServer {
   private resolveNamespace(_req: IncomingMessage, bodyNamespace?: string): string | undefined {
     const namespace = bodyNamespace || undefined;
     // Per-token namespace enforcement (issue #1837): when the presenting
-    // token carries a namespaces allow-list, reject an EXPLICIT namespace
-    // that is not permitted. An absent namespace (→ server default) is left
-    // to the service's existing resolution so legitimate default-scoped ops
-    // are not over-restricted (default-namespace scoping is handled by the
-    // service's read/write resolvers).
+    // token carries a namespaces allow-list, the EFFECTIVE namespace MUST be
+    // a member. The effective namespace is the explicit value when supplied,
+    // OR the server's default namespace when the client omits it — omitting
+    // `?namespace=` MUST NOT bypass the allow-list and silently reach the
+    // default tenant. Fail closed: an unlisted effective namespace (explicit
+    // OR defaulted) is rejected here, and every namespace-scoped route routes
+    // through this helper so none can dodge the check by dropping the param.
     const caps = tokenCapabilityStore.getStore();
-    if (
-      namespace !== undefined &&
-      caps?.namespaces !== undefined &&
-      !caps.namespaces.includes(namespace)
-    ) {
-      throw new EngramAccessForbiddenError(`token is not permitted to access namespace: ${namespace}`);
+    if (caps?.namespaces !== undefined) {
+      const effective = namespace ?? this.service.configRef?.defaultNamespace;
+      if (effective === undefined || !caps.namespaces.includes(effective)) {
+        throw new EngramAccessForbiddenError(
+          namespace === undefined
+            ? "token is scoped to specific namespaces; the server default namespace is not permitted — supply an allowed namespace"
+            : `token is not permitted to access namespace: ${namespace}`,
+        );
+      }
     }
     return namespace;
   }
@@ -1743,12 +1748,12 @@ export class EngramAccessHttpServer {
       const op = getOperation("correction_pending");
       if (op) {
         const output = (await op.run(
-          { namespace: parsed.searchParams.get("namespace") ?? undefined, sessionKey: parsed.searchParams.get("sessionKey") ?? undefined },
+          { namespace: this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined), sessionKey: parsed.searchParams.get("sessionKey") ?? undefined },
           { service: this.service, authenticatedPrincipal: this.resolveRequestPrincipal(req) },
         )) as { result: unknown };
         this.respondJson(res, 200, output.result);
       } else {
-        const namespace = parsed.searchParams.get("namespace") ?? undefined;
+        const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
         const sessionKey = parsed.searchParams.get("sessionKey") ?? undefined;
         const plans = await this.service.correctionListPending({
           ...(namespace ? { namespace } : {}),
@@ -1802,7 +1807,7 @@ export class EngramAccessHttpServer {
         query: parsed.searchParams.get("q") ?? undefined,
         status: parsed.searchParams.get("status") ?? undefined,
         category: parsed.searchParams.get("category") ?? undefined,
-        namespace: parsed.searchParams.get("namespace") ?? undefined,
+        namespace: this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined),
         authenticatedPrincipal: this.resolveRequestPrincipal(req),
         sort,
         limit,
@@ -1836,7 +1841,7 @@ export class EngramAccessHttpServer {
     const memoryMatch = pathname.match(/^\/engram\/v1\/memories\/([^/]+)$/);
     if (req.method === "GET" && memoryMatch) {
       const memoryId = decodeURIComponent(memoryMatch[1] ?? "");
-      const namespace = parsed.searchParams.get("namespace") ?? undefined;
+      const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
       // Issue #1582 — thread the transport session key so a `[m:xxxx]` handle in
       // the path resolves against this session's recall history (codex review).
       // resolveRequestIdentity reads it from adapter identity / request headers.
@@ -1866,7 +1871,7 @@ export class EngramAccessHttpServer {
     if (req.method === "GET" && timelineMatch) {
       this.enforceTokenOp("memory_timeline"); // boundary dispatch (issue #1525)
       const memoryId = decodeURIComponent(timelineMatch[1] ?? "");
-      const namespace = parsed.searchParams.get("namespace") ?? undefined;
+      const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
       const limit = parseStrictIntegerQuery(parsed.searchParams.get("limit"), "limit", 200, 1);
       const response = await this.service.memoryTimeline(memoryId, namespace, limit, this.resolveRequestPrincipal(req));
       this.respondJson(res, response.found ? 200 : 404, response);
@@ -1878,7 +1883,7 @@ export class EngramAccessHttpServer {
       const limit = parseStrictIntegerQuery(parsed.searchParams.get("limit"), "limit", 50, 1);
       const offset = parseStrictIntegerQuery(parsed.searchParams.get("offset"), "offset", 0, 0);
       const response = await this.service.entityList({
-        namespace: parsed.searchParams.get("namespace") ?? undefined,
+        namespace: this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined),
         query: parsed.searchParams.get("q") ?? undefined,
         limit,
         offset,
@@ -1891,7 +1896,7 @@ export class EngramAccessHttpServer {
     if (req.method === "GET" && entityMatch) {
       this.enforceTokenOp("entity_get"); // boundary dispatch (issue #1525)
       const entityName = decodeURIComponent(entityMatch[1] ?? "");
-      const namespace = parsed.searchParams.get("namespace") ?? undefined;
+      const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
       const response = await this.service.entityGet(entityName, namespace);
       this.respondJson(res, response.found ? 200 : 404, response);
       return;
@@ -1901,7 +1906,7 @@ export class EngramAccessHttpServer {
       this.enforceTokenOp("review_queue_list"); // boundary dispatch (issue #1525)
       const response = await this.service.reviewQueue(
         parsed.searchParams.get("runId") ?? undefined,
-        parsed.searchParams.get("namespace") ?? undefined,
+        this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined),
         this.resolveRequestPrincipal(req),
       );
       this.respondJson(res, 200, response);
@@ -1910,13 +1915,15 @@ export class EngramAccessHttpServer {
 
     if (req.method === "GET" && pathname === "/engram/v1/maintenance") {
       this.enforceTokenOp("maintenance_status"); // boundary dispatch (issue #1525)
-      this.respondJson(res, 200, await this.service.maintenance(parsed.searchParams.get("namespace") ?? undefined, this.resolveRequestPrincipal(req)));
+      const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
+      this.respondJson(res, 200, await this.service.maintenance(namespace, this.resolveRequestPrincipal(req)));
       return;
     }
 
     if (req.method === "GET" && pathname === "/engram/v1/quality") {
       this.enforceTokenOp("quality_status"); // boundary dispatch (issue #1525)
-      this.respondJson(res, 200, await this.service.quality(parsed.searchParams.get("namespace") ?? undefined, this.resolveRequestPrincipal(req)));
+      const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
+      this.respondJson(res, 200, await this.service.quality(namespace, this.resolveRequestPrincipal(req)));
       return;
     }
 
@@ -1925,7 +1932,7 @@ export class EngramAccessHttpServer {
       this.respondJson(
         res,
         200,
-        await this.service.trustZoneStatus(parsed.searchParams.get("namespace") ?? undefined, this.resolveRequestPrincipal(req)),
+        await this.service.trustZoneStatus(this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined), this.resolveRequestPrincipal(req)),
       );
       return;
     }
@@ -1963,7 +1970,7 @@ export class EngramAccessHttpServer {
         zone: parseTrustZoneFilter(parsed.searchParams.get("zone")),
         kind: parseTrustZoneKindFilter(parsed.searchParams.get("kind")),
         sourceClass: parseTrustZoneSourceClassFilter(parsed.searchParams.get("sourceClass")),
-        namespace: parsed.searchParams.get("namespace") ?? undefined,
+        namespace: this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined),
         limit,
         offset,
       }, this.resolveRequestPrincipal(req));
@@ -2115,7 +2122,7 @@ export class EngramAccessHttpServer {
         this.respondJson(res, 400, { error: `Invalid filter '${rawFilter}'. Valid: ${[...VALID_FILTERS].join(", ")}` });
         return;
       }
-      const namespace = parsed.searchParams.get("namespace") ?? undefined;
+      const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
       const limit = parseStrictIntegerQuery(parsed.searchParams.get("limit"), "limit", 50, 1);
       const {
         isDefaultReviewNamespace,
@@ -2301,7 +2308,7 @@ export class EngramAccessHttpServer {
           this.service.getWritableStorageForNamespace(namespace, principal),
         localLlm: this.service.localLlmRef,
         fallbackLlm: this.service.fallbackLlmRef,
-        namespace: typeof body.namespace === "string" ? body.namespace : undefined,
+        namespace: this.resolveNamespace(req, typeof body.namespace === "string" ? body.namespace : undefined),
       });
       this.respondJson(res, 200, result);
       return;
@@ -2373,7 +2380,7 @@ export class EngramAccessHttpServer {
     // reads are not possible (CLAUDE.md rule 42).
     if (req.method === "GET" && pathname === "/engram/v1/console/state") {
       this.enforceTokenOp("console_state"); // boundary dispatch (issue #1525)
-      const namespace = parsed.searchParams.get("namespace") ?? undefined;
+      const namespace = this.resolveNamespace(req, parsed.searchParams.get("namespace") ?? undefined);
       const snapshot = await this.service.consoleState(namespace, this.resolveRequestPrincipal(req));
       this.respondJson(res, 200, snapshot);
       return;
@@ -2500,7 +2507,7 @@ export class EngramAccessHttpServer {
         return;
       }
       const namespaceParam = parsed.searchParams.get("namespace");
-      const namespace = namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined;
+      const namespace = this.resolveNamespace(req, namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined);
       const result = await this.service.dreamsStatus({
         windowHours,
         namespace,
@@ -2542,8 +2549,7 @@ export class EngramAccessHttpServer {
         return;
       }
       const dryRun = body.dryRun === true;
-      const namespace =
-        typeof body.namespace === "string" ? body.namespace : undefined;
+      const namespace = this.resolveNamespace(req, typeof body.namespace === "string" ? body.namespace : undefined);
       if (!dryRun) {
         this.ensureWriteRateLimitAvailable();
       }
@@ -2761,7 +2767,7 @@ export class EngramAccessHttpServer {
     // default namespace when absent.
     const parsed = new URL(req.url ?? "/", `http://${hostToUrlAuthority(this.host)}`);
     const namespaceParam = parsed.searchParams.get("namespace");
-    const namespace = namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined;
+    const namespace = this.resolveNamespace(req, namespaceParam && namespaceParam.length > 0 ? namespaceParam : undefined);
     // Resolve to the per-namespace storage directory so the bus subscription
     // is scoped to the correct tenant (CLAUDE.md rule 42).
     // Pass the request principal so namespace ACL is enforced — without it,
