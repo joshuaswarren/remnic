@@ -22,6 +22,9 @@ import {
   type OperationContext,
 } from "./access-boundary.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { EngramAccessForbiddenError } from "./access-errors.js";
+import { tokenCapabilityStore } from "./access-token-capabilities.js";
+import { z } from "zod";
 
 // ---------------------------------------------------------------------------
 // Test fixtures
@@ -209,4 +212,63 @@ test("getOperation / listRegisteredOperations: round-trip a registration", async
   });
   assert.ok(getOperation("memory_search"));
   assert.ok(listRegisteredOperations().includes("memory_search"));
+});
+
+// ---------------------------------------------------------------------------
+// fleetWide flag — fail-closed for namespace-scoped tokens (issue #1850 round 10)
+// Maintenance ops that run ACROSS ALL namespaces carry no `namespace` arg, so
+// the MCP tools/call effective-namespace gate never fires. The fleetWide flag
+// makes defineOperation's run wrapper reject a namespace-scoped token BEFORE
+// the handler — no side effect on denial; unrestricted/legacy unaffected.
+// ---------------------------------------------------------------------------
+
+test("fleetWide op: namespace-scoped token is rejected BEFORE the handler runs (no side effect)", async () => {
+  let ran = false;
+  __resetRegistryForTest();
+  const op = defineOperation({
+    name: "memory_get",
+    description: "test fleet-wide op",
+    fleetWide: true,
+    schema: z.object({}),
+    handler: async () => { ran = true; return { ok: true }; },
+  });
+  await assert.rejects(
+    () => tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, () => op.run({}, ctx(makeMockService()))),
+    (err: unknown) => err instanceof EngramAccessForbiddenError && /across all namespaces/.test(err.message),
+  );
+  assert.equal(ran, false, "fleet-wide handler must NOT run for a namespace-scoped token (no side effect)");
+});
+
+test("fleetWide op: unrestricted and legacy tokens reach the handler", async () => {
+  let ran = false;
+  __resetRegistryForTest();
+  const op = defineOperation({
+    name: "memory_get",
+    description: "test fleet-wide op",
+    fleetWide: true,
+    schema: z.object({}),
+    handler: async () => { ran = true; return { ok: true }; },
+  });
+  // Explicit-unrestricted record (version present, no namespaces axis).
+  const result = await tokenCapabilityStore.run({ version: 1 }, () => op.run({}, ctx(makeMockService())));
+  assert.deepEqual(result, { ok: true });
+  assert.equal(ran, true, "unrestricted token reaches the handler");
+  // Legacy (no ALS bound at all — cron / internal callers).
+  ran = false;
+  assert.deepEqual(await op.run({}, ctx(makeMockService())), { ok: true });
+  assert.equal(ran, true, "legacy token reaches the handler");
+});
+
+test("fleetWide flag is inert for normal (non-fleet-wide) ops under a scoped token", async () => {
+  let ran = false;
+  __resetRegistryForTest();
+  const op = defineOperation({
+    name: "memory_get",
+    description: "normal op (not fleet-wide)",
+    schema: z.object({}),
+    handler: async () => { ran = true; return { ok: true }; },
+  });
+  const result = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, () => op.run({}, ctx(makeMockService())));
+  assert.deepEqual(result, { ok: true });
+  assert.equal(ran, true, "a non-fleet-wide op runs normally for a scoped token");
 });

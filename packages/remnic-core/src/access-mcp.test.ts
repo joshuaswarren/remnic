@@ -13,6 +13,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { EngramMcpServer } from "./access-mcp.js";
+import { tokenCapabilityStore } from "./access-token-capabilities.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
 import { parseConfig } from "./config.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
@@ -978,4 +979,267 @@ test("emitLegacyTools=false still allows calling tools under BOTH names (adverti
     true,
     "legacy engram.recall call still works (callability preserved)",
   );
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Issue #1850 round 5 (finding 3): tools/list must reflect the token's ops scope
+// ──────────────────────────────────────────────────────────────────────────
+
+test("tools/list: deny-all (ops:[]) token sees NO tools (issue #1850 finding 3)", async () => {
+  const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
+  const names = await tokenCapabilityStore.run({ version: 1, ops: [] }, async () =>
+    listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST)),
+  );
+  assert.deepEqual(names, [], "a deny-all token must enumerate zero tools");
+});
+
+test("tools/list: ops-scoped token sees ONLY its permitted tools (issue #1850 finding 3)", async () => {
+  const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
+  const names = await tokenCapabilityStore.run({ version: 1, ops: ["recall", "memory_get"] }, async () =>
+    listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST)),
+  );
+  assert.ok(names.includes("remnic.recall"), "permitted recall tool advertised");
+  assert.ok(names.includes("remnic.memory_get"), "permitted memory_get tool advertised");
+  assert.ok(!names.includes("remnic.memory_store"), "non-permitted tool must NOT be advertised");
+  assert.ok(!names.includes("remnic.observe"), "non-permitted tool must NOT be advertised");
+  assert.equal(names.length, 2, "exactly the two permitted tools advertised");
+});
+
+test("tools/list: unrestricted token (ops axis absent) sees the FULL surface (unchanged)", async () => {
+  const server = new EngramMcpServer(makeMockService(), { emitLegacyTools: false });
+  // No capability context at all (stdio / direct call) ⇒ full surface.
+  const noContext = listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST));
+  // Explicit-unrestricted record (version present, no ops axis) ⇒ same surface.
+  const explicitUnrestricted = await tokenCapabilityStore.run({ version: 1 }, async () =>
+    listToolNames(await server.handleRequest(TOOLS_LIST_REQUEST)),
+  );
+  assert.deepEqual(explicitUnrestricted, noContext, "unrestricted record sees the same surface as legacy/no-context");
+  assert.ok(noContext.length > 10, "sanity: the full tool surface is non-trivial");
+});
+
+// ===========================================================================
+// Issue #1850 round 9 — MCP review_resolve namespace allow-list gate.
+// Mirror of the HTTP review/resolve namespace gate (access-http.test.ts).
+// review_resolve selects its target BY pairId, so the pair's namespace comes
+// from the record — NOT a request param the MCP-over-HTTP tools/call gate
+// (toolAcceptsNamespace) already enforces, because this tool's schema carries
+// no `namespace` property. A namespace-scoped bearer must NOT mutate a pair in
+// a namespace outside its allow-list. Both canonical (remnic.*) and legacy
+// (engram.*) tool-name aliases route through the SAME handler/gate.
+// ===========================================================================
+
+test("MCP review_resolve: namespace-scoped token cannot mutate a pair in a disallowed namespace (issue #1850 round 9)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-mcp-review-resolve-scoped-"));
+  const allowedPair = writePair(dir, {
+    namespace: "ns_a",
+    memoryIds: ["a-1", "a-2"],
+    verdict: "contradicts",
+    rationale: "pair in the allowed namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  const deniedPair = writePair(dir, {
+    namespace: "ns_b",
+    memoryIds: ["b-1", "b-2"],
+    verdict: "contradicts",
+    rationale: "pair in a denied namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  const storage = { dir } as unknown as StorageManager;
+  const service = {
+    ...makeMockService(),
+    configRef: parseConfig({
+      memoryDir: dir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryDir: dir,
+    storageRef: storage,
+    getWritableStorageForNamespace: async (namespace: string | undefined) => ({
+      namespace: namespace ?? "default",
+      storage,
+    }),
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service, { principal: "writer" });
+  const readOutcome = (response: unknown): { isError: boolean; text: string } => {
+    if (typeof response !== "object" || response === null || !("result" in response)) {
+      return { isError: false, text: "" };
+    }
+    const result = response.result;
+    if (typeof result !== "object" || result === null) return { isError: false, text: "" };
+    const isError = "isError" in result && result.isError === true;
+    let text = "";
+    if ("content" in result && Array.isArray(result.content)) {
+      const entry = result.content[0];
+      if (entry != null && typeof entry === "object" && "text" in entry && typeof entry.text === "string") {
+        text = entry.text;
+      }
+    }
+    return { isError, text };
+  };
+  try {
+    // ── scoped to ns_a: denied-namespace pair → isError (fail closed), NOT mutated ──
+    const denied = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
+      readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: deniedPair.pairId, verb: "both-valid" }))),
+    );
+    assert.equal(denied.isError, true, "scoped resolve: a pair in an unlisted namespace must be denied");
+    assert.match(denied.text, /ns_b/, "denial message names the forbidden namespace");
+    assert.notEqual(
+      readPair(dir, deniedPair.pairId)?.resolution,
+      "both-valid",
+      "scoped resolve: the denied pair must remain unresolved (no mutation leak)",
+    );
+
+    // ── scoped to ns_a: allowed-namespace pair → resolves, mutated ──
+    const allowed = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
+      readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: allowedPair.pairId, verb: "both-valid" }))),
+    );
+    assert.equal(allowed.isError, false, "scoped resolve: a pair in the allowed namespace must succeed");
+    assert.equal(
+      readPair(dir, allowedPair.pairId)?.resolution,
+      "both-valid",
+      "scoped resolve: the allowed pair is marked resolved",
+    );
+
+    // ── canonical alias (remnic.review_resolve) routes through the SAME gate ──
+    const deniedCanonical = writePair(dir, {
+      namespace: "ns_b",
+      memoryIds: ["b-3", "b-4"],
+      verdict: "contradicts",
+      rationale: "pair for canonical-alias denial",
+      confidence: 0.9,
+      detectedAt: new Date().toISOString(),
+    });
+    const deniedViaCanonical = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
+      readOutcome(await server.handleRequest(makeToolRequest("remnic.review_resolve", { pairId: deniedCanonical.pairId, verb: "both-valid" }))),
+    );
+    assert.equal(deniedViaCanonical.isError, true, "canonical alias remnic.review_resolve must also be gated");
+    assert.match(deniedViaCanonical.text, /ns_b/, "canonical-alias denial names the forbidden namespace");
+    assert.notEqual(
+      readPair(dir, deniedCanonical.pairId)?.resolution,
+      "both-valid",
+      "canonical-alias denied pair must remain unresolved",
+    );
+
+    // ── unrestricted token (no namespaces axis): the denied-namespace pair is reachable ──
+    const unrestrictedDenied = await tokenCapabilityStore.run({ version: 1 }, async () =>
+      readOutcome(await server.handleRequest(makeToolRequest("engram.review_resolve", { pairId: deniedPair.pairId, verb: "both-valid" }))),
+    );
+    assert.equal(unrestrictedDenied.isError, false, "unrestricted token: the denied-namespace pair is reachable");
+    assert.equal(
+      readPair(dir, deniedPair.pairId)?.resolution,
+      "both-valid",
+      "unrestricted token resolves the previously-denied pair",
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ===========================================================================
+// Issue #1850 round 10 — fleet-wide maintenance ops namespace gate.
+// These ops run ACROSS ALL namespaces (or a global non-namespaced layer) and
+// carry NO `namespace` arg, so the MCP tools/call effective-namespace
+// chokepoint (toolAcceptsNamespace) never fires. The `fleetWide` flag on each
+// op makes defineOperation's run wrapper reject a namespace-scoped token
+// BEFORE the handler — no side effect on denial; unrestricted/legacy allowed.
+// Both canonical (remnic.*) and legacy (engram.*) aliases route through the
+// SAME gate.
+// ===========================================================================
+
+function readCallToolOutcome(response: unknown): { isError: boolean; text: string } {
+  if (typeof response !== "object" || response === null || !("result" in response)) {
+    return { isError: false, text: "" };
+  }
+  const result = response.result;
+  if (typeof result !== "object" || result === null) return { isError: false, text: "" };
+  const isError = "isError" in result && result.isError === true;
+  let text = "";
+  if ("content" in result && Array.isArray(result.content)) {
+    const entry = result.content[0];
+    if (entry != null && typeof entry === "object" && "text" in entry && typeof entry.text === "string") {
+      text = entry.text;
+    }
+  }
+  return { isError, text };
+}
+
+const FLEET_WIDE_MAINTENANCE_TOOLS = [
+  "graph_edge_decay_run",
+  "memory_summarize_hourly",
+  "conversation_index_update",
+  "live_connectors_run",
+  "continuity_audit_generate",
+  "shared_context_cross_signals_run",
+  "shared_context_curate_daily",
+  "compounding_weekly_synthesize",
+  "compounding_promote_candidate",
+  "compression_guidelines_optimize",
+  "compression_guidelines_activate",
+] as const;
+
+test("MCP fleet-wide maintenance ops: namespace-scoped token denied for every op, no side effect (issue #1850 round 10)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-mcp-fleetwide-scoped-"));
+  let sideEffects = 0;
+  // Every fleet-wide op that dispatches to a service method routes through
+  // this tracker; graph_edge_decay_run short-circuits via graphEdgeDecayEnabled
+  // false. Under a scoped token NONE may run — the guard throws first.
+  const track = (): Promise<{ ok: true }> => { sideEffects += 1; return Promise.resolve({ ok: true }); };
+  const service = {
+    ...makeMockService(),
+    configRef: parseConfig({ memoryDir: dir, graphEdgeDecayEnabled: false }),
+    memoryDir: dir,
+    memorySummarizeHourly: track,
+    conversationIndexUpdate: track,
+    liveConnectorsRun: track,
+    continuityAuditGenerate: track,
+    sharedContextCrossSignalsRun: track,
+    sharedContextCurateDaily: track,
+    compoundingWeeklySynthesize: track,
+    compoundingPromoteCandidate: track,
+    compressionGuidelinesOptimize: track,
+    compressionGuidelinesActivate: track,
+  } as unknown as EngramAccessService;
+  const server = new EngramMcpServer(service, { principal: "ops" });
+  try {
+    for (const tool of FLEET_WIDE_MAINTENANCE_TOOLS) {
+      // Legacy alias (engra.*).
+      const legacy = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
+        readCallToolOutcome(await server.handleRequest(makeToolRequest("engram." + tool))),
+      );
+      assert.equal(legacy.isError, true, `engram.${tool}: a namespace-scoped token must be denied`);
+      assert.match(legacy.text, /across all namespaces/, `engram.${tool}: denial names the fleet-wide restriction`);
+      // Canonical alias (remnic.*) routes through the SAME gate.
+      const canonical = await tokenCapabilityStore.run({ version: 1, namespaces: ["ns_a"] }, async () =>
+        readCallToolOutcome(await server.handleRequest(makeToolRequest("remnic." + tool))),
+      );
+      assert.equal(canonical.isError, true, `remnic.${tool}: canonical alias must also be gated`);
+    }
+    assert.equal(sideEffects, 0, "no fleet-wide maintenance service method may run for a namespace-scoped token");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("MCP graph_edge_decay_run: unrestricted and legacy tokens reach the handler (issue #1850 round 10)", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-mcp-decay-unrestricted-"));
+  try {
+    const service = {
+      ...makeMockService(),
+      configRef: parseConfig({ memoryDir: dir, graphEdgeDecayEnabled: false }),
+      memoryDir: dir,
+    } as unknown as EngramAccessService;
+    const server = new EngramMcpServer(service, { principal: "ops" });
+    // Explicit-unrestricted record (version present, no namespaces axis).
+    const unrestricted = await tokenCapabilityStore.run({ version: 1 }, async () =>
+      readCallToolOutcome(await server.handleRequest(makeToolRequest("engram.graph_edge_decay_run"))),
+    );
+    assert.equal(unrestricted.isError, false, "unrestricted token reaches the handler");
+    // Legacy / no ALS at all (cron, internal caller) — same path.
+    const legacy = readCallToolOutcome(await server.handleRequest(makeToolRequest("remnic.graph_edge_decay_run")));
+    assert.equal(legacy.isError, false, "legacy token (no ALS) reaches the handler");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

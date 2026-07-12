@@ -166,6 +166,8 @@ import {
   readForkLineage,
   // wearable transcript sources (Limitless / Bee / Omi)
   runWearablesCliCommand,
+  OPERATION_NAMES,
+  validateCapabilitiesForMint,
 } from "@remnic/core";
 import {
   AUTH_TAG_LENGTH,
@@ -11032,16 +11034,78 @@ function daemonRestart(): void {
 
 // ── Token management ────────────────────────────────────────────────────────
 
-function cmdTokenGenerate(connector: string): void {
+function cmdTokenGenerate(rest: string[]): void {
+  // Parse scoped-capability flags (issue #1837) FIRST so their values are
+  // never mistaken for the connector positional. resolveFlagStrict rejects a
+  // bare flag or one whose value is another --flag, matching the repo's
+  // "value flags must have a real value" convention (rule 14).
+  const opsRaw = resolveFlagStrict(rest, "--ops");
+  const namespacesRaw = resolveFlagStrict(rest, "--namespaces");
+
+  // Connector id is the first positional that is NOT a value flag and NOT the
+  // value consumed by one. Parsing the flags first (above) means `token
+  // generate --ops recall monitor` resolves connector=monitor, not the --ops
+  // value "recall" — the prior `rest.find(a => !a.startsWith("-"))` grabbed
+  // the first non-flag token, which was the --ops value (issue #1850 finding
+  // 5). Skipping each value flag AND its following token leaves only real
+  // positionals; a bare flag (e.g. --json) starts with "-" so it is never
+  // picked as the connector either.
+  let connector: string | undefined;
+  for (let i = 0; i < rest.length; i++) {
+    const tok = rest[i];
+    // --ops and --namespaces each consume the following token as their value;
+    // skip both so that value is never mistaken for the connector.
+    if (tok === "--ops" || tok === "--namespaces") {
+      i++;
+      continue;
+    }
+    if (!tok.startsWith("-")) {
+      connector = tok;
+      break;
+    }
+  }
   if (!connector) {
-    console.error("Usage: remnic token generate <connector-id>");
+    console.error("Usage: remnic token generate <connector-id> [--ops <comma-list>] [--namespaces <comma-list>]");
     console.error("  e.g.: remnic token generate claude-code");
+    console.error("        remnic token generate monitor --ops status,health --namespaces default");
     process.exit(1);
   }
-  const entry = generateToken(connector);
+
+  const rawCaps: Record<string, string[]> = {};
+  if (opsRaw !== undefined) {
+    rawCaps.ops = opsRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  }
+  if (namespacesRaw !== undefined) {
+    rawCaps.namespaces = namespacesRaw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+  }
+
+  // validateCapabilitiesForMint ALWAYS returns a versioned record — even for
+  // a no-flag mint it yields { version: 1 } (explicit unrestricted), never an
+  // omitted field, so a new token is distinguishable from a legacy entry.
+  let capabilities;
+  try {
+    capabilities = validateCapabilitiesForMint(
+      Object.keys(rawCaps).length > 0 ? rawCaps : undefined,
+      OPERATION_NAMES,
+    );
+  } catch (error) {
+    console.error(
+      `Invalid token capabilities: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    console.error("  Run with --ops <comma-list> and/or --namespaces <comma-list> using valid values.");
+    process.exit(1);
+  }
+
+  const entry = generateToken(connector, undefined, capabilities);
   console.log(`Generated token for ${connector}:`);
   console.log(`  Token:   ${entry.token}`);
   console.log(`  Created: ${entry.createdAt}`);
+  if (capabilities.ops !== undefined) {
+    console.log(`  Ops:     ${capabilities.ops.length > 0 ? capabilities.ops.join(", ") : "(deny all)"}`);
+  }
+  if (capabilities.namespaces !== undefined) {
+    console.log(`  Ns:      ${capabilities.namespaces.length > 0 ? capabilities.namespaces.join(", ") : "(deny all)"}`);
+  }
   console.log(`\nUse this token as the Bearer token when connecting from ${connector}.`);
 }
 
@@ -12383,7 +12447,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       const json = rest.includes("--json");
       switch (action) {
         case "generate":
-          cmdTokenGenerate(rest[1]);
+          cmdTokenGenerate(rest.slice(1));
           break;
         case "list":
           cmdTokenList(json);

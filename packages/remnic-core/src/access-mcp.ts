@@ -5,6 +5,7 @@ import type { Readable, Writable } from "node:stream";
 // (memory_get / memory_search / memory_store) as a side effect; callTool
 // dispatches migrated tools through the registry (issue #1525).
 import { type OperationName, getOperation } from "./access-boundary.js";
+import { assertOperationAllowed, capabilityAllowsOp, enforceNamespaceAllowList, tokenCapabilityStore } from "./access-token-capabilities.js";
 import {
   type ActionConfidenceRequest,
   type CapsuleExportRequest,
@@ -20,6 +21,7 @@ import { EngramAccessInputError, type EngramAccessRecallResponse, type EngramAcc
 import "./access-operations.js";
 import { validateBriefingFormat } from "./briefing.js";
 import { processChatMessage } from "./chat/chat-factory.js";
+import { enforceChatSessionNamespace } from "./chat/chat-session.js";
 import { type CitationMetadata, buildCitationGuidance } from "./citations.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import {
@@ -37,6 +39,7 @@ import type { RecallDisclosure, RecallPlanMode } from "./types.js";
 import { expandTildePath } from "./utils/path.js";
 
 import { applyToolOutputSchemas } from "./access-mcp-output-schemas.js";
+import { MCP_READ_ONLY_TOOL_SUFFIXES } from "./mcp-read-only-tools.js";
 type JsonRpcId = string | number | null;
 
 type JsonRpcRequest = {
@@ -77,68 +80,6 @@ type McpResource = {
   description?: string;
   mimeType: string;
   _meta?: Record<string, unknown>;
-};
-
-/**
- * Conservative allowlist of canonical MCP tool suffixes that are
- * unambiguously read-only. Tools in this set are tagged with
- * `annotations: { readOnlyHint: true }` so ChatGPT (and other MCP
- * clients that honor the hint) can skip per-call confirmation.
- *
- * The list is suffix-based so it covers both the `remnic.*` and
- * `engram.*` naming forms. Anything not on it stays unannotated:
- * uncertainty is resolved as "might mutate".
- *
- * Excluded by construction: anything that writes, runs a pipeline,
- * flushes, applies, records, imports, or destructively deletes.
- */
-const MCP_READ_ONLY_TOOL_SUFFIXES: Readonly<Record<string, true>> = {
-  recall: true,
-  recall_explain: true,
-  recall_tier_explain: true,
-  recall_xray: true,
-  briefing: true,
-  wearables_status: true,
-  transcript_day: true,
-  transcript_search: true,
-  transcript_memories: true,
-  action_confidence: true,
-  capsule_list: true,
-  procedural_stats: true,
-  memory_get: true,
-  memory_timeline: true,
-  entity_get: true,
-  review_queue_list: true,
-  lcm_search: true,
-  continuity_incident_list: true,
-  identity_anchor_get: true,
-  memory_identity: true,
-  memory_search: true,
-  memory_profile: true,
-  memory_entities_list: true,
-  memory_questions: true,
-  memory_last_recall: true,
-  memory_intent_debug: true,
-  memory_qmd_debug: true,
-  memory_graph_explain: true,
-  graph_snapshot: true,
-  review_list: true,
-  profiling_report: true,
-  peer_list: true,
-  peer_get: true,
-  peer_profile_get: true,
-  console_state: true,
-  dreams_status: true,
-  codegraph_list_projects: true,
-  codegraph_index_status: true,
-  codegraph_search_graph: true,
-  codegraph_trace_path: true,
-  codegraph_detect_changes: true,
-  codegraph_query_graph: true,
-  codegraph_get_schema: true,
-  codegraph_get_snippet: true,
-  codegraph_get_architecture: true,
-  codegraph_search_code: true,
 };
 
 /**
@@ -2592,13 +2533,15 @@ export class EngramMcpServer {
       };
     }
     if (method === "tools/list") {
-      return {
-        jsonrpc: "2.0",
-        id,
-        result: {
-          tools: this.tools,
-        },
-      };
+      // Issue #1850 round 5 (finding 3): a scoped/deny-all token must not
+      // enumerate the full tool surface — filter advertised tools by the
+      // token's ops allow-list via the same map callTool uses. Unrestricted
+      // tokens (ops axis absent) see everything; unmapped tool ⇒ "" ⇒ hidden.
+      const caps = tokenCapabilityStore.getStore();
+      const tools = caps?.ops === undefined
+        ? this.tools
+        : this.tools.filter((t) => capabilityAllowsOp(caps, MCP_MIGRATED_OPERATIONS[toLegacyToolName(t.name)] ?? ""));
+      return { jsonrpc: "2.0", id, result: { tools } };
     }
     if (method === "resources/list") {
       return {
@@ -2839,6 +2782,19 @@ export class EngramMcpServer {
   }
 
   /**
+   * Whether a tool accepts a `namespace` argument — i.e. it is a
+   * namespace-scoped operation whose effective namespace MUST be gated by the
+   * per-token allow-list. Exposed (public) so the HTTP MCP transport can run
+   * the SAME effective-namespace enforcement the REST surface runs, without
+   * duplicating the tool-schema introspection (issue #1850). Namespace-
+   * agnostic tools (peer/wearables/etc.) return false and stay ungated,
+   * matching the REST surface where those routes never call resolveNamespace.
+   */
+  toolAcceptsNamespace(name: string): boolean {
+    return this.toolAcceptsArgument(name, "namespace");
+  }
+
+  /**
    * Determine whether oai-mem-citation guidance should be appended to recall.
    * Returns true when explicitly enabled via config OR when auto-detect is
    * active and the current MCP session belongs to a Codex adapter client.
@@ -2931,10 +2887,29 @@ export class EngramMcpServer {
     } else if (migrated.startsWith("codegraph_")) {
       envelope = { ...args, tool: migrated.slice("codegraph_".length) };
     } else if (migrated === "chat_message") {
-      // memory_chat dispatches to processChatMessage, not a pure service call.
+      // memory_chat bypasses op.run(); gate op + resumed-session namespace like the HTTP route (#1850 r6).
+      assertOperationAllowed(tokenCapabilityStore.getStore(), migrated);
       const message = typeof args.message === "string" ? args.message : "";
       if (!message) throw new EngramAccessInputError("message is required");
       const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId : undefined;
+      if (chatSessionId) {
+        await enforceChatSessionNamespace(this.service, chatSessionId);
+      } else {
+        // NEW chat session (no chatSessionId): processChatMessage mints a fresh
+        // session under the EFFECTIVE namespace (scope.namespace OR server
+        // default). Unlike the HTTP chat handler (which forwards no namespace),
+        // the MCP scope CAN carry one (Thread 17), so route it through the SAME
+        // effective-namespace chokepoint as the HTTP new-chat path
+        // (enforceNamespaceAllowList maps undefined → default) — a namespace-
+        // scoped token CANNOT start a chat in a namespace outside its allow-
+        // list, including an unconfigured/forbidden server default. Fail closed;
+        // no-op for unrestricted/legacy tokens (issue #1850 round 8).
+        enforceNamespaceAllowList(
+          tokenCapabilityStore.getStore(),
+          scope?.namespace,
+          this.service.configRef?.defaultNamespace,
+        );
+      }
       const chatResult = await processChatMessage({
         service: this.service,
         config: this.service.configRef?.chat,

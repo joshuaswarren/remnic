@@ -410,3 +410,39 @@ test("oauth pending --format rejects a bare flag with no value", async () => {
   assert.notEqual(result.exitCode, 0);
   assert.match(result.stderr, /--format requires a value/);
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// token generate — flag-value-vs-connector positional parsing (issue #1850 #5)
+// ════════════════════════════════════════════════════════════════════════════
+
+test("token generate: --ops value is not mistaken for the connector (flags-first parse)", async () => {
+  // `token generate --ops recall monitor` must resolve connector=monitor,
+  // not the --ops value "recall". The prior `rest.find(a => !a.startsWith("-"))`
+  // grabbed the first non-flag token, which was the --ops value. HOME is
+  // isolated at the file level so the generated token lands in the temp store.
+  const result = await runCli(["token", "generate", "--ops", "recall", "monitor"]);
+  assert.equal(result.exitCode, 0, "token generate should succeed with a valid connector");
+  assert.match(result.stdout, /Generated token for monitor:/, "connector must be monitor, not the --ops value");
+  assert.doesNotMatch(
+    result.stdout,
+    /Generated token for recall:/,
+    "the --ops value 'recall' must never be treated as the connector",
+  );
+});
+
+test("token generate: connector-first ordering still resolves the connector", async () => {
+  // Symmetric: connector before the flags must still resolve correctly.
+  const result = await runCli(["token", "generate", "monitor", "--ops", "recall"]);
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /Generated token for monitor:/);
+});
+
+test("token generate: a bare --ops value with no connector is a usage error, not a misparse", async () => {
+  // `token generate --ops monitor` (no real connector): before the fix the
+  // --ops value "monitor" was grabbed as the connector and a token minted;
+  // now the value is consumed by --ops and the missing connector is a clean
+  // usage error (non-zero exit).
+  const result = await runCli(["token", "generate", "--ops", "monitor"]);
+  assert.notEqual(result.exitCode, 0, "a missing connector must exit non-zero");
+  assert.match(result.stderr, /Usage: remnic token generate <connector-id>/);
+});

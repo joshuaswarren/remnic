@@ -11,6 +11,7 @@ import { mkdir, readFile, appendFile, readdir, stat, unlink, open } from "node:f
 import { constants as fsConstants } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { enforceNamespaceAllowList, tokenCapabilityStore } from "../access-token-capabilities.js";
 
 import type { ChatSessionState, ChatTranscriptEntry } from "./chat-types.js";
 
@@ -209,6 +210,39 @@ export async function loadChatSession(
     ...(pendingPromotionId ? { pendingPromotionId } : {}),
     createdAt,
   };
+}
+
+/**
+ * Structural shape {@link enforceChatSessionNamespace} reads from a service —
+ * `memoryDir` to locate the session file and `configRef.defaultNamespace` to
+ * resolve the effective namespace. Kept structural so the chat module need not
+ * depend on the full {@link EngramAccessService} type.
+ */
+export interface ChatSessionNamespaceHost {
+  memoryDir: string;
+  configRef?: { defaultNamespace?: string } | undefined;
+}
+
+/**
+ * The shared effective-namespace chokepoint for a resumed chat session
+ * (issue #1850 round 6). A chat session is an id-loaded record whose stored
+ * namespace bypassed the per-token allow-list; BOTH the HTTP dispatch
+ * (`/engram/v1/chat/message`, `/engram/v1/chat/events/:id`) and the MCP
+ * dispatch (`memory_chat` → processChatMessage) call this ONE function so
+ * neither surface can dodge it. Loads the session and runs
+ * `enforceNamespaceAllowList` (which maps undefined → the server default).
+ * FAIL CLOSED: a scoped token whose allow-list does not cover the session's
+ * effective namespace is rejected; no-op for unrestricted/legacy tokens. A
+ * missing session is left to the downstream handler (404 /
+ * chat_session_not_found) — only FOUND sessions carry a namespace to gate.
+ */
+export async function enforceChatSessionNamespace(
+  service: ChatSessionNamespaceHost,
+  chatSessionId: string,
+): Promise<void> {
+  const session = await loadChatSession(service.memoryDir, chatSessionId);
+  if (!session) return;
+  enforceNamespaceAllowList(tokenCapabilityStore.getStore(), session.namespace, service.configRef?.defaultNamespace);
 }
 
 /**

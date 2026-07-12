@@ -162,10 +162,13 @@ export const MCP_TOOLS: readonly McpToolEntry[] = [
 // `EngramAccessHttpServer.handle` (access-http.ts). Pathname patterns use
 // `:param` for path segments. The fitness test asserts each entry resolves
 // against the catalog so a new service route cannot land without either
-// migrating it or acknowledging the unmigrated count. Infrastructure probes
-// (health, adapters, the /mcp delegate, admin console, SSE-only endpoints)
-// carry no user request envelope and are intentionally excluded.
+// Infrastructure routes (health, the /mcp delegate, admin console, UI assets)
+// carry no user request envelope and are intentionally excluded. The adapters
+// route was migrated through the boundary in issue #1850 round 5 (finding 1):
+// it is now op-gated by `enforceTokenOp("adapters_status")` so a scoped token
+// cannot reach adapter metadata, and is tracked here so the gate is enforced.
 export const HTTP_ROUTES: readonly HttpRouteEntry[] = [
+  { method: "GET", pathname: "/engram/v1/adapters", operation: "adapters_status" },
   { method: "POST", pathname: "/engram/v1/recall", operation: "recall" },
   { method: "POST", pathname: "/engram/v1/coding-context", operation: "set_coding_context" },
   { method: "POST", pathname: "/engram/v1/capsules/export", operation: "capsule_export" },

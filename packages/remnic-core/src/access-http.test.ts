@@ -7,8 +7,11 @@ import { gzipSync } from "node:zlib";
 
 import { EngramAccessHttpServer, type RemnicAdminControls, type RemnicAdminDashboardStatus } from "./access-http.js";
 import { EngramAccessInputError, type EngramAccessService } from "./access-service.js";
+import { tokenCapabilityStore, type TokenCapabilities } from "./access-token-capabilities.js";
 import { parseConfig } from "./config.js";
 import { readPair, writePair } from "./contradiction/contradiction-review.js";
+import { createChatSession } from "./chat/chat-session.js";
+import { DEFAULT_CHAT_CONFIG } from "./chat/chat-config.js";
 import { projectTagProjectId } from "./coding/coding-namespace.js";
 import { OFFLINE_SYNC_MAX_MTIME_MS } from "./offline-sync.js";
 import type { StorageManager } from "./storage.js";
@@ -1802,5 +1805,783 @@ test("HTTP authTokenEntriesGetter is authoritative: scope policy binds connector
     assert.equal(((await operatorHealth.json()) as { ok?: boolean }).ok, true);
   } finally {
     await server.stop();
+  }
+});
+
+test("HTTP scoped-token namespace allow-list is enforced on every namespace route (issue #1837 bypass fix)", async () => {
+  // A scoped token may touch ONLY ns_a. The server default tenant is "default"
+  // (≠ ns_a), so OMITTING ?namespace= must NOT silently fall through to the
+  // default tenant — the EFFECTIVE namespace (explicit OR defaulted) must be a
+  // member of the token's allow-list on every namespace-scoped route. Fail
+  // closed everywhere; the previous behavior let a scoped bearer drop the
+  // param and reach the server default tenant (memory_list / memory_get).
+  const browseCalls: { namespace?: string }[] = [];
+  const getCalls: { memoryId: string; namespace: string | undefined }[] = [];
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-http-scoped-namespace-allow-list",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryBrowse: async (request: { namespace?: string }) => {
+      browseCalls.push(request);
+      return { total: 0, memories: [] };
+    },
+    memoryGet: async (memoryId: string, namespace: string | undefined) => {
+      getCalls.push({ memoryId, namespace });
+      return { found: true };
+    },
+    peerList: async () => ({ peers: [] }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    // Entry-based tokens with a capabilities record. The scoped token carries
+    // a namespaces allow-list; the operator token is explicit-unrestricted.
+    authTokenEntriesGetter: () => [
+      { token: "scoped-ns-a", capabilities: { version: 1, namespaces: ["ns_a"] } },
+      { token: "operator", capabilities: { version: 1 } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const request = (token: string, urlPath: string) =>
+    fetch(`http://127.0.0.1:${status.port}${urlPath}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  try {
+    // ── memory_list: the named bypass route ──
+    assert.equal(
+      (await request("scoped-ns-a", "/engram/v1/memories")).status,
+      403,
+      "scoped: omitting namespace must be rejected — server default is not in the allow-list",
+    );
+    assert.equal(
+      (await request("scoped-ns-a", "/engram/v1/memories?namespace=ns_b")).status,
+      403,
+      "scoped: an unlisted namespace must be rejected",
+    );
+    const okList = await request("scoped-ns-a", "/engram/v1/memories?namespace=ns_a");
+    assert.equal(okList.status, 200, "scoped: an allowed namespace must succeed");
+    assert.equal(browseCalls.at(-1)?.namespace, "ns_a", "scoped: the allowed namespace is forwarded to the service");
+
+    // ── memory_get: the other named bypass route (dispatches via the op registry) ──
+    assert.equal(
+      (await request("scoped-ns-a", "/engram/v1/memories/m_1")).status,
+      403,
+      "scoped memory_get: omitting namespace must be rejected",
+    );
+    assert.equal(
+      (await request("scoped-ns-a", "/engram/v1/memories/m_1?namespace=ns_b")).status,
+      403,
+      "scoped memory_get: an unlisted namespace must be rejected",
+    );
+    const okGet = await request("scoped-ns-a", "/engram/v1/memories/m_1?namespace=ns_a");
+    assert.equal(okGet.status, 200, "scoped memory_get: an allowed namespace must succeed");
+    assert.deepEqual(
+      getCalls.at(-1),
+      { memoryId: "m_1", namespace: "ns_a" },
+      "scoped memory_get: the allowed namespace reaches the service",
+    );
+
+    // ── a non-namespace-scoped route is unaffected by namespace scoping ──
+    assert.equal(
+      (await request("scoped-ns-a", "/engram/v1/peers")).status,
+      200,
+      "a non-namespace-scoped route must be unaffected",
+    );
+
+    // ── unrestricted token: omitting namespace still reaches the default tenant ──
+    assert.equal(
+      (await request("operator", "/engram/v1/memories")).status,
+      200,
+      "unrestricted: omitting namespace must still reach the default tenant",
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP scoped-token namespace allow-list gates id-loaded contradiction routes (issue #1850 round 2)", async () => {
+  // The contradiction detail GET and review/resolve routes load the pair BY
+  // ID — its namespace comes from the record, NOT a ?namespace= query param
+  // that resolveNamespace() already gates. A namespace-scoped bearer that
+  // knows a pair id in a namespace outside its allow-list must NOT be able to
+  // read (GET) or mutate (resolve) it. Fail closed (403) everywhere; the pair
+  // in the allowed namespace is reachable.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-http-scoped-contradiction-"));
+  const allowedPair = writePair(dir, {
+    namespace: "ns_a",
+    memoryIds: ["a-1", "a-2"],
+    verdict: "contradicts",
+    rationale: "pair in the allowed namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  const deniedPair = writePair(dir, {
+    namespace: "ns_b",
+    memoryIds: ["b-1", "b-2"],
+    verdict: "contradicts",
+    rationale: "pair in a denied namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  const storage = { dir } as unknown as StorageManager;
+  const service = {
+    configRef: parseConfig({
+      memoryDir: dir,
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryDir: dir,
+    storageRef: storage,
+    getReadableStorageForNamespace: async (namespace: string | undefined) => ({
+      namespace: namespace ?? "default",
+      storage,
+    }),
+    getWritableStorageForNamespace: async (namespace: string | undefined) => ({
+      namespace: namespace ?? "default",
+      storage,
+    }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "scoped-ns-a", capabilities: { version: 1, namespaces: ["ns_a"] } },
+      { token: "operator", capabilities: { version: 1 } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const getDetail = (token: string, pairId: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/review/contradictions/${pairId}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  const resolve = (token: string, pairId: string, verb: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/review/resolve`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ pairId, verb }),
+    });
+  try {
+    // ── GET detail: scoped token, denied namespace → 403 (fail closed, no leak) ──
+    assert.equal(
+      (await getDetail("scoped-ns-a", deniedPair.pairId)).status,
+      403,
+      "scoped GET: a pair in an unlisted namespace must be denied (403), not leaked",
+    );
+    // ── GET detail: scoped token, allowed namespace → 200 ──
+    assert.equal(
+      (await getDetail("scoped-ns-a", allowedPair.pairId)).status,
+      200,
+      "scoped GET: a pair in the allowed namespace must succeed",
+    );
+
+    // ── review/resolve: scoped token, denied namespace → 403 before any mutation ──
+    const deniedResolve = await resolve("scoped-ns-a", deniedPair.pairId, "both-valid");
+    assert.equal(
+      deniedResolve.status,
+      403,
+      "scoped resolve: a pair in an unlisted namespace must be denied (403) before any mutation",
+    );
+    // The denied pair must NOT have been mutated (no resolution leak).
+    assert.notEqual(
+      readPair(dir, deniedPair.pairId)?.resolution,
+      "both-valid",
+      "scoped resolve: the denied pair must remain unresolved",
+    );
+
+    // ── review/resolve: scoped token, allowed namespace → succeeds (not 403) ──
+    const allowedResolve = await resolve("scoped-ns-a", allowedPair.pairId, "both-valid");
+    assert.equal(
+      allowedResolve.status,
+      200,
+      "scoped resolve: a pair in the allowed namespace must succeed",
+    );
+    assert.equal(
+      readPair(dir, allowedPair.pairId)?.resolution,
+      "both-valid",
+      "scoped resolve: the allowed pair is marked resolved",
+    );
+
+    // ── unrestricted operator token: the denied-namespace pair is reachable ──
+    assert.equal(
+      (await getDetail("operator", deniedPair.pairId)).status,
+      200,
+      "unrestricted GET: the denied-namespace pair is reachable for an unrestricted token",
+    );
+  } finally {
+    await server.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ===========================================================================
+// Issue #1850 round 4 — uniform effective-namespace chokepoint coverage.
+// One helper (enforceNamespaceAllowList) gates every surface; these tests
+// prove the gate fires on the surfaces round 3 missed: MCP tools/call, HTTP
+// body-namespace (coding) routes, and the legacy undefined-namespace pair.
+// ===========================================================================
+
+test("HTTP-MCP tools/call enforces the token namespace allow-list (issue #1850 finding 1)", async () => {
+  // MCP `tools/call` previously never applied the namespace allow-list, so a
+  // scoped bearer could reach another tenant via tool args. capsule_list is a
+  // namespace-scoped MCP tool (accepts a `namespace` argument), so the gate
+  // must fire on it. The 403 is thrown BEFORE op.run, so the denied case never
+  // reaches the service.
+  const capsuleCalls: Array<Record<string, unknown>> = [];
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-mcp-ns", namespacesEnabled: true, defaultNamespace: "default" }),
+    capsuleList: async (args: Record<string, unknown>) => {
+      capsuleCalls.push(args);
+      return { capsules: [] };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "scoped-ns-a", capabilities: { version: 1, namespaces: ["ns_a"] } },
+      { token: "operator", capabilities: { version: 1 } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const mcpCall = (token: string, namespace: string) =>
+    fetch(`http://127.0.0.1:${status.port}/mcp`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "engram.capsule_list", arguments: { namespace } },
+      }),
+    });
+  try {
+    // scoped: an unlisted namespace is rejected with 403 BEFORE op.run.
+    assert.equal(
+      (await mcpCall("scoped-ns-a", "ns_b")).status,
+      403,
+      "scoped MCP: an unlisted namespace must be denied (403) before op.run",
+    );
+    assert.equal(capsuleCalls.length, 0, "scoped MCP: the service must NOT be reached for a denied namespace");
+    // scoped: the allowed namespace proceeds past the gate (200, not 403).
+    const allowed = await mcpCall("scoped-ns-a", "ns_a");
+    assert.notEqual(allowed.status, 403, "scoped MCP: the allowed namespace must proceed past the gate");
+    assert.equal(capsuleCalls.at(-1)?.namespace, "ns_a", "scoped MCP: the allowed namespace reaches the service");
+    // unrestricted: an unlisted namespace is a no-op (proceeds, not 403).
+    const unrestricted = await mcpCall("operator", "ns_b");
+    assert.notEqual(unrestricted.status, 403, "unrestricted MCP: namespace scoping must be a no-op");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP coding POST routes gate the body namespace through the allow-list (issue #1850 finding 2)", async () => {
+  // coding_decision passes `body` straight to op.run; a scoped bearer setting
+  // body.namespace to another tenant must be rejected. The gate fires on the
+  // body namespace field via the same resolveNamespace chokepoint as query
+  // routes. 403 before op.run; the allowed namespace reaches the service.
+  const decisionCalls: Array<Record<string, unknown>> = [];
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-coding-ns", namespacesEnabled: true, defaultNamespace: "default" }),
+    codingDecision: async (input: Record<string, unknown>) => {
+      decisionCalls.push(input);
+      return { subcommand: "list", records: [], count: 0 };
+    },
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "scoped-ns-a", capabilities: { version: 1, namespaces: ["ns_a"] } },
+      { token: "operator", capabilities: { version: 1 } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const postDecision = (token: string, namespace: string | undefined) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/coding/decisions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ subcommand: "list", ...(namespace ? { namespace } : {}) }),
+    });
+  try {
+    // scoped: body.namespace to an unlisted tenant → 403 before op.run.
+    assert.equal(
+      (await postDecision("scoped-ns-a", "ns_b")).status,
+      403,
+      "scoped coding: body.namespace to an unlisted namespace must be denied (403)",
+    );
+    assert.equal(decisionCalls.length, 0, "scoped coding: the service must NOT be reached for a denied namespace");
+    // scoped: the allowed body.namespace reaches the service.
+    const allowed = await postDecision("scoped-ns-a", "ns_a");
+    assert.notEqual(allowed.status, 403, "scoped coding: the allowed namespace must proceed past the gate");
+    assert.equal(decisionCalls.at(-1)?.namespace, "ns_a", "scoped coding: the allowed namespace reaches the service");
+    // unrestricted: any body.namespace is a no-op.
+    assert.notEqual(
+      (await postDecision("operator", "ns_b")).status,
+      403,
+      "unrestricted coding: namespace scoping must be a no-op",
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("Legacy undefined-namespace contradiction pair: default-allow-list token reads+resolves; non-default denied (issue #1850 findings 3+4)", async () => {
+  // A legacy pair carries namespace:undefined, which downstream storage maps to
+  // the server DEFAULT. Round 3's assertNamespaceAllowed(caps, undefined)
+  // wrongly denied a scoped token whose allow-list INCLUDES the default. The
+  // effective-namespace chokepoint maps undefined → default, so:
+  //   - namespaces:['default'] (== server default) ⇒ ALLOWED read + resolve;
+  //   - namespaces:['ns_a'] (not default) ⇒ DENIED.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-http-scoped-legacy-pair-"));
+  const legacyPair = writePair(dir, {
+    memoryIds: ["legacy-x", "legacy-y"],
+    verdict: "contradicts",
+    rationale: "legacy pair with no namespace",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  // Sanity: the fixture really is a legacy unscoped pair.
+  assert.equal(readPair(dir, legacyPair.pairId)?.namespace, undefined);
+  const storage = { dir } as unknown as StorageManager;
+  const baseService = {
+    configRef: parseConfig({ memoryDir: dir, namespacesEnabled: true, defaultNamespace: "default" }),
+    memoryDir: dir,
+    storageRef: storage,
+    getReadableStorageForNamespace: async (namespace: string | undefined) => ({
+      namespace: namespace ?? "default",
+      storage,
+    }),
+    getWritableStorageForNamespace: async (namespace: string | undefined) => ({
+      namespace: namespace ?? "default",
+      storage,
+    }),
+  };
+  const mkServer = (scopedToken: string, allowList: string[]) => {
+    const service = { ...baseService } as unknown as EngramAccessService;
+    return new EngramAccessHttpServer({
+      service,
+      port: 0,
+      authTokenEntriesGetter: () => [{ token: scopedToken, capabilities: { version: 1, namespaces: allowList } }],
+      adminConsoleEnabled: false,
+    });
+  };
+
+  // ── default-allow-list token: legacy pair is reachable + resolvable ──
+  const defaultServer = mkServer("allow-default", ["default"]);
+  const defaultStatus = await defaultServer.start();
+  try {
+    const detail = await fetch(
+      `http://127.0.0.1:${defaultStatus.port}/engram/v1/review/contradictions/${legacyPair.pairId}`,
+      { headers: { authorization: "Bearer allow-default" } },
+    );
+    assert.equal(detail.status, 200, "default-allow token: legacy undefined pair must be readable (undefined→default)");
+    const resolve = await fetch(`http://127.0.0.1:${defaultStatus.port}/engram/v1/review/resolve`, {
+      method: "POST",
+      headers: { authorization: "Bearer allow-default", "content-type": "application/json" },
+      body: JSON.stringify({ pairId: legacyPair.pairId, verb: "both-valid" }),
+    });
+    assert.equal(resolve.status, 200, "default-allow token: legacy undefined pair must be resolvable");
+    assert.equal(
+      readPair(dir, legacyPair.pairId)?.resolution,
+      "both-valid",
+      "default-allow token: the legacy pair is marked resolved",
+    );
+  } finally {
+    await defaultServer.stop();
+  }
+
+  // A fresh legacy pair for the deny case — independent of the pair the
+  // default-allow token already resolved above, so "must remain unresolved"
+  // is a clean assertion.
+  const deniedLegacyPair = writePair(dir, {
+    memoryIds: ["legacy-deny-x", "legacy-deny-y"],
+    verdict: "contradicts",
+    rationale: "legacy pair for the deny case",
+    confidence: 0.9,
+    detectedAt: new Date().toISOString(),
+  });
+  assert.equal(readPair(dir, deniedLegacyPair.pairId)?.namespace, undefined);
+
+  // ── non-default-allow-list token: legacy pair is DENIED (undefined→default not listed) ──
+  const deniedServer = mkServer("allow-ns-a", ["ns_a"]);
+  const deniedStatus = await deniedServer.start();
+  try {
+    const detail = await fetch(
+      `http://127.0.0.1:${deniedStatus.port}/engram/v1/review/contradictions/${deniedLegacyPair.pairId}`,
+      { headers: { authorization: "Bearer allow-ns-a" } },
+    );
+    assert.equal(
+      detail.status,
+      403,
+      "non-default token: legacy undefined pair must be denied (undefined→default not in allow-list)",
+    );
+    const resolve = await fetch(`http://127.0.0.1:${deniedStatus.port}/engram/v1/review/resolve`, {
+      method: "POST",
+      headers: { authorization: "Bearer allow-ns-a", "content-type": "application/json" },
+      body: JSON.stringify({ pairId: deniedLegacyPair.pairId, verb: "both-valid" }),
+    });
+    assert.equal(resolve.status, 403, "non-default token: legacy undefined pair must not be resolvable");
+    assert.notEqual(
+      readPair(dir, deniedLegacyPair.pairId)?.resolution,
+      "both-valid",
+      "non-default token: the legacy pair must remain unresolved",
+    );
+  } finally {
+    await deniedServer.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Issue #1850 round 5: comprehensive access-surface coverage
+// ──────────────────────────────────────────────────────────────────────────
+
+test("HTTP adapters route is op-gated: deny-all → 403, unrestricted → 200 (issue #1850 finding 1)", async () => {
+  // The adapters route serves adapter metadata after auth but previously had
+  // NO enforceTokenOp, so a deny-all / narrow-ops token reached it. It now
+  // dispatches through the adapters_status op; a scoped token is rejected.
+  const service = {
+    configRef: parseConfig({ memoryDir: "/tmp/remnic-http-adapters-opgate", defaultNamespace: "default" }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "denyall", capabilities: { version: 1, ops: [] } },
+      { token: "narrow", capabilities: { version: 1, ops: ["memory_get"] } },
+      { token: "operator", capabilities: { version: 1 } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const request = (token: string, urlPath: string) =>
+    fetch(`http://127.0.0.1:${status.port}${urlPath}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  try {
+    assert.equal(
+      (await request("denyall", "/engram/v1/adapters")).status,
+      403,
+      "deny-all token must be rejected by the op gate",
+    );
+    assert.equal(
+      (await request("narrow", "/engram/v1/adapters")).status,
+      403,
+      "narrow-ops token without adapters_status must be rejected",
+    );
+    const ok = await request("operator", "/engram/v1/adapters");
+    assert.equal(ok.status, 200, "unrestricted token must reach adapter metadata");
+    const body = (await ok.json()) as { adaptersEnabled?: boolean };
+    assert.equal(typeof body.adaptersEnabled, "boolean", "adapter metadata body shape preserved");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP chat routes gate the resumed session's STORED namespace (issue #1850 finding 2)", async () => {
+  // A chat session is an id-loaded record: its namespace comes from the stored
+  // session header, NOT a ?namespace= query param. A namespace-scoped bearer
+  // that knows a chatSessionId must not post to / stream a session in a
+  // namespace outside its allow-list. The gate runs before delegation.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-chat-ns-gate-"));
+  // Session bound to ns_a (no principal ⇒ accessible to anyone per
+  // sessionBelongsToPrincipal, so the namespace gate is the ONLY gate in play).
+  const session = await createChatSession(dir, { namespace: "ns_a" });
+  const service = {
+    configRef: parseConfig({ memoryDir: dir, namespacesEnabled: true, defaultNamespace: "default" }),
+    memoryDir: dir,
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "scoped-ns-b", capabilities: { version: 1, namespaces: ["ns_b"] } },
+      { token: "scoped-ns-a", capabilities: { version: 1, namespaces: ["ns_a"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const authed = (token: string) => ({ headers: { authorization: `Bearer ${token}` } });
+  try {
+    // ── POST chat/message resuming a CROSS-namespace session → 403 ──
+    const cross = await fetch(`http://127.0.0.1:${status.port}/engram/v1/chat/message`, {
+      method: "POST",
+      ...authed("scoped-ns-b"),
+      headers: { ...authed("scoped-ns-b").headers, "content-type": "application/json" },
+      body: JSON.stringify({ message: "hi", chatSessionId: session.id }),
+    });
+    assert.equal(cross.status, 403, "scoped-ns-b must NOT post to a session bound to ns_a");
+
+    // ── POST chat/message resuming a SAME-namespace session → passes the gate ──
+    // (Chat is unconfigured here so the handler returns chat_disabled 404; the
+    //  point is it is NOT 403 — the namespace gate let it through.)
+    const same = await fetch(`http://127.0.0.1:${status.port}/engram/v1/chat/message`, {
+      method: "POST",
+      headers: { authorization: "Bearer scoped-ns-a", "content-type": "application/json" },
+      body: JSON.stringify({ message: "hi", chatSessionId: session.id }),
+    });
+    assert.notEqual(same.status, 403, "scoped-ns-a must pass the namespace gate for its own session");
+
+    // ── GET chat/events for a CROSS-namespace session → 403 ──
+    const crossEvents = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/chat/events/${session.id}`,
+      authed("scoped-ns-b"),
+    );
+    assert.equal(crossEvents.status, 403, "scoped-ns-b must NOT stream a session bound to ns_a");
+
+    // ── GET chat/events for a SAME-namespace session → passes the gate ──
+    const sameEvents = await fetch(
+      `http://127.0.0.1:${status.port}/engram/v1/chat/events/${session.id}`,
+      authed("scoped-ns-a"),
+    );
+    assert.notEqual(sameEvents.status, 403, "scoped-ns-a must pass the namespace gate for its own session");
+  } finally {
+    await server.stop();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("HTTP per-request token capabilities never bleed across concurrent async requests (issue #1850 r7 ALS run fix)", async () => {
+  // The capability store must be bound via run() (NOT enterWith) so each
+  // request's async scope observes its OWN resolved capabilities across every
+  // await. Interleave concurrent requests with DIFFERENT scopes against an
+  // op+namespace-gated route whose service read yields, then assert:
+  //   (1) a deny-all op token is ALWAYS rejected — never fail-opens to 200
+  //       because its caps leaked to undefined/unrestricted mid-handler;
+  //   (2) the store read AFTER an async yield inside the service still carries
+  //       the REQUESTING token's scope on every call — zero cross-request bleed.
+  const observed: Array<TokenCapabilities | undefined> = [];
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-http-als-concurrency",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryBrowse: async () => {
+      // Yield so concurrent requests overlap at this await — the exact window
+      // where an enterWith-based store would read another request's caps (or
+      // undefined). run() keeps each request in its own scope across the yield.
+      await new Promise<void>((resolve) => setTimeout(resolve, 8));
+      observed.push(tokenCapabilityStore.getStore());
+      return { total: 0, memories: [] };
+    },
+    memoryGet: async () => ({ found: true }),
+    peerList: async () => ({ peers: [] }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      { token: "deny-all", capabilities: { version: 1, ops: [] } },
+      { token: "scoped-ns-a", capabilities: { version: 1, ops: ["memory_list"], namespaces: ["ns_a"] } },
+      { token: "scoped-ns-b", capabilities: { version: 1, ops: ["memory_list"], namespaces: ["ns_b"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const get = (token: string, namespace: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories?namespace=${namespace}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  try {
+    const REPEATS = 15;
+    const batch: Promise<Response>[] = [];
+    for (let i = 0; i < REPEATS; i++) {
+      batch.push(get("deny-all", "ns_a")); // op-gate must reject (ops: [])
+      batch.push(get("scoped-ns-a", "ns_a")); // passes op + ns gate, reaches service
+      batch.push(get("scoped-ns-b", "ns_b")); // passes op + ns gate, reaches service
+    }
+    const responses = await Promise.all(batch);
+
+    // (1) Op-gate holds under concurrency: every deny-all request is 403, never
+    //     fail-open 200 (which would mean its caps bled to unrestricted).
+    const denyAllStatuses = responses.filter((_, i) => i % 3 === 0).map((r) => r.status);
+    assert.ok(
+      denyAllStatuses.every((s) => s === 403),
+      `deny-all token must always be 403, got: ${JSON.stringify(denyAllStatuses)}`,
+    );
+
+    // scoped tokens reach the service (200) — op + namespace gates both pass.
+    const nsAStatuses = responses.filter((_, i) => i % 3 === 1).map((r) => r.status);
+    const nsBStatuses = responses.filter((_, i) => i % 3 === 2).map((r) => r.status);
+    assert.ok(nsAStatuses.every((s) => s === 200), `scoped-ns-a should all be 200: ${JSON.stringify(nsAStatuses)}`);
+    assert.ok(nsBStatuses.every((s) => s === 200), `scoped-ns-b should all be 200: ${JSON.stringify(nsBStatuses)}`);
+
+    // (2) No cross-request bleed: the store read AFTER the async yield carried
+    //     the REQUESTING token's namespace on every service call. memoryBrowse
+    //     ran once per scoped request (2 * REPEATS).
+    assert.equal(observed.length, 2 * REPEATS, "memoryBrowse called once per scoped request");
+    const nsAObserved = observed.filter((c) => c?.namespaces?.includes("ns_a")).length;
+    const nsBObserved = observed.filter((c) => c?.namespaces?.includes("ns_b")).length;
+    assert.equal(nsAObserved, REPEATS, "every ns_a request observed its own scope — no bleed");
+    assert.equal(nsBObserved, REPEATS, "every ns_b request observed its own scope — no bleed");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP allow-capability is never inherited by a concurrent deny token across the async yield (issue #1850 r8 ALS non-inheritance)", async () => {
+  // The r7 run() fix guarantees each request observes its OWN caps. The sharper
+  // property: a token whose caps ALLOW the op+namespace (→ 200) interleaved
+  // with deny tokens (→ 403) must NEVER let a deny request inherit the allow
+  // token's capabilities — i.e. in the SAME batch where allow requests returned
+  // 200, NO deny request ever returned 200. Distinct (op, namespace) per token
+  // so the result can only come from each request's own resolved caps.
+  const observed: Array<TokenCapabilities | undefined> = [];
+  const service = {
+    configRef: parseConfig({
+      memoryDir: "/tmp/remnic-http-als-noninherit",
+      namespacesEnabled: true,
+      defaultNamespace: "default",
+    }),
+    memoryBrowse: async () => {
+      // Real wall-clock yield — the LEGITIMATE timer exception: this test
+      // exercises ALS async-scope isolation across CONCURRENT requests, so the
+      // await must produce a genuine overlap window where an enterWith-based
+      // store would read another request's caps. Deterministic fake timers
+      // cannot force that cross-request overlap (mirrors the r7 sibling test).
+      await new Promise<void>((resolve) => setTimeout(resolve, 8));
+      observed.push(tokenCapabilityStore.getStore());
+      return { total: 0, memories: [] };
+    },
+    memoryGet: async () => ({ found: true }),
+    peerList: async () => ({ peers: [] }),
+  } as unknown as EngramAccessService;
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: () => [
+      // ALLOW: op + namespace both permitted → 200.
+      { token: "allow", capabilities: { version: 1, ops: ["memory_list"], namespaces: ["ns_allow"] } },
+      // DENY (op-level): empty ops → 403 at the op-gate.
+      { token: "deny-all", capabilities: { version: 1, ops: [] } },
+      // DENY (namespace-level): op permitted but scoped to a DIFFERENT
+      // namespace ("ns_other") than the request ("ns_allow") → 403 at the
+      // namespace-gate. The ONLY way this becomes 200 is by inheriting the
+      // allow token's ns_allow cap — exactly the bleed run() prevents.
+      { token: "deny-ns", capabilities: { version: 1, ops: ["memory_list"], namespaces: ["ns_other"] } },
+    ],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  const get = (token: string, namespace: string) =>
+    fetch(`http://127.0.0.1:${status.port}/engram/v1/memories?namespace=${namespace}`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  try {
+    const REPEATS = 15;
+    const batch: Promise<Response>[] = [];
+    for (let i = 0; i < REPEATS; i++) {
+      batch.push(get("allow", "ns_allow")); // 3i   → 200
+      batch.push(get("deny-all", "ns_allow")); // 3i+1 → 403 (op-gate)
+      batch.push(get("deny-ns", "ns_allow")); // 3i+2 → 403 (namespace-gate)
+    }
+    const responses = await Promise.all(batch);
+    const allowStatuses = responses.filter((_, i) => i % 3 === 0).map((r) => r.status);
+    const denyAllStatuses = responses.filter((_, i) => i % 3 === 1).map((r) => r.status);
+    const denyNsStatuses = responses.filter((_, i) => i % 3 === 2).map((r) => r.status);
+
+    // ALLOW requests succeed (200) — the caps DID resolve correctly and the
+    // service read happened under the allow scope.
+    assert.ok(allowStatuses.every((s) => s === 200), `allow token should all be 200: ${JSON.stringify(allowStatuses)}`);
+
+    // NON-INHERITANCE: in the SAME interleaved batch where allow got 200, every
+    // deny request stayed 403 — neither deny token ever inherited the allow
+    // token's capabilities (which would have been 200). Covers BOTH op-level
+    // and namespace-level denial.
+    assert.ok(
+      denyAllStatuses.every((s) => s === 403),
+      `deny-all token must never be 200 (never inherits allow caps): ${JSON.stringify(denyAllStatuses)}`,
+    );
+    assert.ok(
+      denyNsStatuses.every((s) => s === 403),
+      `deny-ns token must never be 200 (never inherits allow namespace): ${JSON.stringify(denyNsStatuses)}`,
+    );
+    // Both deny arrays are ALL 403 ⟹ neither contains a 200: in the same
+    // interleaved batch where the allow token returned 200, no deny request
+    // ever inherited the allow token's capabilities.
+
+    // Only allow requests reached the service; the store read after the async
+    // yield carried the allow token's namespace every time — zero deny bleed.
+    assert.equal(observed.length, REPEATS, "only allow requests reached the service");
+    assert.ok(
+      observed.every((c) => c?.namespaces?.includes("ns_allow")),
+      "every service read carried the allow token's namespace — no deny bleed",
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("HTTP chat/message gates the NEW session's namespace — scoped token cannot start a chat in a disallowed namespace (issue #1850 r7)", async () => {
+  // A NEW chat turn (no chatSessionId) previously never hit the effective-
+  // namespace chokepoint, so a namespace-scoped token could start a chat in the
+  // server DEFAULT namespace even when "default" was outside its allow-list.
+  // The new-session path must resolve the effective namespace (the server
+  // default, since the HTTP chat handler forwards no namespace) and fail closed
+  // against the token allow-list — same as the resume path.
+  const dir = await mkdtemp(path.join(os.tmpdir(), "remnic-chat-new-ns-"));
+  try {
+    const service = {
+      configRef: parseConfig({
+        memoryDir: dir,
+        namespacesEnabled: true,
+        defaultNamespace: "default",
+        chat: { ...DEFAULT_CHAT_CONFIG, enabled: true },
+      }),
+      memoryDir: dir,
+      fallbackLlmRef: { chatCompletion: async () => ({ content: "stub reply" }) },
+      localLlmRef: null,
+      memoryGet: () => Promise.resolve(null),
+      memoryTimeline: () => Promise.resolve([]),
+      memorySearch: () => Promise.resolve({ results: [], count: 0 }),
+      recallExplain: () => Promise.resolve(null),
+      entityGet: () => Promise.resolve(null),
+      memoryProfile: () => Promise.resolve({}),
+      memoryEntitiesList: () => Promise.resolve({ items: [] }),
+      memoryQuestions: () => Promise.resolve({ items: [] }),
+      reviewQueue: () => Promise.resolve({ items: [] }),
+    } as unknown as EngramAccessService;
+    const server = new EngramAccessHttpServer({
+      service,
+      port: 0,
+      authTokenEntriesGetter: () => [
+        // scoped to ns_a (NOT the server default) — must be denied a new chat.
+        { token: "scoped-ns-a", capabilities: { version: 1, ops: ["chat_message"], namespaces: ["ns_a"] } },
+        // scoped to the server default — may start a new chat there.
+        { token: "scoped-default", capabilities: { version: 1, ops: ["chat_message"], namespaces: ["default"] } },
+      ],
+      adminConsoleEnabled: false,
+    });
+    const status = await server.start();
+    const post = (token: string) =>
+      fetch(`http://127.0.0.1:${status.port}/engram/v1/chat/message`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        body: JSON.stringify({ message: "hi" }), // no chatSessionId → NEW session
+      });
+    try {
+      // DISALLOWED: token scoped to ns_a; the new session would land in the
+      // server default ("default"), which is not in ["ns_a"] → 403.
+      const denied = await post("scoped-ns-a");
+      assert.equal(denied.status, 403, "scoped-to-ns_a must not start a new chat in the default namespace");
+
+      // ALLOWED: token scoped to the server default → gate passes → chat runs
+      // and returns 200 with a reply.
+      const allowed = await post("scoped-default");
+      assert.equal(allowed.status, 200, "scoped-to-default may start a new chat in the default namespace");
+      const allowedBody = (await allowed.json()) as { reply?: string };
+      assert.ok(allowedBody.reply && allowedBody.reply.length > 0, "allowed new chat returns a reply");
+    } finally {
+      await server.stop();
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });
