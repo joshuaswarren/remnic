@@ -476,6 +476,64 @@ test("normalizeCapabilities: rejects non-object", () => {
   assert.throws(() => normalizeCapabilities("bad"), /must be an object/i);
   assert.throws(() => normalizeCapabilities([1]), /must be an object/i);
 });
+// ===========================================================================
+// 9b. Mint/load version symmetry (issue #1837 r11) — validateCapabilitiesForMint
+//     and normalizeCapabilities MUST treat the version marker identically:
+//     an absent/undefined version coerces to the current default (1) in both,
+//     and an explicitly-wrong version is rejected by both. The prior asymmetry
+//     let {version: undefined} pass mint (coerced to {version:1}) yet THROW on
+//     load — a record that mint-validated had to also load-normalize.
+// ===========================================================================
+
+test("version symmetry: undefined version coerces to 1 in BOTH mint and load", () => {
+  const minted = validateCapabilitiesForMint({ version: undefined, ops: ["recall"] }, OPERATION_NAMES);
+  assert.deepEqual(minted, { version: TOKEN_CAPABILITIES_VERSION, ops: ["recall"] });
+  // The minted record must load-normalize without throwing (the original bug).
+  const loaded = normalizeCapabilities(minted);
+  assert.deepEqual(loaded, { version: TOKEN_CAPABILITIES_VERSION, ops: ["recall"] });
+});
+
+test("version symmetry: absent version key coerces to 1 in BOTH mint and load", () => {
+  const minted = validateCapabilitiesForMint({ ops: ["recall"] }, OPERATION_NAMES);
+  assert.deepEqual(minted, { version: TOKEN_CAPABILITIES_VERSION, ops: ["recall"] });
+  // A present record with NO version key loads as version 1 (no throw).
+  const loaded = normalizeCapabilities({ ops: ["recall"] });
+  assert.deepEqual(loaded, { version: TOKEN_CAPABILITIES_VERSION, ops: ["recall"] });
+});
+
+test("version symmetry: undefined-version record round-trips mint → load", () => {
+  // The mint output is what is persisted; feeding it back through the load
+  // normalizer must reproduce it exactly (mint ⇄ load equivalence).
+  const minted = validateCapabilitiesForMint(
+    { version: undefined, namespaces: ["default"] },
+    OPERATION_NAMES,
+  );
+  const reloaded = normalizeCapabilities(minted);
+  assert.deepEqual(reloaded, minted);
+  assert.deepEqual(reloaded, { version: TOKEN_CAPABILITIES_VERSION, namespaces: ["default"] });
+});
+
+test("version symmetry: explicitly-wrong versions (2, 'x', 0) rejected identically by mint AND load", () => {
+  for (const badVersion of [2, "x", 0]) {
+    assert.throws(
+      () => validateCapabilitiesForMint({ version: badVersion }, OPERATION_NAMES),
+      /version must be/i,
+      `mint must reject version ${JSON.stringify(badVersion)}`,
+    );
+    assert.throws(
+      () => normalizeCapabilities({ version: badVersion }),
+      /version must be/i,
+      `load must reject version ${JSON.stringify(badVersion)}`,
+    );
+  }
+});
+
+test("version symmetry: version 1 is accepted identically by mint AND load", () => {
+  const minted = validateCapabilitiesForMint({ version: 1, ops: ["recall"] }, OPERATION_NAMES);
+  const loaded = normalizeCapabilities({ version: 1, ops: ["recall"] });
+  assert.deepEqual(minted, loaded);
+  assert.deepEqual(loaded, { version: TOKEN_CAPABILITIES_VERSION, ops: ["recall"] });
+});
 
 // ===========================================================================
 // 10. CRITICAL COVERAGE — boundary run() enforces for EVERY registered op

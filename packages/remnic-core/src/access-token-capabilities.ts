@@ -126,9 +126,11 @@ function parseAxis(
 /**
  * Normalize a capabilities record for PERSISTENCE/LOAD. Returns `undefined`
  * ONLY when the record is entirely absent (a pre-feature legacy entry ⇒
- * unrestricted). When present, the version marker is preserved so the entry
- * stays mechanically distinguishable from legacy on reload. Throws on a
- * malformed record (non-object, bad/missing version, malformed axes).
+ * unrestricted). When present, an absent/`undefined` `version` is COERCED to
+ * the current default (1) — mirroring {@link validateCapabilitiesForMint} — so
+ * a record that mint-validated also load-normalizes without a schema throw.
+ * An explicitly-present WRONG version (not 1) is still rejected. Throws on a
+ * malformed record (non-object, explicitly-wrong version, malformed axes).
  */
 export function normalizeCapabilities(raw: unknown): TokenCapabilities | undefined {
   if (raw === undefined || raw === null) return undefined;
@@ -136,7 +138,10 @@ export function normalizeCapabilities(raw: unknown): TokenCapabilities | undefin
     throw new Error("capabilities must be an object with a version marker");
   }
   const obj = raw as Record<string, unknown>;
-  if (obj.version !== TOKEN_CAPABILITIES_VERSION) {
+  // Coerce absent/undefined version → 1, mirroring validateCapabilitiesForMint
+  // (version 1 is the only schema version; coercing keeps mint-validated
+  // records reloadable). Only an explicitly-present WRONG version throws.
+  if (obj.version !== undefined && obj.version !== TOKEN_CAPABILITIES_VERSION) {
     throw new Error(`capabilities.version must be ${TOKEN_CAPABILITIES_VERSION}`);
   }
   const ops = parseAxis(obj, "ops", () => true, "operation");
@@ -152,10 +157,12 @@ export function normalizeCapabilities(raw: unknown): TokenCapabilities | undefin
  * record (never `undefined`) so every newly-minted token carries an explicit
  * capability decision — a new token can never gain full access by OMITTING
  * the field. When `raw` is absent/null, the result is an explicit
- * unrestricted record (`{ version: 1 }`), a deliberate/auditable choice.
- * Rejects unknown op names against the catalog and malformed namespace
- * values; throws a plain Error — the caller must NOT create a token when
- * this throws.
+ * unrestricted record (`{ version: 1 }`), a deliberate/auditable choice. A
+ * present-but-`undefined` (or absent) `version` is coerced to the current
+ * default (1); an explicitly-wrong version is rejected. This version rule is
+ * identical to {@link normalizeCapabilities} (mint/load symmetry). Rejects
+ * unknown op names against the catalog and malformed namespace values;
+ * throws a plain Error — the caller must NOT create a token when this throws.
  */
 export function validateCapabilitiesForMint(
   raw: unknown,
