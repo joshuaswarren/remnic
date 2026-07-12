@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { parseIsoOffsetTimestamp } from "../utils/iso-timestamp.js";
+import type { SourceConnectorProvenance } from "../types.js";
 
 export interface BulkImportSource {
   turns: ImportTurn[];
@@ -14,7 +15,7 @@ export interface BulkImportSource {
   };
 }
 
-export interface ImportTurn {
+export interface ImportTurn extends SourceConnectorProvenance {
   role: "user" | "assistant" | "other";
   content: string;
   timestamp: string;

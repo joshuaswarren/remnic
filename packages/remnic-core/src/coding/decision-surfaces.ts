@@ -208,6 +208,8 @@ export interface DecisionSurfaceContext {
   resolveStorage(request: DecisionSurfaceRequest): Promise<DecisionSurfaceStorage>;
   /** Throw the surface-appropriate input-validation error. */
   throwInputError(message: string): never;
+  /** Server-resolved connector identity for provenance stamping. */
+  readonly sourceConnector?: string;
 }
 
 /**
@@ -358,6 +360,7 @@ async function decisionRecord(
     //     persist inactive decision statuses in frontmatter).
     structuredAttributes: { decisionStatus: status },
     status: isActive ? undefined : "archived",
+    ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
   });
   log.info(
     `access-write op=coding_decision/record memoryId=${memoryId} status=${status}`,
@@ -419,6 +422,7 @@ async function decisionSupersede(
       // the replacement so list/get projection and QMD indexing see the
       // authoritative marker (review: supersede omits decisionStatus attrs).
       structuredAttributes: { decisionStatus: "accepted" },
+      ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
     },
   );
   if (replacementBlocked) {

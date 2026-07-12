@@ -791,6 +791,7 @@ export class AccessAdminOpsSurface {
             sourceMemoryId: memory.sourceMemoryId,
             actor: memory.actor,
             validAt: memory.validAt,
+            ...(memory.sourceConnector ? { sourceConnector: memory.sourceConnector } : {}),
           },
         );
         // #1645: a tombstone-blocked promotion lands pending_review (no active

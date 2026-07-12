@@ -782,6 +782,7 @@ export interface PromotionStorageProvider {
        * back to its origin (matches the runtime extraction pipeline).
        */
       lineage: string[];
+      sourceConnector?: string;
     }
   ): Promise<string>;
 }
@@ -918,6 +919,7 @@ export async function promoteMemory(options: PromoteMemoryOptions): Promise<Memo
         actor: options.actor,
         validAt: sourceMemory.frontmatter.valid_at,
         lineage: [options.sourceMemoryId],
+        ...(sourceMemory.frontmatter.sourceConnector ? { sourceConnector: sourceMemory.frontmatter.sourceConnector } : {}),
       });
       target.promoted = true;
       target.promotedMemoryId = promotedId;

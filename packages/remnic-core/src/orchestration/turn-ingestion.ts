@@ -422,6 +422,7 @@ export class TurnIngestionCoordinator {
         importProvenance: turn.importProvenance,
         turnFingerprint: turn.turnFingerprint,
         persistProcessedFingerprint: turn.persistProcessedFingerprint === true,
+        ...(turn.sourceConnector ? { sourceConnector: turn.sourceConnector } : {}),
       });
     }
     if (sessionTurns.length === 0) {

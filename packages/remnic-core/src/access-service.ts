@@ -4058,6 +4058,7 @@ export class EngramAccessService {
         cwd: request.cwd,
         projectTag: request.projectTag,
         effectiveCodingContext: effectiveCodingContext ?? null,
+        sourceConnector: request.sourceConnector,
       },
       beforeExecute: hooks?.enforceWriteQuota,
       execute: () => this.runObserve(request),
