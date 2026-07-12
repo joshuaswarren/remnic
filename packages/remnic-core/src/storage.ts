@@ -2719,6 +2719,7 @@ export class StorageManager {
       writeFile: (p, c) => this.writeStorageSecureFile(p, c),
       readFile: (p) => readMaybeEncryptedFile(p, this._secureStoreKey, this.baseDir),
       readDir: (d) => readdir(d),
+      realpath: (p) => realpath(p),
     }));
   }
 

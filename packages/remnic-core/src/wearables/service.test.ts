@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
+import { realpath as fsRealpath } from "node:fs/promises";
 import { test } from "node:test";
 
 import {
@@ -52,6 +53,7 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
       [...fusedFiles.keys()]
         .filter((key) => path.dirname(key) === dirPath)
         .map((key) => path.basename(key)),
+    realpath: (filePath) => fsRealpath(filePath),
   });
   const files = new Map<string, string>();
   const storage = {

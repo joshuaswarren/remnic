@@ -13,6 +13,7 @@
 
 import { createHash } from "node:crypto";
 import * as path from "node:path";
+import { pathIsInside } from "../../utils/path-containment.js";
 import { isValidTranscriptDate } from "../day-store.js";
 import type {
   FusedDayFile,
@@ -280,6 +281,13 @@ export interface FusionFileIo {
   readFile(filePath: string): Promise<string>;
   /** Directory entries; rejects with ENOENT when the directory is absent. */
   readDir(dirPath: string): Promise<string[]>;
+  /**
+   * Resolve a path through symlinks (node:fs/promises realpath); rejects
+   * with ENOENT when the path is absent. Used by the symlink-containment
+   * guard so a symlinked `_fusion` dir (or parent) that resolves outside
+   * the wearables root is rejected before any read/write (AGENTS.md #3).
+   */
+  realpath(filePath: string): Promise<string>;
 }
 
 /**
@@ -305,13 +313,17 @@ export class FusionArtifactStore {
   }
 
   async writeFusedDay(date: string, serialized: string): Promise<void> {
-    await this.io.writeFile(this.fusedDayPath(date), serialized);
+    const filePath = this.fusedDayPath(date);
+    await this.assertPathContained(filePath);
+    await this.io.writeFile(filePath, serialized);
   }
 
   /** Read a stored fused-day artifact; null when absent. */
   async readFusedDay(date: string): Promise<string | null> {
+    const filePath = this.fusedDayPath(date);
+    await this.assertPathContained(filePath);
     try {
-      return await this.io.readFile(this.fusedDayPath(date));
+      return await this.io.readFile(filePath);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
       throw err;
@@ -320,11 +332,11 @@ export class FusionArtifactStore {
 
   /** List dates with stored fused artifacts, newest first. */
   async listFusedDays(): Promise<string[]> {
+    const fusionDir = path.join(this.wearablesDir, FUSION_DIR_NAME);
+    await this.assertPathContained(fusionDir);
     let entries: string[];
     try {
-      entries = await this.io.readDir(
-        path.join(this.wearablesDir, FUSION_DIR_NAME),
-      );
+      entries = await this.io.readDir(fusionDir);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw err;
@@ -338,5 +350,42 @@ export class FusionArtifactStore {
     }
     days.sort((a, b) => (a > b ? -1 : a < b ? 1 : 0));
     return days;
+  }
+
+  /**
+   * Reject a symlinked/traversing fusion artifact path before any IO. The
+   * fusion dir (`<wearablesDir>/_fusion`) and its parents are followed
+   * directly by the secure IO; a symlink placed there (attacker-writable
+   * or a malformed memory dir) would otherwise be followed and read/write
+   * outside the allowed root (AGENTS.md pattern #3). Resolve the candidate
+   * and the wearables root through realpath and refuse anything that
+   * escapes — mirroring `assertPathInsideRoot` in the storage walkers.
+   * Absent paths are allowed (the secure write creates them lexically
+   * under the root; a missing path cannot yet be a followable symlink).
+   */
+  private async assertPathContained(targetPath: string): Promise<void> {
+    let rootReal: string;
+    try {
+      rootReal = await this.io.realpath(this.wearablesDir);
+    } catch {
+      // Fresh dir not yet on disk — no symlink can resolve through a
+      // missing root, so fall back to a lexical resolve.
+      rootReal = path.resolve(this.wearablesDir);
+    }
+    // Guard both the fusion directory (the entry a writer controls) and,
+    // when present, the target file itself.
+    for (const candidate of [path.dirname(targetPath), targetPath]) {
+      let candidateReal: string;
+      try {
+        candidateReal = await this.io.realpath(candidate);
+      } catch {
+        continue; // absent — nothing to follow
+      }
+      if (!pathIsInside(rootReal, candidateReal)) {
+        throw new Error(
+          "wearable fusion artifact path resolves outside the wearables root — refusing to follow a symlink/traversal (AGENTS.md pattern #3)",
+        );
+      }
+    }
   }
 }

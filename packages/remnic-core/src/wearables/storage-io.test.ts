@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { mkdir, readdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
@@ -217,5 +218,39 @@ test("fused-day artifacts write/read/list and stay out of transcript listings", 
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked _fusion dir that escapes the memory dir is refused, not followed", async () => {
+  const { storage, dir } = makeStorage();
+  // Outside target: a sibling temp dir NOT under the memory dir root.
+  const escapeDir = mkdtempSync(path.join(tmpdir(), "remnic-fusion-escape-"));
+  try {
+    // Ensure the wearables parent exists, then plant a symlinked _fusion
+    // dir that points outside the allowed root (AGENTS.md pattern #3).
+    await mkdir(path.join(dir, "wearables"), { recursive: true });
+    await symlink(escapeDir, path.join(dir, "wearables", "_fusion"), "dir");
+
+    const store = storage.fusionArtifactStore();
+    // Write must be refused — never followed into the escape dir.
+    await assert.rejects(
+      store.writeFusedDay("2026-06-10", "---\nkind: wearable-fusion\n---\n\n[]\n"),
+      /resolves outside the wearables root/,
+    );
+    // Read and list are refused for the same reason.
+    await assert.rejects(
+      store.readFusedDay("2026-06-10"),
+      /resolves outside the wearables root/,
+    );
+    await assert.rejects(
+      store.listFusedDays(),
+      /resolves outside the wearables root/,
+    );
+    // Nothing was written into the escape target.
+    const leaked = await readdir(escapeDir).catch(() => []);
+    assert.equal(leaked.length, 0, "no fused artifact must leak into the symlink target");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(escapeDir, { recursive: true, force: true });
   }
 });
