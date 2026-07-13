@@ -311,7 +311,8 @@ tests/bench-ui-results.test.ts(474,45): TS7006
 tests/bench-ui-results.test.ts(671,66): TS7006
 tests/binary-lifecycle.test.ts(719,13): TS2352
 tests/capsule-manifest.test.ts(200,3): TS2322
-tests/cli-tier-status.test.ts(37,11): TS2322
+tests/cli-tier-status.test.ts(39,7): TS2322
+tests/cli-tier-status.test.ts(71,5): TS2322
 tests/cli/capsule.test.ts(104,3): TS2322
 tests/cli/patterns.test.ts(59,18): TS2352
 tests/compat-fixtures/empty-package/src/index.ts(1,1): TS2304
