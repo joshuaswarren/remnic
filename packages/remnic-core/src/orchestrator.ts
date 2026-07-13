@@ -3195,7 +3195,9 @@ export class Orchestrator {
   }
 
   // Issue #1526 (seam 4): compression-guideline learning moved to
-  // CompressionGuidelineCoordinator. Thin delegation keeps the
+  // CompressionGuidelineCoordinator. Public forwarding delegates were
+  // removed; callers use the coordinator directly. This private helper
+  // forwards recall-section formatting to the coordinator.
   private async buildCompressionGuidelineRecallSection(): Promise<string | null> {
     return this.compressionGuidelineCoordinator.buildCompressionGuidelineRecallSection();
   }
