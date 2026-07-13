@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [v9.6.11] — 2026-07-13
+
 ### Added
 
 - MemCorrect now routes Remnic corrections through the Correction Contract
