@@ -679,6 +679,26 @@ function parseClaudeCliJsonResult(stdout: string): ClaudeCliJsonResult {
     }
     return parsed as ClaudeCliJsonResult;
   } catch {
+    // Whole-stdout parse failed. Claude Code prints the result envelope as a
+    // single JSON line, but user-level hooks and warnings can interleave
+    // extra lines around it (observed live: complete envelopes with
+    // `terminal_reason: "completed"` rejected because a stray line broke the
+    // whole-stdout parse). Scan lines from the END for the last parseable
+    // top-level object before giving up — the envelope is the final thing
+    // the CLI prints on success.
+    const lines = trimmed.split(/\r?\n/);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index].trim();
+      if (!line.startsWith("{") || !line.endsWith("}")) continue;
+      try {
+        const parsed = JSON.parse(line) as unknown;
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return parsed as ClaudeCliJsonResult;
+        }
+      } catch {
+        // keep scanning
+      }
+    }
     // Fall back to treating raw stdout as an error blob — a non-JSON
     // response from `--output-format json` is itself an anomaly.
     return { is_error: true, error: trimmed.slice(-1_000) };

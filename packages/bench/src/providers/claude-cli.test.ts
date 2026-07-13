@@ -108,6 +108,37 @@ test("claude-cli provider trusts a clean result envelope over a non-zero exit", 
   assert.equal(calls, 1, "a salvageable envelope must not burn retries");
 });
 
+
+test("claude-cli provider salvages an envelope preceded by hook/warning lines", async () => {
+  // User-level hooks and warnings can interleave extra stdout lines around
+  // the single-line JSON envelope, breaking a whole-stdout parse. The
+  // last parseable JSON line is the envelope and must win — with or
+  // without a clean exit code.
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        return {
+          status: 1,
+          signal: null,
+          stdout: [
+            "SessionEnd hook [bash hook.sh] failed: No such file or directory",
+            JSON.stringify({
+              is_error: false,
+              result: "interleaved answer",
+              usage: { input_tokens: 5, output_tokens: 2 },
+            }),
+          ].join("\n"),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  const result = await provider.complete("q");
+  assert.equal(result.text, "interleaved answer");
+  assert.deepEqual(result.tokens, { input: 5, output: 2 });
+});
 test("claude-cli provider still fails a non-zero exit whose envelope is an error", async () => {
   const provider = createClaudeCliProvider(
     { provider: "claude-cli", model: "opus", retryOptions: { maxAttempts: 1 } },
