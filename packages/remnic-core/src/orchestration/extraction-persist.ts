@@ -1939,6 +1939,9 @@ export class ExtractionPersistCoordinator {
             // would cause the fact to be dropped here — cross-namespace
             // write suppression / data loss.
             const lookupStorage = targetStorage;
+            // PR #1852 review finding on 7e0eb1a0: forward the candidate's
+            // sourceConnector so the connector-aware skip gate can refuse to
+            // drop a connector B paraphrase against connector A's memory.
             semanticDecision = await decideSemanticDedup(
               fact.content,
               (content, limit) =>
@@ -1947,6 +1950,7 @@ export class ExtractionPersistCoordinator {
                 enabled: true,
                 threshold: this.deps.config.semanticDedupThreshold,
                 candidates: this.deps.config.semanticDedupCandidates,
+                sourceConnector: sourceContext?.sourceConnector,
               },
             );
           } catch (err) {

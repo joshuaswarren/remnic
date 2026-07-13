@@ -245,6 +245,111 @@ test("semantic dedup: normalizes malformed numeric options before lookup", async
   assert.equal(clampedLowThreshold.action, "skip");
 });
 
+// ── Connector-aware semantic dedup (PR #1852 review finding on 7e0eb1a0) ──────
+//
+// A provenance-bearing candidate (sourceConnector present) may be suppressed
+// only by a near-duplicate from the SAME connector. A different or absent
+// neighbor connector must NOT suppress the write. Operator/unattributed
+// writes (no candidate connector) preserve the original behavior.
+
+test("semantic dedup connector-aware: skips same-connector paraphrase", async () => {
+  // Candidate from chatgpt; top neighbor is also chatgpt at 0.96 → skip.
+  const decision = await decideSemanticDedup(
+    "tabs are preferred by the user for indentation",
+    makeLookup([{ id: "existing-pref", score: 0.96, sourceConnector: "chatgpt" }]),
+    { ...DEFAULT_OPTS, sourceConnector: "chatgpt" },
+  );
+  assert.equal(decision.action, "skip");
+  if (decision.action === "skip") {
+    assert.equal(decision.reason, "near_duplicate");
+    assert.equal(decision.topId, "existing-pref");
+    assert.equal(decision.topScore, 0.96);
+  }
+});
+
+test("semantic dedup connector-aware: keeps different-connector paraphrase (B vs A)", async () => {
+  // Candidate from chatgpt; only neighbor is codex at 0.96 → must NOT skip.
+  const decision = await decideSemanticDedup(
+    "tabs are preferred by the user for indentation",
+    makeLookup([{ id: "codex-pref", score: 0.96, sourceConnector: "codex" }]),
+    { ...DEFAULT_OPTS, sourceConnector: "chatgpt" },
+  );
+  assert.equal(decision.action, "keep");
+  assert.equal(decision.reason, "connector_mismatch");
+  if (decision.action === "keep") {
+    assert.equal(decision.topId, "codex-pref");
+  }
+});
+
+test("semantic dedup connector-aware: keeps provenance candidate when neighbor connector absent", async () => {
+  // Candidate from chatgpt; neighbor has no connector at 0.97 → must NOT skip.
+  const decision = await decideSemanticDedup(
+    "tabs are preferred by the user for indentation",
+    makeLookup([{ id: "operator-pref", score: 0.97 }]),
+    { ...DEFAULT_OPTS, sourceConnector: "chatgpt" },
+  );
+  assert.equal(decision.action, "keep");
+  assert.equal(decision.reason, "connector_mismatch");
+});
+
+test("semantic dedup connector-aware: operator (no candidate connector) preserves skip regardless of neighbor connector", async () => {
+  // No candidate connector → existing behavior: skip on any near-duplicate,
+  // even one tagged with a different connector.
+  const decision = await decideSemanticDedup(
+    "tabs are preferred by the user for indentation",
+    makeLookup([{ id: "codex-pref", score: 0.96, sourceConnector: "codex" }]),
+    DEFAULT_OPTS,
+  );
+  assert.equal(decision.action, "skip");
+  if (decision.action === "skip") {
+    assert.equal(decision.topId, "codex-pref");
+  }
+});
+
+test("semantic dedup connector-aware: same-connector dedup survives when a different-connector hit scores higher", async () => {
+  // Candidate from chatgpt; codex neighbor scores 0.98 (higher) but a chatgpt
+  // neighbor also clears threshold at 0.94 → skip against the chatgpt hit,
+  // not the codex one. This preserves same-connector dedup.
+  const decision = await decideSemanticDedup(
+    "tabs are preferred by the user for indentation",
+    makeLookup([
+      { id: "codex-pref", score: 0.98, sourceConnector: "codex" },
+      { id: "chatgpt-pref", score: 0.94, sourceConnector: "chatgpt" },
+    ]),
+    { ...DEFAULT_OPTS, sourceConnector: "chatgpt" },
+  );
+  assert.equal(decision.action, "skip");
+  if (decision.action === "skip") {
+    assert.equal(decision.topId, "chatgpt-pref");
+    assert.equal(decision.topScore, 0.94);
+  }
+});
+
+test("semantic dedup connector-aware: keeps when candidate connector set but no same-connector neighbor clears threshold", async () => {
+  // Candidate from chatgpt; codex neighbor at 0.97 clears threshold, but the
+  // only chatgpt neighbor is at 0.80 (below) → keep (connector_mismatch).
+  const decision = await decideSemanticDedup(
+    "tabs are preferred by the user for indentation",
+    makeLookup([
+      { id: "codex-pref", score: 0.97, sourceConnector: "codex" },
+      { id: "chatgpt-unrelated", score: 0.8, sourceConnector: "chatgpt" },
+    ]),
+    { ...DEFAULT_OPTS, sourceConnector: "chatgpt" },
+  );
+  assert.equal(decision.action, "keep");
+  assert.equal(decision.reason, "connector_mismatch");
+});
+
+test("semantic dedup connector-aware: empty/whitespace candidate connector treated as operator", async () => {
+  // A whitespace-only candidate connector is absent → operator behavior → skip.
+  const wsDecision = await decideSemanticDedup(
+    "tabs are preferred by the user for indentation",
+    makeLookup([{ id: "codex-pref", score: 0.96, sourceConnector: "codex" }]),
+    { ...DEFAULT_OPTS, sourceConnector: "   " },
+  );
+  assert.equal(wsDecision.action, "skip");
+});
+
 test("semantic dedup: candidates=0 short-circuits without calling lookup", async () => {
   let called = 0;
   const decision = await decideSemanticDedup(
