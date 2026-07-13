@@ -2576,7 +2576,7 @@ Best for:
         const h = typeof hours === "number" && Number.isFinite(hours) ? hours : 24;
 
         if (sessionKey) {
-          const res = await orchestrator.updateConversationIndex(sessionKey, h, { embed });
+          const res = await orchestrator.conversationIndexCoordinator.update(sessionKey, h, { embed });
           if (res.skipped && res.reason === "min_interval") {
             const retrySec = Math.max(1, Math.ceil((res.retryAfterMs ?? 0) / 1000));
             return toolResult(
@@ -2594,7 +2594,7 @@ Best for:
         const skippedIds: string[] = [];
         let embeddedRuns = 0;
         for (const sk of sessions) {
-          const res = await orchestrator.updateConversationIndex(sk, h, { embed });
+          const res = await orchestrator.conversationIndexCoordinator.update(sk, h, { embed });
           total += res.chunks;
           if (res.skipped) {
             skipped += 1;

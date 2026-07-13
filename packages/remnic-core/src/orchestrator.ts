@@ -421,7 +421,6 @@ import {
 } from "./semantic-consolidation.js";
 import {
   type ConversationIndexBackend,
-  type ConversationIndexBackendInspection,
   type ConversationQmdRuntime,
 } from "./conversation-index/backend.js";
 import {
@@ -2166,45 +2165,6 @@ export class Orchestrator {
     );
   }
 
-  // Issue #1526: countConversationChunkDocs / buildConversationIndexChunks moved
-  // to ConversationIndexCoordinator (internal helpers, no orchestrator callers).
-
-  async getConversationIndexHealth(): Promise<{
-    enabled: boolean;
-    backend: "qmd" | "faiss";
-    status: "ok" | "degraded" | "disabled";
-    chunkDocCount: number;
-    lastUpdateAt: string | null;
-    qmdAvailable?: boolean;
-    faiss?: {
-      ok: boolean;
-      status: "ok" | "degraded" | "error";
-      indexPath: string;
-      message?: string;
-      manifest?: {
-        version: number;
-        modelId: string;
-        normalizedModelId: string;
-        dimension: number;
-        chunkCount: number;
-        updatedAt: string;
-        lastSuccessfulRebuildAt: string;
-      };
-    };
-  }> {
-    return this.conversationIndexCoordinator.getHealth();
-  }
-
-  async inspectConversationIndex(): Promise<
-    ConversationIndexBackendInspection & {
-      enabled: boolean;
-      chunkDocCount: number;
-      lastUpdateAt: string | null;
-    }
-  > {
-    return this.conversationIndexCoordinator.inspect();
-  }
-
   async getRecoverySummary(sessionKey?: string): Promise<{
     generatedAt: string;
     sessionKey?: string;
@@ -2215,34 +2175,6 @@ export class Orchestrator {
     checkpointHealthy: boolean;
   }> {
     return this.transcript.getRecoverySummary(sessionKey);
-  }
-
-  async updateConversationIndex(
-    sessionKey: string,
-    hours: number = 24,
-    opts?: { embed?: boolean; enforceMinInterval?: boolean },
-  ): Promise<{
-    chunks: number;
-    skipped: boolean;
-    reason?: string;
-    retryAfterMs?: number;
-    embedded?: boolean;
-  }> {
-    return this.conversationIndexCoordinator.update(sessionKey, hours, opts);
-  }
-
-  async rebuildConversationIndex(
-    sessionKey?: string,
-    hours: number = 24,
-    opts?: { embed?: boolean },
-  ): Promise<{
-    chunks: number;
-    skipped: boolean;
-    reason?: string;
-    embedded?: boolean;
-    rebuilt?: boolean;
-  }> {
-    return this.conversationIndexCoordinator.rebuild(sessionKey, hours, opts);
   }
 
   private async validateLocalLlmModel(): Promise<void> {

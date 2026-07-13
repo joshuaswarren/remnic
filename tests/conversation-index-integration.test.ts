@@ -241,7 +241,7 @@ test("updateConversationIndex routes writes through FAISS backend when selected"
     },
   };
 
-  const result = await orchestrator.updateConversationIndex("session-a", 24, {
+  const result = await orchestrator.conversationIndexCoordinator.update("session-a", 24, {
     enforceMinInterval: false,
   });
 
@@ -311,7 +311,7 @@ test("updateConversationIndex routes writes through the shared backend contract 
     },
   };
 
-  const result = await orchestrator.updateConversationIndex("session-b", 24, {
+  const result = await orchestrator.conversationIndexCoordinator.update("session-b", 24, {
     enforceMinInterval: false,
   });
 
@@ -365,7 +365,7 @@ test("conversation index health routes through the shared backend contract when 
     },
   };
 
-  const health = await orchestrator.getConversationIndexHealth();
+  const health = await orchestrator.conversationIndexCoordinator.getHealth();
   assert.equal(backendHealthCalls, 1);
   assert.equal(health.enabled, true);
   assert.equal(health.backend, "faiss");
@@ -412,7 +412,7 @@ test("conversation index inspect routes through the shared backend contract when
     },
   };
 
-  const inspection = await orchestrator.inspectConversationIndex();
+  const inspection = await orchestrator.conversationIndexCoordinator.inspect();
   assert.equal(inspectCalls, 1);
   assert.equal(inspection.enabled, true);
   assert.equal(inspection.indexPath, "/tmp/faiss-index");
@@ -458,7 +458,7 @@ test("rebuildConversationIndex routes through the shared backend contract when p
     },
   };
 
-  const result = await orchestrator.rebuildConversationIndex(undefined, 24, { embed: false });
+  const result = await orchestrator.conversationIndexCoordinator.rebuild(undefined, 24, { embed: false });
   assert.equal(rebuildCalls, 1);
   assert.equal(result.skipped, false);
   assert.equal(result.rebuilt, true);

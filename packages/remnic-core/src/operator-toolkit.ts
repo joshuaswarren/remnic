@@ -116,40 +116,42 @@ function formatUnknownError(error: unknown): string {
 }
 
 interface ConversationIndexLike {
-  getConversationIndexHealth(): Promise<{
-    enabled: boolean;
-    backend: "qmd" | "faiss";
-    status: "ok" | "degraded" | "disabled";
-    chunkDocCount: number;
-    lastUpdateAt: string | null;
-    qmdAvailable?: boolean;
-    faiss?: {
-      ok: boolean;
-      status: "ok" | "degraded" | "error";
-      indexPath: string;
-      message?: string;
-      manifest?: {
-        version: number;
-        modelId: string;
-        normalizedModelId: string;
-        dimension: number;
-        chunkCount: number;
-        updatedAt: string;
-        lastSuccessfulRebuildAt: string;
+  conversationIndexCoordinator: {
+    getHealth(): Promise<{
+      enabled: boolean;
+      backend: "qmd" | "faiss";
+      status: "ok" | "degraded" | "disabled";
+      chunkDocCount: number;
+      lastUpdateAt: string | null;
+      qmdAvailable?: boolean;
+      faiss?: {
+        ok: boolean;
+        status: "ok" | "degraded" | "error";
+        indexPath: string;
+        message?: string;
+        manifest?: {
+          version: number;
+          modelId: string;
+          normalizedModelId: string;
+          dimension: number;
+          chunkCount: number;
+          updatedAt: string;
+          lastSuccessfulRebuildAt: string;
+        };
       };
-    };
-  }>;
-  rebuildConversationIndex(
-    sessionKey?: string,
-    hours?: number,
-    opts?: { embed?: boolean },
-  ): Promise<{
-    chunks: number;
-    skipped: boolean;
-    reason?: string;
-    embedded?: boolean;
-    rebuilt?: boolean;
-  }>;
+    }>;
+    rebuild(
+      sessionKey?: string,
+      hours?: number,
+      opts?: { embed?: boolean },
+    ): Promise<{
+      chunks: number;
+      skipped: boolean;
+      reason?: string;
+      embedded?: boolean;
+      rebuilt?: boolean;
+    }>;
+  };
 }
 
 export interface OperatorToolkitOrchestrator extends ConversationIndexLike {
@@ -1240,7 +1242,7 @@ export async function runOperatorDoctor(options: OperatorDoctorOptions): Promise
     },
   });
 
-  const conversationIndex = await options.orchestrator.getConversationIndexHealth();
+  const conversationIndex = await options.orchestrator.conversationIndexCoordinator.getHealth();
   checks.push({
     key: "conversation_index",
     status: conversationIndex.status === "ok"
@@ -2277,7 +2279,7 @@ export async function runOperatorInventory(options: OperatorInventoryOptions): P
       reviewQueue = 0;
     }
   }
-  const conversationIndex = await options.orchestrator.getConversationIndexHealth();
+  const conversationIndex = await options.orchestrator.conversationIndexCoordinator.getHealth();
   const nativeKnowledgeStatus = await summarizeNativeKnowledgeStatus(config);
 
   return {

@@ -257,7 +257,7 @@ export class AccessAdminOpsSurface {
     }
 
     if (sessionKey) {
-      const result = await this.deps.orchestrator.updateConversationIndex(
+      const result = await this.deps.orchestrator.conversationIndexCoordinator.update(
         sessionKey,
         hours,
         { embed: request.embed },
@@ -282,7 +282,7 @@ export class AccessAdminOpsSurface {
     let embeddedRuns = 0;
 
     for (const sessionKey of sessionKeys) {
-      const result = await this.deps.orchestrator.updateConversationIndex(
+      const result = await this.deps.orchestrator.conversationIndexCoordinator.update(
         sessionKey,
         hours,
         { embed: request.embed },
