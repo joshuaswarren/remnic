@@ -45,6 +45,37 @@ test("runTierStatusCliCommand returns coordinator status payload", async () => {
   assert.deepEqual(result, expected);
 });
 
+test("runTierStatusCliCommand accepts the legacy getTierMigrationStatus adapter", async () => {
+  const expected = {
+    updatedAt: "2026-03-01T00:00:00.000Z",
+    lastCycle: {
+      trigger: "manual",
+      scanned: 4,
+      migrated: 1,
+      promoted: 0,
+      demoted: 1,
+      limit: 2,
+      dryRun: false,
+    },
+    totals: {
+      cycles: 2,
+      scanned: 8,
+      migrated: 3,
+      promoted: 1,
+      demoted: 2,
+      errors: 0,
+    },
+  };
+
+  const result = await runTierStatusCliCommand({
+    getTierMigrationStatus() {
+      return Promise.resolve(expected);
+    },
+  });
+
+  assert.deepEqual(result, expected);
+});
+
 test("runTierMigrateCliCommand forwards dry-run and limit to coordinator runCycle", async () => {
   const calls: Array<{ dryRun?: boolean; limitOverride?: number; force?: boolean }> = [];
   const result = await runTierMigrateCliCommand(
@@ -72,6 +103,32 @@ test("runTierMigrateCliCommand forwards dry-run and limit to coordinator runCycl
   assert.equal(calls.length, 1);
   assert.deepEqual(calls[0], { dryRun: true, limitOverride: 7, force: false });
   assert.equal(result.limit, 7);
+  assert.equal(result.dryRun, true);
+});
+
+test("runTierMigrateCliCommand accepts the legacy runTierMigrationNow adapter", async () => {
+  const calls: Array<{ dryRun?: boolean; limit?: number }> = [];
+  const result = await runTierMigrateCliCommand(
+    {
+      runTierMigrationNow(options) {
+        calls.push(options ?? {});
+        return Promise.resolve({
+          trigger: "manual",
+          scanned: 12,
+          migrated: 2,
+          promoted: 1,
+          demoted: 1,
+          limit: 9,
+          dryRun: options?.dryRun === true,
+        });
+      },
+    },
+    { dryRun: true, limit: 9 },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0], { dryRun: true, limit: 9 });
+  assert.equal(result.limit, 9);
   assert.equal(result.dryRun, true);
 });
 

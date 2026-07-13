@@ -1867,24 +1867,79 @@ export async function runSessionRepairCliCommand(
   return { report, plan, applyResult };
 }
 
+// ---------------------------------------------------------------------------
+// Tier migration CLI adapters
+//
+// The public exports below accept two adapter shapes and normalize at this
+// boundary; registerCli always passes the coordinator shape internally.
+//   1. Coordinator shape — the orchestrator exposes the extracted
+//      TierMigrationCoordinator directly (current wiring).
+//   2. Legacy shape — the orchestrator formerly forwarded via
+//      getTierMigrationStatus / runTierMigrationNow delegates. External
+//      callers (tests, integrations) that still pass the old shape keep
+//      working.
+// ---------------------------------------------------------------------------
+
+/** Coordinator-shaped adapter for tier-status reads. */
+export interface TierStatusCoordinatorCliAdapter {
+  readonly tierMigrationCoordinator: Pick<TierMigrationCoordinator, "getStatus">;
+}
+
+/** Legacy adapter shape for tier-status reads (former orchestrator delegate). */
+export interface TierStatusLegacyCliAdapter {
+  getTierMigrationStatus():
+    | Promise<TierMigrationStatusSnapshot>
+    | TierMigrationStatusSnapshot;
+}
+
+/** Accepted input for {@link runTierStatusCliCommand}. */
+export type TierStatusCliAdapter =
+  | TierStatusCoordinatorCliAdapter
+  | TierStatusLegacyCliAdapter;
+
+/** Coordinator-shaped adapter for tier-migrate runs. */
+export interface TierMigrateCoordinatorCliAdapter {
+  readonly tierMigrationCoordinator: Pick<TierMigrationCoordinator, "runCycle">;
+  readonly storage: StorageManager;
+}
+
+/** Legacy adapter shape for tier-migrate runs (former orchestrator delegate). */
+export interface TierMigrateLegacyCliAdapter {
+  runTierMigrationNow(options?: {
+    dryRun?: boolean;
+    limit?: number;
+  }): Promise<TierMigrationCycleSummary>;
+}
+
+/** Accepted input for {@link runTierMigrateCliCommand}. */
+export type TierMigrateCliAdapter =
+  | TierMigrateCoordinatorCliAdapter
+  | TierMigrateLegacyCliAdapter;
+
 export async function runTierStatusCliCommand(
-  orchestrator: { readonly tierMigrationCoordinator: Pick<TierMigrationCoordinator, "getStatus"> },
+  adapter: TierStatusCliAdapter,
 ): Promise<TierMigrationStatusSnapshot> {
-  return orchestrator.tierMigrationCoordinator.getStatus();
+  if ("tierMigrationCoordinator" in adapter) {
+    return adapter.tierMigrationCoordinator.getStatus();
+  }
+  return adapter.getTierMigrationStatus();
 }
 
 export async function runTierMigrateCliCommand(
-  orchestrator: {
-    readonly tierMigrationCoordinator: Pick<TierMigrationCoordinator, "runCycle">;
-    readonly storage: StorageManager;
-  },
+  adapter: TierMigrateCliAdapter,
   options: { dryRun?: boolean; limit?: number } = {},
 ): Promise<TierMigrationCycleSummary> {
-  return orchestrator.tierMigrationCoordinator.runCycle(
-    orchestrator.storage,
-    "manual",
-    { dryRun: options.dryRun === true, limitOverride: options.limit, force: false },
-  );
+  if ("tierMigrationCoordinator" in adapter) {
+    return adapter.tierMigrationCoordinator.runCycle(
+      adapter.storage,
+      "manual",
+      { dryRun: options.dryRun === true, limitOverride: options.limit, force: false },
+    );
+  }
+  return adapter.runTierMigrationNow({
+    dryRun: options.dryRun === true,
+    limit: options.limit,
+  });
 }
 
 const MIGRATE_LIMIT_CAP = 2000;
