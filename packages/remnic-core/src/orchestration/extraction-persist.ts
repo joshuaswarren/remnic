@@ -80,6 +80,7 @@ import {
   dedupeBehaviorSignalsByMemoryAndHash,
 } from "../behavior-signals.js";
 import { buildProcedurePersistBody } from "../procedural/procedure-types.js";
+import { stripAttributesSuffix } from "../structured-attributes.js";
 import { LocalLlmClient } from "../local-llm.js";
 import {
   FallbackLlmClient,
@@ -859,9 +860,33 @@ export class ExtractionPersistCoordinator {
               );
             }
           } else {
-            // temporalSupersessionEnabled is off or no entity/attributes — keep
-            // the original short-circuit behaviour.
-            return;
+            // Connector-aware dedup (QPAn-): when temporal supersession is off
+            // or the fact has no entity/structuredAttributes, the original
+            // short-circuit would drop a different-connector fact. Verify a
+            // same-connector active fact exists before skipping the shared
+            // promotion write; otherwise fall through so the new connector's
+            // fact gets its own promoted copy.
+            let skipSharedPromotion = true;
+            try {
+              const allSharedMems = await sharedStorage.readAllMemories();
+              const snc = sourceContext?.sourceConnector?.trim() || undefined;
+              const sharedNormalized = ContentHashIndex.normalizeContent(dedupContent);
+              skipSharedPromotion = allSharedMems.some((m) => {
+                if (m.frontmatter.category !== "fact") return false;
+                if ((m.frontmatter.status ?? "active") !== "active") return false;
+                if (normalizeStoredHashSource(m.content ?? "") !== sharedNormalized) return false;
+                return (m.frontmatter.sourceConnector?.trim() || undefined) === snc;
+              });
+            } catch (err) {
+              log.warn(
+                `connector-aware shared promotion dedup scan failed; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
+              );
+              skipSharedPromotion = false;
+            }
+            if (skipSharedPromotion) {
+              return;
+            }
+            // No same-connector active shared fact — fall through to write.
           }
         }
         const sharedPromotion = await sharedStorage.writeMemory(
@@ -1627,8 +1652,15 @@ export class ExtractionPersistCoordinator {
           exactDuplicate = allMems.some((m) => {
             if (m.frontmatter.category !== writeCategory) return false;
             if ((m.frontmatter.status ?? "active") !== "active") return false;
-            if (normalizeStoredHashSource(m.content ?? "") !==
-              ContentHashIndex.normalizeContent(canonicalContentForHash)) return false;
+            // Thread 5 (QPDE5): for procedures the hash is keyed on the full
+            // body (title + steps via buildProcedurePersistBody), so compare
+            // against contentHashDedupKey — not canonicalContentForHash which
+            // is the title only. Thread 3 (QO42V): facts with
+            // structuredAttributes get an appended [Attributes: ...] suffix in
+            // the stored body that the hash key lacks; strip it before
+            // comparing so same-connector enriched facts dedup correctly.
+            if (normalizeStoredHashSource(stripAttributesSuffix(m.content ?? "")) !==
+              ContentHashIndex.normalizeContent(contentHashDedupKey)) return false;
             return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
           });
         } catch (err) {

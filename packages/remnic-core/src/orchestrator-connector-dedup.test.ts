@@ -565,3 +565,303 @@ test("promotion dedup (QOjlD): cited fact canonicalized before connector-aware d
   const all = await storage.readAllMemories();
   assert.equal(all.length, 1, "only one memory on disk");
 });
+
+// ---------------------------------------------------------------------------
+// Thread 5 (QPDE5): procedure body comparison in extraction dedup.
+// The hash is keyed on buildProcedurePersistBody (title + steps), but the
+// connector-aware scan previously compared against canonicalContentForHash
+// (title only). Same-connector procedures with steps were re-persisted.
+// ---------------------------------------------------------------------------
+
+function makeProcedureFact(
+  title: string,
+  steps: Array<{ intent: string; expectedOutcome?: string }>,
+): ExtractedFact {
+  return {
+    content: title,
+    category: "procedure",
+    tags: [],
+    confidence: 0.9,
+    procedureSteps: steps.map((s, i) => ({
+      order: i + 1,
+      intent: s.intent,
+      expectedOutcome: s.expectedOutcome,
+    })),
+  };
+}
+
+function procedureResult(
+  title: string,
+  steps: Array<{ intent: string; expectedOutcome?: string }>,
+): ExtractionResult {
+  return {
+    facts: [makeProcedureFact(title, steps)],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  };
+}
+
+test("connector dedup (QPDE5): same-connector procedure with steps dedupes", async () => {
+  const { orchestrator, storage } = await makeDedupOrchestrator();
+  // Title must contain a PROCEDURE_TRIGGER_RE phrase ("to deploy").
+  const title = "Workflow to deploy the canary service to staging";
+  const steps = [
+    { intent: "Build the container image", expectedOutcome: "Image tagged and pushed" },
+    { intent: "Update the Helm chart values", expectedOutcome: "Values file committed" },
+  ];
+
+  // First write with connector "chatgpt" — must succeed.
+  const ids1 = await orchestrator.persistExtraction(
+    procedureResult(title, steps),
+    storage,
+    null,
+    { sourceConnector: "chatgpt" },
+  );
+  assert.equal(ids1.length, 1, "first procedure write must succeed");
+
+  // Second write: same procedure, same connector → must dedupe.
+  const ids2 = await orchestrator.persistExtraction(
+    procedureResult(title, steps),
+    storage,
+    null,
+    { sourceConnector: "chatgpt" },
+  );
+  assert.equal(ids2.length, 0, "same-connector procedure must be deduped");
+
+  // Only one procedure memory on disk.
+  const all = await storage.readAllMemories();
+  const procs = all.filter((m: MemoryFile) => m.frontmatter.category === "procedure");
+  assert.equal(procs.length, 1, "only one procedure memory on disk");
+});
+
+test("connector dedup (QPDE5): same procedure + different connector does NOT dedupe", async () => {
+  const { orchestrator, storage } = await makeDedupOrchestrator();
+  const title = "Recipe for rotating database credentials securely";
+  const steps = [
+    { intent: "Generate new credentials in vault" },
+    { intent: "Update application configuration" },
+    { intent: "Verify connectivity with new credentials" },
+  ];
+
+  // First write with connector "chatgpt".
+  const ids1 = await orchestrator.persistExtraction(
+    procedureResult(title, steps),
+    storage,
+    null,
+    { sourceConnector: "chatgpt" },
+  );
+  assert.equal(ids1.length, 1, "first procedure write must succeed");
+
+  // Second write: same procedure, DIFFERENT connector → must NOT dedupe.
+  const ids2 = await orchestrator.persistExtraction(
+    procedureResult(title, steps),
+    storage,
+    null,
+    { sourceConnector: "codex-cli" },
+  );
+  assert.equal(ids2.length, 1, "cross-connector procedure must NOT be deduped");
+
+  // Two procedures on disk.
+  const all = await storage.readAllMemories();
+  const procs = all.filter((m: MemoryFile) => m.frontmatter.category === "procedure");
+  assert.equal(procs.length, 2, "two procedure memories on disk");
+});
+
+// ---------------------------------------------------------------------------
+// Thread 3 (QO42V): structuredAttributes enrichment in extraction dedup.
+// Facts with structuredAttributes get an appended [Attributes: ...] suffix in
+// the stored body. The connector-aware scan previously compared the enriched
+// stored body against the raw hash key (no suffix), so same-connector enriched
+// facts were re-persisted.
+// ---------------------------------------------------------------------------
+
+function makeEnrichedFact(
+  content: string,
+  attrs: Record<string, string>,
+): ExtractedFact {
+  return {
+    content,
+    category: "fact",
+    tags: [],
+    confidence: 0.9,
+    structuredAttributes: attrs,
+    entityRef: "test-entity",
+  };
+}
+
+function enrichedResult(
+  content: string,
+  attrs: Record<string, string>,
+): ExtractionResult {
+  return {
+    facts: [makeEnrichedFact(content, attrs)],
+    entities: [],
+    relationships: [],
+    questions: [],
+    profileUpdates: [],
+  };
+}
+
+test("connector dedup (QO42V): same-connector fact with structuredAttributes dedupes", async () => {
+  const { orchestrator, storage } = await makeDedupOrchestrator();
+  const body = "The primary database runs on PostgreSQL version sixteen.";
+  const attrs = { dbEngine: "postgresql", version: "16" };
+
+  // First write with connector "chatgpt" — must succeed.
+  const ids1 = await orchestrator.persistExtraction(
+    enrichedResult(body, attrs),
+    storage,
+    null,
+    { sourceConnector: "chatgpt" },
+  );
+  assert.equal(ids1.length, 1, "first enriched fact write must succeed");
+
+  // Second write: same content + attrs, same connector → must dedupe.
+  const ids2 = await orchestrator.persistExtraction(
+    enrichedResult(body, attrs),
+    storage,
+    null,
+    { sourceConnector: "chatgpt" },
+  );
+  assert.equal(ids2.length, 0, "same-connector enriched fact must be deduped");
+
+  // Only one memory on disk.
+  const all = await storage.readAllMemories();
+  const facts = all.filter(
+    (m: MemoryFile) => m.frontmatter.category === "fact" && m.frontmatter.status !== "superseded",
+  );
+  assert.equal(facts.length, 1, "only one active fact memory on disk");
+});
+
+// ---------------------------------------------------------------------------
+// Thread 4 (QPAn-): shared promotion short-circuit ignores connector when
+// temporal supersession is off or the fact has no entity/attributes.
+// Uses a scope plan with a serverShared promotion target so the shared
+// promotion path fires and reaches the no-supersession else branch.
+// ---------------------------------------------------------------------------
+
+function makeSharedPromotionScopePlan(): ResolvedScopeProfilePlan {
+  return {
+    profileId: "test-shared-promotion",
+    profile: {
+      readOrder: ["userProject", "serverShared"],
+      writeDefault: "userProject",
+      promotionTargets: ["serverShared"],
+      autoPromote: {
+        enabled: true,
+        targets: ["serverShared"],
+        categories: ["fact"],
+        minConfidenceTier: "speculative",
+      },
+    },
+    baseNamespace: "default",
+    writeLayer: "userProject",
+    writeNamespace: "default",
+    readNamespaces: ["default", "shared"],
+    layers: [
+      {
+        id: "userProject",
+        kind: "user-project",
+        namespace: "default",
+        readable: true,
+        writable: true,
+        promotable: false,
+        reason: "test",
+      },
+      {
+        id: "serverShared",
+        kind: "server-shared",
+        namespace: "shared",
+        readable: true,
+        writable: true,
+        promotable: true,
+        reason: "test",
+      },
+    ],
+    promotionTargets: [
+      {
+        target: "serverShared",
+        namespace: "shared",
+        authorized: true,
+        reason: "test",
+      },
+    ],
+    warnings: [],
+  };
+}
+
+test("shared promotion (QPAn-): different-connector fact promotes when supersession is off", async () => {
+  const { orchestrator, storage } = await makePromotionOrchestrator();
+  const scopePlan = makeSharedPromotionScopePlan();
+  const body =
+    "The backup scheduler retains snapshots for thirty days before pruning.";
+
+  // Pre-write the fact to the SHARED namespace with connector "chatgpt".
+  // No entityRef/structuredAttributes → shared promotion takes the else branch.
+  const sharedStorage = await orchestrator.getStorage("shared");
+  await sharedStorage.writeMemory("fact", body, {
+    confidence: 0.9,
+    sourceConnector: "chatgpt",
+  });
+
+  // Extract with a DIFFERENT connector — shared promotion else branch
+  // must NOT short-circuit; the different-connector fact gets promoted.
+  const ids = await orchestrator.persistExtraction(
+    factResult(body),
+    storage,
+    null,
+    { sourceConnector: "codex-cli" },
+    "default",
+    scopePlan,
+  );
+  assert.equal(ids.length, 1, "source write must succeed");
+
+  // Shared namespace must now have TWO memories (chatgpt + codex-cli).
+  const sharedMems = await sharedStorage.readAllMemories();
+  const connectors = sharedMems.map(
+    (m: MemoryFile) => m.frontmatter.sourceConnector ?? undefined,
+  );
+  assert.ok(
+    connectors.includes("chatgpt"),
+    "pre-written chatgpt shared copy must remain",
+  );
+  assert.ok(
+    connectors.includes("codex-cli"),
+    "promoted codex-cli shared copy must exist",
+  );
+});
+
+test("shared promotion (QPAn-): same-connector fact skips promotion when supersession is off", async () => {
+  const { orchestrator, storage } = await makePromotionOrchestrator();
+  const scopePlan = makeSharedPromotionScopePlan();
+  const body =
+    "The log aggregator compacts segments every six hours to reclaim disk space.";
+
+  // Pre-write to shared with connector "chatgpt".
+  const sharedStorage = await orchestrator.getStorage("shared");
+  await sharedStorage.writeMemory("fact", body, {
+    confidence: 0.9,
+    sourceConnector: "chatgpt",
+  });
+
+  // Extract with the SAME connector — shared promotion must be skipped.
+  const ids = await orchestrator.persistExtraction(
+    factResult(body),
+    storage,
+    null,
+    { sourceConnector: "chatgpt" },
+    "default",
+    scopePlan,
+  );
+  assert.equal(ids.length, 1, "source write must succeed");
+
+  // Shared namespace must still have exactly ONE memory.
+  const sharedMems = await sharedStorage.readAllMemories();
+  assert.equal(
+    sharedMems.length,
+    1,
+    "same-connector shared promotion must be skipped",
+  );
+});
