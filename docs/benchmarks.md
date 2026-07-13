@@ -135,10 +135,12 @@ Both used `--runtime-profile baseline --system-provider claude-cli
 Note on artifact fields: the runner records `meta.mode: "full"` (full-mode
 scoring pipeline) with `config.benchmarkOptions.trialLimit` bounding the
 task count — the "(trial)" labels above and the `trial100`/`trial50` filename
-segments carry the partial-coverage signal. The bounded artifacts retain
-`tier: "frontier"` and their Claude Code provenance; they are not full
-leaderboard results because coverage is capped, not because Claude Code is an
-invalid research harness.
+segments carry the partial-coverage signal. These historical bounded artifacts
+omit a top-level `tier` field; the published-artifact compatibility rule treats
+an absent tier as `frontier`, while new artifacts should record
+`tier: "frontier"` explicitly alongside their Claude Code provenance. They are
+not full leaderboard results because coverage is capped, not because Claude
+Code is an invalid research harness.
 
 A small number of tasks (9/100 locomo, 3/50 longmemeval) hit intermittent
 `claude -p` subprocess failures (exit 1) and scored 0 on those metrics;
