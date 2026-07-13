@@ -82,7 +82,7 @@
       "leaderboardArtifacts": [
         {
           "benchmark": "memcorrect-v1",
-          "path": "/home/joshuawarren/.remnic/bench/results/leaderboard/memcorrect-prompt-only-baseline-2026-07-13T20-47-40-328Z.jsonl",
+          "path": "~/.remnic/bench/results/leaderboard/memcorrect-prompt-only-baseline-2026-07-13T20-47-40-328Z.jsonl",
           "format": "memcorrect-adapter-metrics-jsonl",
           "records": 1
         }
@@ -105,7 +105,7 @@
         "taskId": "memcorrect-12613607-0",
         "question": "what is my database preference?",
         "expected": "{\"correctedContent\":[\"neovim\"],\"retiredContent\":[\"nine-am\"]}",
-        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"Correction: my database record saying nine-am is wrong. It is now neovim.\",\"Got it — noting nine-am for database.\",\"My database preference is nine-am.\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"Correction: my database record saying nine-am is wrong. It is now neovim.\",\"Got it \u2014 noting nine-am for database.\",\"My database preference is nine-am.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -143,7 +143,7 @@
         "taskId": "memcorrect-12613607-1",
         "question": "what is my notebook preference?",
         "expected": "{\"correctedContent\":[\"neovim\"],\"retiredContent\":[\"postgres\"]}",
-        "actual": "{\"shape\":\"conversational\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched notebook from postgres to neovim last month.\",\"Got it — noting postgres for notebook.\",\"My notebook preference is postgres.\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched notebook from postgres to neovim last month.\",\"Got it \u2014 noting postgres for notebook.\",\"My notebook preference is postgres.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -181,7 +181,7 @@
         "taskId": "memcorrect-12613607-2",
         "question": "what is my notebook preference?",
         "expected": "{\"correctedContent\":[\"lined\"],\"retiredContent\":[\"nine-am\"]}",
-        "actual": "{\"shape\":\"scoped\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"For this project, notebook is lined now, not nine-am.\",\"Got it — noting nine-am for notebook.\",\"My notebook preference is nine-am.\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"For this project, notebook is lined now, not nine-am.\",\"Got it \u2014 noting nine-am for notebook.\",\"My notebook preference is nine-am.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -220,7 +220,7 @@
         "taskId": "memcorrect-12613607-3",
         "question": "what is my standup preference?",
         "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"mechanical\"]}",
-        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"Update: standup is mysql going forward instead of mechanical.\",\"Got it — noting mechanical for standup.\",\"My standup preference is mechanical.\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"Update: standup is mysql going forward instead of mechanical.\",\"Got it \u2014 noting mechanical for standup.\",\"My standup preference is mechanical.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -259,7 +259,7 @@
         "taskId": "memcorrect-12613607-4",
         "question": "what is my keyboard preference?",
         "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"monday\"]}",
-        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"Correction: my keyboard record saying monday is wrong. It is now canary.\",\"Got it — noting monday for keyboard.\",\"My keyboard preference is monday.\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"Correction: my keyboard record saying monday is wrong. It is now canary.\",\"Got it \u2014 noting monday for keyboard.\",\"My keyboard preference is monday.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -297,7 +297,7 @@
         "taskId": "memcorrect-12613607-5",
         "question": "what is my database preference?",
         "expected": "{\"correctedContent\":[\"ten-am\"],\"retiredContent\":[\"postgres\"]}",
-        "actual": "{\"shape\":\"conversational\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched database from postgres to ten-am last month.\",\"Got it — noting postgres for database.\",\"My database preference is postgres.\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched database from postgres to ten-am last month.\",\"Got it \u2014 noting postgres for database.\",\"My database preference is postgres.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -335,7 +335,7 @@
         "taskId": "memcorrect-12613607-6",
         "question": "what is my calendar preference?",
         "expected": "{\"correctedContent\":[\"wednesday\"],\"retiredContent\":[\"mechanical\"]}",
-        "actual": "{\"shape\":\"scoped\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"For this project, calendar is wednesday now, not mechanical.\",\"Got it — noting mechanical for calendar.\",\"My calendar preference is mechanical.\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"For this project, calendar is wednesday now, not mechanical.\",\"Got it \u2014 noting mechanical for calendar.\",\"My calendar preference is mechanical.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -374,7 +374,7 @@
         "taskId": "memcorrect-12613607-7",
         "question": "what is my coffee preference?",
         "expected": "{\"correctedContent\":[\"wednesday\"],\"retiredContent\":[\"nine-am\"]}",
-        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"Update: coffee is wednesday going forward instead of nine-am.\",\"Got it — noting nine-am for coffee.\",\"My coffee preference is nine-am.\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"Update: coffee is wednesday going forward instead of nine-am.\",\"Got it \u2014 noting nine-am for coffee.\",\"My coffee preference is nine-am.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -413,7 +413,7 @@
         "taskId": "memcorrect-12613607-8",
         "question": "what is my database preference?",
         "expected": "{\"correctedContent\":[\"ten-am\"],\"retiredContent\":[\"nine-am\"]}",
-        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"Correction: my database record saying nine-am is wrong. It is now ten-am.\",\"Got it — noting nine-am for database.\",\"My database preference is nine-am.\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"Correction: my database record saying nine-am is wrong. It is now ten-am.\",\"Got it \u2014 noting nine-am for database.\",\"My database preference is nine-am.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -451,7 +451,7 @@
         "taskId": "memcorrect-12613607-9",
         "question": "what is my editor preference?",
         "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"postgres\"]}",
-        "actual": "{\"shape\":\"conversational\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched editor from postgres to canary last month.\",\"Got it — noting postgres for editor.\",\"My editor preference is postgres.\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched editor from postgres to canary last month.\",\"Got it \u2014 noting postgres for editor.\",\"My editor preference is postgres.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -489,7 +489,7 @@
         "taskId": "memcorrect-12613607-a",
         "question": "what is my calendar preference?",
         "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"postgres\"]}",
-        "actual": "{\"shape\":\"scoped\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"For this project, calendar is canary now, not postgres.\",\"Got it — noting postgres for calendar.\",\"My calendar preference is postgres.\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"For this project, calendar is canary now, not postgres.\",\"Got it \u2014 noting postgres for calendar.\",\"My calendar preference is postgres.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -528,7 +528,7 @@
         "taskId": "memcorrect-12613607-b",
         "question": "what is my editor preference?",
         "expected": "{\"correctedContent\":[\"ten-am\"],\"retiredContent\":[\"nine-am\"]}",
-        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"Update: editor is ten-am going forward instead of nine-am.\",\"Got it — noting nine-am for editor.\",\"My editor preference is nine-am.\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"Update: editor is ten-am going forward instead of nine-am.\",\"Got it \u2014 noting nine-am for editor.\",\"My editor preference is nine-am.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -567,7 +567,7 @@
         "taskId": "memcorrect-12613607-c",
         "question": "what is my deploy preference?",
         "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"monday\"]}",
-        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"Correction: my deploy record saying monday is wrong. It is now black-coffee.\",\"Got it — noting monday for deploy.\",\"My deploy preference is monday.\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"Correction: my deploy record saying monday is wrong. It is now black-coffee.\",\"Got it \u2014 noting monday for deploy.\",\"My deploy preference is monday.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -605,7 +605,7 @@
         "taskId": "memcorrect-12613607-d",
         "question": "what is my keyboard preference?",
         "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"monday\"]}",
-        "actual": "{\"shape\":\"conversational\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched keyboard from monday to mysql last month.\",\"Got it — noting monday for keyboard.\",\"My keyboard preference is monday.\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched keyboard from monday to mysql last month.\",\"Got it \u2014 noting monday for keyboard.\",\"My keyboard preference is monday.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -643,7 +643,7 @@
         "taskId": "memcorrect-12613607-e",
         "question": "what is my deploy preference?",
         "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"helix\"]}",
-        "actual": "{\"shape\":\"scoped\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"For this project, deploy is black-coffee now, not helix.\",\"Got it — noting helix for deploy.\",\"My deploy preference is helix.\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"For this project, deploy is black-coffee now, not helix.\",\"Got it \u2014 noting helix for deploy.\",\"My deploy preference is helix.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -682,7 +682,7 @@
         "taskId": "memcorrect-12613607-f",
         "question": "what is my standup preference?",
         "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"mechanical\"]}",
-        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"Update: standup is black-coffee going forward instead of mechanical.\",\"Got it — noting mechanical for standup.\",\"My standup preference is mechanical.\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"Update: standup is black-coffee going forward instead of mechanical.\",\"Got it \u2014 noting mechanical for standup.\",\"My standup preference is mechanical.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -721,7 +721,7 @@
         "taskId": "memcorrect-12613607-10",
         "question": "what is my deploy preference?",
         "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"nine-am\"]}",
-        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"Correction: my deploy record saying nine-am is wrong. It is now mysql.\",\"Got it — noting nine-am for deploy.\",\"My deploy preference is nine-am.\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"Correction: my deploy record saying nine-am is wrong. It is now mysql.\",\"Got it \u2014 noting nine-am for deploy.\",\"My deploy preference is nine-am.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -759,7 +759,7 @@
         "taskId": "memcorrect-12613607-11",
         "question": "what is my notebook preference?",
         "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"mechanical\"]}",
-        "actual": "{\"shape\":\"conversational\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched notebook from mechanical to mysql last month.\",\"Got it — noting mechanical for notebook.\",\"My notebook preference is mechanical.\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched notebook from mechanical to mysql last month.\",\"Got it \u2014 noting mechanical for notebook.\",\"My notebook preference is mechanical.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -797,7 +797,7 @@
         "taskId": "memcorrect-12613607-12",
         "question": "what is my notebook preference?",
         "expected": "{\"correctedContent\":[\"membrane\"],\"retiredContent\":[\"oat-milk\"]}",
-        "actual": "{\"shape\":\"scoped\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"For this project, notebook is membrane now, not oat-milk.\",\"Got it — noting oat-milk for notebook.\",\"My notebook preference is oat-milk.\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"For this project, notebook is membrane now, not oat-milk.\",\"Got it \u2014 noting oat-milk for notebook.\",\"My notebook preference is oat-milk.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -836,7 +836,7 @@
         "taskId": "memcorrect-12613607-13",
         "question": "what is my keyboard preference?",
         "expected": "{\"correctedContent\":[\"lined\"],\"retiredContent\":[\"nine-am\"]}",
-        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"Update: keyboard is lined going forward instead of nine-am.\",\"Got it — noting nine-am for keyboard.\",\"My keyboard preference is nine-am.\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"Update: keyboard is lined going forward instead of nine-am.\",\"Got it \u2014 noting nine-am for keyboard.\",\"My keyboard preference is nine-am.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -875,7 +875,7 @@
         "taskId": "memcorrect-12613607-14",
         "question": "what is my deploy preference?",
         "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"postgres\"]}",
-        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"Correction: my deploy record saying postgres is wrong. It is now canary.\",\"Got it — noting postgres for deploy.\",\"My deploy preference is postgres.\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"Correction: my deploy record saying postgres is wrong. It is now canary.\",\"Got it \u2014 noting postgres for deploy.\",\"My deploy preference is postgres.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -913,7 +913,7 @@
         "taskId": "memcorrect-12613607-15",
         "question": "what is my coffee preference?",
         "expected": "{\"correctedContent\":[\"wednesday\"],\"retiredContent\":[\"nine-am\"]}",
-        "actual": "{\"shape\":\"conversational\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched coffee from nine-am to wednesday last month.\",\"Got it — noting nine-am for coffee.\",\"My coffee preference is nine-am.\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched coffee from nine-am to wednesday last month.\",\"Got it \u2014 noting nine-am for coffee.\",\"My coffee preference is nine-am.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -951,7 +951,7 @@
         "taskId": "memcorrect-12613607-16",
         "question": "what is my coffee preference?",
         "expected": "{\"correctedContent\":[\"membrane\"],\"retiredContent\":[\"blue-green\"]}",
-        "actual": "{\"shape\":\"scoped\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"For this project, coffee is membrane now, not blue-green.\",\"Got it — noting blue-green for coffee.\",\"My coffee preference is blue-green.\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"For this project, coffee is membrane now, not blue-green.\",\"Got it \u2014 noting blue-green for coffee.\",\"My coffee preference is blue-green.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -990,7 +990,7 @@
         "taskId": "memcorrect-12613607-17",
         "question": "what is my keyboard preference?",
         "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"nine-am\"]}",
-        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"Update: keyboard is black-coffee going forward instead of nine-am.\",\"Got it — noting nine-am for keyboard.\",\"My keyboard preference is nine-am.\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"Update: keyboard is black-coffee going forward instead of nine-am.\",\"Got it \u2014 noting nine-am for keyboard.\",\"My keyboard preference is nine-am.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1029,7 +1029,7 @@
         "taskId": "memcorrect-12613607-18",
         "question": "what is my standup preference?",
         "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"dotgrid\"]}",
-        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"Correction: my standup record saying dotgrid is wrong. It is now black-coffee.\",\"Got it — noting dotgrid for standup.\",\"My standup preference is dotgrid.\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"Correction: my standup record saying dotgrid is wrong. It is now black-coffee.\",\"Got it \u2014 noting dotgrid for standup.\",\"My standup preference is dotgrid.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1067,7 +1067,7 @@
         "taskId": "memcorrect-12613607-19",
         "question": "what is my database preference?",
         "expected": "{\"correctedContent\":[\"wednesday\"],\"retiredContent\":[\"helix\"]}",
-        "actual": "{\"shape\":\"conversational\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched database from helix to wednesday last month.\",\"Got it — noting helix for database.\",\"My database preference is helix.\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched database from helix to wednesday last month.\",\"Got it \u2014 noting helix for database.\",\"My database preference is helix.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1105,7 +1105,7 @@
         "taskId": "memcorrect-12613607-1a",
         "question": "what is my keyboard preference?",
         "expected": "{\"correctedContent\":[\"wednesday\"],\"retiredContent\":[\"oat-milk\"]}",
-        "actual": "{\"shape\":\"scoped\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"For this project, keyboard is wednesday now, not oat-milk.\",\"Got it — noting oat-milk for keyboard.\",\"My keyboard preference is oat-milk.\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"For this project, keyboard is wednesday now, not oat-milk.\",\"Got it \u2014 noting oat-milk for keyboard.\",\"My keyboard preference is oat-milk.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1144,7 +1144,7 @@
         "taskId": "memcorrect-12613607-1b",
         "question": "what is my database preference?",
         "expected": "{\"correctedContent\":[\"lined\"],\"retiredContent\":[\"postgres\"]}",
-        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"Update: database is lined going forward instead of postgres.\",\"Got it — noting postgres for database.\",\"My database preference is postgres.\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"Update: database is lined going forward instead of postgres.\",\"Got it \u2014 noting postgres for database.\",\"My database preference is postgres.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1183,7 +1183,7 @@
         "taskId": "memcorrect-12613607-1c",
         "question": "what is my editor preference?",
         "expected": "{\"correctedContent\":[\"membrane\"],\"retiredContent\":[\"helix\"]}",
-        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"Correction: my editor record saying helix is wrong. It is now membrane.\",\"Got it — noting helix for editor.\",\"My editor preference is helix.\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"Correction: my editor record saying helix is wrong. It is now membrane.\",\"Got it \u2014 noting helix for editor.\",\"My editor preference is helix.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1221,7 +1221,7 @@
         "taskId": "memcorrect-12613607-1d",
         "question": "what is my standup preference?",
         "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"postgres\"]}",
-        "actual": "{\"shape\":\"conversational\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched standup from postgres to mysql last month.\",\"Got it — noting postgres for standup.\",\"My standup preference is postgres.\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched standup from postgres to mysql last month.\",\"Got it \u2014 noting postgres for standup.\",\"My standup preference is postgres.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1259,7 +1259,7 @@
         "taskId": "memcorrect-12613607-1e",
         "question": "what is my standup preference?",
         "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"postgres\"]}",
-        "actual": "{\"shape\":\"scoped\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"For this project, standup is black-coffee now, not postgres.\",\"Got it — noting postgres for standup.\",\"My standup preference is postgres.\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"For this project, standup is black-coffee now, not postgres.\",\"Got it \u2014 noting postgres for standup.\",\"My standup preference is postgres.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1298,7 +1298,7 @@
         "taskId": "memcorrect-12613607-1f",
         "question": "what is my calendar preference?",
         "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"mechanical\"]}",
-        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"Update: calendar is canary going forward instead of mechanical.\",\"Got it — noting mechanical for calendar.\",\"My calendar preference is mechanical.\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"Update: calendar is canary going forward instead of mechanical.\",\"Got it \u2014 noting mechanical for calendar.\",\"My calendar preference is mechanical.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1337,7 +1337,7 @@
         "taskId": "memcorrect-12613607-20",
         "question": "what is my editor preference?",
         "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"nine-am\"]}",
-        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"Correction: my editor record saying nine-am is wrong. It is now mysql.\",\"Got it — noting nine-am for editor.\",\"My editor preference is nine-am.\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"Correction: my editor record saying nine-am is wrong. It is now mysql.\",\"Got it \u2014 noting nine-am for editor.\",\"My editor preference is nine-am.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1375,7 +1375,7 @@
         "taskId": "memcorrect-12613607-21",
         "question": "what is my database preference?",
         "expected": "{\"correctedContent\":[\"neovim\"],\"retiredContent\":[\"dotgrid\"]}",
-        "actual": "{\"shape\":\"conversational\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched database from dotgrid to neovim last month.\",\"Got it — noting dotgrid for database.\",\"My database preference is dotgrid.\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched database from dotgrid to neovim last month.\",\"Got it \u2014 noting dotgrid for database.\",\"My database preference is dotgrid.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1413,7 +1413,7 @@
         "taskId": "memcorrect-12613607-22",
         "question": "what is my keyboard preference?",
         "expected": "{\"correctedContent\":[\"membrane\"],\"retiredContent\":[\"dotgrid\"]}",
-        "actual": "{\"shape\":\"scoped\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"For this project, keyboard is membrane now, not dotgrid.\",\"Got it — noting dotgrid for keyboard.\",\"My keyboard preference is dotgrid.\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"For this project, keyboard is membrane now, not dotgrid.\",\"Got it \u2014 noting dotgrid for keyboard.\",\"My keyboard preference is dotgrid.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1452,7 +1452,7 @@
         "taskId": "memcorrect-12613607-23",
         "question": "what is my deploy preference?",
         "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"monday\"]}",
-        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"Update: deploy is canary going forward instead of monday.\",\"Got it — noting monday for deploy.\",\"My deploy preference is monday.\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"Update: deploy is canary going forward instead of monday.\",\"Got it \u2014 noting monday for deploy.\",\"My deploy preference is monday.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1491,7 +1491,7 @@
         "taskId": "memcorrect-12613607-24",
         "question": "what is my coffee preference?",
         "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"blue-green\"]}",
-        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"Correction: my coffee record saying blue-green is wrong. It is now mysql.\",\"Got it — noting blue-green for coffee.\",\"My coffee preference is blue-green.\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"Correction: my coffee record saying blue-green is wrong. It is now mysql.\",\"Got it \u2014 noting blue-green for coffee.\",\"My coffee preference is blue-green.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1529,7 +1529,7 @@
         "taskId": "memcorrect-12613607-25",
         "question": "what is my editor preference?",
         "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"monday\"]}",
-        "actual": "{\"shape\":\"conversational\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched editor from monday to black-coffee last month.\",\"Got it — noting monday for editor.\",\"My editor preference is monday.\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"Oh by the way, we switched editor from monday to black-coffee last month.\",\"Got it \u2014 noting monday for editor.\",\"My editor preference is monday.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1567,7 +1567,7 @@
         "taskId": "memcorrect-12613607-26",
         "question": "what is my editor preference?",
         "expected": "{\"correctedContent\":[\"lined\"],\"retiredContent\":[\"helix\"]}",
-        "actual": "{\"shape\":\"scoped\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"For this project, editor is lined now, not helix.\",\"Got it — noting helix for editor.\",\"My editor preference is helix.\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"For this project, editor is lined now, not helix.\",\"Got it \u2014 noting helix for editor.\",\"My editor preference is helix.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,
@@ -1606,7 +1606,7 @@
         "taskId": "memcorrect-12613607-27",
         "question": "what is my keyboard preference?",
         "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"mechanical\"]}",
-        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"Update: keyboard is black-coffee going forward instead of mechanical.\",\"Got it — noting mechanical for keyboard.\",\"My keyboard preference is mechanical.\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"Update: keyboard is black-coffee going forward instead of mechanical.\",\"Got it \u2014 noting mechanical for keyboard.\",\"My keyboard preference is mechanical.\"]}",
         "scores": {
           "uptake_at_next": 0,
           "uptake_latency": 8,

@@ -45,6 +45,50 @@ test("timeout guard rejects a stuck adapter phase", async () => {
   assert.equal(timedOutPhase, "timeout-test:recall session=s");
 });
 
+test("timeout guard forwards the optional correct surface with phase guarding", async () => {
+  const adapter = makeAdapter();
+  const correctCalls: Array<{ session: string; text: string; at?: string }> = [];
+  adapter.correct = async (sessionId, text, at) => {
+    correctCalls.push({ session: sessionId, text, ...(at !== undefined ? { at } : {}) });
+    return { applied: true };
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 1000,
+  });
+
+  assert.ok(guarded.correct, "guarded adapter must preserve correct()");
+  const outcome = await guarded.correct("s", "fix this", "2026-07-05T00:00:00Z");
+  assert.deepEqual(outcome, { applied: true });
+  assert.deepEqual(correctCalls, [
+    { session: "s", text: "fix this", at: "2026-07-05T00:00:00Z" },
+  ]);
+});
+
+test("timeout guard omits correct when the adapter has none", () => {
+  const guarded = createTimeoutGuardedAdapter(makeAdapter(), {
+    benchmarkId: "timeout-test",
+    timeoutMs: 1000,
+  });
+  assert.equal(guarded.correct, undefined);
+});
+
+test("timeout guard rejects a stuck correct phase", async () => {
+  const adapter = makeAdapter();
+  adapter.correct = () => {
+    const { promise } = Promise.withResolvers<{ applied: boolean }>();
+    return promise;
+  };
+  const guarded = createTimeoutGuardedAdapter(adapter, {
+    benchmarkId: "timeout-test",
+    timeoutMs: 5,
+  });
+  await assert.rejects(
+    () => guarded.correct!("s", "fix this"),
+    /benchmark phase timed out after 5ms: timeout-test:correct session=s/,
+  );
+});
+
 test("timeout guard aborts adapter phase work on timeout", async () => {
   const adapter = makeAdapter();
   let sawAbort = false;

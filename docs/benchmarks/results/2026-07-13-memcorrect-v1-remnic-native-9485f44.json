@@ -49,7 +49,7 @@
       "leaderboardArtifacts": [
         {
           "benchmark": "memcorrect-v1",
-          "path": "/home/joshuawarren/.remnic/bench/results/leaderboard/memcorrect-remnic-native-2026-07-13T20-47-36-910Z.jsonl",
+          "path": "~/.remnic/bench/results/leaderboard/memcorrect-remnic-native-2026-07-13T20-47-36-910Z.jsonl",
           "format": "memcorrect-adapter-metrics-jsonl",
           "records": 1
         }

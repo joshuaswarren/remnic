@@ -2452,6 +2452,20 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           "correct",
         );
         if (plan.actions.length === 0) {
+          if (plan.affected.length > 0) {
+            // The planner LOCATED candidates but drafted no action — the
+            // deterministic manual-selection fallback (classify LLM
+            // unavailable or unparsable). Silently falling back to the turn
+            // path here would measure non-contract behavior while labeling
+            // the run contract-routed (codex P1) — fail loudly instead so a
+            // misconfigured lab run cannot mismeasure.
+            await access
+              .correctionDiscard(plan.planId, { sessionKey: sessionId })
+              .catch(() => undefined);
+            throw new Error(
+              `correction planner degraded to the manual-selection fallback (no applicable action drafted for ${plan.affected.length} candidate(s); warnings: ${plan.warnings.join("; ") || "none"}) — refusing to measure the turn path as contract behavior`,
+            );
+          }
           // Planner found nothing to change (no matching memory yet, or a
           // purely additive correction). Discard the empty pending plan and
           // report not-applied so the caller can deliver the correction
@@ -2461,7 +2475,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             .catch(() => undefined);
           return { applied: false };
         }
-        await withBenchPhaseAbort(
+        const outcome = await withBenchPhaseAbort(
           access.correctionApply(plan.planId, {
             confirm: true,
             sessionKey: sessionId,
@@ -2469,7 +2483,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           control,
           "correct",
         );
-        return { applied: true };
+        // A `partial` outcome means at least one action failed — report
+        // not-fully-applied so the MemCorrect wrapper also delivers the
+        // correction through the turn path (mirrors a user restating after a
+        // partial fix) instead of counting a partial apply as full uptake
+        // (cursor Medium).
+        return { applied: outcome.status === "applied" };
       },
 
       async drain(control?: BenchPhaseControl): Promise<void> {
