@@ -1161,6 +1161,19 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
         'ERROR: --memcorrect-adapter must be "remnic" or "prompt-only".',
       );
     }
+    // Mirror the other benchmark-specific flag checks (--task-filter,
+    // --ingest-concurrency): an explicit adapter choice on a non-MemCorrect
+    // run would be silently ignored downstream — reject instead (codex P2).
+    const targetsMemcorrect =
+      action !== "published" &&
+      !args.includes("--all") &&
+      benchmarks.length === 1 &&
+      benchmarks[0] === "memcorrect-v1";
+    if (!targetsMemcorrect) {
+      throw new Error(
+        "ERROR: --memcorrect-adapter is only supported for a single-benchmark memcorrect-v1 run.",
+      );
+    }
     memcorrectAdapter = memcorrectAdapterRaw;
   }
 

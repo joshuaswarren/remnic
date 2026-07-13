@@ -2446,11 +2446,55 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         throwIfBenchPhaseAborted(control, "correct");
         sessionId = normalizeBenchSessionId(sessionId);
         const access = getCorrectionAccess();
-        const plan = await withBenchPhaseAbort(
+        const discardPlan = async (planId: string): Promise<void> => {
+          await access
+            .correctionDiscard(planId, { sessionKey: sessionId })
+            .catch(() => undefined);
+        };
+        let plan = await withBenchPhaseAbort(
           access.correctionPlan({ text, sessionKey: sessionId }),
           control,
           "correct",
         );
+        // Bench "namespaces" are distinct session ids inside ONE store (real
+        // namespaces are disabled), but the correction planner searches the
+        // whole default namespace — restrict the plan to memories extracted
+        // for THIS session (their frontmatter.source carries the per-session
+        // replay tag) so a correction can never plan/apply against another
+        // benchmark session's memories and corrupt scope_precision /
+        // collateral measurements (codex P1). Limitation: replacement
+        // memories written by a previous correction carry the executor's
+        // source, not the session tag; MemCorrect issues one correct() per
+        // scenario, so no scenario re-corrects its own replacement.
+        if (plan.affected.length > 0) {
+          const sessionSource = benchCoreMemorySource(sessionId);
+          const owned = new Set(
+            (await readBenchCoreMemories(state.orchestrator))
+              .filter((memory) => memory.frontmatter.source === sessionSource)
+              .map((memory) => memory.frontmatter.id),
+          );
+          const ownedAffected = plan.affected.filter((entry) => owned.has(entry.memoryId));
+          if (ownedAffected.length === 0) {
+            // Everything the planner located belongs to another benchmark
+            // session — for THIS session the correction has no target.
+            await discardPlan(plan.planId);
+            return { applied: false };
+          }
+          if (ownedAffected.length < plan.affected.length) {
+            // Re-plan restricted to this session's memories via explicit
+            // target ids (the planner resolves those directly).
+            await discardPlan(plan.planId);
+            plan = await withBenchPhaseAbort(
+              access.correctionPlan({
+                text,
+                sessionKey: sessionId,
+                targetIds: ownedAffected.map((entry) => entry.memoryId),
+              }),
+              control,
+              "correct",
+            );
+          }
+        }
         if (plan.actions.length === 0) {
           if (plan.affected.length > 0) {
             // The planner LOCATED candidates but drafted no action — the
@@ -2459,9 +2503,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
             // path here would measure non-contract behavior while labeling
             // the run contract-routed (codex P1) — fail loudly instead so a
             // misconfigured lab run cannot mismeasure.
-            await access
-              .correctionDiscard(plan.planId, { sessionKey: sessionId })
-              .catch(() => undefined);
+            await discardPlan(plan.planId);
             throw new Error(
               `correction planner degraded to the manual-selection fallback (no applicable action drafted for ${plan.affected.length} candidate(s); warnings: ${plan.warnings.join("; ") || "none"}) — refusing to measure the turn path as contract behavior`,
             );
@@ -2470,9 +2512,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           // purely additive correction). Discard the empty pending plan and
           // report not-applied so the caller can deliver the correction
           // through the plain turn path instead.
-          await access
-            .correctionDiscard(plan.planId, { sessionKey: sessionId })
-            .catch(() => undefined);
+          await discardPlan(plan.planId);
           return { applied: false };
         }
         const outcome = await withBenchPhaseAbort(
