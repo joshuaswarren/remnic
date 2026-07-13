@@ -1061,7 +1061,7 @@ test("access HTTP dreams run consumes the write rate limit for live runs", async
   };
 
   try {
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 120; index += 1) {
       const response = await fetch(`${base}/engram/v1/dreams/run`, {
         method: "POST",
         headers,
@@ -1462,7 +1462,7 @@ test("access HTTP server rate-limits write endpoints", async () => {
       Authorization: "Bearer secret-token",
       "Content-Type": "application/json",
     };
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 120; index += 1) {
       const response = await fetch(`${base}/engram/v1/memories`, {
         method: "POST",
         headers,
@@ -1522,7 +1522,7 @@ test("access HTTP server does not consume the write rate limit for invalid reque
       Authorization: "Bearer secret-token",
       "Content-Type": "application/json",
     };
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 120; index += 1) {
       const response = await fetch(`${base}/engram/v1/memories`, {
         method: "POST",
         headers,
@@ -1594,7 +1594,7 @@ test("access HTTP server does not consume the write rate limit for idempotency r
       Authorization: "Bearer secret-token",
       "Content-Type": "application/json",
     };
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 120; index += 1) {
       const response = await fetch(`${base}/engram/v1/memories`, {
         method: "POST",
         headers,
@@ -1663,7 +1663,7 @@ test("access HTTP server allows idempotent replay writes even after the write li
       Authorization: "Bearer secret-token",
       "Content-Type": "application/json",
     };
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 120; index += 1) {
       const response = await fetch(`${base}/engram/v1/memories`, {
         method: "POST",
         headers,
@@ -1748,7 +1748,7 @@ test("access HTTP server enforces the write rate limit at the real miss even whe
     "Content-Type": "application/json",
   };
   try {
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 120; index += 1) {
       const res = await fetch(`${base}/engram/v1/memories`, {
         method: "POST",
         headers,
@@ -1756,7 +1756,7 @@ test("access HTTP server enforces the write rate limit at the real miss even whe
       });
       assert.equal(res.status, 201);
     }
-    // 31st real miss: peek said replay (pre-check skipped), but the in-service
+    // 121st real miss: peek said replay (pre-check skipped), but the in-service
     // hook enforces the now-full window.
     const overflow = await fetch(`${base}/engram/v1/memories`, {
       method: "POST",
@@ -1764,7 +1764,7 @@ test("access HTTP server enforces the write rate limit at the real miss even whe
       body: JSON.stringify({ content: "overflow", category: "fact" }),
     });
     assert.equal(overflow.status, 429);
-    assert.equal(quotaCalls, 31, "every store must consult the authoritative quota hook");
+    assert.equal(quotaCalls, 121, "every store must consult the authoritative quota hook");
   } finally {
     await server.stop();
   }
@@ -1837,7 +1837,7 @@ test("access HTTP server allows dry-run writes even after the write limit is ful
       Authorization: "Bearer secret-token",
       "Content-Type": "application/json",
     };
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 120; index += 1) {
       const response = await fetch(`${base}/engram/v1/memories`, {
         method: "POST",
         headers,
@@ -1893,7 +1893,7 @@ test("access HTTP server allows trust-zone dry runs even after the write limit i
       Authorization: "Bearer secret-token",
       "Content-Type": "application/json",
     };
-    for (let index = 0; index < 30; index += 1) {
+    for (let index = 0; index < 120; index += 1) {
       const response = await fetch(`${base}/engram/v1/memories`, {
         method: "POST",
         headers,
@@ -2393,7 +2393,7 @@ test("access HTTP server rate-limits MCP write tool calls", async () => {
     };
 
     // Exhaust the write rate limit via MCP memory_store calls
-    for (let i = 0; i < 30; i++) {
+    for (let i = 0; i < 120; i++) {
       const res = await fetch(`${base}/mcp`, {
         method: "POST",
         headers,
@@ -2410,7 +2410,7 @@ test("access HTTP server rate-limits MCP write tool calls", async () => {
       assert.equal(res.status, 200);
     }
 
-    // 31st write should be rate-limited
+    // 121st write should be rate-limited
     const limited = await fetch(`${base}/mcp`, {
       method: "POST",
       headers,

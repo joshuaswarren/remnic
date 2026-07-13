@@ -143,7 +143,7 @@ transport at `POST /mcp`. Authentication is a bearer token checked with
 5. `"default"`.
 
 A global write rate-limit exists (`WRITE_RATE_LIMIT_WINDOW_MS = 60_000`,
-`WRITE_RATE_LIMIT_MAX_REQUESTS = 30` at `access-http.ts:59-60`). It applies
+`WRITE_RATE_LIMIT_MAX_REQUESTS = 120` at `access-http.ts:200-201`). It applies
 only to write routes and is global (not per-principal). Read routes —
 including `/engram/v1/recall`, `GET /engram/v1/memories` (list/browse),
 `GET /engram/v1/entities`, `POST /engram/v1/lcm/search`, and

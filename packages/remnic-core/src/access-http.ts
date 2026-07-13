@@ -198,7 +198,7 @@ const defaultAdminConsolePublicDir = resolveDefaultAdminConsolePublicDir();
 const correlationIdStore = new AsyncLocalStorage<string>();
 
 const WRITE_RATE_LIMIT_WINDOW_MS = 60_000;
-const WRITE_RATE_LIMIT_MAX_REQUESTS = 30;
+const WRITE_RATE_LIMIT_MAX_REQUESTS = 120;
 const TRUST_ZONE_RECORD_KINDS = ["memory", "artifact", "state", "trajectory", "external"] as const;
 const TRUST_ZONE_SOURCE_CLASSES = ["tool_output", "web_content", "subagent_trace", "system_memory", "user_input", "manual"] as const;
 

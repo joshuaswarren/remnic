@@ -172,7 +172,7 @@ Response (HTTP 202):
 - `lcmArchived` — whether messages were archived in LCM
 - `extractionQueued` — whether messages were queued for extraction
 
-Rate-limited to 30 requests per minute. See the [Standalone Server Guide](guides/standalone-server.md#the-observe-endpoint) for details.
+Rate-limited to 120 requests per minute. See the [Standalone Server Guide](guides/standalone-server.md#the-observe-endpoint) for details.
 
 #### `POST /engram/v1/lcm/search`
 
@@ -670,7 +670,7 @@ All error responses follow a consistent JSON structure:
 | 401 | `unauthorized` | Missing or invalid bearer token |
 | 404 | `not_found` | Unknown endpoint or resource |
 | 413 | `request_body_too_large` | Body exceeds `maxBodyBytes` (default: 128KB) |
-| 429 | `write_rate_limited` | Write rate limit exceeded (30 requests per 60 seconds) |
+| 429 | `write_rate_limited` | Write rate limit exceeded (120 requests per 60 seconds) |
 | 500 | `internal_error` | Unexpected server error |
 
 ### Correlation IDs

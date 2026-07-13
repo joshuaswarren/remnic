@@ -313,7 +313,7 @@ See the [Namespaces documentation](../namespaces.md) for full details on namespa
 
 ### Rate limiting
 
-The observe endpoint is rate-limited to **30 requests per minute** per server instance. Dry runs and idempotency replays do not count toward the limit. If the limit is exceeded, the server returns HTTP 429.
+The observe endpoint is rate-limited to **120 requests per minute** per server instance. Dry runs and idempotency replays do not count toward the limit. If the limit is exceeded, the server returns HTTP 429.
 
 ## LCM Search
 
