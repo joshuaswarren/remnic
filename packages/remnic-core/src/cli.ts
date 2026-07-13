@@ -4,6 +4,7 @@ import { access, lstat, readFile, readdir, realpath, unlink } from "node:fs/prom
 import { createHash } from "node:crypto";
 import type { Readable, Writable } from "node:stream";
 import type { Orchestrator } from "./orchestrator.js";
+import type { ConversationIndexCoordinator } from "./orchestration/conversation-index-coordinator.js";
 import { resolveNamespaceCapabilities,
   resolveMemoryLifecycleCapabilities,
   resolveIdentityContinuityCapabilities,
@@ -607,68 +608,10 @@ interface TailscaleHelperLike {
 }
 
 export interface ConversationIndexHealthCliOrchestrator {
-  getConversationIndexHealth(): Promise<{
-    enabled: boolean;
-    backend: "qmd" | "faiss";
-    status: "ok" | "degraded" | "disabled";
-    chunkDocCount: number;
-    lastUpdateAt: string | null;
-    qmdAvailable?: boolean;
-    faiss?: {
-      ok: boolean;
-      status: "ok" | "degraded" | "error";
-      indexPath: string;
-      message?: string;
-      manifest?: {
-        version: number;
-        modelId: string;
-        normalizedModelId: string;
-        dimension: number;
-        chunkCount: number;
-        updatedAt: string;
-        lastSuccessfulRebuildAt: string;
-      };
-    };
-  }>;
-  inspectConversationIndex(): Promise<{
-    enabled: boolean;
-    backend: "qmd" | "faiss";
-    status: "ok" | "degraded" | "disabled";
-    available: boolean;
-    indexPath: string;
-    supportsIncrementalUpdate: boolean;
-    message?: string;
-    chunkDocCount: number;
-    lastUpdateAt: string | null;
-    metadata: {
-      chunkCount: number | null;
-      qmdAvailable?: boolean;
-      debugStatus?: string;
-      hasIndex?: boolean;
-      hasMetadata?: boolean;
-      hasManifest?: boolean;
-      manifest?: {
-        version: number;
-        modelId: string;
-        normalizedModelId: string;
-        dimension: number;
-        chunkCount: number;
-        updatedAt: string;
-        lastSuccessfulRebuildAt: string;
-      };
-    };
-  }>;
-  rebuildConversationIndex(
-    sessionKey?: string,
-    hours?: number,
-    opts?: { embed?: boolean },
-  ): Promise<{
-    chunks: number;
-    skipped: boolean;
-    reason?: string;
-    embedded?: boolean;
-    rebuilt?: boolean;
-  }>;
+  conversationIndexCoordinator: Pick<
+    ConversationIndexCoordinator,
+    "getHealth" | "inspect" | "rebuild"
+  >;
 }
 
 export interface GraphHealthCliCommandOptions {
@@ -1222,13 +1165,13 @@ export async function runConversationIndexHealthCliCommand(
     };
   };
 }> {
-  return orchestrator.getConversationIndexHealth();
+  return orchestrator.conversationIndexCoordinator.getHealth();
 }
 
 export async function runConversationIndexInspectCliCommand(
   orchestrator: ConversationIndexHealthCliOrchestrator,
 ) {
-  return orchestrator.inspectConversationIndex();
+  return orchestrator.conversationIndexCoordinator.inspect();
 }
 
 export async function runConversationIndexRebuildCliCommand(
@@ -1239,7 +1182,7 @@ export async function runConversationIndexRebuildCliCommand(
     embed?: boolean;
   },
 ) {
-  return orchestrator.rebuildConversationIndex(
+  return orchestrator.conversationIndexCoordinator.rebuild(
     options.sessionKey,
     options.hours,
     { embed: options.embed },

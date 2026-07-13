@@ -229,11 +229,13 @@ test("summarizeTierDistribution: runOperatorDoctor includes tier_distribution ch
         async ensureCollection() { return "skipped" as const; },
         debugStatus() { return "disabled"; },
       },
-      async getConversationIndexHealth() {
-        return { enabled: false, backend: "qmd" as const, status: "disabled" as const, chunkDocCount: 0, lastUpdateAt: null };
-      },
-      async rebuildConversationIndex() {
-        return { chunks: 0, skipped: true, reason: "disabled", embedded: false, rebuilt: false };
+      conversationIndexCoordinator: {
+        async getHealth() {
+          return { enabled: false, backend: "qmd" as const, status: "disabled" as const, chunkDocCount: 0, lastUpdateAt: null };
+        },
+        async rebuild() {
+          return { chunks: 0, skipped: true, reason: "disabled", embedded: false, rebuilt: false };
+        },
       },
     };
 

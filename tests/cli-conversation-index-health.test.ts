@@ -26,14 +26,16 @@ test("conversation-index-health CLI wrapper returns orchestrator health payload"
   };
 
   const result = await runConversationIndexHealthCliCommand({
-    async getConversationIndexHealth() {
-      return expected;
-    },
-    async inspectConversationIndex() {
-      throw new Error("unused");
-    },
-    async rebuildConversationIndex() {
-      throw new Error("unused");
+    conversationIndexCoordinator: {
+      async getHealth() {
+        return expected;
+      },
+      async inspect() {
+        throw new Error("unused");
+      },
+      async rebuild() {
+        throw new Error("unused");
+      },
     },
   });
 
@@ -59,14 +61,16 @@ test("conversation-index-inspect CLI wrapper returns orchestrator inspection pay
   };
 
   const result = await runConversationIndexInspectCliCommand({
-    async getConversationIndexHealth() {
-      throw new Error("unused");
-    },
-    async inspectConversationIndex() {
-      return expected;
-    },
-    async rebuildConversationIndex() {
-      throw new Error("unused");
+    conversationIndexCoordinator: {
+      async getHealth() {
+        throw new Error("unused");
+      },
+      async inspect() {
+        return expected;
+      },
+      async rebuild() {
+        throw new Error("unused");
+      },
     },
   });
 
@@ -76,15 +80,17 @@ test("conversation-index-inspect CLI wrapper returns orchestrator inspection pay
 test("conversation-index-rebuild CLI wrapper forwards options", async () => {
   const calls: Array<{ sessionKey?: string; hours?: number; opts?: { embed?: boolean } }> = [];
   const result = await runConversationIndexRebuildCliCommand({
-    async getConversationIndexHealth() {
-      throw new Error("unused");
-    },
-    async inspectConversationIndex() {
-      throw new Error("unused");
-    },
-    async rebuildConversationIndex(sessionKey?: string, hours?: number, opts?: { embed?: boolean }) {
-      calls.push({ sessionKey, hours, opts });
-      return { chunks: 7, skipped: false, embedded: false, rebuilt: true };
+    conversationIndexCoordinator: {
+      async getHealth() {
+        throw new Error("unused");
+      },
+      async inspect() {
+        throw new Error("unused");
+      },
+      async rebuild(sessionKey?: string, hours?: number, opts?: { embed?: boolean }) {
+        calls.push({ sessionKey, hours, opts });
+        return { chunks: 7, skipped: false, embedded: false, rebuilt: true };
+      },
     },
   }, {
     sessionKey: "agent:test:main",
@@ -129,7 +135,7 @@ test("orchestrator conversation index health reports qmd backend availability", 
     isAvailable: () => true,
   };
 
-  const health = await orchestrator.getConversationIndexHealth();
+  const health = await orchestrator.conversationIndexCoordinator.getHealth();
 
   assert.equal(health.enabled, true);
   assert.equal(health.backend, "qmd");
@@ -153,7 +159,7 @@ test("orchestrator conversation index health probes qmd when availability is unk
     },
   };
 
-  const health = await orchestrator.getConversationIndexHealth();
+  const health = await orchestrator.conversationIndexCoordinator.getHealth();
 
   assert.equal(probed, 1);
   assert.equal(health.enabled, true);
@@ -174,7 +180,7 @@ test("orchestrator conversation index health reports faiss degradation fail-open
     },
   };
 
-  const health = await orchestrator.getConversationIndexHealth();
+  const health = await orchestrator.conversationIndexCoordinator.getHealth();
 
   assert.equal(health.enabled, true);
   assert.equal(health.backend, "faiss");
@@ -188,7 +194,7 @@ test("orchestrator conversation index health reports disabled state", async () =
     conversationIndexBackend: "qmd",
   });
 
-  const health = await orchestrator.getConversationIndexHealth();
+  const health = await orchestrator.conversationIndexCoordinator.getHealth();
 
   assert.equal(health.enabled, false);
   assert.equal(health.status, "disabled");

@@ -117,6 +117,52 @@ export function evaluateTestTypecheckResult({
   };
 }
 
+export function evaluateTestTypecheckUpdate({
+  status,
+  stdout = "",
+  stderr = "",
+  root = repoRoot,
+}) {
+  const rawOutput = `${stdout}${stderr}`;
+  const diagnostics = normalizeDiagnostics(rawOutput, root);
+  const nonDiagnostic = nonDiagnosticFailureLines(rawOutput, root)
+    .join("\n")
+    .trim();
+
+  if (status === 0) {
+    return {
+      ok: true,
+      diagnostics: "",
+      message: "[test-typecheck] tests typecheck cleanly; no baseline update needed.",
+    };
+  }
+
+  if (!diagnostics) {
+    return {
+      ok: false,
+      diagnostics: "",
+      message:
+        "[test-typecheck] cannot update baseline without TypeScript diagnostics",
+    };
+  }
+
+  if (nonDiagnostic) {
+    return {
+      ok: false,
+      diagnostics: "",
+      message:
+        "[test-typecheck] tsc failed with non-diagnostic output; investigate the wrapper/tooling failure before updating the baseline.",
+      details: nonDiagnostic,
+    };
+  }
+
+  return {
+    ok: true,
+    diagnostics,
+    message: `[test-typecheck] baseline updated (${diagnostics.split("\n").length} diagnostics)`,
+  };
+}
+
 export function isDirectRunPath(argvPath, moduleUrl = import.meta.url) {
   if (!argvPath) return false;
   try {
@@ -147,14 +193,21 @@ function main() {
     : "";
   const updateBaseline = process.argv.includes("--update");
   if (updateBaseline && (result.status ?? 1) !== 0) {
-    const normalized = normalizeDiagnostics(`${result.stdout ?? ""}${result.stderr ?? ""}`);
-    if (!normalized) {
-      console.error("[test-typecheck] cannot update baseline without TypeScript diagnostics");
-      process.exit(1);
+    const update = evaluateTestTypecheckUpdate({
+      status: result.status ?? 1,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+    });
+    if (update.ok) {
+      writeFileSync(baselinePath, `${update.diagnostics}\n`);
+      console.log(update.message);
+      process.exit(0);
     }
-    writeFileSync(baselinePath, `${normalized}\n`);
-    console.log(`[test-typecheck] baseline updated (${normalized.split("\n").length} diagnostics)`);
-    process.exit(0);
+    console.error(update.message);
+    if (update.details) {
+      console.error(update.details);
+    }
+    process.exit(1);
   }
   const evaluation = evaluateTestTypecheckResult({
     status: result.status ?? 1,

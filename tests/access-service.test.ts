@@ -220,8 +220,10 @@ test("conversationIndexUpdate rejects blank sessionKey instead of updating every
         throw new Error("all-session update should not run");
       },
     },
-    updateConversationIndex: async () => {
-      throw new Error("single-session update should not run");
+    conversationIndexCoordinator: {
+      update: async () => {
+        throw new Error("single-session update should not run");
+      },
     },
   } as any);
 

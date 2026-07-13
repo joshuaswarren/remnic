@@ -7,7 +7,10 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 const scriptUrl = new URL("../scripts/check-test-types.mjs", import.meta.url);
-const { evaluateTestTypecheckResult, isDirectRunPath } = await import(scriptUrl.href);
+// Dynamic import is intentional: the specifier is a runtime file:// URL exercised
+// by the direct-run and import-boundary tests below. Static import cannot resolve it.
+const { evaluateTestTypecheckResult, evaluateTestTypecheckUpdate, isDirectRunPath } =
+  await import(scriptUrl.href);
 
 const ROOT = "/repo";
 const BASELINE_DIAGNOSTIC = "/repo/tests/example.test.ts(12,7): error TS2322: bad";
@@ -153,5 +156,86 @@ describe("check-test-types wrapper", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("check-test-types baseline update", () => {
+  it("refreshes the baseline when diagnostics have no wrapper failure", () => {
+    const result = evaluateTestTypecheckUpdate({
+      status: 2,
+      stdout: `${BASELINE_DIAGNOSTIC}\n`,
+      root: ROOT,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(
+      result.diagnostics,
+      "<repo>/tests/example.test.ts(12,7): TS2322",
+    );
+    assert.match(result.message, /baseline updated \(1 diagnostics\)/);
+  });
+
+  it("rejects ELIFECYCLE wrapper output even when diagnostics are present", () => {
+    const result = evaluateTestTypecheckUpdate({
+      status: 2,
+      stdout: `${BASELINE_DIAGNOSTIC}\n\u2009ELIFECYCLE\u2009 Command failed with exit code 2\n`,
+      root: ROOT,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics, "");
+    assert.match(result.message, /non-diagnostic output/);
+    assert.match(result.details ?? "", /ELIFECYCLE/);
+  });
+
+  it("rejects command-failure output mixed with diagnostics", () => {
+    const result = evaluateTestTypecheckUpdate({
+      status: 2,
+      stdout: `${BASELINE_DIAGNOSTIC}\nCommand failed with exit code 2\n`,
+      root: ROOT,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics, "");
+    assert.match(result.message, /non-diagnostic output/);
+    assert.match(result.details ?? "", /Command failed/);
+  });
+
+  it("rejects stderr wrapper failure alongside stdout diagnostics", () => {
+    const result = evaluateTestTypecheckUpdate({
+      status: 2,
+      stdout: `${BASELINE_DIAGNOSTIC}\n`,
+      stderr: " ELIFECYCLE  Command failed. Try again with --verbose.\n",
+      root: ROOT,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics, "");
+    assert.match(result.message, /non-diagnostic output/);
+    assert.match(result.details ?? "", /ELIFECYCLE/);
+  });
+
+  it("rejects updates when there are no TypeScript diagnostics", () => {
+    const result = evaluateTestTypecheckUpdate({
+      status: 2,
+      stdout: "Command failed with exit code 2\n",
+      root: ROOT,
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.diagnostics, "");
+    assert.match(result.message, /without TypeScript diagnostics/);
+  });
+
+  it("reports a clean typecheck instead of updating when status is zero", () => {
+    const result = evaluateTestTypecheckUpdate({
+      status: 0,
+      stdout: "",
+      root: ROOT,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.diagnostics, "");
+    assert.match(result.message, /tests typecheck cleanly/);
   });
 });

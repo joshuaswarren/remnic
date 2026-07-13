@@ -78,23 +78,25 @@ async function makeFixture(overrides: Record<string, unknown> = {}): Promise<{
         return config.qmdEnabled ? "available" : "disabled";
       },
     },
-    async getConversationIndexHealth() {
-      return {
-        enabled: false,
-        backend: "qmd" as const,
-        status: "disabled" as const,
-        chunkDocCount: 0,
-        lastUpdateAt: null,
-      };
-    },
-    async rebuildConversationIndex() {
-      return {
-        chunks: 0,
-        skipped: true,
-        reason: "disabled",
-        embedded: false,
-        rebuilt: false,
-      };
+    conversationIndexCoordinator: {
+      async getHealth() {
+        return {
+          enabled: false,
+          backend: "qmd" as const,
+          status: "disabled" as const,
+          chunkDocCount: 0,
+          lastUpdateAt: null,
+        };
+      },
+      async rebuild() {
+        return {
+          chunks: 0,
+          skipped: true,
+          reason: "disabled",
+          embedded: false,
+          rebuilt: false,
+        };
+      },
     },
   };
   return { root, memoryDir, workspaceDir, configPath, config, orchestrator };
@@ -197,7 +199,7 @@ test("operator doctor surfaces auth and qmd problems", async () => {
         return "cli=false";
       },
     };
-    fixture.orchestrator.getConversationIndexHealth = async () => ({
+    fixture.orchestrator.conversationIndexCoordinator.getHealth = async () => ({
       enabled: true,
       backend: "qmd",
       status: "degraded",
