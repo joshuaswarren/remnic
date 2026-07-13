@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -145,6 +145,17 @@ function main() {
   const expectedText = existsSync(baselinePath)
     ? readFileSync(baselinePath, "utf8")
     : "";
+  const updateBaseline = process.argv.includes("--update");
+  if (updateBaseline && (result.status ?? 1) !== 0) {
+    const normalized = normalizeDiagnostics(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+    if (!normalized) {
+      console.error("[test-typecheck] cannot update baseline without TypeScript diagnostics");
+      process.exit(1);
+    }
+    writeFileSync(baselinePath, `${normalized}\n`);
+    console.log(`[test-typecheck] baseline updated (${normalized.split("\n").length} diagnostics)`);
+    process.exit(0);
+  }
   const evaluation = evaluateTestTypecheckResult({
     status: result.status ?? 1,
     stdout: result.stdout ?? "",

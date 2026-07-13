@@ -8,15 +8,13 @@
  *   - promotion/demotion execution via TierMigrationExecutor
  *   - status recording through TierMigrationStatusStore
  *
- * The orchestrator constructs one instance and delegates the three public
- * entrypoints (`runTierMigrationCycle`, `runTierMigrationNow`,
- * `getTierMigrationStatus`) to it. Storage is passed per-call so extraction
- * (which writes to a namespace-scoped storage) and maintenance/manual (which
- * use the default storage) share one coordinator.
- *
- * Behavior-preserving move from orchestrator.ts. No logic changes — the
- * orchestrator keeps thin delegating methods so existing call sites and
- * tests that exercise the public API continue to work.
+ * The orchestrator constructs one instance and exposes it as the public
+ * `tierMigrationCoordinator` field. CLI commands and maintenance paths call
+ * `getStatus`/`runCycle` directly; the orchestrator keeps a private
+ * `runTierMigrationCycle` wrapper for the extraction-run dependency.
+ * Storage is passed per-call so extraction (which writes to a namespace-
+ * scoped storage) and maintenance/manual (which use the default storage)
+ * share one coordinator.
  */
 
 import path from "node:path";

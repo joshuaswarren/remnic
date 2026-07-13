@@ -236,7 +236,6 @@ import {
   type GraphRecallExpandedEntry,
   type LastRecallSnapshot,
   type TierMigrationCycleSummary,
-  type TierMigrationStatusSnapshot,
 } from "./recall-state.js";
 import {
   buildHandleIndexForResults,
@@ -3031,21 +3030,6 @@ export class Orchestrator {
     },
   ): Promise<TierMigrationCycleSummary> {
     return this.tierMigrationCoordinator.runCycle(storage, trigger, options);
-  }
-
-  async getTierMigrationStatus(): Promise<TierMigrationStatusSnapshot> {
-    return this.tierMigrationStatus.get();
-  }
-
-  async runTierMigrationNow(options?: {
-    dryRun?: boolean;
-    limit?: number;
-  }): Promise<TierMigrationCycleSummary> {
-    return this.runTierMigrationCycle(this.storage, "manual", {
-      dryRun: options?.dryRun === true,
-      limitOverride: options?.limit,
-      force: false,
-    });
   }
 
   private maybeScheduleConsolidation(nonZeroExtraction: boolean): void {
