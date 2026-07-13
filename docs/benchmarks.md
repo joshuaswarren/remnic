@@ -293,12 +293,32 @@ re-ingest, collateral damage to unrelated memories, scope precision,
 false-apply, and re-assertion. It is system-agnostic — any memory system
 that implements the `MemCorrectSystemAdapter` interface can be scored.
 Methodology, metric definitions, and the submission contract are in
-[`docs/benchmarks/memcorrect.md`](./benchmarks/memcorrect.md). Lab
-artifacts land in `docs/benchmarks/results/` once the local-lab Tier-L run
-completes; until then the hermetic synthetic-corpus smoke (`remnic bench run
-memcorrect-v1 --quick`) is the reproducible in-tree check. By default this
-exercises the Remnic-native adapter (the bench `system`); the prompt-only
-baseline is a programmatic adapter (see `runner.test.ts`), not a CLI mode.
+[`docs/benchmarks/memcorrect.md`](./benchmarks/memcorrect.md).
+
+**Tier-L full-matrix artifacts (2026-07-13, commit `9485f448`, RTX 3090):**
+two committed 40-scenario `mode: full` runs (seed `0xc077e7`) —
+`results/2026-07-13-memcorrect-v1-remnic-native-9485f44.json`
+(runtime profile `real`: Remnic's shipped defaults with the fact pipeline
+and Correction Contract active; extraction + correction classification on
+`qwen2.5-7b-32k:latest`; pinned config in
+`configs/memcorrect-lab-remnic-config.json`) and
+`results/2026-07-13-memcorrect-v1-prompt-only-baseline-9485f44.json`
+(the hermetic append-only floor). Adapter selection is a CLI mode:
+`remnic bench run memcorrect-v1 --memcorrect-adapter <remnic|prompt-only>`;
+the Remnic adapter routes `correct()` through the Correction Contract
+(plan + confirmed apply) with the plain turn path as fallback.
+
+**Honest reading of the Tier-L numbers:** both adapters land on the floor
+for the containment-scored metrics (`uptake_at_next = 0`,
+`non_resurrection = 0`, `false_apply = 1`). Per-scenario tracing shows the
+Remnic correction path itself works — the fact is extracted, the contract
+plan applies, the stored fact is retired — but stale content still reaches
+recall through the 7B classify model drafting retire-only actions (no
+corrected replacement fact), surviving behavioral-profile lines, and
+verbatim LCM turn evidence quoting the outdated statement. MemCorrect is
+deliberately strict: serving a stale value anywhere in recall context fails
+the probe. These artifacts are the reproducibility anchor for that finding,
+not a leaderboard bragging number.
 
 ## Ethics
 

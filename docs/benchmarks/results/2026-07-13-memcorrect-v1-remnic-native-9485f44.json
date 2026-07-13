@@ -1,0 +1,1673 @@
+{
+  "meta": {
+    "id": "cb03e09d-b468-4aab-9788-71bff31b95e1",
+    "benchmark": "memcorrect-v1",
+    "benchmarkTier": "remnic",
+    "version": "1.0.0",
+    "remnicVersion": "9.6.10",
+    "gitSha": "9485f4482",
+    "timestamp": "2026-07-13T20:47:36.910Z",
+    "mode": "full",
+    "runCount": 1,
+    "seeds": [
+      12613607
+    ],
+    "datasetHash": "ebbb5889561188354171d3f1323b1284e6c6dc36e40d5fd5cf718ec722401acb"
+  },
+  "config": {
+    "runtimeProfile": "real",
+    "systemProvider": null,
+    "judgeProvider": null,
+    "adapterMode": "remnic-native",
+    "remnicConfig": {
+      "$comment": "Pinned Remnic config for the MemCorrect v1 lab run (issue #1725 / plan item 2b). Used with `remnic bench run memcorrect-v1 --runtime-profile real --remnic-config <this file> --memcorrect-adapter remnic` on the RTX 3090 lab host. The real profile preserves Remnic's shipped defaults (full fact pipeline, contradiction detection, tombstones, correction contract); this file pins only the local-LLM endpoint and the extraction gates so the run is hermetic and reproducible without environment-variable templating.",
+      "modelSource": "plugin",
+      "localLlmEnabled": true,
+      "localLlmFallback": false,
+      "localLlmUrl": "http://127.0.0.1:11434",
+      "localLlmModel": "qwen2.5-7b-32k:latest",
+      "extractionMinUserTurns": 0,
+      "extractionMinChars": 10,
+      "lcmEnabled": true
+    },
+    "benchmarkOptions": {
+      "personaCount": 5,
+      "factsPerPersona": 8,
+      "maintenanceCycles": 5,
+      "uptakeLatencyCap": 8,
+      "aggregateMetrics": {
+        "uptake_at_next": 0,
+        "uptake_latency": 8,
+        "uptake_latency_censored": 40,
+        "non_resurrection": 0,
+        "collateral_delta": 0,
+        "scope_precision": 0,
+        "false_apply": 1,
+        "reassertion": 1,
+        "provenance_fidelity": null
+      },
+      "leaderboardArtifacts": [
+        {
+          "benchmark": "memcorrect-v1",
+          "path": "/home/joshuawarren/.remnic/bench/results/leaderboard/memcorrect-remnic-native-2026-07-13T20-47-36-910Z.jsonl",
+          "format": "memcorrect-adapter-metrics-jsonl",
+          "records": 1
+        }
+      ]
+    },
+    "internalProvider": null
+  },
+  "cost": {
+    "totalTokens": 0,
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "estimatedCostUsd": 0,
+    "totalLatencyMs": 521270,
+    "meanQueryLatencyMs": 13031.75,
+    "judgeModelCalls": 0
+  },
+  "results": {
+    "tasks": [
+      {
+        "taskId": "memcorrect-12613607-0",
+        "question": "what is my database preference?",
+        "expected": "{\"correctedContent\":[\"neovim\"],\"retiredContent\":[\"nine-am\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:39:03.468Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 14478,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-0",
+          "shape": "explicit-targeted",
+          "category": "fact",
+          "namespace": "avery-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-1",
+        "question": "what is my notebook preference?",
+        "expected": "{\"correctedContent\":[\"neovim\"],\"retiredContent\":[\"postgres\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:39:15.313Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 11900,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-1",
+          "shape": "conversational",
+          "category": "preference",
+          "namespace": "avery-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-2",
+        "question": "what is my notebook preference?",
+        "expected": "{\"correctedContent\":[\"lined\"],\"retiredContent\":[\"nine-am\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:39:30.335Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "scope_precision": 0
+        },
+        "latencyMs": 15021,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-2",
+          "shape": "scoped",
+          "category": "decision",
+          "namespace": "avery-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": 0,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-3",
+        "question": "what is my standup preference?",
+        "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"mechanical\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:39:42.995Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "reassertion": 1
+        },
+        "latencyMs": 13163,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-3",
+          "shape": "re-assertion",
+          "category": "commitment",
+          "namespace": "avery-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": 1,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-4",
+        "question": "what is my keyboard preference?",
+        "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"monday\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:39:54.800Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 10646,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-4",
+          "shape": "explicit-targeted",
+          "category": "relationship",
+          "namespace": "avery-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-5",
+        "question": "what is my database preference?",
+        "expected": "{\"correctedContent\":[\"ten-am\"],\"retiredContent\":[\"postgres\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:40:07.777Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 14767,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-5",
+          "shape": "conversational",
+          "category": "fact",
+          "namespace": "avery-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-6",
+        "question": "what is my calendar preference?",
+        "expected": "{\"correctedContent\":[\"wednesday\"],\"retiredContent\":[\"mechanical\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"avery-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:40:22.770Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "scope_precision": 0
+        },
+        "latencyMs": 14101,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-6",
+          "shape": "scoped",
+          "category": "preference",
+          "namespace": "avery-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": 0,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-7",
+        "question": "what is my coffee preference?",
+        "expected": "{\"correctedContent\":[\"wednesday\"],\"retiredContent\":[\"nine-am\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"avery-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:40:36.473Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "reassertion": 1
+        },
+        "latencyMs": 11089,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-7",
+          "shape": "re-assertion",
+          "category": "decision",
+          "namespace": "avery-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": 1,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-8",
+        "question": "what is my database preference?",
+        "expected": "{\"correctedContent\":[\"ten-am\"],\"retiredContent\":[\"nine-am\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:40:47.058Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 13310,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-8",
+          "shape": "explicit-targeted",
+          "category": "commitment",
+          "namespace": "blair-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-9",
+        "question": "what is my editor preference?",
+        "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"postgres\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:41:00.948Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 12996,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-9",
+          "shape": "conversational",
+          "category": "relationship",
+          "namespace": "blair-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-a",
+        "question": "what is my calendar preference?",
+        "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"postgres\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:41:14.729Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "scope_precision": 0
+        },
+        "latencyMs": 14469,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-a",
+          "shape": "scoped",
+          "category": "fact",
+          "namespace": "blair-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": 0,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-b",
+        "question": "what is my editor preference?",
+        "expected": "{\"correctedContent\":[\"ten-am\"],\"retiredContent\":[\"nine-am\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:41:26.545Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "reassertion": 1
+        },
+        "latencyMs": 13386,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-b",
+          "shape": "re-assertion",
+          "category": "preference",
+          "namespace": "blair-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": 1,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-c",
+        "question": "what is my deploy preference?",
+        "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"monday\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:41:40.097Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 11499,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-c",
+          "shape": "explicit-targeted",
+          "category": "decision",
+          "namespace": "blair-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-d",
+        "question": "what is my keyboard preference?",
+        "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"monday\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:41:51.083Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 10806,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-d",
+          "shape": "conversational",
+          "category": "commitment",
+          "namespace": "blair-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-e",
+        "question": "what is my deploy preference?",
+        "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"helix\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"blair-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:42:05.008Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "scope_precision": 0
+        },
+        "latencyMs": 14259,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-e",
+          "shape": "scoped",
+          "category": "relationship",
+          "namespace": "blair-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": 0,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-f",
+        "question": "what is my standup preference?",
+        "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"mechanical\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"blair-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:42:17.349Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "reassertion": 1
+        },
+        "latencyMs": 13101,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-f",
+          "shape": "re-assertion",
+          "category": "fact",
+          "namespace": "blair-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": 1,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-10",
+        "question": "what is my deploy preference?",
+        "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"nine-am\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:42:31.020Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 12812,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-10",
+          "shape": "explicit-targeted",
+          "category": "preference",
+          "namespace": "cassidy-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-11",
+        "question": "what is my notebook preference?",
+        "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"mechanical\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:42:43.399Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 11535,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-11",
+          "shape": "conversational",
+          "category": "decision",
+          "namespace": "cassidy-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-12",
+        "question": "what is my notebook preference?",
+        "expected": "{\"correctedContent\":[\"membrane\"],\"retiredContent\":[\"oat-milk\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:42:55.683Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "scope_precision": 0
+        },
+        "latencyMs": 13269,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-12",
+          "shape": "scoped",
+          "category": "commitment",
+          "namespace": "cassidy-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": 0,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-13",
+        "question": "what is my keyboard preference?",
+        "expected": "{\"correctedContent\":[\"lined\"],\"retiredContent\":[\"nine-am\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:43:09.624Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "reassertion": 1
+        },
+        "latencyMs": 12743,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-13",
+          "shape": "re-assertion",
+          "category": "relationship",
+          "namespace": "cassidy-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": 1,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-14",
+        "question": "what is my deploy preference?",
+        "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"postgres\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:43:21.118Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 14058,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-14",
+          "shape": "explicit-targeted",
+          "category": "fact",
+          "namespace": "cassidy-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-15",
+        "question": "what is my coffee preference?",
+        "expected": "{\"correctedContent\":[\"wednesday\"],\"retiredContent\":[\"nine-am\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:43:37.332Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 11972,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-15",
+          "shape": "conversational",
+          "category": "preference",
+          "namespace": "cassidy-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-16",
+        "question": "what is my coffee preference?",
+        "expected": "{\"correctedContent\":[\"membrane\"],\"retiredContent\":[\"blue-green\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"cassidy-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:43:50.822Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "scope_precision": 0
+        },
+        "latencyMs": 13466,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-16",
+          "shape": "scoped",
+          "category": "decision",
+          "namespace": "cassidy-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": 0,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-17",
+        "question": "what is my keyboard preference?",
+        "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"nine-am\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"cassidy-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:44:01.595Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "reassertion": 1
+        },
+        "latencyMs": 12460,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-17",
+          "shape": "re-assertion",
+          "category": "commitment",
+          "namespace": "cassidy-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": 1,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-18",
+        "question": "what is my standup preference?",
+        "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"dotgrid\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:44:14.036Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 13913,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-18",
+          "shape": "explicit-targeted",
+          "category": "relationship",
+          "namespace": "dakota-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-19",
+        "question": "what is my database preference?",
+        "expected": "{\"correctedContent\":[\"wednesday\"],\"retiredContent\":[\"helix\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:44:26.939Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 12549,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-19",
+          "shape": "conversational",
+          "category": "fact",
+          "namespace": "dakota-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-1a",
+        "question": "what is my keyboard preference?",
+        "expected": "{\"correctedContent\":[\"wednesday\"],\"retiredContent\":[\"oat-milk\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:44:39.273Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "scope_precision": 0
+        },
+        "latencyMs": 11129,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-1a",
+          "shape": "scoped",
+          "category": "preference",
+          "namespace": "dakota-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": 0,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-1b",
+        "question": "what is my database preference?",
+        "expected": "{\"correctedContent\":[\"lined\"],\"retiredContent\":[\"postgres\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:44:52.600Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "reassertion": 1
+        },
+        "latencyMs": 17288,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-1b",
+          "shape": "re-assertion",
+          "category": "decision",
+          "namespace": "dakota-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": 1,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-1c",
+        "question": "what is my editor preference?",
+        "expected": "{\"correctedContent\":[\"membrane\"],\"retiredContent\":[\"helix\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:45:06.898Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 11762,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-1c",
+          "shape": "explicit-targeted",
+          "category": "commitment",
+          "namespace": "dakota-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-1d",
+        "question": "what is my standup preference?",
+        "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"postgres\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:45:19.645Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 12252,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-1d",
+          "shape": "conversational",
+          "category": "relationship",
+          "namespace": "dakota-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-1e",
+        "question": "what is my standup preference?",
+        "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"postgres\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"dakota-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:45:31.480Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "scope_precision": 0
+        },
+        "latencyMs": 13876,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-1e",
+          "shape": "scoped",
+          "category": "fact",
+          "namespace": "dakota-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": 0,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-1f",
+        "question": "what is my calendar preference?",
+        "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"mechanical\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"dakota-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:45:44.991Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "reassertion": 1
+        },
+        "latencyMs": 13338,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-1f",
+          "shape": "re-assertion",
+          "category": "preference",
+          "namespace": "dakota-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": 1,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-20",
+        "question": "what is my editor preference?",
+        "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"nine-am\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:45:58.286Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 11639,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-20",
+          "shape": "explicit-targeted",
+          "category": "decision",
+          "namespace": "emerson-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-21",
+        "question": "what is my database preference?",
+        "expected": "{\"correctedContent\":[\"neovim\"],\"retiredContent\":[\"dotgrid\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:46:10.462Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 11725,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-21",
+          "shape": "conversational",
+          "category": "commitment",
+          "namespace": "emerson-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-22",
+        "question": "what is my keyboard preference?",
+        "expected": "{\"correctedContent\":[\"membrane\"],\"retiredContent\":[\"dotgrid\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:46:23.167Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "scope_precision": 0
+        },
+        "latencyMs": 13999,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-22",
+          "shape": "scoped",
+          "category": "relationship",
+          "namespace": "emerson-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": 0,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-23",
+        "question": "what is my deploy preference?",
+        "expected": "{\"correctedContent\":[\"canary\"],\"retiredContent\":[\"monday\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:46:36.513Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "reassertion": 1
+        },
+        "latencyMs": 14126,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-23",
+          "shape": "re-assertion",
+          "category": "fact",
+          "namespace": "emerson-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": 1,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-24",
+        "question": "what is my coffee preference?",
+        "expected": "{\"correctedContent\":[\"mysql\"],\"retiredContent\":[\"blue-green\"]}",
+        "actual": "{\"shape\":\"explicit-targeted\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:46:51.283Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 12071,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-24",
+          "shape": "explicit-targeted",
+          "category": "preference",
+          "namespace": "emerson-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-25",
+        "question": "what is my editor preference?",
+        "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"monday\"]}",
+        "actual": "{\"shape\":\"conversational\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:47:01.959Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1
+        },
+        "latencyMs": 12718,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-25",
+          "shape": "conversational",
+          "category": "decision",
+          "namespace": "emerson-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-26",
+        "question": "what is my editor preference?",
+        "expected": "{\"correctedContent\":[\"lined\"],\"retiredContent\":[\"helix\"]}",
+        "actual": "{\"shape\":\"scoped\",\"namespace\":\"emerson-work\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:47:16.565Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "scope_precision": 0
+        },
+        "latencyMs": 13520,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-26",
+          "shape": "scoped",
+          "category": "commitment",
+          "namespace": "emerson-work",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": 0,
+              "false_apply": 1,
+              "reassertion": null,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      },
+      {
+        "taskId": "memcorrect-12613607-27",
+        "question": "what is my keyboard preference?",
+        "expected": "{\"correctedContent\":[\"black-coffee\"],\"retiredContent\":[\"mechanical\"]}",
+        "actual": "{\"shape\":\"re-assertion\",\"namespace\":\"emerson-home\",\"postCorrectionRecall\":[\"## Remnic recall pipeline\\n## User Profile\",\"# Behavioral Profile\",\"*Last updated: 2026-07-13T20:47:29.432Z*\"]}",
+        "scores": {
+          "uptake_at_next": 0,
+          "uptake_latency": 8,
+          "uptake_latency_censored": 1,
+          "non_resurrection": 0,
+          "false_apply": 1,
+          "reassertion": 1
+        },
+        "latencyMs": 14059,
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "details": {
+          "scenarioId": "memcorrect-12613607-27",
+          "shape": "re-assertion",
+          "category": "relationship",
+          "namespace": "emerson-home",
+          "adapter": "remnic-native",
+          "metrics": {
+            "memcorrect": {
+              "uptake_at_next": 0,
+              "uptake_latency": 8,
+              "uptake_latency_censored": 1,
+              "non_resurrection": 0,
+              "collateral_delta": 0,
+              "scope_precision": null,
+              "false_apply": 1,
+              "reassertion": 1,
+              "provenance_fidelity": null
+            }
+          }
+        }
+      }
+    ],
+    "aggregates": {
+      "uptake_at_next": {
+        "mean": 0,
+        "median": 0,
+        "stdDev": 0,
+        "min": 0,
+        "max": 0
+      },
+      "uptake_latency": {
+        "mean": 8,
+        "median": 8,
+        "stdDev": 0,
+        "min": 8,
+        "max": 8
+      },
+      "uptake_latency_censored": {
+        "mean": 1,
+        "median": 1,
+        "stdDev": 0,
+        "min": 1,
+        "max": 1
+      },
+      "non_resurrection": {
+        "mean": 0,
+        "median": 0,
+        "stdDev": 0,
+        "min": 0,
+        "max": 0
+      },
+      "false_apply": {
+        "mean": 1,
+        "median": 1,
+        "stdDev": 0,
+        "min": 1,
+        "max": 1
+      },
+      "scope_precision": {
+        "mean": 0,
+        "median": 0,
+        "stdDev": 0,
+        "min": 0,
+        "max": 0
+      },
+      "reassertion": {
+        "mean": 1,
+        "median": 1,
+        "stdDev": 0,
+        "min": 1,
+        "max": 1
+      }
+    },
+    "statistics": {
+      "confidenceIntervals": {},
+      "bootstrapSamples": 0
+    }
+  },
+  "environment": {
+    "os": "linux",
+    "nodeVersion": "v22.22.0",
+    "hardware": "x64"
+  }
+}
