@@ -193,7 +193,12 @@ export function resolveSpeaker(
     // so a provider label cannot masquerade as the reserved self flag.
     return { label: stripSelfMarker(segment.speakerName.trim()), isSelf: false };
   }
-  const key = segment.speakerKey.trim();
+  // Strip the reserved `(you)` marker from the raw key so a provider
+  // speakerKey like "Pat (you)" can never leak the marker into a non-self
+  // rendered label — the fusion reconstructor reads the suffix as
+  // authoritative self metadata and would misattribute the speaker as the
+  // wearer (issue #1849).
+  const key = stripSelfMarker(segment.speakerKey.trim());
   // Bare diarization indexes read better with a prefix.
   if (/^\d+$/.test(key)) {
     return { label: `Speaker ${key}`, isSelf: false };

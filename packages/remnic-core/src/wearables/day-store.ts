@@ -35,6 +35,17 @@ export const WEARABLES_DIR_NAME = "wearables";
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
+ * Day-transcript body serialization format version. Folded into
+ * `hashTranscriptBody` so a version bump invalidates files written by an
+ * older serializer and forces an idempotent rewrite. Decoders gate on this:
+ * only bodies whose parsed meta carries >= this version have escape
+ * sequences decoded; legacy bodies (absent / older) are left byte-for-byte
+ * unchanged so a literal two-character `\n`/`\r` in a pre-escaper
+ * transcript is never altered (issue #1849).
+ */
+export const TRANSCRIPT_FORMAT_VERSION = 2;
+
+/**
  * A rendered transcript segment line: `**label** [clock]: text`. Shared
  * by the composer (escape), the display/search decoder
  * (`decodeTranscriptBody`), and the fusion reconstruct parser so all
@@ -50,7 +61,14 @@ export function isValidTranscriptDate(date: string): boolean {
 }
 
 export function hashTranscriptBody(body: string): string {
-  return createHash("sha256").update(body, "utf-8").digest("hex");
+  // The version prefix makes the hash an idempotency key for the body AS
+  // SERIALIZED under the current format: when the escape encoding changes
+  // (version bump) every existing file's stored hash no longer matches and
+  // the pipeline rewrites it with the new marker — no separate migration
+  // pass needed (issue #1849).
+  return createHash("sha256")
+    .update(`v${TRANSCRIPT_FORMAT_VERSION}\n${body}`, "utf-8")
+    .digest("hex");
 }
 
 function formatClockTime(iso: string | undefined, timezone: string): string {
@@ -156,6 +174,24 @@ export function unescapeSpeakerLabel(label: string): string {
 }
 
 /**
+ * Whether a parsed day-transcript's body was written by the escape-aware
+ * serializer (meta carries `formatVersion` >= `TRANSCRIPT_FORMAT_VERSION`).
+ * Legacy bodies (no marker, or an older version) must NOT be decoded: their
+ * literal two-character `\n`, `\r`, and lone backslashes are original
+ * content, not escape sequences (issue #1849).
+ */
+export function bodyIsEscaped(
+  meta: { formatVersion?: number } | null | undefined,
+): boolean {
+  return (
+    meta !== null &&
+    meta !== undefined &&
+    typeof meta.formatVersion === "number" &&
+    meta.formatVersion >= TRANSCRIPT_FORMAT_VERSION
+  );
+}
+
+/**
  * Decode the escaped segment text AND speaker label of a stored
  * transcript body into the ORIGINAL forms for user-facing
  * view/search/index surfaces. Only segment lines are touched: the text
@@ -166,8 +202,16 @@ export function unescapeSpeakerLabel(label: string): string {
  * reconstruct path does NOT use this — it decodes each segment once
  * during parse — so callers feeding bodies back into reconstruct must
  * pass the RAW stored body, not a decoded one, to avoid double-decoding.
+ *
+ * FORMAT-AWARE (issue #1849): when `escaped` is falsy (the default) the
+ * body is returned byte-for-byte unchanged. Only bodies written by the
+ * escape-aware serializer (`escaped = true`, derived from
+ * `bodyIsEscaped(meta)`) are decoded, so a legacy transcript's literal
+ * two-character `\n`/`\r` or lone backslash is never altered. Callers
+ * that have the parsed meta should pass `bodyIsEscaped(meta)`.
  */
-export function decodeTranscriptBody(body: string): string {
+export function decodeTranscriptBody(body: string, escaped = false): string {
+  if (!escaped) return body;
   const lines = body.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const match = TRANSCRIPT_SEGMENT_LINE.exec(lines[i]);
@@ -246,6 +290,7 @@ export function composeDayTranscriptMeta(
     durationMinutes,
     contentHash: hashTranscriptBody(body),
     syncedAt,
+    formatVersion: TRANSCRIPT_FORMAT_VERSION,
   };
 }
 
@@ -256,6 +301,9 @@ export function serializeDayTranscript(
 ): string {
   const lines: string[] = ["---"];
   lines.push(`kind: ${meta.kind}`);
+  if (typeof meta.formatVersion === "number") {
+    lines.push(`formatVersion: ${meta.formatVersion}`);
+  }
   lines.push(`source: ${JSON.stringify(meta.source)}`);
   lines.push(`date: ${JSON.stringify(meta.date)}`);
   lines.push(`timezone: ${JSON.stringify(meta.timezone)}`);
@@ -318,6 +366,9 @@ export function parseDayTranscript(raw: string): WearableDayTranscript | null {
 
   const meta: WearableDayTranscriptMeta = {
     kind: "wearable-transcript",
+    ...(scalars.has("formatVersion")
+      ? { formatVersion: parseNonNegativeInt(scalars.get("formatVersion")) }
+      : {}),
     source,
     date,
     // Preserve a missing timezone field as "" rather than coercing to a

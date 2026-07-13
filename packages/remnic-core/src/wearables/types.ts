@@ -354,6 +354,13 @@ export interface WearableDayTranscriptMeta {
   /** SHA-256 of the body — used to skip unchanged rewrites. */
   contentHash: string;
   syncedAt: string;
+  /**
+   * Body serialization format version. Present (>= 2) only on bodies written
+   * by the escape-aware serializer; absent on legacy transcripts. Decoders
+   * gate on this so a legacy body's literal two-character `\n`/`\r` is never
+   * altered (issue #1849).
+   */
+  formatVersion?: number;
 }
 
 /** A parsed day-transcript file. */

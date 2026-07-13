@@ -14,6 +14,7 @@ import {
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import {
+  bodyIsEscaped,
   decodeTranscriptBody,
   escapeSegmentText,
   isValidTranscriptDate,
@@ -466,7 +467,7 @@ export class WearablesService {
         // trip); user-facing view surfaces must show the original text.
         // The fusion reconstruct path reads raw bodies separately and
         // decodes once during parse, so this never double-decodes (#1849).
-        body: decodeTranscriptBody(parsed?.body ?? raw),
+        body: decodeTranscriptBody(parsed?.body ?? raw, bodyIsEscaped(parsed?.meta)),
         overlapsWith: [],
       });
     }
@@ -516,13 +517,17 @@ export class WearablesService {
     }
     const storage = await this.deps.getStorage();
     const enabled = this.enabledSources();
-    const bodies: Array<{ source: string; body: string }> = [];
+    const bodies: Array<{ source: string; body: string; escaped?: boolean }> = [];
     const sourceTimezones: string[] = [];
     for (const [source] of enabled) {
       const raw = await storage.readWearableDayTranscript(source, date);
       if (raw === null) continue;
       const parsed = parseDayTranscript(raw);
-      bodies.push({ source, body: parsed?.body ?? raw });
+      bodies.push({
+        source,
+        body: parsed?.body ?? raw,
+        escaped: bodyIsEscaped(parsed?.meta),
+      });
       sourceTimezones.push(parsed?.meta.timezone ?? "");
     }
     // Reconstruct the normalized inputs once and derive the sources that
@@ -725,6 +730,7 @@ export class WearablesService {
         escaped === trimmed ? [trimmed] : [trimmed, escaped];
       const seen = new Set<string>();
       const results: WearableTranscriptSearchResult[] = [];
+      const idxStorage = await this.deps.getStorage();
       for (const q of queries) {
         const hits = await this.deps.searchBackend.search(q, limit * 5);
         if (hits === null) break; // backend unavailable
@@ -735,13 +741,18 @@ export class WearablesService {
           const dedupeKey = `${located.source}:${located.date}`;
           if (seen.has(dedupeKey)) continue;
           seen.add(dedupeKey);
+          // The indexed snippet mirrors the stored body's escape encoding.
+          // Read the file once to learn whether it was written by the
+          // escape-aware serializer so a LEGACY file's literal two-character
+          // \n/\r is never decoded (#1849).
+          const idxRaw =
+            await idxStorage.readWearableDayTranscript(located.source, located.date);
+          const idxMeta = parseDayTranscript(idxRaw ?? "")?.meta ?? null;
           results.push({
             source: located.source,
             date: located.date,
             score: hit.score,
-            // Decode the escaped serialization so the snippet shows
-            // the original segment text (#1849).
-            snippet: decodeTranscriptBody(hit.preview),
+            snippet: decodeTranscriptBody(hit.preview, bodyIsEscaped(idxMeta)),
             backend: "indexed",
           });
           if (results.length >= limit) break;
@@ -768,10 +779,16 @@ export class WearablesService {
       if (!matchesScope(source, date)) continue;
       const raw = await storage.readWearableDayTranscript(source, date);
       if (raw === null) continue;
+      const scanParsed = parseDayTranscript(raw);
       // Decode escaped segment text so searches match AND snippets show
       // the ORIGINAL text (e.g. a real newline or backslash), not the
-      // internal escape serialization (#1849).
-      const body = decodeTranscriptBody(parseDayTranscript(raw)?.body ?? raw);
+      // internal escape serialization — but ONLY for bodies written by
+      // the escape-aware serializer; legacy bodies are searched verbatim
+      // (#1849).
+      const body = decodeTranscriptBody(
+        scanParsed?.body ?? raw,
+        bodyIsEscaped(scanParsed?.meta),
+      );
       const lower = body.toLowerCase();
       const index = lower.indexOf(needle);
       if (index === -1) continue;

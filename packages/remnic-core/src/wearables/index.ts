@@ -61,12 +61,18 @@ export {
   type SpeakerRegistry,
 } from "./speakers.js";
 export {
+  bodyIsEscaped,
   composeDayTranscriptBody,
   composeDayTranscriptMeta,
+  decodeTranscriptBody,
+  escapeSegmentText,
   hashTranscriptBody,
   isValidTranscriptDate,
   parseDayTranscript,
   serializeDayTranscript,
+  TRANSCRIPT_FORMAT_VERSION,
+  unescapeSegmentText,
+  unescapeSpeakerLabel,
   WEARABLES_DIR_NAME,
 } from "./day-store.js";
 export {

@@ -1415,7 +1415,7 @@ test("reconstruct round-trips through the real composeDayTranscriptBody renderer
     ),
   ];
   const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
-  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body, escaped: true }]);
   assert.equal(parsed.length, 1);
   const conv = parsed[0]!;
   assert.equal(conv.conversationId, "c1");
@@ -2117,7 +2117,7 @@ test("multiline segment text round-trips losslessly through the real renderer", 
     ),
   ];
   const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
-  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body, escaped: true }]);
   assert.equal(parsed.length, 1);
   const segs = parsed[0]!.segments;
   assert.equal(segs.length, 2);
@@ -2137,7 +2137,7 @@ test("segment text with backslashes round-trips losslessly", () => {
     ),
   ];
   const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, REGISTRY);
-  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
   assert.equal(parsed[0]!.segments[0]!.text, tricky);
 });
 
@@ -2156,7 +2156,7 @@ test("multiline segment with continuation that resembles heading syntax is not m
     ),
   ];
   const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
-  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body, escaped: true }]);
   assert.equal(parsed.length, 1, "adversarial heading must not create a second conversation");
   assert.equal(parsed[0]!.segments.length, 1);
   assert.equal(parsed[0]!.segments[0]!.text, adversarial);
@@ -2174,7 +2174,7 @@ test("segment text with continuation resembling a segment clock line stays in on
     ),
   ];
   const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, REGISTRY);
-  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
   assert.equal(parsed[0]!.segments.length, 1, "injected segment line must not be parsed separately");
   assert.equal(parsed[0]!.segments[0]!.text, adversarial);
 });
@@ -2211,7 +2211,7 @@ test("carriage returns in segment text round-trip losslessly", () => {
     ),
   ];
   const body = composeDayTranscriptBody("limitless", DATE, "UTC", conversations, REGISTRY);
-  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body, escaped: true }]);
   assert.equal(parsed[0]!.segments[0]!.text, crText);
 });
 
@@ -2227,7 +2227,7 @@ test("unicode and mixed special characters in segment text round-trip losslessly
     ),
   ];
   const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, REGISTRY);
-  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
   assert.equal(parsed[0]!.segments[0]!.text, unicode);
 });
 
@@ -2352,7 +2352,7 @@ test("reconstruct never attributes a non-self speaker whose name ends in (you) a
   // Pat line — the marker is reserved for the wearer only.
   assert.ok(/\*\*Pat\*\* \[09:01\]: I am Pat\./.test(body), "Pat's label has no (you) marker: " + body);
 
-  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
   assert.equal(parsed.length, 1);
   const segs = parsed[0]!.segments;
   assert.equal(segs.length, 2);
@@ -2508,7 +2508,7 @@ test("speaker label containing markdown delimiters round-trips through compose �
     "label delimiters are escaped in the stored body: " + body,
   );
   // Reconstruct decodes the label back to the original form.
-  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
   assert.equal(parsed.length, 1);
   const segs = parsed[0]!.segments;
   assert.equal(segs.length, 2);
@@ -2535,6 +2535,6 @@ test("speaker label A**B alone round-trips through compose → reconstruct (#184
     ),
   ];
   const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, registry);
-  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body, escaped: true }]);
   assert.equal(parsed[0]!.segments[0]!.speaker, "A**B");
 });

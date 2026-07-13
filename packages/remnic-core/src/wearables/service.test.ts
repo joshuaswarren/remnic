@@ -6,6 +6,7 @@ import { realpath as fsRealpath } from "node:fs/promises";
 import { test } from "node:test";
 
 import {
+  bodyIsEscaped,
   composeDayTranscriptBody,
   composeDayTranscriptMeta,
   parseDayTranscript,
@@ -887,7 +888,11 @@ test("fuseDay regenerates a stale artifact written under an older algorithm vers
       ["limitless", "bee"].map(async (source) => {
         const raw = await storage.readWearableDayTranscript(source, "2026-06-10");
         const parsed = parseDayTranscript(raw ?? "");
-        return { source, body: parsed?.body ?? raw ?? "" };
+        return {
+          source,
+          body: parsed?.body ?? raw ?? "",
+          escaped: bodyIsEscaped(parsed?.meta),
+        };
       }),
     );
     const reconstructed = reconstructFusionInputs("2026-06-10", bodies);

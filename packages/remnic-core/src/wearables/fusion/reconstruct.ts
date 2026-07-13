@@ -93,12 +93,23 @@ function nextCalendarDay(date: string): string {
  */
 export function reconstructFusionInputs(
   date: string,
-  dayTranscripts: ReadonlyArray<{ source: string; body: string }>,
+  dayTranscripts: ReadonlyArray<{
+    source: string;
+    body: string;
+    /**
+     * Whether the body was written by the escape-aware serializer
+     * (`bodyIsEscaped(meta)`). When falsy (legacy) the segment text and
+     * speaker label are used verbatim — no escape decoding — so a legacy
+     * transcript's literal two-character `\n`/`\r` is never altered
+     * (issue #1849).
+     */
+    escaped?: boolean;
+  }>,
 ): FusionConversationInput[] {
   if (!isValidTranscriptDate(date)) return [];
   const inputs: FusionConversationInput[] = [];
 
-  for (const { source, body } of dayTranscripts) {
+  for (const { source, body, escaped } of dayTranscripts) {
     let current: {
       conversationId: string;
       title?: string;
@@ -185,7 +196,7 @@ export function reconstructFusionInputs(
       if (segmentMatch !== null) {
         if (current === null) continue; // segment outside any conversation
         const [, label, clock, rawText] = segmentMatch;
-        const text = unescapeSegmentText(rawText);
+        const text = escaped ? unescapeSegmentText(rawText) : rawText;
         const segMin = clockMinutesOfDay(clock);
         // A segment clock EARLIER than the conversation start clock MAY
         // have crossed midnight. Roll it to the next calendar day ONLY
@@ -214,9 +225,12 @@ export function reconstructFusionInputs(
         const segDate = plausibleSegWrap ? nextCalendarDay(date) : date;
         const startIso = clockToIso(clock, segDate);
         // Decode the safely-serialized speaker label back to its original
-        // form; legacy raw labels (no escape sequences) round-trip
-        // verbatim (#1849).
-        const speaker = unescapeSpeakerLabel(label.trim());
+        // form ONLY when the body is escape-aware; legacy raw labels are
+        // used verbatim so their literal characters are never altered
+        // (#1849).
+        const speaker = escaped
+          ? unescapeSpeakerLabel(label.trim())
+          : label.trim();
         const segment: FusionSegmentInput = {
           speaker,
           // Self status is read from the RESERVED `(you)` marker, which the

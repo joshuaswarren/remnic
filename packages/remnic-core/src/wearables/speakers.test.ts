@@ -198,3 +198,41 @@ test("stripSelfMarker / hasSelfMarker use linear string ops (CodeQL #1849)", () 
   assert.equal(hasSelfMarker("(you) said hi"), false);
   assert.equal(stripSelfMarker("(you) said hi"), "(you) said hi");
 });
+
+test("raw speakerKey fallback strips the reserved (you) marker (issue #1849)", () => {
+  // A provider speakerKey that literally contains the reserved `(you)`
+  // suffix must NEVER carry it into a rendered non-self label. Without
+  // the strip, the fusion reconstructor would read the suffix as self
+  // metadata and misattribute the speaker as the wearer.
+  const registry = emptySpeakerRegistry();
+  registry.selfName = "Jordan";
+
+  // Raw key with a trailing (you) — non-self fallback path.
+  const resolved = resolveSpeaker(
+    "bee",
+    { speakerKey: "Pat (you)" },
+    registry,
+  );
+  assert.equal(resolved.isSelf, false, "raw key is never self");
+  assert.equal(resolved.label, "Pat", "(you) stripped from raw key label");
+  assert.equal(hasSelfMarker(resolved.label), false, "no marker leaks");
+
+  // Bare-digit key with a trailing (you) becomes "Speaker <digits>"
+  // after stripping, never carrying the marker.
+  const digitResolved = resolveSpeaker(
+    "omi",
+    { speakerKey: "5 (you)" },
+    registry,
+  );
+  assert.equal(digitResolved.isSelf, false);
+  assert.equal(digitResolved.label, "Speaker 5");
+
+  // A key that is ONLY "(you)" strips to empty -> "Unknown speaker".
+  const onlyMarker = resolveSpeaker(
+    "limitless",
+    { speakerKey: "(you)" },
+    registry,
+  );
+  assert.equal(onlyMarker.isSelf, false);
+  assert.equal(onlyMarker.label, "Unknown speaker");
+});

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  bodyIsEscaped,
   composeDayTranscriptBody,
   composeDayTranscriptMeta,
   decodeTranscriptBody,
@@ -9,6 +10,7 @@ import {
   isValidTranscriptDate,
   parseDayTranscript,
   serializeDayTranscript,
+  TRANSCRIPT_FORMAT_VERSION,
 } from "./day-store.js";
 import { emptySpeakerRegistry } from "./speakers.js";
 import type { WearableConversation } from "./types.js";
@@ -156,7 +158,7 @@ test("decodeTranscriptBody decodes segment text but leaves headings/locations un
     "*Location: D:\\data*\n" +
     "\n" +
     '**Me (you)** [09:00]: Line one.\\nLine two.\n';
-  const decoded = decodeTranscriptBody(body);
+  const decoded = decodeTranscriptBody(body, true);
   // Segment text IS decoded: backslash-n -> real newline.
   assert.ok(decoded.includes("Line one.\nLine two."), "segment newline decoded");
   assert.ok(!decoded.includes("Line one.\\nLine two."), "no escaped-newline leak in segment");
@@ -182,7 +184,7 @@ test("decodeTranscriptBody recovers original segment text from a composed body (
   assert.ok(body.includes("First line.\\nSecond line"), "stored body has the escaped newline");
   // ...and decoding recovers the original utterance verbatim.
   assert.ok(
-    decodeTranscriptBody(body).includes(original),
+    decodeTranscriptBody(body, true).includes(original),
     "decoded body recovers the original segment text",
   );
 });
@@ -218,7 +220,7 @@ test("speaker label with markdown delimiters round-trips through compose → par
     "label delimiters are escaped in the stored body: " + body,
   );
   // Display decoding recovers the ORIGINAL label for view/search surfaces.
-  const decoded = decodeTranscriptBody(body);
+  const decoded = decodeTranscriptBody(body, true);
   assert.ok(
     decoded.includes("**A**B** [09:01]: Delimited label."),
     "decoded body shows the original unescaped label: " + decoded,
@@ -246,4 +248,85 @@ test("legacy raw label without escape sequences parses and decodes verbatim (#18
     "**Guest** [09:01]: Good morning.\n";
   const decoded = decodeTranscriptBody(body);
   assert.equal(decoded, body, "legacy body with no escapes decodes verbatim");
+});
+
+test("legacy body with literal backslash-n/backslash-r is never decoded (#1849)", () => {
+  // A pre-escaper transcript whose segment text contains the LITERAL
+  // two-character sequences \n and \r (not escape sequences). The
+  // format-aware decoder MUST leave them byte-for-byte unchanged so the
+  // original content is never corrupted.
+  const legacyBody =
+    "# bee transcript — 2026-06-10\n" +
+    "\n" +
+    "## 09:00–09:10 (conversation c1)\n" +
+    "\n" +
+    "**Guest** [09:00]: A literal backslash-n \\n and backslash-r \\r here.\n";
+  // Default (escaped=false): legacy body is a no-op.
+  assert.equal(
+    decodeTranscriptBody(legacyBody),
+    legacyBody,
+    "legacy body must not be decoded without an explicit format marker",
+  );
+  // Even when explicitly told the body IS escaped, the literal sequences
+  // \n / \r WOULD be decoded — but only NEW-format bodies (meta carries
+  // formatVersion >= 2) are ever passed escaped=true by the service.
+  // Here we verify the SAFETY of the default: callers that forget the
+  // flag never corrupt legacy content.
+  assert.equal(
+    decodeTranscriptBody(legacyBody, false),
+    legacyBody,
+    "escaped=false leaves legacy literal escapes unchanged",
+  );
+});
+
+test("new-format body with formatVersion marker decodes correctly (#1849)", () => {
+  const conversations: WearableConversation[] = [
+    {
+      id: "c1",
+      source: "bee",
+      startIso: "2026-06-10T09:00:00Z",
+      segments: [{ speakerKey: "user", isWearer: true, text: "Line one.\nLine two." }],
+    },
+  ];
+  const body = composeDayTranscriptBody("bee", "2026-06-10", "UTC", conversations, REGISTRY);
+  const meta = composeDayTranscriptMeta(
+    "bee", "2026-06-10", "UTC", conversations, REGISTRY, body, "2026-06-11T01:00:00.000Z",
+  );
+  // The meta carries the format version marker.
+  assert.equal(meta.formatVersion, TRANSCRIPT_FORMAT_VERSION);
+  assert.ok(bodyIsEscaped(meta), "new-format meta is recognized as escaped");
+  // bodyIsEscaped returns false for legacy (no marker) and null.
+  assert.equal(bodyIsEscaped(null), false);
+  assert.equal(bodyIsEscaped(undefined), false);
+  assert.equal(bodyIsEscaped({}), false);
+  assert.equal(bodyIsEscaped({ formatVersion: 1 }), false);
+  // Decoding with the escaped flag recovers the original newline.
+  const decoded = decodeTranscriptBody(body, bodyIsEscaped(meta));
+  assert.ok(decoded.includes("Line one.\nLine two."), "new-format body decodes the newline");
+});
+
+test("composeDayTranscriptMeta stamps formatVersion and serialize/parse round-trips it (#1849)", () => {
+  const body = composeDayTranscriptBody(
+    "limitless", "2026-06-10", "UTC", CONVERSATIONS, REGISTRY,
+  );
+  const meta = composeDayTranscriptMeta(
+    "limitless", "2026-06-10", "UTC", CONVERSATIONS, REGISTRY, body, "2026-06-11T01:00:00.000Z",
+  );
+  assert.equal(meta.formatVersion, TRANSCRIPT_FORMAT_VERSION);
+  const serialized = serializeDayTranscript(meta, body);
+  assert.ok(serialized.includes("formatVersion: 2"), "serialized file carries the marker");
+  const parsed = parseDayTranscript(serialized);
+  assert.ok(parsed);
+  assert.equal(parsed!.meta.formatVersion, TRANSCRIPT_FORMAT_VERSION);
+  // A legacy file (hand-written, no formatVersion line) parses with
+  // formatVersion undefined so bodyIsEscaped returns false.
+  const legacyFile =
+    "---\nkind: wearable-transcript\nsource: \"bee\"\ndate: \"2026-06-10\"\n" +
+    "timezone: \"UTC\"\nconversationCount: 1\nsegmentCount: 1\n" +
+    "speakers: []\ndurationMinutes: 0\ncontentHash: \"x\"\nsyncedAt: \"y\"\n" +
+    "---\n\n# bee transcript — 2026-06-10\n";
+  const legacyParsed = parseDayTranscript(legacyFile);
+  assert.ok(legacyParsed);
+  assert.equal(legacyParsed!.meta.formatVersion, undefined);
+  assert.equal(bodyIsEscaped(legacyParsed!.meta), false);
 });
