@@ -10,7 +10,8 @@
  * Moved here (behavior-preserving):
  *   - module-level helpers `dedupeEntitySynthesisEvidenceEntries`,
  *     `flattenStructuredSectionEvidence`, `fingerprintEntitySynthesisEvidence`
- *   - the orchestrator method `processEntitySynthesisQueue`
+ *   - the queue-processing method, now owned by this coordinator as
+ *     `processQueue` (originally the orchestrator's `processEntitySynthesisQueue`)
  *
  * The orchestrator constructs one instance and exposes it as
  * `orchestrator.entitySynthesisCoordinator`; call sites invoke `processQueue`
