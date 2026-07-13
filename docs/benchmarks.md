@@ -104,13 +104,17 @@ full published-benchmark pipeline against a frontier model without a raw
 Anthropic API budget — the operator's Claude Max subscription provides the
 compute.
 
-**Honest labeling:** these artifacts are labeled **"Opus via Claude Code"**
-(`provider: "claude-cli"`, `model: "opus"` on the artifact config) — never
-`tier: "frontier"`. Claude Code adds system-prompt scaffolding and
-model-alias routing that a reviewer cannot reproduce from a raw API call.
-The published headline `tier: "frontier"` number must still come from the
-raw Anthropic Messages API provider. These runs are pipeline-validation
-evidence, not publishable leaderboard numbers.
+**Provenance labeling:** these artifacts are labeled **"Opus via Claude Code"**
+(`provider: "claude-cli"`, `model: "opus"` on the artifact config) and retain
+`tier: "frontier"` when they satisfy the Tier-F artifact contract. Claude Code
+is a valid research harness; its entitlement and invocation details are part of
+the provenance record alongside the model and benchmark configuration. A raw
+Anthropic API run and a Claude Code run are distinct measurement paths, not a
+valid-versus-invalid hierarchy. Reviewers must be able to reproduce the
+declared harness and configuration, and bounded trials must remain clearly
+identified as partial-coverage artifacts rather than full leaderboard runs.
+These artifacts are therefore pipeline-validation evidence until the complete
+uncapped benchmark coverage required by the publication rubric is executed.
 
 ### Bounded-slice results (2026-07-08, commit 798fe8a7a)
 
@@ -130,9 +134,11 @@ Both used `--runtime-profile baseline --system-provider claude-cli
 
 Note on artifact fields: the runner records `meta.mode: "full"` (full-mode
 scoring pipeline) with `config.benchmarkOptions.trialLimit` bounding the
-task count — the "(trial)" labels above and the `trial100`/`trial50`
-filename segments carry the partial-coverage signal; these artifacts are
-pipeline-validation evidence, not publishable leaderboard numbers.
+task count — the "(trial)" labels above and the `trial100`/`trial50` filename
+segments carry the partial-coverage signal. The bounded artifacts retain
+`tier: "frontier"` and their Claude Code provenance; they are not full
+leaderboard results because coverage is capped, not because Claude Code is an
+invalid research harness.
 
 A small number of tasks (9/100 locomo, 3/50 longmemeval) hit intermittent
 `claude -p` subprocess failures (exit 1) and scored 0 on those metrics;

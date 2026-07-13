@@ -569,16 +569,19 @@ machine; the training entry point exits with code 2 and an install hint if
 ## A.5 Tier F (frontier) reproduction
 
 The Tier F responder is **Opus 4.8 via Claude Code (`claude -p`)**, through
-the `claude-cli` bench provider — not a raw-API frontier call (there is no
-API budget). This is a hard dependency on PR #1735 (`claude-cli` provider),
-which is **not yet on `main`**; the Tier F run (#1728) is blocked on it.
+the `claude-cli` bench provider. This is a valid research harness and a
+distinct provenance path from the raw Anthropic API; the benchmark artifact
+records the provider, model, harness, isolation settings, and invocation
+configuration. The Tier F run (#1728) uses the same supported artifact schema
+as other frontier runs.
 
-**Honest labelling.** A `claude -p` number is "Opus 4.8 via Claude Code," not
-a raw-API `tier: "frontier"` result. Claude Code adds system-prompt
-scaffolding + model-alias routing and is not reproducible without a Claude
-Code entitlement. The artifact keeps `tier: "frontier"` (the only supported
-value for a non-local run) and carries the label in its `note` + model
-metadata (e.g. model `opus-4-8-via-claude-code`). No new tier value is
+**Provenance labelling.** A `claude -p` result is labeled "Opus 4.8 via Claude
+Code" and retains `tier: "frontier"` when it satisfies the Tier-F artifact
+contract. Claude Code entitlement and model-alias details are part of the
+measurement provenance, not grounds for downgrading the result. Raw API and
+Claude Code runs are distinct measurement paths; neither is inherently the
+valid one. The artifact carries the harness label in its `note` and model
+metadata (for example, `opus-4-8-via-claude-code`). No new tier value is
 invented — `BenchmarkArtifactTier` is `"local" | "frontier"` only and
 `parseBenchmarkArtifact()` rejects anything else.
 
