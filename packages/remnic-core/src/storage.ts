@@ -4749,7 +4749,9 @@ export class StorageManager {
       updated: new Date().toISOString(),
       supersedes: options?.supersedes ?? memory.frontmatter.supersedes,
       lineage: mergedLineage.length > 0 ? mergedLineage : undefined,
-      ...(options?.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
+      ...(memory.frontmatter.sourceConnector === undefined && options?.sourceConnector
+        ? { sourceConnector: options.sourceConnector }
+        : {}),
     };
     const sanitized = sanitizeMemoryContent(newContent);
     if (!sanitized.clean) {
