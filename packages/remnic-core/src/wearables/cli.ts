@@ -33,6 +33,8 @@ Commands:
     --source <id>  --from <date>  --to <date>  --limit <n>
   memories [options]             List memories created from transcripts
     --source <id>  --date <date>  --limit <n>
+  fuse <YYYY-MM-DD>              Fuse enabled sources' transcripts for a day
+  fused <YYYY-MM-DD>             List fused conversations for a day
   speakers list                  Show the speaker registry
   speakers self <name>           Set the wearer's display name
   speakers set <source> <key> <name> [--self]
@@ -418,6 +420,69 @@ export async function runWearablesCliCommand(
         throw new WearablesInputError(
           `unknown corrections action '${action}' — expected list, add, or remove`,
         );
+      }
+      case "fuse": {
+        const parsed = parseFlags(rest);
+        const date = flagString(parsed, "--date") ?? parsed.positional[0];
+        if (!date) {
+          throw new WearablesInputError(
+            "fuse requires a date (e.g. wearables fuse 2026-06-10)",
+          );
+        }
+        const result = await service.fuseDay(date);
+        if (parsed.flags.has("--json")) {
+          io.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+          return 0;
+        }
+        // `written:false` has two distinct meanings (issue #1849): a genuine
+        // idempotent no-op (inputs unchanged) OR a deliberate SKIP — e.g.
+        // mixed source timezones — where fusion was refused and any
+        // previously-fused artifact for the day was cleared. The JSON path
+        // carries `skipped`, but the text path collapsed both into
+        // "(unchanged)", hiding a skip (and a possible artifact deletion)
+        // behind an idempotent-looking label. Check `skipped` first and emit
+        // a distinct skip line; reserve "(unchanged)" for written:false
+        // WITHOUT a skip reason. Mirrors the `skipped` field the JSON path
+        // serializes.
+        if (result.skipped) {
+          io.stdout.write(
+            `Skipped fusing ${date}: ${result.skipped.reason} — no fused artifact written; any existing fused artifact for the day was cleared.\n`,
+          );
+        } else {
+          io.stdout.write(
+            `Fused ${date}: ${result.conversationCount} conversation${result.conversationCount === 1 ? "" : "s"} from ${result.sources.length} source${result.sources.length === 1 ? "" : "s"}.${result.written ? "" : " (unchanged)"}\n`,
+          );
+        }
+        return 0;
+      }
+      case "fused": {
+        const parsed = parseFlags(rest);
+        const date = flagString(parsed, "--date") ?? parsed.positional[0];
+        if (!date) {
+          throw new WearablesInputError(
+            "fused requires a date (e.g. wearables fused 2026-06-10)",
+          );
+        }
+        const conversations = await service.fusedConversations(date);
+        if (parsed.flags.has("--json")) {
+          io.stdout.write(`${JSON.stringify({ date, conversations }, null, 2)}\n`);
+          return 0;
+        }
+        if (conversations.length === 0) {
+          io.stdout.write(`No fused conversations for ${date}.\n`);
+          return 0;
+        }
+        for (const conv of conversations) {
+          io.stdout.write(
+            `${conv.id} ${conv.startIso}${conv.endIso ? ` \u2013 ${conv.endIso}` : ""} (${conv.sources.join(", ")}, ${conv.segments.length} segment${conv.segments.length === 1 ? "" : "s"})\n`,
+          );
+          for (const disagreement of conv.disagreements) {
+            io.stdout.write(
+              `  disagreement [${disagreement.kind}] @ ${disagreement.subject}: ${disagreement.candidates.length} candidate${disagreement.candidates.length === 1 ? "" : "s"}\n`,
+            );
+          }
+        }
+        return 0;
       }
       default:
         throw new WearablesInputError(

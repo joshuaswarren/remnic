@@ -245,3 +245,35 @@ test("a deep window narrower than the tick window is rejected, 0 disables", () =
     5,
   );
 });
+
+
+test("fusion defaults to disabled with documented knobs", () => {
+  const parsed = parseWearablesConfig({});
+  assert.equal(parsed.fusion.enabled, false);
+  assert.equal(parsed.fusion.proximityGapMs, 300_000);
+  assert.equal(parsed.fusion.windowToleranceMs, 30_000);
+});
+
+test("fusion enabled flag and knobs parse and validate", () => {
+  const parsed = parseWearablesConfig({
+    fusion: { enabled: true, proximityGapMs: 120_000, windowToleranceMs: 15_000 },
+  });
+  assert.equal(parsed.fusion.enabled, true);
+  assert.equal(parsed.fusion.proximityGapMs, 120_000);
+  assert.equal(parsed.fusion.windowToleranceMs, 15_000);
+});
+
+test("fusion knobs reject non-positive integers", () => {
+  assert.throws(
+    () => parseWearablesConfig({ fusion: { proximityGapMs: 0 } }),
+    /proximityGapMs must be a positive integer/,
+  );
+  assert.throws(
+    () => parseWearablesConfig({ fusion: { windowToleranceMs: -5 } }),
+    /windowToleranceMs must be a positive integer/,
+  );
+});
+
+test("fusion block must be an object when present", () => {
+  assert.throws(() => parseWearablesConfig({ fusion: "on" }), /must be an object/);
+});

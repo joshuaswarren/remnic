@@ -1,0 +1,218 @@
+/**
+ * Wearable cross-source fusion — day-level orchestrator.
+ *
+ * Takes every enabled source's normalized conversations for one day,
+ * clusters them across sources, reconciles each cluster, and attaches a
+ * stable content-hash id so re-running over unchanged inputs produces a
+ * byte-identical artifact (idempotent — no duplicate files).
+ *
+ * Deterministic end to end: no timestamps from "now", no LLM, no
+ * randomness. The only time-derived value is the `fusedAt` frontmatter
+ * field added at storage time (excluded from the content hash).
+ */
+
+import { createHash } from "node:crypto";
+import { clusterConversations } from "./cluster.js";
+import {
+  DEFAULT_SOURCE_TRUST,
+  DEFAULT_WINDOW_TOLERANCE_MS,
+  fuseCluster,
+  type FuseClusterResult,
+} from "./reconcile.js";
+import { DEFAULT_PROXIMITY_GAP_MS } from "./cluster.js";
+import type {
+  FusionConversationInput,
+  FusionDayResult,
+  FusionOptions,
+  FusedConversationProvenance,
+  FusedWearableConversation,
+} from "./types.js";
+
+const FUSION_ID_PREFIX = "fusion";
+/**
+ * Fusion algorithm/schema version. Folded into the day content hash (the
+ * idempotency key) so a change to the clustering, reconciliation, or
+ * reconstruction algorithm invalidates cached artifacts even when the raw
+ * inputs and fusion config are byte-identical — pre-existing `_fusion/`
+ * files are regenerated rather than served stale. Bump this whenever the
+ * fusion algorithm meaningfully changes (this PR changed it repeatedly).
+ * The per-conversation id (`canonicalInputsKey`) is intentionally NOT
+ * folded with the version, so a conversation keeps a stable identity.
+ */
+export const FUSION_ALGO_VERSION = "2026-07-12-1";
+
+/**
+ * Canonical, stable serialization of a set of fusion inputs — the base
+ * for the per-conversation id. Input-only so a conversation keeps a
+ * stable identity across re-runs regardless of input order. The day
+ * content hash additionally folds the effective fusion config (see
+ * `canonicalDayKey`) so a config change invalidates the cached artifact.
+ */
+function canonicalInputsKey(
+  date: string,
+  inputs: readonly FusionConversationInput[],
+): string {
+  const sorted = [...inputs].sort((a, b) => {
+    if (a.source !== b.source) return a.source < b.source ? -1 : 1;
+    if (a.conversationId !== b.conversationId) {
+      return a.conversationId < b.conversationId ? -1 : 1;
+    }
+    return 0;
+  });
+  // Serialize the structured tuples UNAMBIGUOUSLY before hashing. The old
+  // `|`/newline-delimited form could collide: a speaker label or segment
+  // text containing `|` (or a newline plus a forged `seg|…`/`conv|…`
+  // prefix) could make two DISTINCT inputs serialize to identical bytes,
+  // hashing alike — so fuseDay wrongly took the idempotent-skip path and
+  // kept serving a stale artifact. JSON string quoting makes every field
+  // boundary unforgeable, and the positional array order is the
+  // deterministic key order (no object keys to sort).
+  const record = [
+    date,
+    sorted.map((conv) => [
+      conv.source,
+      conv.conversationId,
+      conv.startIso,
+      conv.endIso ?? "",
+      conv.title ?? "",
+      conv.summary ?? "",
+      conv.segments.map((segment) => [
+        segment.speaker,
+        segment.isSelf ? "self" : "other",
+        segment.startIso ?? "",
+        segment.endIso ?? "",
+        segment.text,
+      ]),
+    ]),
+  ];
+  return createHash("sha256").update(JSON.stringify(record), "utf-8").digest("hex");
+}
+
+/**
+ * Effective-config fingerprint folded into the day content hash so a
+ * change to any clustering/reconciliation knob (proximity gap, window
+ * tolerance, or per-source trust) invalidates the cached artifact.
+ * Defaults are resolved so an explicit default hashes identically to an
+ * omission, keeping the skip-unchanged path deterministic. Only sources
+ * that actually contribute to the day are included, so a trust change
+ * for an absent source cannot spuriously trigger a rebuild.
+ */
+function configFingerprint(
+  options: FusionOptions,
+  sources: readonly string[],
+): string {
+  const proximityGapMs = options.proximityGapMs ?? DEFAULT_PROXIMITY_GAP_MS;
+  const windowToleranceMs =
+    options.windowToleranceMs ?? DEFAULT_WINDOW_TOLERANCE_MS;
+  const trustMap = options.sourceTrust ?? {};
+  // JSON form so a source id (or future field) containing `|` cannot forge
+  // a trust-entry boundary and collide two distinct effective configs into
+  // one day hash.
+  const trustEntries = [...new Set(sources)]
+    .sort()
+    .map((source) => [source, trustMap[source] ?? DEFAULT_SOURCE_TRUST]);
+  return JSON.stringify([proximityGapMs, windowToleranceMs, trustEntries]);
+}
+
+/**
+ * Day idempotency key: the input-only hash combined with the effective
+ * fusion-config fingerprint AND the fusion algorithm version. Same inputs +
+ * same config + same version => same hash (no duplicate rewrite); a config
+ * change OR an algorithm-version bump => new hash => rebuild. The version
+ * is what forces regeneration when the ALGORITHM itself changes but the
+ * inputs and config are byte-identical (issue #1849).
+ */
+export function canonicalDayKey(
+  date: string,
+  inputs: readonly FusionConversationInput[],
+  options: FusionOptions,
+  algoVersion: string = FUSION_ALGO_VERSION,
+): string {
+  const inputsKey = canonicalInputsKey(date, inputs);
+  const fingerprint = configFingerprint(
+    options,
+    inputs.map((conv) => conv.source),
+  );
+  return createHash("sha256")
+    .update(inputsKey)
+    .update("\n")
+    .update(fingerprint)
+    .update("\n")
+    .update(algoVersion)
+    .digest("hex");
+}
+
+function buildProvenance(
+  cluster: readonly FusionConversationInput[],
+  proximityGapMs: number,
+  windowToleranceMs: number,
+): FusedConversationProvenance {
+  return {
+    contributions: cluster.map((conv) => ({
+      source: conv.source,
+      conversationId: conv.conversationId,
+      startIso: conv.startIso,
+      ...(conv.endIso !== undefined ? { endIso: conv.endIso } : {}),
+      segmentCount: conv.segments.length,
+    })),
+    proximityGapMs,
+    windowToleranceMs,
+    method: "time-proximity",
+  };
+}
+
+/**
+ * Fuse every source's conversations for one day into a stable result.
+ * Empty input yields an empty (but well-formed) result so callers can
+ * treat "nothing to fuse" uniformly.
+ */
+export function fuseDay(
+  date: string,
+  inputs: readonly FusionConversationInput[],
+  options: FusionOptions = {},
+): FusionDayResult {
+  const proximityGapMs = options.proximityGapMs ?? DEFAULT_PROXIMITY_GAP_MS;
+  const windowToleranceMs =
+    options.windowToleranceMs ?? DEFAULT_WINDOW_TOLERANCE_MS;
+
+  const clusters = clusterConversations(inputs, proximityGapMs);
+  const conversations: FusedWearableConversation[] = clusters.map((cluster) => {
+    const fused: FuseClusterResult = fuseCluster(cluster, {
+      ...options,
+      windowToleranceMs,
+    });
+    const id = `${FUSION_ID_PREFIX}-${canonicalInputsKey(date, cluster).slice(0, 24)}`;
+    const result: FusedWearableConversation = {
+      id,
+      date,
+      startIso: fused.startIso,
+      sources: fused.sources,
+      speakers: fused.speakers,
+      segments: fused.segments,
+      disagreements: fused.disagreements,
+      provenance: buildProvenance(cluster, proximityGapMs, windowToleranceMs),
+    };
+    if (fused.endIso !== undefined) result.endIso = fused.endIso;
+    if (fused.title !== undefined) result.title = fused.title;
+    if (fused.summary !== undefined) result.summary = fused.summary;
+    return result;
+  });
+
+  const sourcesSeen = new Set<string>();
+  const sources: string[] = [];
+  for (const conv of conversations) {
+    for (const source of conv.sources) {
+      if (!sourcesSeen.has(source)) {
+        sourcesSeen.add(source);
+        sources.push(source);
+      }
+    }
+  }
+
+  return {
+    date,
+    conversations,
+    sources,
+    contentHash: canonicalDayKey(date, inputs, options),
+  };
+}

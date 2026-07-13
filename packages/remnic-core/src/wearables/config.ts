@@ -16,6 +16,7 @@ import type {
   WearableCleanupSettings,
   WearableCorrectionRule,
   WearableMemoryMode,
+  WearableFusionConfig,
   WearableSourceSettings,
   WearablesConfig,
 } from "./types.js";
@@ -47,6 +48,11 @@ const MAX_AUTO_SYNC_WINDOW_DAYS = 90;
 const DEFAULT_SOURCE_TRUST = 0.8;
 const DEFAULT_AUTO_APPROVE_TRUST = 0.7;
 const DEFAULT_REVIEW_TRUST = 0.45;
+// Cross-source fusion (#1810) — disabled by default; enabling is the
+// only behavior change fusion introduces.
+const DEFAULT_FUSION_ENABLED = false;
+const DEFAULT_FUSION_PROXIMITY_GAP_MS = 300_000;
+const DEFAULT_FUSION_WINDOW_TOLERANCE_MS = 30_000;
 
 // Sources whose provider emits per-utterance text but unreliable
 // speaker labels (Bee falls back to a generic "unknown" label when
@@ -91,6 +97,14 @@ export function defaultWearableSourceSettings(
   };
 }
 
+export function defaultWearableFusionConfig(): WearableFusionConfig {
+  return {
+    enabled: DEFAULT_FUSION_ENABLED,
+    proximityGapMs: DEFAULT_FUSION_PROXIMITY_GAP_MS,
+    windowToleranceMs: DEFAULT_FUSION_WINDOW_TOLERANCE_MS,
+  };
+}
+
 export function defaultWearablesConfig(): WearablesConfig {
   return {
     enabled: false,
@@ -104,6 +118,7 @@ export function defaultWearablesConfig(): WearablesConfig {
     autoSyncDeepDays: DEFAULT_AUTO_SYNC_DEEP_DAYS,
     corrections: [],
     sources: {},
+    fusion: defaultWearableFusionConfig(),
   };
 }
 
@@ -331,6 +346,42 @@ function parseSourceSettings(
  * Parse the `wearables` config block. `undefined` yields the disabled
  * default config; any present-but-malformed value throws.
  */
+function parseFusionSettings(
+  value: unknown,
+  keyPath: string,
+): WearableFusionConfig {
+  if (value === undefined) return defaultWearableFusionConfig();
+  const raw = requireObject(value, keyPath);
+  const defaults = defaultWearableFusionConfig();
+  const parsePositiveInt = (
+    value: unknown,
+    name: string,
+    fallback: number,
+  ): number => {
+    if (value === undefined) return fallback;
+    const coerced = coerceNumber(value);
+    if (coerced === undefined || !Number.isInteger(coerced) || coerced <= 0) {
+      throw new Error(
+        `${keyPath}.${name} must be a positive integer (got ${JSON.stringify(value)})`,
+      );
+    }
+    return coerced;
+  };
+  return {
+    enabled: parseBool(raw.enabled, `${keyPath}.enabled`, defaults.enabled),
+    proximityGapMs: parsePositiveInt(
+      raw.proximityGapMs,
+      "proximityGapMs",
+      defaults.proximityGapMs,
+    ),
+    windowToleranceMs: parsePositiveInt(
+      raw.windowToleranceMs,
+      "windowToleranceMs",
+      defaults.windowToleranceMs,
+    ),
+  };
+}
+
 export function parseWearablesConfig(value: unknown): WearablesConfig {
   if (value === undefined) return defaultWearablesConfig();
   const raw = requireObject(value, "wearables");
@@ -455,6 +506,7 @@ export function parseWearablesConfig(value: unknown): WearablesConfig {
     autoSyncIntervalMinutes,
     autoSyncDays,
     autoSyncDeepDays,
+    fusion: parseFusionSettings(raw.fusion, "wearables.fusion"),
     corrections: parseCorrectionRules(raw.corrections, "wearables.corrections"),
     sources,
   };

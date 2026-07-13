@@ -9,6 +9,7 @@ export * from "./types.js";
 export { describeErrorForOperator, WearablesInputError } from "./errors.js";
 export {
   defaultWearableCleanupSettings,
+  defaultWearableFusionConfig,
   defaultWearableSourceSettings,
   defaultWearablesConfig,
   KNOWN_WEARABLE_SOURCE_IDS,
@@ -60,13 +61,21 @@ export {
   type SpeakerRegistry,
 } from "./speakers.js";
 export {
+  bodyIsEscaped,
   composeDayTranscriptBody,
   composeDayTranscriptMeta,
+  decodeTranscriptBody,
+  escapeSegmentText,
   hashTranscriptBody,
   isValidTranscriptDate,
   parseDayTranscript,
+  parseTranscriptSegmentLine,
   serializeDayTranscript,
+  TRANSCRIPT_FORMAT_VERSION,
+  unescapeSegmentText,
+  unescapeSpeakerLabel,
   WEARABLES_DIR_NAME,
+  type TranscriptSegmentMatch,
 } from "./day-store.js";
 export {
   emptySyncState,
@@ -112,3 +121,35 @@ export {
   type WearableTranscriptSearchResult,
   type WearablesServiceDeps,
 } from "./service.js";
+
+export {
+  clusterConversations,
+  composeFusionDayMeta,
+  DEFAULT_PROXIMITY_GAP_MS,
+  DEFAULT_SOURCE_TRUST,
+  DEFAULT_WINDOW_TOLERANCE_MS,
+  FUSION_KIND,
+  fuseCluster,
+  fuseDay,
+  fusionInputsFromConversations,
+  hashFusionBody,
+  parseFusionDay,
+  reconstructFusionInputs,
+  serializeFusionDay,
+  type FuseClusterResult,
+  type DisagreementKind,
+  type FusionConversationInput,
+  type FusionDayResult,
+  type FusionOptions,
+  type FusionSegmentInput,
+  type FusedConversationProvenance,
+  type FusedContribution,
+  type FusedDayFile,
+  type FusedDayMeta,
+  type FusedDisagreement,
+  type FusedSegment,
+  type FusedSegmentProvenance,
+  type FusedSpeaker,
+  type FusedWearableConversation,
+  type SegmentPickReason,
+} from "./fusion/index.js";

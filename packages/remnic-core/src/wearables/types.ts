@@ -285,6 +285,30 @@ export interface WearablesConfig {
   corrections: WearableCorrectionRule[];
   /** Per-source settings, keyed by connector id. */
   sources: Record<string, WearableSourceSettings>;
+  /**
+   * Cross-source fusion settings (issue #1810). Default disabled —
+   * enabling it is the only behavior change fusion introduces.
+   */
+  fusion: WearableFusionConfig;
+}
+
+/**
+ * Cross-source fusion configuration (issue #1810). When disabled (the
+ * default), no fusion artifacts are written and no behavior changes.
+ */
+export interface WearableFusionConfig {
+  /** Master gate for fusion. Default false. */
+  enabled: boolean;
+  /**
+   * Max gap (ms) between two conversations to merge into one fused
+   * cluster. Default 300000 (5 minutes).
+   */
+  proximityGapMs: number;
+  /**
+   * Max drift (ms) for two segments to align across sources. Default
+   * 30000 (30 seconds).
+   */
+  windowToleranceMs: number;
 }
 
 /** Summary returned by a sync run (one source). */
@@ -330,6 +354,13 @@ export interface WearableDayTranscriptMeta {
   /** SHA-256 of the body — used to skip unchanged rewrites. */
   contentHash: string;
   syncedAt: string;
+  /**
+   * Body serialization format version. Present (>= 2) only on bodies written
+   * by the escape-aware serializer; absent on legacy transcripts. Decoders
+   * gate on this so a legacy body's literal two-character `\n`/`\r` is never
+   * altered (issue #1849).
+   */
+  formatVersion?: number;
 }
 
 /** A parsed day-transcript file. */

@@ -13,8 +13,25 @@ import {
 } from "./corrections.js";
 import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
-import { isValidTranscriptDate, parseDayTranscript } from "./day-store.js";
+import {
+  bodyIsEscaped,
+  decodeTranscriptBody,
+  escapeSegmentText,
+  isValidTranscriptDate,
+  parseDayTranscript,
+} from "./day-store.js";
+import {
+  composeFusionDayMeta,
+  type FusionArtifactStore,
+  fuseDay as fuseDayInputs,
+  hashFusionBody,
+  parseFusionDay,
+  reconstructFusionInputs,
+  serializeFusionDay,
+  type FusedWearableConversation,
+} from "./fusion/index.js";
 import { stripAttributesSuffix } from "../storage.js";
+import { log } from "../logger.js";
 import type { MemoryFrontmatter } from "../types.js";
 import type { WearableMemoryGenDeps } from "./memory-gen.js";
 import { WEARABLE_SOURCE_PREFIX, wearableSourceLabel } from "./memory-gen.js";
@@ -59,6 +76,7 @@ export interface WearableStorageIo {
   listWearableTranscriptDays(
     sourceId?: string,
   ): Promise<Array<{ source: string; date: string }>>;
+  fusionArtifactStore(): FusionArtifactStore;
   readAllMemories(): Promise<
     Array<{
       path: string;
@@ -443,7 +461,13 @@ export class WearablesService {
         source,
         date,
         meta: parsed?.meta ?? null,
-        body: parsed?.body ?? raw,
+        // Decode escaped segment text for display: the stored body is an
+        // internal line-based serialization (newlines/backslashes escaped
+        // so segment text survives the serialize -> reconstruct round
+        // trip); user-facing view surfaces must show the original text.
+        // The fusion reconstruct path reads raw bodies separately and
+        // decodes once during parse, so this never double-decodes (#1849).
+        body: decodeTranscriptBody(parsed?.body ?? raw, bodyIsEscaped(parsed?.meta)),
         overlapsWith: [],
       });
     }
@@ -462,6 +486,192 @@ export class WearablesService {
     if (sourceId !== undefined) assertValidSourceId(sourceId);
     const storage = await this.deps.getStorage();
     return storage.listWearableTranscriptDays(sourceId);
+  }
+
+  // -- cross-source fusion (#1810) -----------------------------------------
+
+  /**
+   * Fuse all enabled sources' stored transcripts for one day into a
+   * derived `FusedWearableConversation[]` artifact. Deterministic and
+   * idempotent: unchanged inputs and fusion config produce a stable
+   * content hash and the derived file is left untouched on re-run. Requires
+   * `wearables.fusion.enabled`; otherwise it throws. Raw per-source
+   * transcripts are never modified.
+   */
+  async fuseDay(date: string): Promise<{
+    date: string;
+    sources: string[];
+    conversationCount: number;
+    contentHash: string;
+    written: boolean;
+    skipped?: { reason: string };
+  }> {
+    this.assertEnabled();
+    if (!this.deps.config.fusion.enabled) {
+      throw new WearablesInputError(
+        "wearables fusion is not enabled — set `wearables.fusion.enabled: true` in the plugin config",
+      );
+    }
+    if (!isValidTranscriptDate(date)) {
+      throw new WearablesInputError(`invalid date '${date}' — expected YYYY-MM-DD`);
+    }
+    const storage = await this.deps.getStorage();
+    const enabled = this.enabledSources();
+    const bodies: Array<{ source: string; body: string; escaped?: boolean }> = [];
+    const sourceTimezones: string[] = [];
+    for (const [source] of enabled) {
+      const raw = await storage.readWearableDayTranscript(source, date);
+      if (raw === null) continue;
+      const parsed = parseDayTranscript(raw);
+      bodies.push({
+        source,
+        body: parsed?.body ?? raw,
+        escaped: bodyIsEscaped(parsed?.meta),
+      });
+      sourceTimezones.push(parsed?.meta.timezone ?? "");
+    }
+    // Reconstruct the normalized inputs once and derive the sources that
+    // actually CONTRIBUTE conversations/clocks for the day. The sync path
+    // can persist an explicit EMPTY (all-elided / zero-conversation)
+    // transcript for days whose segments were all dropped; such a file
+    // contributes no clocks, so it must not influence the timezone guard
+    // below.
+    const reconstructed = reconstructFusionInputs(date, bodies);
+    const contributing = bodies
+      .map((entry, i) => ({
+        source: entry.source,
+        timezone: sourceTimezones[i] ?? "",
+      }))
+      .filter((entry) =>
+        reconstructed.some((input) => input.source === entry.source),
+      );
+    // Mixed-timezone guard: reconstructFusionInputs rebuilds every clock as
+    // `${date}T${HH}:${MM}:00Z` and compares local HH:MM clocks across sources
+    // as if they shared one timezone. That comparison is ONLY valid when every
+    // CONTRIBUTING source (one that reconstructs to >=1 conversation) carries
+    // the SAME explicit IANA timezone id (meta.timezone). Sources that
+    // reconstruct to zero conversations contribute no clocks and are ignored,
+    // so an empty/all-elided transcript rendered under a different (or
+    // missing) timezone cannot block a genuine same-zone fusion. Sampling one
+    // UTC offset per source is insufficient: on DST-transition dates two
+    // different zones can share a noon offset yet differ during recorded hours
+    // (e.g. America/Los_Angeles vs America/Phoenix on 2026-03-08 — both UTC-7
+    // by noon, an hour apart before LA's spring-forward). A source whose
+    // timezone id is missing/empty is treated as unresolvable rather than
+    // silently coerced to a default, so any unknown tz fails safe. Require
+    // exact tz-id identity across all contributing sources.
+    if (contributing.length > 1) {
+      const referenceTz = contributing[0]!.timezone;
+      const allSameExplicitTz =
+        referenceTz.trim().length > 0 &&
+        contributing.every((entry) => entry.timezone === referenceTz);
+      if (!allSameExplicitTz) {
+        const detail = contributing
+          .map((entry) => `${entry.source}=${entry.timezone || "?"}`)
+          .join(", ");
+        log.warn(
+          `wearables fusion: skipping ${date} — sources were rendered under differing timezones (${detail}); reconstructFusionInputs only compares local clocks correctly when every source shares one explicit IANA timezone id`,
+        );
+        // Clear any previously-fused artifact for this day: a day that
+        // fused successfully before must not keep serving a stale view
+        // now that this run explicitly refuses to fuse (issue #1849).
+        await storage.fusionArtifactStore().deleteFusedDay(date);
+        return {
+          date,
+          sources: [],
+          conversationCount: 0,
+          contentHash: "",
+          written: false,
+          skipped: { reason: "conflicting-timezones" },
+        };
+      }
+    }
+    const sourceTrust: Record<string, number> = {};
+    for (const [id, settings] of enabled) {
+      sourceTrust[id] = settings.sourceTrust;
+    }
+    const result = fuseDayInputs(date, reconstructed, {
+      proximityGapMs: this.deps.config.fusion.proximityGapMs,
+      windowToleranceMs: this.deps.config.fusion.windowToleranceMs,
+      sourceTrust,
+    });
+    // Idempotent skip-unchanged: do not rewrite when the input content
+    // hash matches the stored artifact, the stored body parsed cleanly
+    // into a well-formed conversation set, AND the stored body hash still
+    // matches a recompute over the stored body itself. A
+    // truncated/corrupt/malformed-element body fails to parse
+    // (parseOk:false) even when the frontmatter hash matches, and a body
+    // whose bytes drifted fails the body-hash recompute even when the
+    // input hash + conversation count still match — so either forces a
+    // self-repair rewrite instead of trusting the hashes alone.
+    const existingRaw = await storage.fusionArtifactStore().readFusedDay(date);
+    const existing = parseFusionDay(existingRaw ?? "");
+    // parseOk is bound to a local so the skip condition can keep the
+    // explicit `existing !== null` guard for the `.meta` access below —
+    // an inline `existing.parseOk` member check there trips
+    // useOptionalChain (whose suggested fix would drop the guard and
+    // null-deref the later access), so we read it via optional chain.
+    const parsedCleanly = existing?.parseOk === true;
+    const skipUnchanged =
+      existing !== null &&
+      parsedCleanly &&
+      existing.meta.contentHash === result.contentHash &&
+      existing.meta.bodyHash === hashFusionBody(existing.conversations);
+    const written = !skipUnchanged;
+    if (written) {
+      const meta = composeFusionDayMeta(
+        date,
+        result.conversations,
+        result.sources,
+        result.contentHash,
+        new Date().toISOString(),
+      );
+      await storage.fusionArtifactStore().writeFusedDay(
+        date,
+        serializeFusionDay(meta, result.conversations),
+      );
+    }
+    return {
+      date: result.date,
+      sources: result.sources,
+      conversationCount: result.conversations.length,
+      contentHash: result.contentHash,
+      written,
+    };
+  }
+
+  /**
+   * List fused conversations for a date (the fusion listing surface).
+   * Returns the persisted derived artifact's conversations, or an empty
+   * array when no fused artifact has been written for that day. When a
+   * file EXISTS but its body is corrupt (parseOk:false), throws
+   * WearablesInputError so the caller can distinguish a broken artifact
+   * from a day that was never fused — never silently returns an empty
+   * list that looks identical to "no artifact" (issue #1849).
+   */
+  async fusedConversations(
+    date: string,
+  ): Promise<FusedWearableConversation[]> {
+    if (!isValidTranscriptDate(date)) {
+      throw new WearablesInputError(`invalid date '${date}' — expected YYYY-MM-DD`);
+    }
+    const storage = await this.deps.getStorage();
+    const raw = await storage.fusionArtifactStore().readFusedDay(date);
+    if (raw === null) return [];
+    const parsed = parseFusionDay(raw);
+    if (parsed === null) return [];
+    if (!parsed.parseOk) {
+      throw new WearablesInputError(
+        `fused artifact for ${date} is corrupt — re-run \`wearables fuse ${date}\` to repair`,
+      );
+    }
+    return parsed.conversations;
+  }
+
+  /** List dates with stored fused artifacts, newest first. */
+  async listFusedDays(): Promise<string[]> {
+    const storage = await this.deps.getStorage();
+    return storage.fusionArtifactStore().listFusedDays();
   }
 
   /**
@@ -509,31 +719,54 @@ export class WearablesService {
     };
 
     if (this.deps.searchBackend) {
-      const hits = await this.deps.searchBackend.search(trimmed, limit * 5);
-      if (hits !== null) {
-        const results: WearableTranscriptSearchResult[] = [];
+      // The index stores escaped segment text (real newlines become
+      // the two characters \n, lone backslashes are doubled). A query
+      // containing those characters in their ORIGINAL decoded form will
+      // not match the indexed representation, so we ALSO search the
+      // escaped form. This keeps the indexed path at parity with the
+      // scan fallback, which decodes the body before searching (#1849).
+      const escaped = escapeSegmentText(trimmed);
+      const queries =
+        escaped === trimmed ? [trimmed] : [trimmed, escaped];
+      const seen = new Set<string>();
+      const results: WearableTranscriptSearchResult[] = [];
+      const idxStorage = await this.deps.getStorage();
+      for (const q of queries) {
+        const hits = await this.deps.searchBackend.search(q, limit * 5);
+        if (hits === null) break; // backend unavailable
         for (const hit of hits) {
           const located = locateTranscriptPath(hit.path);
           if (!located) continue;
           if (!matchesScope(located.source, located.date)) continue;
+          const dedupeKey = `${located.source}:${located.date}`;
+          if (seen.has(dedupeKey)) continue;
+          seen.add(dedupeKey);
+          // The indexed snippet mirrors the stored body's escape encoding.
+          // Read the file once to learn whether it was written by the
+          // escape-aware serializer so a LEGACY file's literal two-character
+          // \n/\r is never decoded (#1849).
+          const idxRaw =
+            await idxStorage.readWearableDayTranscript(located.source, located.date);
+          const idxMeta = parseDayTranscript(idxRaw ?? "")?.meta ?? null;
           results.push({
             source: located.source,
             date: located.date,
             score: hit.score,
-            snippet: hit.preview,
+            snippet: decodeTranscriptBody(hit.preview, bodyIsEscaped(idxMeta)),
             backend: "indexed",
           });
           if (results.length >= limit) break;
         }
-        // The index spans the whole memory dir, so ordinary memory
-        // files can crowd transcripts out of the top hits entirely.
-        // Zero in-scope hits therefore doesn't mean "no transcript
-        // matches" — fall through to the bounded scan in that case
-        // (Codex P2 on PR #1458). Partial result sets stay indexed-only
-        // so the two backends never interleave in one response.
-        if (results.length > 0) {
-          return results;
-        }
+        if (results.length >= limit) break;
+      }
+      // The index spans the whole memory dir, so ordinary memory
+      // files can crowd transcripts out of the top hits entirely.
+      // Zero in-scope hits therefore doesn't mean "no transcript
+      // matches" — fall through to the bounded scan in that case
+      // (Codex P2 on PR #1458). Partial result sets stay indexed-only
+      // so the two backends never interleave in one response.
+      if (results.length > 0) {
+        return results;
       }
     }
 
@@ -546,7 +779,16 @@ export class WearablesService {
       if (!matchesScope(source, date)) continue;
       const raw = await storage.readWearableDayTranscript(source, date);
       if (raw === null) continue;
-      const body = parseDayTranscript(raw)?.body ?? raw;
+      const scanParsed = parseDayTranscript(raw);
+      // Decode escaped segment text so searches match AND snippets show
+      // the ORIGINAL text (e.g. a real newline or backslash), not the
+      // internal escape serialization — but ONLY for bodies written by
+      // the escape-aware serializer; legacy bodies are searched verbatim
+      // (#1849).
+      const body = decodeTranscriptBody(
+        scanParsed?.body ?? raw,
+        bodyIsEscaped(scanParsed?.meta),
+      );
       const lower = body.toLowerCase();
       const index = lower.indexOf(needle);
       if (index === -1) continue;

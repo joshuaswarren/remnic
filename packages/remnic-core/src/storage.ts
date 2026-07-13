@@ -23,6 +23,7 @@ import { serializeProvenanceFields, parseProvenanceSources, parseProvenanceTag, 
 import { serializeFaithfulnessFields, parseFaithfulnessField } from "./extraction-faithfulness.js";
 import { createVersion as createPageVersion, type VersioningConfig, type VersionTrigger } from "./page-versioning.js";
 import { isValidTranscriptDate, WEARABLES_DIR_NAME } from "./wearables/day-store.js";
+import { FusionArtifactStore } from "./wearables/fusion/index.js";
 import {
   SecureStoreLockedError,
   MAGIC_HEADER_SIZE,
@@ -2707,6 +2708,21 @@ export class StorageManager {
     return this.memoryReadStore.listWearableTranscriptDays(
       sourceId,
     );
+  }
+
+  private _fusionStore?: FusionArtifactStore;
+
+  /** Derived fusion-day IO; file IO lives in wearables/fusion (#1810). */
+  fusionArtifactStore(): FusionArtifactStore {
+    if (this._fusionStore) return this._fusionStore;
+    return (this._fusionStore = new FusionArtifactStore(this.wearablesDir, this.baseDir, {
+      writeFile: (p, c) => this.writeStorageSecureFile(p, c),
+      readFile: (p) => readMaybeEncryptedFile(p, this._secureStoreKey, this.baseDir),
+      readDir: (d) => readdir(d),
+      deleteFile: (p) => unlink(p),
+      realpath: (p) => realpath(p),
+      lstat: (p) => lstat(p).then((st) => ({ isSymbolicLink: st.isSymbolicLink() })),
+    }));
   }
 
   /**

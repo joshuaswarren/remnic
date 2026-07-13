@@ -5573,6 +5573,31 @@
                 }
               }
             }
+          },
+          "fusion": {
+            "type": "object",
+            "additionalProperties": false,
+            "default": {},
+            "description": "Cross-source fusion of multi-source wearable transcripts into one reconciled artifact per real-world conversation (issue #1810). Deterministic and disabled by default.",
+            "properties": {
+              "enabled": {
+                "type": "boolean",
+                "default": false,
+                "description": "Master gate for cross-source fusion. When false, no fusion artifacts are written and no behavior changes."
+              },
+              "proximityGapMs": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 300000,
+                "description": "Max gap (ms) between two conversations to merge into one fused cluster."
+              },
+              "windowToleranceMs": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 30000,
+                "description": "Max drift (ms) for two segments to align across sources."
+              }
+            }
           }
         }
       },

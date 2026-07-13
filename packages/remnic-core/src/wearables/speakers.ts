@@ -35,6 +35,43 @@ export interface SpeakerRegistry {
 
 export const DEFAULT_SELF_NAME = "Me";
 
+/**
+ * Reserved self marker appended to a wearer's display label so the
+ * rendered transcript carries explicit, parseable self metadata. It is
+ * RESERVED: a non-self display label can never carry it (see
+ * `stripSelfMarker`), so when `reconstructFusionInputs` reads it back it
+ * is authoritative self metadata — never a coincidental display-name
+ * suffix that would misattribute another speaker as the wearer
+ * (issue #1849).
+ */
+export const SELF_MARKER_SUFFIX = " (you)";
+const SELF_MARKER = "(you)";
+
+/**
+ * Remove a reserved `(you)` self marker from a display name. Applied to
+ * every base name before it becomes a label so the marker can only ever
+ * appear as the renderer-appended self flag, never as part of a stored
+ * non-self display name.
+ *
+ * Implemented with plain string ops instead of a regex so the leading
+ * `\s*` (no anchor) cannot cause the O(n²) backtracking CodeQL flags
+ * on whitespace-only input (js/polynomial-redos).
+ */
+export function stripSelfMarker(name: string): string {
+  const trimmed = name.trimEnd();
+  if (!trimmed.endsWith(SELF_MARKER)) return trimmed;
+  return trimmed.slice(0, -SELF_MARKER.length).trimEnd();
+}
+
+/**
+ * Whether a rendered label carries the reserved self marker. This is the
+ * single authoritative self-status detector shared by the renderer and
+ * the fusion reconstructor (issue #1849).
+ */
+export function hasSelfMarker(label: string): boolean {
+  return label.trimEnd().endsWith(SELF_MARKER);
+}
+
 export function emptySpeakerRegistry(): SpeakerRegistry {
   return { version: 1, selfName: DEFAULT_SELF_NAME, speakers: {} };
 }
@@ -130,21 +167,38 @@ export function resolveSpeaker(
   const override = registry.speakers[speakerRegistryKey(sourceId, segment.speakerKey)];
   if (override) {
     const isSelf = override.isSelf === true;
+    // Reserve the `(you)` marker: strip any pre-existing marker from the
+    // base name so a NON-self label can never carry it. Without this, a
+    // speaker override like "Pat (you)" set WITHOUT --self would render
+    // as "Pat (you)" and the fusion reconstructor would read the suffix
+    // as self metadata, attributing Pat's words to the wearer (issue
+    // #1849).
+    const base = stripSelfMarker(override.name);
     return {
-      label: isSelf ? `${override.name} (you)` : override.name,
+      label: isSelf ? `${base}${SELF_MARKER_SUFFIX}` : base,
       isSelf,
     };
   }
   if (segment.isWearer === true) {
-    return { label: `${registry.selfName} (you)`, isSelf: true };
+    return {
+      label: `${stripSelfMarker(registry.selfName)}${SELF_MARKER_SUFFIX}`,
+      isSelf: true,
+    };
   }
   if (
     typeof segment.speakerName === "string" &&
     segment.speakerName.trim().length > 0
   ) {
-    return { label: segment.speakerName.trim(), isSelf: false };
+    // Provider-supplied names are never self here; strip a stray marker
+    // so a provider label cannot masquerade as the reserved self flag.
+    return { label: stripSelfMarker(segment.speakerName.trim()), isSelf: false };
   }
-  const key = segment.speakerKey.trim();
+  // Strip the reserved `(you)` marker from the raw key so a provider
+  // speakerKey like "Pat (you)" can never leak the marker into a non-self
+  // rendered label — the fusion reconstructor reads the suffix as
+  // authoritative self metadata and would misattribute the speaker as the
+  // wearer (issue #1849).
+  const key = stripSelfMarker(segment.speakerKey.trim());
   // Bare diarization indexes read better with a prefix.
   if (/^\d+$/.test(key)) {
     return { label: `Speaker ${key}`, isSelf: false };
