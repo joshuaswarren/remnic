@@ -240,7 +240,7 @@ test("optimizeCompressionGuidelines stages a draft revision without overwriting 
       },
     ]);
 
-    const result = await orchestrator.optimizeCompressionGuidelines({ dryRun: false, eventLimit: 50 });
+    const result = await orchestrator.compressionGuidelineCoordinator.optimizeCompressionGuidelines({ dryRun: false, eventLimit: 50 });
     assert.equal(result.persisted, true);
     assert.equal(typeof result.draftContentHash, "string");
 
@@ -305,12 +305,12 @@ test("optimizeCompressionGuidelines increments staged guideline versions from th
       },
     ]);
 
-    const first = await orchestrator.optimizeCompressionGuidelines({ dryRun: false, eventLimit: 50 });
+    const first = await orchestrator.compressionGuidelineCoordinator.optimizeCompressionGuidelines({ dryRun: false, eventLimit: 50 });
     const firstDraftState = await orchestrator.storage.readCompressionGuidelineDraftState();
     assert.equal(first.nextGuidelineVersion, 5);
     assert.equal(firstDraftState?.guidelineVersion, 5);
 
-    const second = await orchestrator.optimizeCompressionGuidelines({ dryRun: false, eventLimit: 50 });
+    const second = await orchestrator.compressionGuidelineCoordinator.optimizeCompressionGuidelines({ dryRun: false, eventLimit: 50 });
     const secondDraftState = await orchestrator.storage.readCompressionGuidelineDraftState();
     assert.equal(second.nextGuidelineVersion, 6);
     assert.equal(secondDraftState?.guidelineVersion, 6);
@@ -355,7 +355,7 @@ test("optimizeCompressionGuidelines tags semantic refinement calls as background
       },
     ]);
 
-    const result = await orchestrator.optimizeCompressionGuidelines({
+    const result = await orchestrator.compressionGuidelineCoordinator.optimizeCompressionGuidelines({
       dryRun: false,
       eventLimit: 10,
     });
@@ -394,20 +394,20 @@ test("activateCompressionGuidelineDraft requires reviewed draft identity and rej
       },
     ]);
 
-    const optimizeResult = await orchestrator.optimizeCompressionGuidelines({ dryRun: false, eventLimit: 10 });
+    const optimizeResult = await orchestrator.compressionGuidelineCoordinator.optimizeCompressionGuidelines({ dryRun: false, eventLimit: 10 });
     assert.equal(typeof optimizeResult.draftContentHash, "string");
 
-    const missingIdentity = await orchestrator.activateCompressionGuidelineDraft();
+    const missingIdentity = await orchestrator.compressionGuidelineCoordinator.activateCompressionGuidelineDraft();
     assert.equal(missingIdentity.activated, false);
     assert.equal(missingIdentity.reason, "expected_revision_required");
 
-    const staleIdentity = await orchestrator.activateCompressionGuidelineDraft({
+    const staleIdentity = await orchestrator.compressionGuidelineCoordinator.activateCompressionGuidelineDraft({
       expectedContentHash: "stale-hash",
     });
     assert.equal(staleIdentity.activated, false);
     assert.equal(staleIdentity.reason, "content_hash_mismatch");
 
-    const activated = await orchestrator.activateCompressionGuidelineDraft({
+    const activated = await orchestrator.compressionGuidelineCoordinator.activateCompressionGuidelineDraft({
       expectedContentHash: optimizeResult.draftContentHash ?? undefined,
     });
     assert.equal(activated.activated, true);

@@ -51,27 +51,29 @@ function buildHarness(resultOverride?: {
       sharedContextEnabled: false,
       compoundingEnabled: false,
     },
-    optimizeCompressionGuidelines: async (params?: Record<string, unknown>) => {
-      capturedCalls.push(params ?? {});
-      return {
+    compressionGuidelineCoordinator: {
+      optimizeCompressionGuidelines: async (params?: Record<string, unknown>) => {
+        capturedCalls.push(params ?? {});
+        return {
+          enabled: resultOverride?.enabled ?? true,
+          dryRun: resultOverride?.dryRun ?? false,
+          eventCount: resultOverride?.eventCount ?? 22,
+          previousGuidelineVersion: resultOverride?.previousGuidelineVersion ?? 3,
+          nextGuidelineVersion: resultOverride?.nextGuidelineVersion ?? 4,
+          draftContentHash:
+            resultOverride?.draftContentHash ?? (resultOverride?.dryRun === true ? null : "hash-123"),
+          changedRules: resultOverride?.changedRules ?? 2,
+          semanticRefinementApplied: resultOverride?.semanticRefinementApplied ?? false,
+          persisted: resultOverride?.persisted ?? true,
+        };
+      },
+      activateCompressionGuidelineDraft: async () => ({
         enabled: resultOverride?.enabled ?? true,
-        dryRun: resultOverride?.dryRun ?? false,
-        eventCount: resultOverride?.eventCount ?? 22,
-        previousGuidelineVersion: resultOverride?.previousGuidelineVersion ?? 3,
-        nextGuidelineVersion: resultOverride?.nextGuidelineVersion ?? 4,
-        draftContentHash:
-          resultOverride?.draftContentHash ?? (resultOverride?.dryRun === true ? null : "hash-123"),
-        changedRules: resultOverride?.changedRules ?? 2,
-        semanticRefinementApplied: resultOverride?.semanticRefinementApplied ?? false,
-        persisted: resultOverride?.persisted ?? true,
-      };
+        activated: resultOverride?.activated ?? true,
+        guidelineVersion: resultOverride?.nextGuidelineVersion ?? 4,
+        reason: resultOverride?.reason,
+      }),
     },
-    activateCompressionGuidelineDraft: async () => ({
-      enabled: resultOverride?.enabled ?? true,
-      activated: resultOverride?.activated ?? true,
-      guidelineVersion: resultOverride?.nextGuidelineVersion ?? 4,
-      reason: resultOverride?.reason,
-    }),
     qmd: {
       search: async () => [],
       searchGlobal: async () => [],

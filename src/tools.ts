@@ -1917,7 +1917,7 @@ Best for:
           eventLimit?: number;
         };
 
-        const result = await orchestrator.optimizeCompressionGuidelines({
+        const result = await orchestrator.compressionGuidelineCoordinator.optimizeCompressionGuidelines({
           dryRun: dryRun === true,
           eventLimit,
         });
@@ -1963,7 +1963,7 @@ Best for:
           Number.isFinite(params.expectedGuidelineVersion)
             ? Math.floor(params.expectedGuidelineVersion)
             : undefined;
-        const result = await orchestrator.activateCompressionGuidelineDraft({
+        const result = await orchestrator.compressionGuidelineCoordinator.activateCompressionGuidelineDraft({
           ...(expectedContentHash ? { expectedContentHash } : {}),
           ...(typeof expectedGuidelineVersion === "number" ? { expectedGuidelineVersion } : {}),
         });
