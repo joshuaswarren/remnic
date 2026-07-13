@@ -71,6 +71,20 @@ function makeStorage(memoryDir: string): WearableStorageIo & {
       }
     },
     realpath: (filePath) => fsRealpath(filePath),
+    lstat: async (filePath) => {
+      // The in-memory mock models no real symlinks: a `_fusion` dir
+      // "exists" when at least one fused file lives beneath it, and is
+      // never itself a symbolic link.
+      const hasChildren = [...fusedFiles.keys()].some(
+        (k) => path.dirname(k) === filePath,
+      );
+      if (!hasChildren) {
+        const err = new Error(`ENOENT: ${filePath}`) as NodeJS.ErrnoException;
+        err.code = "ENOENT";
+        throw err;
+      }
+      return { isSymbolicLink: false };
+    },
   });
   const files = new Map<string, string>();
   const storage = {

@@ -2322,3 +2322,44 @@ test("implausible earlier end does not span the day: cluster clamps it to the st
     "clamped point-window keeps the within-gap neighbor in one cluster (no broad clustering)",
   );
 });
+
+test("reconstruct never attributes a non-self speaker whose name ends in (you) as self (issue #1849)", () => {
+  // A non-self override stored with a name that already ends in the
+  // reserved `(you)` marker. The renderer (resolveSpeaker) reserves the
+  // marker, so the stored transcript line carries NO marker for Pat, and
+  // reconstruct reads self status only from the authoritative marker.
+  const registry = emptySpeakerRegistry();
+  registry.selfName = "Jordan";
+  registry.speakers["bee:SPEAKER_01"] = {
+    name: "Pat (you)",
+    updatedAt: "2026-06-10T00:00:00Z",
+  };
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [
+        { text: "I am the wearer.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        { text: "I am Pat.", speakerKey: "SPEAKER_01", startIso: "2026-06-10T09:01:00.000Z" },
+      ],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, registry);
+
+  // The rendered body must NOT place a `(you)` marker on the non-self
+  // Pat line — the marker is reserved for the wearer only.
+  assert.ok(/\*\*Pat\*\* \[09:01\]: I am Pat\./.test(body), "Pat's label has no (you) marker: " + body);
+
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  assert.equal(parsed.length, 1);
+  const segs = parsed[0]!.segments;
+  assert.equal(segs.length, 2);
+  // Wearer keeps the authoritative marker -> self.
+  assert.equal(segs[0]!.speaker, "Jordan (you)");
+  assert.equal(segs[0]!.isSelf, true);
+  // Pat is NOT attributed as self despite the stored name ending in (you).
+  assert.equal(segs[1]!.speaker, "Pat");
+  assert.equal(segs[1]!.isSelf, false);
+});

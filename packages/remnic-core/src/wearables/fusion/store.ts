@@ -291,6 +291,14 @@ export interface FusionFileIo {
    * read/write/delete (AGENTS.md #3).
    */
   realpath(filePath: string): Promise<string>;
+  /**
+   * Stat a path WITHOUT following a trailing symlink
+   * (node:fs/promises lstat); rejects with ENOENT when the path is
+   * absent. Used to detect a pre-existing symlink at the fusion
+   * artifact directory itself, which is rejected even when its
+   * target resolves inside the memory dir (issue #1849).
+   */
+  lstat(filePath: string): Promise<{ isSymbolicLink: boolean }>;
 }
 
 /**
@@ -409,6 +417,37 @@ export class FusionArtifactStore {
     await this.assertNoEscape(rootReal, this.wearablesDir);
     await this.assertNoEscape(rootReal, path.dirname(targetPath));
     await this.assertNoEscape(rootReal, targetPath);
+    // Reject a symlinked `_fusion` dir outright — even when its
+    // target resolves INSIDE the memory dir. The managed fusion root
+    // is always a real directory created by the secure write; a
+    // pre-existing link there is tampering/aliasing and is refused
+    // before a single byte is written or read (issue #1849).
+    await this.assertFusionDirNotSymlinked();
+  }
+
+  /**
+   * Refuse a pre-existing symbolic link at the `<wearablesDir>/_fusion`
+   * directory. Unlike `assertNoEscape` (which follows the link and only
+   * rejects when the target lands outside the memory dir), this catches a
+   * fusion root that aliases an in-bounds path — e.g. a `_fusion` link
+   * pointed at a raw source transcript — so fusion IO never writes
+   * through it and overwrites the aliased file. Absent dirs are allowed
+   * (a fresh write creates a real directory lexically under the root).
+   */
+  private async assertFusionDirNotSymlinked(): Promise<void> {
+    const fusionDir = path.join(this.wearablesDir, FUSION_DIR_NAME);
+    let stat: { isSymbolicLink: boolean };
+    try {
+      stat = await this.io.lstat(fusionDir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+    if (stat.isSymbolicLink) {
+      throw new Error(
+        "wearable fusion dir '_fusion' is a symbolic link — refusing to follow it even when it resolves inside the memory dir (AGENTS.md pattern #3)",
+      );
+    }
   }
 
   /**

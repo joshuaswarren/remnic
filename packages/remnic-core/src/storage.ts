@@ -2721,6 +2721,7 @@ export class StorageManager {
       readDir: (d) => readdir(d),
       deleteFile: (p) => unlink(p),
       realpath: (p) => realpath(p),
+      lstat: (p) => lstat(p).then((st) => ({ isSymbolicLink: st.isSymbolicLink() })),
     }));
   }
 

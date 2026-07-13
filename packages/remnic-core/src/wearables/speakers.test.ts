@@ -108,3 +108,61 @@ test("a malformed speakers file throws instead of silently resetting", async () 
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the reserved (you) self marker is stripped from non-self display names (issue #1849)", () => {
+  const registry = emptySpeakerRegistry();
+  registry.selfName = "Jordan";
+  // A non-self override whose stored name already ends with the reserved
+  // marker must NOT carry it into the rendered label — otherwise the
+  // fusion reconstructor would read the suffix as self metadata and
+  // attribute this speaker's words to the wearer.
+  registry.speakers[speakerRegistryKey("bee", "SPEAKER_01")] = {
+    name: "Pat (you)",
+    updatedAt: "2026-06-10T00:00:00Z",
+  };
+  assert.deepEqual(
+    resolveSpeaker("bee", { speakerKey: "SPEAKER_01" }, registry),
+    { label: "Pat", isSelf: false },
+  );
+
+  // A self override whose name ends with the marker renders exactly ONE
+  // marker (never "Pat (you) (you)").
+  registry.speakers[speakerRegistryKey("bee", "SPEAKER_02")] = {
+    name: "Pat (you)",
+    isSelf: true,
+    updatedAt: "2026-06-10T00:00:00Z",
+  };
+  assert.deepEqual(
+    resolveSpeaker("bee", { speakerKey: "SPEAKER_02" }, registry),
+    { label: "Pat (you)", isSelf: true },
+  );
+
+  // A provider-supplied name carrying the marker is also stripped.
+  assert.deepEqual(
+    resolveSpeaker(
+      "omi",
+      { speakerKey: "SPEAKER_03", speakerName: "Sam (you)" },
+      registry,
+    ),
+    { label: "Sam", isSelf: false },
+  );
+
+});
+
+test("distinctSpeakerLabels never emits a non-self label ending in (you)", () => {
+  const registry = emptySpeakerRegistry();
+  registry.speakers[speakerRegistryKey("bee", "0")] = {
+    name: "Pat (you)",
+    updatedAt: "2026-06-10T00:00:00Z",
+  };
+  const labels = distinctSpeakerLabels(
+    "bee",
+    [
+      { speakerKey: "user", isWearer: true },
+      { speakerKey: "0" },
+    ],
+    registry,
+  );
+  // The wearer keeps the marker; the non-self "Pat (you)" override does not.
+  assert.deepEqual(labels, ["Me (you)", "Pat"]);
+});

@@ -21,6 +21,7 @@ import {
   TRANSCRIPT_SEGMENT_LINE,
   unescapeSegmentText,
 } from "../day-store.js";
+import { hasSelfMarker } from "../speakers.js";
 import type {
   FusionConversationInput,
   FusionSegmentInput,
@@ -81,10 +82,6 @@ function nextCalendarDay(date: string): string {
   const mm = String(dt.getUTCMonth() + 1).padStart(2, "0");
   const dd = String(dt.getUTCDate()).padStart(2, "0");
   return `${yy}-${mm}-${dd}`;
-}
-
-function isSelfLabel(label: string): boolean {
-  return /\(you\)\s*$/.test(label.trim());
 }
 
 /**
@@ -203,7 +200,10 @@ export function reconstructFusionInputs(
         const startIso = clockToIso(clock, segDate);
         const segment: FusionSegmentInput = {
           speaker: label.trim(),
-          isSelf: isSelfLabel(label),
+          // Self status is read from the RESERVED `(you)` marker, which the
+          // renderer guarantees can only appear on the wearer's label -
+          // never on a non-self display name (issue #1849).
+          isSelf: hasSelfMarker(label),
           text,
           ...(startIso !== undefined ? { startIso } : {}),
         };

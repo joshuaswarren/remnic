@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdir, readdir, symlink } from "node:fs/promises";
+import { mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
@@ -292,5 +292,41 @@ test("a symlinked wearables root that escapes the memory dir is refused, not fol
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(escapeDir, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked _fusion dir that resolves INSIDE the memory dir is refused, not followed (issue #1849)", async () => {
+  const { storage, dir } = makeStorage();
+  try {
+    // A real raw source transcript living under the wearables tree, and
+    // a `_fusion` symlink that aliases the SAME directory (resolves
+    // inside the memory dir, so the escape guard alone would allow it).
+    // Without the explicit symlink rejection, writeFusedDay("2026-06-10")
+    // would follow the link and OVERWRITE the raw source file.
+    const rawDir = path.join(dir, "wearables", "limitless");
+    const rawFile = path.join(rawDir, "2026-06-10.md");
+    await mkdir(rawDir, { recursive: true });
+    await writeFile(rawFile, "RAW SOURCE TRANSCRIPT\n", "utf-8");
+    await mkdir(path.join(dir, "wearables"), { recursive: true });
+    await symlink(rawDir, path.join(dir, "wearables", "_fusion"), "dir");
+
+    const store = storage.fusionArtifactStore();
+    // Write must be refused because `_fusion` is a symlink — even though
+    // its target resolves inside the memory dir.
+    await assert.rejects(
+      store.writeFusedDay("2026-06-10", "---\nkind: wearable-fusion\n---\n\n[]\n"),
+      /is a symbolic link/,
+    );
+    // Read, list, and delete are refused for the same reason.
+    await assert.rejects(store.readFusedDay("2026-06-10"), /is a symbolic link/);
+    await assert.rejects(store.listFusedDays(), /is a symbolic link/);
+    await assert.rejects(store.deleteFusedDay("2026-06-10"), /is a symbolic link/);
+
+    // The raw source file must be untouched — the fused artifact was
+    // never written through the symlink.
+    const after = await readFile(rawFile, "utf-8");
+    assert.equal(after, "RAW SOURCE TRANSCRIPT\n", "raw source file must not be overwritten");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
