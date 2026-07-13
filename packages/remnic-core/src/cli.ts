@@ -691,11 +691,6 @@ export interface SessionRepairCliCommandOptions {
   sessionFilesDir?: string;
 }
 
-export interface TierMigrationCliOrchestrator {
-  readonly tierMigrationCoordinator: Pick<TierMigrationCoordinator, "getStatus" | "runCycle">;
-  readonly storage: StorageManager;
-}
-
 export interface MemoryActionAuditCliCommandOptions {
   namespace?: string;
   limit?: number;
