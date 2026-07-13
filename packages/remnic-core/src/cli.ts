@@ -217,6 +217,8 @@ import {
   planSessionTranscriptMigration,
 } from "./session-transcript-migration.js";
 import type { TierMigrationCycleSummary, TierMigrationStatusSnapshot } from "./recall-state.js";
+import type { TierMigrationCoordinator } from "./orchestration/tier-migration-coordinator.js";
+import type { StorageManager } from "./index.js";
 import {
   readRuntimePolicySnapshot as readPolicyRuntimeSnapshot,
   sanitizeRuntimePolicyValues,
@@ -690,8 +692,8 @@ export interface SessionRepairCliCommandOptions {
 }
 
 export interface TierMigrationCliOrchestrator {
-  getTierMigrationStatus(): Promise<TierMigrationStatusSnapshot>;
-  runTierMigrationNow(options?: { dryRun?: boolean; limit?: number }): Promise<TierMigrationCycleSummary>;
+  readonly tierMigrationCoordinator: Pick<TierMigrationCoordinator, "getStatus" | "runCycle">;
+  readonly storage: StorageManager;
 }
 
 export interface MemoryActionAuditCliCommandOptions {
@@ -1871,19 +1873,23 @@ export async function runSessionRepairCliCommand(
 }
 
 export async function runTierStatusCliCommand(
-  orchestrator: TierMigrationCliOrchestrator,
+  orchestrator: { readonly tierMigrationCoordinator: Pick<TierMigrationCoordinator, "getStatus"> },
 ): Promise<TierMigrationStatusSnapshot> {
-  return orchestrator.getTierMigrationStatus();
+  return orchestrator.tierMigrationCoordinator.getStatus();
 }
 
 export async function runTierMigrateCliCommand(
-  orchestrator: TierMigrationCliOrchestrator,
+  orchestrator: {
+    readonly tierMigrationCoordinator: Pick<TierMigrationCoordinator, "runCycle">;
+    readonly storage: StorageManager;
+  },
   options: { dryRun?: boolean; limit?: number } = {},
 ): Promise<TierMigrationCycleSummary> {
-  return orchestrator.runTierMigrationNow({
-    dryRun: options.dryRun === true,
-    limit: options.limit,
-  });
+  return orchestrator.tierMigrationCoordinator.runCycle(
+    orchestrator.storage,
+    "manual",
+    { dryRun: options.dryRun === true, limitOverride: options.limit, force: false },
+  );
 }
 
 const MIGRATE_LIMIT_CAP = 2000;

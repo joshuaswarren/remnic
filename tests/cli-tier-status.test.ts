@@ -10,8 +10,9 @@ import {
 import { parseConfig } from "../src/config.js";
 import { Orchestrator } from "../src/orchestrator.js";
 import { StorageManager } from "../src/storage.js";
+import type { SearchBackend } from "../src/search/port.js";
 
-test("runTierStatusCliCommand returns orchestrator status payload", async () => {
+test("runTierStatusCliCommand returns coordinator status payload", async () => {
   const expected = {
     updatedAt: "2026-02-28T00:00:00.000Z",
     lastCycle: {
@@ -34,58 +35,47 @@ test("runTierStatusCliCommand returns orchestrator status payload", async () => 
   };
 
   const result = await runTierStatusCliCommand({
-    async getTierMigrationStatus() {
-      return expected;
-    },
-    async runTierMigrationNow() {
-      throw new Error("not used");
+    tierMigrationCoordinator: {
+      getStatus() {
+        return expected;
+      },
     },
   });
 
   assert.deepEqual(result, expected);
 });
 
-test("runTierMigrateCliCommand forwards dry-run and limit", async () => {
-  const calls: Array<{ dryRun?: boolean; limit?: number }> = [];
+test("runTierMigrateCliCommand forwards dry-run and limit to coordinator runCycle", async () => {
+  const calls: Array<{ dryRun?: boolean; limitOverride?: number; force?: boolean }> = [];
   const result = await runTierMigrateCliCommand(
     {
-      async getTierMigrationStatus() {
-        return {
-          updatedAt: "2026-02-28T00:00:00.000Z",
-          lastCycle: null,
-          totals: {
-            cycles: 0,
-            scanned: 0,
-            migrated: 0,
-            promoted: 0,
-            demoted: 0,
-            errors: 0,
-          },
-        };
+      tierMigrationCoordinator: {
+        async runCycle(_storage, _trigger, options) {
+          calls.push(options ?? {});
+          return {
+            trigger: "manual",
+            scanned: 20,
+            migrated: 2,
+            promoted: 1,
+            demoted: 1,
+            limit: 7,
+            dryRun: options?.dryRun === true,
+          };
+        },
       },
-      async runTierMigrationNow(options) {
-        calls.push(options ?? {});
-        return {
-          trigger: "manual",
-          scanned: 20,
-          migrated: 2,
-          promoted: 1,
-          demoted: 1,
-          limit: 7,
-          dryRun: options?.dryRun === true,
-        };
-      },
+      // runCycle mock ignores the storage arg — stub satisfies the param type.
+      storage: null as unknown as StorageManager,
     },
     { dryRun: true, limit: 7 },
   );
 
   assert.equal(calls.length, 1);
-  assert.deepEqual(calls[0], { dryRun: true, limit: 7 });
+  assert.deepEqual(calls[0], { dryRun: true, limitOverride: 7, force: false });
   assert.equal(result.limit, 7);
   assert.equal(result.dryRun, true);
 });
 
-test("orchestrator runTierMigrationNow dry-run reports candidates without moving files", async () => {
+test("orchestrator tier migration dry-run reports candidates without moving files", async () => {
   const memoryDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-tier-migrate-"));
   const workspaceDir = await mkdtemp(path.join(os.tmpdir(), "engram-cli-tier-migrate-workspace-"));
 
@@ -100,13 +90,15 @@ test("orchestrator runTierMigrationNow dry-run reports candidates without moving
       qmdTierDemotionValueThreshold: 1,
       qmdTierPromotionValueThreshold: 1,
     });
-    const orchestrator = new Orchestrator(config) as any;
+    const orchestrator = new Orchestrator(config);
+    // Tier migration only invokes updateCollection/embedCollection on the QMD
+    // backend; stub those so no real search index is required.
     orchestrator.qmd = {
       updateCollection: async () => {},
       embedCollection: async () => {},
-    };
+    } as unknown as SearchBackend;
 
-    const storage = orchestrator.storage as StorageManager;
+    const storage = orchestrator.storage;
     await storage.writeMemory("fact", "candidate for dry-run migration", { source: "test" });
 
     const summary = await runTierMigrateCliCommand(orchestrator, { dryRun: true, limit: 1 });
