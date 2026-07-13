@@ -11,6 +11,15 @@ Remnic helps AI agents understand the people they work with: their preferences, 
 
 Remnic is not just a memory store. It is an exploration of the systems layer around user-aware agents: scoped memory, provenance, retrieval quality, correction, boundaries, and evals.
 
+## ChatGPT Integration
+
+Remnic now works inside chatgpt.com. Connect it as a developer-mode app and your assistant can store and recall memories on your own server.
+
+OpenAI no longer blocks built-in memory or tools when you add a custom MCP server. Remnic fills that gap with MCP and OAuth 2.1 support. Your memory store stays on your disk as plain text files, and that local store is the source of truth. Note that when ChatGPT calls Remnic's tools, the memory content it reads and writes is also processed by OpenAI's tool pipeline, so treat what you surface accordingly.
+
+Setup takes a few minutes. Point your HTTPS server URL at ChatGPT, turn on OAuth, and link the app. Full guide: **[docs/integration/chatgpt.md](docs/integration/chatgpt.md)**
+
+
 ## Why this matters
 
 Most agents do not fail because they lack another prompt. They fail because they do not understand the user, the project, the boundaries, or what “good” means in context.

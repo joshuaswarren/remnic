@@ -59,7 +59,7 @@
 
 ## Integrations
 
-- [ChatGPT (developer mode)](integration/chatgpt.md) — Public-internet MCP + OAuth 2.1 flow: Tailscale Funnel / Cloudflare Tunnel, `server.oauth` config, local operator approval, troubleshooting
+- [ChatGPT (developer mode)](integration/chatgpt.md) — Give ChatGPT persistent, governed memory on your own infrastructure via MCP + OAuth 2.1. OpenAI no longer disables memory/tools for custom MCP servers, so Remnic works alongside native ChatGPT capabilities.
 - [Connector Setup Guide](integration/connector-setup.md) — Wire Remnic memory to Claude Code, Codex, Cursor, Copilot, Cline, Roo Code, Windsurf, Amp, Replit, Hermes, and any generic MCP client
 - [Pi Coding Agent](integration/pi.md) — Native Pi extension (`@remnic/plugin-pi`) for hooks, slash commands, and compaction coordination
 - [Oh My Pi (omp)](integration/omp.md) — omp rules, MCP server config, and the native omp extension

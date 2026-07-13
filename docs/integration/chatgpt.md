@@ -17,9 +17,37 @@ URL. The local operator approves every link request on the server machine.
 > locally against `/mcp` with a bearer token; this guide covers the public
 > flow ChatGPT itself uses.
 
+## Overview
+
+ChatGPT can now persist memories across conversations using **your infrastructure** as the source of truth. This integration exposes your local Remnic server to chatgpt.com via a developer-mode app that speaks MCP over OAuth 2.1. The result: in any ChatGPT conversation where you have enabled the Remnic app, ChatGPT can read and write to a memory store that lives on your filesystem as plain markdown, governed by your config, with provenance and lifecycle controls you choose.
+
+Two privacy and scope notes worth understanding before you connect:
+
+- **Local source of truth, processed by OpenAI.** The canonical memory store lives on your filesystem, and Remnic never sends memory to a third party on its own. But when ChatGPT invokes Remnic's `recall` or `memory_store` tools, the memory content in those requests and responses transits OpenAI's tool pipeline. Remnic's source of truth stays local; the tool inputs and outputs ChatGPT exchanges are processed by OpenAI.
+- **Only in chats where the app is enabled.** Linking the app does not make Remnic a global memory layer across all of ChatGPT. You must open a conversation and select or add the Remnic app (or refer to it) before ChatGPT will use its MCP tools. Chats where the app is not selected will neither read nor write Remnic memory.
+
+The key enabler is recent: OpenAI no longer disables built-in memory and tools when you connect a custom MCP server. That means Remnic works alongside ChatGPT's native capabilities instead of replacing them. You get Remnic's entity tracking, semantic search, and scoped namespaces inside the ChatGPT composer.
+
+One caveat on native memory: ChatGPT's native memory is **off by default for apps** and must be enabled per app if you want the model's own memories to inform Remnic tool calls. With native memory off, ChatGPT re-evaluates each request without it, so Remnic's tools will not see context the model would otherwise have surfaced from native memory. This does not affect Remnic's own store and recall, which work regardless. See OpenAI's Apps SDK guide on [Memory and tool calls](https://developers.openai.com/apps-sdk/build/mcp-server#memory-and-tool-calls).
+
+## Quick Start
+
+1. **[Start your Remnic server](#requirements)** and [expose it over public HTTPS](#step-1-expose-the-server-over-public-https) (Tailscale Funnel is fastest).
+2. **[Configure OAuth](#step-2-configure-oauth-in-remnic)** with a `client_id`, `client_secret`, and your public `issuerUrl`.
+3. **[Create a developer-mode app](#step-3-create-the-app-in-chatgpt)** at `chatgpt.com/plugins`, then add the redirect URL to your config.
+4. **[Approve the link request](#step-4-approve-the-link-request-locally)** on your server machine, then start using Remnic tools in [the ChatGPT composer](#step-5-use-the-app-in-the-chatgpt-composer).
+
+> **Native ChatGPT memory is off by default for apps.** Linking Remnic
+> does not turn on ChatGPT's native memory. If you want the model's own
+> memories to inform Remnic tool calls, enable the per-app Memory toggle
+> in the app's settings; otherwise ChatGPT re-evaluates each request
+> without native memory. Remnic's own store and recall work regardless.
+> See OpenAI's Apps SDK guide: [Memory and tool
+> calls](https://developers.openai.com/apps-sdk/build/mcp-server#memory-and-tool-calls).
+
 ---
 
-## Prerequisites
+## Requirements
 
 - **ChatGPT plan:** Pro, Plus, Business, Enterprise, or Edu on the web. The
   developer-mode MCP flow is a ChatGPT-side feature and is not available on
@@ -369,6 +397,7 @@ re-runs the OAuth approval flow.
 | `remnic oauth pending` says "No pending requests" while the browser is on the approval page | The page is polling the wrong server, or the server is bound to a different port than `issuerUrl` points at. | Check the URL in the browser tab — it should be `<issuerUrl>/authorize?...`, and the page polls `<issuerUrl>/oauth/authorize/poll`. If it shows `127.0.0.1`, the tunnel is not routing correctly. |
 | ChatGPT returns "Invalid client" or "Invalid client_secret" at the token endpoint | `clientId` / `clientSecret` pasted into ChatGPT does not match `server.oauth.clientId` / `server.oauth.clientSecret`. | Remnic enforces the single `tokenEndpointAuthMethod` from your config. Re-copy the values from your config file (no surrounding whitespace, no shell-expanded placeholders) and re-paste into the ChatGPT app. |
 | Operator `remnic oauth approve` returns 401 | The CLI is talking to a Remnic daemon that does not have the same operator bearer token. | The CLI uses the same operator auth as the rest of the daemon-backed commands (`REMNIC_AUTH_TOKEN` / config). Re-check the config / env on the server machine. |
+| ChatGPT shows "Output schema recommended" on Remnic tools | Your Remnic version predates outputSchema support (PR #1844). ChatGPT recommends structured output on all MCP tools but older Remnic versions do not provide it. | Update to the latest Remnic version: `npm install -g @remnic/cli@latest`, then `remnic daemon restart`. The current release ships an `outputSchema` on every MCP tool, which silences the warning. |
 
 ---
 
