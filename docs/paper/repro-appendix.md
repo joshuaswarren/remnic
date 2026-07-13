@@ -589,7 +589,7 @@ invented — `BenchmarkArtifactTier` is `"local" | "frontier"` only and
 `claude -p` from a freshly-created empty temp workspace with `--tools ""`
 (the flag that actually disables built-in tools), `--safe-mode` (Claude
 Code's config-skipping equivalent of Codex's `--ignore-user-config`), and
-`--append-system-prompt` for the scoring protocol. Without these it inherits
+`--system-prompt` for the scoring protocol. Without these it inherits
 `~/.claude/CLAUDE.md` / project settings and silently contaminates every
 answer.
 
