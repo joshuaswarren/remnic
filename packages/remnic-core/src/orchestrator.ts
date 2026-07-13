@@ -3194,22 +3194,10 @@ export class Orchestrator {
     return this.consolidationRunCoordinator.run();
   }
 
-  async optimizeCompressionGuidelines(options?: {
-    dryRun?: boolean;
-    eventLimit?: number;
-  }) {
-    return this.compressionGuidelineCoordinator.optimizeCompressionGuidelines(options);
-  }
-
-  async activateCompressionGuidelineDraft(options?: {
-    expectedContentHash?: string;
-    expectedGuidelineVersion?: number;
-  }) {
-    return this.compressionGuidelineCoordinator.activateCompressionGuidelineDraft(options);
-  }
-
   // Issue #1526 (seam 4): compression-guideline learning moved to
-  // CompressionGuidelineCoordinator. Thin delegation keeps the
+  // CompressionGuidelineCoordinator. Public forwarding delegates were
+  // removed; callers use the coordinator directly. This private helper
+  // forwards recall-section formatting to the coordinator.
   private async buildCompressionGuidelineRecallSection(): Promise<string | null> {
     return this.compressionGuidelineCoordinator.buildCompressionGuidelineRecallSection();
   }

@@ -4722,7 +4722,7 @@ export class EngramAccessService {
     if (!resolveCompressionCapabilities(this.orchestrator.config).compressionGuidelineLearning) {
       return { enabled: false, reason: "Compression guideline learning is disabled. Enable `compressionGuidelineLearningEnabled: true`." };
     }
-    return await this.orchestrator.optimizeCompressionGuidelines({
+    return await this.orchestrator.compressionGuidelineCoordinator.optimizeCompressionGuidelines({
       dryRun: request.dryRun,
       eventLimit: request.eventLimit,
     });
@@ -4735,7 +4735,7 @@ export class EngramAccessService {
     if (!resolveCompressionCapabilities(this.orchestrator.config).compressionGuidelineLearning) {
       return { enabled: false, reason: "Compression guideline learning is disabled." };
     }
-    return await this.orchestrator.activateCompressionGuidelineDraft({
+    return await this.orchestrator.compressionGuidelineCoordinator.activateCompressionGuidelineDraft({
       expectedContentHash: request.expectedContentHash,
       expectedGuidelineVersion: request.expectedGuidelineVersion,
     });
