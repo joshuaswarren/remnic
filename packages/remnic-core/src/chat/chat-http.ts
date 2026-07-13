@@ -201,11 +201,23 @@ export async function handleChatMessage(
     return;
   }
 
-  // Strip internal error details from the wire response (CodeQL — no stack
-  // traces or internal messages leak to the client; keep only the tagged reply).
-  const wireResult = result.error
-    ? { reply: result.reply, chatSessionId: result.chatSessionId, ...(result.pendingPlan ? { pendingPlan: result.pendingPlan } : {}) }
-    : result;
+  // Build the public response field-by-field.  Never serialize the engine
+  // result wholesale: an engine failure may carry internal error metadata.
+  const wireResult = {
+    reply: result.reply,
+    chatSessionId: result.chatSessionId,
+    ...(result.pendingPlan
+      ? {
+          pendingPlan: {
+            planId: result.pendingPlan.planId,
+            preview: result.pendingPlan.preview,
+          },
+        }
+      : {}),
+    ...(result.skippedTools
+      ? { skippedTools: result.skippedTools.filter((name): name is string => typeof name === "string") }
+      : {}),
+  };
   respondJson(res, 200, wireResult);
 }
 
