@@ -43,7 +43,7 @@ test("runDeepSleepGovernanceNow refreshes entity synthesis after apply runs", ()
 
   assert.match(
     source,
-    /if \(options\?\.dryRun !== true\) \{\s*try \{\s*await this\.deps\.processEntitySynthesisQueue\(\s*this\.deps\.storageDirNamespace\(targetStorage\.dir\),\s*5,\s*\);/m,
+    /if \(options\?\.dryRun !== true\) \{\s*try \{\s*await this\.deps\.entitySynthesisCoordinator\.processQueue\(\s*this\.deps\.storageDirNamespace\(targetStorage\.dir\),\s*5,\s*\);/m,
     "deep-sleep apply runs should refresh entity synthesis for the active namespace",
   );
 });

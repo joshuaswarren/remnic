@@ -2092,16 +2092,6 @@ export class Orchestrator {
     return this.storageRouter.storageFor(ns);
   }
 
-  async processEntitySynthesisQueue(
-    namespace?: string,
-    maxEntities: number = 5,
-  ): Promise<number> {
-    // Issue #1526: entity synthesis lifecycle moved to EntitySynthesisCoordinator.
-    // Thin delegation keeps all call sites (consolidation pass, access-service)
-    // and tests that exercise the public API working unchanged.
-    return this.entitySynthesisCoordinator.processQueue(namespace, maxEntities);
-  }
-
   async generateDaySummary(
     memories: string | MemoryFile[],
   ): Promise<DaySummaryResult | null> {

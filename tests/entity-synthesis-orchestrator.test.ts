@@ -63,7 +63,7 @@ test("processEntitySynthesisQueue refreshes stale entities in bounded batches", 
     };
 
     const refreshStartedAt = Date.now();
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const refreshFinishedAt = Date.now();
 
     const rawPrimary = await readFile(path.join(memoryDir, "entities", `${primaryCanonical}.md`), "utf-8");
@@ -126,7 +126,7 @@ test("processEntitySynthesisQueue sorts freshest evidence before truncating", as
       return { content: "Jane Doe has refreshed synthesis." };
     };
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
 
     assert.equal(processed, 1);
     assert.match(capturedPrompt, /Newest event should survive truncation\./);
@@ -174,7 +174,7 @@ test("processEntitySynthesisQueue batches overflow evidence before advancing fre
       return { content: `Jane Doe synthesis batch ${prompts.length}.` };
     };
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const rawEntity = await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8");
     const parsed = parseEntityFile(rawEntity);
 
@@ -231,7 +231,7 @@ test("processEntitySynthesisQueue skips failed targets and continues through the
       return { content: "Project Success has refreshed synthesis." };
     };
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 2);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 2);
     const rawSuccess = await readFile(
       path.join(memoryDir, "entities", `${succeedingCanonical}.md`),
       "utf-8",
@@ -288,7 +288,7 @@ test("processEntitySynthesisQueue counts failed entities against the maxEntities
       return { content: "Project Success has refreshed synthesis." };
     };
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const rawSuccess = await readFile(
       path.join(memoryDir, "entities", `${succeedingCanonical}.md`),
       "utf-8",
@@ -352,7 +352,7 @@ test("processEntitySynthesisQueue keeps the newest and oldest repeated facts bef
       return { content: "Jane Doe has refreshed synthesis." };
     };
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
 
     assert.equal(processed, 1);
     assert.match(capturedPrompt, /Repeated recent fact\./);
@@ -429,7 +429,7 @@ test("processEntitySynthesisQueue treats offset timestamps as newer when filteri
       return { content: "Jane Doe has refreshed synthesis." };
     };
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
 
     assert.equal(processed, 1);
     assert.match(capturedPrompt, /Offset timestamp should count as new evidence\./);
@@ -481,7 +481,7 @@ test("processEntitySynthesisQueue includes backfilled appended entries alongside
       return { content: "Jane Doe synthesis with backfilled evidence." };
     };
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const rawEntity = await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8");
     const parsed = parseEntityFile(rawEntity);
 
@@ -533,8 +533,8 @@ test("processEntitySynthesisQueue does not regress synthesisUpdatedAt for backfi
       return { content: "Jane Doe synthesis with backfilled evidence." };
     };
 
-    const firstProcessed = await orchestrator.processEntitySynthesisQueue("default", 1);
-    const secondProcessed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const firstProcessed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
+    const secondProcessed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const rawEntity = await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8");
     const parsed = parseEntityFile(rawEntity);
 
@@ -595,7 +595,7 @@ test("processEntitySynthesisQueue skips writing synthesis from a stale timeline 
       return { content: "Jane Doe synthesis built from a stale snapshot." };
     };
 
-    const firstProcessed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const firstProcessed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const afterFirstRaw = await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8");
     const afterFirst = parseEntityFile(afterFirstRaw);
 
@@ -610,7 +610,7 @@ test("processEntitySynthesisQueue skips writing synthesis from a stale timeline 
       return { content: "Jane Doe synthesis after re-reading current evidence." };
     };
 
-    const secondProcessed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const secondProcessed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const afterSecondRaw = await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8");
     const afterSecond = parseEntityFile(afterSecondRaw);
 
@@ -684,7 +684,7 @@ test("processEntitySynthesisQueue skips writing synthesis when structured sectio
       return { content: "Jane Doe synthesis built from a stale structured snapshot." };
     };
 
-    const firstProcessed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const firstProcessed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const afterFirstRaw = await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8");
     const afterFirst = parseEntityFile(afterFirstRaw);
 
@@ -700,7 +700,7 @@ test("processEntitySynthesisQueue skips writing synthesis when structured sectio
       return { content: "Jane Doe synthesis after re-reading structured evidence." };
     };
 
-    const secondProcessed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const secondProcessed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const afterSecondRaw = await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8");
     const afterSecond = parseEntityFile(afterSecondRaw);
 
@@ -751,7 +751,7 @@ test("processEntitySynthesisQueue synthesizes section-only entities", async () =
       return { content: "Acme Corp favors durable teams over frequent reorganizations." };
     };
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const parsed = parseEntityFile(await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8"));
 
     assert.equal(processed, 1);
@@ -829,7 +829,7 @@ test("processEntitySynthesisQueue includes changed same-count structured evidenc
       return { content: "Jane Doe synthesis rebuilt with the changed belief and fresh timeline evidence." };
     };
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const reparsed = parseEntityFile(await readFile(entityPath, "utf-8"));
 
     assert.equal(processed, 1);
@@ -881,7 +881,7 @@ test("processEntitySynthesisQueue does not resynthesize timestampless evidence o
       return { content: "Jane Doe synthesis rebuilt from timestampless evidence." };
     };
 
-    const firstProcessed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const firstProcessed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const firstRawEntity = await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8");
     const firstParsed = parseEntityFile(firstRawEntity);
 
@@ -892,7 +892,7 @@ test("processEntitySynthesisQueue does not resynthesize timestampless evidence o
     assert.equal(firstParsed.synthesisTimelineCount, firstParsed.timeline.length);
     assert.equal(isEntitySynthesisStale(firstParsed), false);
 
-    const secondProcessed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const secondProcessed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const secondRawEntity = await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8");
     const secondParsed = parseEntityFile(secondRawEntity);
 
@@ -951,7 +951,7 @@ test("processEntitySynthesisQueue advances freshness using the newest non-empty 
 
     orchestrator.fastChatCompletion = async () => ({ content: "Jane Doe synthesis after mixed evidence." });
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const parsed = parseEntityFile(await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8"));
 
     assert.equal(processed, 1);
@@ -993,7 +993,7 @@ test("processEntitySynthesisQueue treats zero max tokens as disabled", async () 
       return { content: "should not be called" };
     };
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
 
     assert.equal(processed, 0);
     assert.equal(completionCalls, 0);
@@ -1031,7 +1031,7 @@ test("processEntitySynthesisQueue accepts long synthesis responses within the co
 
     orchestrator.fastChatCompletion = async () => ({ content: longSynthesis });
 
-    const processed = await orchestrator.processEntitySynthesisQueue("default", 1);
+    const processed = await orchestrator.entitySynthesisCoordinator.processQueue("default", 1);
     const raw = await readFile(path.join(memoryDir, "entities", `${canonical}.md`), "utf-8");
     const parsed = parseEntityFile(raw);
 

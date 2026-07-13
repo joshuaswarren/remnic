@@ -10,16 +10,15 @@
  * Moved here (behavior-preserving):
  *   - module-level helpers `dedupeEntitySynthesisEvidenceEntries`,
  *     `flattenStructuredSectionEvidence`, `fingerprintEntitySynthesisEvidence`
- *   - the orchestrator method `processEntitySynthesisQueue`
+ *   - the queue-processing method, now owned by this coordinator as
+ *     `processQueue` (originally the orchestrator's `processEntitySynthesisQueue`)
  *
- * The orchestrator constructs one instance and delegates the public entrypoint
- * to it. Storage is resolved per-call via the injected accessor so namespace-
- * scoped and default-namespace calls share one coordinator.
- *
- * Behavior-preserving move from orchestrator.ts. No logic changes — the
- * orchestrator keeps a thin delegating `processEntitySynthesisQueue` so
- * existing call sites (consolidation pass, access-service) and tests that
- * exercise the public API continue to work.
+ * The orchestrator constructs one instance and exposes it as
+ * `orchestrator.entitySynthesisCoordinator`; call sites invoke `processQueue`
+ * directly (issue #1800 removed the orchestrator's forwarding delegate once
+ * every caller migrated). Storage is resolved per-call via the injected
+ * accessor so namespace-scoped and default-namespace calls share one
+ * coordinator.
  */
 
 import { createHash } from "node:crypto";

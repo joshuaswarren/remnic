@@ -192,7 +192,7 @@ export class AccessAdminOpsSurface {
     });
     if (mode === "apply") {
       try {
-        await this.deps.orchestrator.processEntitySynthesisQueue(
+        await this.deps.orchestrator.entitySynthesisCoordinator.processQueue(
           resolvedNamespace,
           Math.min(boundedBatchSize ?? 5, 5),
         );
