@@ -148,8 +148,12 @@ function main() {
   const updateBaseline = process.argv.includes("--update");
   if (updateBaseline && (result.status ?? 1) !== 0) {
     const normalized = normalizeDiagnostics(`${result.stdout ?? ""}${result.stderr ?? ""}`);
-    writeFileSync(baselinePath, normalized ? `${normalized}\n` : "");
-    console.log(`[test-typecheck] baseline updated (${normalized ? normalized.split("\n").length : 0} diagnostics)`);
+    if (!normalized) {
+      console.error("[test-typecheck] cannot update baseline without TypeScript diagnostics");
+      process.exit(1);
+    }
+    writeFileSync(baselinePath, `${normalized}\n`);
+    console.log(`[test-typecheck] baseline updated (${normalized.split("\n").length} diagnostics)`);
     process.exit(0);
   }
   const evaluation = evaluateTestTypecheckResult({
