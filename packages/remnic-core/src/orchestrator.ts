@@ -111,7 +111,7 @@ import { ConsolidationRunCoordinator } from "./orchestration/consolidation-run.j
 import { ExtractionPersistCoordinator } from "./orchestration/extraction-persist.js";
 import { RecallInternalCoordinator } from "./orchestration/recall-internal.js";
 import { RecallSearchPipelineCoordinator } from "./orchestration/recall-search-pipeline.js";
-import { TurnIngestionCoordinator } from "./orchestration/turn-ingestion.js";
+import { TurnIngestionCoordinator, type TurnIngestionOptions } from "./orchestration/turn-ingestion.js";
 import { RecallIntrospectionCoordinator } from "./orchestration/recall-introspection.js";
 import { OrchestratorInitCoordinator } from "./orchestration/orchestrator-init.js";
 import { PersistenceIndexCoordinator } from "./orchestration/persistence-index.js";
@@ -823,8 +823,8 @@ export class Orchestrator {
         setLastPersistExtractionPendingReviewIds: (ids) => { this.lastPersistExtractionPendingReviewIds = ids; },
         addContentHashDedup: (targetStorage, content) => this.addContentHashDedup(targetStorage, content),
         hasContentHashDedup: (targetStorage, content) => this.hasContentHashDedup(targetStorage, content),
-        backfillTemporalBoundsOnDedupHit: (targetStorage, dedupContent, bounds, entityRef) =>
-          this.backfillTemporalBoundsOnDedupHit(targetStorage, dedupContent, bounds, entityRef),
+        backfillTemporalBoundsOnDedupHit: (targetStorage, dedupContent, bounds, entityRef, sourceConnector) =>
+          this.backfillTemporalBoundsOnDedupHit(targetStorage, dedupContent, bounds, entityRef, sourceConnector),
         saveContentHashIndexes: () => this.saveContentHashIndexes(),
         artifactTypeForCategory: (category) => this.artifactTypeForCategory(category),
         loadRoutingRules: () => this.loadRoutingRules(),
@@ -1315,12 +1315,14 @@ export class Orchestrator {
       eventTimeSource?: "extracted" | "assumed";
     },
     entityRef?: string,
+    sourceConnector?: string,
   ): Promise<void> {
     return this.persistenceIndexCoordinator.backfillTemporalBoundsOnDedupHit(
       targetStorage,
       dedupContent,
       bounds,
       entityRef,
+      sourceConnector,
     );
   }
 
@@ -2828,13 +2830,7 @@ export class Orchestrator {
     role: "user" | "assistant",
     content: string,
     sessionKey?: string,
-    options: {
-      bufferKey?: string;
-      logicalSessionKey?: string;
-      providerThreadId?: string | null;
-      turnFingerprint?: string;
-      persistProcessedFingerprint?: boolean;
-    } = {},
+    options: TurnIngestionOptions & { persistProcessedFingerprint?: boolean } = {},
   ): Promise<void> {
     return this.turnIngestionCoordinator.processTurn(
       role,
@@ -3085,7 +3081,7 @@ export class Orchestrator {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
+    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
     /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */

@@ -632,6 +632,7 @@ export class SmartBuffer {
           if (typeof t.persistProcessedFingerprint === "boolean") {
             copy.persistProcessedFingerprint = t.persistProcessedFingerprint;
           }
+          if (typeof t.sourceConnector === "string") copy.sourceConnector = t.sourceConnector;
           return copy;
         });
       }
@@ -791,6 +792,9 @@ function copyBufferTurn(turn: BufferTurn): BufferTurn {
   if (typeof turn.persistProcessedFingerprint === "boolean") {
     copy.persistProcessedFingerprint = turn.persistProcessedFingerprint;
   }
+  if (typeof turn.sourceConnector === "string") {
+    copy.sourceConnector = turn.sourceConnector;
+  }
   return copy;
 }
 
@@ -804,7 +808,8 @@ function bufferTurnsEqual(left: BufferTurn | undefined, right: BufferTurn): bool
     left.logicalSessionKey === right.logicalSessionKey &&
     left.providerThreadId === right.providerThreadId &&
     left.turnFingerprint === right.turnFingerprint &&
-    left.persistProcessedFingerprint === right.persistProcessedFingerprint
+    left.persistProcessedFingerprint === right.persistProcessedFingerprint &&
+    left.sourceConnector === right.sourceConnector
   );
 }
 

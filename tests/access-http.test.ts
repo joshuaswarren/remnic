@@ -26,16 +26,18 @@ function createFakeService(): EngramAccessService {
       context: "memory context",
       count: 1,
       memoryIds: ["fact-1"],
-      results: [{
-        id: "fact-1",
-        path: "/tmp/engram/facts/fact-1.md",
-        category: "fact",
-        status: "active",
-        created: "2026-03-08T00:00:00.000Z",
-        updated: "2026-03-08T00:00:00.000Z",
-        tags: ["ops"],
-        preview: "hello",
-      }],
+      results: [
+        {
+          id: "fact-1",
+          path: "/tmp/engram/facts/fact-1.md",
+          category: "fact",
+          status: "active",
+          created: "2026-03-08T00:00:00.000Z",
+          updated: "2026-03-08T00:00:00.000Z",
+          tags: ["ops"],
+          preview: "hello",
+        },
+      ],
       recordedAt: "2026-03-08T00:00:00.000Z",
       traceId: "trace-1",
       plannerMode: "full",
@@ -84,15 +86,17 @@ function createFakeService(): EngramAccessService {
       found: true,
       namespace: "global",
       count: 1,
-      timeline: [{
-        eventId: "evt-1",
-        memoryId,
-        eventType: "created",
-        timestamp: "2026-03-08T00:00:00.000Z",
-        eventOrder: 1,
-        actor: "engram",
-        ruleVersion: "1",
-      }],
+      timeline: [
+        {
+          eventId: "evt-1",
+          memoryId,
+          eventType: "created",
+          timestamp: "2026-03-08T00:00:00.000Z",
+          eventOrder: 1,
+          actor: "engram",
+          ruleVersion: "1",
+        },
+      ],
     }),
     memoryBrowse: async () => ({
       namespace: "global",
@@ -101,16 +105,18 @@ function createFakeService(): EngramAccessService {
       count: 1,
       limit: 50,
       offset: 0,
-      memories: [{
-        id: "fact-1",
-        path: "/tmp/engram/facts/fact-1.md",
-        category: "fact",
-        status: "pending_review",
-        created: "2026-03-08T00:00:00.000Z",
-        updated: "2026-03-08T00:00:00.000Z",
-        tags: ["ops"],
-        preview: "hello",
-      }],
+      memories: [
+        {
+          id: "fact-1",
+          path: "/tmp/engram/facts/fact-1.md",
+          category: "fact",
+          status: "pending_review",
+          created: "2026-03-08T00:00:00.000Z",
+          updated: "2026-03-08T00:00:00.000Z",
+          tags: ["ops"],
+          preview: "hello",
+        },
+      ],
     }),
     entityList: async () => ({
       namespace: "global",
@@ -118,13 +124,15 @@ function createFakeService(): EngramAccessService {
       count: 1,
       limit: 50,
       offset: 0,
-      entities: [{
-        name: "person-alex",
-        type: "person",
-        updated: "2026-03-08T00:00:00.000Z",
-        summary: "Owns ops",
-        aliases: ["Alex Ops"],
-      }],
+      entities: [
+        {
+          name: "person-alex",
+          type: "person",
+          updated: "2026-03-08T00:00:00.000Z",
+          summary: "Owns ops",
+          aliases: ["Alex Ops"],
+        },
+      ],
     }),
     entityGet: async (name) => ({
       found: true,
@@ -156,7 +164,7 @@ function createFakeService(): EngramAccessService {
     // pre-checks the quota — enforcement is solely the in-service hook.)
     memoryStore: async (
       { dryRun, idempotencyKey }: { dryRun?: boolean; idempotencyKey?: string },
-      hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+      hooks?: { enforceWriteQuota?: () => void | Promise<void> }
     ) => {
       if (dryRun !== true) await hooks?.enforceWriteQuota?.();
       return {
@@ -173,7 +181,7 @@ function createFakeService(): EngramAccessService {
     },
     suggestionSubmit: async (
       { dryRun, idempotencyKey }: { dryRun?: boolean; idempotencyKey?: string },
-      hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+      hooks?: { enforceWriteQuota?: () => void | Promise<void> }
     ) => {
       if (dryRun !== true) await hooks?.enforceWriteQuota?.();
       return {
@@ -258,33 +266,35 @@ function createFakeService(): EngramAccessService {
       count: 1,
       limit: 25,
       offset: 0,
-      records: [{
-        recordId: "tz-1",
-        filePath: "/tmp/engram/state/trust-zones/zones/working/2026-03-08/tz-1.json",
-        zone: "working",
-        recordedAt: "2026-03-08T00:00:00.000Z",
-        kind: "state",
-        summary: "Anchored tool output awaiting promotion.",
-        sourceClass: "tool_output",
-        evidenceHashPresent: true,
-        anchored: true,
-        entityRefs: ["deploy:42"],
-        tags: ["trust-zone-demo"],
-        trustScore: {
-          total: 0.9,
-          band: "high",
+      records: [
+        {
+          recordId: "tz-1",
+          filePath: "/tmp/engram/state/trust-zones/zones/working/2026-03-08/tz-1.json",
+          zone: "working",
+          recordedAt: "2026-03-08T00:00:00.000Z",
+          kind: "state",
+          summary: "Anchored tool output awaiting promotion.",
+          sourceClass: "tool_output",
+          evidenceHashPresent: true,
           anchored: true,
-          sourceClassWeight: 0.55,
-          sourceIdBonus: 0.1,
-          evidenceHashBonus: 0.2,
-          sessionKeyBonus: 0.05,
+          entityRefs: ["deploy:42"],
+          tags: ["trust-zone-demo"],
+          trustScore: {
+            total: 0.9,
+            band: "high",
+            anchored: true,
+            sourceClassWeight: 0.55,
+            sourceIdBonus: 0.1,
+            evidenceHashBonus: 0.2,
+            sessionKeyBonus: 0.05,
+          },
+          nextPromotionTarget: "trusted",
+          nextPromotionAllowed: false,
+          nextPromotionReasons: ["trusted promotion requires corroboration from an independent non-quarantine source"],
+          corroborationCount: 0,
+          corroborationSourceClasses: [],
         },
-        nextPromotionTarget: "trusted",
-        nextPromotionAllowed: false,
-        nextPromotionReasons: ["trusted promotion requires corroboration from an independent non-quarantine source"],
-        corroborationCount: 0,
-        corroborationSourceClasses: [],
-      }],
+      ],
     }),
     trustZonePromote: async ({ recordId, targetZone, dryRun }) => ({
       namespace: "global",
@@ -327,25 +337,28 @@ function createFakeService(): EngramAccessService {
           evidenceHash: "sha256:deploy",
         },
       },
-      filePath: dryRun === true ? undefined : "/tmp/engram/state/trust-zones/zones/trusted/2026-03-08/tz-1-trusted.json",
+      filePath:
+        dryRun === true ? undefined : "/tmp/engram/state/trust-zones/zones/trusted/2026-03-08/tz-1-trusted.json",
     }),
     trustZoneDemoSeed: async ({ dryRun }) => ({
       namespace: "global",
       scenario: "enterprise-buyer-v1",
       dryRun: dryRun === true,
       recordsWritten: dryRun === true ? 0 : 5,
-      records: [{
-        schemaVersion: 1,
-        recordId: "tz-demo-1",
-        zone: "quarantine",
-        recordedAt: "2026-03-08T00:00:00.000Z",
-        kind: "external",
-        summary: "Demo trust-zone record.",
-        provenance: {
-          sourceClass: "web_content",
-          observedAt: "2026-03-07T23:59:00.000Z",
+      records: [
+        {
+          schemaVersion: 1,
+          recordId: "tz-demo-1",
+          zone: "quarantine",
+          recordedAt: "2026-03-08T00:00:00.000Z",
+          kind: "external",
+          summary: "Demo trust-zone record.",
+          provenance: {
+            sourceClass: "web_content",
+            observedAt: "2026-03-07T23:59:00.000Z",
+          },
         },
-      }],
+      ],
       filePaths: dryRun === true ? [] : ["/tmp/engram/state/trust-zones/zones/quarantine/2026-03-08/tz-demo-1.json"],
     }),
     reviewDisposition: async ({ memoryId, status }) => ({
@@ -425,12 +438,14 @@ function createFakeService(): EngramAccessService {
       },
     }),
     capsuleImport: async ({ archivePath, mode }) => ({
-      imported: [{
-        sourcePath: "facts/2026-04-28/fact-a.md",
-        targetPath: "facts/2026-04-28/fact-a.md",
-        snapshotted: mode === "overwrite",
-        rewroteId: false,
-      }],
+      imported: [
+        {
+          sourcePath: "facts/2026-04-28/fact-a.md",
+          targetPath: "facts/2026-04-28/fact-a.md",
+          snapshotted: mode === "overwrite",
+          rewroteId: false,
+        },
+      ],
       skipped: [],
       manifest: {
         format: "remnic-capsule",
@@ -480,7 +495,7 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
 
     const healthRes = await fetch(`${base}/engram/v1/health`, { headers });
     assert.equal(healthRes.status, 200);
-    const health = await healthRes.json() as { ok: boolean; projectionAvailable: boolean };
+    const health = (await healthRes.json()) as { ok: boolean; projectionAvailable: boolean };
     assert.equal(health.ok, true);
     assert.equal(health.projectionAvailable, true);
 
@@ -490,7 +505,7 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
       body: JSON.stringify({ query: "what did we decide?", sessionKey: "sess-1" }),
     });
     assert.equal(recallRes.status, 200);
-    const recall = await recallRes.json() as { context: string; memoryIds: string[] };
+    const recall = (await recallRes.json()) as { context: string; memoryIds: string[] };
     assert.equal(recall.context, "memory context");
     assert.deepEqual(recall.memoryIds, ["fact-1"]);
     assert.equal((recall as { traceId?: string }).traceId, "trace-1");
@@ -501,24 +516,24 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
       body: JSON.stringify({ sessionKey: "sess-1", namespace: "global" }),
     });
     assert.equal(explainRes.status, 200);
-    const explain = await explainRes.json() as { found: boolean; snapshot: { sessionKey: string } };
+    const explain = (await explainRes.json()) as { found: boolean; snapshot: { sessionKey: string } };
     assert.equal(explain.found, true);
     assert.equal(explain.snapshot.sessionKey, "sess-1");
 
     const memoryRes = await fetch(`${base}/engram/v1/memories/fact-1`, { headers });
     assert.equal(memoryRes.status, 200);
-    const memory = await memoryRes.json() as { found: boolean; memory: { id: string } };
+    const memory = (await memoryRes.json()) as { found: boolean; memory: { id: string } };
     assert.equal(memory.found, true);
     assert.equal(memory.memory.id, "fact-1");
 
     const timelineRes = await fetch(`${base}/engram/v1/memories/fact-1/timeline?limit=5`, { headers });
     assert.equal(timelineRes.status, 200);
-    const timeline = await timelineRes.json() as { count: number };
+    const timeline = (await timelineRes.json()) as { count: number };
     assert.equal(timeline.count, 1);
 
     const browseRes = await fetch(`${base}/engram/v1/memories?q=hello`, { headers });
     assert.equal(browseRes.status, 200);
-    const browse = await browseRes.json() as { total: number; sort: string };
+    const browse = (await browseRes.json()) as { total: number; sort: string };
     assert.equal(browse.total, 1);
     assert.equal(browse.sort, "updated_desc");
 
@@ -533,7 +548,7 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
       }),
     });
     assert.equal(storeRes.status, 201);
-    const storePayload = await storeRes.json() as { operation: string; status: string; idempotencyKey: string };
+    const storePayload = (await storeRes.json()) as { operation: string; status: string; idempotencyKey: string };
     assert.equal(storePayload.operation, "memory_store");
     assert.equal(storePayload.status, "stored");
     assert.equal(storePayload.idempotencyKey, "store-1");
@@ -548,36 +563,36 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
       }),
     });
     assert.equal(suggestionRes.status, 201);
-    const suggestionPayload = await suggestionRes.json() as { operation: string; status: string; queued: boolean };
+    const suggestionPayload = (await suggestionRes.json()) as { operation: string; status: string; queued: boolean };
     assert.equal(suggestionPayload.operation, "suggestion_submit");
     assert.equal(suggestionPayload.status, "queued_for_review");
     assert.equal(suggestionPayload.queued, true);
 
     const entitiesRes = await fetch(`${base}/engram/v1/entities?q=alex`, { headers });
     assert.equal(entitiesRes.status, 200);
-    const entities = await entitiesRes.json() as { total: number };
+    const entities = (await entitiesRes.json()) as { total: number };
     assert.equal(entities.total, 1);
 
     const entityRes = await fetch(`${base}/engram/v1/entities/person-alex`, { headers });
     assert.equal(entityRes.status, 200);
-    const entity = await entityRes.json() as { found: boolean; entity: { name: string } };
+    const entity = (await entityRes.json()) as { found: boolean; entity: { name: string } };
     assert.equal(entity.found, true);
     assert.equal(entity.entity.name, "person-alex");
 
     const queueRes = await fetch(`${base}/engram/v1/review-queue`, { headers });
     assert.equal(queueRes.status, 200);
-    const queue = await queueRes.json() as { found: boolean; runId: string };
+    const queue = (await queueRes.json()) as { found: boolean; runId: string };
     assert.equal(queue.found, true);
     assert.equal(queue.runId, "gov-1");
 
     const maintenanceRes = await fetch(`${base}/engram/v1/maintenance`, { headers });
     assert.equal(maintenanceRes.status, 200);
-    const maintenance = await maintenanceRes.json() as { latestGovernanceRun: { runId: string } };
+    const maintenance = (await maintenanceRes.json()) as { latestGovernanceRun: { runId: string } };
     assert.equal(maintenance.latestGovernanceRun.runId, "gov-1");
 
     const qualityRes = await fetch(`${base}/engram/v1/quality`, { headers });
     assert.equal(qualityRes.status, 200);
-    const quality = await qualityRes.json() as {
+    const quality = (await qualityRes.json()) as {
       totalMemories: number;
       latestGovernanceRun: { qualityScore: { score: number } };
     };
@@ -586,14 +601,11 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
 
     const trustZoneStatusRes = await fetch(`${base}/engram/v1/trust-zones/status`, { headers });
     assert.equal(trustZoneStatusRes.status, 200);
-    const trustZoneStatus = await trustZoneStatusRes.json() as { status: { records: { valid: number } } };
+    const trustZoneStatus = (await trustZoneStatusRes.json()) as { status: { records: { valid: number } } };
     assert.equal(trustZoneStatus.status.records.valid, 3);
 
     // Procedural stats (issue #567 PR 5/5). Namespace is optional.
-    const proceduralStatsRes = await fetch(
-      `${base}/engram/v1/procedural/stats`,
-      { headers },
-    );
+    const proceduralStatsRes = await fetch(`${base}/engram/v1/procedural/stats`, { headers });
     assert.equal(proceduralStatsRes.status, 200);
     const proceduralStats = (await proceduralStatsRes.json()) as {
       schemaVersion: number;
@@ -625,7 +637,7 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
       }),
     });
     assert.equal(capsuleExportRes.status, 200);
-    const capsuleExport = await capsuleExportRes.json() as {
+    const capsuleExport = (await capsuleExportRes.json()) as {
       archivePath: string;
       manifestPath: string;
       encryptedArchivePath: string | null;
@@ -635,7 +647,10 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
     assert.equal(capsuleExport.manifestPath, "/tmp/engram/.capsules/daily-ops.manifest.json");
     assert.equal(capsuleExport.encryptedArchivePath, null);
     assert.equal(capsuleExport.manifest.capsule.id, "daily-ops");
-    assert.deepEqual(capsuleExport.manifest.files.map((file) => file.path), ["facts/2026-04-28/fact-a.md"]);
+    assert.deepEqual(
+      capsuleExport.manifest.files.map((file) => file.path),
+      ["facts/2026-04-28/fact-a.md"]
+    );
 
     const capsuleImportDenied = await fetch(`${base}/engram/v1/capsules/import`, {
       method: "POST",
@@ -654,7 +669,7 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
       }),
     });
     assert.equal(capsuleImportRes.status, 200);
-    const capsuleImport = await capsuleImportRes.json() as {
+    const capsuleImport = (await capsuleImportRes.json()) as {
       imported: Array<{ sourcePath: string; targetPath: string; snapshotted: boolean }>;
       skipped: unknown[];
       manifest: { capsule: { id: string } };
@@ -668,7 +683,7 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
     // Operator console state (issue #688 PR 2/3).
     const consoleStateRes = await fetch(`${base}/engram/v1/console/state`, { headers });
     assert.equal(consoleStateRes.status, 200);
-    const consoleState = await consoleStateRes.json() as {
+    const consoleState = (await consoleStateRes.json()) as {
       capturedAt: string;
       bufferState: { turnsCount: number; byteCount: number };
       qmdProbe: { available: boolean };
@@ -686,17 +701,25 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
 
     const trustZoneBrowseRes = await fetch(`${base}/engram/v1/trust-zones/records?zone=working`, { headers });
     assert.equal(trustZoneBrowseRes.status, 200);
-    const trustZoneBrowse = await trustZoneBrowseRes.json() as { count: number; records: Array<{ recordId: string }> };
+    const trustZoneBrowse = (await trustZoneBrowseRes.json()) as {
+      count: number;
+      records: Array<{ recordId: string }>;
+    };
     assert.equal(trustZoneBrowse.count, 1);
     assert.equal(trustZoneBrowse.records[0]?.recordId, "tz-1");
 
     const trustZonePromoteRes = await fetch(`${base}/engram/v1/trust-zones/promote`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ recordId: "tz-1", targetZone: "trusted", promotionReason: "Operator approved", dryRun: true }),
+      body: JSON.stringify({
+        recordId: "tz-1",
+        targetZone: "trusted",
+        promotionReason: "Operator approved",
+        dryRun: true,
+      }),
     });
     assert.equal(trustZonePromoteRes.status, 200);
-    const trustZonePromote = await trustZonePromoteRes.json() as { dryRun: boolean; wroteRecord: boolean };
+    const trustZonePromote = (await trustZonePromoteRes.json()) as { dryRun: boolean; wroteRecord: boolean };
     assert.equal(trustZonePromote.dryRun, true);
     assert.equal(trustZonePromote.wroteRecord, false);
 
@@ -706,7 +729,7 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
       body: JSON.stringify({ scenario: "enterprise-buyer-v1", dryRun: true }),
     });
     assert.equal(trustZoneSeedRes.status, 200);
-    const trustZoneSeed = await trustZoneSeedRes.json() as { dryRun: boolean; scenario: string };
+    const trustZoneSeed = (await trustZoneSeedRes.json()) as { dryRun: boolean; scenario: string };
     assert.equal(trustZoneSeed.dryRun, true);
     assert.equal(trustZoneSeed.scenario, "enterprise-buyer-v1");
 
@@ -716,7 +739,7 @@ test("access HTTP server enforces bearer auth and serves phase 1 routes", async 
       body: JSON.stringify({ memoryId: "fact-1", status: "active", reasonCode: "operator_confirmed" }),
     });
     assert.equal(dispositionRes.status, 200);
-    const disposition = await dispositionRes.json() as { ok: boolean; status: string };
+    const disposition = (await dispositionRes.json()) as { ok: boolean; status: string };
     assert.equal(disposition.ok, true);
     assert.equal(disposition.status, "active");
   } finally {
@@ -796,7 +819,7 @@ test("access HTTP capsule export validates input and surfaces ACL errors", async
       body: JSON.stringify({ name: "bad name" }),
     });
     assert.equal(invalidName.status, 400);
-    const invalidNamePayload = await invalidName.json() as { code: string; details: Array<{ field: string }> };
+    const invalidNamePayload = (await invalidName.json()) as { code: string; details: Array<{ field: string }> };
     assert.equal(invalidNamePayload.code, "validation_error");
     assert.equal(invalidNamePayload.details[0]?.field, "name");
 
@@ -820,7 +843,7 @@ test("access HTTP capsule export validates input and surfaces ACL errors", async
       body: JSON.stringify({ name: "good-name", namespace: "private" }),
     });
     assert.equal(deniedNamespace.status, 400);
-    const deniedPayload = await deniedNamespace.json() as { code: string; error: string };
+    const deniedPayload = (await deniedNamespace.json()) as { code: string; error: string };
     assert.equal(deniedPayload.code, "input_error");
     assert.equal(deniedPayload.error, "namespace is not readable");
 
@@ -901,7 +924,10 @@ test("access HTTP capsule import validates input and surfaces ACL errors", async
       body: JSON.stringify({ mode: "overwrite" }),
     });
     assert.equal(missingArchivePath.status, 400);
-    const missingArchivePayload = await missingArchivePath.json() as { code: string; details: Array<{ field: string }> };
+    const missingArchivePayload = (await missingArchivePath.json()) as {
+      code: string;
+      details: Array<{ field: string }>;
+    };
     assert.equal(missingArchivePayload.code, "validation_error");
     assert.equal(missingArchivePayload.details[0]?.field, "archivePath");
 
@@ -918,7 +944,7 @@ test("access HTTP capsule import validates input and surfaces ACL errors", async
       body: JSON.stringify({ archivePath: "/tmp/import-alias.capsule.json.gz", namespace: "private" }),
     });
     assert.equal(deniedNamespace.status, 400);
-    const deniedPayload = await deniedNamespace.json() as { code: string; error: string };
+    const deniedPayload = (await deniedNamespace.json()) as { code: string; error: string };
     assert.equal(deniedPayload.code, "input_error");
     assert.equal(deniedPayload.error, "namespace is not writable");
 
@@ -932,7 +958,7 @@ test("access HTTP capsule import validates input and surfaces ACL errors", async
       }),
     });
     assert.equal(aliasResponse.status, 200);
-    const aliasPayload = await aliasResponse.json() as {
+    const aliasPayload = (await aliasResponse.json()) as {
       skipped: Array<{ path: string; reason: string }>;
       manifest: { capsule: { id: string } };
     };
@@ -985,7 +1011,7 @@ test("access HTTP dreams run rejects non-boolean dryRun without invoking service
     });
 
     assert.equal(response.status, 400);
-    const payload = await response.json() as { error: string };
+    const payload = (await response.json()) as { error: string };
     assert.match(payload.error, /dryRun must be a boolean/);
     assert.equal(calls, 0);
   } finally {
@@ -1028,7 +1054,7 @@ test("access HTTP dreams run rejects non-string namespace without invoking servi
     });
 
     assert.equal(response.status, 400);
-    const payload = await response.json() as { error: string };
+    const payload = (await response.json()) as { error: string };
     assert.match(payload.error, /namespace must be a string/);
     assert.equal(calls, 0);
   } finally {
@@ -1119,7 +1145,7 @@ test("access HTTP server rejects invalid trust-zone browse filters", async () =>
     for (const testCase of cases) {
       const res = await fetch(`${base}/engram/v1/trust-zones/records?${testCase.query}`, { headers });
       assert.equal(res.status, 400);
-      const payload = await res.json() as { error: string };
+      const payload = (await res.json()) as { error: string };
       assert.equal(payload.error, testCase.error);
     }
   } finally {
@@ -1226,7 +1252,7 @@ test("access HTTP server returns an empty review queue payload with 200", async 
       headers: { Authorization: "Bearer secret-token" },
     });
     assert.equal(response.status, 200);
-    const payload = await response.json() as { found: boolean };
+    const payload = (await response.json()) as { found: boolean };
     assert.equal(payload.found, false);
   } finally {
     await server.stop();
@@ -1261,7 +1287,9 @@ test("access HTTP server forwards namespace query params to governance endpoints
 
   try {
     const headers = { Authorization: "Bearer secret-token" };
-    const queueResponse = await fetch(`${base}/engram/v1/review-queue?runId=gov-9&namespace=project-alpha`, { headers });
+    const queueResponse = await fetch(`${base}/engram/v1/review-queue?runId=gov-9&namespace=project-alpha`, {
+      headers,
+    });
     assert.equal(queueResponse.status, 200);
     const maintenanceResponse = await fetch(`${base}/engram/v1/maintenance?namespace=project-alpha`, { headers });
     assert.equal(maintenanceResponse.status, 200);
@@ -1303,17 +1331,14 @@ test("access HTTP recall forwards include_low_confidence query flag", async () =
   const base = `http://${started.host}:${started.port}`;
 
   try {
-    const response = await fetch(
-      `${base}/engram/v1/recall?include_low_confidence=true`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer secret-token",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ query: "diagnose graph traversal" }),
+    const response = await fetch(`${base}/engram/v1/recall?include_low_confidence=true`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret-token",
+        "Content-Type": "application/json",
       },
-    );
+      body: JSON.stringify({ query: "diagnose graph traversal" }),
+    });
 
     assert.equal(response.status, 200);
     assert.equal(captured.length, 1);
@@ -1352,20 +1377,17 @@ test("access HTTP recall body includeLowConfidence wins over query flag", async 
   const base = `http://${started.host}:${started.port}`;
 
   try {
-    const response = await fetch(
-      `${base}/engram/v1/recall?include_low_confidence=true`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer secret-token",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          query: "diagnose graph traversal",
-          includeLowConfidence: false,
-        }),
+    const response = await fetch(`${base}/engram/v1/recall?include_low_confidence=true`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret-token",
+        "Content-Type": "application/json",
       },
-    );
+      body: JSON.stringify({
+        query: "diagnose graph traversal",
+        includeLowConfidence: false,
+      }),
+    });
 
     assert.equal(response.status, 200);
     assert.equal(captured.length, 1);
@@ -1400,20 +1422,17 @@ test("access HTTP recall rejects invalid include_low_confidence query flag", asy
   const base = `http://${started.host}:${started.port}`;
 
   try {
-    const response = await fetch(
-      `${base}/engram/v1/recall?include_low_confidence=1`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer secret-token",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ query: "diagnose graph traversal" }),
+    const response = await fetch(`${base}/engram/v1/recall?include_low_confidence=1`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret-token",
+        "Content-Type": "application/json",
       },
-    );
+      body: JSON.stringify({ query: "diagnose graph traversal" }),
+    });
 
     assert.equal(response.status, 400);
-    const body = await response.json() as { error: string };
+    const body = (await response.json()) as { error: string };
     assert.match(body.error, /include_low_confidence/);
   } finally {
     await server.stop();
@@ -1559,7 +1578,7 @@ test("access HTTP server does not consume the write rate limit for idempotency r
         idempotencyKey === "replay-key" ? "replay" : "miss",
       memoryStore: async (
         { dryRun, idempotencyKey }: { dryRun?: boolean; idempotencyKey?: string },
-        hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+        hooks?: { enforceWriteQuota?: () => void | Promise<void> }
       ) => {
         const replay = Boolean(idempotencyKey && seenKeys.has(idempotencyKey));
         if (idempotencyKey) {
@@ -1632,7 +1651,7 @@ test("access HTTP server allows idempotent replay writes even after the write li
         idempotencyKey === "replay-key" ? "replay" : "miss",
       memoryStore: async (
         { idempotencyKey }: { idempotencyKey?: string },
-        hooks?: { enforceWriteQuota?: () => void | Promise<void> },
+        hooks?: { enforceWriteQuota?: () => void | Promise<void> }
       ) => {
         // The replay bypasses the quota hook entirely; only fresh writes enforce.
         if (idempotencyKey !== "replay-key") await hooks?.enforceWriteQuota?.();
@@ -1717,10 +1736,7 @@ test("access HTTP server enforces the write rate limit at the real miss even whe
       // Peek always claims replay → HTTP skips its pre-write availability check.
       peekMemoryStoreIdempotency: async () => "replay",
       // ...but every store is a real miss that invokes the authoritative hook.
-      memoryStore: async (
-        _request: unknown,
-        hooks?: { enforceWriteQuota?: () => void | Promise<void> },
-      ) => {
+      memoryStore: async (_request: unknown, hooks?: { enforceWriteQuota?: () => void | Promise<void> }) => {
         quotaCalls += 1;
         await hooks?.enforceWriteQuota?.(); // throws 429 once the window is full
         return {
@@ -2030,8 +2046,8 @@ test("access HTTP server binds namespace write authorization to its configured p
       getMemoryTimeline: async () => [],
     }),
     recallIntrospection: {
-    getLastIntentSnapshot: async () => null,
-    getLastGraphRecallSnapshot: async () => null,
+      getLastIntentSnapshot: async () => null,
+      getLastGraphRecallSnapshot: async () => null,
     },
   } as any);
 
@@ -2065,7 +2081,7 @@ test("access HTTP server binds namespace write authorization to its configured p
       }),
     });
     assert.equal(rejected.status, 400);
-    const payload = await rejected.json() as { error: string };
+    const payload = (await rejected.json()) as { error: string };
     assert.equal(payload.error, "namespace is not writable: secret-team");
   } finally {
     await rejectServer.stop();
@@ -2096,7 +2112,7 @@ test("access HTTP server binds namespace write authorization to its configured p
       }),
     });
     assert.equal(allowed.status, 200);
-    const payload = await allowed.json() as { status: string; namespace: string };
+    const payload = (await allowed.json()) as { status: string; namespace: string };
     assert.equal(payload.status, "validated");
     assert.equal(payload.namespace, "secret-team");
   } finally {
@@ -2176,7 +2192,7 @@ test("access HTTP server returns 400 for empty recall query", async () => {
       body: JSON.stringify({ query: "   " }),
     });
     assert.equal(response.status, 400);
-    const body = await response.json() as { error: string };
+    const body = (await response.json()) as { error: string };
     assert.equal(body.error, "query is required");
   } finally {
     await server.stop();
@@ -2218,7 +2234,7 @@ test("access HTTP server exposes MCP JSON-RPC endpoint at /mcp", async () => {
       }),
     });
     assert.equal(initRes.status, 200);
-    const initPayload = await initRes.json() as {
+    const initPayload = (await initRes.json()) as {
       jsonrpc: string;
       id: number;
       result: { protocolVersion: string; serverInfo: { name: string } };
@@ -2239,7 +2255,7 @@ test("access HTTP server exposes MCP JSON-RPC endpoint at /mcp", async () => {
       }),
     });
     assert.equal(toolsRes.status, 200);
-    const toolsPayload = await toolsRes.json() as {
+    const toolsPayload = (await toolsRes.json()) as {
       result: { tools: Array<{ name: string }> };
     };
     const toolNames = toolsPayload.result.tools.map((t) => t.name);
@@ -2263,7 +2279,7 @@ test("access HTTP server exposes MCP JSON-RPC endpoint at /mcp", async () => {
       }),
     });
     assert.equal(callRes.status, 200);
-    const callPayload = await callRes.json() as {
+    const callPayload = (await callRes.json()) as {
       result: { isError: boolean; structuredContent: { context: string } };
     };
     assert.equal(callPayload.result.isError, false);
@@ -2440,7 +2456,7 @@ test("access HTTP server rate-limits MCP write tool calls", async () => {
       }),
     });
     assert.equal(previewDreamsRun.status, 200);
-    const previewPayload = await previewDreamsRun.json() as {
+    const previewPayload = (await previewDreamsRun.json()) as {
       result: { structuredContent: { dryRun: boolean } };
     };
     assert.equal(previewPayload.result.structuredContent.dryRun, true);
@@ -2459,7 +2475,7 @@ test("access HTTP server rate-limits MCP write tool calls", async () => {
       }),
     });
     assert.equal(previewMemoryAction.status, 200);
-    const previewMemoryActionPayload = await previewMemoryAction.json() as {
+    const previewMemoryActionPayload = (await previewMemoryAction.json()) as {
       result: { structuredContent: { dryRun: boolean } };
     };
     assert.equal(previewMemoryActionPayload.result.structuredContent.dryRun, true);
@@ -2550,8 +2566,8 @@ test("access HTTP server returns 400 for explicit-capture validation errors", as
     lastRecall: { get: () => null, getMostRecent: () => null },
     getStorage: async () => storage,
     recallIntrospection: {
-    getLastIntentSnapshot: async () => null,
-    getLastGraphRecallSnapshot: async () => null,
+      getLastIntentSnapshot: async () => null,
+      getLastGraphRecallSnapshot: async () => null,
     },
   } as any);
   const server = new EngramAccessHttpServer({
@@ -2579,9 +2595,16 @@ test("access HTTP server returns 400 for explicit-capture validation errors", as
       }),
     });
     assert.equal(memoryResponse.status, 400);
-    const memoryPayload = await memoryResponse.json() as { error: string; code: string; details?: Array<{ field: string; message: string }> };
+    const memoryPayload = (await memoryResponse.json()) as {
+      error: string;
+      code: string;
+      details?: Array<{ field: string; message: string }>;
+    };
     assert.equal(memoryPayload.code, "validation_error");
-    assert.ok(memoryPayload.details?.some(d => d.field.includes("confidence")), `Expected confidence validation error, got: ${JSON.stringify(memoryPayload.details)}`);
+    assert.ok(
+      memoryPayload.details?.some((d) => d.field.includes("confidence")),
+      `Expected confidence validation error, got: ${JSON.stringify(memoryPayload.details)}`
+    );
 
     const suggestionResponse = await fetch(`${base}/engram/v1/suggestions`, {
       method: "POST",
@@ -2593,11 +2616,96 @@ test("access HTTP server returns 400 for explicit-capture validation errors", as
       }),
     });
     assert.equal(suggestionResponse.status, 400);
-    const suggestionPayload = await suggestionResponse.json() as { error: string; code: string; details?: Array<{ field: string; message: string }> };
+    const suggestionPayload = (await suggestionResponse.json()) as {
+      error: string;
+      code: string;
+      details?: Array<{ field: string; message: string }>;
+    };
     assert.equal(suggestionPayload.code, "validation_error");
-    assert.ok(suggestionPayload.details?.some(d => d.field.includes("confidence")), `Expected confidence validation error, got: ${JSON.stringify(suggestionPayload.details)}`);
+    assert.ok(
+      suggestionPayload.details?.some((d) => d.field.includes("confidence")),
+      `Expected confidence validation error, got: ${JSON.stringify(suggestionPayload.details)}`
+    );
   } finally {
     await server.stop();
     await rm(memoryDir, { recursive: true, force: true });
+  }
+});
+
+test("access HTTP coding/decisions route forwards connector from auth boundary", async () => {
+  let capturedConnector: string | undefined = "SENTINEL";
+  const service = Object.assign(createFakeService(), {
+    codingDecision: async (_req: unknown, _principal?: string, sourceConnector?: string) => {
+      capturedConnector = sourceConnector;
+      return { subcommand: "record", memoryId: "test-1", status: "accepted" };
+    },
+  });
+  const server = new EngramAccessHttpServer({
+    service,
+    host: "127.0.0.1",
+    port: 0,
+    authTokenEntriesGetter: () => [{ token: "chatgpt-token", connector: "chatgpt" }],
+    maxBodyBytes: 1024,
+  });
+  const started = await server.start();
+  const base = `http://${started.host}:${started.port}`;
+  try {
+    const res = await fetch(`${base}/engram/v1/coding/decisions`, {
+      method: "POST",
+      headers: { Authorization: "Bearer chatgpt-token", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subcommand: "record",
+        title: "Test Decision",
+        decision: "We adopt SQLite.",
+        status: "accepted",
+        sessionKey: "s1",
+      }),
+    });
+    assert.ok(res.ok, `expected 200, got ${res.status}`);
+    assert.equal(
+      capturedConnector,
+      "chatgpt",
+      "REST coding/decisions must forward sourceConnector='chatgpt' from the auth boundary"
+    );
+  } finally {
+    await server.stop();
+  }
+});
+
+test("access HTTP coding/architecture route forwards connector from auth boundary", async () => {
+  let capturedConnector: string | undefined = "SENTINEL";
+  const service = Object.assign(createFakeService(), {
+    codingArchitecture: async (_req: unknown, _principal?: string, sourceConnector?: string) => {
+      capturedConnector = sourceConnector;
+      return { subcommand: "refresh", card: "test card", repoRoot: "/tmp" };
+    },
+    architectureCardSurfaceVisible: true,
+  });
+  const server = new EngramAccessHttpServer({
+    service,
+    host: "127.0.0.1",
+    port: 0,
+    authTokenEntriesGetter: () => [{ token: "chatgpt-token", connector: "chatgpt" }],
+    maxBodyBytes: 1024,
+  });
+  const started = await server.start();
+  const base = `http://${started.host}:${started.port}`;
+  try {
+    const res = await fetch(`${base}/engram/v1/coding/architecture`, {
+      method: "POST",
+      headers: { Authorization: "Bearer chatgpt-token", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subcommand: "refresh",
+        sessionKey: "s1",
+      }),
+    });
+    assert.ok(res.ok, `expected 200, got ${res.status}`);
+    assert.equal(
+      capturedConnector,
+      "chatgpt",
+      "REST coding/architecture must forward sourceConnector from the auth boundary"
+    );
+  } finally {
+    await server.stop();
   }
 });

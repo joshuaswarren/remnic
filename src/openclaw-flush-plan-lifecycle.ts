@@ -724,6 +724,7 @@ function buildFlushPlanImportTurn(params: {
     participantName: "OpenClaw memory flush planner",
     content: `${prefix}${params.content.trim()}`,
     sourceFormat: "openclaw",
+    sourceConnector: "openclaw",
     rawContent: params.content,
     importProvenance: {
       sourceLabel: "OpenClaw flush plan",

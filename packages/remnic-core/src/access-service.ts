@@ -180,7 +180,7 @@ import type {
   EntityFile,
   MemoryFile,
   MemoryActionOutcome,
-  CodingContext,
+  CodingContext, SourceConnectorProvenance,
   MemoryActionType,
   MemoryLifecycleEvent,
   MemoryStatus,
@@ -1019,7 +1019,7 @@ export interface EngramAccessObserveMessage {
   sourceFormat?: MessagePartSourceFormat;
 }
 
-export interface EngramAccessObserveRequest {
+export interface EngramAccessObserveRequest extends SourceConnectorProvenance {
   sessionKey: string;
   messages: EngramAccessObserveMessage[];
   namespace?: string;
@@ -2961,6 +2961,7 @@ export class EngramAccessService {
         entityRef: request.entityRef,
         ttl: request.ttl,
         sourceReason: request.sourceReason,
+        sourceConnector: request.sourceConnector,
       },
       skip: request.dryRun === true,
     });
@@ -2997,6 +2998,7 @@ export class EngramAccessService {
         entityRef: request.entityRef,
         ttl: request.ttl,
         sourceReason: request.sourceReason,
+        sourceConnector: request.sourceConnector,
       },
       skip: request.dryRun === true,
     });
@@ -3061,6 +3063,7 @@ export class EngramAccessService {
   async codegraphTool(
     request: CodegraphSurfaceRequest,
     authenticatedPrincipal?: string,
+    sourceConnector?: string,
   ): Promise<CodegraphSurfaceResponse> {
     const principal = authenticatedPrincipal ?? "default";
     const memoryDir = this.orchestrator.config.memoryDir;
@@ -3097,7 +3100,7 @@ export class EngramAccessService {
         throw new EngramAccessInputError(msg);
       },
       delegateDecisionRecord: async (decisionRequest) => {
-        return this.codingDecision(decisionRequest, authenticatedPrincipal);
+        return this.codingDecision(decisionRequest, authenticatedPrincipal, sourceConnector);
       },
       buildArchitectureCard: async (repoRoot) => {
         return buildArchitectureCard(repoRoot, {
@@ -3125,6 +3128,7 @@ export class EngramAccessService {
   async codingDecision(
     request: DecisionSurfaceRequest,
     authenticatedPrincipal?: string,
+    sourceConnector?: string,
   ): Promise<DecisionSurfaceResponse> {
     return handleCodingDecision(request, {
       codingKnowledge: this.orchestrator.config.codingKnowledge,
@@ -3146,6 +3150,7 @@ export class EngramAccessService {
         return Object.assign(storage, { namespace: ns });
       },
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+      sourceConnector,
     });
   }
 
@@ -3171,6 +3176,7 @@ export class EngramAccessService {
   async codingArchitecture(
     request: ArchitectureSurfaceRequest,
     authenticatedPrincipal?: string,
+    sourceConnector?: string,
   ): Promise<ArchitectureSurfaceResponse> {
     const resolvedConfig = this.orchestrator.config;
     return handleCodingArchitecture(request, {
@@ -3205,6 +3211,7 @@ export class EngramAccessService {
         createVersion,
       ),
       throwInputError: (msg) => { throw new EngramAccessInputError(msg); },
+      sourceConnector,
     });
   }
 
@@ -4056,6 +4063,7 @@ export class EngramAccessService {
         cwd: request.cwd,
         projectTag: request.projectTag,
         effectiveCodingContext: effectiveCodingContext ?? null,
+        sourceConnector: request.sourceConnector,
       },
       beforeExecute: hooks?.enforceWriteQuota,
       execute: () => this.runObserve(request),

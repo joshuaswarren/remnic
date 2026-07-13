@@ -2456,7 +2456,16 @@ export interface RelevanceFeedback {
   notes?: string[];
 }
 
-export interface BufferTurn {
+/**
+ * Trusted connector identity, resolved from the auth boundary.
+ * Never user-editable — set by the server from the authenticated connector,
+ * not from tool arguments (anti-spoofing).
+ */
+export interface SourceConnectorProvenance {
+  sourceConnector?: string;
+}
+
+export interface BufferTurn extends SourceConnectorProvenance {
   role: "user" | "assistant";
   content: string;
   timestamp: string;
@@ -2600,7 +2609,7 @@ export interface ImportanceScore {
   keywords: string[];
 }
 
-export interface MemoryFrontmatter {
+export interface MemoryFrontmatter extends SourceConnectorProvenance {
   id: string;
   category: MemoryCategory;
   created: string;

@@ -158,12 +158,13 @@ export interface ArchitectureSurfaceStorage {
       source?: string;
       status?: MemoryStatus;
       structuredAttributes?: Record<string, string>;
+      sourceConnector?: string;
     },
   ): Promise<MemoryWriteResult>;
   updateMemory(
     id: string,
     newContent: string,
-    options?: { supersedes?: string; lineage?: string[]; actor?: string },
+    options?: { supersedes?: string; lineage?: string[]; actor?: string; sourceConnector?: string },
   ): Promise<boolean>;
 }
 
@@ -205,6 +206,8 @@ export interface ArchitectureSurfaceContext {
   versioning: ArchitectureVersioningHook;
   /** Throw the surface-appropriate input-validation error. */
   throwInputError(message: string): never;
+  /** Server-resolved connector identity for provenance. */
+  readonly sourceConnector?: string;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -311,6 +314,7 @@ async function architectureRefresh(
     await ctx.versioning.snapshotIfExists(existing);
     const updated = await storage.updateMemory(existing.frontmatter.id, cardContent, {
       actor: "coding-architecture-refresh",
+      ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
     });
     if (!updated) {
       log.warn(
@@ -320,6 +324,7 @@ async function architectureRefresh(
         confidence: 1.0,
         tags,
         source: "coding-architecture",
+        ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
         structuredAttributes: { cardKind: ARCHITECTURE_CARD_KIND },
       });
       log.info(
@@ -344,6 +349,7 @@ async function architectureRefresh(
     confidence: 1.0,
     tags,
     source: "coding-architecture",
+    ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
     structuredAttributes: { cardKind: ARCHITECTURE_CARD_KIND },
   });
   log.info(

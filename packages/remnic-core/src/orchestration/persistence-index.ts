@@ -133,6 +133,7 @@ export class PersistenceIndexCoordinator {
       eventTimeSource?: "extracted" | "assumed";
     },
     entityRef?: string,
+    sourceConnector?: string,
   ): Promise<void> {
     // I/O gate: scan when there is a recall-relevant bound to backfill —
     // either an end bound (invalidAt, which expires the fact) or a corrected
@@ -171,6 +172,19 @@ export class PersistenceIndexCoordinator {
           m.frontmatter.entityRef &&
           normalizeSupersessionKey(m.frontmatter.entityRef) !== incomingEntityNorm
         ) {
+          return false;
+        }
+        // Connector identity guard (review f1b89fe9, cursor #1852): exact
+        // match on connector identity, including undefined. In the shared
+        // namespace, multiple connectors can carry identical-content facts;
+        // without this filter .find() selects the first hash/entity match.
+        // Operator/no-connector backfill (sourceConnector undefined) may only
+        // select a connectorless candidate, never a connector-tagged one;
+        // connector-authenticated backfill only selects the same connector.
+        const incomingConnector = sourceConnector?.trim() || undefined;
+        const candidateConnector =
+          m.frontmatter.sourceConnector?.trim() || undefined;
+        if (incomingConnector !== candidateConnector) {
           return false;
         }
         // Prefer the stored contentHash (what the hash index actually keys
@@ -488,10 +502,31 @@ export class PersistenceIndexCoordinator {
     const scope = this.deps.semanticDedupScopeFor(targetStorage);
     const hits = await this.deps.embeddingFallback.search(content, limit, { ...scope, throwOnTimeout: true });
     if (!Array.isArray(hits) || hits.length === 0) return [];
-    return hits.map((hit) => ({
-      id: hit.id,
-      score: hit.score,
-      path: hit.path,
-    }));
+    // PR #1852 review finding on 7e0eb1a0: attach each neighbor's
+    // sourceConnector so decideSemanticDedup can apply the connector-aware
+    // skip gate. Reads are bounded by `limit` (default 5) and best-effort:
+    // a read failure leaves the connector absent, which the decision
+    // function treats as "must not suppress a provenance-bearing write".
+    const enriched: SemanticDedupHit[] = await Promise.all(
+      hits.map(async (hit) => {
+        let sourceConnector: string | undefined;
+        try {
+          const memory = await targetStorage.getMemoryById(hit.id);
+          sourceConnector =
+            typeof memory?.frontmatter.sourceConnector === "string"
+              ? memory.frontmatter.sourceConnector.trim() || undefined
+              : undefined;
+        } catch {
+          sourceConnector = undefined;
+        }
+        return {
+          id: hit.id,
+          score: hit.score,
+          path: hit.path,
+          ...(sourceConnector !== undefined ? { sourceConnector } : {}),
+        };
+      }),
+    );
+    return enriched;
   }
 }

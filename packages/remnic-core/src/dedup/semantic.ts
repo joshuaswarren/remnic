@@ -23,6 +23,13 @@ export interface SemanticDedupHit {
   score: number;
   /** Optional source path, purely informational. */
   path?: string;
+  /**
+   * Source connector of the existing neighbor memory's provenance, used by
+   * the connector-aware skip gate (PR #1852 review finding on 7e0eb1a0).
+   * Absent when the neighbor is operator/unattributed or its frontmatter
+   * could not be read.
+   */
+  sourceConnector?: string;
 }
 
 /**
@@ -45,6 +52,15 @@ export interface SemanticDedupOptions {
   threshold: number;
   /** How many nearest neighbors to compare against. */
   candidates: number;
+  /**
+   * Source connector of the CANDIDATE fact being evaluated (its provenance).
+   * When present, a near-duplicate skip is permitted only against a neighbor
+   * carrying the SAME connector; a different or absent neighbor connector
+   * must NOT suppress the write (PR #1852 review finding on 7e0eb1a0).
+   * Absent for operator / unattributed writes, which preserve the original
+   * behavior (skip on any near-duplicate regardless of neighbor connector).
+   */
+  sourceConnector?: string;
 }
 
 export type SemanticDedupDecision =
@@ -54,7 +70,8 @@ export type SemanticDedupDecision =
         | "disabled"
         | "backend_unavailable"
         | "no_candidates"
-        | "no_near_duplicate";
+        | "no_near_duplicate"
+        | "connector_mismatch";
       topScore?: number;
       topId?: string;
     }
@@ -135,8 +152,21 @@ export async function decideSemanticDedup(
     return { action: "keep", reason: "no_candidates" };
   }
 
+  // Resolve the candidate's provenance connector. An empty/whitespace
+  // value is treated as absent (operator / unattributed).
+  const candidateConnector =
+    typeof options.sourceConnector === "string" &&
+    options.sourceConnector.trim().length > 0
+      ? options.sourceConnector.trim()
+      : undefined;
+
   // Defensive: callers ought to return sorted, but don't trust it.
   let top: SemanticDedupHit | undefined;
+  // Best same-connector neighbor — only tracked when the candidate is
+  // provenance-bearing. Tracked in the same pass so a connector-aware skip
+  // matches the best neighbor from the SAME connector even when a higher-
+  // scoring neighbor from a DIFFERENT connector would otherwise win.
+  let sameConnectorTop: SemanticDedupHit | undefined;
   for (const hit of hits) {
     if (
       !hit ||
@@ -150,12 +180,50 @@ export async function decideSemanticDedup(
     if (!top || hit.score > top.score) {
       top = hit;
     }
+    if (
+      candidateConnector !== undefined &&
+      typeof hit.sourceConnector === "string" &&
+      hit.sourceConnector.trim() === candidateConnector &&
+      (!sameConnectorTop || hit.score > sameConnectorTop.score)
+    ) {
+      sameConnectorTop = hit;
+    }
   }
   if (!top) {
     return { action: "keep", reason: "no_near_duplicate" };
   }
 
   if (top.score >= threshold) {
+    // Connector-aware skip gate (PR #1852 review finding on 7e0eb1a0):
+    // A provenance-bearing candidate may be suppressed ONLY by a near-
+    // duplicate from the SAME connector. A different or absent neighbor
+    // connector must NOT suppress the write — otherwise a connector B
+    // paraphrase would be dropped against connector A's memory before the
+    // write ever happens. When the candidate carries no connector (operator
+    // / unattributed), preserve the original behavior and skip on any match.
+    if (candidateConnector !== undefined) {
+      const match =
+        sameConnectorTop !== undefined && sameConnectorTop.score >= threshold
+          ? sameConnectorTop
+          : undefined;
+      if (match) {
+        return {
+          action: "skip",
+          reason: "near_duplicate",
+          topScore: match.score,
+          topId: match.id,
+          topPath: match.path,
+        };
+      }
+      // Best overall hit cleared threshold but came from a different or
+      // absent connector; no same-connector near-duplicate exists. Keep.
+      return {
+        action: "keep",
+        reason: "connector_mismatch",
+        topScore: top.score,
+        topId: top.id,
+      };
+    }
     return {
       action: "skip",
       reason: "near_duplicate",

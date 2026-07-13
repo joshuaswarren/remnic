@@ -13,6 +13,7 @@ export type ExplicitCaptureInput = {
   namespace?: string;
   tags?: string[];
   entityRef?: string;
+  sourceConnector?: string;
   ttl?: string;
   sourceReason?: string;
 };
@@ -24,6 +25,7 @@ export type ValidExplicitCapture = {
   namespace?: string;
   tags: string[];
   entityRef?: string;
+  sourceConnector?: string;
   expiresAt?: string;
   sourceReason?: string;
   /**
@@ -371,8 +373,9 @@ export function validateExplicitCaptureInput(
     namespace: asTrimmed(input.namespace),
     tags: Array.from(new Set((input.tags ?? []).map((tag) => tag.trim()).filter(Boolean))),
     entityRef: asTrimmed(input.entityRef),
-    expiresAt,
     sourceReason: asTrimmed(input.sourceReason),
+    sourceConnector: input.sourceConnector,
+    expiresAt,
   };
 }
 
@@ -410,7 +413,14 @@ async function findDuplicateExplicitCapture(
     const status = memory.frontmatter.status ?? "active";
     if (status !== "active") return false;
     if (memory.frontmatter.category !== candidate.category) return false;
-    return normalizeCaptureContent(memory.content) === normalizedCandidate;
+    if (normalizeCaptureContent(memory.content) !== normalizedCandidate) return false;
+    // Connector-aware dedup: same content from different connectors is NOT
+    // a duplicate. Operator (undefined) and connector-tagged memories are
+    // always distinct. Normalize empty strings to undefined.
+    const existingConnector = memory.frontmatter.sourceConnector?.trim() || undefined;
+    const newConnector = candidate.sourceConnector?.trim() || undefined;
+    if (existingConnector !== newConnector) return false;
+    return true;
   });
   return match?.frontmatter.id ?? null;
 }
@@ -438,6 +448,7 @@ export async function persistExplicitCapture(
     entityRef: candidate.entityRef,
     expiresAt: candidate.expiresAt,
     source: source === "inline" ? "explicit-inline" : "explicit",
+    ...(candidate.sourceConnector ? { sourceConnector: candidate.sourceConnector } : {}),
   });
   // #1522: catalog touch handled at the storage chokepoint — the StorageManager's
   // post-write hook records the namespace touch automatically.
@@ -492,6 +503,7 @@ async function findQueuedExplicitCaptureDuplicate(
   orchestrator: Orchestrator,
   namespace: string | undefined,
   content: string,
+  sourceConnector?: string,
 ): Promise<string | null> {
   const storage = await orchestrator.getStorage(namespace);
   const existing = await storage.readAllMemories();
@@ -500,7 +512,11 @@ async function findQueuedExplicitCaptureDuplicate(
     const status = memory.frontmatter.status ?? "active";
     if (status !== "pending_review") return false;
     if (!(memory.frontmatter.tags ?? []).includes("queued-review")) return false;
-    return normalizeCaptureContent(memory.content) === normalized;
+    if (normalizeCaptureContent(memory.content) !== normalized) return false;
+    const existingConnector = memory.frontmatter.sourceConnector?.trim() || undefined;
+    const newConnector = sourceConnector?.trim() || undefined;
+    if (existingConnector !== newConnector) return false;
+    return true;
   });
   return match?.frontmatter.id ?? null;
 }
@@ -520,7 +536,7 @@ export async function queueExplicitCaptureForReview(
     ? requestedNamespace
     : resolveExplicitCaptureReviewNamespace(orchestrator, requestedNamespace);
   const content = buildExplicitCaptureReviewContent(input, reason);
-  const duplicateOf = await findQueuedExplicitCaptureDuplicate(orchestrator, queueNamespace, content);
+  const duplicateOf = await findQueuedExplicitCaptureDuplicate(orchestrator, queueNamespace, content, input.sourceConnector);
   if (duplicateOf) {
     return { id: duplicateOf, duplicateOf };
   }
@@ -536,6 +552,7 @@ export async function queueExplicitCaptureForReview(
     tags: Array.from(new Set([...EXPLICIT_CAPTURE_REVIEW_TAGS, ...requestedTags])),
     entityRef: sanitizeReviewMetadata(input.entityRef),
     source: source === "inline" ? "explicit-inline-review" : "explicit-review",
+    ...(input.sourceConnector ? { sourceConnector: input.sourceConnector } : {}),
   });
   try {
     const created = await storage.getMemoryById(id);

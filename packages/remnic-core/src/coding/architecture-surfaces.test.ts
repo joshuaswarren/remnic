@@ -95,13 +95,13 @@ function makeCardMemory(overrides: {
 interface StubStorage extends ArchitectureSurfaceStorage {
   memories: MemoryFile[];
   written: Array<{ category: string; content: string; options: Record<string, unknown> }>;
-  updated: Array<{ id: string; content: string }>;
+  updated: Array<{ id: string; content: string; options: Record<string, unknown> }>;
 }
 
 function makeStubStorage(initialMemories: MemoryFile[] = []): StubStorage {
   const allMemories: MemoryFile[] = [...initialMemories];
   const written: Array<{ category: string; content: string; options: Record<string, unknown> }> = [];
-  const updated: Array<{ id: string; content: string }> = [];
+  const updated: Array<{ id: string; content: string; options: Record<string, unknown> }> = [];
   return {
     dir: "/synthetic/memory",
     namespace: "default",
@@ -119,10 +119,17 @@ function makeStubStorage(initialMemories: MemoryFile[] = []): StubStorage {
       });
       return { id: id, tombstoneBlocked: false };
     },
-    async updateMemory(id, newContent) {
-      updated.push({ id, content: newContent });
+    async updateMemory(id, newContent, options) {
+      updated.push({ id, content: newContent, options: options ?? {} });
       const m = allMemories.find((mem) => mem.frontmatter.id === id);
-      if (m) m.content = newContent;
+      if (m) {
+        m.content = newContent;
+        // Apply sourceConnector backfill to the in-memory frontmatter so
+        // tests can verify the caller's intent matches what reaches storage.
+        if (options?.sourceConnector) {
+          (m.frontmatter as unknown as Record<string, unknown>).sourceConnector = options.sourceConnector;
+        }
+      }
       return !!m;
     },
   };
@@ -602,4 +609,71 @@ test("MCP surface: remnic.coding_architecture alias dispatches identically", asy
   });
   assert.equal(calls.length, 1, "service.codingArchitecture called exactly once via alias");
   assert.equal(calls[0]?.subcommand, "get");
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Regression: sourceConnector provenance through updateMemory (codex finding)
+// ──────────────────────────────────────────────────────────────────────────
+
+test("refresh: updateMemory backfills sourceConnector when connector provided", async () => {
+  // Seed an existing card WITHOUT sourceConnector (pre-provenance card).
+  const storage = makeStubStorage([
+    makeCardMemory({
+      content: "# Old card — pre-provenance",
+      frontmatter: { id: "old-card" },
+    }),
+  ]);
+  const ctx = makeContext({
+    resolveStorage: async () => storage,
+    sourceConnector: "chatgpt",
+  });
+  await handleCodingArchitecture({ subcommand: "refresh", sessionKey: "s1" }, ctx);
+  // updateMemory must have been called with sourceConnector in the options.
+  assert.equal(storage.updated.length, 1, "updateMemory called once");
+  assert.equal(
+    storage.updated[0]!.options.sourceConnector,
+    "chatgpt",
+    "sourceConnector must reach updateMemory options",
+  );
+});
+
+test("refresh: updateMemory omits sourceConnector when no connector in context", async () => {
+  // Existing card, no connector in the context — updateMemory must still
+  // succeed without breaking frontmatter.
+  const storage = makeStubStorage([
+    makeCardMemory({
+      content: "# Existing card",
+      frontmatter: { id: "existing-card" },
+    }),
+  ]);
+  const ctx = makeContext({ resolveStorage: async () => storage });
+  await handleCodingArchitecture({ subcommand: "refresh", sessionKey: "s1" }, ctx);
+  assert.equal(storage.updated.length, 1, "updateMemory called once");
+  assert.equal(
+    storage.updated[0]!.options.sourceConnector,
+    undefined,
+    "no sourceConnector when context has none",
+  );
+});
+
+test("refresh: updateMemory retains existing sourceConnector via frontmatter spread", async () => {
+  // Existing card already HAS sourceConnector — updateMemory's frontmatter
+  // spread preserves it even when the refresh call doesn't pass it again.
+  const storage = makeStubStorage([
+    makeCardMemory({
+      content: "# Card with connector",
+      frontmatter: { id: "connector-card", sourceConnector: "openclaw" },
+    }),
+  ]);
+  const ctx = makeContext({ resolveStorage: async () => storage });
+  const result = await handleCodingArchitecture({ subcommand: "refresh", sessionKey: "s1" }, ctx);
+  if (result.subcommand !== "refresh") return;
+  assert.equal(result.refreshed, true);
+  // The card memory in storage must still have its sourceConnector.
+  const card = storage.memories.find((m) => m.frontmatter.id === "connector-card");
+  assert.equal(
+    card?.frontmatter.sourceConnector,
+    "openclaw",
+    "existing sourceConnector preserved through updateMemory",
+  );
 });

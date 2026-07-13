@@ -80,6 +80,7 @@ import {
   dedupeBehaviorSignalsByMemoryAndHash,
 } from "../behavior-signals.js";
 import { buildProcedurePersistBody } from "../procedural/procedure-types.js";
+import { stripAttributesSuffix } from "../structured-attributes.js";
 import { LocalLlmClient } from "../local-llm.js";
 import {
   FallbackLlmClient,
@@ -133,6 +134,7 @@ export interface ExtractionPersistDeps {
       eventTimeSource?: "extracted" | "assumed";
     },
     entityRef?: string,
+    sourceConnector?: string,
   ) => Promise<void>;
   saveContentHashIndexes: () => Promise<void>;
   artifactTypeForCategory: (
@@ -215,7 +217,7 @@ export class ExtractionPersistCoordinator {
     result: ExtractionResult,
     storage: StorageManager,
     threadIdForExtraction?: string | null,
-    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string },
+    sourceContext?: { sessionKey?: string; principal?: string; validAt?: string; sourceConnector?: string },
     baseNamespace?: string,
     scopeProfileWritePlan?: ResolvedScopeProfilePlan | null,
     /** Verbatim source turn text the facts were extracted from (faithfulness gate #1576). */
@@ -230,6 +232,17 @@ export class ExtractionPersistCoordinator {
     // see zero behavioral change.
     const citationEnabled = resolvePipelineProcessingCapabilities(this.deps.config).inlineSourceAttribution === true;
     const citationTemplate = this.deps.config.inlineSourceAttributionFormat;
+
+  // Canonicalize stored content for dedup comparison: strip citations
+  // (using the same template), sanitize, then normalize whitespace.
+  const normalizeStoredHashSource = (raw: string): string =>
+    ContentHashIndex.normalizeContent(
+      sanitizeMemoryContent(
+        citationEnabled && hasCitationForTemplate(raw, citationTemplate)
+          ? stripCitationForTemplate(raw, citationTemplate)
+          : raw,
+      ).text,
+    );
     // The stable fields (agent, session) are computed once; `ts` is intentionally
     // omitted here and added fresh per invocation so each fact in a large batch
     // gets its own insertion timestamp rather than sharing a single batch-start time.
@@ -477,6 +490,27 @@ export class ExtractionPersistCoordinator {
             options.category === "fact" &&
             (await targetStorage.hasFactContentHash(dedupContent))
           ) {
+            // Connector-aware dedup (QOjlD): verify a same-connector
+            // active fact exists before skipping the promotion write.
+            // Different connectors with same content should NOT be deduped.
+            let skipPromotion = true;
+            try {
+              const allMems = await targetStorage.readAllMemories();
+              const nc = sourceContext?.sourceConnector?.trim() || undefined;
+              skipPromotion = allMems.some((m) => {
+                if (m.frontmatter.category !== options.category) return false;
+                if ((m.frontmatter.status ?? "active") !== "active") return false;
+                if (normalizeStoredHashSource(m.content ?? "") !==
+                  ContentHashIndex.normalizeContent(dedupContent)) return false;
+                return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
+              });
+            } catch (err) {
+              log.warn(
+                `connector-aware promotion dedup scan failed; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
+              );
+              skipPromotion = false;
+            }
+            if (skipPromotion) {
             // #1671 — backfill bi-temporal bounds the existing promoted copy
             // lacks (re-extraction with a now-resolved invalidAt). Best-effort,
             // fail-open; the helper gates on invalidAt to avoid I/O when no
@@ -493,9 +527,11 @@ export class ExtractionPersistCoordinator {
                   ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
                 },
                 options.entityRef,
+                sourceContext?.sourceConnector,
               );
             }
             continue;
+            }
           }
           const targetPromotion = await targetStorage.writeMemory(
             options.category as any,
@@ -521,6 +557,7 @@ export class ExtractionPersistCoordinator {
               contentHashSource: options.category === "fact" ? dedupContent : rawContent,
               ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
               ...(options.provenance ? { provenance: options.provenance } : {}),
+              ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
             },
           );
           const promotedId = targetPromotion.id;
@@ -666,11 +703,43 @@ export class ExtractionPersistCoordinator {
           options.category === "fact" &&
           (await sharedStorage.hasFactContentHash(dedupContent))
         ) {
+          // Connector identity gate: only backfill temporal bounds onto a
+          // same-connector fact.  Different connectors with identical content
+          // must not cross-patch each other's temporal fields (codex finding:
+          // temporal backfill occurred before connector mismatch check).
+          // Fail-open: on scan error backfill proceeds (preserving prior
+          // best-effort behaviour).
+          let sharedSameConnector = true;
+          if (options.invalidAt || options.validAt) {
+            try {
+              const sharedMems = await sharedStorage.readAllMemories();
+              const snc = sourceContext?.sourceConnector?.trim() || undefined;
+              sharedSameConnector = sharedMems.some((m) => {
+                if (m.frontmatter.category !== "fact") return false;
+                if ((m.frontmatter.status ?? "active") !== "active") return false;
+                if (normalizeStoredHashSource(m.content ?? "") !==
+                  ContentHashIndex.normalizeContent(dedupContent)) return false;
+                return (m.frontmatter.sourceConnector?.trim() || undefined) === snc;
+              });
+            } catch (scanErr) {
+              // Review f1b89fe9: on scan error, conservatively skip backfill
+              // instead of fail-opening. A fail-open here still calls the
+              // helper, which selects the first hash/entity match — and if
+              // that match is a different connector's fact, the mutation
+              // corrupts its temporal bounds. Skipping is the safe choice.
+              sharedSameConnector = false;
+              log.warn(
+                `connector-aware shared backfill scan failed; skipping backfill to avoid cross-connector mutation: ${scanErr instanceof Error ? scanErr.message : String(scanErr)}`,
+              );
+            }
+          }
           // #1671 — backfill bi-temporal bounds onto the existing shared copy
           // before the supersession short-circuit. Covers all return paths below
           // (supersession-hit, catch-skip, and the no-supersession short-circuit)
           // in one shot. Best-effort / fail-open; the helper gates on invalidAt.
-          if (options.invalidAt || options.validAt) {
+          // Connector gate: skip backfill when no same-connector active fact
+          // exists so a different connector's copy is not mutated.
+          if (sharedSameConnector && (options.invalidAt || options.validAt)) {
             await this.deps.backfillTemporalBoundsOnDedupHit(
               sharedStorage,
               dedupContent,
@@ -682,6 +751,7 @@ export class ExtractionPersistCoordinator {
                 ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
               },
               options.entityRef,
+              sourceContext?.sourceConnector,
             );
           }
           // Uj6H fix: shared-namespace temporal supersession must also run when
@@ -741,7 +811,13 @@ export class ExtractionPersistCoordinator {
                 // (including any appended "[Attributes: ...]" suffix) against the
                 // enriched normalizedIncoming so the candidate selected is the one
                 // whose hash actually matched in hasFactContentHash.
-                return ContentHashIndex.normalizeContent(m.content ?? "") === normalizedIncoming;
+                if (normalizeStoredHashSource(m.content ?? "") !== normalizedIncoming) return false;
+                // Connector-aware dedup: same content from different connectors
+                // is NOT a duplicate (review thread QOjlD).
+                const existingConnector = m.frontmatter.sourceConnector?.trim() || undefined;
+                const newConnector = sourceContext?.sourceConnector?.trim() || undefined;
+                if (existingConnector !== newConnector) return false;
+                return true;
               });
               hashDedupLookupComplete = true;
               if (hashDedupMatchingFact) {
@@ -819,9 +895,33 @@ export class ExtractionPersistCoordinator {
               );
             }
           } else {
-            // temporalSupersessionEnabled is off or no entity/attributes — keep
-            // the original short-circuit behaviour.
-            return;
+            // Connector-aware dedup (QPAn-): when temporal supersession is off
+            // or the fact has no entity/structuredAttributes, the original
+            // short-circuit would drop a different-connector fact. Verify a
+            // same-connector active fact exists before skipping the shared
+            // promotion write; otherwise fall through so the new connector's
+            // fact gets its own promoted copy.
+            let skipSharedPromotion = true;
+            try {
+              const allSharedMems = await sharedStorage.readAllMemories();
+              const snc = sourceContext?.sourceConnector?.trim() || undefined;
+              const sharedNormalized = ContentHashIndex.normalizeContent(dedupContent);
+              skipSharedPromotion = allSharedMems.some((m) => {
+                if (m.frontmatter.category !== "fact") return false;
+                if ((m.frontmatter.status ?? "active") !== "active") return false;
+                if (normalizeStoredHashSource(m.content ?? "") !== sharedNormalized) return false;
+                return (m.frontmatter.sourceConnector?.trim() || undefined) === snc;
+              });
+            } catch (err) {
+              log.warn(
+                `connector-aware shared promotion dedup scan failed; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
+              );
+              skipSharedPromotion = false;
+            }
+            if (skipSharedPromotion) {
+              return;
+            }
+            // No same-connector active shared fact — fall through to write.
           }
         }
         const sharedPromotion = await sharedStorage.writeMemory(
@@ -849,6 +949,7 @@ export class ExtractionPersistCoordinator {
             // Claim-level provenance spans (issue #1575 PR 2).
             ...(options.sources && options.sources.length > 0 ? { sources: options.sources } : {}),
             ...(options.provenance ? { provenance: options.provenance } : {}),
+            ...(sourceContext?.sourceConnector ? { sourceConnector: sourceContext.sourceConnector } : {}),
           },
         );
         const promotedId = sharedPromotion.id;
@@ -930,6 +1031,7 @@ export class ExtractionPersistCoordinator {
       confidence: number;
       entityRef?: string;
       structuredAttributes?: Record<string, string>;
+      sourceConnector?: string;
       bounds: {
         invalidAt?: string;
         validFrom?: string;
@@ -989,6 +1091,7 @@ export class ExtractionPersistCoordinator {
               dedupContent,
               args.bounds,
               args.entityRef,
+              args.sourceConnector,
             );
           } catch (err) {
             log.warn(
@@ -1016,6 +1119,7 @@ export class ExtractionPersistCoordinator {
               dedupContent,
               args.bounds,
               args.entityRef,
+              args.sourceConnector,
             );
           }
         } catch (err) {
@@ -1574,6 +1678,36 @@ export class ExtractionPersistCoordinator {
           `content-hash dedup lookup failed for storage ${targetStorage.dir}; writing fact fail-open: ${err}`,
         );
       }
+      // Connector-aware dedup (QOjlB): if the hash says duplicate, verify
+      // a same-content, same-connector active fact exists. Different
+      // connectors with same content should NOT be deduped. Fail open
+      // (write) on scan failure so an unverifiable hash hit cannot
+      // silently drop content.
+      if (exactDuplicate) {
+        try {
+          const allMems = await targetStorage.readAllMemories();
+          const nc = sourceContext?.sourceConnector?.trim() || undefined;
+          exactDuplicate = allMems.some((m) => {
+            if (m.frontmatter.category !== writeCategory) return false;
+            if ((m.frontmatter.status ?? "active") !== "active") return false;
+            // Thread 5 (QPDE5): for procedures the hash is keyed on the full
+            // body (title + steps via buildProcedurePersistBody), so compare
+            // against contentHashDedupKey — not canonicalContentForHash which
+            // is the title only. Thread 3 (QO42V): facts with
+            // structuredAttributes get an appended [Attributes: ...] suffix in
+            // the stored body that the hash key lacks; strip it before
+            // comparing so same-connector enriched facts dedup correctly.
+            if (normalizeStoredHashSource(stripAttributesSuffix(m.content ?? "")) !==
+              ContentHashIndex.normalizeContent(contentHashDedupKey)) return false;
+            return (m.frontmatter.sourceConnector?.trim() || undefined) === nc;
+          });
+        } catch (err) {
+          log.warn(
+            `connector-aware dedup scan failed for storage ${targetStorage.dir}; writing fail-open: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          exactDuplicate = false;
+        }
+      }
       if (exactDuplicate) {
         // #1671 — before short-circuiting, backfill bi-temporal bounds
         // onto the existing source-namespace copy if it lacks bounds the
@@ -1628,6 +1762,7 @@ export class ExtractionPersistCoordinator {
                 eventTimeSource: biTemporal.eventTimeSource,
               },
               fact.entityRef,
+              sourceContext?.sourceConnector,
             );
             // #1707 thread 1 — the source branch short-circuits (`continue`
             // below) before the promotion dedup paths run, so promoted
@@ -1642,6 +1777,7 @@ export class ExtractionPersistCoordinator {
               confidence: fact.confidence,
               entityRef: fact.entityRef,
               structuredAttributes: fact.structuredAttributes,
+              sourceConnector: sourceContext?.sourceConnector,
               bounds: {
                 invalidAt: biTemporal.validUntil,
                 validFrom: biTemporal.validFrom,
@@ -1803,6 +1939,9 @@ export class ExtractionPersistCoordinator {
             // would cause the fact to be dropped here — cross-namespace
             // write suppression / data loss.
             const lookupStorage = targetStorage;
+            // PR #1852 review finding on 7e0eb1a0: forward the candidate's
+            // sourceConnector so the connector-aware skip gate can refuse to
+            // drop a connector B paraphrase against connector A's memory.
             semanticDecision = await decideSemanticDedup(
               fact.content,
               (content, limit) =>
@@ -1811,6 +1950,7 @@ export class ExtractionPersistCoordinator {
                 enabled: true,
                 threshold: this.deps.config.semanticDedupThreshold,
                 candidates: this.deps.config.semanticDedupCandidates,
+                sourceConnector: sourceContext?.sourceConnector,
               },
             );
           } catch (err) {
@@ -1841,6 +1981,7 @@ export class ExtractionPersistCoordinator {
         (fact as any).source === "proactive"
           ? "extraction-proactive"
           : "extraction";
+      const extractionSourceConnector = sourceContext?.sourceConnector;
 
       // Check for contradictions before writing (Phase 2B).
       // NOTE: This block was moved above the chunking branch so that the
@@ -2025,6 +2166,7 @@ export class ExtractionPersistCoordinator {
               tags: [...fact.tags, "chunked"],
               entityRef: fact.entityRef,
               source: extractionWriteSource,
+              ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
               importance,
               supersedes,
               links: links.length > 0 ? links : undefined,
@@ -2118,6 +2260,7 @@ export class ExtractionPersistCoordinator {
                   // the verified span (chatgpt-codex-connector thread Ocvmo).
                   ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
                   ...(fact.provenance ? { provenance: fact.provenance } : {}),
+                  ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
                 },
               );
             }
@@ -2207,6 +2350,7 @@ export class ExtractionPersistCoordinator {
                 }
               : {}),
             source: extractionWriteSource,
+            ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
             ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
             ...(fact.provenance ? { provenance: fact.provenance } : {}),
           });
@@ -2261,6 +2405,7 @@ export class ExtractionPersistCoordinator {
                 intentGoal: inferredIntent?.goal,
                 intentActionType: inferredIntent?.actionType,
                 intentEntityTypes: inferredIntent?.entityTypes,
+                ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
               });
             }
             // v8.2: graph edge building for chunked memories. #1576: skip pending_review.
@@ -2377,6 +2522,7 @@ export class ExtractionPersistCoordinator {
               ? (fact as any).entityRef
               : undefined,
           source: extractionWriteSource,
+          ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
           importance,
           supersedes,
           links: links.length > 0 ? links : undefined,
@@ -2498,6 +2644,7 @@ export class ExtractionPersistCoordinator {
               }
             : {}),
           source: extractionWriteSource,
+          ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
           ...(fact.sources && fact.sources.length > 0 ? { sources: fact.sources } : {}),
           ...(fact.provenance ? { provenance: fact.provenance } : {}),
         });
@@ -2558,6 +2705,7 @@ export class ExtractionPersistCoordinator {
             intentGoal: inferredIntent?.goal,
             intentActionType: inferredIntent?.actionType,
             intentEntityTypes: inferredIntent?.entityTypes,
+            ...(extractionSourceConnector ? { sourceConnector: extractionSourceConnector } : {}),
           });
         }
         // Register in the target storage content-hash index after successful

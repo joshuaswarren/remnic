@@ -61,6 +61,12 @@ type McpRequestOptions = {
    * the write-rate-limit window); the standalone MCP server has no quota.
    */
   enforceWriteQuota?: () => void | Promise<void>;
+  /**
+   * Server-resolved connector identity (Phase 1 provenance). Set by the HTTP
+   * auth boundary from the matched token entry's connector; threaded into
+   * the operation context so write handlers stamp it onto frontmatter.
+   */
+  sourceConnector?: string;
 };
 
 type McpTool = {
@@ -2645,7 +2651,8 @@ export class EngramMcpServer {
           effectivePrincipal,
           options?.sessionId,
           mcpScope,
-          options?.enforceWriteQuota
+          options?.enforceWriteQuota,
+          options?.sourceConnector
         );
         return {
           jsonrpc: "2.0",
@@ -2853,7 +2860,8 @@ export class EngramMcpServer {
     effectivePrincipal?: string,
     mcpSessionId?: string,
     scope?: { namespace?: string; sessionKey?: string },
-    enforceWriteQuota?: () => void | Promise<void>
+    enforceWriteQuota?: () => void | Promise<void>,
+    sourceConnector?: string,
   ): Promise<unknown> {
     const migrated = MCP_MIGRATED_OPERATIONS[toLegacyToolName(name)];
     if (!migrated) {
@@ -2952,6 +2960,7 @@ export class EngramMcpServer {
       service: this.service,
       authenticatedPrincipal: effectivePrincipal,
       ...(enforceWriteQuota ? { hooks: { enforceWriteQuota } } : {}),
+      ...(sourceConnector ? { sourceConnector } : {}),
     })) as { result: unknown };
     return output.result;
   }
