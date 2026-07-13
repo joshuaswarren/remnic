@@ -102,6 +102,8 @@ export interface ParsedBenchArgs {
   publishedIngestConcurrency?: number;
   /** `bench published` — benchmark-specific task/ability filter for diagnostic runs. */
   publishedTaskFilter?: string;
+  /** `bench run memcorrect-v1` — adapter mode ("remnic" | "prompt-only"). */
+  memcorrectAdapter?: "remnic" | "prompt-only";
   /** `bench published` — published artifact output directory. */
   publishedOut?: string;
   /** `bench published` — dry-run: validate + load but do NOT call the model. */
@@ -374,6 +376,7 @@ const BENCH_VALUE_FLAGS = Object.freeze([
   "--ama-bench-cross-judge-api-key",
   "--ama-bench-cross-judge-codex-reasoning-effort",
   "--local-lab-manifest",
+  "--memcorrect-adapter",
 ] as const);
 
 const BENCH_BOOLEAN_FLAGS = Object.freeze([
@@ -455,6 +458,7 @@ const RUN_VALUE_FLAGS = Object.freeze([
   "--ama-bench-cross-judge-api-key",
   "--ama-bench-cross-judge-codex-reasoning-effort",
   "--local-lab-manifest",
+  "--memcorrect-adapter",
 ] as const satisfies readonly BenchValueFlag[]);
 
 const RUN_BOOLEAN_FLAGS = Object.freeze([
@@ -1148,6 +1152,18 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     publishedTaskFilter = trimmed;
   }
 
+  const memcorrectAdapterRaw = readBenchOptionValue(args, "--memcorrect-adapter");
+  let memcorrectAdapter: "remnic" | "prompt-only" | undefined;
+  if (memcorrectAdapterRaw !== undefined) {
+    if (memcorrectAdapterRaw !== "remnic" && memcorrectAdapterRaw !== "prompt-only") {
+      // Rule 51: reject invalid enum values with the valid options listed.
+      throw new Error(
+        'ERROR: --memcorrect-adapter must be "remnic" or "prompt-only".',
+      );
+    }
+    memcorrectAdapter = memcorrectAdapterRaw;
+  }
+
   let publishedSeed: number | undefined;
   if (publishedSeedRaw !== undefined) {
     const parsed = Number(publishedSeedRaw);
@@ -1342,6 +1358,7 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     publishedTrialConcurrency,
     publishedIngestConcurrency,
     publishedTaskFilter,
+    memcorrectAdapter,
     publishedOut: publishedOutRaw
       ? path.resolve(expandTilde(publishedOutRaw))
       : undefined,

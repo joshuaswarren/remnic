@@ -25,6 +25,7 @@ import {
   buildExplicitCueRecallSection,
   buildTrajectoryAnalysisRecallSection,
   collectExplicitTurnReferences,
+  EngramAccessService,
   expandTildePath,
   normalizeTurnExpansionEnd,
   Orchestrator,
@@ -1712,6 +1713,26 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
       void trackedCleanup;
     };
 
+    // Correction-contract surface (issue #1584 plan item 2a). Built lazily and
+    // rebound whenever rebuild() swaps the orchestrator; this is the same
+    // public access layer the MCP/HTTP memory_correct_plan/apply tools use,
+    // so the benchmark exercises the real correction path, not internals.
+    let correctionAccess:
+      | { service: EngramAccessService; orchestrator: unknown }
+      | undefined;
+    const getCorrectionAccess = (): EngramAccessService => {
+      if (
+        !correctionAccess ||
+        correctionAccess.orchestrator !== state.orchestrator
+      ) {
+        correctionAccess = {
+          service: new EngramAccessService(state.orchestrator),
+          orchestrator: state.orchestrator,
+        };
+      }
+      return correctionAccess.service;
+    };
+
     return {
       async store(
         sessionId: string,
@@ -2411,6 +2432,44 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           waitForCompletionOnAbort: true,
         });
         sessionTurnCounters.clear();
+      },
+
+      async correct(
+        sessionId: string,
+        text: string,
+        _at?: string,
+        control?: BenchPhaseControl,
+      ): Promise<{ applied: boolean }> {
+        // The correction executor stamps its own audit timestamps; the seeded
+        // corpus timestamp (`_at`) is honored by the turn-path fallback the
+        // caller runs when this resolves `{ applied: false }`.
+        throwIfBenchPhaseAborted(control, "correct");
+        sessionId = normalizeBenchSessionId(sessionId);
+        const access = getCorrectionAccess();
+        const plan = await withBenchPhaseAbort(
+          access.correctionPlan({ text, sessionKey: sessionId }),
+          control,
+          "correct",
+        );
+        if (plan.actions.length === 0) {
+          // Planner found nothing to change (no matching memory yet, or a
+          // purely additive correction). Discard the empty pending plan and
+          // report not-applied so the caller can deliver the correction
+          // through the plain turn path instead.
+          await access
+            .correctionDiscard(plan.planId, { sessionKey: sessionId })
+            .catch(() => undefined);
+          return { applied: false };
+        }
+        await withBenchPhaseAbort(
+          access.correctionApply(plan.planId, {
+            confirm: true,
+            sessionKey: sessionId,
+          }),
+          control,
+          "correct",
+        );
+        return { applied: true };
       },
 
       async drain(control?: BenchPhaseControl): Promise<void> {

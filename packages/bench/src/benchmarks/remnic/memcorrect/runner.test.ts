@@ -58,6 +58,38 @@ test("registry: memcorrect-v1 is tier=remnic, status=ready, runnerAvailable", ()
   assert.equal(memcorrectDefinition.runnerAvailable, true);
 });
 
+test('runner: benchmarkOptions.adapter "prompt-only" selects the baseline adapter', async () => {
+  const result = await runMemCorrectBenchmark(
+    options({
+      benchmarkOptions: { adapter: "prompt-only" },
+      limit: 1,
+    }),
+  );
+  assert.equal(result.config.adapterMode, "prompt-only-baseline");
+});
+
+test('runner: benchmarkOptions.adapter "remnic" wraps the bench system adapter', async () => {
+  const result = await runMemCorrectBenchmark(
+    options({
+      benchmarkOptions: { adapter: "remnic" },
+      limit: 1,
+    }),
+  );
+  assert.equal(result.config.adapterMode, "remnic-native");
+});
+
+test("runner: an unknown string adapter mode is rejected with the valid options listed", async () => {
+  await assert.rejects(
+    runMemCorrectBenchmark(
+      options({
+        benchmarkOptions: { adapter: "mem0ish" },
+        limit: 1,
+      }),
+    ),
+    /must be one of \["remnic", "prompt-only"\]/,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // End-to-end with the prompt-only baseline
 // ---------------------------------------------------------------------------

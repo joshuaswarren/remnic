@@ -100,6 +100,20 @@ export interface BenchMemoryAdapter {
     sessionId?: string,
     control?: BenchPhaseControl,
   ): Promise<SearchResult[]>;
+  /**
+   * Optional explicit-correction surface (issue #1584 plan item 2a). Routes a
+   * natural-language correction through the system's correction contract
+   * (plan + confirmed apply) instead of a plain turn store. Resolves
+   * `{ applied: false }` when the planner produced no applicable actions so
+   * the caller can fall back to the turn path. Adapters without an explicit
+   * correction surface omit this method entirely.
+   */
+  correct?(
+    sessionId: string,
+    text: string,
+    at?: string,
+    control?: BenchPhaseControl,
+  ): Promise<{ applied: boolean }>;
   reset(sessionId?: string, control?: BenchPhaseControl): Promise<void>;
   getStats(sessionId?: string, control?: BenchPhaseControl): Promise<MemoryStats>;
   /** Wait for background summarization (e.g. LCM) to finish after store(). */

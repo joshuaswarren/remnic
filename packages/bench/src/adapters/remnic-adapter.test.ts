@@ -362,6 +362,31 @@ test("direct adapter can use a caller-owned memory directory", async () => {
   }
 });
 
+test("direct adapter correct() reports not-applied when the planner finds nothing", async () => {
+  const adapter = await createRemnicAdapter({});
+
+  try {
+    // Empty store + no classify LLM → the correction planner deterministically
+    // produces zero actions; correct() must report { applied: false } so the
+    // MemCorrect wrapper falls back to the turn path, and the adapter must
+    // stay fully usable afterwards.
+    assert.ok(adapter.correct, "direct adapter must expose the correction surface");
+    const outcome = await adapter.correct(
+      "correct-session",
+      "Correction: the deploy target is canary, not production.",
+    );
+    assert.deepEqual(outcome, { applied: false });
+
+    await adapter.store("correct-session", [
+      { role: "user", content: "The deploy target is canary." },
+    ]);
+    const recalled = await adapter.recall("correct-session", "What is the deploy target?");
+    assert.match(recalled, /canary/);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
 test("direct adapter observes timeout guard abort control before storing messages", async () => {
   const adapter = await createRemnicAdapter({
     configOverrides: {
