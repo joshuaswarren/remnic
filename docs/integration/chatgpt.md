@@ -19,7 +19,12 @@ URL. The local operator approves every link request on the server machine.
 
 ## Overview
 
-ChatGPT can now persist memories across conversations using **your infrastructure**, not OpenAI's cloud. This integration exposes your local Remnic server to chatgpt.com via a developer-mode app that speaks MCP over OAuth 2.1. The result: every ChatGPT conversation you have can read and write to a memory store that lives on your filesystem as plain markdown, governed by your config, with provenance and lifecycle controls you choose.
+ChatGPT can now persist memories across conversations using **your infrastructure** as the source of truth. This integration exposes your local Remnic server to chatgpt.com via a developer-mode app that speaks MCP over OAuth 2.1. The result: in any ChatGPT conversation where you have enabled the Remnic app, ChatGPT can read and write to a memory store that lives on your filesystem as plain markdown, governed by your config, with provenance and lifecycle controls you choose.
+
+Two privacy and scope notes worth understanding before you connect:
+
+- **Local source of truth, processed by OpenAI.** The canonical memory store lives on your filesystem, and Remnic never sends memory to a third party on its own. But when ChatGPT invokes Remnic's `recall` or `memory_store` tools, the memory content in those requests and responses transits OpenAI's tool pipeline. Remnic's source of truth stays local; the tool inputs and outputs ChatGPT exchanges are processed by OpenAI.
+- **Only in chats where the app is enabled.** Linking the app does not make Remnic a global memory layer across all of ChatGPT. You must open a conversation and select or add the Remnic app (or refer to it) before ChatGPT will use its MCP tools. Chats where the app is not selected will neither read nor write Remnic memory.
 
 The key enabler is recent: OpenAI no longer disables built-in memory and tools when you connect a custom MCP server. That means Remnic works alongside ChatGPT's native capabilities instead of replacing them. You get Remnic's entity tracking, semantic search, and scoped namespaces inside the ChatGPT composer.
 

@@ -312,10 +312,13 @@ CONNECTING OTHER AGENTS
 
 CHATGPT DEVELOPER MODE (headline integration):
   ChatGPT can now persist memories across conversations using YOUR
-  infrastructure, not OpenAI's cloud. OpenAI no longer disables built-in
+  infrastructure as the source of truth. OpenAI no longer disables built-in
   memory/tools when you connect a custom MCP server. Remnic plugs into
-  that gap as an MCP + OAuth 2.1 integration, giving ChatGPT a
-  persistent, governed, local-first memory store.
+  that gap as an MCP + OAuth 2.1 integration, giving ChatGPT a persistent,
+  governed, local-first memory store. The canonical store stays on your
+  disk; when ChatGPT calls Remnic's tools, those tool inputs/outputs are
+  processed by OpenAI. Remnic is available only in chats where the
+  app/tools are enabled.
 
   docs/integration/chatgpt.md     Full setup guide with Quick Start,
                                   Overview, Requirements, step-by-step OAuth
