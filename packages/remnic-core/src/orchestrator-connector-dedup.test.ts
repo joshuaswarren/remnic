@@ -1000,3 +1000,83 @@ test("shared backfill: same-connector shared fact IS temporal-patched", async ()
     "same-connector shared fact must get invalid_at backfilled",
   );
 });
+
+// ---------------------------------------------------------------------------
+// Regression (cursor #1852): persistence-index backfill must match connector
+// identity EXACTLY, including undefined. The prior guard only filtered
+// sourceConnector when truthy — so an operator re-extraction with NO connector
+// skipped the guard entirely, letting .find() select the first hash/entity
+// match, which could be a connector-TAGGED duplicate, mutating its temporal
+// bounds. Fix: exact comparison (undefined === undefined, tagged === tagged).
+// ---------------------------------------------------------------------------
+
+test("shared backfill: operator (no-connector) extraction must NOT patch a connector-tagged duplicate", async () => {
+  const { orchestrator, storage } = await makeDedupOrchestrator({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    temporalBiTemporal: true,
+  });
+  const scopePlan = makeSharedPromotionScopePlan();
+  const body =
+    "The rate limiter resets its token bucket every two hundred milliseconds.";
+
+  // Pre-write TWO facts to the shared namespace with identical content:
+  // one tagged "chatgpt" and one connectorless. Neither has temporal bounds.
+  const sharedStorage = await orchestrator.getStorage("shared");
+  await sharedStorage.writeMemory("fact", body, {
+    confidence: 0.9,
+    sourceConnector: "chatgpt",
+  });
+  await sharedStorage.writeMemory("fact", body, {
+    confidence: 0.9,
+    // No sourceConnector — connectorless, the only kind eligible for
+    // operator/no-connector backfill.
+  });
+
+  // Verify the tagged fact exists and lacks temporal bounds.
+  const sharedBefore = await sharedStorage.readAllMemories();
+  const taggedBefore = sharedBefore.find(
+    (m: MemoryFile) => m.frontmatter.sourceConnector === "chatgpt",
+  );
+  assert.ok(taggedBefore, "pre-written chatgpt fact exists");
+  assert.equal(taggedBefore!.frontmatter.invalid_at, undefined);
+
+  // Extract the SAME content with NO sourceConnector (operator
+  // re-extraction) and an eventTime that resolves a validUntil bound.
+  const ids = await orchestrator.persistExtraction(
+    {
+      facts: [{
+        content: body,
+        category: "fact" as const,
+        tags: [],
+        confidence: 0.9,
+        eventTime: "until 2025-06",
+      }],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    },
+    storage,
+    null,
+    { validAt: "2025-07-01T00:00:00.000Z" },
+    "default",
+    scopePlan,
+  );
+  assert.ok(ids.length >= 1, "extraction must proceed");
+
+  // The chatgpt-tagged fact must NOT have been temporal-patched.
+  // Operator/no-connector backfill may only select a connectorless
+  // candidate, never a connector-tagged one (cursor #1852).
+  const sharedAfter = await sharedStorage.readAllMemories();
+  const taggedAfter = sharedAfter.find(
+    (m: MemoryFile) => m.frontmatter.sourceConnector === "chatgpt",
+  );
+  assert.ok(taggedAfter, "chatgpt fact still exists");
+  assert.equal(
+    taggedAfter!.frontmatter.invalid_at,
+    undefined,
+    "tagged fact must NOT get invalid_at from connectorless/operator backfill",
+  );
+});

@@ -174,17 +174,18 @@ export class PersistenceIndexCoordinator {
         ) {
           return false;
         }
-        // Connector identity guard (review f1b89fe9): only match facts from
-        // the same source connector. In the shared namespace, multiple
-        // connectors can carry identical-content facts; without this filter
-        // .find() selects the first hash/entity match, which could be a
-        // different connector's copy, mutating it instead of the intended
-        // same-connector fact.
-        if (sourceConnector) {
-          const sc = sourceConnector.trim();
-          if ((m.frontmatter.sourceConnector?.trim() || undefined) !== sc) {
-            return false;
-          }
+        // Connector identity guard (review f1b89fe9, cursor #1852): exact
+        // match on connector identity, including undefined. In the shared
+        // namespace, multiple connectors can carry identical-content facts;
+        // without this filter .find() selects the first hash/entity match.
+        // Operator/no-connector backfill (sourceConnector undefined) may only
+        // select a connectorless candidate, never a connector-tagged one;
+        // connector-authenticated backfill only selects the same connector.
+        const incomingConnector = sourceConnector?.trim() || undefined;
+        const candidateConnector =
+          m.frontmatter.sourceConnector?.trim() || undefined;
+        if (incomingConnector !== candidateConnector) {
+          return false;
         }
         // Prefer the stored contentHash (what the hash index actually keys
         // on) — it is computed from contentHashSource (the raw/enriched
