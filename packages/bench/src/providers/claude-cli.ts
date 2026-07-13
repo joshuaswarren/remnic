@@ -317,7 +317,24 @@ class ClaudeCliProvider implements LlmProvider {
         const request = this.buildRunRequest(prompt, opts, tempDir);
         const result = await this.runClaudeCli(request);
 
-        if (result.status !== 0) {
+        // Parse the stdout envelope BEFORE gating on the exit status. Claude
+        // Code can exit non-zero for reasons unrelated to the completion
+        // itself (a failing user hook, a teardown race) while still emitting
+        // a complete zero-error result envelope — the dominant source of
+        // spuriously 0-scored tasks in the 2026-07-08 bounded trials (~8%
+        // of tasks). A parseable payload with `is_error` unset and
+        // non-empty result text is a successful completion regardless of
+        // the exit code; everything else keeps the exit-status failure
+        // handling below (parseClaudeCliJsonResult never throws — empty or
+        // non-JSON stdout becomes an `is_error` blob, which is not
+        // salvageable).
+        const payload = parseClaudeCliJsonResult(result.stdout);
+        const salvageableDespiteExit =
+          !isClaudeCliErrorFlagSet(payload.is_error) &&
+          typeof payload.result === "string" &&
+          payload.result.trim().length > 0;
+
+        if (result.status !== 0 && !salvageableDespiteExit) {
           // Usage-limit detection is deliberately restricted to FAILURE
           // paths (non-zero exits here, is_error payloads below). A
           // successful benchmark answer that merely mentions "rate limit"
@@ -351,7 +368,6 @@ class ClaudeCliProvider implements LlmProvider {
           throw error;
         }
 
-        const payload = parseClaudeCliJsonResult(result.stdout);
         if (isClaudeCliErrorFlagSet(payload.is_error)) {
           // Usage-limit responses can surface as a zero-exit is_error JSON
           // payload, or as bare stderr with empty stdout — both land here.

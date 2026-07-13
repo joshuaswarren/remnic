@@ -77,6 +77,73 @@ test("claude-cli provider invokes claude -p in an isolated benchmark mode", asyn
   assert.notEqual(captured.cwd, process.cwd());
 });
 
+test("claude-cli provider trusts a clean result envelope over a non-zero exit", async () => {
+  // Claude Code can exit 1 for reasons unrelated to the completion (a
+  // failing user hook, a teardown race) while still printing a complete
+  // zero-error envelope — the ~8% spurious task failures in the 2026-07-08
+  // bounded trials. The envelope wins; no retry is spent.
+  let calls = 0;
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        calls += 1;
+        return {
+          status: 1,
+          signal: null,
+          stdout: JSON.stringify({
+            is_error: false,
+            result: "salvaged answer",
+            usage: { input_tokens: 7, output_tokens: 3 },
+          }),
+          stderr: "SessionEnd hook failed: exit status 1",
+        };
+      },
+    },
+  );
+
+  const result = await provider.complete("q");
+  assert.equal(result.text, "salvaged answer");
+  assert.deepEqual(result.tokens, { input: 7, output: 3 });
+  assert.equal(calls, 1, "a salvageable envelope must not burn retries");
+});
+
+test("claude-cli provider still fails a non-zero exit whose envelope is an error", async () => {
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus", retryOptions: { maxAttempts: 1 } },
+    {
+      async runClaudeCli() {
+        return {
+          status: 1,
+          signal: null,
+          stdout: JSON.stringify({ is_error: true, result: "Not logged in · Please run /login" }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(provider.complete("q"), /Claude CLI completion failed \(exit 1\)/);
+});
+
+test("claude-cli provider still fails a non-zero exit with an empty-result envelope", async () => {
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus", retryOptions: { maxAttempts: 1 } },
+    {
+      async runClaudeCli() {
+        return {
+          status: 1,
+          signal: null,
+          stdout: JSON.stringify({ is_error: false, result: "" }),
+          stderr: "boom",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(provider.complete("q"), /Claude CLI completion failed \(exit 1\)/);
+});
+
 test("claude-cli provider omits --system-prompt when no systemPrompt is given", async () => {
   const captured: { args?: string[] } = {};
   const provider = createClaudeCliProvider(
