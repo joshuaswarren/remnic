@@ -28,12 +28,22 @@ Two privacy and scope notes worth understanding before you connect:
 
 The key enabler is recent: OpenAI no longer disables built-in memory and tools when you connect a custom MCP server. That means Remnic works alongside ChatGPT's native capabilities instead of replacing them. You get Remnic's entity tracking, semantic search, and scoped namespaces inside the ChatGPT composer.
 
+One caveat on native memory: ChatGPT's native memory is **off by default for apps** and must be enabled per app if you want the model's own memories to inform Remnic tool calls. With native memory off, ChatGPT re-evaluates each request without it, so Remnic's tools will not see context the model would otherwise have surfaced from native memory. This does not affect Remnic's own store and recall, which work regardless. See OpenAI's Apps SDK guide on [Memory and tool calls](https://developers.openai.com/apps-sdk/build/mcp-server#memory-and-tool-calls).
+
 ## Quick Start
 
 1. **[Start your Remnic server](#requirements)** and [expose it over public HTTPS](#step-1-expose-the-server-over-public-https) (Tailscale Funnel is fastest).
 2. **[Configure OAuth](#step-2-configure-oauth-in-remnic)** with a `client_id`, `client_secret`, and your public `issuerUrl`.
 3. **[Create a developer-mode app](#step-3-create-the-app-in-chatgpt)** at `chatgpt.com/plugins`, then add the redirect URL to your config.
 4. **[Approve the link request](#step-4-approve-the-link-request-locally)** on your server machine, then start using Remnic tools in [the ChatGPT composer](#step-5-use-the-app-in-the-chatgpt-composer).
+
+> **Native ChatGPT memory is off by default for apps.** Linking Remnic
+> does not turn on ChatGPT's native memory. If you want the model's own
+> memories to inform Remnic tool calls, enable the per-app Memory toggle
+> in the app's settings; otherwise ChatGPT re-evaluates each request
+> without native memory. Remnic's own store and recall work regardless.
+> See OpenAI's Apps SDK guide: [Memory and tool
+> calls](https://developers.openai.com/apps-sdk/build/mcp-server#memory-and-tool-calls).
 
 ---
 

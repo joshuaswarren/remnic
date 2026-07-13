@@ -318,7 +318,9 @@ CHATGPT DEVELOPER MODE (headline integration):
   governed, local-first memory store. The canonical store stays on your
   disk; when ChatGPT calls Remnic's tools, those tool inputs/outputs are
   processed by OpenAI. Remnic is available only in chats where the
-  app/tools are enabled.
+  app/tools are enabled. Native ChatGPT memory is OFF by default for
+  apps and must be enabled per app; Remnic's own store/recall work
+  regardless (https://developers.openai.com/apps-sdk/build/mcp-server#memory-and-tool-calls).
 
   docs/integration/chatgpt.md     Full setup guide with Quick Start,
                                   Overview, Requirements, step-by-step OAuth
