@@ -2585,3 +2585,132 @@ test("HTTP chat/message gates the NEW session's namespace — scoped token canno
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// PR #1852: token-rotation race — authorized entry must be reused for provenance
+// ---------------------------------------------------------------------------
+
+test("PR #1852: token rotation between authorization and write does not stamp the wrong connector", async () => {
+  // Race: the dynamic-token authorization resolves an entry (connector A),
+  // then the provenance resolver re-reads the token store. If the store
+  // rotated between the two reads, the OLD code stamped connector B. The
+  // fix caches the matched entry per-request so the provenance comes from
+  // the SAME entry that authorized.
+  let getterCalls = 0;
+  const entriesGetter = () => {
+    getterCalls++;
+    // First call (authorization): token -> "chatgpt".
+    // Subsequent call (provenance in the OLD code): token -> "codex-cli".
+    // With the fix the getter is called only once; the second call never
+    // happens and the cached "chatgpt" entry is reused.
+    if (getterCalls <= 1) {
+      return [{ token: "race_token", connector: "chatgpt" }];
+    }
+    return [{ token: "race_token", connector: "codex-cli" }];
+  };
+
+  let capturedSourceConnector: string | undefined;
+  const service = {
+    memoryStore: (req: { sourceConnector?: string }) => {
+      capturedSourceConnector = req.sourceConnector;
+      return Promise.resolve({
+        schemaVersion: 1,
+        operation: "memory_store",
+        namespace: "default",
+        dryRun: false,
+        accepted: true,
+        queued: false,
+        status: "stored",
+      });
+    },
+  } as unknown as EngramAccessService;
+
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authTokenEntriesGetter: entriesGetter,
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const res = await fetch(`http://127.0.0.1:${status.port}/engram/v1/memories`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer race_token",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        content: "race-test memory",
+        schemaVersion: 1,
+        idempotencyKey: "race-key-1852",
+      }),
+    });
+    assert.equal(res.status, 201, "memory_store must succeed with a valid entry token");
+
+    // The provenance must come from the entry that AUTHORIZED the request
+    // ("chatgpt"), not from the rotated store ("codex-cli").
+    assert.equal(
+      capturedSourceConnector,
+      "chatgpt",
+      "sourceConnector must be from the authorized entry, not the rotated store",
+    );
+    // The getter must have been called only once — the matched entry is
+    // cached per-request.
+    assert.equal(getterCalls, 1, "authTokenEntriesGetter must be called once (cached per-request)");
+  } finally {
+    await server.stop();
+  }
+});
+
+test("PR #1852: static operator token has no connector provenance under rotation", async () => {
+  // An operator-supplied static token must never acquire connector provenance,
+  // even when an entries getter is also configured and the static token
+  // appears there under a different connector. This guards the short-circuit
+  // in resolveMatchedEntry: static tokens return { token } (no connector).
+  let capturedSourceConnector: string | undefined;
+  const service = {
+    memoryStore: (req: { sourceConnector?: string }) => {
+      capturedSourceConnector = req.sourceConnector;
+      return Promise.resolve({
+        schemaVersion: 1,
+        operation: "memory_store",
+        namespace: "default",
+        dryRun: false,
+        accepted: true,
+        queued: false,
+        status: "stored",
+      });
+    },
+  } as unknown as EngramAccessService;
+
+  const server = new EngramAccessHttpServer({
+    service,
+    port: 0,
+    authToken: "operator-static",
+    authTokenEntriesGetter: () => [{ token: "operator-static", connector: "chatgpt" }],
+    adminConsoleEnabled: false,
+  });
+  const status = await server.start();
+  try {
+    const res = await fetch(`http://127.0.0.1:${status.port}/engram/v1/memories`, {
+      method: "POST",
+      headers: {
+        authorization: "Bearer operator-static",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        content: "operator-token memory",
+        schemaVersion: 1,
+        idempotencyKey: "static-key-1852",
+      }),
+    });
+    assert.equal(res.status, 201);
+    assert.equal(
+      capturedSourceConnector,
+      undefined,
+      "static operator token must carry no connector provenance",
+    );
+  } finally {
+    await server.stop();
+  }
+});

@@ -3458,13 +3458,44 @@ export class EngramAccessHttpServer {
   }
 
   /**
-   * Resolve the presenting token's entry for an authorized request, or null.
-   * Captures the matched entry — including its capabilities record — so the
-   * op/namespace capability enforcement (issue #1837) uses the SAME entry
-   * that validated. Static operator tokens (`authToken`/`authTokens`) and
-   * the string-token getter carry no capabilities ⇒ unrestricted.
+   * Per-request cache of the matched token entry (the entry whose token
+   * matched the bearer credential, BEFORE any path-policy check). Pinning
+   * the entry to the first read means authorization, capability
+   * enforcement, and connector provenance all observe the SAME token-store
+   * snapshot — a rotation between the auth check and the write handler can
+   * no longer stamp the wrong connector (PR #1852 race).
    */
-  private resolveAuthorizedEntry(
+  private matchedEntryCache = new WeakMap<
+    IncomingMessage,
+    { token: string; connector?: string; capabilities?: TokenCapabilities } | null
+  >();
+
+  /**
+   * Resolve the matched token entry for this request, caching the result so
+   * every downstream consumer (authorization, capability enforcement,
+   * connector provenance) sees the same snapshot entry (PR #1852).
+   */
+  private resolveMatchedEntry(
+    req: IncomingMessage,
+    pathname?: string,
+  ): { token: string; connector?: string; capabilities?: TokenCapabilities } | null {
+    if (this.matchedEntryCache.has(req)) {
+      return this.matchedEntryCache.get(req) ?? null;
+    }
+    const entry = this.computeMatchedEntry(req, pathname);
+    this.matchedEntryCache.set(req, entry);
+    return entry;
+  }
+
+  /**
+   * Find the entry whose token matches the request's bearer credential.
+   * Static operator tokens (`authToken`/`authTokens`) and the string-token
+   * getter carry no capabilities ⇒ unrestricted. Dynamic entry-based tokens
+   * capture connector identity and capabilities. A corrupt or unreadable
+   * token store returns null rather than propagating an error — provenance
+   * must never block an already-authenticated request.
+   */
+  private computeMatchedEntry(
     req: IncomingMessage,
     pathname?: string,
   ): { token: string; connector?: string; capabilities?: TokenCapabilities } | null {
@@ -3525,13 +3556,13 @@ export class EngramAccessHttpServer {
     // identity it scopes (mint/revoke coherence). Capabilities ride on the
     // same entry so enforcement can never lag the token that validated.
     if (this.authTokenEntriesGetter) {
-      for (const entry of this.authTokenEntriesGetter()) {
-        if (!this.timingSafeStringEqual(token, entry.token)) continue;
-        const matched = { token: entry.token, connector: entry.connector, capabilities: entry.capabilities };
-        if (!this.tokenPathPolicy) return matched;
-        // Fail closed: a policy without a connector identity denies.
-        if (typeof entry.connector !== "string" || entry.connector.length === 0) return null;
-        return this.tokenPathPolicy(entry.connector, pathname) ? matched : null;
+      try {
+        for (const entry of this.authTokenEntriesGetter()) {
+          if (!this.timingSafeStringEqual(token, entry.token)) continue;
+          return { token: entry.token, connector: entry.connector, capabilities: entry.capabilities };
+        }
+      } catch {
+        // Corrupt or unreadable tokens.json — no match.
       }
       return null;
     }
@@ -3545,25 +3576,40 @@ export class EngramAccessHttpServer {
     return null;
   }
 
-  /** Cache for per-request capability resolution (avoids re-resolving). */
-  private capabilityCache = new WeakMap<IncomingMessage, TokenCapabilities | null>();
+  /**
+   * Resolve the presenting token's entry for an authorized request, or null.
+   * Applies the path-policy gate (if configured) on top of the per-request
+   * cached matched entry so the identity that is authorized is the same one
+   * whose connector later stamps frontmatter. Static operator tokens and the
+   * string-token getter carry no capabilities ⇒ unrestricted.
+   */
+  private resolveAuthorizedEntry(
+    req: IncomingMessage,
+    pathname?: string,
+  ): { token: string; connector?: string; capabilities?: TokenCapabilities } | null {
+    const matched = this.resolveMatchedEntry(req, pathname);
+    if (!matched) return null;
+    // Apply the path-policy gate for dynamic entry-based tokens.
+    if ("connector" in matched && this.tokenPathPolicy) {
+      // Fail closed: a policy without a connector identity denies.
+      if (typeof matched.connector !== "string" || matched.connector.length === 0) return null;
+      return this.tokenPathPolicy(matched.connector, pathname) ? matched : null;
+    }
+    return matched;
+  }
 
   /**
    * Resolve the presenting token's capabilities for this request, or
    * undefined when the token is unrestricted (legacy / static operator /
-   * explicit-unrestricted record). Cached per-request. `null` sentinel
-   * distinguishes "resolved as unrestricted" from "not yet resolved".
+   * explicit-unrestricted record). Reads from the per-request cached matched
+   * entry so capabilities come from the same snapshot as authorization and
+   * connector provenance (PR #1852).
    */
   private resolveTokenCapabilities(
     req: IncomingMessage,
     pathname?: string,
   ): TokenCapabilities | undefined {
-    if (this.capabilityCache.has(req)) {
-      return this.capabilityCache.get(req) ?? undefined;
-    }
-    const caps = this.resolveAuthorizedEntry(req, pathname)?.capabilities;
-    this.capabilityCache.set(req, caps ?? null);
-    return caps;
+    return this.resolveMatchedEntry(req, pathname)?.capabilities;
   }
 
   /**
@@ -3592,47 +3638,14 @@ export class EngramAccessHttpServer {
   }
   /**
    * Resolve the connector identity for the request's bearer token (Phase 1
-   * provenance). When `authTokenEntriesGetter` is configured, finds the entry
-   * whose token matches the request's Authorization header and returns its
-   * `connector`. Returns `undefined` for operator-supplied static tokens or
-   * when no entry getter is configured — those writes are operator-initiated.
+   * provenance). Reuses the per-request cached matched entry so a token
+   * rotation between the auth check and the write handler cannot stamp the
+   * wrong connector (PR #1852 race). Returns `undefined` for operator-
+   * supplied static tokens or when no entry getter is configured — those
+   * writes are operator-initiated.
    */
   private resolveConnector(req: IncomingMessage): string | undefined {
-    if (!this.authTokenEntriesGetter) return undefined;
-    const raw = req.headers.authorization;
-    let candidate: string | null = null;
-    if (raw) {
-      const separator = raw.indexOf(" ");
-      if (separator > 0) {
-        const scheme = raw.slice(0, separator).toLowerCase();
-        if (scheme === "bearer") {
-          candidate = raw.slice(separator + 1).trim();
-        }
-      }
-    }
-    if (!candidate) return undefined;
-    const token = candidate;
-    // Static (operator-supplied) tokens never carry connector provenance.
-    // Short-circuit BEFORE touching the token store so a corrupt or
-    // unreadable tokens.json cannot crash an already-authenticated operator
-    // request. Connector provenance is optional — it must never block an
-    // authenticated request (review thread QMPsO).
-    if (this.authToken && this.timingSafeStringEqual(token, this.authToken)) return undefined;
-    for (const valid of this.authTokens) {
-      if (this.timingSafeStringEqual(token, valid)) return undefined;
-    }
-    // Dynamic entry-based tokens: resolve connector identity. A corrupt
-    // or unreadable tokens.json must not crash the request — return
-    // undefined (no provenance) rather than propagating the error.
-    try {
-      for (const entry of this.authTokenEntriesGetter()) {
-        if (!this.timingSafeStringEqual(token, entry.token)) continue;
-        return entry.connector;
-      }
-    } catch {
-      return undefined;
-    }
-    return undefined;
+    return this.resolveMatchedEntry(req)?.connector;
   }
 
   private timingSafeStringEqual(a: string, b: string): boolean {
