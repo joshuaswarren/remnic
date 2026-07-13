@@ -8,10 +8,12 @@ import {
   DEFAULT_SELF_NAME,
   distinctSpeakerLabels,
   emptySpeakerRegistry,
+  hasSelfMarker,
   loadSpeakerRegistry,
   resolveSpeaker,
   saveSpeakerRegistry,
   speakerRegistryKey,
+  stripSelfMarker,
 } from "./speakers.js";
 
 test("resolution precedence: override > wearer flag > provider name > raw key", () => {
@@ -165,4 +167,34 @@ test("distinctSpeakerLabels never emits a non-self label ending in (you)", () =>
   );
   // The wearer keeps the marker; the non-self "Pat (you)" override does not.
   assert.deepEqual(labels, ["Me (you)", "Pat"]);
+});
+
+test("stripSelfMarker / hasSelfMarker use linear string ops (CodeQL #1849)", () => {
+  // Standard cases — marker present and absent.
+  assert.equal(stripSelfMarker("Jordan (you)"), "Jordan");
+  assert.equal(stripSelfMarker("Jordan"), "Jordan");
+  assert.equal(hasSelfMarker("Jordan (you)"), true);
+  assert.equal(hasSelfMarker("Jordan"), false);
+
+  // Trailing whitespace around the marker is absorbed.
+  assert.equal(stripSelfMarker("Jordan (you)  "), "Jordan");
+  assert.equal(hasSelfMarker("Jordan (you) \t"), true);
+
+  // Only the final marker is stripped — a second "(you)" survives.
+  assert.equal(stripSelfMarker("Jordan (you)(you)"), "Jordan (you)");
+
+  // Marker with leading whitespace but no name.
+  assert.equal(stripSelfMarker(" (you)"), "");
+  assert.equal(stripSelfMarker("(you)"), "");
+
+  // Empty / whitespace-only input — the case that caused O(n^2)
+  // backtracking with the old \s*\(you\)\s*$ regex.
+  assert.equal(stripSelfMarker(""), "");
+  assert.equal(stripSelfMarker("   "), "");
+  assert.equal(hasSelfMarker("   "), false);
+  assert.equal(hasSelfMarker(""), false);
+
+  // "(you)" not at the end is NOT a marker.
+  assert.equal(hasSelfMarker("(you) said hi"), false);
+  assert.equal(stripSelfMarker("(you) said hi"), "(you) said hi");
 });

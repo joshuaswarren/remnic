@@ -45,16 +45,22 @@ export const DEFAULT_SELF_NAME = "Me";
  * (issue #1849).
  */
 export const SELF_MARKER_SUFFIX = " (you)";
-const SELF_MARKER_RE = /\s*\(you\)\s*$/;
+const SELF_MARKER = "(you)";
 
 /**
  * Remove a reserved `(you)` self marker from a display name. Applied to
  * every base name before it becomes a label so the marker can only ever
  * appear as the renderer-appended self flag, never as part of a stored
  * non-self display name.
+ *
+ * Implemented with plain string ops instead of a regex so the leading
+ * `\s*` (no anchor) cannot cause the O(n²) backtracking CodeQL flags
+ * on whitespace-only input (js/polynomial-redos).
  */
 export function stripSelfMarker(name: string): string {
-  return name.replace(SELF_MARKER_RE, "").trimEnd();
+  const trimmed = name.trimEnd();
+  if (!trimmed.endsWith(SELF_MARKER)) return trimmed;
+  return trimmed.slice(0, -SELF_MARKER.length).trimEnd();
 }
 
 /**
@@ -63,7 +69,7 @@ export function stripSelfMarker(name: string): string {
  * the fusion reconstructor (issue #1849).
  */
 export function hasSelfMarker(label: string): boolean {
-  return SELF_MARKER_RE.test(label);
+  return label.trimEnd().endsWith(SELF_MARKER);
 }
 
 export function emptySpeakerRegistry(): SpeakerRegistry {

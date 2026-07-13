@@ -15,6 +15,7 @@ import { describeErrorForOperator, WearablesInputError } from "./errors.js";
 import { inferMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import {
   decodeTranscriptBody,
+  escapeSegmentText,
   isValidTranscriptDate,
   parseDayTranscript,
 } from "./day-store.js";
@@ -713,33 +714,48 @@ export class WearablesService {
     };
 
     if (this.deps.searchBackend) {
-      const hits = await this.deps.searchBackend.search(trimmed, limit * 5);
-      if (hits !== null) {
-        const results: WearableTranscriptSearchResult[] = [];
+      // The index stores escaped segment text (real newlines become
+      // the two characters \n, lone backslashes are doubled). A query
+      // containing those characters in their ORIGINAL decoded form will
+      // not match the indexed representation, so we ALSO search the
+      // escaped form. This keeps the indexed path at parity with the
+      // scan fallback, which decodes the body before searching (#1849).
+      const escaped = escapeSegmentText(trimmed);
+      const queries =
+        escaped === trimmed ? [trimmed] : [trimmed, escaped];
+      const seen = new Set<string>();
+      const results: WearableTranscriptSearchResult[] = [];
+      for (const q of queries) {
+        const hits = await this.deps.searchBackend.search(q, limit * 5);
+        if (hits === null) break; // backend unavailable
         for (const hit of hits) {
           const located = locateTranscriptPath(hit.path);
           if (!located) continue;
           if (!matchesScope(located.source, located.date)) continue;
+          const dedupeKey = `${located.source}:${located.date}`;
+          if (seen.has(dedupeKey)) continue;
+          seen.add(dedupeKey);
           results.push({
             source: located.source,
             date: located.date,
             score: hit.score,
-            // Decode the escaped serialization so the snippet shows the
-            // original segment text (#1849).
+            // Decode the escaped serialization so the snippet shows
+            // the original segment text (#1849).
             snippet: decodeTranscriptBody(hit.preview),
             backend: "indexed",
           });
           if (results.length >= limit) break;
         }
-        // The index spans the whole memory dir, so ordinary memory
-        // files can crowd transcripts out of the top hits entirely.
-        // Zero in-scope hits therefore doesn't mean "no transcript
-        // matches" — fall through to the bounded scan in that case
-        // (Codex P2 on PR #1458). Partial result sets stay indexed-only
-        // so the two backends never interleave in one response.
-        if (results.length > 0) {
-          return results;
-        }
+        if (results.length >= limit) break;
+      }
+      // The index spans the whole memory dir, so ordinary memory
+      // files can crowd transcripts out of the top hits entirely.
+      // Zero in-scope hits therefore doesn't mean "no transcript
+      // matches" — fall through to the bounded scan in that case
+      // (Codex P2 on PR #1458). Partial result sets stay indexed-only
+      // so the two backends never interleave in one response.
+      if (results.length > 0) {
+        return results;
       }
     }
 

@@ -329,6 +329,59 @@ test("zero in-scope indexed hits fall back to the bounded scan", async () => {
   }
 });
 
+test("indexed search escapes the query and decodes the snippet (#1849)", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
+  try {
+    const storage = makeStorage(dir);
+    // Segment text carries a literal backslash. In the stored file the
+    // backslash is doubled, so the indexed text has C:\\GAPDIR while
+    // the original had C:\GAPDIR. The indexed backend must receive
+    // the escaped form to match the indexed representation.
+    storeDay(storage, "limitless", "2026-06-10", ["File at C:\\GAPDIR\\report.txt"]);
+
+    const receivedQueries: string[] = [];
+    const service = new WearablesService({
+      config: { ...defaultWearablesConfig(), enabled: true },
+      getStorage: async () => storage,
+      extract: null,
+      searchBackend: {
+        async search(query: string) {
+          receivedQueries.push(query);
+          // Simulate a hit whose preview carries the escaped form.
+          return [
+            {
+              path: "/memory/wearables/limitless/2026-06-10.md",
+              score: 0.9,
+              preview: "**Me (you)** [10:00]: File at C:\\\\GAPDIR\\\\report.txt",
+            },
+          ];
+        },
+      },
+    });
+
+    const results = await service.searchTranscripts("C:\\GAPDIR");
+    assert.equal(results.length, 1);
+    assert.equal(results[0].backend, "indexed");
+    assert.equal(results[0].source, "limitless");
+    // The escaped query form (doubled backslash) must reach the backend.
+    assert.ok(
+      receivedQueries.some((q) => q === "C:\\\\GAPDIR"),
+      "indexed backend must receive escaped query for backslash content",
+    );
+    // The snippet must show the DECODED original (single backslash).
+    assert.ok(
+      results[0].snippet.includes("C:\\GAPDIR"),
+      "snippet shows decoded single backslash",
+    );
+    assert.ok(
+      !results[0].snippet.includes("C:\\\\GAPDIR"),
+      "no escaped-backslash leak in snippet",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("transcriptMemories filters by wearable source and day", async () => {
   const dir = mkdtempSync(path.join(tmpdir(), "remnic-service-"));
   try {

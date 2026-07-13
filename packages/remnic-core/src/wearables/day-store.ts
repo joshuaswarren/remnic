@@ -90,7 +90,7 @@ function conversationDurationMinutes(conversation: WearableConversation): number
  * independently and the continuation is silently dropped (or worse, a
  * continuation line that looks like a heading/clock is mis-parsed).
  */
-function escapeSegmentText(text: string): string {
+export function escapeSegmentText(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
     .replace(/\n/g, "\\n")
