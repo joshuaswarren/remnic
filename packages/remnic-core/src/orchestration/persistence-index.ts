@@ -133,6 +133,7 @@ export class PersistenceIndexCoordinator {
       eventTimeSource?: "extracted" | "assumed";
     },
     entityRef?: string,
+    sourceConnector?: string,
   ): Promise<void> {
     // I/O gate: scan when there is a recall-relevant bound to backfill —
     // either an end bound (invalidAt, which expires the fact) or a corrected
@@ -172,6 +173,18 @@ export class PersistenceIndexCoordinator {
           normalizeSupersessionKey(m.frontmatter.entityRef) !== incomingEntityNorm
         ) {
           return false;
+        }
+        // Connector identity guard (review f1b89fe9): only match facts from
+        // the same source connector. In the shared namespace, multiple
+        // connectors can carry identical-content facts; without this filter
+        // .find() selects the first hash/entity match, which could be a
+        // different connector's copy, mutating it instead of the intended
+        // same-connector fact.
+        if (sourceConnector) {
+          const sc = sourceConnector.trim();
+          if ((m.frontmatter.sourceConnector?.trim() || undefined) !== sc) {
+            return false;
+          }
         }
         // Prefer the stored contentHash (what the hash index actually keys
         // on) — it is computed from contentHashSource (the raw/enriched

@@ -134,6 +134,7 @@ export interface ExtractionPersistDeps {
       eventTimeSource?: "extracted" | "assumed";
     },
     entityRef?: string,
+    sourceConnector?: string,
   ) => Promise<void>;
   saveContentHashIndexes: () => Promise<void>;
   artifactTypeForCategory: (
@@ -526,6 +527,7 @@ export class ExtractionPersistCoordinator {
                   ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
                 },
                 options.entityRef,
+                sourceContext?.sourceConnector,
               );
             }
             continue;
@@ -720,8 +722,14 @@ export class ExtractionPersistCoordinator {
                 return (m.frontmatter.sourceConnector?.trim() || undefined) === snc;
               });
             } catch (scanErr) {
+              // Review f1b89fe9: on scan error, conservatively skip backfill
+              // instead of fail-opening. A fail-open here still calls the
+              // helper, which selects the first hash/entity match — and if
+              // that match is a different connector's fact, the mutation
+              // corrupts its temporal bounds. Skipping is the safe choice.
+              sharedSameConnector = false;
               log.warn(
-                `connector-aware shared backfill scan failed; backfilling fail-open: ${scanErr instanceof Error ? scanErr.message : String(scanErr)}`,
+                `connector-aware shared backfill scan failed; skipping backfill to avoid cross-connector mutation: ${scanErr instanceof Error ? scanErr.message : String(scanErr)}`,
               );
             }
           }
@@ -743,6 +751,7 @@ export class ExtractionPersistCoordinator {
                 ...(options.eventTimeSource ? { eventTimeSource: options.eventTimeSource } : {}),
               },
               options.entityRef,
+              sourceContext?.sourceConnector,
             );
           }
           // Uj6H fix: shared-namespace temporal supersession must also run when
@@ -1022,6 +1031,7 @@ export class ExtractionPersistCoordinator {
       confidence: number;
       entityRef?: string;
       structuredAttributes?: Record<string, string>;
+      sourceConnector?: string;
       bounds: {
         invalidAt?: string;
         validFrom?: string;
@@ -1081,6 +1091,7 @@ export class ExtractionPersistCoordinator {
               dedupContent,
               args.bounds,
               args.entityRef,
+              args.sourceConnector,
             );
           } catch (err) {
             log.warn(
@@ -1108,6 +1119,7 @@ export class ExtractionPersistCoordinator {
               dedupContent,
               args.bounds,
               args.entityRef,
+              args.sourceConnector,
             );
           }
         } catch (err) {
@@ -1750,6 +1762,7 @@ export class ExtractionPersistCoordinator {
                 eventTimeSource: biTemporal.eventTimeSource,
               },
               fact.entityRef,
+              sourceContext?.sourceConnector,
             );
             // #1707 thread 1 — the source branch short-circuits (`continue`
             // below) before the promotion dedup paths run, so promoted
@@ -1764,6 +1777,7 @@ export class ExtractionPersistCoordinator {
               confidence: fact.confidence,
               entityRef: fact.entityRef,
               structuredAttributes: fact.structuredAttributes,
+              sourceConnector: sourceContext?.sourceConnector,
               bounds: {
                 invalidAt: biTemporal.validUntil,
                 validFrom: biTemporal.validFrom,

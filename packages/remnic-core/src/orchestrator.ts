@@ -823,8 +823,8 @@ export class Orchestrator {
         setLastPersistExtractionPendingReviewIds: (ids) => { this.lastPersistExtractionPendingReviewIds = ids; },
         addContentHashDedup: (targetStorage, content) => this.addContentHashDedup(targetStorage, content),
         hasContentHashDedup: (targetStorage, content) => this.hasContentHashDedup(targetStorage, content),
-        backfillTemporalBoundsOnDedupHit: (targetStorage, dedupContent, bounds, entityRef) =>
-          this.backfillTemporalBoundsOnDedupHit(targetStorage, dedupContent, bounds, entityRef),
+        backfillTemporalBoundsOnDedupHit: (targetStorage, dedupContent, bounds, entityRef, sourceConnector) =>
+          this.backfillTemporalBoundsOnDedupHit(targetStorage, dedupContent, bounds, entityRef, sourceConnector),
         saveContentHashIndexes: () => this.saveContentHashIndexes(),
         artifactTypeForCategory: (category) => this.artifactTypeForCategory(category),
         loadRoutingRules: () => this.loadRoutingRules(),
@@ -1315,12 +1315,14 @@ export class Orchestrator {
       eventTimeSource?: "extracted" | "assumed";
     },
     entityRef?: string,
+    sourceConnector?: string,
   ): Promise<void> {
     return this.persistenceIndexCoordinator.backfillTemporalBoundsOnDedupHit(
       targetStorage,
       dedupContent,
       bounds,
       entityRef,
+      sourceConnector,
     );
   }
 
