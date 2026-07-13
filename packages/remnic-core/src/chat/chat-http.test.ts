@@ -116,7 +116,7 @@ test("HTTP chat/message: hides unexpected stack traces and internal paths", asyn
         chatCompletion: async () => {
           throw new Error("secret failure at /srv/remnic/private/token-store.js");
         },
-      },
+      } as never,
       memoryDir,
       configRef: parseConfig({ memoryDir, chat: { ...DEFAULT_CHAT_CONFIG, enabled: true } }),
     });
