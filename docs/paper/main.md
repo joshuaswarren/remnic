@@ -323,27 +323,62 @@ new ones.
 ## 5. Experimental Setup
 
 **Intent.** The protocol that makes every number in §6 independently
-reproducible on one GPU. Lift from `docs/benchmarks/sota-readiness.md`.
-Cover: the two-tier protocol (Tier L local / Tier F frontier), runtime
-profiles (`runtime-profiles.ts`), the judge cache + Cohen's-κ cross-tier
-calibration, repro manifests (`repro-manifest.ts`), and seed / model / dataset
-/ commit-SHA pinning. State the **publishability rubric** (non-mock; repro
-manifest present; judge calibration reported; honest framing attached;
-leaderboard-safety / explicit-cue guards; reproducible on one GPU).
+reproducible on one GPU.
 
-- `TODO(#1573)`: cite the local-lab harness + judge cache + calibration
-  mechanism (RTX 3090 box, `local-lab` profile).
-- `TODO(#1574)`: cite the runtime profiles used (baseline / real /
-  openclaw-chain / local-lab) and the existing single-flag ablation profiles.
-- `TODO(#1728)`: define the Tier-F responder configuration honestly —
-  **Opus 4.8 via Claude Code (`claude -p`)**, `--tools ""` + `--safe-mode` +
-  isolated cwd + `--append-system-prompt`, local 3090 as judge (calibrated
-  against a small Opus-judged slice for Cohen's κ). State explicitly that this
-  is "Opus 4.8 via Claude Code," **not** a raw-API frontier number, and that
-  `tier` stays `"frontier"` with the label in the artifact `note`/model
-  metadata.
-- `TODO(#1735)`: gate the Tier-F description on the `claude-cli` bench
-  provider landing — it is a hard prerequisite, not assumed-present.
+**Two-tier protocol.** Every published number carries a tier. **Tier L
+(local)** runs entirely on one consumer GPU — an RTX 3090 (24 GB) driving
+`qwen2.5-7b-32k:latest` (Q4_K_M, 32k context) over Ollama — and exists as
+the reproducibility anchor: anyone with one GPU can rerun it. Tier-L
+artifacts must carry a hardware envelope (GPU, VRAM, quantization); the
+promotion bridge refuses a local-tier artifact without one. **Tier F
+(frontier)** carries the head-to-head accuracy claim. The Tier-F responder
+is **Opus 4.8 via Claude Code (`claude -p`)** through the `claude-cli`
+bench provider — a valid research harness and a distinct provenance path
+from the raw Anthropic API; the artifact records provider, model, harness,
+isolation settings, and invocation so the measurement path is explicit.
+Isolation is mandatory and implemented by the provider: a freshly created
+empty temp workspace, tools disabled, user/project configuration skipped,
+session persistence off, and an environment allowlist that excludes memory
+directories and unrelated secrets — without this, Claude Code inherits
+user-level instructions and silently contaminates every answer.
+
+**Runtime profiles.** The system under test is pinned by a named runtime
+profile (`runtime-profiles.ts`): `baseline` (deterministic pinned Remnic
+configuration, LCM stack), `real` (Remnic's shipped defaults plus a pinned
+config file — the MemCorrect lab profile,
+`docs/benchmarks/configs/memcorrect-lab-remnic-config.json`), `local-lab`
+(manifest-pinned operator-hosted models, temperature 0, fixed seed —
+`docs/benchmarks/configs/local-lab-3090.json`), and `openclaw-chain` (the
+full host chain). The §7 ablations flip exactly one flag against `baseline`
+per cell.
+
+**Judging and cross-tier calibration.** LoCoMo and LongMemEval judging runs
+on the local 3090 judge; judge verdicts are content-cached so re-scoring
+cached answers is free. Cross-tier credibility comes from Cohen's-κ
+calibration (`remnic bench judge-calibrate`): the local judge and the
+Tier-F gold judge (Opus via `claude -p`) re-judge a deterministic
+50-question slice of a benchmark's cached answers, and the resulting κ —
+with sample size, threshold, and a warning flag when κ falls below it — is
+persisted and stamped into every subsequent stored result whose judge
+matches the calibrated pair (`judgeCalibration` on the artifact schema).
+
+**Pinning and manifests.** Every stored result records the git commit SHA,
+seed, dataset version, runtime profile, provider/model identities, and
+benchmark options; a reproducibility manifest (`repro-manifest.ts`)
+accompanies each results directory. Artifacts are SHA-256-hashed over
+canonical JSON, and the figure pipeline renders only manifest-tracked,
+non-mock artifacts (§6), byte-identically on regeneration.
+
+**Publishability rubric.** A number enters this paper only if: (1) the
+artifact is real and committed, never a mock fixture; (2) its repro
+manifest pins seed, model + quantization, context window, dataset version,
+and runtime profile; (3) judge calibration is reported wherever a judge is
+used; (4) a one-paragraph honest framing accompanies it (what the number
+is and is not); (5) leaderboard-safety guards (explicit-cue recall rules,
+no train/test leakage) are respected; and (6) the Tier-L path is
+re-runnable on one GPU. Bounded (`--limit`/`--trial-limit`) runs are
+partial-coverage evidence and are never presented as full leaderboard
+results — the promotion bridge rejects them outright.
 
 ---
 
