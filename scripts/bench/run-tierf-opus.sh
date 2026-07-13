@@ -34,6 +34,18 @@ MANIFEST="docs/benchmarks/configs/local-lab-3090.json"
 JUDGE_ARGS=(--judge-provider ollama --judge-model "qwen2.5-7b-32k:latest" --judge-base-url "http://127.0.0.1:11434/api")
 SEED=1
 
+# judge-calibrate does NOT generate answers — it re-judges a benchmark's
+# CACHED answers from an existing FULL stored result in ~/.remnic/bench/results
+# (the Tier-L pass produced these on the lab host). Fail up front with a clear
+# message instead of erroring mid-script on a clean runner (codex P2).
+preflight_calibration_inputs() {
+  local benchmark="$1"
+  if ! ls "$HOME/.remnic/bench/results/${benchmark}-v"*.json >/dev/null 2>&1; then
+    echo "BLOCKED: judge-calibrate needs an existing FULL stored ${benchmark} result (cached answers) in ~/.remnic/bench/results — run the Tier-L pass first (see docs/benchmarks.md)." >&2
+    exit 3
+  fi
+}
+
 step() { printf '\n=== %s — %s ===\n' "$(date -u +%FT%TZ)" "$1"; }
 
 step "preflight: claude auth"
@@ -43,6 +55,10 @@ if [[ "$AUTH_OUT" != *pong* ]]; then
   echo "BLOCKED: claude CLI is not authenticated on this host. Run: claude /login" >&2
   exit 2
 fi
+
+step "preflight: cached answers for calibration"
+preflight_calibration_inputs locomo
+preflight_calibration_inputs longmemeval
 
 step "judge calibration (Cohen's kappa) — locomo"
 node scripts/run-bench-cli.mjs judge-calibrate --benchmark locomo \

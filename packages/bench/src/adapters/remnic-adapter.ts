@@ -772,6 +772,72 @@ function benchCoreMemorySource(sessionId: string): string {
   return `bench-replay-${createHash("sha256").update(sessionId).digest("hex").slice(0, 16)}`;
 }
 
+/** Structural view of a correction plan for session-scoping decisions. */
+export interface SessionScopedCorrectionPlanView {
+  affected: ReadonlyArray<{ memoryId: string }>;
+  actions: ReadonlyArray<
+    | { kind: "supersede"; loserId: string }
+    | { kind: "edit"; memoryId: string }
+    | { kind: "retract"; memoryId: string }
+    | { kind: "rescope"; memoryId: string }
+    | { kind: "redaction_rule" }
+  >;
+}
+
+export type SessionScopedCorrectionDecision =
+  | { kind: "proceed" }
+  /** Everything the planner located belongs to another benchmark session. */
+  | { kind: "no-owned-target" }
+  /** Mixed ownership — re-plan restricted to these session-owned ids. */
+  | { kind: "replan"; targetIds: string[] }
+  /** The plan drafts mutations against foreign-session memories. */
+  | { kind: "foreign-actions"; foreignIds: string[] };
+
+/**
+ * Decide how a correction plan may proceed under the bench session-scoping
+ * contract (codex P1 ×2 + cursor Medium on PR #1862). Bench "namespaces" are
+ * distinct session ids inside ONE store (real namespaces are disabled), so a
+ * plan must never mutate memories that were not extracted for the calling
+ * session:
+ *
+ *   - initial phase, everything located is foreign → `no-owned-target`
+ *     (for THIS session the correction has no target; turn-path fallback).
+ *   - initial phase, mixed ownership → `replan` with the owned subset as
+ *     explicit target ids.
+ *   - ANY phase, an action targets a foreign memory (the planner's neighbor
+ *     expansion can pull same-`entityRef` siblings from another session even
+ *     under explicit targetIds) → `foreign-actions`; the caller must fail
+ *     loudly, never apply, never silently downgrade to the turn path.
+ *
+ * `redaction_rule` actions are targetless (future-extraction rules) and are
+ * never treated as foreign.
+ */
+export function resolveSessionScopedCorrectionDecision(
+  plan: SessionScopedCorrectionPlanView,
+  ownedIds: ReadonlySet<string>,
+  phase: "initial" | "replanned",
+): SessionScopedCorrectionDecision {
+  const actionTargets: string[] = [];
+  for (const action of plan.actions) {
+    if (action.kind === "supersede") actionTargets.push(action.loserId);
+    else if (action.kind !== "redaction_rule") actionTargets.push(action.memoryId);
+  }
+  const foreignIds = actionTargets.filter((id) => !ownedIds.has(id));
+  if (phase === "initial") {
+    const ownedAffected = plan.affected.filter((entry) => ownedIds.has(entry.memoryId));
+    if (plan.affected.length > 0 && ownedAffected.length === 0) {
+      return { kind: "no-owned-target" };
+    }
+    if (ownedAffected.length < plan.affected.length) {
+      return { kind: "replan", targetIds: ownedAffected.map((entry) => entry.memoryId) };
+    }
+  }
+  if (foreignIds.length > 0) {
+    return { kind: "foreign-actions", foreignIds };
+  }
+  return { kind: "proceed" };
+}
+
 function benchEntityStructuredFactSourceDir(memoryDir: string): string {
   return path.join(memoryDir, "state", "bench-entity-structured-facts");
 }
@@ -2462,57 +2528,75 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         // for THIS session (their frontmatter.source carries the per-session
         // replay tag) so a correction can never plan/apply against another
         // benchmark session's memories and corrupt scope_precision /
-        // collateral measurements (codex P1). Limitation: replacement
-        // memories written by a previous correction carry the executor's
-        // source, not the session tag; MemCorrect issues one correct() per
-        // scenario, so no scenario re-corrects its own replacement.
-        if (plan.affected.length > 0) {
-          const sessionSource = benchCoreMemorySource(sessionId);
-          const owned = new Set(
-            (await readBenchCoreMemories(state.orchestrator))
-              .filter((memory) => memory.frontmatter.source === sessionSource)
-              .map((memory) => memory.frontmatter.id),
+        // collateral measurements (codex P1). The scoping decisions live in
+        // resolveSessionScopedCorrectionDecision (pure, unit-tested).
+        // Limitation: replacement memories written by a previous correction
+        // carry the executor's source, not the session tag; MemCorrect
+        // issues one correct() per scenario, so no scenario re-corrects its
+        // own replacement.
+        const sessionSource = benchCoreMemorySource(sessionId);
+        const owned = new Set(
+          (await readBenchCoreMemories(state.orchestrator))
+            .filter((memory) => memory.frontmatter.source === sessionSource)
+            .map((memory) => memory.frontmatter.id),
+        );
+        let replanned = false;
+        const decision = resolveSessionScopedCorrectionDecision(plan, owned, "initial");
+        if (decision.kind === "no-owned-target") {
+          // Everything the planner located belongs to another benchmark
+          // session — for THIS session the correction has no target.
+          await discardPlan(plan.planId);
+          return { applied: false };
+        }
+        if (decision.kind === "replan") {
+          // Re-plan restricted to this session's memories via explicit
+          // target ids (the planner resolves those directly).
+          await discardPlan(plan.planId);
+          replanned = true;
+          plan = await withBenchPhaseAbort(
+            access.correctionPlan({
+              text,
+              sessionKey: sessionId,
+              targetIds: decision.targetIds,
+            }),
+            control,
+            "correct",
           );
-          const ownedAffected = plan.affected.filter((entry) => owned.has(entry.memoryId));
-          if (ownedAffected.length === 0) {
-            // Everything the planner located belongs to another benchmark
-            // session — for THIS session the correction has no target.
-            await discardPlan(plan.planId);
-            return { applied: false };
-          }
-          if (ownedAffected.length < plan.affected.length) {
-            // Re-plan restricted to this session's memories via explicit
-            // target ids (the planner resolves those directly).
-            await discardPlan(plan.planId);
-            plan = await withBenchPhaseAbort(
-              access.correctionPlan({
-                text,
-                sessionKey: sessionId,
-                targetIds: ownedAffected.map((entry) => entry.memoryId),
-              }),
-              control,
-              "correct",
-            );
-          }
+        }
+        // Re-check ownership on the FINAL plan: even under explicit
+        // targetIds the planner's neighbor expansion can pull same-entityRef
+        // siblings from another session into the drafted actions (codex P1).
+        // Applying such a plan would mutate a foreign session; silently
+        // falling back to the turn path would mislabel the measurement —
+        // fail loudly instead.
+        const finalDecision = resolveSessionScopedCorrectionDecision(
+          plan,
+          owned,
+          replanned ? "replanned" : "initial",
+        );
+        if (finalDecision.kind === "foreign-actions") {
+          await discardPlan(plan.planId);
+          throw new Error(
+            `correction plan drafts actions against ${finalDecision.foreignIds.length} foreign-session memory(ies) (${finalDecision.foreignIds.join(", ")}) — the bench harness cannot scope this correction; refusing to apply or mismeasure`,
+          );
         }
         if (plan.actions.length === 0) {
-          if (plan.affected.length > 0) {
-            // The planner LOCATED candidates but drafted no action — the
-            // deterministic manual-selection fallback (classify LLM
-            // unavailable or unparsable). Silently falling back to the turn
-            // path here would measure non-contract behavior while labeling
-            // the run contract-routed (codex P1) — fail loudly instead so a
-            // misconfigured lab run cannot mismeasure.
-            await discardPlan(plan.planId);
+          await discardPlan(plan.planId);
+          if (replanned || plan.affected.length > 0) {
+            // Session-owned targets were identified (or candidates were
+            // located and the classify LLM drafted nothing — the
+            // deterministic manual-selection fallback). Silently falling
+            // back to the turn path here would measure non-contract
+            // behavior while labeling the run contract-routed (codex P1 +
+            // cursor Medium on the empty re-plan) — fail loudly instead so
+            // a degraded lab run cannot mismeasure.
             throw new Error(
-              `correction planner degraded to the manual-selection fallback (no applicable action drafted for ${plan.affected.length} candidate(s); warnings: ${plan.warnings.join("; ") || "none"}) — refusing to measure the turn path as contract behavior`,
+              `correction planner drafted no applicable action (${replanned ? "re-planned with explicit session-owned targets" : `${plan.affected.length} candidate(s) located`}; warnings: ${plan.warnings.join("; ") || "none"}) — refusing to measure the turn path as contract behavior`,
             );
           }
           // Planner found nothing to change (no matching memory yet, or a
-          // purely additive correction). Discard the empty pending plan and
-          // report not-applied so the caller can deliver the correction
-          // through the plain turn path instead.
-          await discardPlan(plan.planId);
+          // purely additive correction). Report not-applied so the caller
+          // can deliver the correction through the plain turn path instead.
           return { applied: false };
         }
         const outcome = await withBenchPhaseAbort(

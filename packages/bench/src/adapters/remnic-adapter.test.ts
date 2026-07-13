@@ -28,6 +28,7 @@ import {
   buildBenchBaselineRemnicConfig,
   createLightweightAdapter,
   createRemnicAdapter,
+  resolveSessionScopedCorrectionDecision,
 } from "./remnic-adapter.ts";
 import { createTimeoutGuardedAdapter } from "./timeout-guard.ts";
 
@@ -3756,4 +3757,89 @@ test("lightweight adapter suppresses real Remnic pipeline even when feature over
   } finally {
     await adapter.destroy();
   }
+});
+
+// ---------------------------------------------------------------------------
+// Session-scoped correction decisions (PR #1862 review — codex P1 ×2, cursor)
+// ---------------------------------------------------------------------------
+
+test("correction scoping: fully-owned plan proceeds", () => {
+  const owned = new Set(["m-1", "m-2"]);
+  const decision = resolveSessionScopedCorrectionDecision(
+    {
+      affected: [{ memoryId: "m-1" }, { memoryId: "m-2" }],
+      actions: [
+        { kind: "supersede", loserId: "m-1" },
+        { kind: "retract", memoryId: "m-2" },
+      ],
+    },
+    owned,
+    "initial",
+  );
+  assert.deepEqual(decision, { kind: "proceed" });
+});
+
+test("correction scoping: foreign-only plan reports no owned target", () => {
+  const decision = resolveSessionScopedCorrectionDecision(
+    {
+      affected: [{ memoryId: "twin-1" }],
+      actions: [{ kind: "retract", memoryId: "twin-1" }],
+    },
+    new Set(["m-1"]),
+    "initial",
+  );
+  assert.deepEqual(decision, { kind: "no-owned-target" });
+});
+
+test("correction scoping: mixed ownership demands a replan with the owned subset", () => {
+  const decision = resolveSessionScopedCorrectionDecision(
+    {
+      affected: [{ memoryId: "m-1" }, { memoryId: "twin-1" }],
+      actions: [{ kind: "retract", memoryId: "m-1" }],
+    },
+    new Set(["m-1"]),
+    "initial",
+  );
+  assert.deepEqual(decision, { kind: "replan", targetIds: ["m-1"] });
+});
+
+test("correction scoping: replanned plan with foreign action targets is rejected", () => {
+  // Neighbor expansion pulled a same-entityRef twin back in despite explicit
+  // targetIds — the caller must fail loudly, never apply.
+  const decision = resolveSessionScopedCorrectionDecision(
+    {
+      affected: [{ memoryId: "m-1" }, { memoryId: "twin-1" }],
+      actions: [
+        { kind: "edit", memoryId: "m-1" },
+        { kind: "retract", memoryId: "twin-1" },
+      ],
+    },
+    new Set(["m-1"]),
+    "replanned",
+  );
+  assert.deepEqual(decision, { kind: "foreign-actions", foreignIds: ["twin-1"] });
+});
+
+test("correction scoping: targetless redaction rules are never foreign", () => {
+  const decision = resolveSessionScopedCorrectionDecision(
+    {
+      affected: [{ memoryId: "m-1" }],
+      actions: [{ kind: "redaction_rule" }],
+    },
+    new Set(["m-1"]),
+    "replanned",
+  );
+  assert.deepEqual(decision, { kind: "proceed" });
+});
+
+test("correction scoping: initial fully-owned plan with a foreign rescope target is rejected", () => {
+  const decision = resolveSessionScopedCorrectionDecision(
+    {
+      affected: [{ memoryId: "m-1" }],
+      actions: [{ kind: "rescope", memoryId: "twin-1" }],
+    },
+    new Set(["m-1"]),
+    "initial",
+  );
+  assert.deepEqual(decision, { kind: "foreign-actions", foreignIds: ["twin-1"] });
 });
