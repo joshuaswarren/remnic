@@ -164,7 +164,7 @@ export interface ArchitectureSurfaceStorage {
   updateMemory(
     id: string,
     newContent: string,
-    options?: { supersedes?: string; lineage?: string[]; actor?: string },
+    options?: { supersedes?: string; lineage?: string[]; actor?: string; sourceConnector?: string },
   ): Promise<boolean>;
 }
 
@@ -314,6 +314,7 @@ async function architectureRefresh(
     await ctx.versioning.snapshotIfExists(existing);
     const updated = await storage.updateMemory(existing.frontmatter.id, cardContent, {
       actor: "coding-architecture-refresh",
+      ...(ctx.sourceConnector ? { sourceConnector: ctx.sourceConnector } : {}),
     });
     if (!updated) {
       log.warn(

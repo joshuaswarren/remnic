@@ -4711,7 +4711,7 @@ export class StorageManager {
   async updateMemory(
     id: string,
     newContent: string,
-    options?: { supersedes?: string; lineage?: string[]; actor?: string }
+    options?: { supersedes?: string; lineage?: string[]; actor?: string; sourceConnector?: string }
   ): Promise<boolean> {
     const memories = await this.readAllMemories();
     const memory = memories.find((m) => m.frontmatter.id === id);
@@ -4726,6 +4726,7 @@ export class StorageManager {
       updated: new Date().toISOString(),
       supersedes: options?.supersedes ?? memory.frontmatter.supersedes,
       lineage: mergedLineage.length > 0 ? mergedLineage : undefined,
+      ...(options?.sourceConnector ? { sourceConnector: options.sourceConnector } : {}),
     };
     const sanitized = sanitizeMemoryContent(newContent);
     if (!sanitized.clean) {

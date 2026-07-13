@@ -33,6 +33,7 @@ import type { ResolvedScopeProfilePlan } from "./namespaces/scope-profiles.js";
 /** Source-context shape accepted by persistExtraction (connector subset). */
 interface TestSourceContext {
   sourceConnector?: string;
+  validAt?: string;
 }
 
 /** Orchestrator fields the tests touch (all exist on the real instance). */
@@ -863,5 +864,139 @@ test("shared promotion (QPAn-): same-connector fact skips promotion when superse
     sharedMems.length,
     1,
     "same-connector shared promotion must be skipped",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Regression: shared-promotion temporal backfill respects connector identity
+// (codex finding: temporal backfill occurred before connector mismatch check).
+// The shared namespace's backfillTemporalBoundsOnDedupHit must NOT patch
+// temporal bounds onto a different-connector fact. Same-connector facts
+// still get backfilled as designed.
+// ---------------------------------------------------------------------------
+
+test("shared backfill: different-connector shared fact is NOT temporal-patched", async () => {
+  const { orchestrator, storage } = await makeDedupOrchestrator({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    temporalBiTemporal: true,
+  });
+  const scopePlan = makeSharedPromotionScopePlan();
+  const body =
+    "The CDN edge cache invalidates stale assets every forty-five minutes.";
+
+  // Pre-write a fact to the SHARED namespace with connector "chatgpt"
+  // and NO temporal bounds (invalid_at absent).
+  const sharedStorage = await orchestrator.getStorage("shared");
+  await sharedStorage.writeMemory("fact", body, {
+    confidence: 0.9,
+    sourceConnector: "chatgpt",
+  });
+
+  // Verify the pre-written fact has no invalid_at.
+  const sharedBefore = await sharedStorage.readAllMemories();
+  const preFact = sharedBefore.find((m: MemoryFile) => m.frontmatter.sourceConnector === "chatgpt");
+  assert.ok(preFact, "pre-written chatgpt fact exists");
+  assert.equal(preFact!.frontmatter.invalid_at, undefined, "no invalid_at before extraction");
+
+  // Extract the SAME content with a DIFFERENT connector and an eventTime
+  // expression that resolves a validUntil bound.
+  const ids = await orchestrator.persistExtraction(
+    {
+      facts: [{
+        content: body,
+        category: "fact" as const,
+        tags: [],
+        confidence: 0.9,
+        eventTime: "until 2025-06",
+      }],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    },
+    storage,
+    null,
+    { sourceConnector: "codex-cli", validAt: "2025-07-01T00:00:00.000Z" },
+    "default",
+    scopePlan,
+  );
+  assert.equal(ids.length, 1, "source write must succeed");
+
+  // The chatgpt shared fact must NOT have been temporal-patched —
+  // different connector means no cross-connector backfill.
+  const sharedAfter = await sharedStorage.readAllMemories();
+  const chatgptFact = sharedAfter.find(
+    (m: MemoryFile) => m.frontmatter.sourceConnector === "chatgpt",
+  );
+  assert.ok(chatgptFact, "chatgpt shared fact still exists");
+  assert.equal(
+    chatgptFact!.frontmatter.invalid_at,
+    undefined,
+    "chatgpt fact must NOT get invalid_at from codex-li backfill",
+  );
+
+  // The codex-li fact must have its OWN promoted shared copy with bounds.
+  const codexFact = sharedAfter.find(
+    (m: MemoryFile) => m.frontmatter.sourceConnector === "codex-cli",
+  );
+  assert.ok(codexFact, "codex-li shared copy was promoted");
+  assert.ok(
+    codexFact!.frontmatter.invalid_at,
+    "codex-li shared copy has temporal bounds from its own extraction",
+  );
+});
+
+test("shared backfill: same-connector shared fact IS temporal-patched", async () => {
+  const { orchestrator, storage } = await makeDedupOrchestrator({
+    namespacesEnabled: true,
+    defaultNamespace: "default",
+    sharedNamespace: "shared",
+    temporalBiTemporal: true,
+  });
+  const scopePlan = makeSharedPromotionScopePlan();
+  const body =
+    "The feature flag service polls configuration updates every ninety seconds.";
+
+  // Pre-write a fact to shared with connector "chatgpt" and NO temporal bounds.
+  const sharedStorage = await orchestrator.getStorage("shared");
+  await sharedStorage.writeMemory("fact", body, {
+    confidence: 0.9,
+    sourceConnector: "chatgpt",
+  });
+
+  // Extract SAME content with SAME connector and an eventTime resolving validUntil.
+  await orchestrator.persistExtraction(
+    {
+      facts: [{
+        content: body,
+        category: "fact" as const,
+        tags: [],
+        confidence: 0.9,
+        eventTime: "until 2025-03",
+      }],
+      entities: [],
+      relationships: [],
+      questions: [],
+      profileUpdates: [],
+    },
+    storage,
+    null,
+    { sourceConnector: "chatgpt", validAt: "2025-07-01T00:00:00.000Z" },
+    "default",
+    scopePlan,
+  );
+
+  // Same connector → backfill MUST fire, patching invalid_at onto the
+  // existing shared fact.
+  const sharedAfter = await sharedStorage.readAllMemories();
+  const chatgptFact = sharedAfter.find(
+    (m: MemoryFile) => m.frontmatter.sourceConnector === "chatgpt",
+  );
+  assert.ok(chatgptFact, "chatgpt shared fact exists");
+  assert.ok(
+    chatgptFact!.frontmatter.invalid_at,
+    "same-connector shared fact must get invalid_at backfilled",
   );
 });

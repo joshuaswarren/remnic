@@ -701,11 +701,37 @@ export class ExtractionPersistCoordinator {
           options.category === "fact" &&
           (await sharedStorage.hasFactContentHash(dedupContent))
         ) {
+          // Connector identity gate: only backfill temporal bounds onto a
+          // same-connector fact.  Different connectors with identical content
+          // must not cross-patch each other's temporal fields (codex finding:
+          // temporal backfill occurred before connector mismatch check).
+          // Fail-open: on scan error backfill proceeds (preserving prior
+          // best-effort behaviour).
+          let sharedSameConnector = true;
+          if (options.invalidAt || options.validAt) {
+            try {
+              const sharedMems = await sharedStorage.readAllMemories();
+              const snc = sourceContext?.sourceConnector?.trim() || undefined;
+              sharedSameConnector = sharedMems.some((m) => {
+                if (m.frontmatter.category !== "fact") return false;
+                if ((m.frontmatter.status ?? "active") !== "active") return false;
+                if (normalizeStoredHashSource(m.content ?? "") !==
+                  ContentHashIndex.normalizeContent(dedupContent)) return false;
+                return (m.frontmatter.sourceConnector?.trim() || undefined) === snc;
+              });
+            } catch (scanErr) {
+              log.warn(
+                `connector-aware shared backfill scan failed; backfilling fail-open: ${scanErr instanceof Error ? scanErr.message : String(scanErr)}`,
+              );
+            }
+          }
           // #1671 — backfill bi-temporal bounds onto the existing shared copy
           // before the supersession short-circuit. Covers all return paths below
           // (supersession-hit, catch-skip, and the no-supersession short-circuit)
           // in one shot. Best-effort / fail-open; the helper gates on invalidAt.
-          if (options.invalidAt || options.validAt) {
+          // Connector gate: skip backfill when no same-connector active fact
+          // exists so a different connector's copy is not mutated.
+          if (sharedSameConnector && (options.invalidAt || options.validAt)) {
             await this.deps.backfillTemporalBoundsOnDedupHit(
               sharedStorage,
               dedupContent,
