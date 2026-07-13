@@ -9,6 +9,7 @@ import {
   hashTranscriptBody,
   isValidTranscriptDate,
   parseDayTranscript,
+  parseTranscriptSegmentLine,
   serializeDayTranscript,
   TRANSCRIPT_FORMAT_VERSION,
 } from "./day-store.js";
@@ -193,7 +194,7 @@ test("decodeTranscriptBody recovers original segment text from a composed body (
 test("speaker label with markdown delimiters round-trips through compose → parse and decodeTranscriptBody (#1849)", () => {
   // A speaker label containing `**`, `[`, `]` — the exact characters that
   // delimit a segment line. Without safe serialization the label breaks
-  // TRANSCRIPT_SEGMENT_LINE parsing; with escape/unescape it round-trips
+  // parseTranscriptSegmentLine parsing; with escape/unescape it round-trips
   // losslessly through composition, parsing, and display decoding.
   const registry = emptySpeakerRegistry();
   registry.selfName = "Me";
@@ -329,4 +330,60 @@ test("composeDayTranscriptMeta stamps formatVersion and serialize/parse round-tr
   assert.ok(legacyParsed);
   assert.equal(legacyParsed!.meta.formatVersion, undefined);
   assert.equal(bodyIsEscaped(legacyParsed!.meta), false);
+});
+
+test("parseTranscriptSegmentLine extracts label, clock, and text (#1849)", () => {
+  const m = parseTranscriptSegmentLine("**Pat** [09:30]: Hello world.");
+  assert.deepEqual(m, { label: "Pat", clock: "09:30", text: "Hello world." });
+});
+
+test("parseTranscriptSegmentLine handles single-char label and empty text", () => {
+  const m = parseTranscriptSegmentLine("**X** [00:00]: ");
+  assert.deepEqual(m, { label: "X", clock: "00:00", text: "" });
+});
+
+test("parseTranscriptSegmentLine preserves backslash escape sequences in label/text", () => {
+  // Escaped labels/text from the escape-aware serializer carry literal
+  // backslash sequences that must survive the linear parser unchanged.
+  const m = parseTranscriptSegmentLine("**Pat \\*Smith\\*** [09:00]: Hello \\n world.");
+  assert.ok(m);
+  assert.equal(m!.label, "Pat \\*Smith\\*");
+  assert.equal(m!.clock, "09:00");
+  assert.equal(m!.text, "Hello \\n world.");
+});
+
+test("parseTranscriptSegmentLine returns null for non-segment lines", () => {
+  assert.equal(parseTranscriptSegmentLine(""), null);
+  assert.equal(parseTranscriptSegmentLine("not a segment"), null);
+  assert.equal(parseTranscriptSegmentLine("**no close"), null);
+  assert.equal(parseTranscriptSegmentLine("**label** no bracket"), null);
+  assert.equal(parseTranscriptSegmentLine("**label** [clock] no colon-space"), null);
+  assert.equal(parseTranscriptSegmentLine("**label** [clock]:no space"), null);
+  assert.equal(parseTranscriptSegmentLine("**label** []: text"), null);
+});
+
+test("parseTranscriptSegmentLine is linear-safe on adversarial repeated delimiters (#1849)", () => {
+  // A line with many '*' chars must not cause polynomial backtracking.
+  // The linear scan finds the first '**' followed by \s[ — or returns
+  // null — without exploring exponential alternatives.
+  const longLabel = "a".repeat(10_000);
+  const adversarial = `**${longLabel}** [09:00]: text`;
+  const m = parseTranscriptSegmentLine(adversarial);
+  assert.ok(m, "long label with valid delimiters must parse");
+  assert.equal(m!.label, longLabel);
+  assert.equal(m!.clock, "09:00");
+  assert.equal(m!.text, "text");
+
+  // All stars, no closing \s[ — must return null quickly.
+  const noClose = "**" + "*".repeat(10_000);
+  assert.equal(parseTranscriptSegmentLine(noClose), null);
+
+  // All stars followed by valid suffix — the first '**' positions are
+  // all stars (not followed by \s), so the scan walks the entire run
+  // in O(n) and finds the '** ' before '['.
+  const allStars = "**" + "*".repeat(10_000) + "** [09:00]: text";
+  const m2 = parseTranscriptSegmentLine(allStars);
+  assert.ok(m2, "star-prefixed line with valid delimiters must parse");
+  assert.equal(m2!.clock, "09:00");
+  assert.equal(m2!.text, "text");
 });

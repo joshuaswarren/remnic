@@ -18,7 +18,7 @@
 
 import {
   isValidTranscriptDate,
-  TRANSCRIPT_SEGMENT_LINE,
+  parseTranscriptSegmentLine,
   unescapeSegmentText,
   unescapeSpeakerLabel,
 } from "../day-store.js";
@@ -192,10 +192,10 @@ export function reconstructFusionInputs(
 
       if (LOCATION_LINE.exec(line) !== null) continue;
 
-      const segmentMatch = TRANSCRIPT_SEGMENT_LINE.exec(line);
+      const segmentMatch = parseTranscriptSegmentLine(line);
       if (segmentMatch !== null) {
         if (current === null) continue; // segment outside any conversation
-        const [, label, clock, rawText] = segmentMatch;
+        const { label, clock, text: rawText } = segmentMatch;
         const text = escaped ? unescapeSegmentText(rawText) : rawText;
         const segMin = clockMinutesOfDay(clock);
         // A segment clock EARLIER than the conversation start clock MAY

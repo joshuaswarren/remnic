@@ -232,7 +232,16 @@ export function parseFusionDay(raw: string): FusedDayFile | null {
   let conversations: FusedWearableConversation[] = [];
   let parseOk = true;
   const bodyTrimmed = body.trim();
-  if (bodyTrimmed.length > 0) {
+  if (bodyTrimmed.length === 0) {
+    // An existing artifact whose body is blank or whitespace-only (no
+    // JSON at all) is corrupt — it is NOT a valid empty `[]`. The
+    // serializer always writes `JSON.stringify(conversations, null, 2)`
+    // which produces `[]` for zero conversations, so a blank body means
+    // the file was truncated, partially written, or manually emptied.
+    // Flag parseOk:false so fusedConversations() surfaces the corruption
+    // and fuseDay() repairs it (issue #1849).
+    parseOk = false;
+  } else {
     try {
       const parsed: unknown = JSON.parse(bodyTrimmed);
       if (Array.isArray(parsed) && parsed.every(isFusedWearableConversation)) {

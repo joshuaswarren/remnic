@@ -69,11 +69,13 @@ export {
   hashTranscriptBody,
   isValidTranscriptDate,
   parseDayTranscript,
+  parseTranscriptSegmentLine,
   serializeDayTranscript,
   TRANSCRIPT_FORMAT_VERSION,
   unescapeSegmentText,
   unescapeSpeakerLabel,
   WEARABLES_DIR_NAME,
+  type TranscriptSegmentMatch,
 } from "./day-store.js";
 export {
   emptySyncState,

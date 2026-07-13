@@ -46,13 +46,114 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 export const TRANSCRIPT_FORMAT_VERSION = 2;
 
 /**
- * A rendered transcript segment line: `**label** [clock]: text`. Shared
- * by the composer (escape), the display/search decoder
- * (`decodeTranscriptBody`), and the fusion reconstruct parser so all
- * three agree on what a segment line is — no divergent parsing across
- * the view/search/index surfaces (#1849).
+ * Result of parsing a rendered transcript segment line.
  */
-export const TRANSCRIPT_SEGMENT_LINE = /^\*\*(.+?)\*\*\s\[(.+?)\]:\s(.*)$/;
+export interface TranscriptSegmentMatch {
+  /** Speaker label text between the `**` delimiters. */
+  label: string;
+  /** Clock text between the `[` `]` delimiters. */
+  clock: string;
+  /** Segment text after the colon. */
+  text: string;
+}
+
+/**
+ * Test a single character code point against the JavaScript regex `\s`
+ * whitespace class without invoking a regex. Used by the linear segment
+ * line parser so no quantified pattern is ever evaluated on untrusted
+ * transcript content (CodeQL polynomial-redos, issue #1849).
+ */
+function isRegexWhitespace(code: number): boolean {
+  return (
+    (code >= 0x09 && code <= 0x0d) ||
+    code === 0x20 ||
+    code === 0xa0 ||
+    code === 0x1680 ||
+    (code >= 0x2000 && code <= 0x200a) ||
+    code === 0x2028 ||
+    code === 0x2029 ||
+    code === 0x202f ||
+    code === 0x205f ||
+    code === 0x3000 ||
+    code === 0xfeff
+  );
+}
+
+/**
+ * Parse a rendered transcript segment line (`**label** [clock]: text`)
+ * into its three components using a linear, bounded scan — a CodeQL-safe
+ * replacement for the polynomial-risk regex that previously matched this
+ * format. Returns null when the line is not a segment line.
+ *
+ * The scan finds the FIRST occurrence of each structural delimiter
+ * (`**` after the label, `]` after the clock) exactly as the original
+ * non-greedy regex did, and verifies the fixed separator characters
+ * (`\s`, `[`, `:`, `\s`) by single-character code-point comparison.
+ * No quantified regex is evaluated on the line (#1849).
+ *
+ * Escaped labels (formatVersion >= 2) never contain an unescaped `**`,
+ * `[`, or `]`, and rendered clocks are always `HH:MM` / `--:--`, so the
+ * first delimiter is always the correct one for every well-formed
+ * transcript. Legacy unescaped labels are used verbatim by the caller
+ * and parsed identically here.
+ */
+export function parseTranscriptSegmentLine(
+  line: string,
+): TranscriptSegmentMatch | null {
+  // Must start with '**'.
+  if (!line.startsWith("**")) return null;
+
+  // Find the closing '**' of the label: the first '**' at index >= 3
+  // (label is at least 1 char) that is immediately followed by \s and
+  // then '['. This mirrors the non-greedy regex: the engine tries the
+  // shortest label first and extends only when the subsequent fixed
+  // delimiters do not line up. An escaped label ending with '\*' is
+  // correctly handled because the spurious '**' (escape-star + close-
+  // star) is not followed by \s and the scan continues.
+  let labelEnd = -1;
+  for (let i = 3; i < line.length; i++) {
+    if (
+      line.charCodeAt(i) !== 0x2a /* '*' */ ||
+      i + 3 >= line.length ||
+      line.charCodeAt(i + 1) !== 0x2a /* '*' */ ||
+      !isRegexWhitespace(line.charCodeAt(i + 2)) ||
+      line.charCodeAt(i + 3) !== 0x5b /* '[' */
+    ) {
+      continue;
+    }
+    labelEnd = i;
+    break;
+  }
+  if (labelEnd === -1) return null;
+
+  const label = line.slice(2, labelEnd);
+  // Clock content starts after the closing '**', the \s, and the '['.
+  const clockStart = labelEnd + 4;
+
+  // Find the closing ']' of the clock: the first ']' at index >=
+  // clockStart + 1 (clock is at least 1 char) that is immediately
+  // followed by ':' and \s — matching the non-greedy regex.
+  let clockEnd = -1;
+  for (let i = clockStart + 1; i < line.length; i++) {
+    if (
+      line.charCodeAt(i) !== 0x5d /* ']' */ ||
+      i + 2 >= line.length ||
+      line.charCodeAt(i + 1) !== 0x3a /* ':' */ ||
+      !isRegexWhitespace(line.charCodeAt(i + 2))
+    ) {
+      continue;
+    }
+    clockEnd = i;
+    break;
+  }
+  if (clockEnd === -1) return null;
+
+  return {
+    label,
+    clock: line.slice(clockStart, clockEnd),
+    text: line.slice(clockEnd + 3),
+  };
+}
 
 export function isValidTranscriptDate(date: string): boolean {
   if (!DATE_PATTERN.test(date)) return false;
@@ -137,7 +238,7 @@ export function unescapeSegmentText(text: string): string {
  * Escape a speaker label for the line-based markdown format so that
  * markdown-delimiter characters in an arbitrary user/provider label
  * (`**`, `[`, `]`), the escape character (`\`), and embedded newlines/
- * carriage returns cannot break `TRANSCRIPT_SEGMENT_LINE` parsing.
+ * carriage returns cannot break `parseTranscriptSegmentLine` parsing.
  * Without this, a label containing `**` (or `** [clock]:`) can make the
  * non-greedy delimiter match land on the wrong `**` and mis-parse the
  * clock/text — or fail to parse the line at all. Reversed by
@@ -214,9 +315,9 @@ export function decodeTranscriptBody(body: string, escaped = false): string {
   if (!escaped) return body;
   const lines = body.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    const match = TRANSCRIPT_SEGMENT_LINE.exec(lines[i]);
+    const match = parseTranscriptSegmentLine(lines[i]);
     if (match === null) continue;
-    const [, label, clock, rawText] = match;
+    const { label, clock, text: rawText } = match;
     const decodedText = unescapeSegmentText(rawText);
     const decodedLabel = unescapeSpeakerLabel(label);
     if (decodedText === rawText && decodedLabel === label) continue;

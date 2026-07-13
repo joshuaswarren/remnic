@@ -831,6 +831,41 @@ test("parseFusionDay rejects corrupt bodies even with matching hash + count", ()
   }
 });
 
+test("parseFusionDay rejects a blank or whitespace-only body as corrupt (#1849)", () => {
+  // An existing artifact whose body is blank/whitespace-only (frontmatter
+  // present but no JSON) is corrupt — NOT a valid empty `[]`. The
+  // serializer always writes JSON.stringify(conversations, null, 2) which
+  // produces "[]" for zero conversations, so a blank body means the file
+  // was truncated, partially written, or manually emptied.
+  const header = [
+    "---",
+    "kind: wearable-fusion",
+    `date: ${JSON.stringify(DATE)}`,
+    "sourceCount: 0",
+    "conversationCount: 0",
+    'contentHash: "abc"',
+    'bodyHash: "def"',
+    'fusedAt: "2026-06-11T00:00:00.000Z"',
+    "---",
+    "",
+  ].join("\n");
+  for (const body of ["", "   ", "\n\n", "\t"]) {
+    const parsed = parseFusionDay(`${header}${body}\n`);
+    assert.ok(parsed, `expected non-null parse for blank body`);
+    assert.equal(
+      parsed!.parseOk,
+      false,
+      `blank/whitespace body must be corrupt: ${JSON.stringify(body)}`,
+    );
+    assert.equal(parsed!.conversations.length, 0);
+  }
+  // A valid serialized [] remains accepted with parseOk true.
+  const validParsed = parseFusionDay(`${header}[]\n`);
+  assert.ok(validParsed);
+  assert.equal(validParsed!.parseOk, true);
+  assert.equal(validParsed!.conversations.length, 0);
+});
+
 test("reconstructFusionInputs parses a rendered transcript body", () => {
   const body = [
     "# limitless transcript — 2026-06-10",
@@ -2482,7 +2517,7 @@ test("implausible earlier segment does not span the day: neighbor clusters, not 
 test("speaker label containing markdown delimiters round-trips through compose → reconstruct (#1849)", () => {
   // A user-defined speaker label with `**`, `[`, and `]` — the exact
   // characters that delimit a segment line. Without safe serialization the
-  // `**` (or `[clock]`) inside the label can break TRANSCRIPT_SEGMENT_LINE
+  // `**` (or `[clock]`) inside the label can break parseTranscriptSegmentLine
   // parsing; with escape/unescape the label survives losslessly.
   const registry = emptySpeakerRegistry();
   registry.speakers["bee:SPEAKER_01"] = {
