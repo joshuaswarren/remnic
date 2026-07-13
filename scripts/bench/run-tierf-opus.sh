@@ -28,7 +28,10 @@ cd "$(dirname "$0")/../.."
 LOG_DIR="${TIERF_LOG_DIR:-$HOME/tierf-logs}"
 mkdir -p "$LOG_DIR"
 MANIFEST="docs/benchmarks/configs/local-lab-3090.json"
-JUDGE_ARGS=(--judge-provider ollama --judge-model "qwen2.5-7b-32k:latest" --judge-base-url "http://127.0.0.1:11434")
+# The bench ollama provider appends /generate and /tags directly to baseUrl —
+# it needs the /api form (the local-lab manifest path normalizes this, the raw
+# CLI flag does not).
+JUDGE_ARGS=(--judge-provider ollama --judge-model "qwen2.5-7b-32k:latest" --judge-base-url "http://127.0.0.1:11434/api")
 SEED=1
 
 step() { printf '\n=== %s — %s ===\n' "$(date -u +%FT%TZ)" "$1"; }
