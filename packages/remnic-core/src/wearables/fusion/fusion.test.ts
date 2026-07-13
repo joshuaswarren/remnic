@@ -2363,3 +2363,178 @@ test("reconstruct never attributes a non-self speaker whose name ends in (you) a
   assert.equal(segs[1]!.speaker, "Pat");
   assert.equal(segs[1]!.isSelf, false);
 });
+
+test("reconstruct does NOT roll an implausible earlier SEGMENT clock into the next day (#1849)", () => {
+  // start 14:00, a segment clocked at 13:00 (provider skew / a clock that
+  // ran backwards). The implied wrap (14:00 -> midnight -> 13:00) is ~23h,
+  // far past the plausible-conversation bound. The segment must STAY on the
+  // same date so it precedes the start and the downstream cluster clamp
+  // collapses it — NOT roll to the next day and stretch a ~23h interval
+  // that broadly clusters unrelated neighbors.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 14:00–15:00 · Sync (conversation c1)",
+    "",
+    "**Me (you)** [14:00]: Opening remark.",
+    "**Jane** [13:00]: Provider-skewed earlier clock.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T14:00:00.000Z");
+  // The 13:00 segment is NOT rolled to 2026-06-11; it stays on 2026-06-10.
+  const skewed = conv.segments.find((s) => s.text === "Provider-skewed earlier clock.");
+  assert.ok(skewed, "provider-skewed segment present");
+  assert.equal(
+    skewed!.startIso,
+    "2026-06-10T13:00:00.000Z",
+    "implausible earlier segment stays on the same date",
+  );
+  // It precedes the conversation start, leaving it for the cluster clamp.
+  assert.ok(
+    Date.parse(skewed!.startIso!) < Date.parse(conv.startIso!),
+    "same-date earlier segment precedes the start (ready for clamping)",
+  );
+});
+
+test("reconstruct still rolls a plausible post-midnight SEGMENT clock into the next day (#1849)", () => {
+  // start 23:55, a segment at 00:05 wraps only 10 min — well within the
+  // plausible bound. The segment MUST roll forward despite the heading end
+  // clock also being plausible; the segment-vs-start plausibility gate must
+  // not over-tighten and suppress genuine midnight wraps.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 23:55–00:10 · Late (conversation c1)",
+    "",
+    "**Me (you)** [23:58]: Still talking.",
+    "**Jane** [00:05]: After midnight.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T23:55:00.000Z");
+  assert.equal(conv.endIso, "2026-06-11T00:10:00.000Z");
+  const isos = conv.segments.map((s) => s.startIso);
+  assert.ok(
+    isos.includes("2026-06-10T23:58:00.000Z"),
+    "pre-midnight segment stays on the rendered date",
+  );
+  assert.ok(
+    isos.includes("2026-06-11T00:05:00.000Z"),
+    "plausible post-midnight segment rolls to the next day",
+  );
+});
+
+test("reconstruct rolls a long-but-plausible post-midnight segment (boundary of the wrap bound) (#1849)", () => {
+  // start 20:00, segment 01:00: implied wrap = 240 + 60 = 300 min, well
+  // within the 12h bound. Must still roll.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 20:00–--:-- · Evening (conversation c1)",
+    "",
+    "**Jane** [01:00]: Past midnight, long evening.",
+    "",
+  ].join("\n");
+  const parsed = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  assert.equal(parsed.length, 1);
+  const conv = parsed[0]!;
+  assert.equal(conv.startIso, "2026-06-10T20:00:00.000Z");
+  assert.equal(
+    conv.segments[0]!.startIso,
+    "2026-06-11T01:00:00.000Z",
+    "long-but-plausible wrap (5h) still rolls to the next day",
+  );
+});
+
+test("implausible earlier segment does not span the day: neighbor clusters, not swallows (#1849)", () => {
+  // A 14:00-start conversation with a 13:00 provider-skewed segment. The
+  // segment stays same-date (13:00 < start 14:00) and is clamped by the
+  // interval to [14:00, 14:00]. A different-source neighbor at 14:03 (within
+  // the 5-min gap) clusters with it. If the segment had wrongly rolled to
+  // 2026-06-11T13:00 the window would span ~23h and swallow far-flung
+  // neighbors instead of clustering only nearby ones.
+  const body = [
+    "# limitless transcript — 2026-06-10",
+    "",
+    "## 14:00–15:00 · Sync (conversation c1)",
+    "",
+    "**Me (you)** [14:00]: Roadmap.",
+    "**Jane** [13:00]: Skew.",
+    "",
+  ].join("\n");
+  const limitless = reconstructFusionInputs(DATE, [{ source: "limitless", body }]);
+  const bee: FusionConversationInput = {
+    source: "bee",
+    conversationId: "c1",
+    startIso: "2026-06-10T14:03:00.000Z",
+    endIso: "2026-06-10T14:08:00.000Z",
+    segments: [{ speaker: "Me (you)", isSelf: true, text: "Neighbor." }],
+  };
+  const clusters = clusterConversations([...limitless, bee]);
+  assert.equal(clusters.length, 1, "clamped window clusters the nearby neighbor");
+});
+
+test("speaker label containing markdown delimiters round-trips through compose → reconstruct (#1849)", () => {
+  // A user-defined speaker label with `**`, `[`, and `]` — the exact
+  // characters that delimit a segment line. Without safe serialization the
+  // `**` (or `[clock]`) inside the label can break TRANSCRIPT_SEGMENT_LINE
+  // parsing; with escape/unescape the label survives losslessly.
+  const registry = emptySpeakerRegistry();
+  registry.speakers["bee:SPEAKER_01"] = {
+    name: 'A**B [weird]: label',
+    updatedAt: "2026-06-10T00:00:00Z",
+  };
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [
+        { text: "I am the wearer.", isWearer: true, startIso: "2026-06-10T09:00:30.000Z" },
+        { text: "I am tricky.", speakerKey: "SPEAKER_01", startIso: "2026-06-10T09:01:00.000Z" },
+      ],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, registry);
+  // The stored body MUST serialize the delimiters safely (no raw ** [ ]: ).
+  assert.ok(
+    !/\*\*A\*\*B/.test(body),
+    "label delimiters are escaped in the stored body: " + body,
+  );
+  // Reconstruct decodes the label back to the original form.
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  assert.equal(parsed.length, 1);
+  const segs = parsed[0]!.segments;
+  assert.equal(segs.length, 2);
+  assert.equal(segs[0]!.speaker, "Me (you)");
+  assert.equal(segs[0]!.isSelf, true);
+  assert.equal(segs[1]!.speaker, 'A**B [weird]: label', "delimited label round-trips losslessly");
+  assert.equal(segs[1]!.isSelf, false);
+});
+
+test("speaker label A**B alone round-trips through compose → reconstruct (#1849)", () => {
+  // Minimal repro from the contract: a label that is exactly `A**B`.
+  const registry = emptySpeakerRegistry();
+  registry.speakers["bee:SPEAKER_01"] = {
+    name: "A**B",
+    updatedAt: "2026-06-10T00:00:00Z",
+  };
+  const conversations = [
+    conversation(
+      "bee",
+      "c1",
+      "2026-06-10T09:00:00.000Z",
+      [{ text: "Hello.", speakerKey: "SPEAKER_01", startIso: "2026-06-10T09:00:30.000Z" }],
+      { endIso: "2026-06-10T09:10:00.000Z" },
+    ),
+  ];
+  const body = composeDayTranscriptBody("bee", DATE, "UTC", conversations, registry);
+  const parsed = reconstructFusionInputs(DATE, [{ source: "bee", body }]);
+  assert.equal(parsed[0]!.segments[0]!.speaker, "A**B");
+});

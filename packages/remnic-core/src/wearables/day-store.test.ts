@@ -186,3 +186,64 @@ test("decodeTranscriptBody recovers original segment text from a composed body (
     "decoded body recovers the original segment text",
   );
 });
+
+
+test("speaker label with markdown delimiters round-trips through compose → parse and decodeTranscriptBody (#1849)", () => {
+  // A speaker label containing `**`, `[`, `]` — the exact characters that
+  // delimit a segment line. Without safe serialization the label breaks
+  // TRANSCRIPT_SEGMENT_LINE parsing; with escape/unescape it round-trips
+  // losslessly through composition, parsing, and display decoding.
+  const registry = emptySpeakerRegistry();
+  registry.selfName = "Me";
+  registry.speakers["bee:SPEAKER_01"] = {
+    name: "A**B",
+    updatedAt: "2026-06-10T00:00:00Z",
+  };
+  const conversations: WearableConversation[] = [
+    {
+      id: "c1",
+      source: "bee",
+      startIso: "2026-06-10T09:00:00Z",
+      segments: [
+        { speakerKey: "user", isWearer: true, text: "Hi there.", startIso: "2026-06-10T09:00:00Z" },
+        { speakerKey: "SPEAKER_01", text: "Delimited label.", startIso: "2026-06-10T09:01:00Z" },
+      ],
+    },
+  ];
+  const body = composeDayTranscriptBody("bee", "2026-06-10", "UTC", conversations, registry);
+  // The raw stored body escapes the delimiters so the parser never sees
+  // a forged `**` or `[` boundary inside the label.
+  assert.ok(
+    body.includes("**A\\*\\*B**"),
+    "label delimiters are escaped in the stored body: " + body,
+  );
+  // Display decoding recovers the ORIGINAL label for view/search surfaces.
+  const decoded = decodeTranscriptBody(body);
+  assert.ok(
+    decoded.includes("**A**B** [09:01]: Delimited label."),
+    "decoded body shows the original unescaped label: " + decoded,
+  );
+  // parseDayTranscript preserves the body bytes verbatim.
+  const serialized = serializeDayTranscript(
+    composeDayTranscriptMeta("bee", "2026-06-10", "UTC", conversations, registry, body, "2026-06-11T01:00:00.000Z"),
+    body,
+  );
+  const parsed = parseDayTranscript(serialized);
+  assert.ok(parsed);
+  assert.equal(parsed!.body, body, "body survives serialization round-trip");
+});
+
+test("legacy raw label without escape sequences parses and decodes verbatim (#1849)", () => {
+  // A hand-written stored body whose label was NEVER escaped (a pre-
+  // escaper transcript). decodeTranscriptBody and the segment-line parser
+  // must treat it as a no-op: no backslash sequences => unchanged label.
+  const body =
+    "# bee transcript — 2026-06-10\n" +
+    "\n" +
+    "## 09:00–09:10 (conversation c1)\n" +
+    "\n" +
+    "**Me (you)** [09:00]: Hello world.\n" +
+    "**Guest** [09:01]: Good morning.\n";
+  const decoded = decodeTranscriptBody(body);
+  assert.equal(decoded, body, "legacy body with no escapes decodes verbatim");
+});

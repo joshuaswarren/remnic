@@ -116,15 +116,56 @@ export function unescapeSegmentText(text: string): string {
 }
 
 /**
- * Decode the escaped segment text of a stored transcript body into the
- * ORIGINAL text for user-facing view/search/index surfaces. Only the
- * text portion of segment lines is decoded; headings, locations, and
- * the H1 header are NOT escaped on write and pass through unchanged, so
- * a title or location containing a literal backslash is never altered.
- * The fusion reconstruct path does NOT use this — it decodes each
- * segment once during parse — so callers feeding bodies back into
- * reconstruct must pass the RAW stored body, not a decoded one, to
- * avoid double-decoding.
+ * Escape a speaker label for the line-based markdown format so that
+ * markdown-delimiter characters in an arbitrary user/provider label
+ * (`**`, `[`, `]`), the escape character (`\`), and embedded newlines/
+ * carriage returns cannot break `TRANSCRIPT_SEGMENT_LINE` parsing.
+ * Without this, a label containing `**` (or `** [clock]:`) can make the
+ * non-greedy delimiter match land on the wrong `**` and mis-parse the
+ * clock/text — or fail to parse the line at all. Reversed by
+ * `unescapeSpeakerLabel` (this module). Legacy transcripts whose labels
+ * were never escaped still parse: `unescapeSpeakerLabel` is a no-op on
+ * any label without a backslash escape sequence (#1849).
+ */
+export function escapeSpeakerLabel(label: string): string {
+  return label
+    .replace(/\\/g, "\\\\")
+    .replace(/\*/g, "\\*")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .replace(/\n/g, "\\n")
+    .replace(/\r/g, "\\r");
+}
+
+/**
+ * Reverse `escapeSpeakerLabel`. Unknown escape sequences (a backslash
+ * followed by a character the escaper never emits) are passed through
+ * literally so legacy transcripts with raw labels still round-trip
+ * their original text, mirroring `unescapeSegmentText` for segment text.
+ */
+export function unescapeSpeakerLabel(label: string): string {
+  return label.replace(/\\(.)/g, (_match, ch: string) => {
+    if (ch === "\\") return "\\";
+    if (ch === "*") return "*";
+    if (ch === "[") return "[";
+    if (ch === "]") return "]";
+    if (ch === "n") return "\n";
+    if (ch === "r") return "\r";
+    return "\\" + ch;
+  });
+}
+
+/**
+ * Decode the escaped segment text AND speaker label of a stored
+ * transcript body into the ORIGINAL forms for user-facing
+ * view/search/index surfaces. Only segment lines are touched: the text
+ * is decoded via `unescapeSegmentText` and the label via
+ * `unescapeSpeakerLabel`; headings, locations, and the H1 header are
+ * NOT escaped on write and pass through unchanged, so a title or
+ * location containing a literal backslash is never altered. The fusion
+ * reconstruct path does NOT use this — it decodes each segment once
+ * during parse — so callers feeding bodies back into reconstruct must
+ * pass the RAW stored body, not a decoded one, to avoid double-decoding.
  */
 export function decodeTranscriptBody(body: string): string {
   const lines = body.split("\n");
@@ -132,9 +173,10 @@ export function decodeTranscriptBody(body: string): string {
     const match = TRANSCRIPT_SEGMENT_LINE.exec(lines[i]);
     if (match === null) continue;
     const [, label, clock, rawText] = match;
-    const decoded = unescapeSegmentText(rawText);
-    if (decoded === rawText) continue;
-    lines[i] = `**${label}** [${clock}]: ${decoded}`;
+    const decodedText = unescapeSegmentText(rawText);
+    const decodedLabel = unescapeSpeakerLabel(label);
+    if (decodedText === rawText && decodedLabel === label) continue;
+    lines[i] = `**${decodedLabel}** [${clock}]: ${decodedText}`;
   }
   return lines.join("\n");
 }
@@ -171,7 +213,9 @@ export function composeDayTranscriptBody(
     for (const segment of conversation.segments) {
       const { label } = resolveSpeaker(sourceId, segment, registry);
       const at = formatClockTime(segment.startIso, timezone);
-      lines.push(`**${label}** [${at}]: ${escapeSegmentText(segment.text)}`);
+      lines.push(
+        `**${escapeSpeakerLabel(label)}** [${at}]: ${escapeSegmentText(segment.text)}`,
+      );
     }
     lines.push("");
   }
