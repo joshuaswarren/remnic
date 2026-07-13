@@ -18,11 +18,12 @@
  *      `BenchMemoryAdapter` (the access-service-level abstraction other
  *      Remnic benchmarks use) into the MemCorrect contract. Per the issue,
  *      the Remnic adapter must use only public surfaces; reaching into
- *      orchestrator internals makes the benchmark meaningless. Full
- *      correction-contract exercise (forced dreams + consolidation +
- *      reinforcement + contradiction scan) lands with #1580/#1579; this
- *      wrapper maps correct() to observe + drain today and documents the
- *      upgrade path.
+ *      orchestrator internals makes the benchmark meaningless. When the
+ *      wrapped adapter exposes the optional `correct()` surface (the
+ *      Correction Contract plan/apply path from #1580), corrections route
+ *      through it; the plain turn-store path remains the fallback for
+ *      adapters without an explicit correction surface and for corrections
+ *      the planner could not apply.
  */
 
 import type { BenchMemoryAdapter } from "../../../adapters/types.js";
@@ -347,13 +348,19 @@ export function createRemnicMemCorrectAdapter(
         .filter((s) => s.length > 0);
     },
     async correct(text, sessionKey, at) {
-      // Today: observe the correction as a user turn through the public
-      // store path. When #1580's correction contract is available, this
-      // routes through the contract tool instead (the adapter surface is
-      // unchanged; only the internal call differs). The seeded corpus
+      // Prefer the explicit Correction Contract surface (#1580 / plan item
+      // 2a): plan + confirmed apply through the same public access layer the
+      // MCP/HTTP correction tools use. When the planner produces no
+      // applicable action (or the adapter has no correction surface), fall
+      // back to delivering the correction as a user turn — the seeded corpus
       // timestamp is preserved so temporal reasoning is evaluated against
       // the scenario timeline, not wall-clock ingestion time.
-      await adapter.store(`${sessionPrefix}:${sessionKey}`, [
+      const scopedSession = `${sessionPrefix}:${sessionKey}`;
+      if (adapter.correct) {
+        const outcome = await adapter.correct(scopedSession, text, at);
+        if (outcome.applied) return;
+      }
+      await adapter.store(scopedSession, [
         { role: "user", content: text, timestamp: at },
       ]);
     },

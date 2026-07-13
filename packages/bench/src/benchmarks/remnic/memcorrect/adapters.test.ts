@@ -115,6 +115,36 @@ test("remnic wrapper: correct() observes the correction as a user turn", async (
   assert.equal(captured.storeCalls[0].messages.length, 1);
 });
 
+test("remnic wrapper: correct() prefers the adapter's correction-contract surface", async () => {
+  const captured = newCaptured();
+  const correctCalls: Array<{ session: string; text: string; at?: string }> = [];
+  const base = fakeBenchAdapter(captured);
+  base.correct = async (sessionId, text, at) => {
+    correctCalls.push({ session: sessionId, text, ...(at !== undefined ? { at } : {}) });
+    return { applied: true };
+  };
+  const adapter = createRemnicMemCorrectAdapter(base, { sessionPrefix: "mc" });
+  await adapter.correct("fix this", "ns-a", "2026-07-05T00:02:00Z");
+  assert.equal(correctCalls.length, 1);
+  assert.equal(correctCalls[0].session, "mc:ns-a");
+  assert.equal(correctCalls[0].text, "fix this");
+  assert.equal(correctCalls[0].at, "2026-07-05T00:02:00Z");
+  // The contract applied — the correction must NOT also land as a turn.
+  assert.equal(captured.storeCalls.length, 0);
+});
+
+test("remnic wrapper: correct() falls back to the turn path when the contract plans nothing", async () => {
+  const captured = newCaptured();
+  const base = fakeBenchAdapter(captured);
+  base.correct = async () => ({ applied: false });
+  const adapter = createRemnicMemCorrectAdapter(base, { sessionPrefix: "mc" });
+  await adapter.correct("fix this", "ns-a", "2026-07-05T00:02:00Z");
+  // Unapplied contract → delivered exactly once as a user turn.
+  assert.equal(captured.storeCalls.length, 1);
+  assert.equal(captured.storeCalls[0].session, "mc:ns-a");
+  assert.equal(captured.storeCalls[0].messages.length, 1);
+});
+
 test("remnic wrapper: runMaintenance forces a drain", async () => {
   const captured = newCaptured();
   const adapter = createRemnicMemCorrectAdapter(fakeBenchAdapter(captured));

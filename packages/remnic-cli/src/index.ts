@@ -2948,6 +2948,7 @@ function buildPublishedBenchmarkOptions(
     publishedTrialLimit?: number;
     publishedTrialConcurrency?: number;
     publishedTaskFilter?: string;
+    memcorrectAdapter?: "remnic" | "prompt-only";
   },
 ): Record<string, unknown> | undefined {
   const trialLimitOptions =
@@ -2973,6 +2974,9 @@ function buildPublishedBenchmarkOptions(
   }
   if (benchmarkId === "beam" && args.publishedTaskFilter !== undefined) {
     return { taskFilter: args.publishedTaskFilter };
+  }
+  if (benchmarkId === "memcorrect-v1" && args.memcorrectAdapter !== undefined) {
+    return { adapter: args.memcorrectAdapter };
   }
   return undefined;
 }

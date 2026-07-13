@@ -99,31 +99,180 @@ each one.
 §6's results score. Walk the recall path top-down: three-tier retrieval
 (explicit-cue → targeted-fact → response-guidance, unified on the #1539 recall
 spine), then the glass-box layers that make recalls explainable and
-correctable. Each subsystem is a `TODO` to its owning issue for the
-mechanism description; this skeleton does not restate mechanism details.
+correctable. Every mechanism claim below cites the shipped module; nothing is
+aspirational.
 
-- **3.1 Three-tier retrieval** — `TODO(#1539)`: describe the recall spine and
-  the four thin-config pipeline stages, with the declared event-order budget
-  fix.
-- **3.2 Provenance spans** — `TODO(#1575)`: span model, storage, read surfaces.
-  Cite the shipped `provenance.ts` surfaces, not orchestrator internals.
-- **3.3 Faithfulness gate** — `TODO(#1576)`: extraction-time gate; shadow mode
-  enables the harvest stream for the #1585 model lab.
-- **3.4 TrustScore** — `TODO(#1577)`: the recall-stage trust signal
-  (`trust-zones.ts`/`provenance.ts`). **Note for §3 vs §6:** TrustScore is a
-  shipped *recall-stage feature*, **not yet a benchmark metric** — describe it
-  as a system capability here; do not score it in §6 until surfacing work
-  exists (flag in §6 TODO).
-- **3.5 Correction Contract + passive detection + memory handles** —
-  `TODO(#1580)` Correction Contract (4-PR order); `TODO(#1581)` passive
-  correction detection; `TODO(#1582)` memory handles `[m:xxxx]`;
-  `TODO(#1583)` the chat surface that exercises correction end-to-end.
-- **3.6 Bi-temporal validity + tombstones / non-resurrection** —
-  `TODO(#1578)` bi-temporal frontmatter + recall filter;
-  `TODO(#1579)` tombstones and the 5-path resurrection matrix (the guarantee
-  §4's `non_resurrection` metric measures).
-- `TODO(#1726)`: assemble §3 once the subsystem issues above have merged; until
-  then this section is a structural placeholder.
+**Substrate.** Remnic is files-first: every memory is a markdown file with
+YAML frontmatter in a plain directory tree, and every index — the tombstone
+log, search collections, projections — is an explicitly rebuildable cache of
+that file truth. All durable writes funnel through a single storage
+chokepoint, so cross-cutting invariants (tombstone checks, dedup, cataloging)
+are enforced once rather than re-implemented per write path. This one
+decision does a lot of quiet work: §3.6's non-resurrection guarantee holds
+for write paths that did not exist when the guarantee was written.
+
+### 3.1 Three-tier retrieval
+
+Recall runs as tiered pipelines — explicit-cue (verbatim turn references),
+targeted-fact (entity- and claim-directed lookup), and response-guidance
+(behavioral steering), plus an event-order pipeline for chronology questions.
+All tiers instantiate one shared stage sequence: intent classification →
+candidate collection → dedup → rank → filter → slice → metadata → token
+budgeting (`recall-pipeline-stages.ts`). A single `unifiedDedupeAndRank`
+stage owns scoring, thresholding, and ordering behind a declared
+configuration object, so behavioral differences between tiers — most
+dangerously, recency-descending versus chronology-ascending turn ordering —
+are declared fields rather than divergent copies of comparator code. The
+pipeline order itself is a repository contract: candidate headroom first,
+then policy filters, then rerank/boost, then the user-facing cap — a cap
+applied before final filtering is treated as a bug class, not a tuning
+choice. Above the spine, an episode/note classification layer routes
+experiential episodes and semantic notes into different consolidation
+behavior (`himem.ts`), and Memory Boxes group related episodes for
+verified recall (`boxes.ts`, `verified-recall.ts`).
+
+### 3.2 Provenance spans
+
+Every extracted claim can carry claim-level source spans: session key, turn
+id, observation timestamp, and the verbatim quote with character offsets
+(`provenance.ts`). A coarse tag (`verified` | `unverified` | `none`)
+summarizes span state for cheap filtering. The load-bearing invariant is
+enforced symmetrically at write and read: a `verified` or `unverified` tag
+never survives without at least one structurally valid span — it is
+downgraded to `none`; a corrupt span drops to absent rather than poisoning
+the memory. With the feature disabled, serialized output is byte-identical
+to pre-provenance behavior, which is what makes incremental adoption safe.
+
+### 3.3 Faithfulness gate
+
+At extraction time, each candidate fact is entailment-checked against its
+own verified source span — the §3.2 quote, deliberately not the whole
+conversation, both for latency and because re-reading the full transcript
+would reintroduce the hallucination surface the gate exists to close
+(`extraction-faithfulness.ts`). This is distinct from fact-worthiness
+judging: the gate asks "is this claim supported by what was actually said,"
+targeting the highest-severity memory failure — a hallucinated extraction
+becoming a confident durable memory. Verdicts are `entailed`,
+`contradicted`, or `unsupported`; a backend failure is a tagged bypass
+(`unchecked`), never a silent verdict, and never blocks the write. Shadow
+mode records verdicts without enforcement, which is the harvest stream the
+model lab uses to train the local gate model (Appendix A.4.3).
+
+### 3.4 TrustScore
+
+TrustScore is a pure, deterministic blend of up to eight per-memory signals
+— memory-worth, faithfulness verdict, provenance strength, corroboration,
+contradiction state, operator feedback, recency, and domain calibration —
+with declared default weights that are sum-normalized over the signals
+actually present (`trust-score.ts`). Its contract is epistemically
+conservative: a memory with no instrumentation scores exactly neutral (0.5,
+recall multiplier 1.0) rather than being penalized for missing data; a
+corrupt component contributes neutrally, never an extreme; absent components
+redistribute their weight. Scores map to bands (high / medium / low /
+quarantine), where quarantine is reserved for hard negatives — a
+`contradicted` faithfulness verdict or an unresolved contradiction — and
+quarantined memories are excluded from injection but always visible in
+recall X-ray output with the reason attached. At injection time the score
+becomes a bounded recall multiplier and, in the low bands, a deterministic
+epistemic hedge that names the actual weakest signals instead of a generic
+"low confidence" disclaimer. **Note for §3 vs §6:** TrustScore is a shipped
+*recall-stage feature*, **not yet a benchmark metric** — it is described
+here as a system capability and is not scored in §6.
+
+### 3.5 Correction Contract, passive detection, memory handles
+
+Correction is a first-class write path, not an `update()` API. A
+natural-language correction becomes a `CorrectionPlan`: the planner resolves
+targets (searched or explicitly named), classifies the correction (`wrong`,
+`outdated`, `incomplete`, `wrong_scope`, `never_store`), drafts per-memory
+actions, and renders a human-readable diff with a confidence score and an
+expiry (`correction-contract.ts`). Planning is read-only by construction —
+with no LLM available the planner degrades to zero actions and "located for
+review," never to a guessed mutation. Apply is confirm-gated and
+exactly-once; a plan interrupted mid-apply is detected at startup and
+scrubbed rather than silently retried. The executor is the only writer and
+follows a non-destructive order: replacement memories are written first
+(page-versioned, revertable), only then are predecessors superseded,
+validity-stamped, and tombstoned, then changes propagate to the search
+index, graph edges, belief ledger, and profile, and finally an audit record
+— itself a searchable memory — lands in `corrections/`. A failed
+replacement write never destroys the old state.
+
+Two adjacent mechanisms make the contract reachable in practice. Passive
+correction detection watches user turns with a morphology-aware heuristic —
+no additional LLM call — and is deliberately conservative: hypotheticals,
+quoted speech, and third-party corrections are rejected by anti-fixture
+guards, with the contradiction scan and the chat surface as backstops
+(`passive-correction-detector.ts`). Memory handles render every injected
+memory with a short id-derived token (`[m:4f2a]`) so an agent or user can
+say "`[m:4f2a]` is stale" and route the correction to an exact target;
+handles are derived from ids (never content), widened on collision, and
+resolved per-session against the injection snapshot, so no global handle
+table exists to leak across sessions (`recall-handles.ts`). The chat
+surface (#1583) exercises the full loop end-to-end: recall with handles,
+passive detection, plan preview, confirm, apply.
+
+### 3.6 Bi-temporal validity and tombstoned non-resurrection
+
+Memories carry two independent time axes: transaction time (when the system
+learned/updated the record) and validity time (`valid_at` / `invalid_at`,
+half-open) describing when the fact was true in the world
+(`temporal-validity.ts`). Supersession stamps the predecessor's
+`invalid_at`, and `as_of` recall answers "what did we believe was true at
+time T" — the corrected past stays queryable instead of being overwritten.
+A corrupt validity timestamp conservatively evaluates to not-valid, never
+to always-true.
+
+Retirement is enforced by an append-only tombstone log keyed by content
+hash, normalized text, and entity reference (`lifecycle/tombstones.ts`).
+Because the check runs at the single write chokepoint, one mechanism blocks
+all five known resurrection paths — re-extraction from old transcripts,
+importers, consolidation merges, dream/REM re-derivation, and pattern
+reinforcement — without per-path code. Reversal is itself an append
+(`kind: revocation`); history is never rewritten. A blocked write is parked
+as `pending_review` with the blocking tombstone recorded, never silently
+dropped. This mechanism is exactly what §4's `non_resurrection` metric
+measures from the outside.
+
+### 3.7 Recall X-ray
+
+Every recall can be replayed as a per-result attribution: which tier served
+it, the score decomposition, the graph path when graph retrieval fired, the
+filter ladder that admitted or rejected it, and the audit entry id
+(`recall-xray.ts`), rendered identically across CLI, HTTP, and MCP. The
+design rule is that an exclusion must never look like an absence: a
+quarantined memory shows up in the X-ray with its quarantine reason rather
+than disappearing.
+
+### 3.8 What makes this architecture different
+
+Read together, the subsystems implement one discipline rather than eight
+features:
+
+1. **Correction is an auditable write path.** A plan/apply contract with
+   non-destructive ordering, revertable page-versioned edits, and a
+   substrate-level non-resurrection invariant. Contemporary memory systems
+   expose add/update/delete APIs; we are not aware of a published
+   resurrection-blocking guarantee or confirm-gated correction protocol
+   among them (§2).
+2. **Recall is glass-box end-to-end.** Claim-level source spans →
+   entailment verdict → multi-signal TrustScore with component echo →
+   named epistemic hedges → X-ray filter ladder. "Why is this memory in my
+   context" has a mechanical answer at every layer.
+3. **Fail-safe epistemics are a recurring contract shape.** Neutral on
+   absent signals, drop-corrupt-never-poison, tagged backend-failure versus
+   verdict, byte-identical output when disabled, exclusions never invisible.
+   The system prefers admitting ignorance to manufacturing confidence.
+4. **The substrate is bi-temporal, human-readable, and reproducible.**
+   Markdown files as truth, rebuildable indexes, `as_of` history, and a
+   benchmark protocol that reruns on a single consumer GPU (§5).
+
+These are engineering claims, and §8 states their limits honestly:
+TrustScore is not yet a scored benchmark metric, the fine-tuned faithfulness
+gate model's final manifest is pending (#1737), and §4's uptake metrics are
+strict by design — a system that keeps quoting the outdated turn in recall
+context fails the probe even when a corrected fact also surfaces.
+
 
 ---
 
@@ -174,27 +323,62 @@ new ones.
 ## 5. Experimental Setup
 
 **Intent.** The protocol that makes every number in §6 independently
-reproducible on one GPU. Lift from `docs/benchmarks/sota-readiness.md`.
-Cover: the two-tier protocol (Tier L local / Tier F frontier), runtime
-profiles (`runtime-profiles.ts`), the judge cache + Cohen's-κ cross-tier
-calibration, repro manifests (`repro-manifest.ts`), and seed / model / dataset
-/ commit-SHA pinning. State the **publishability rubric** (non-mock; repro
-manifest present; judge calibration reported; honest framing attached;
-leaderboard-safety / explicit-cue guards; reproducible on one GPU).
+reproducible on one GPU.
 
-- `TODO(#1573)`: cite the local-lab harness + judge cache + calibration
-  mechanism (RTX 3090 box, `local-lab` profile).
-- `TODO(#1574)`: cite the runtime profiles used (baseline / real /
-  openclaw-chain / local-lab) and the existing single-flag ablation profiles.
-- `TODO(#1728)`: define the Tier-F responder configuration honestly —
-  **Opus 4.8 via Claude Code (`claude -p`)**, `--tools ""` + `--safe-mode` +
-  isolated cwd + `--append-system-prompt`, local 3090 as judge (calibrated
-  against a small Opus-judged slice for Cohen's κ). State explicitly that this
-  is "Opus 4.8 via Claude Code," **not** a raw-API frontier number, and that
-  `tier` stays `"frontier"` with the label in the artifact `note`/model
-  metadata.
-- `TODO(#1735)`: gate the Tier-F description on the `claude-cli` bench
-  provider landing — it is a hard prerequisite, not assumed-present.
+**Two-tier protocol.** Every published number carries a tier. **Tier L
+(local)** runs entirely on one consumer GPU — an RTX 3090 (24 GB) driving
+`qwen2.5-7b-32k:latest` (Q4_K_M, 32k context) over Ollama — and exists as
+the reproducibility anchor: anyone with one GPU can rerun it. Tier-L
+artifacts must carry a hardware envelope (GPU, VRAM, quantization); the
+promotion bridge refuses a local-tier artifact without one. **Tier F
+(frontier)** carries the head-to-head accuracy claim. The Tier-F responder
+is **Opus 4.8 via Claude Code (`claude -p`)** through the `claude-cli`
+bench provider — a valid research harness and a distinct provenance path
+from the raw Anthropic API; the artifact records provider, model, harness,
+isolation settings, and invocation so the measurement path is explicit.
+Isolation is mandatory and implemented by the provider: a freshly created
+empty temp workspace, tools disabled, user/project configuration skipped,
+session persistence off, and an environment allowlist that excludes memory
+directories and unrelated secrets — without this, Claude Code inherits
+user-level instructions and silently contaminates every answer.
+
+**Runtime profiles.** The system under test is pinned by a named runtime
+profile (`runtime-profiles.ts`): `baseline` (deterministic pinned Remnic
+configuration, LCM stack), `real` (Remnic's shipped defaults plus a pinned
+config file — the MemCorrect lab profile,
+`docs/benchmarks/configs/memcorrect-lab-remnic-config.json`), `local-lab`
+(manifest-pinned operator-hosted models, temperature 0, fixed seed —
+`docs/benchmarks/configs/local-lab-3090.json`), and `openclaw-chain` (the
+full host chain). The §7 ablations flip exactly one flag against `baseline`
+per cell.
+
+**Judging and cross-tier calibration.** LoCoMo and LongMemEval judging runs
+on the local 3090 judge; judge verdicts are content-cached so re-scoring
+cached answers is free. Cross-tier credibility comes from Cohen's-κ
+calibration (`remnic bench judge-calibrate`): the local judge and the
+Tier-F gold judge (Opus via `claude -p`) re-judge a deterministic
+50-question slice of a benchmark's cached answers, and the resulting κ —
+with sample size, threshold, and a warning flag when κ falls below it — is
+persisted and stamped into every subsequent stored result whose judge
+matches the calibrated pair (`judgeCalibration` on the artifact schema).
+
+**Pinning and manifests.** Every stored result records the git commit SHA,
+seed, dataset version, runtime profile, provider/model identities, and
+benchmark options; a reproducibility manifest (`repro-manifest.ts`)
+accompanies each results directory. Artifacts are SHA-256-hashed over
+canonical JSON, and the figure pipeline renders only manifest-tracked,
+non-mock artifacts (§6), byte-identically on regeneration.
+
+**Publishability rubric.** A number enters this paper only if: (1) the
+artifact is real and committed, never a mock fixture; (2) its repro
+manifest pins seed, model + quantization, context window, dataset version,
+and runtime profile; (3) judge calibration is reported wherever a judge is
+used; (4) a one-paragraph honest framing accompanies it (what the number
+is and is not); (5) leaderboard-safety guards (explicit-cue recall rules,
+no train/test leakage) are respected; and (6) the Tier-L path is
+re-runnable on one GPU. Bounded (`--limit`/`--trial-limit`) runs are
+partial-coverage evidence and are never presented as full leaderboard
+results — the promotion bridge rejects them outright.
 
 ---
 
@@ -217,18 +401,46 @@ passes the §5 publishability rubric.** Until then, every block is a TODO.
     Real = Remnic Tier-L anchor; pending = Tier-F (#1728) + Mem0/Zep/Letta
     (#1747).
   - **Figure 2** — `figures/fig2-memcorrect-metrics.svg`: the 8 MemCorrect
-    metrics. All adapter bars pending until a `memcorrect-v1` artifact is
-    committed (#1584 run + #1747 adapters).
+    metrics. Remnic-native and prompt-only-baseline bars are real (Tier-L
+    artifacts committed 2026-07-13); Mem0/Zep/Letta bars remain pending
+    (#1747 adapter runs are API-key-gated and deliberately not run here).
   - **Figure 3** — `figures/fig3-trustscore-components.svg`: the 8 TrustScore
     weighted components, source-extracted from `DEFAULT_TRUST_WEIGHTS`. A system
     illustration, not a benchmark metric (#1577).
 
-- **6.1 MemCorrect — Remnic vs baselines vs third-party adapters.**
-  - `TODO(#1584)`: commit a real `memcorrect-v1` Tier-L artifact
-    (`docs/benchmarks/results/`). As of this skeleton **no MemCorrect artifact
-    is committed** — only the harness + generator + metrics exist.
-  - `TODO(#1727)`: add the Mem0 / Zep / Letta adapter rows. Until the adapters
-    exist, §6.1 can only report Remnic-native vs the `PromptOnlyBaselineAdapter`
+- **6.1 MemCorrect — Remnic vs the prompt-only floor (Tier L).**
+  Two full-matrix (40-scenario, `mode: full`, seed `0xc077e7`) artifacts are
+  committed:
+  `docs/benchmarks/results/2026-07-13-memcorrect-v1-remnic-native-9485f44.json`
+  (runtime profile `real` — Remnic's shipped defaults with the fact pipeline
+  and Correction Contract active; extraction and correction classification on
+  `qwen2.5-7b-32k:latest`, RTX 3090; pinned config in
+  `docs/benchmarks/configs/memcorrect-lab-remnic-config.json`) and
+  `docs/benchmarks/results/2026-07-13-memcorrect-v1-prompt-only-baseline-9485f44.json`
+  (the hermetic append-only floor). Corrections in the Remnic run route
+  through the Correction Contract (plan + confirmed apply) via the public
+  access-service surface, with the plain turn path as fallback.
+
+  **Headline finding (honest):** at Tier L, Remnic's containment-scored
+  metrics land on the same floor as the prompt-only baseline
+  (`uptake_at_next = 0`, `non_resurrection = 0`, `false_apply = 1` for both
+  adapters). Per-scenario tracing shows this is not a harness artifact and
+  not a dead correction path: extraction does produce the target fact, the
+  contract plan applies (`applied: true`), and the stored fact is retired.
+  The probes still fail because stale content keeps reaching the serving
+  layer through three side channels: (a) the 7B classify model drafts
+  retire-only actions instead of supersede-with-replacement, so no corrected
+  fact exists for the probe to contain; (b) behavioral-profile lines derived
+  from the original fact survive the correction; and (c) verbatim LCM turn
+  evidence quotes the outdated statement into recall context. MemCorrect is
+  strict by design — a system that keeps serving the stale value anywhere in
+  its recall context fails the probe — and this result is exactly the
+  failure class the benchmark exists to expose: **fact-store correction is
+  necessary but not sufficient; correction must propagate to every serving
+  surface.** §8 discusses the classify-model capability axis (Tier F) and
+  the serving-surface propagation follow-up this measurement motivates.
+  - `TODO(#1727)`: add the Mem0 / Zep / Letta adapter rows. Until those runs
+    exist, §6.1 reports Remnic-native vs the `PromptOnlyBaselineAdapter`
     floor — clearly labeled as such, not as a "we beat X" claim.
 - **6.2 LoCoMo / LongMemEval — head-to-head at Tier F, Tier L as anchor.**
   - `TODO(#1728)`: produce the Tier-F run. As of this skeleton **no Tier-F

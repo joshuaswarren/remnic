@@ -197,6 +197,28 @@ export function createTimeoutGuardedAdapter(
           drainTimeoutMs,
         );
   }
+  if (adapter.correct) {
+    // Preserve the optional correction-contract surface (issue #1584 plan
+    // item 2a) — dropping it here would silently downgrade guarded MemCorrect
+    // runs to the turn-store fallback while still labeling the run
+    // contract-routed (codex P1).
+    wrapped.correct = (
+      sessionId: string,
+      text: string,
+      at?: string,
+      control?: BenchPhaseControl,
+    ): Promise<{ applied: boolean }> =>
+      phaseTimeoutMs === undefined
+        ? adapter.correct!(sessionId, text, at, control)
+        : run(`correct session=${sessionId}`, async (signal) => {
+          const merged = mergeBenchPhaseControl(signal, control);
+          try {
+            return await adapter.correct!(sessionId, text, at, merged.control);
+          } finally {
+            merged.cleanup();
+          }
+        });
+  }
   if (adapter.responder) {
     wrapped.responder =
       phaseTimeoutMs === undefined

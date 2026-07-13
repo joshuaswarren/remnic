@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- MemCorrect now routes Remnic corrections through the Correction Contract
+  (plan + confirmed apply) via the public access-service surface, with an
+  explicit turn-path fallback when the planner produces no applicable action.
+  `remnic bench run memcorrect-v1 --memcorrect-adapter <remnic|prompt-only>`
+  selects the adapter from the CLI.
+
 ## [v9.3.764] — 2026-07-11
 
 ### Changed

@@ -100,16 +100,30 @@ const FULL_OPTIONS = {
  * Resolve the adapter to drive. The lab run is explicit about which adapter
  * MemCorrect exercises:
  *   - `benchmarkOptions.adapter` (a `MemCorrectSystemAdapter`) → use directly.
- *     This is how the prompt-only baseline, the Remnic-native adapter, and
- *     any third-party adapter are selected.
- *   - Otherwise, wrap the bench `system` adapter (a `BenchMemoryAdapter`)
- *     into the MemCorrect contract via the public access-service surface.
+ *     This is how any in-process custom or third-party adapter is selected.
+ *   - `benchmarkOptions.adapter === "prompt-only"` → the hermetic
+ *     `PromptOnlyBaselineAdapter` floor (CLI: `--memcorrect-adapter prompt-only`).
+ *   - `benchmarkOptions.adapter === "remnic"` or absent → wrap the bench
+ *     `system` adapter (a `BenchMemoryAdapter`) into the MemCorrect contract
+ *     via the public access-service surface.
+ *   - Any other string is rejected with the valid options listed (rule 51) —
+ *     never silently reinterpreted.
  */
 function resolveAdapter(
   options: ResolvedRunBenchmarkOptions,
 ): { adapter: MemCorrectSystemAdapter; adapterLabel: string } {
   const override = options.benchmarkOptions?.["adapter"];
-  if (
+  if (typeof override === "string") {
+    if (override === "prompt-only") {
+      const adapter = new PromptOnlyBaselineAdapter();
+      return { adapter, adapterLabel: adapter.label };
+    }
+    if (override !== "remnic") {
+      throw new Error(
+        `memcorrect-v1 adapter must be one of ["remnic", "prompt-only"] (or an in-process MemCorrectSystemAdapter object); received "${override}"`,
+      );
+    }
+  } else if (
     override &&
     typeof override === "object" &&
     "reset" in override &&

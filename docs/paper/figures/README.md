@@ -19,7 +19,7 @@ across runs — asserted by `tests/paper-figures.test.mjs`). The generator is
 | Figure | File | Real data | Pending data |
 |---|---|---|---|
 | 1 — LoCoMo / LongMemEval | `fig1-locomo-longmemeval.svg` | Remnic Tier-L (both benchmarks) | Remnic Tier-F (#1728); Mem0 / Zep / Letta (#1747) |
-| 2 — MemCorrect 8 metrics | `fig2-memcorrect-metrics.svg` | — (no artifact committed) | all adapters (#1584 Tier-L run + #1747 third-party) |
+| 2 — MemCorrect 8 metrics | `fig2-memcorrect-metrics.svg` | Remnic-native + prompt-only baseline (Tier-L full matrix, 2026-07-13) | Mem0 / Zep / Letta (#1747, API-key-gated) |
 | 3 — TrustScore 8 components | `fig3-trustscore-components.svg` | all 8 (source-extracted weights) | — |
 
 **Legend.** Solid bars are real — every value traces to a committed artifact or
@@ -53,14 +53,19 @@ run (#1728) and the third-party recall adapters (#1747). Competitor
 self-reported numbers are **not** echoed here — they are cited-not-reproduced
 until the harness reproduces them.
 
-**Figure 2.** No `memcorrect-v1` artifact is committed yet, so **all** adapter
-bars (Remnic-native, prompt-only baseline, Mem0, Zep, Letta) are pending. The
-eight metric axes, their directions (`↑ higher` / `↓ lower` / `→ 0`), and the
-adapter row layout are keyed to the `MemCorrectLeaderboardRow` schema
-(`packages/bench/src/leaderboard-export.ts`) — the public submission format the
-#1747 adapters emit. When a `memcorrect-v1` artifact lands under
-`docs/benchmarks/results/`, the generator reads its
-`config.benchmarkOptions.aggregateMetrics` and renders real bars automatically.
+**Figure 2.** The Remnic-native and prompt-only-baseline bars are real —
+two committed 40-scenario Tier-L full-matrix artifacts
+(`docs/benchmarks/results/2026-07-13-memcorrect-v1-remnic-native-9485f44.json`,
+`docs/benchmarks/results/2026-07-13-memcorrect-v1-prompt-only-baseline-9485f44.json`;
+see `docs/benchmarks.md` for the run commands and the honest reading of the
+floor-identical containment metrics). Mem0 / Zep / Letta bars remain pending
+on the #1747 adapter runs (API-key-gated). The eight metric axes, their
+directions (`↑ higher` / `↓ lower` / `→ 0`), and the adapter row layout are
+keyed to the `MemCorrectLeaderboardRow` schema
+(`packages/bench/src/leaderboard-export.ts`) — the public submission format
+the #1747 adapters emit. The generator reads
+`config.benchmarkOptions.aggregateMetrics` from each committed artifact and
+renders real bars automatically.
 
 **Figure 3.** The eight weighted components are extracted at render time from
 `DEFAULT_TRUST_WEIGHTS` in `packages/remnic-core/src/trust-score.ts` and
