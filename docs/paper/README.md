@@ -50,17 +50,20 @@ issue owns one (`related-work.md`). Keeping the rest of the skeleton in a single
    (both `tier: "local"`, model `qwen2.5-7b-32k:latest`). The
    `2026-04-20-*-mock000.json` files are **mocks** and must never be cited as
    results.
-3. **No Tier-F claim without the real run.** A Tier-F responder run (Opus 4.8
-   via `claude -p`) does not exist yet and is blocked on PR #1735 + child #1728.
-   The skeleton leaves §6 Results and §5 Tier-F rows as TODOs.
+3. **No Tier-F claim without the real run.** A complete Tier-F responder run
+   (Opus 4.8 via `claude -p`) is still pending for the full dataset. The
+   bounded artifacts and provider are available; §6 Results and §5 Tier-F rows
+   must distinguish trial coverage from full coverage.
 4. **Lead with MemCorrect (composition framing), not raw Tier-L accuracy.** Per
    Joshua's confirmed decision (2026-07-07). MemCorrect's novelty is a
    composition/protocol claim, **not** "first to measure memory correction" —
    the plan's Novelty section names StateBench / STALE / MemSyco-Bench /
    MemStrata / MemoryAgentBench as prior art that must be engaged.
-5. **Label `claude -p` honestly.** A `claude -p` number is "Opus 4.8 via Claude
-   Code," not a raw-API frontier number. Keep `tier: "frontier"`; carry the
-   label in the artifact `note`/model metadata. Do not invent a new tier value.
+5. **Label `claude -p` with complete provenance.** A `claude -p` number is
+   "Opus 4.8 via Claude Code," a valid research-harness measurement distinct
+   from a raw-API run. Keep `tier: "frontier"` when the artifact contract is
+   satisfied; carry provider, harness, model, isolation, invocation, and
+   artifact labels in metadata. Do not invent a new tier value.
 6. **Keep the corrected KU framing.** `docs/benchmarks/memcorrect.md` already
    reads *"the strongest systems score roughly 70–90%, not ceiling"* (the old
    "near ceiling" wording was removed before this skeleton landed). The §4

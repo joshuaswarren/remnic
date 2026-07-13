@@ -287,9 +287,11 @@ softens into overclaim:
 - **MemCorrect v1 synthetic-corpus limits** — deterministic, token-pool-derived
   (no real PII by construction), but synthetic; the corpus does not capture
   every real-world correction shape. Scope to what the corpus tests.
-- **`claude -p` is not a raw-API number** — Claude Code adds system-prompt
-  scaffolding + model-alias routing and is not reproducible without a Claude
-  Code entitlement. Say so.
+- **`claude -p` is a valid research-harness path distinct from raw API.**
+  Claude Code adds system-prompt scaffolding and model-alias routing; record
+  the harness, entitlement, model, isolation, and invocation details as
+  provenance. A result may retain `tier: "frontier"` when the artifact
+  contract is satisfied; bounded trials remain partial-coverage results.
 - `TODO(#1726)`: no drafting blocker — write the prose from the bullets above
   once §5/§6 are populated; do not add limitations that imply un-run
   experiments.

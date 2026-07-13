@@ -109,6 +109,30 @@ test("HTTP chat/message: 503 when no LLM is available", async () => {
   });
 });
 
+test("HTTP chat/message: hides unexpected stack traces and internal paths", async () => {
+  await withTempDir(async (memoryDir) => {
+    const service = makeService({
+      fallbackLlmRef: {
+        chatCompletion: async () => {
+          throw new Error("secret failure at /srv/remnic/private/token-store.js");
+        },
+      },
+      memoryDir,
+      configRef: parseConfig({ memoryDir, chat: { ...DEFAULT_CHAT_CONFIG, enabled: true } }),
+    });
+    const m = mockRes();
+    await handleChatMessage(mockReq() as never, m as never, { message: "hi" }, {
+      service,
+      config: service.configRef!.chat,
+      memoryDir,
+    });
+    assert.equal(m.status, 200);
+    assert.ok(!m.body.includes("secret failure"));
+    assert.ok(!m.body.includes("/srv/remnic"));
+    assert.ok(!m.body.includes("stack"));
+  });
+});
+
 test("HTTP chat/message: 200 happy path returns reply + chatSessionId", async () => {
   await withTempDir(async (memoryDir) => {
     const service = makeService({

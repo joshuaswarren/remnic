@@ -95,8 +95,18 @@ A prior-art sweep (live web research, 2026-07-07) confirms MemCorrect is a **gen
 **Already applied (verified 2026-07-07):** `docs/benchmarks/memcorrect.md` no longer says LongMemEval KU is "near ceiling" — it now reads *"the strongest systems score roughly 70–90%, not ceiling"* and frames KU as checking only newest-fact answer-time behavior. The paper draft must keep this corrected framing; do not re-introduce the old wording.
 
 ### Tier-F responder: `claude -p` / Opus 4.8 IS the path (no API budget)
-There is no budget for a raw-API frontier run, so the Tier-F responder **is** Opus 4.8 via Claude Code headless (`claude -p`), through the `claude-cli` bench provider. **That provider is delivered by PR #1735** (`feat/bench-claude-cli-provider`, modeled on `codex-cli.ts`) and is NOT yet on `main`, so the Tier-F run (#1728) is blocked on #1735 merging first — it is a hard dependency, not an assumed-present tool.
-- **Label it honestly — don't hide it.** A `claude -p` number is "Opus 4.8 via Claude Code," NOT a raw-API `tier: "frontier"` result (Claude Code adds system-prompt scaffolding + model-alias routing, and it isn't reproducible without a Claude Code entitlement). **Do not invent a new `tier` value** — `BenchmarkArtifactTier` is `local|frontier` only and `parseBenchmarkArtifact()` rejects anything else. Label it via the artifact's `note` + model metadata (e.g. model `opus-4-8-via-claude-code`) while keeping `tier: "frontier"`, or land a schema+parser+test change first if a distinct tier is truly wanted. Stated plainly, this is defensible; presenting it *as* a raw-API number is the only thing that would sink credibility.
+There is no budget for a raw-API frontier run, so the Tier-F responder is Opus
+4.8 via Claude Code headless (`claude -p`), through the `claude-cli` bench
+provider. **That provider is delivered by PR #1735** and is now available on
+`main`; this is a valid research harness, not a fallback that invalidates the
+measurement.
+- **Label it with complete provenance.** A `claude -p` number may retain
+  `tier: "frontier"` when it satisfies the artifact contract. Record
+  `provider: "claude-cli"`, the actual model, Claude Code harness details,
+  isolation settings, invocation configuration, artifact note, and model
+  metadata. Raw Anthropic API and Claude Code are distinct measurement paths,
+  not a valid-versus-invalid hierarchy. Do not invent a new `tier` value —
+  `BenchmarkArtifactTier` remains `local|frontier`.
 - **Isolation is mandatory.** Run `claude -p` from a freshly-created empty temp workspace with **`--tools ""`** (the flag that actually disables built-in tools; `--allowedTools` only gates permission prompts) and Claude Code's config-skipping **`--safe-mode`** (the Claude Code equivalent of Codex's `--ignore-user-config`), or it inherits `~/.claude/CLAUDE.md`/project settings and silently contaminates every answer. The delivered `claude-cli` provider (PR #1735) does exactly this — `--tools ""` + `--safe-mode` + isolated cwd + **`--system-prompt`** (full replace, so Claude Code's default coding-agent prompt is dropped entirely — verified via a token-count check: `--system-prompt` sends 0 default-prompt cache tokens vs 1599 for `--append-system-prompt`) carrying the benchmark scoring protocol — all verified against the installed `claude` CLI.
 
 ### Fitting Claude Max x20 session limits (the real constraint)
