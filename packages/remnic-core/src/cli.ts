@@ -1919,24 +1919,24 @@ export type TierMigrateCliAdapter =
 export async function runTierStatusCliCommand(
   adapter: TierStatusCliAdapter,
 ): Promise<TierMigrationStatusSnapshot> {
-  if ("tierMigrationCoordinator" in adapter) {
+  if ("tierMigrationCoordinator" in adapter && typeof adapter.tierMigrationCoordinator.getStatus === "function") {
     return adapter.tierMigrationCoordinator.getStatus();
   }
-  return adapter.getTierMigrationStatus();
+  return (adapter as TierStatusLegacyCliAdapter).getTierMigrationStatus();
 }
 
 export async function runTierMigrateCliCommand(
   adapter: TierMigrateCliAdapter,
   options: { dryRun?: boolean; limit?: number } = {},
 ): Promise<TierMigrationCycleSummary> {
-  if ("tierMigrationCoordinator" in adapter) {
+  if ("tierMigrationCoordinator" in adapter && typeof adapter.tierMigrationCoordinator.runCycle === "function") {
     return adapter.tierMigrationCoordinator.runCycle(
       adapter.storage,
       "manual",
       { dryRun: options.dryRun === true, limitOverride: options.limit, force: false },
     );
   }
-  return adapter.runTierMigrationNow({
+  return (adapter as TierMigrateLegacyCliAdapter).runTierMigrationNow({
     dryRun: options.dryRun === true,
     limit: options.limit,
   });
