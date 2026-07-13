@@ -3262,9 +3262,11 @@ test("access service governanceRun skips entity synthesis refresh in shadow mode
       recall: async () => "ctx",
       lastRecall: { get: () => null, getMostRecent: () => null },
       getStorage: async () => storage,
-      processEntitySynthesisQueue: async () => {
-        synthesisCalls += 1;
-        throw new Error("shadow mode must not refresh synthesis");
+      entitySynthesisCoordinator: {
+        processQueue: async () => {
+          synthesisCalls += 1;
+          throw new Error("shadow mode must not refresh synthesis");
+        },
       },
     } as any);
 
@@ -3363,9 +3365,11 @@ test("access service governanceRun preserves apply result when entity synthesis 
       recall: async () => "ctx",
       lastRecall: { get: () => null, getMostRecent: () => null },
       getStorage: async () => storage,
-      processEntitySynthesisQueue: async () => {
-        synthesisCalls += 1;
-        throw new Error("synthetic refresh failure");
+      entitySynthesisCoordinator: {
+        processQueue: async () => {
+          synthesisCalls += 1;
+          throw new Error("synthetic refresh failure");
+        },
       },
     } as any);
 

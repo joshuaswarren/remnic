@@ -22,6 +22,7 @@ import { LocalLlmClient } from "../local-llm.js";
 import { log } from "../logger.js";
 import { canWriteNamespace, defaultNamespaceForPrincipal, recallNamespacesForPrincipal, resolvePrincipal } from "../namespaces/principal.js";
 import type { ExtractionRunResult } from "./extraction-run.js";
+import type { EntitySynthesisCoordinator } from "./entity-synthesis-coordinator.js";
 import type { BufferTurn, CodingContext, DaySummaryResult, MemoryFile, PluginConfig } from "../types.js";
 import {
   Orchestrator,
@@ -40,10 +41,7 @@ export interface SessionContextDeps {
   getCodingContextForSession(sessionKey: string | undefined): CodingContext | null;
   readonly initPromise: Promise<void> | null;
   readonly localLlm: LocalLlmClient;
-  processEntitySynthesisQueue(
-    namespace?: string,
-    maxEntities?: number,
-  ): Promise<number>;
+  readonly entitySynthesisCoordinator: EntitySynthesisCoordinator;
   queueBufferedExtraction(
     turnsToExtract: BufferTurn[],
     reason: "trigger_mode" | "heartbeat_observer",
@@ -282,7 +280,7 @@ export class SessionContextCoordinator {
     });
     if (options?.dryRun !== true) {
       try {
-        await this.deps.processEntitySynthesisQueue(
+        await this.deps.entitySynthesisCoordinator.processQueue(
           this.deps.storageDirNamespace(targetStorage.dir),
           5,
         );
