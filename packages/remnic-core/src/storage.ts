@@ -555,6 +555,32 @@ export function parseFrontmatterStringValue(rawValue: string | undefined): strin
  * corrupt stored counter fails safely rather than poisoning downstream
  * scoring. Pair with `assertMemoryWorthCounter` on the write path.
  */
+function bracketListInner(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) return undefined;
+  return trimmed.slice(1, -1);
+}
+
+function quotedArrayValues(raw: string): string[] {
+  const inner = bracketListInner(raw);
+  if (inner === undefined) return [];
+  const values: string[] = [];
+  let i = 0;
+  while (i < inner.length) {
+    while (i < inner.length && inner[i] !== '"') i++;
+    if (i >= inner.length) break;
+    i++;
+    let value = "";
+    while (i < inner.length) {
+      const ch = inner[i++];
+      if (ch === "\\" && i < inner.length) value += ch + inner[i++];
+      else if (ch === '"') { values.push(value); break; }
+      else value += ch;
+    }
+  }
+  return values;
+}
+
 function parseMemoryWorthCounterField(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
   const trimmed = raw.trim();
@@ -647,9 +673,9 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
 
   let tags: string[] = [];
   const tagsStr = fm.tags ?? "";
-  const tagMatch = tagsStr.match(/\[(.*)]/);
-  if (tagMatch) {
-    tags = tagMatch[1]
+  const tagInner = bracketListInner(tagsStr);
+  if (tagInner !== undefined) {
+    tags = tagInner
       .split(",")
       .map((t) => t.trim().replace(/^"|"$/g, ""))
       .filter(Boolean);
@@ -657,9 +683,9 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
 
   let intentEntityTypes: string[] | undefined;
   const intentEntityTypesStr = fm.intentEntityTypes ?? "";
-  const intentEntityTypesMatch = intentEntityTypesStr.match(/\[(.*)]/);
-  if (intentEntityTypesMatch) {
-    intentEntityTypes = intentEntityTypesMatch[1]
+  const intentEntityTypesInner = bracketListInner(intentEntityTypesStr);
+  if (intentEntityTypesInner !== undefined) {
+    intentEntityTypes = intentEntityTypesInner
       .split(",")
       .map((t) => t.trim().replace(/^"|"$/g, ""))
       .filter(Boolean);
@@ -670,9 +696,9 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
   // Parse lineage array if present
   let lineage: string[] | undefined;
   const lineageStr = fm.lineage ?? "";
-  const lineageMatch = lineageStr.match(/\[(.*)]/);
-  if (lineageMatch) {
-    lineage = lineageMatch[1]
+  const lineageInner = bracketListInner(lineageStr);
+  if (lineageInner !== undefined) {
+    lineage = lineageInner
       .split(",")
       .map((l) => l.trim().replace(/^"|"$/g, ""))
       .filter(Boolean);
@@ -807,21 +833,18 @@ export function parseFrontmatter(raw: string): { frontmatter: MemoryFrontmatter;
     let reasons: string[] = [];
     const reasonsStr = fm.importanceReasons ?? "";
     if (reasonsStr.trim().startsWith("[") && reasonsStr.trim().endsWith("]")) {
-      const reasonMatches = reasonsStr.matchAll(/"((?:\\.|[^"\\])*)"/g);
-      for (const match of reasonMatches) {
-        const reason = parseLinkReasonValue(match[1]);
-        if (reason.length > 0) {
-          reasons.push(reason);
-        }
+      for (const rawReason of quotedArrayValues(reasonsStr)) {
+        const reason = parseLinkReasonValue(rawReason);
+        if (reason.length > 0) reasons.push(reason);
       }
     }
 
     // Parse importance keywords array
     let keywords: string[] = [];
     const keywordsStr = fm.importanceKeywords ?? "";
-    const keywordsMatch = keywordsStr.match(/\[(.*)]/);
-    if (keywordsMatch) {
-      keywords = keywordsMatch[1]
+    const keywordsInner = bracketListInner(keywordsStr);
+    if (keywordsInner !== undefined) {
+      keywords = keywordsInner
         .split(",")
         .map((k) => k.trim().replace(/^"|"$/g, ""))
         .filter(Boolean);
