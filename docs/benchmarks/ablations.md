@@ -21,6 +21,15 @@ Each cell artifact is committed next to the baseline under
 **No datasets, raw traces, or logs are committed** — only the validated
 `BenchmarkArtifact v1` JSON (metrics + per-task scores + provenance envelope).
 
+> **Note:** the three ablation-cell artifacts
+>(`…c67c2c7-memory-worth-off.json`, `…c67c2c7-contradiction-scan-on.json`,
+>`…c67c2c7-graph-recall-on.json`) were untracked from the working tree to
+>prevent them from polluting the Figure 1 Tier-L anchor (the figure generator
+>picks the newest artifact per benchmark+tier). They remain reproducible from
+>git history at commit `dcdcb5a8` (`git show dcdcb5a8:docs/benchmarks/results/<basename>`),
+>on the lab host at `~/src/remnic/docs/benchmarks/results/`, and in the stored
+>results at `~/.remnic/bench/results/`.
+
 ## Per-cell deltas vs baseline
 
 `contains_answer` / `f1` / `llm_judge` / `rouge_l` are the four
