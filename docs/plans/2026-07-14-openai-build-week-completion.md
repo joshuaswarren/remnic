@@ -91,10 +91,12 @@ Integration checkpoint:
 
 ### Phase 2 — measured evidence
 
-- [ ] #1877: pin the judge calibration set and add a larger slice and/or
+- [x] #1877: pin the judge calibration set and add a larger slice and/or
   bootstrap confidence interval before interpreting headline LLM-judge scores.
   Retain deterministic metrics and manually review a stratified sample.
-- [ ] Decide and document #1871's provider/tier classification.
+- [x] Decide and document #1871's provider/tier classification: raw Responses
+  API for the reproducible run; a Codex CLI result, if ever used, is labeled a
+  research-harness measurement rather than an independent frontier headline.
 - [ ] Smoke GPT-5.6 end to end before a paid run.
 - [ ] Run LongMemEval real profile and the full MemCorrect matrix with complete
   provider, harness, model, judge, rubric, isolation, cost, token, dataset,
@@ -106,18 +108,19 @@ Integration checkpoint:
 
 ### Phase 3 — judge experience and submission
 
-- [ ] #1873: verify `npm pack`/tarball or released packages from a clean
+- [x] #1873: verify `npm pack`/tarball packages from a clean
   container or temporary prefix, with no repository checkout.
-- [ ] Verify global install, MCP quick run, run listing, offline HTML export,
+- [x] Verify global-prefix install, MCP quick run, run listing, offline HTML export,
   and the missing-optional-bench install hint.
-- [ ] Add README and bench README Build Week sections, supported platforms,
+- [x] Add README and bench README Build Week sections, supported platforms,
   exact judge commands, Codex collaboration narrative, and GPT-5.6 role.
 - [ ] Finalize `HACKATHON.md` with commit/artifact/test receipts and session ID.
-- [ ] Reconcile Devpost copy with shipped reality and delete unshipped claims.
-- [ ] Write and rehearse a sub-three-minute demo script: stale-memory problem,
+- [x] Reconcile Devpost copy with shipped reality and delete unshipped claims.
+- [x] Write a sub-three-minute demo script: stale-memory problem,
   MCP-backed run, correction/non-resurrection result, report card, receipts,
   and explicit Codex/GPT-5.6 voiceover.
-- [ ] Run voice lint, license/privacy/secret audit, and final cold-path test.
+- [ ] Run final license/privacy/secret audit. Voice lint and the packed-tarball
+  cold-path test pass; the recorded demo still needs operator rehearsal.
 - [ ] Submit Devpost entry; close #1868 only when every child has receipts.
 
 ## Remaining open-issue program

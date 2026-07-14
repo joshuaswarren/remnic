@@ -88,7 +88,8 @@ and tracks the still-pending operator evidence.
 Supported judge path:
 
 - Node.js 22.12 or newer.
-- Linux is verified from a source checkout for the Build Week path.
+- Linux is verified from both a source checkout and packed tarballs installed
+  into a clean global prefix for the Build Week path.
 - macOS uses the same Node CLI and is supported; its final global-install
   receipt is still an operator release check.
 - On Windows, use WSL2 for the claimed judge path. Native Windows is not yet

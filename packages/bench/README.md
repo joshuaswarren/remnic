@@ -75,10 +75,11 @@ provider, and report card. The underlying Remnic engine and original benchmark
 harness are prior work. The evidence ledger, credential-dependent frontier-run
 placeholder, and release status live in the root [`HACKATHON.md`](../../HACKATHON.md).
 
-The claimed judge path requires Node.js 22.12+. It is verified from source on
-Linux; macOS is supported with the same Node CLI but still needs the final
-global-install receipt. Windows judges should use WSL2; native Windows is not
-currently claimed as Build Week-verified.
+The claimed judge path requires Node.js 22.12+. It is verified from source and
+from packed tarballs installed into a clean global prefix on Linux; macOS is
+supported with the same Node CLI but still needs a release-install receipt.
+Windows judges should use WSL2; native Windows is not currently claimed as
+Build Week-verified.
 
 ## What it does
 

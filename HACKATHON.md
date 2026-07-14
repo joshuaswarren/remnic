@@ -29,8 +29,8 @@ links the new code. Open boxes show work or proof that is still due.
 A one-command harness that benchmarks the memory system behind an AI agent.
 It asks three questions. Does the agent recall the right things? Does it
 accept corrections? Does it stop serving stale facts after a correction?
-It runs against any memory backend through a generic MCP adapter, not just
-Remnic. It uses GPT-5.6 as the grading judge. It produces a shareable
+It runs against Remnic or another conforming memory backend through a generic
+MCP adapter. It can use GPT-5.6 as the grading judge. It produces a shareable
 scored report card.
 
 The pitch in one line: agent memory without evals is vibes with a database.
@@ -85,12 +85,25 @@ and Codex session evidence at submission time.
   a single shareable scored report with per-dimension scores, correction
   behavior, and provenance. Included in the existing publish feed for
   remnic.ai.
-- [ ] Judge sandbox instructions. A documented five-minute test path (see
+- [x] Judge sandbox instructions. A documented five-minute test path (see
   below), so judges can run the tool without rebuilding anything.
 
 Delivered implementation commit:
 [`fb295ff8`](https://github.com/joshuaswarren/remnic/commit/fb295ff8fb9cb66c7f4bcde793d4ce63aa095ae1)
 (MCP adapter, Responses judge provider, and report card).
+
+Additional in-window receipts:
+
+- [`43bf0b8d`](https://github.com/joshuaswarren/remnic/commit/43bf0b8d)
+  pins the judge data. It also adds a repeatable bootstrap confidence range.
+- [`c8e5837f`](https://github.com/joshuaswarren/remnic/commit/c8e5837f)
+  adds the judge instructions, honest Devpost draft, and demo script.
+- [`f2496bdc`](https://github.com/joshuaswarren/remnic/commit/f2496bdc)
+  adds the cold packed-tarball test. It passed on Linux x64 with Node 22.23.1
+  on 2026-07-14. The run ended in `PACKAGED_SANDBOX_OK`. It used
+  `adapterMode=mcp`, saved one task with `uptake_at_next=1`, and made a
+  15,144-byte report. Run it with
+  `node scripts/verify-build-week-sandbox.mjs`.
 
 Codex `/feedback` session ID for the core functionality:
 **PENDING OPERATOR INPUT.** Run `/feedback` in the primary Codex session and
@@ -158,14 +171,14 @@ in `docs/paper/repro-appendix.md`.
 | Environment | Build Week support statement |
 |---|---|
 | Node.js | 22.12 or newer |
-| Linux | Source-checkout MCP demo verified on Linux x64 |
+| Linux | Source-checkout and packed-tarball global-prefix paths verified on Linux x64 |
 | macOS | Supported by the Node CLI; final global-install receipt pending |
 | Windows | Use WSL2 for the claimed path; native Windows is not claimed as verified |
 | MCP transport | stdio and Streamable HTTP |
 
-The published-package cold-install receipt is still pending. Before submission,
-replace this sentence with the release version and link the exact receipt, or
-leave the source-checkout path as the only verified installation claim.
+The packed-tarball cold-install receipt is complete. Public npm version `9.6.17`
+predates this work. A release with the commits above must ship before the
+deadline. After that release, rerun the same test and record the version here.
 
 ## Honest framing of the novelty claim
 
