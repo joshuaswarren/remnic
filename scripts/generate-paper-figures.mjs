@@ -380,8 +380,9 @@ function provenanceFooter(width, y, sources) {
 
 // Metrics plotted on the shared [0,1] accuracy axis. Non-[0,1] metrics
 // (search_hits is a count; locomo_hidden_evidence_id_leak is a guard indicator
-// where 1 = leakage detected) are reported in a footnote table, not on the
-// accuracy axis — plotting them on the same scale would mislead.
+// where 1 = guard held / zero hidden evidence ids leaked — the runner scores
+// hiddenEvidenceIdLeakCount === 0 ? 1 : 0) are reported in a footnote table,
+// not on the accuracy axis — plotting them on the same scale would mislead.
 const LOCOMO_AXIS_METRICS = [
   { key: "contains_answer", label: "contains_answer", dir: "higher" },
   { key: "f1", label: "f1", dir: "higher" },
