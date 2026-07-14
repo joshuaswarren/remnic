@@ -29,9 +29,9 @@ not the markup.
 
 | File | Owner | Status |
 |---|---|---|
-| `main.md` | #1726 (this issue) | Skeleton — abstract + §1–§9, intent + TODOs only |
-| `related-work.md` | #1729 (sibling issue) | Not created here. `main.md` §2 points at it. |
-| `repro-appendix.md` | follow-up child of the plan's execution item 8 | Not created here. `main.md` §9 points at it. |
+| `main.md` | #1726 (this issue) | Working draft — §1–§9 in prose; remaining `TODO(#NNNN)` markers inline (third-party adapters #1727/#1747, §6.3 TrustScore/faithfulness, §7.2 #1708) |
+| `related-work.md` | #1729 (landed) | Drafted — differentiation table + capability matrix. `main.md` §2 points at it. |
+| `repro-appendix.md` | plan execution item 8 | Drafted — Tier L and Tier F (§A.5) reproduction paths. `main.md` §9 points at it. |
 
 Section-level standalone files are intentionally avoided except where a sibling
 issue owns one (`related-work.md`). Keeping the rest of the skeleton in a single
@@ -42,18 +42,22 @@ issue owns one (`related-work.md`). Keeping the rest of the skeleton in a single
 1. **No fabricated numbers.** Every metric cited must trace to a committed
    artifact under `docs/benchmarks/results/` (or a sibling path). Anything not
    yet produced is a `TODO(#NNNN)`, never a placeholder value.
-2. **Cite only committed artifacts.** As of this skeleton the only real
-   (non-mock) committed artifacts are the two Tier-L local runs at
-   `docs/benchmarks/results/2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json`
-   and
-   `docs/benchmarks/results/2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json`
-   (both `tier: "local"`, model `qwen2.5-7b-32k:latest`). The
-   `2026-04-20-*-mock000.json` files are **mocks** and must never be cited as
-   results.
-3. **No Tier-F claim without the real run.** A complete Tier-F responder run
-   (Opus 4.8 via `claude -p`) is still pending for the full dataset. The
-   bounded artifacts and provider are available; §6 Results and §5 Tier-F rows
-   must distinguish trial coverage from full coverage.
+2. **Cite only committed artifacts.** `docs/benchmarks/results/` on `main`
+   carries ten artifacts: two mocks (`2026-04-20-*-mock000.json` — never cite
+   as results), two real Tier-L anchors (`2026-07-07-*-47aae03.json`), two
+   bounded Tier-F trials (`2026-07-08-*-798fe8a.json` — partial coverage,
+   never leaderboard numbers), two MemCorrect full-matrix runs
+   (`2026-07-13-memcorrect-v1-*-9485f44.json`), and two full Tier-F frontier
+   runs (`2026-07-14-*-opus-0676347.json`). One recorded exception: the three
+   §7.1 ablation-cell artifacts (`…c67c2c7-*.json`) are committed in git
+   history at `dcdcb5a8` but deliberately untracked from the current tree so
+   the figure generator's newest-per-tier pick keeps the Figure 1 Tier-L
+   anchor clean; `docs/benchmarks/ablations.md` and §7.1's provenance note
+   document the retrieval path.
+3. **Distinguish trial coverage from full coverage.** The full Tier-F run
+   (Opus 4.8 via `claude -p`, `real` profile) landed 2026-07-14 and is the
+   accuracy claim; the 2026-07-08 bounded artifacts remain partial-coverage
+   evidence only.
 4. **Lead with MemCorrect (composition framing), not raw Tier-L accuracy.** Per
    Joshua's confirmed decision (2026-07-07). MemCorrect's novelty is a
    composition/protocol claim, **not** "first to measure memory correction" —

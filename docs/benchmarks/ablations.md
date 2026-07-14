@@ -5,7 +5,7 @@ This page reports the **single-flag ablation matrix** from issue
 / [#1725](https://github.com/joshuaswarren/remnic/issues/1725), produced on the
 RTX 3090 local-lab box under the `local-lab` runtime profile.
 
-Each ablation flips **exactly one** recall-stack flag off its default in the
+Each ablation changes **exactly one** recall-stack flag away from its default in the
 baseline run and re-runs the full LoCoMo-10 benchmark (1986 questions across
 all 10 conversations) with everything else held constant: same model
 (`qwen2.5-7b-32k:latest`, Q4_K_M), same seed (1), same responder **and** judge

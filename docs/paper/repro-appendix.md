@@ -9,11 +9,12 @@
 > present; judge calibration reported; honest framing attached; leaderboard-safe;
 > reproducible on one GPU).
 >
-> **Honesty boundary.** Every command and schema below traces to code or docs
-> committed (the trained faithfulness-gate v1 weights, the Tier F frontier
-> run), this appendix says so explicitly and marks the state — it never
-> describes an un-run experiment as if it were done. The two real Tier L
-> artifacts already on `main` (§A.1.2) are cited as committed evidence.
+> **Honesty boundary.** Every command and schema below traces to committed
+> code or docs, with one exception marked pending where it appears: the
+> trained faithfulness-gate v1 weights manifest (§A.4.3, #1737). The Tier L
+> anchor artifacts, the MemCorrect full-matrix artifacts, and the Tier F
+> frontier artifacts on `main` (§A.1.2) are cited as committed evidence;
+> this appendix never describes an un-run experiment as if it were done.
 
 ---
 
@@ -167,20 +168,24 @@ size, threshold, and a `warning` flag set when κ falls below threshold. It
 lands on local artifacts after `remnic bench judge-calibrate` (§A.3.5).
 
 **What is committed today.** `docs/benchmarks/results/` on `main` carries
-four artifacts. Two are clearly-marked mock placeholders
+ten artifacts. Two are clearly-marked mock placeholders
 (`2026-04-20-locomo-gpt-4o-mini-mock000.json`,
 `2026-04-20-longmemeval-gpt-4o-mini-mock000.json`) with
 `datasetVersion: "mock-fixture"` and zeroed metrics — **do not cite**. Two are
-**real Tier L artifacts** (`2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json`
-for LoCoMo and `2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json` for
-LongMemEval), both `tier: "local"`, model `qwen2.5-7b-32k:latest` (Q4_K_M,
-non-thinking), seed 1, full dataset (1986/1986 LoCoMo QA across all 10
-conversations; 500/500 LongMemEval-oracle). They are the reproducibility
-anchor the paper skeleton cites — quote their metric values from §6 Results,
-not here. Neither carries `judgeCalibration` yet (the local judge has no
-frontier pair to calibrate against until the Tier F run lands). The Tier F
-frontier artifacts and the trained faithfulness-gate manifest are **not yet
-committed** — see §A.4.3 and §A.5 for their pending state.
+the **real Tier L anchors** (`2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json`
+and `2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json`), both
+`tier: "local"`, model `qwen2.5-7b-32k:latest` (Q4_K_M, non-thinking), seed 1,
+full dataset (1986/1986 LoCoMo QA; 500/500 LongMemEval-oracle). They predate
+the frontier judge pair, so they omit `judgeCalibration` — expected, not a
+gap. Two are **bounded Tier F trials** (`2026-07-08-*-798fe8a.json`,
+trial-limited) — partial-coverage evidence, never leaderboard numbers. Two
+are the **MemCorrect full-matrix** artifacts (`2026-07-13-memcorrect-v1-*-9485f44.json`,
+40 scenarios, `mode: full`). Two are the **full Tier F frontier runs**
+(`2026-07-14-{locomo,longmemeval}-opus-0676347.json`, Opus 4.8 via Claude
+Code, `real` runtime profile, zero task failures), each carrying a stamped
+`judgeCalibration` (LongMemEval κ=0.769, `warning: false`; LoCoMo κ=0.135,
+`warning: true`). Quote metric values from §6 Results, not here. The trained
+faithfulness-gate manifest remains pending — see §A.4.3.
 
 ---
 
@@ -431,9 +436,10 @@ jq . ~/.remnic/bench/results/MANIFEST.json
 > attached on the **next** `remnic bench run` that uses the same judge pair.
 > To produce an artifact with `judgeCalibration` populated, calibrate first,
 > then re-run the benchmark, then promote that second result. The two Tier L
-> artifacts currently on `main` were produced before any frontier judge was
-> available, so they omit `judgeCalibration` — this is expected, not a gap,
-> until the Tier F run lands.
+> anchor artifacts on `main` were produced before any frontier judge was
+> available, so they omit `judgeCalibration` — expected, not a gap. The two
+> full Tier F artifacts (`2026-07-14-*-opus-0676347.json`) followed the
+> calibrate-first ordering and carry it.
 
 The build script rejects partial and quick-mode runs and runs that record a
 `config.benchmarkOptions.limit` / `trialLimit` (issue #1712 publish-safety
@@ -648,4 +654,4 @@ Every command and schema in this appendix traces to a committed source:
 | Hardware envelope + model-size policy | `model-lab/README.md` |
 | Faithfulness-gate manifest (schema example) | `model-lab/faithfulness-gate/manifest.json` |
 | Faithfulness-record contract | `model-lab/common/jsonl_schema.py` |
-| Committed artifacts (mock placeholders + real Tier L) | `docs/benchmarks/results/2026-{04-20-mock000,07-07-qwen2.5-7b}*.json` |
+| Committed artifacts (mocks + Tier L anchors + Tier F trials + MemCorrect + Tier F full) | `docs/benchmarks/results/2026-{04-20,07-07,07-08,07-13,07-14}-*.json` |
