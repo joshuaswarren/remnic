@@ -1,4 +1,7 @@
-import type { BenchResponder } from "./adapters/types.js";
+import type {
+  BenchRecallSupportAssessment,
+  BenchResponder,
+} from "./adapters/types.js";
 import { TRAJECTORY_RETRY_SECTION_TITLE_SET } from "./recall-sections.js";
 
 export type BenchmarkAnswerMode = "default" | "strict" | "agentic-memory";
@@ -40,6 +43,7 @@ export async function answerBenchmarkQuestion(options: {
   answerFormat?: BenchmarkAnswerFormat;
   questionContext?: BenchmarkQuestionContext;
   retryUnknownWithEvidence?: boolean;
+  recallSupport?: BenchRecallSupportAssessment;
 }): Promise<BenchmarkAnswerResult> {
   if (!options.responder) {
     return {
@@ -59,7 +63,7 @@ export async function answerBenchmarkQuestion(options: {
     options.answerFormat === "auto" || options.answerFormat === undefined
       ? inferAnswerFormat(options.question)
       : options.answerFormat;
-  const question =
+  const baseQuestion =
     answerMode === "strict"
       ? buildStrictBenchmarkQuestion(options.question, answerFormat)
       : answerMode === "agentic-memory"
@@ -69,6 +73,9 @@ export async function answerBenchmarkQuestion(options: {
             options.questionContext,
           )
       : options.question;
+  const question = shouldInstructRecallAbstention(options.recallSupport)
+    ? buildRecallAbstentionQuestion(baseQuestion, options.recallSupport!)
+    : baseQuestion;
   const response = await options.responder.respond(
     question,
     options.recalledText,
@@ -101,6 +108,28 @@ export async function answerBenchmarkQuestion(options: {
       : response.tokens,
     model: finalResponse.model ?? response.model,
   };
+}
+
+function shouldInstructRecallAbstention(
+  support: BenchRecallSupportAssessment | undefined,
+): boolean {
+  return support?.status === "empty" || support?.status === "weak";
+}
+
+function buildRecallAbstentionQuestion(
+  question: string,
+  support: BenchRecallSupportAssessment,
+): string {
+  const description = support.status === "empty"
+    ? "the successful recall returned no evidence"
+    : "the recall adapter explicitly classified the supplied evidence as weak";
+  return [
+    question,
+    "",
+    "Recall support gate:",
+    `- ${description}.`,
+    '- Do not infer, guess, or synthesize an answer. Answer exactly "unknown".',
+  ].join("\n");
 }
 
 export function buildAgenticMemoryBenchmarkQuestion(

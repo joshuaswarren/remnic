@@ -100,6 +100,40 @@ benchmark operators should use the `baseline` profile only for LoCoMo's
 skip-extraction replay path when optimizing this measured configuration; this
 is not production guidance and does not change shipped defaults.
 
+An opt-in answer-time support gate is available as an **empty-recall
+abstention foundation**. It defaults to `false`. To enable it for a CLI run,
+put the following top-level setting in the JSON passed to the existing
+`--remnic-config` option (a nested `remnic` object is also accepted by the
+runtime-profile loader):
+
+```json
+{
+  "answerSupportGate": true
+}
+```
+
+```bash
+remnic bench run locomo --runtime-profile real \
+  --remnic-config ./locomo-real.json
+```
+
+Boolean-like strings (`true/false`, `1/0`, `yes/no`, and `on/off`) are
+validated explicitly. With the gate enabled, a successful empty responder
+context instructs the responder to answer `unknown`. Adapters may additionally
+provide an exact-context support assessment; `weak` requires a positive
+matched-evidence count and a finite maximum score below an explicit threshold.
+Backend failure is recorded separately and never forces abstention. The current
+gate lives in the shared published-benchmark harness, so it applies uniformly
+to LoCoMo and LongMemEval without inspecting benchmark categories or answers.
+The Remnic benchmark adapter does not yet expose that bounded same-context
+confidence signal, so non-empty recall remains `unavailable` rather than being
+guessed weak from auxiliary zero-hit searches.
+
+This foundation does **not** establish issue #1878's acceptance metrics. A new
+calibrated, uncapped 1,986-task real-profile LoCoMo run, with the required
+responder/judge credentials and published artifact, is still required before
+claiming adversarial lift or answerable-category preservation.
+
 The two `*-mock000.json` files remain as **pipeline examples** with
 `datasetVersion: "mock-fixture"` and placeholder scores; **do not cite
 them publicly**. They will be removed once full uncapped Tier L runs

@@ -38,6 +38,33 @@ export interface BenchPhaseControl {
   signal?: AbortSignal;
 }
 
+export type BenchRecallSupportStatus =
+  | "supported"
+  | "weak"
+  | "empty"
+  | "unavailable"
+  | "backend_failure";
+
+/**
+ * Answer-time support signal for the exact recall text supplied to the
+ * responder. `weak` is intentionally explicit: callers must not infer it from
+ * a zero-hit auxiliary search when `recalledText` contains evidence from other
+ * retrieval tiers.
+ */
+export interface BenchRecallSupportAssessment {
+  status: BenchRecallSupportStatus;
+  reason?: string;
+  evidenceCount?: number;
+  maxScore?: number;
+  supportThreshold?: number;
+}
+
+export interface BenchRecallSupportRequest {
+  query: string;
+  recalledText: string;
+  sessionIds: readonly string[];
+}
+
 export interface BenchResponder {
   respond(
     question: string,
@@ -118,6 +145,15 @@ export interface BenchMemoryAdapter {
     options?: BenchRecallOptions,
     control?: BenchPhaseControl,
   ): Promise<string>;
+  /**
+   * Optionally assess support using the exact, final recall context that will
+   * be sent to the responder. Implementations may return `weak` only from
+   * explicit evidence-confidence signals derived from that context.
+   */
+  assessRecallSupport?(
+    request: BenchRecallSupportRequest,
+    control?: BenchPhaseControl,
+  ): Promise<BenchRecallSupportAssessment>;
   search(
     query: string,
     limit: number,
