@@ -71,7 +71,18 @@ function buildPlan(
 ): HarnessPlan {
   const ingestSessions: HarnessPlan["ingestSessions"] = [];
   const sessionIds: string[] = [];
-  const annotateTemporalSources = shouldAnnotateTemporalSources(item.question);
+  const evidenceStrategy = resolveLongMemEvalEvidenceStrategy(item);
+  const annotateSources =
+    evidenceStrategy !== "single-session" ||
+    shouldAnnotateTemporalSources(item.question);
+  const sourceChronology = rankSourceDates(
+    item.haystack_dates,
+    item.haystack_sessions.length,
+  );
+  const currentKnowledgeSourceIndex =
+    evidenceStrategy === "knowledge-update"
+      ? sourceChronology.indexOf(item.haystack_sessions.length)
+      : undefined;
   for (
     let sessionIndex = 0;
     sessionIndex < item.haystack_sessions.length;
@@ -83,10 +94,18 @@ function buildPlan(
     const messages = item.haystack_sessions[sessionIndex]!.map<Message>(
       (turn) => ({
         role: turn.role,
-        content: annotateTemporalSources
+        content: annotateSources
           ? formatLongMemEvalTurn(turn.content, {
               sessionId,
               haystackDate,
+              sourceOrder: sourceChronology[sessionIndex]!,
+              sourceCount: item.haystack_sessions.length,
+              knowledgeState:
+                currentKnowledgeSourceIndex === undefined
+                  ? undefined
+                  : sessionIndex === currentKnowledgeSourceIndex
+                    ? "current_candidate"
+                    : "superseded_candidate",
             })
           : turn.content,
       }),
@@ -100,6 +119,8 @@ function buildPlan(
     question: item.question,
     expected: item.answer,
     recallSessionIds: sessionIds,
+    recallTextTransform: ({ recalledText }) =>
+      composeLongMemEvalEvidence(recalledText, evidenceStrategy),
     binaryJudgePrompt: ({ answeredText }) =>
       buildLongMemEvalOfficialJudgePrompt(item, answeredText),
     extraDetails: {
@@ -108,6 +129,8 @@ function buildPlan(
       haystackDates: item.haystack_dates,
       haystackSessionIds: item.haystack_session_ids,
       answerSessionIds: item.answer_session_ids,
+      evidenceStrategy,
+      knowledgeSupersessionSurfaced: evidenceStrategy === "knowledge-update",
       judgeProtocol: "longmemeval-official-yes-no",
       judgePromptSource:
         "https://github.com/xiaowu0162/LongMemEval/blob/main/src/evaluation/evaluate_qa.py",
@@ -259,13 +282,95 @@ function uniqueSearchResults(results: SearchResult[]): SearchResult[] {
 
 function formatLongMemEvalTurn(
   content: string,
-  metadata: { sessionId: string; haystackDate?: string },
+  metadata: {
+    sessionId: string;
+    haystackDate?: string;
+    sourceOrder: number;
+    sourceCount: number;
+    knowledgeState?: "current_candidate" | "superseded_candidate";
+  },
 ): string {
-  const fields = [`source_session: ${metadata.sessionId}`];
+  const fields = [
+    `source_session: ${metadata.sessionId}`,
+    `source_order: ${metadata.sourceOrder}/${metadata.sourceCount}`,
+  ];
   if (metadata.haystackDate) {
     fields.push(`source_date: ${metadata.haystackDate}`);
   }
+  if (metadata.knowledgeState) {
+    fields.push(`knowledge_state: ${metadata.knowledgeState}`);
+  }
   return `[${fields.join("] [")}] ${content}`;
+}
+
+type LongMemEvalEvidenceStrategy =
+  "single-session" | "multi-session" | "knowledge-update";
+
+function resolveLongMemEvalEvidenceStrategy(
+  item: LongMemEvalItem,
+): LongMemEvalEvidenceStrategy {
+  if (
+    item.question_type === "knowledge-update" ||
+    item.question_type === "multi-session-update"
+  ) {
+    return "knowledge-update";
+  }
+  if (item.question_type === "multi-session") {
+    return "multi-session";
+  }
+  return "single-session";
+}
+
+function composeLongMemEvalEvidence(
+  recalledText: string,
+  strategy: LongMemEvalEvidenceStrategy,
+): string {
+  if (recalledText.trim().length === 0 || strategy === "single-session") {
+    return recalledText;
+  }
+
+  const guidance = [
+    "[multi_session_evidence] Compose the answer from all relevant source_session blocks; one block may contain only part of the answer.",
+  ];
+  if (strategy === "knowledge-update") {
+    guidance.push(
+      "[knowledge_update_evidence] When facts conflict, treat current_candidate as the current value and superseded_candidate as historical; use source_date and source_order to resolve chronology.",
+    );
+  }
+  return `${guidance.join("\n")}\n\n${recalledText}`;
+}
+
+function rankSourceDates(
+  dates: readonly string[],
+  sourceCount: number,
+): number[] {
+  const chronologicalIndices = Array.from(
+    { length: sourceCount },
+    (_, index) => index,
+  ).sort((left, right) => {
+    const leftTimestamp = parseSourceDate(dates[left]);
+    const rightTimestamp = parseSourceDate(dates[right]);
+    if (leftTimestamp < rightTimestamp) {
+      return -1;
+    }
+    if (leftTimestamp > rightTimestamp) {
+      return 1;
+    }
+    return left - right;
+  });
+  const ranks = new Array<number>(sourceCount);
+  chronologicalIndices.forEach((sourceIndex, chronologicalIndex) => {
+    ranks[sourceIndex] = chronologicalIndex + 1;
+  });
+  return ranks;
+}
+
+function parseSourceDate(value: string | undefined): number {
+  if (!value) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
 }
 
 function shouldAnnotateTemporalSources(question: string): boolean {

@@ -230,7 +230,7 @@ test("LongMemEval runner preserves temporal source metadata without narrowing re
     assert.deepEqual(recallSessionIds, ["old-session", "latest-session"]);
     assert.match(
       storedSessions.get("latest-session")?.[0] ?? "",
-      /^\[source_session: latest-session\] \[source_date: 2025-02-01\]/,
+      /^\[source_session: latest-session\] \[source_order: 2\/2\] \[source_date: 2025-02-01\]/,
     );
 
     const task = result.results.tasks[0]!;
@@ -249,6 +249,220 @@ test("LongMemEval runner preserves temporal source metadata without narrowing re
     ]);
     assert.equal(audit.answerSessionIdsUsedForRecall, false);
     assert.match(judgePrompt, /updated answer/);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("LongMemEval composes split session evidence and surfaces update supersession", async () => {
+  const tempDir = await mkdtemp(path.join(tmpdir(), "remnic-lme-compose-"));
+  try {
+    await writeFile(
+      path.join(tempDir, "longmemeval_oracle.json"),
+      JSON.stringify([
+        {
+          question_id: "compose-1",
+          question_type: "multi-session",
+          question: "What day is the flight and which hotel was booked?",
+          answer: "Tuesday and the Hilton",
+          question_date: "2025-03-03",
+          haystack_sessions: [
+            [{ role: "user", content: "The flight leaves on Tuesday." }],
+            [{ role: "user", content: "I booked the Hilton." }],
+          ],
+          haystack_session_ids: ["flight-session", "hotel-session"],
+          haystack_dates: ["2025-03-01", "2025-03-02"],
+          answer_session_ids: ["flight-session", "hotel-session"],
+        },
+        {
+          question_id: "update-1",
+          question_type: "knowledge-update",
+          question: "What is the user's current diet?",
+          answer: "vegan",
+          question_date: "2025-03-03",
+          // Deliberately reverse chronological ingest order. Supersession must
+          // follow source time, not array position or the gold answer session.
+          haystack_sessions: [
+            [{ role: "user", content: "My diet is now vegan." }],
+            [{ role: "user", content: "I am vegetarian." }],
+          ],
+          haystack_session_ids: ["new-diet", "old-diet"],
+          haystack_dates: ["2025-03-02", "2025-01-01"],
+          answer_session_ids: ["new-diet"],
+        },
+      ]),
+      "utf8",
+    );
+
+    const storedSessions = new Map<string, string[]>();
+    const responderContexts: string[] = [];
+    const result = await runLongMemEvalBenchmark({
+      benchmark: longMemEvalDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store(sessionId, messages) {
+          storedSessions.set(
+            sessionId,
+            messages.map((message) => message.content),
+          );
+        },
+        async recall(sessionId) {
+          return (storedSessions.get(sessionId) ?? []).join("\n");
+        },
+        async search() {
+          return [];
+        },
+        async reset() {
+          storedSessions.clear();
+        },
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond(question, recalledText) {
+            responderContexts.push(recalledText);
+            return {
+              text: question.includes("flight")
+                ? "Tuesday and the Hilton"
+                : "vegan",
+              tokens: { input: 1, output: 1 },
+              latencyMs: 1,
+              model: "smoke-responder",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            return 1;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "smoke-judge",
+            };
+          },
+          async scoreBinaryPrompt() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "smoke-judge",
+            };
+          },
+        },
+      },
+    });
+
+    assert.equal(responderContexts.length, 2);
+    assert.match(responderContexts[0]!, /\[multi_session_evidence\]/);
+    assert.match(responderContexts[0]!, /source_session: flight-session/);
+    assert.match(responderContexts[0]!, /The flight leaves on Tuesday/);
+    assert.match(responderContexts[0]!, /source_session: hotel-session/);
+    assert.match(responderContexts[0]!, /I booked the Hilton/);
+
+    assert.match(responderContexts[1]!, /\[knowledge_update_evidence\]/);
+    assert.match(
+      responderContexts[1]!,
+      /source_session: new-diet[^\n]+knowledge_state: current_candidate[^\n]+My diet is now vegan/,
+    );
+    assert.match(
+      responderContexts[1]!,
+      /source_session: old-diet[^\n]+knowledge_state: superseded_candidate[^\n]+I am vegetarian/,
+    );
+    assert.equal(
+      result.results.tasks[1]?.details.evidenceStrategy,
+      "knowledge-update",
+    );
+    assert.equal(
+      result.results.tasks[1]?.details.knowledgeSupersessionSurfaced,
+      true,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("LongMemEval composition preserves empty recall for abstention", async () => {
+  const tempDir = await mkdtemp(
+    path.join(tmpdir(), "remnic-lme-empty-compose-"),
+  );
+  let responderContext = "not-called";
+  try {
+    await writeFile(
+      path.join(tempDir, "longmemeval_oracle.json"),
+      JSON.stringify([
+        {
+          question_id: "empty-update",
+          question_type: "knowledge-update",
+          question: "What is the user's current diet?",
+          answer: "unknown",
+          question_date: "2025-03-03",
+          haystack_sessions: [[{ role: "user", content: "Unrelated note." }]],
+          haystack_session_ids: ["empty-session"],
+          haystack_dates: ["2025-03-02"],
+          answer_session_ids: [],
+        },
+      ]),
+      "utf8",
+    );
+
+    await runLongMemEvalBenchmark({
+      benchmark: longMemEvalDefinition,
+      mode: "full",
+      datasetDir: tempDir,
+      system: {
+        async store() {},
+        async recall() {
+          return "";
+        },
+        async search() {
+          return [];
+        },
+        async reset() {},
+        async destroy() {},
+        async getStats() {
+          return { totalMessages: 0, totalSummaryNodes: 0, maxDepth: 0 };
+        },
+        responder: {
+          async respond(_question, recalledText) {
+            responderContext = recalledText;
+            return {
+              text: "unknown",
+              tokens: { input: 1, output: 1 },
+              latencyMs: 1,
+              model: "smoke-responder",
+            };
+          },
+        },
+        judge: {
+          async score() {
+            return 1;
+          },
+          async scoreWithMetrics() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "smoke-judge",
+            };
+          },
+          async scoreBinaryPrompt() {
+            return {
+              score: 1,
+              tokens: { input: 0, output: 0 },
+              latencyMs: 0,
+              model: "smoke-judge",
+            };
+          },
+        },
+      },
+    });
+
+    assert.equal(responderContext, "");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
