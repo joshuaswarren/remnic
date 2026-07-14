@@ -46,6 +46,61 @@ The long-term goal is to make memory inspectable, scoped, correctable, and measu
 
 Try the no-key [Coding Agent Memory Demo](examples/coding-agent-memory-demo/) for a five-minute walkthrough where real Remnic `memoryStore()` and `recallXray()` calls carry a scoped project decision/preference across two coding-agent session identities.
 
+## OpenAI Build Week: MemCorrect
+
+Remnic's Developer Tools entry is **MemCorrect**, a benchmark for the memory
+system behind an AI agent. It measures whether a backend recalls the right
+fact, accepts a correction, and stops serving the stale fact. The new MCP
+adapter lets the same contract run against Remnic or another conforming MCP
+memory server through explicit tool and argument mapping.
+
+After installing the two packages, the judge path itself needs no dataset,
+API key, or network access:
+
+```bash
+npm install -g @remnic/cli @remnic/bench
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
+remnic bench runs list
+remnic bench export <run-id> --format html --output ./memcorrect-report.html
+```
+
+The packaged MCP demo is intentionally small. Its value is that the command
+exercises the real MCP transport and correction contract, then produces a
+self-contained report card. It is a smoke test, not a publishable model or
+backend comparison.
+
+To run the same correction rubric with GPT-5.6 as the judge, opt in explicitly
+through the OpenAI Responses API:
+
+```bash
+export OPENAI_API_KEY=...
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
+  --judge-provider openai --judge-model gpt-5.6
+```
+
+Codex was used to implement and adversarially review the in-window MCP adapter,
+Responses provider, and report card. GPT-5.6 is the optional structured-output
+judge inside the harness; the keyless command above remains deterministic and
+offline. Remnic and the original benchmark harness predate the event, so
+[`HACKATHON.md`](HACKATHON.md) draws the prior-work boundary commit by commit
+and tracks the still-pending operator evidence.
+
+Supported judge path:
+
+- Node.js 22.12 or newer.
+- Linux is verified from a source checkout for the Build Week path.
+- macOS uses the same Node CLI and is supported; its final global-install
+  receipt is still an operator release check.
+- On Windows, use WSL2 for the claimed judge path. Native Windows is not yet
+  claimed as Build Week-verified.
+- MCP servers may use stdio or Streamable HTTP. A non-canonical tool surface
+  requires an explicit `--mcp-tool-map`; bearer tokens are read from
+  `REMNIC_BENCH_MCP_BEARER_TOKEN`, not command-line arguments.
+
+See the focused [`@remnic/bench` guide](packages/bench/README.md) and the
+[submission evidence ledger](HACKATHON.md) for source-checkout instructions,
+receipts, and the exact line between prior and new work.
+
 ## Engram -> Remnic
  **Engram is now Remnic.** Canonical packages live under the `@remnic/*` scope:
  [`@remnic/core`](https://www.npmjs.com/package/@remnic/core),

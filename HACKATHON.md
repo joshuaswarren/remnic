@@ -13,6 +13,17 @@ document is that documentation. Judges: everything you are asked to evaluate
 is listed under "Work built during the submission period" below. Nothing
 else counts.
 
+## Judge summary
+
+MemCorrect tests agent memory. One local command starts a small MCP server,
+runs a correction case, and writes a report. The run needs no key or data set.
+It checks two facts on their own: did the next answer use the fix, and did the
+old fact come back later? The report keeps both results visible.
+
+The MCP adapter, GPT-5.6 judge path, and report card are new Build Week work.
+The Remnic engine and the first bench package are not. The checked list below
+links the new code. Open boxes show work or proof that is still due.
+
 ## What the submission is
 
 A one-command harness that benchmarks the memory system behind an AI agent.
@@ -51,31 +62,43 @@ Prior work includes, at minimum:
 
 The dated commit history on `main` is the audit trail for this line.
 
-## Work built during the submission period (PENDING: entries below are committed in #1869 to #1873)
+## Work built during the submission period
 
 Status boxes get checked as the work lands. Each item links to its commits
 and Codex session evidence at submission time.
 
-- [ ] Generic MCP memory adapter (`packages/bench/src/adapters/`). A
+- [x] Generic MCP memory adapter (`packages/bench/src/adapters/`). A
   benchmark adapter that speaks the Model Context Protocol, so the harness
-  can score any MCP memory server: Mem0, Zep, LangMem, or a bare RAG
-  store. This is the core new functionality of the submission.
-- [ ] GPT-5.6 judge provider (`packages/bench/src/providers/`). Wires
+  can score a conforming MCP memory server through explicit tool and argument
+  mapping. This is the core new functionality of the submission.
+- [x] GPT-5.6 judge provider (`packages/bench/src/providers/`). Wires
   GPT-5.6 through the OpenAI Responses API as the grading model. It scores
   benchmark answers, correction acceptance, and stale-memory harm.
 - [ ] GPT-5.6 frontier-tier run. A full Tier-F benchmark run with GPT-5.6
   as the system under test. Committed as a reproducible artifact under
-  `docs/benchmarks/results/` with its manifest.
-- [ ] Memory report card. Extends `remnic bench export --format html` into
+  `docs/benchmarks/results/` with its manifest. **Blocked on operator input:**
+  Codex CLI 0.144.4 authenticated through ChatGPT rejects `gpt-5.6` as an
+  unsupported account model, and this environment has no `OPENAI_API_KEY` or
+  `REMNIC_BENCH_OPENAI_API_KEY`. Run it through the raw Responses API once a
+  key is available; do not substitute or relabel a different model.
+- [x] Memory report card. Extends `remnic bench export --format html` into
   a single shareable scored report with per-dimension scores, correction
-  behavior, and provenance. Published through the existing feed to
+  behavior, and provenance. Included in the existing publish feed for
   remnic.ai.
 - [ ] Judge sandbox instructions. A documented five-minute test path (see
   below), so judges can run the tool without rebuilding anything.
 
-Commits for these items: added at submission time.
-Codex `/feedback` session ID for the core functionality: added at
-submission time.
+Delivered implementation commit:
+[`fb295ff8`](https://github.com/joshuaswarren/remnic/commit/fb295ff8fb9cb66c7f4bcde793d4ce63aa095ae1)
+(MCP adapter, Responses judge provider, and report card).
+
+Codex `/feedback` session ID for the core functionality:
+**PENDING OPERATOR INPUT.** Run `/feedback` in the primary Codex session and
+paste the real session ID here before submission.
+
+GPT-5.6 frontier artifact and manifest:
+**PENDING OPERATOR INPUT.** This requires an OpenAI API key. Link only the committed
+artifact produced by the raw Responses API run.
 
 ## How Codex and GPT-5.6 were used
 
@@ -86,40 +109,63 @@ the `/feedback` session ID document where Codex sped up the work. They also
 record the key design calls: the adapter contract shape, the scoring
 rubric, and the report layout.
 
-GPT-5.6 is load-bearing inside the product twice. It is the benchmark judge
-that grades memory answers. It is also a benchmarked system in the
-frontier-tier run. Both uses produce committed, hash-locked artifacts.
+GPT-5.6 is load-bearing in the implemented product as the opt-in benchmark
+judge that grades memory answers through strict structured outputs. The
+planned second use, benchmarking GPT-5.6 as the system under test, remains
+credential-blocked and is not claimed as delivered.
 
 ## How to test it in five minutes
 
-No datasets, no API keys, no network:
+After the npm packages are installed, no datasets, API keys, or network:
 
 ```bash
 npm install -g @remnic/cli @remnic/bench
-remnic bench run --quick longmemeval   # ~60s against the bundled fixture
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
 remnic bench runs list
-remnic bench export <run-id> --format html
+remnic bench export <run-id> --format html --output ./memcorrect-report.html
 ```
 
-The quick run always uses the bundled fixture; that is the zero-setup
-path. To score the real datasets with the GPT-5.6 judge, download them
-first, then drop the `--quick` flag:
+After package installation, the run itself uses the bundled MCP demo and needs
+no dataset, API key, or network. It exercises the real MCP transport and
+correction contract. It is a product smoke test, not a publishable backend or
+model result.
+
+Until the Build Week revision is published to npm, use the source checkout:
 
 ```bash
-export OPENAI_API_KEY=sk-...
-remnic bench datasets download longmemeval
-remnic bench run longmemeval \
-  --judge-provider openai --judge-model gpt-5.6 \
-  --judge-api-key "$OPENAI_API_KEY"
+pnpm install --frozen-lockfile
+pnpm --filter @remnic/bench build
+pnpm exec tsx packages/remnic-cli/src/index.ts bench run \
+  --quick memcorrect-v1 --adapter mcp --mcp-demo
 ```
 
-Without the judge flags, the run falls back to the unjudged scoring
-path, and the key must go through `--judge-api-key` (the provider does
-not read the env var on its own). One caveat until #1870 lands: today
-`--judge-provider openai` routes through the existing chat-completions
-compatible provider. The Responses API judge provider is part of the
-in-window work, and the same command exercises it once merged. Full
-reproduction paths live in `docs/paper/repro-appendix.md`.
+To invoke GPT-5.6 as the structured-output judge:
+
+```bash
+export OPENAI_API_KEY=...
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
+  --judge-provider openai --judge-model gpt-5.6
+```
+
+Without the judge flags, MemCorrect reports its deterministic contract metrics
+without making an OpenAI call. The OpenAI provider is selected only when the
+flags are present and reads `OPENAI_API_KEY`; the manifest records the provider,
+model, and rubric version but redacts the secret. Full reproduction paths live
+in `docs/paper/repro-appendix.md`.
+
+## Supported judge environment
+
+| Environment | Build Week support statement |
+|---|---|
+| Node.js | 22.12 or newer |
+| Linux | Source-checkout MCP demo verified on Linux x64 |
+| macOS | Supported by the Node CLI; final global-install receipt pending |
+| Windows | Use WSL2 for the claimed path; native Windows is not claimed as verified |
+| MCP transport | stdio and Streamable HTTP |
+
+The published-package cold-install receipt is still pending. Before submission,
+replace this sentence with the release version and link the exact receipt, or
+leave the source-checkout path as the only verified installation claim.
 
 ## Honest framing of the novelty claim
 
@@ -136,5 +182,5 @@ MemStrata, and MemoryAgentBench are prior art. We engage them in
 - [ ] Core functionality built in Codex sessions, with the `/feedback` session ID captured.
 - [ ] Demo video under 3 minutes, public on YouTube. Audio covers Codex and GPT-5.6 usage.
 - [ ] Repository public with MIT license (already true).
-- [ ] README documents where Codex sped up the work and how GPT-5.6 is used.
+- [x] README documents where Codex sped up the work and how GPT-5.6 is used.
 - [ ] Devpost submission filed before July 21, 5:00 PM PT.
