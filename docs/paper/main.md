@@ -792,9 +792,10 @@ retrieve and re-verify them with
 `git show dcdcb5a8:docs/benchmarks/results/<basename>` followed by
 `pnpm exec tsx scripts/bench/verify-artifact.ts`. They are also present on
 the lab host at `~/src/remnic/docs/benchmarks/results/` and in the stored
-results at `~/.remnic/bench/results/`. This is one of the two recorded
-exceptions to the "current-tree artifact" rule (the other is §6.2's
-temporal comparison artifact); both are listed centrally in the paper
+results at `~/.remnic/bench/results/`. This is one of the recorded
+exceptions to the "current-tree artifact" rule (the others are §6.2's
+temporal comparison artifact and the baseline-profile companion pair);
+all are listed centrally in the paper
 README's rule 2, and this one is also documented in
 `docs/benchmarks/ablations.md`.
 
