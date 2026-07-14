@@ -1,0 +1,109 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  assessRemnicRecallSupport,
+  createRemnicAdapter,
+  shouldIncludeCoreRecallForReplay,
+} from "./remnic-adapter.ts";
+
+test("exact-context support distinguishes empty, weak, supported, and unavailable", () => {
+  const request = {
+    query: "Which city did Maya move to after college?",
+    sessionIds: ["session-1"],
+  };
+  assert.equal(assessRemnicRecallSupport({ ...request, recalledText: "" }).status, "empty");
+
+  const unrelated = assessRemnicRecallSupport({
+    ...request,
+    recalledText: "## Raw messages\n[user]: Jordan repairs vintage bicycles.",
+  });
+  assert.equal(unrelated.status, "empty");
+  assert.equal(unrelated.evidenceCount, 0);
+
+  const weak = assessRemnicRecallSupport({
+    ...request,
+    recalledText: "## Raw messages\n[user]: Maya enjoys vintage bicycles.",
+  });
+  assert.equal(weak.status, "weak");
+  assert.equal(weak.evidenceCount, 1);
+  assert.ok((weak.maxScore ?? 1) < (weak.supportThreshold ?? 0));
+
+  const supported = assessRemnicRecallSupport({
+    ...request,
+    recalledText: "## Search evidence\n[session-1, turn 3, user]: Maya moved to Seattle after college.",
+  });
+  assert.equal(supported.status, "supported");
+  assert.ok((supported.maxScore ?? 0) >= (supported.supportThreshold ?? 1));
+
+  const underspecified = assessRemnicRecallSupport({
+    query: "Where?",
+    recalledText: "Seattle",
+    sessionIds: ["session-1"],
+  });
+  assert.equal(underspecified.status, "unavailable");
+});
+
+test("Remnic adapter exposes exact-context support for its final skip-extraction recall", async () => {
+  const adapter = await createRemnicAdapter({
+    replayExtractionMode: "skip",
+    configOverrides: {
+      answerSupportMinCoverage: 0.34,
+      skipExtractionLcmFirst: true,
+    },
+  });
+  try {
+    await adapter.store("session-1", [
+      { role: "user", content: "Maya moved to Seattle after college." },
+      { role: "assistant", content: "I will remember that Maya moved to Seattle." },
+    ]);
+    await adapter.drain?.();
+    const query = "Which city did Maya move to after college?";
+    const recalledText = await adapter.recall("session-1", query, 8_000);
+    const assessment = await adapter.assessRecallSupport?.({
+      query,
+      recalledText,
+      sessionIds: ["session-1"],
+    });
+
+    assert.match(recalledText, /Maya moved to Seattle/);
+    assert.equal(assessment?.status, "supported");
+    assert.ok((assessment?.evidenceCount ?? 0) > 0);
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("skip-extraction LCM-first composition suppresses only the extraction-dependent core layer", () => {
+  assert.equal(shouldIncludeCoreRecallForReplay({
+    useCoreMemoryPipeline: true,
+    replayExtractionMode: "skip",
+    skipExtractionLcmFirst: true,
+  }), false);
+  assert.equal(shouldIncludeCoreRecallForReplay({
+    useCoreMemoryPipeline: true,
+    replayExtractionMode: "skip",
+    skipExtractionLcmFirst: false,
+  }), true, "explicit false restores the previous composition for ablation");
+  assert.equal(shouldIncludeCoreRecallForReplay({
+    useCoreMemoryPipeline: true,
+    replayExtractionMode: "await",
+    skipExtractionLcmFirst: true,
+  }), true, "normal extracted-memory runs retain core recall");
+  assert.equal(shouldIncludeCoreRecallForReplay({
+    useCoreMemoryPipeline: false,
+    replayExtractionMode: "await",
+    skipExtractionLcmFirst: false,
+  }), false);
+});
+
+test("Remnic adapter validates support and skip-extraction policy config", async () => {
+  await assert.rejects(
+    () => createRemnicAdapter({ configOverrides: { answerSupportMinCoverage: 0 } }),
+    /answerSupportMinCoverage/,
+  );
+  await assert.rejects(
+    () => createRemnicAdapter({ configOverrides: { skipExtractionLcmFirst: "sometimes" } }),
+    /skipExtractionLcmFirst/,
+  );
+});

@@ -100,15 +100,15 @@ benchmark operators should use the `baseline` profile only for LoCoMo's
 skip-extraction replay path when optimizing this measured configuration; this
 is not production guidance and does not change shipped defaults.
 
-An opt-in answer-time support gate is available as an **empty-recall
-abstention foundation**. It defaults to `false`. To enable it for a CLI run,
-put the following top-level setting in the JSON passed to the existing
-`--remnic-config` option (a nested `remnic` object is also accepted by the
-runtime-profile loader):
+An answer-time support gate is available as a read-time faithfulness control.
+It defaults to `true` for the full-feature `real` profile and remains disabled
+for the stripped `baseline` profile. To disable it for an ablation, put the
+following top-level setting in the JSON passed to the existing
+`--remnic-config` option (a nested `remnic` object is also accepted):
 
 ```json
 {
-  "answerSupportGate": true
+  "answerSupportGate": false
 }
 ```
 
@@ -118,16 +118,20 @@ remnic bench run locomo --runtime-profile real \
 ```
 
 Boolean-like strings (`true/false`, `1/0`, `yes/no`, and `on/off`) are
-validated explicitly. With the gate enabled, a successful empty responder
-context instructs the responder to answer `unknown`. Adapters may additionally
-provide an exact-context support assessment; `weak` requires a positive
-matched-evidence count and a finite maximum score below an explicit threshold.
+validated explicitly. With the gate enabled, empty or weak exact-context
+support instructs the responder to answer `unknown`. The Remnic adapter scores
+only the final context supplied to the responder; it does not infer weakness
+from a separate zero-hit search. `answerSupportMinCoverage` controls the
+bounded lexical coverage threshold (default `0.34`, valid range `(0, 1]`).
 Backend failure is recorded separately and never forces abstention. The current
 gate lives in the shared published-benchmark harness, so it applies uniformly
 to LoCoMo and LongMemEval without inspecting benchmark categories or answers.
-The Remnic benchmark adapter does not yet expose that bounded same-context
-confidence signal, so non-empty recall remains `unavailable` rather than being
-guessed weak from auxiliary zero-hit searches.
+For `replayExtractionMode: "skip"`, the adapter now defaults to LCM-first
+composition: extraction-dependent core recall receives no budget, while
+verbatim LCM search/summary evidence remains available. Set
+`skipExtractionLcmFirst: false` to reproduce the previous composition for an
+ablation. This policy is generic to skip-extraction replay and does not inspect
+LoCoMo categories or gold answers.
 
 This foundation does **not** establish issue #1878's acceptance metrics. A new
 calibrated, uncapped 1,986-task real-profile LoCoMo run, with the required
