@@ -45,8 +45,9 @@ fi
 # real-profile artifacts carry no kappa and the publishability gate fails.
 preflight_calibration_state() {
   local benchmark="$1"
-  if [ ! -f "$HOME/.remnic/bench/calibration/${benchmark}.json" ]; then
-    echo "BLOCKED: calibration state for ${benchmark} is missing - run the baseline pass (scripts/bench/run-tierf-opus.sh) first, or run 'remnic bench judge-calibrate --benchmark ${benchmark} ...' manually." >&2
+  local file="$HOME/.remnic/bench/calibration/${benchmark}.json"
+  if [ ! -f "$file" ] || ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$file" 2>/dev/null; then
+    echo "BLOCKED: calibration state for ${benchmark} is missing or corrupt - run the baseline pass (scripts/bench/run-tierf-opus.sh) first, or run 'remnic bench judge-calibrate --benchmark ${benchmark} ...' manually." >&2
     exit 3
   fi
 }
