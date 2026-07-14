@@ -83,7 +83,7 @@ old value anywhere in recall context fails the probe. That is exactly the
 failure class the benchmark exists to expose: fact-store correction is
 necessary but not sufficient.
 
-This paper makes four contributions:
+This paper makes three contributions:
 
 1. **MemCorrect**, a benchmark that evaluates agent-memory correction as a
    complete, system-agnostic protocol. It combines five correction
@@ -93,25 +93,26 @@ This paper makes four contributions:
    a claim to be first at measuring any single behavior. StateBench, STALE,
    MemSyco-Bench, MemStrata, and MemoryAgentBench each test a slice; §2
    engages each one metric by metric so the composition claim is defensible.
-2. **Glass-box mechanisms** that make every recall explainable and every
+2. **A reproducible-on-one-GPU evaluation protocol.** A two-tier design
+   (Tier L local RTX 3090 anchor, Tier F frontier) with committed repro
+   manifests, a content-cached judge, and Cohen's-kappa cross-tier
+   calibration against an Opus-judged gold slice. §5 specifies the protocol
+   and the publishability rubric every number must pass.
+3. **Glass-box mechanisms** that make every recall explainable and every
    correction auditable: provenance spans (#1575), a faithfulness gate
    (#1576), TrustScore (#1577), bi-temporal validity with tombstoned
    non-resurrection (#1578-1579), and the Correction Contract with passive
    correction detection and memory handles `[m:xxxx]` (#1580-1583). §3
    describes the shipped system module by module; every mechanism cited
    corresponds to committed code.
-3. **A reproducible-on-one-GPU evaluation protocol.** A two-tier design
-   (Tier L local RTX 3090 anchor, Tier F frontier) with committed repro
-   manifests, a content-cached judge, and Cohen's-kappa cross-tier
-   calibration against an Opus-judged gold slice. §5 specifies the protocol
-   and the publishability rubric every number must pass.
-4. **Results** across three surfaces: MemCorrect exposes a containment-floor
-   failure class that fact-store correction alone does not close (§6.1);
-   LoCoMo and LongMemEval report Tier-F head-to-head results with the Tier-L
-   anchor as the reproducibility baseline (§6.2); TrustScore and
-   faithfulness behavior are reported as system capability (§6.3). Numeric
-   results live in §6; this introduction asserts no accuracy figure that §6
-   does not back with a committed artifact.
+
+The three contributions are evaluated across three result surfaces:
+MemCorrect exposes a containment-floor failure class that fact-store
+correction alone does not close (§6.1); LoCoMo and LongMemEval report
+Tier-F head-to-head results with the Tier-L anchor as the reproducibility
+baseline (§6.2); TrustScore and faithfulness behavior are reported as
+system capability (§6.3). Numeric results live in §6; this introduction
+asserts no accuracy figure that §6 does not back with a committed artifact.
 
 ---
 
@@ -676,8 +677,8 @@ passes the §5 publishability rubric.** Until then, every block is a TODO.
 
 This subsection reports the single-flag ablation matrix from issues
 #1730, #1574, and #1725, produced on the RTX 3090 local-lab box under the
-`local-lab` runtime profile. Each ablation flips exactly one recall-stack flag
-off its default in the baseline run and re-runs the full LoCoMo-10 benchmark
+`local-lab` runtime profile. Each ablation changes exactly one recall-stack
+flag away from its default in the baseline run and re-runs the full LoCoMo-10 benchmark
 (1986 questions across all 10 conversations) with everything else held
 constant: same model (`qwen2.5-7b-32k:latest`, Q4_K_M), same seed (1), same
 responder and judge model. The baseline is the first real Tier-L artifact,
