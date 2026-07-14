@@ -47,9 +47,10 @@ would mislead. The `2026-04-20-*-mock000.json` files are mocks and are **never**
 cited as results (the generator filters them out; the test asserts this).
 
 Tier-L is the **reproducibility anchor, not the accuracy headline** (per the
-paper's honest framing: a 7B-local non-thinking run is modest by design). The
-head-to-head vs Mem0/Zep/Letta is the Tier-F panel, which is pending the Tier-F
-run (#1728) and the third-party recall adapters (#1747). Competitor
+paper's honest framing: a 7B-local non-thinking run is modest by design).
+Tier-F (real profile, Opus 4.8 via Claude Code) is now real for both
+benchmarks — the head-to-head vs Mem0/Zep/Letta is the remaining pending
+panel (third-party recall adapters #1747, API-key-gated). Competitor
 self-reported numbers are **not** echoed here — they are cited-not-reproduced
 until the harness reproduces them.
 

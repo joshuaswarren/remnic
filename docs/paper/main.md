@@ -536,10 +536,13 @@ softens into overclaim:
 - **Tier-L 7B-local numbers are modest and are *not* the accuracy claim.** They
   are the reproducibility anchor (one-GPU, re-runnable). The accuracy headline
   is MemCorrect (composition) + the Tier-F head-to-head.
-- **Local-judge calibration caveats** — the local 3090 judges Tier F; κ vs an
-  Opus-judged slice must be reported and is currently a gap (#1709). State the
-  qwen3 truncation + ollama context-default gotchas already documented in the
-  bench docs.
+- **Local-judge calibration** — the local 3090 judges Tier F; Cohen's κ
+  vs an Opus-judged slice is now measured and reported (LongMemEval
+  κ=0.769 above threshold; LoCoMo κ=0.135 below — the LoCoMo
+  `llm_judge` carries a warning). The low κ on LoCoMo is a genuine
+  limitation: the local 7B judge diverges from Opus on open-ended
+  answers, so LoCoMo's `llm_judge` is approximate. State the qwen3
+  truncation + ollama context-default gotchas already documented.
 - **MemCorrect v1 synthetic-corpus limits** — deterministic, token-pool-derived
   (no real PII by construction), but synthetic; the corpus does not capture
   every real-world correction shape. Scope to what the corpus tests.
