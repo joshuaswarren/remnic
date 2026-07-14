@@ -63,6 +63,8 @@ test("Responses judge defaults to gpt-5.6 and sends a strict JSON schema", async
   assert.equal(requestBody.text.format.type, "json_schema");
   assert.equal(requestBody.text.format.strict, true);
   assert.deepEqual(requestBody.text.format.schema.required, ["score", "decision", "reason"]);
+  assert.equal("temperature" in requestBody, false);
+  assert.equal("seed" in requestBody, false);
 });
 
 test("Responses judge forwards an explicit model override", async () => {
@@ -93,6 +95,53 @@ test("Responses judge trims an adversarial trailing-slash suffix in linear time"
   });
 
   assert.equal(requestUrl, "https://gateway.example/internal//v1/responses");
+});
+
+test("Responses requests forward configured temperature and seed on every request path", async () => {
+  const requestBodies: Record<string, any>[] = [];
+  const assistantPayload = {
+    ...completedPayload(),
+    output: [{ type: "message", content: [{ type: "output_text", text: JSON.stringify({
+      identity_accuracy: 5,
+      stance_coherence: 4,
+      novelty: 3,
+      calibration: 5,
+      notes: "ok",
+    }) }] }],
+  };
+  await withMockFetch(async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, any>;
+    requestBodies.push(body);
+    return jsonResponse(body.text?.format?.name === "sealed_assistant_rubric"
+      ? assistantPayload
+      : completedPayload());
+  }, async () => {
+    const provider = createOpenAiResponsesProvider({ temperature: 0, seed: 1884 });
+    await provider.complete("complete input");
+    const verdict = await provider.judge({ rubric: "rubric", rubricVersion: "v1", input: "judge input" });
+    assert.equal(verdict.ok, true);
+    await provider.evaluateAssistantRubric({ system: "sealed", user: "task", rubricId: "assistant-v1" });
+  });
+
+  assert.equal(requestBodies.length, 3);
+  for (const body of requestBodies) {
+    assert.equal(body.temperature, 0);
+    assert.equal(body.seed, 1884);
+  }
+});
+
+test("Responses completions prefer a per-call temperature over provider config", async () => {
+  let requestBody: Record<string, any> = {};
+  await withMockFetch(async (_input, init) => {
+    requestBody = JSON.parse(String(init?.body));
+    return jsonResponse(completedPayload());
+  }, async () => {
+    const provider = createOpenAiResponsesProvider({ temperature: 0, seed: 1884 });
+    await provider.complete("input", { temperature: 0.25 });
+  });
+
+  assert.equal(requestBody.temperature, 0.25);
+  assert.equal(requestBody.seed, 1884);
 });
 
 test("a genuine score of zero is a successful verdict with safe telemetry", async () => {

@@ -175,6 +175,8 @@ export class OpenAiResponsesProvider implements LlmProvider {
             model: this.config.model,
             ...(opts.systemPrompt ? { instructions: opts.systemPrompt } : {}),
             input: prompt,
+            temperature: opts.temperature ?? this.config.temperature,
+            ...(this.config.seed !== undefined ? { seed: this.config.seed } : {}),
             ...(opts.maxTokens !== undefined ? { max_output_tokens: opts.maxTokens } : {}),
             store: false,
           }),
@@ -232,6 +234,8 @@ export class OpenAiResponsesProvider implements LlmProvider {
             model: this.config.model,
             instructions: request.rubric,
             input: request.input,
+            temperature: this.config.temperature,
+            ...(this.config.seed !== undefined ? { seed: this.config.seed } : {}),
             text: {
               format: {
                 type: "json_schema",
@@ -304,6 +308,8 @@ export class OpenAiResponsesProvider implements LlmProvider {
             model: this.config.model,
             instructions: request.system,
             input: request.user,
+            temperature: this.config.temperature,
+            ...(this.config.seed !== undefined ? { seed: this.config.seed } : {}),
             text: {
               format: {
                 type: "json_schema",

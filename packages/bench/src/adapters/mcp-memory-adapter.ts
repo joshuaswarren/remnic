@@ -519,8 +519,10 @@ export async function createMcpMemoryAdapter(options: McpMemoryAdapterOptions): 
     destroy: () => backend.destroy(),
   };
   try {
-    const preflight = await adapter.preflight();
-    if (!preflight.ok) throw new McpMemoryBackendError(preflight);
+    if (!options.skipPreflight) {
+      const preflight = await adapter.preflight();
+      if (!preflight.ok) throw new McpMemoryBackendError(preflight);
+    }
     return adapter;
   } catch (error) {
     await backend.destroy();
@@ -567,8 +569,10 @@ export async function createMcpMemCorrectAdapter(options: McpMemoryAdapterOption
     destroy: () => backend.destroy(),
   };
   try {
-    const preflight = await adapter.preflight();
-    if (!preflight.ok) throw new McpMemoryBackendError(preflight);
+    if (!options.skipPreflight) {
+      const preflight = await adapter.preflight();
+      if (!preflight.ok) throw new McpMemoryBackendError(preflight);
+    }
     return adapter;
   } catch (error) {
     await backend.destroy();

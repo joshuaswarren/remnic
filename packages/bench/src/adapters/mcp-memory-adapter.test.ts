@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createMcpMemCorrectAdapter,
   createMcpMemoryAdapter,
   McpMemoryBackendError,
   type McpListedTool,
@@ -381,5 +382,72 @@ test("two adapters sharing one backend cannot see or reset each other's namespac
     assert.match(await second.recall("same-session", "value"), /beta-only/);
   } finally {
     await Promise.all([first.destroy(), second.destroy()]);
+  }
+});
+
+test("standard MCP factory skipPreflight defers discovery and bypasses the canary", async () => {
+  const client = new FakeMemoryClient("canonical", new Map());
+  let factoryCalls = 0;
+  const adapter = await createMcpMemoryAdapter({
+    transport: inertTransport,
+    namespacePrefix: "skip-standard",
+    skipPreflight: true,
+    clientFactory: async () => {
+      factoryCalls += 1;
+      return client;
+    },
+  });
+  try {
+    assert.equal(factoryCalls, 0);
+    assert.deepEqual(client.calls, []);
+
+    await adapter.store("actual-session", [
+      { role: "user", content: "actual benchmark evidence" },
+    ]);
+    assert.equal(factoryCalls, 1);
+    assert.deepEqual(client.calls.map(({ name }) => name), ["store_memory"]);
+    assert.equal(
+      client.calls.some(({ args }) =>
+        Object.values(args).some((value) => String(value).includes("canary-")),
+      ),
+      false,
+    );
+  } finally {
+    await adapter.destroy();
+  }
+});
+
+test("MemCorrect MCP factory skipPreflight defers discovery and bypasses the canary", async () => {
+  const client = new FakeMemoryClient("canonical", new Map());
+  let factoryCalls = 0;
+  const adapter = await createMcpMemCorrectAdapter({
+    transport: inertTransport,
+    namespacePrefix: "skip-memcorrect",
+    skipPreflight: true,
+    clientFactory: async () => {
+      factoryCalls += 1;
+      return client;
+    },
+  });
+  try {
+    assert.equal(factoryCalls, 0);
+    assert.deepEqual(client.calls, []);
+
+    await adapter.ingestTurn(
+      "actual-session",
+      "user",
+      "actual correction evidence",
+      "2026-07-14T00:00:00.000Z",
+    );
+    assert.equal(factoryCalls, 1);
+    assert.deepEqual(client.calls.map(({ name }) => name), ["store_memory"]);
+    assert.equal(
+      client.calls.some(({ args }) =>
+        Object.values(args).some((value) => String(value).includes("canary-")),
+      ),
+      false,
+    );
+  } finally {
+    await adapter.destroy();
   }
 });
