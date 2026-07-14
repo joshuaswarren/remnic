@@ -442,29 +442,73 @@ passes the §5 publishability rubric.** Until then, every block is a TODO.
   - `TODO(#1727)`: add the Mem0 / Zep / Letta adapter rows. Until those runs
     exist, §6.1 reports Remnic-native vs the `PromptOnlyBaselineAdapter`
     floor — clearly labeled as such, not as a "we beat X" claim.
-- **6.2 LoCoMo / LongMemEval — head-to-head at Tier F, Tier L as anchor.**
-  - `TODO(#1728)`: produce the Tier-F run. As of this skeleton **no Tier-F
-    artifact exists.**
-  - **Citable today (Tier L only, reproducibility anchor, not the accuracy
-    claim):** the two committed local artifacts —
-    `docs/benchmarks/results/2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json`
-    and
-    `docs/benchmarks/results/2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json`
-    (`tier: "local"`, model `qwen2.5-7b-32k:latest`). Reference them by path
-    in the draft; do **not** quote their metric values in the skeleton.
-  - `TODO(#1727)`: reproduce-or-cite-with-caveat the Mem0 and Zep
-    self-reported published numbers (per the plan doc's Part 2, item 4) via
-    our harness. Those competitor figures are currently cited-from-issue-text,
-    **not** reproduced by our harness — mark as cited-not-reproduced or run
-    them; do not echo the literal values here until they are reproduced.
+- **6.2 LoCoMo / LongMemEval — Tier F (real profile, full feature set).**
+  Two full Tier-F artifacts are committed (Opus 4.8 via Claude Code,
+  `real` profile — Remnic's shipped defaults with the full feature set
+  active: QMD hybrid search, knowledge index, entity retrieval, verified
+  recall, Memory Boxes, contradiction detection, Correction Contract;
+  local 3090 judge `qwen2.5-7b-32k:latest`; zero task failures across
+  2486 total questions; gitSha `0676347`):
+
+  | Benchmark | Tier | Tasks | `llm_judge` | `contains_answer` | `f1` | κ (calibration) |
+  |---|---|---|---|---|---|---|
+  | LongMemEval | F (real) | 500/500 | **0.760** | 0.492 | 0.493 | 0.769 ✓ (above threshold) |
+  | LongMemEval | L (anchor) | 500/500 | 0.186 | 0.098 | 0.071 | — |
+  | LoCoMo | F (real) | 1986/1986 | **0.444** | 0.158 | 0.265 | 0.135 ⚠ (below threshold, warning attached) |
+  | LoCoMo | L (anchor) | 1986/1986 | 0.224 | 0.083 | 0.122 | — |
+
+  Artifacts:
+  `docs/benchmarks/results/2026-07-14-longmemeval-opus-0676347.json`,
+  `docs/benchmarks/results/2026-07-14-locomo-opus-0676347.json`.
+
+  **Judge calibration.** Cohen's κ was computed by re-judging a
+  deterministic 50-question slice with both the local 3090 judge and
+  Opus (the gold standard). LongMemEval's κ=0.769 clears the 0.7
+  publishability threshold — the local judge is a defensible proxy for
+  that benchmark. LoCoMo's κ=0.135 does not; the local judge's verdicts
+  diverge substantially from Opus on LoCoMo's open-ended answers, so
+  the LoCoMo `llm_judge` carries a warning flag in the artifact and
+  should be read as an approximate, not authoritative, score. The
+  deterministic metrics (`contains_answer`, `f1`, `rouge_l`) are
+  judge-independent and unaffected.
+
+  **Per-type breakdown (LongMemEval Tier F, real profile).** The
+  aggregate 0.760 hides a sharp split:
+
+  | Question type | n | judge acc. |
+  |---|---|---|
+  | single-session-user | 70 | 0.943 |
+  | single-session-assistant | 56 | 0.911 |
+  | single-session-preference | 30 | 0.800 |
+  | knowledge-update | 78 | 0.795 |
+  | multi-session | 133 | 0.789 |
+  | **temporal-reasoning** | **133** | **0.541** |
+
+  Temporal reasoning is the entire gap: lifting that one category to
+  the multi-session level (0.789) would move the aggregate from 0.760
+  to ~0.82. The mechanism is nameable: temporal questions need
+  cross-session chronology reconstruction, but the recall context blob
+  delivers evidence snippets without a structured timeline. Remnic
+  ships an event-order recall tier and bi-temporal validity machinery,
+  but the bench recall path surfaces neither as an ordered timeline for
+  date-shaped queries. This is both an honest limitation and the
+  concrete improvement lever documented in the Temporal Lift plan.
+
+  **`locomo_hidden_evidence_id_leak = 1.0`** on both tiers: the
+  responder always echoes the hidden evidence identifier embedded in
+  the recalled context. This is a known harness interaction (the IDs
+  are in the LCM evidence text the responder reads), not a Remnic
+  mechanism failure; it is reported honestly rather than suppressed.
+
+  - `TODO(#1747)`: Mem0 / Zep / Letta comparison rows are cited-not-
+    reproduced until the third-party adapter runs land (API-key-gated,
+    excluded by operator directive).
 - **6.3 TrustScore / faithfulness behavior.**
   - `TODO(#1577)`: TrustScore is a shipped recall feature, **not a benchmark
     metric yet.** Report it as system behavior (qualitative + a worked example)
     unless/until a scored surface is added; do not invent a metric.
   - `TODO(#1576)`: faithfulness gate behavior — describe against the #1585
     shadow/harvest data once that stream exists.
-- `TODO(#1709)`: close the `judgeCalibration` (Cohen's κ) gap before any Tier-F
-  number is published.
 
 ---
 
