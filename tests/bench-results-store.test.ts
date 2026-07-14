@@ -64,7 +64,7 @@ function buildResult(
     },
     environment: {
       os: "darwin",
-      nodeVersion: process.version,
+      nodeVersion: "v22.23.1",
     },
   };
 }

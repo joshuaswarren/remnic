@@ -952,9 +952,10 @@ export async function queryTemporalTimelineAsync(
     // No lexical match (legacy rows or generic "first/last" query): retain
     // both chronology edges so earliest and latest questions remain answerable.
     const earlyCount = Math.ceil(requestedLimit / 2);
+    const lateCount = requestedLimit - earlyCount;
     const selected = [
       ...chronology.slice(0, earlyCount),
-      ...chronology.slice(-(requestedLimit - earlyCount)),
+      ...(lateCount > 0 ? chronology.slice(-lateCount) : []),
     ];
     return selected.sort(compareTemporalIndexEvents);
   } catch {

@@ -343,3 +343,53 @@ test("large temporal indexes return a bounded relevant oversample before memory 
   assert.equal(generic?.[0]?.eventAt, "2026-03-01T00:00:00.000Z");
   assert.equal(generic?.at(-1)?.eventAt, "2026-03-28T00:00:00.000Z");
 });
+
+test("temporal timeline generic edge selection honors small and zero limits", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-small-limit-"));
+  for (let day = 1; day <= 4; day += 1) {
+    const timestamp = `2026-04-0${day}T00:00:00.000Z`;
+    indexMemory(memoryDir, `/tmp/edge-${day}.md`, timestamp, [], {
+      validAt: timestamp,
+      searchText: `unrelated event ${day}`,
+    });
+  }
+
+  const genericQuery = "What happened first or last?";
+  const limitOne = await queryTemporalTimelineAsync(memoryDir, {
+    query: genericQuery,
+    limit: 1,
+  });
+  assert.deepEqual(limitOne?.map((entry) => entry.path), ["/tmp/edge-1.md"]);
+
+  const limitTwo = await queryTemporalTimelineAsync(memoryDir, {
+    query: genericQuery,
+    limit: 2,
+  });
+  assert.deepEqual(limitTwo?.map((entry) => entry.path), [
+    "/tmp/edge-1.md",
+    "/tmp/edge-4.md",
+  ]);
+
+  assert.deepEqual(
+    await queryTemporalTimelineAsync(memoryDir, { query: genericQuery, limit: 0 }),
+    [],
+  );
+  assert.deepEqual(
+    await queryTemporalTimelineAsync(memoryDir, { query: genericQuery, limit: -3 }),
+    [],
+  );
+  assert.deepEqual(
+    (await queryTemporalTimelineAsync(memoryDir, {
+      query: genericQuery,
+      limit: 1.9,
+    }))?.map((entry) => entry.path),
+    ["/tmp/edge-1.md"],
+  );
+  assert.equal(
+    (await queryTemporalTimelineAsync(memoryDir, {
+      query: genericQuery,
+      limit: Number.POSITIVE_INFINITY,
+    }))?.length,
+    4,
+  );
+});

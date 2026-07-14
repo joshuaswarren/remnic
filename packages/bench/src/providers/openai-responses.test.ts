@@ -78,6 +78,23 @@ test("Responses judge forwards an explicit model override", async () => {
   assert.equal(requestedModel, "gpt-5.6-2026-07-01");
 });
 
+test("Responses judge trims an adversarial trailing-slash suffix in linear time", async () => {
+  let requestUrl = "";
+  const repeatedSlashes = "/".repeat(100_000);
+  await withMockFetch(async (input) => {
+    requestUrl = String(input);
+    return jsonResponse(completedPayload());
+  }, async () => {
+    const provider = createOpenAiResponsesProvider({
+      baseUrl: `https://gateway.example/internal//v1${repeatedSlashes}`,
+    });
+    const result = await provider.judge({ rubric: "rubric", rubricVersion: "v1", input: "input" });
+    assert.equal(result.ok, true);
+  });
+
+  assert.equal(requestUrl, "https://gateway.example/internal//v1/responses");
+});
+
 test("a genuine score of zero is a successful verdict with safe telemetry", async () => {
   await withMockFetch(async () => jsonResponse(completedPayload(0)), async () => {
     const provider = createOpenAiResponsesProvider();

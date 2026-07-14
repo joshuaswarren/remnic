@@ -530,7 +530,7 @@ export class OpenAiResponsesProvider implements LlmProvider {
   }
 
   private responsesUrl(): string {
-    const baseUrl = (this.config.baseUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
+    const baseUrl = trimTrailingSlashes(this.config.baseUrl ?? "https://api.openai.com/v1");
     return `${baseUrl}/responses`;
   }
 
@@ -780,4 +780,10 @@ function safeErrorName(error: unknown): string {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
+}
+
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return end === value.length ? value : value.slice(0, end);
 }
