@@ -68,8 +68,9 @@ GPT-5.6 is the opt-in judge inside the tool through the OpenAI Responses API.
 That exact API model id is `gpt-5.6`. Our separate ChatGPT-backed Codex CLI
 measurement plan uses `gpt-5.6-luna` for bulk responder and internal work and
 `gpt-5.6-terra` for quality-critical judging. Each completion is a fresh,
-isolated `codex exec`; no fast mode is used. The 2,473-credit account keeps a
-473-credit reserve, so the bounded run can spend at most 2,000 credits. Actual
+isolated `codex exec`; no fast mode is used. The 2,473-credit grant is used
+exclusively by that run and keeps a 473-credit reserve, so the bounded harness
+can spend at most 2,000 credits. Bounded mode verifies ChatGPT authentication. Actual
 input, cached-input, and output usage is reconciled after every completed turn.
 `gpt-5.6-sol` is opt-in only and outside that bounded plan. We do not claim a
 published GPT-5.6 model result until a committed artifact and manifest exist,

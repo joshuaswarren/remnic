@@ -83,8 +83,11 @@ disables hooks, and keeps no session. The sandbox is read-only, approvals are
 denied, and the benchmark prompt instructs the model not to use tools. The
 Build Week plan uses normal service, not fast mode.
 
-The account has 2,473 token credits. A 473-credit safety reserve leaves 2,000
-usable credits. Configure the atomic completed-turn ledger and guards,
+The Build Week grant has 2,473 Codex credits. Use the account exclusively for
+this one harness process during a bounded run because Codex CLI exposes no
+machine-readable account balance. Bounded mode also requires `codex login
+status` to report ChatGPT authentication. A 473-credit safety reserve leaves
+2,000 usable credits. Configure the atomic completed-turn ledger and guards,
 then measure a quick task before choosing a workload bound:
 
 ```bash
@@ -95,21 +98,28 @@ export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger
 remnic bench run --quick longmemeval \
   --runtime-profile real \
   --system-provider codex-cli --system-model gpt-5.6-luna \
+  --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
-  --judge-provider codex-cli --judge-model gpt-5.6-terra
+  --internal-codex-reasoning-effort medium \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra \
+  --judge-codex-reasoning-effort high
 
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
   --system-provider codex-cli --system-model gpt-5.6-luna \
+  --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
-  --judge-provider codex-cli --judge-model gpt-5.6-terra
+  --internal-codex-reasoning-effort medium \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra \
+  --judge-codex-reasoning-effort high
 ```
 
 The placeholder is intentional. `--limit` and LoCoMo/MemoryAgentBench's
 `--trial-limit` bound tasks, not token credits. Derive each next batch from
 actual `turn.completed` JSONL usage. Stop dispatching at 2,000 spent; the
 473-credit reserve absorbs only a final in-flight call whose exact cost becomes
-known after completion.
+known after completion. Missing exact terminal usage blocks the ledger pending
+manual account reconciliation.
 Rates per one million tokens are Luna: 25 input, 2.5 cached input, 150 output;
 Terra: 62.5 input, 6.25 cached input, 375 output. A bounded result is a trial,
 not a full leaderboard artifact.

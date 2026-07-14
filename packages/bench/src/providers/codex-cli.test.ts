@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -68,7 +68,7 @@ test("codex-cli provider invokes codex exec in an isolated benchmark mode", asyn
     "--config",
     'approval_policy="never"',
     "--disable",
-    "codex_hooks",
+    "hooks",
     "--ephemeral",
     "--ignore-user-config",
     "--ignore-rules",
@@ -566,6 +566,78 @@ test("codex-cli provider ignores the removed Responses transport override", asyn
   }
 });
 
+test("bounded codex-cli runs require ChatGPT auth and persist native usage", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-auth-"));
+  const keys = [
+    "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+    "REMNIC_BENCH_CODEX_CREDIT_RESERVE",
+    "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
+  ] as const;
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  process.env.REMNIC_BENCH_CODEX_CREDIT_BUDGET = "2473";
+  process.env.REMNIC_BENCH_CODEX_CREDIT_RESERVE = "473";
+  process.env.REMNIC_BENCH_CODEX_CREDIT_LEDGER = path.join(directory, "ledger.json");
+
+  try {
+    __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
+    let called = false;
+    const apiAuthed = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.6-luna" },
+      {
+        async runCodexLoginStatus() {
+          return { status: 0, stdout: "Logged in using an API key", stderr: "" };
+        },
+        async runCodexCli() {
+          called = true;
+          throw new Error("must not run");
+        },
+      },
+    );
+    await assert.rejects(apiAuthed.complete("hello"), /require ChatGPT-backed/);
+    assert.equal(called, false);
+
+    __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
+    const chatGptAuthed = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.6-luna" },
+      {
+        async runCodexLoginStatus() {
+          return { status: 0, stdout: "Logged in using ChatGPT", stderr: "" };
+        },
+        async runCodexCli() {
+          return {
+            status: 0,
+            signal: null,
+            stdout: '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10,"reasoning_output_tokens":5}}',
+            stderr: "",
+            outputText: "answer",
+          };
+        },
+      },
+    );
+    assert.equal((await chatGptAuthed.complete("hello")).text, "answer");
+    const ledger = JSON.parse(
+      await readFile(path.join(directory, "ledger.json"), "utf8"),
+    ) as { entries: Array<{ inputTokens: number; cachedInputTokens: number }> };
+    assert.deepEqual(ledger.entries[0], {
+      at: ledger.entries[0]?.at,
+      model: "gpt-5.6-luna",
+      credits: 0.00355,
+      inputTokens: 100,
+      cachedInputTokens: 20,
+      outputTokens: 10,
+      reasoningOutputTokens: 5,
+    });
+  } finally {
+    __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("codex-cli provider surfaces non-zero CLI exits", async () => {
   const provider = createCodexCliProvider(
     { provider: "codex-cli", model: "gpt-5.5" },
@@ -904,6 +976,30 @@ test("codex-cli command terminates subprocess when aborted", async () => {
     assert.equal(__codexCliProviderTestHooks.getActiveCodexCliChildCount(), 0);
   } finally {
     await rm(tempDir, { force: true, recursive: true });
+  }
+});
+
+test("codex-cli command rejects a successful process that omits the final-message file", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-output-"));
+  const workspacePath = path.join(tempDir, "workspace");
+  await mkdir(workspacePath);
+  try {
+    await assert.rejects(
+      __codexCliProviderTestHooks.runCodexCliCommand({
+        executable: process.execPath,
+        args: [
+          "-e",
+          'process.stdout.write(\'{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}\\n\')',
+        ],
+        input: "prompt",
+        outputPath: path.join(tempDir, "missing-last-message.txt"),
+        workspacePath,
+        env: process.env,
+      }),
+      /did not write --output-last-message/,
+    );
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
   }
 });
 

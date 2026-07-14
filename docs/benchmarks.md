@@ -225,7 +225,11 @@ either CLI model. Check the authenticated catalog immediately before a run
 with `codex debug models`. `gpt-5.6-sol` is disabled for the bounded plan and
 requires an explicit operator opt-in.
 
-The account starts with exactly 2,473 token credits. A 473-credit in-flight
+The Build Week grant starts with 2,473 Codex credits. Run the benchmark as the
+only Codex user on the account: the CLI does not expose a machine-readable
+account balance, while this ledger can only observe calls made by this harness.
+Bounded mode verifies that `codex login status` reports ChatGPT authentication.
+A 473-credit in-flight
 safety reserve leaves a hard planned-spend ceiling of 2,000 credits. Runs use
 normal service, not fast mode. The provider adds actual usage from every
 `turn.completed` JSONL event to an atomic JSON ledger before the next batch is
@@ -240,10 +244,12 @@ reaches 2,000 credits.
 
 For one completed turn, charge
 `((input_tokens - cached_input_tokens) * input_rate + cached_input_tokens * cached_rate + output_tokens * output_rate) / 1,000,000`.
-The exact ledger invariant is `spent + remaining = 2,473`. Dispatch stops at
+For exclusive harness use, the local ledger invariant is `spent + remaining =
+2,473`. Dispatch stops at
 2,000 spent; a just-completed call may consume part of the reserve, but total
 spend may never exceed 2,473. Estimates do not replace the completed-turn
-record.
+record. A missing terminal usage event blocks the ledger until manual account
+reconciliation instead of permitting another charged call.
 
 Each provider call is a one-shot, non-interactive `codex exec` launched in a
 new empty temporary workspace. It ignores user configuration and repository
@@ -262,15 +268,21 @@ export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger
 remnic bench run --quick longmemeval \
   --runtime-profile real \
   --system-provider codex-cli --system-model gpt-5.6-luna \
+  --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
-  --judge-provider codex-cli --judge-model gpt-5.6-terra
+  --internal-codex-reasoning-effort medium \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra \
+  --judge-codex-reasoning-effort high
 
 # Replace this only after the smoke ledger establishes observed cost.
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
   --system-provider codex-cli --system-model gpt-5.6-luna \
+  --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
-  --judge-provider codex-cli --judge-model gpt-5.6-terra
+  --internal-codex-reasoning-effort medium \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra \
+  --judge-codex-reasoning-effort high
 ```
 
 `--limit` caps loaded items. `--trial-limit` caps scored trials only for LoCoMo

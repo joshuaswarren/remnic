@@ -147,7 +147,11 @@ artifact exists.
 
 ## Credit-backed Codex CLI run protocol
 
-The account has exactly **2,473 token credits**. We hold back **473 credits**.
+The Build Week grant is **2,473 Codex credits**. During a benchmark window,
+this account must be used exclusively by this one harness process; the Codex
+CLI has no machine-readable account-balance command, so unrelated Codex use
+cannot be reconciled into the local ledger. Before starting, `codex login
+status` must report ChatGPT authentication. We hold back **473 credits**.
 That leaves **2,000 usable credits**. The holdback is not a spend target. It
 covers the last call, since its true cost is known only after it ends. Codex
 adds each finished turn to one JSON ledger. The usage comes from the
@@ -170,7 +174,9 @@ Credit accounting uses the published per-million-token rates:
 
 For each finished turn, credits equal
 `((input_tokens - cached_input_tokens) * input_rate + cached_input_tokens * cached_rate + output_tokens * output_rate) / 1,000,000`.
-The ledger records real use. It does not guess a fixed trial count. After each
+The ledger records harness-observed use. If a process exits without exact usage,
+the ledger blocks further calls until the account is manually reconciled. It
+does not guess a fixed trial count. After each
 small batch, set the next `--limit` or `--trial-limit` from the balance and the
 measured cost per task. Stop at the 2,000-credit spend line. Stop sooner if the
 balance cannot cover one more task. We do not use fast service. Sol needs its
@@ -195,8 +201,11 @@ export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger
 remnic bench run longmemeval --runtime-profile real \
   --limit <LEDGER_DERIVED_LIMIT> \
   --system-provider codex-cli --system-model gpt-5.6-luna \
+  --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
-  --judge-provider codex-cli --judge-model gpt-5.6-terra
+  --internal-codex-reasoning-effort medium \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra \
+  --judge-codex-reasoning-effort high
 ```
 
 The placeholder is on purpose. There is no honest fixed task count until we

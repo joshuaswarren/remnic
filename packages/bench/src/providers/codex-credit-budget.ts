@@ -26,7 +26,10 @@ interface CodexCreditLedger {
   reserveCredits: number;
   spentCredits: number;
   entries: CodexCreditLedgerEntry[];
+  blockedReason?: string;
 }
+
+type LedgerLockPhase = "preflight" | "in-flight" | "settled";
 
 export interface CodexCreditBudgetConfig {
   budgetCredits: number;
@@ -36,6 +39,9 @@ export interface CodexCreditBudgetConfig {
 }
 
 const ONE_MILLION = 1_000_000;
+// Conservative upper bound for one supported text-model turn. GPT-5.6 Terra's
+// full 1.05M-token context plus 128K output costs well under this amount.
+const MAX_BOUNDED_CALL_CREDITS = 300;
 const SOL_MODEL = /^gpt-5\.6-sol(?:-|$)/i;
 const CREDIT_RATES: ReadonlyArray<[RegExp, CodexCreditRate]> = [
   [/^gpt-5\.6-sol(?:-|$)/i, { input: 125, cachedInput: 12.5, output: 750 }],
@@ -49,6 +55,13 @@ const CREDIT_RATES: ReadonlyArray<[RegExp, CodexCreditRate]> = [
 ];
 
 let completionQueue: Promise<void> = Promise.resolve();
+
+export class CodexCreditAccountingError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CodexCreditAccountingError";
+  }
+}
 
 export function resolveCodexCreditBudgetConfig(
   env: NodeJS.ProcessEnv = process.env,
@@ -67,6 +80,12 @@ export function resolveCodexCreditBudgetConfig(
   if (reserveCredits >= budgetCredits) {
     throw new Error(
       "REMNIC_BENCH_CODEX_CREDIT_RESERVE must be smaller than REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+    );
+  }
+  if (reserveCredits < MAX_BOUNDED_CALL_CREDITS) {
+    throw new Error(
+      `REMNIC_BENCH_CODEX_CREDIT_RESERVE must be at least ${MAX_BOUNDED_CALL_CREDITS} credits ` +
+        "to cover the conservative maximum cost of the one serialized in-flight call",
     );
   }
 
@@ -102,22 +121,18 @@ export async function runWithinCodexCreditBudget<T>(args: {
 
   const lockPath = `${args.config.ledgerPath}.lock`;
   let lock: Awaited<ReturnType<typeof open>> | undefined;
+  let dispatchStarted = false;
+  let accountingSettled = false;
   try {
     await mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
-    try {
-      lock = await open(lockPath, "wx", 0o600);
-      await lock.writeFile(`${JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() })}\n`);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-        throw new Error(
-          `Codex credit ledger is locked by another benchmark process (${lockPath}); ` +
-            "refusing concurrent credit spend.",
-        );
-      }
-      throw error;
-    }
+    lock = await acquireLedgerLock(lockPath);
     assertModelAllowed(args.model, args.config);
     const ledger = await readLedger(args.config);
+    if (ledger.blockedReason) {
+      throw new Error(
+        `Codex credit ledger is blocked pending manual reconciliation: ${ledger.blockedReason}`,
+      );
+    }
     const usableCredits = args.config.budgetCredits - args.config.reserveCredits;
     if (ledger.spentCredits >= usableCredits) {
       throw new Error(
@@ -126,16 +141,25 @@ export async function runWithinCodexCreditBudget<T>(args: {
       );
     }
 
-    const result = await args.run();
+    await writeLockState(lock, "in-flight");
+    dispatchStarted = true;
+    let result: Awaited<ReturnType<typeof args.run>>;
+    try {
+      result = await args.run();
+    } catch (error) {
+      if (error instanceof CodexCreditAccountingError) {
+        const blockedLedger: CodexCreditLedger = {
+          ...ledger,
+          blockedReason: error.message,
+        };
+        await writeLedger(args.config.ledgerPath, blockedLedger);
+        await writeLockState(lock, "settled");
+        accountingSettled = true;
+      }
+      throw error;
+    }
     const credits = calculateCodexCredits(args.model, result.usage);
     const nextSpent = ledger.spentCredits + credits;
-    if (nextSpent > args.config.budgetCredits) {
-      throw new Error(
-        `Codex credit budget exceeded by completed call: ${nextSpent.toFixed(3)} > ` +
-          `${args.config.budgetCredits.toFixed(3)} credits. Stop the benchmark immediately.`,
-      );
-    }
-
     const nextLedger: CodexCreditLedger = {
       ...ledger,
       spentCredits: nextSpent,
@@ -150,13 +174,109 @@ export async function runWithinCodexCreditBudget<T>(args: {
       ],
     };
     await writeLedger(args.config.ledgerPath, nextLedger);
+    await writeLockState(lock, "settled");
+    accountingSettled = true;
+    if (nextSpent > args.config.budgetCredits) {
+      throw new Error(
+        `Codex credit budget exceeded by completed call: ${nextSpent.toFixed(3)} > ` +
+          `${args.config.budgetCredits.toFixed(3)} credits. Usage was persisted; stop the benchmark immediately.`,
+      );
+    }
     return result.value;
   } finally {
-    if (lock) {
-      await lock.close();
-      await unlink(lockPath).catch(() => undefined);
+    try {
+      if (lock) {
+        try {
+          await lock.close();
+        } finally {
+          if (!dispatchStarted || accountingSettled) {
+            await unlink(lockPath).catch(() => undefined);
+          }
+        }
+      }
+    } finally {
+      release();
     }
-    release();
+  }
+}
+
+async function acquireLedgerLock(
+  lockPath: string,
+): Promise<Awaited<ReturnType<typeof open>>> {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let createdLock: Awaited<ReturnType<typeof open>> | undefined;
+    try {
+      createdLock = await open(lockPath, "wx", 0o600);
+      await writeLockState(createdLock, "preflight");
+      return createdLock;
+    } catch (error) {
+      if (createdLock) {
+        await createdLock.close().catch(() => undefined);
+        await unlink(lockPath).catch(() => undefined);
+      }
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const owner = await readLockOwner(lockPath);
+      if (
+        !owner ||
+        isProcessAlive(owner.pid) ||
+        owner.phase === "in-flight"
+      ) {
+        throw new Error(
+          `Codex credit ledger is locked${owner?.phase === "in-flight" ? " with unreconciled in-flight usage" : " by another benchmark process"} ` +
+            `(${lockPath}); refusing credit spend.`,
+        );
+      }
+      await unlink(lockPath).catch((unlinkError: NodeJS.ErrnoException) => {
+        if (unlinkError.code !== "ENOENT") throw unlinkError;
+      });
+    }
+  }
+  throw new Error(`Unable to acquire Codex credit ledger lock (${lockPath})`);
+}
+
+async function readLockOwner(
+  lockPath: string,
+): Promise<{ pid: number; phase: LedgerLockPhase } | undefined> {
+  try {
+    const parsed = JSON.parse(await readFile(lockPath, "utf8")) as {
+      pid?: unknown;
+      phase?: unknown;
+    };
+    if (
+      !Number.isSafeInteger(parsed.pid) ||
+      (parsed.pid as number) <= 0 ||
+      (parsed.phase !== "preflight" &&
+        parsed.phase !== "in-flight" &&
+        parsed.phase !== "settled")
+    ) {
+      return undefined;
+    }
+    return { pid: parsed.pid as number, phase: parsed.phase };
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeLockState(
+  lock: Awaited<ReturnType<typeof open>>,
+  phase: LedgerLockPhase,
+): Promise<void> {
+  const contents = `${JSON.stringify({
+    pid: process.pid,
+    phase,
+    updatedAt: new Date().toISOString(),
+  })}\n`;
+  await lock.truncate(0);
+  await lock.write(contents, 0, "utf8");
+  await lock.sync();
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 

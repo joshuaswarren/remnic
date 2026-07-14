@@ -92,7 +92,8 @@ Voiceover: "Codex built and adversarially reviewed the new MCP adapter,
 Responses provider, and report card during Build Week. GPT-5.6 is the optional
 structured-output judge inside the harness. Our bounded CLI measurement uses
 Luna for bulk work and Terra for quality-critical judging, with every completed
-turn charged to an exact credit ledger. Remnic itself and the original
+turn charged to the harness ledger. The account stays exclusive to that run,
+and missing usage blocks further dispatch. Remnic itself and the original
 benchmark package are prior work; our public evidence ledger draws that line
 commit by commit."
 
@@ -101,8 +102,8 @@ ChatGPT-backed Codex CLI slugs `gpt-5.6-luna` and `gpt-5.6-terra`. If the CLI
 artifact is shown, its run must use one-shot isolated `codex exec` calls, normal
 service rather than fast mode, a 2,473-credit budget, a 473-credit reserve, and
 the real model labels. `gpt-5.6-sol` is opt-in only and is outside the bounded
-plan. Confirm the authenticated catalog immediately before recording with
-`codex debug models`.
+plan. Confirm ChatGPT authentication with `codex login status` and the catalog
+with `codex debug models` immediately before recording.
 
 Do not say GPT-5.6 was benchmarked as the system under test unless the real,
 hash-locked artifact is on screen.

@@ -21,6 +21,7 @@ import {
   type StructuredVerdictRequest,
 } from "./structured-judge.js";
 import {
+  CodexCreditAccountingError,
   parseCodexJsonlUsage,
   resolveCodexCreditBudgetConfig,
   runWithinCodexCreditBudget,
@@ -53,6 +54,10 @@ interface CodexCliProviderDeps {
     executable: string,
     env: NodeJS.ProcessEnv,
   ) => Promise<{ status: number | null; stderr: string }>;
+  runCodexLoginStatus?: (
+    executable: string,
+    env: NodeJS.ProcessEnv,
+  ) => Promise<{ status: number | null; stdout: string; stderr: string }>;
 }
 
 interface CodexCliDiagnosticRecord {
@@ -167,6 +172,7 @@ const CODEX_CLI_RUNTIME_ENV_ALLOWLIST = new Set([
 
 const activeCodexCliChildPids = new Set<number>();
 let codexCliParentCleanupInstalled = false;
+const codexCliLoginStatusCache = new Map<string, Promise<void>>();
 class CodexCliProvider implements StructuredJudgeProvider {
   readonly provider = "codex-cli" as const;
   readonly id: string;
@@ -178,6 +184,11 @@ class CodexCliProvider implements StructuredJudgeProvider {
     executable: string,
     env: NodeJS.ProcessEnv,
   ) => Promise<{ status: number | null; stderr: string }>;
+  private readonly runCodexLoginStatus: (
+    executable: string,
+    env: NodeJS.ProcessEnv,
+  ) => Promise<{ status: number | null; stdout: string; stderr: string }>;
+  private readonly requiresExactUsage: boolean;
   private usage: TokenUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -188,6 +199,9 @@ class CodexCliProvider implements StructuredJudgeProvider {
     this.config = config;
     this.runCodexCli = deps.runCodexCli ?? runCodexCliCommand;
     this.runCodexVersion = deps.runCodexVersion ?? runCodexVersionCommand;
+    this.runCodexLoginStatus =
+      deps.runCodexLoginStatus ?? runCodexLoginStatusCommand;
+    this.requiresExactUsage = deps.runCodexCli === undefined;
     this.id = `codex-cli:${config.model}`;
     this.name = config.model;
   }
@@ -198,6 +212,9 @@ class CodexCliProvider implements StructuredJudgeProvider {
   ): Promise<CompletionResult> {
     const startedAt = performance.now();
     const creditBudget = resolveCodexCreditBudgetConfig();
+    if (creditBudget) {
+      await this.assertChatGptCreditAuth();
+    }
 
     const maxAttempts = normalizeCodexCliMaxAttempts(
       creditBudget ? 1 : this.config.retryOptions?.maxAttempts,
@@ -234,10 +251,16 @@ class CodexCliProvider implements StructuredJudgeProvider {
               model: this.config.model,
               run: async () => {
                 const value = await this.runCodexCli(request);
-                if (value.status !== 0) {
-                  throw codexCliResultError(value);
+                const usage = parseCodexJsonlUsage(
+                  `${value.stdout}\n${value.stderr}`,
+                );
+                if (!usage) {
+                  throw new CodexCreditAccountingError(
+                    `Codex CLI exited ${value.status ?? "without a status"} without exact ` +
+                      "turn.completed usage; account balance must be reconciled before resuming.",
+                  );
                 }
-                return { value, usage: requireCodexJsonlUsage(value) };
+                return { value, usage };
               },
             })
           : await this.runCodexCli(request);
@@ -273,7 +296,9 @@ class CodexCliProvider implements StructuredJudgeProvider {
           throw error;
         }
         await finishDiagnostics({ result });
-        const nativeUsage = readCodexUsage(result, text);
+        const nativeUsage = this.requiresExactUsage
+          ? requireCodexJsonlUsage(result)
+          : readCodexUsage(result, text);
         const tokens = {
           input: nativeUsage.inputTokens,
           output: nativeUsage.outputTokens,
@@ -412,6 +437,27 @@ class CodexCliProvider implements StructuredJudgeProvider {
     };
   }
 
+  private async assertChatGptCreditAuth(): Promise<void> {
+    const executable = resolveCodexCliExecutable(this.config);
+    const env = buildIsolatedCodexEnv();
+    const cacheKey = `${executable}\0${env.CODEX_HOME ?? env.HOME ?? ""}`;
+    let check = codexCliLoginStatusCache.get(cacheKey);
+    if (!check) {
+      check = this.runCodexLoginStatus(executable, env).then((result) => {
+        const output = `${result.stdout}\n${result.stderr}`.trim();
+        if (result.status !== 0 || !/logged in using chatgpt/i.test(output)) {
+          throw new Error(
+            "Bounded Codex credit runs require ChatGPT-backed Codex CLI authentication; " +
+              `\`codex login status\` reported: ${output || `exit ${result.status ?? "unknown"}`}`,
+          );
+        }
+      });
+      codexCliLoginStatusCache.set(cacheKey, check);
+      check.catch(() => codexCliLoginStatusCache.delete(cacheKey));
+    }
+    await check;
+  }
+
   private recordUsage(inputTokens: number, outputTokens: number): void {
     this.usage = {
       inputTokens: this.usage.inputTokens + inputTokens,
@@ -437,7 +483,7 @@ class CodexCliProvider implements StructuredJudgeProvider {
       "--config",
       'approval_policy="never"',
       "--disable",
-      "codex_hooks",
+      "hooks",
       "--ephemeral",
       "--ignore-user-config",
       "--ignore-rules",
@@ -524,6 +570,62 @@ function runCodexVersionCommand(
             )
           : stderr,
       });
+    });
+  });
+}
+
+function runCodexLoginStatusCommand(
+  executable: string,
+  env: NodeJS.ProcessEnv,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, ["login", "status"], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    let killTimeout: NodeJS.Timeout | undefined;
+    const terminate = (signal: NodeJS.Signals): void => {
+      if (child.pid && process.platform !== "win32") {
+        try {
+          process.kill(-child.pid, signal);
+          return;
+        } catch {
+          // Fall back to the direct child.
+        }
+      }
+      child.kill(signal);
+    };
+    const timeout = setTimeout(() => {
+      stderr = appendBounded(
+        stderr,
+        `\nCodex CLI login status timed out after ${CODEX_CLI_VERSION_TIMEOUT_MS}ms.`,
+      );
+      terminate("SIGTERM");
+      killTimeout = setTimeout(() => terminate("SIGKILL"), 1_000);
+      killTimeout.unref();
+    }, CODEX_CLI_VERSION_TIMEOUT_MS);
+    timeout.unref();
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
+      stdout = appendBounded(stdout, chunk);
+    });
+    child.stderr?.on("data", (chunk: string) => {
+      stderr = appendBounded(stderr, chunk);
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      if (killTimeout) clearTimeout(killTimeout);
+      reject(error);
+    });
+    child.on("close", (status) => {
+      clearTimeout(timeout);
+      if (killTimeout) clearTimeout(killTimeout);
+      resolve({ status, stdout, stderr });
     });
   });
 }
@@ -900,7 +1002,7 @@ function runCodexCliCommand(request: CodexCliRunRequest): Promise<CodexCliRunRes
       }
 
       try {
-        const outputText = await readCodexOutput(request.outputPath, stdout);
+        const outputText = await readCodexOutput(request.outputPath, status);
         resolve({ status, signal, stdout, stderr, outputText });
       } catch (error) {
         reject(error);
@@ -991,13 +1093,22 @@ function signalExitCode(signal: NodeJS.Signals): number {
 
 async function readCodexOutput(
   outputPath: string,
-  stdout: string,
+  status: number | null,
 ): Promise<string> {
   try {
     return await readFile(outputPath, "utf8");
-  } catch {
-    return stdout;
+  } catch (error) {
+    if (status === 0) {
+      throw new Error(
+        `Codex CLI exited successfully but did not write --output-last-message: ${safeErrorMessage(error)}`,
+      );
+    }
+    return "";
   }
+}
+
+function safeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function appendBounded(existing: string, next: string): string {
@@ -1201,6 +1312,7 @@ export function createCodexCliProvider(
 export const __codexCliProviderTestHooks = {
   buildCodexCompletionPrompt,
   buildIsolatedCodexEnv,
+  clearCodexCliLoginStatusCache: () => codexCliLoginStatusCache.clear(),
   getActiveCodexCliChildCount: () => activeCodexCliChildPids.size,
   parseCodexJsonlUsage,
   parseCodexTokenUsage,

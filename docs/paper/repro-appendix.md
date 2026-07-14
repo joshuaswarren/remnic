@@ -641,7 +641,10 @@ prompt on stdin, captures only the final response, and removes the workspace.
 This is one-shot isolation per completion, not one shared chat session per
 benchmark.
 
-The Build Week balance is 2,473 token credits. Keep 473 credits as an in-flight
+The Build Week grant is 2,473 Codex credits. Keep the account exclusive to this
+single harness process during the run because Codex CLI has no machine-readable
+account-balance command. Bounded mode requires `codex login status` to report
+ChatGPT authentication. Keep 473 credits as an in-flight
 safety reserve and allow no more than 2,000 credits of planned spend. Use
 normal service, not fast mode. Configure the provider's guard before the first
 turn:
@@ -665,26 +668,34 @@ tokens):
 
 The per-turn charge is
 `((input_tokens - cached_input_tokens) * input_rate + cached_input_tokens * cached_rate + output_tokens * output_rate) / 1,000,000`.
-Verify after every batch that `spent + remaining = 2,473`. Do not dispatch a
+With exclusive account use, verify after every batch that the harness ledger's
+`spent + remaining = 2,473`. Do not dispatch a
 new call after planned spend reaches 2,000; the 473-credit reserve exists to
 absorb only the final in-flight call because its actual usage arrives after
 completion. Total spend may never exceed 2,473. Because task prompts and
 answers vary, do not allocate a fixed trial count in advance. Measure one
 quick task, calculate observed credits per task, then set the next workload
-bound conservatively:
+bound conservatively. If exact terminal usage is missing, the ledger blocks
+further dispatch until manual account reconciliation:
 
 ```bash
 remnic bench run --quick longmemeval \
   --runtime-profile real \
   --system-provider codex-cli --system-model gpt-5.6-luna \
+  --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
-  --judge-provider codex-cli --judge-model gpt-5.6-terra
+  --internal-codex-reasoning-effort medium \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra \
+  --judge-codex-reasoning-effort high
 
 remnic bench run longmemeval \
   --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
   --system-provider codex-cli --system-model gpt-5.6-luna \
+  --system-codex-reasoning-effort medium \
   --internal-provider codex-cli --internal-model gpt-5.6-luna \
-  --judge-provider codex-cli --judge-model gpt-5.6-terra
+  --internal-codex-reasoning-effort medium \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra \
+  --judge-codex-reasoning-effort high
 ```
 
 `<LEDGER_DERIVED_LIMIT>` is an operator-computed placeholder, not a missing

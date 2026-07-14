@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
   __codexCreditBudgetTestHooks,
+  CodexCreditAccountingError,
   calculateCodexCredits,
   parseCodexJsonlUsage,
   resolveCodexCreditBudgetConfig,
@@ -62,8 +63,8 @@ test("bounded runs persist exact usage and stop at the safety-reserve boundary",
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-ledger-"));
   const ledgerPath = path.join(directory, "ledger.json");
   const config = {
-    budgetCredits: 9.875,
-    reserveCredits: 1,
+    budgetCredits: 308.875,
+    reserveCredits: 300,
     ledgerPath,
     allowSol: false,
   };
@@ -121,4 +122,130 @@ test("budget environment parsing uses the competition reserve and rejects invali
     () => resolveCodexCreditBudgetConfig({ REMNIC_BENCH_CODEX_CREDIT_BUDGET: "abc" }),
     /finite number/,
   );
+  assert.throws(
+    () => resolveCodexCreditBudgetConfig({
+      REMNIC_BENCH_CODEX_CREDIT_BUDGET: "2473",
+      REMNIC_BENCH_CODEX_CREDIT_RESERVE: "299",
+    }),
+    /at least 300 credits/,
+  );
+});
+
+test("completed over-budget usage is persisted before the stop error", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-overrun-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config: { budgetCredits: 400, reserveCredits: 300, ledgerPath, allowSol: false },
+        model: "gpt-5.6-terra",
+        run: async () => ({
+          value: "charged",
+          usage: {
+            inputTokens: 8_000_000,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+        }),
+      }),
+      /Usage was persisted/,
+    );
+    const ledger = JSON.parse(await readFile(ledgerPath, "utf8")) as {
+      spentCredits: number;
+      entries: unknown[];
+    };
+    assert.equal(ledger.spentCredits, 500);
+    assert.equal(ledger.entries.length, 1);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("unknown charged usage blocks the ledger until manual reconciliation", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-blocked-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  const config = { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false };
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => {
+          throw new CodexCreditAccountingError("missing terminal usage");
+        },
+      }),
+      /missing terminal usage/,
+    );
+    let called = false;
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => {
+          called = true;
+          return { value: "unexpected", usage };
+        },
+      }),
+      /blocked pending manual reconciliation/,
+    );
+    assert.equal(called, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("stale dead-process locks are reclaimed but live locks fail closed", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-lock-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  const lockPath = `${ledgerPath}.lock`;
+  const config = { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false };
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await writeFile(
+      lockPath,
+      JSON.stringify({ pid: 2_147_483_647, phase: "preflight" }),
+      { mode: 0o600 },
+    );
+    assert.equal(
+      await runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => ({ value: "reclaimed", usage }),
+      }),
+      "reclaimed",
+    );
+
+    await writeFile(
+      lockPath,
+      JSON.stringify({ pid: process.pid, phase: "preflight" }),
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => ({ value: "unexpected", usage }),
+      }),
+      /locked by another benchmark process/,
+    );
+
+    await writeFile(
+      lockPath,
+      JSON.stringify({ pid: 2_147_483_647, phase: "in-flight" }),
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config,
+        model: "gpt-5.6-luna",
+        run: async () => ({ value: "unexpected", usage }),
+      }),
+      /unreconciled in-flight usage/,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
