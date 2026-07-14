@@ -324,16 +324,12 @@ class ClaudeCliProvider implements LlmProvider {
         // spuriously 0-scored tasks in the 2026-07-08 bounded trials (~8%
         // of tasks). A parseable payload with `is_error` unset and
         // non-empty result text is a successful completion regardless of
-        // the exit code; everything else keeps the exit-status failure
-        // handling below (parseClaudeCliJsonResult never throws — empty or
-        // non-JSON stdout becomes an `is_error` blob, which is not
-        // salvageable).
         const payload = parseClaudeCliJsonResult(result.stdout);
         const salvageableDespiteExit =
+          result.signal === null && // don't salvage an aborted/timed-out run (codex P2)
           !isClaudeCliErrorFlagSet(payload.is_error) &&
           typeof payload.result === "string" &&
           payload.result.trim().length > 0;
-
         if (result.status !== 0 && !salvageableDespiteExit) {
           // Usage-limit detection is deliberately restricted to FAILURE
           // paths (non-zero exits here, is_error payloads below). A

@@ -40,6 +40,21 @@ if [[ "$AUTH_OUT" != *pong* ]]; then
   exit 2
 fi
 
+# judge-calibrate is NOT re-run here (the judge pair is unchanged from the
+# baseline pass); but the persisted calibration state MUST exist, or the
+# real-profile artifacts carry no kappa and the publishability gate fails.
+preflight_calibration_state() {
+  local benchmark="$1"
+  if [ ! -f "$HOME/.remnic/bench/calibration/${benchmark}.json" ]; then
+    echo "BLOCKED: calibration state for ${benchmark} is missing - run the baseline pass (scripts/bench/run-tierf-opus.sh) first, or run 'remnic bench judge-calibrate --benchmark ${benchmark} ...' manually." >&2
+    exit 3
+  fi
+}
+
+step "preflight: calibration state (from baseline pass)"
+preflight_calibration_state locomo
+preflight_calibration_state longmemeval
+
 step "full LongMemEval (500 tasks) — real profile, Opus responder, local judge"
 node scripts/run-bench-cli.mjs run longmemeval \
   --runtime-profile real \
