@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1040" height="560" viewBox="0 0 1040 560" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" role="img" aria-labelledby="title desc">
 <title id="title">Figure 1 — LoCoMo / LongMemEval comparison</title>
-<desc id="desc">Grouped bar chart. Remnic Tier-L bars are real (committed artifacts); Tier-F and Mem0/Zep/Letta bars are data-pending placeholders.</desc>
+<desc id="desc">Grouped bar chart. Remnic Tier-L and Tier-F bars are real (committed artifacts); Mem0/Zep/Letta bars are data-pending placeholders.</desc>
 <rect x="0" y="0" width="1040" height="560" fill="#ffffff"/>
 <defs><pattern id="pendingHatch1" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
 <rect width="6" height="6" fill="#E8E8E8"/>

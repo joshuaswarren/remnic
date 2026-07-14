@@ -46,8 +46,15 @@ fi
 preflight_calibration_state() {
   local benchmark="$1"
   local file="$HOME/.remnic/bench/calibration/${benchmark}.json"
-  if [ ! -f "$file" ] || ! python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d.get('localJudgeModel') == 'qwen2.5-7b-32k:latest', f\"localJudgeModel mismatch: {d.get('localJudgeModel')}\"" "$file" 2>/dev/null; then
-    echo "BLOCKED: calibration state for ${benchmark} is missing, corrupt, or scoped to a different judge - run the baseline pass (scripts/bench/run-tierf-opus.sh) first, or run 'remnic bench judge-calibrate --benchmark ${benchmark} ...' manually." >&2
+  if [ ! -f "$file" ] || ! python3 -c "
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d.get('localJudgeProvider') == 'ollama', f\"localJudgeProvider: {d.get('localJudgeProvider')}\"
+assert d.get('localJudgeModel') == 'qwen2.5-7b-32k:latest', f\"localJudgeModel: {d.get('localJudgeModel')}\"
+assert d.get('frontierJudgeProvider') == 'claude-cli', f\"frontierJudgeProvider: {d.get('frontierJudgeProvider')}\"
+assert d.get('frontierJudgeModel') == 'opus', f\"frontierJudgeModel: {d.get('frontierJudgeModel')}\"
+" "$file" 2>/dev/null; then
+    echo "BLOCKED: calibration state for ${benchmark} is missing, corrupt, or scoped to a different judge pair - run the baseline pass first." >&2
     exit 3
   fi
 }
