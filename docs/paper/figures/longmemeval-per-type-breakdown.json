@@ -1,29 +1,80 @@
 {
-  "knowledge-update": {
-    "count": 78,
-    "judge_accuracy_mean": 0.7949
+  "_schema": "per-question-type judge_accuracy comparison, LongMemEval Tier F (real profile), same judge (ollama qwen2.5-7b-32k:latest)",
+  "runs": {
+    "pre-broadening (0676347)": {
+      "_source": "longmemeval-v9.6.10-2026-07-14T04-02-21-944Z.json / committed artifact 2026-07-14-longmemeval-opus-0676347.json",
+      "_aggregate_judge_accuracy": 0.76,
+      "_judge_kappa": 0.7691,
+      "by_type": {
+        "knowledge-update": {
+          "count": 78,
+          "judge_accuracy_mean": 0.7949
+        },
+        "multi-session": {
+          "count": 133,
+          "judge_accuracy_mean": 0.7895
+        },
+        "single-session-assistant": {
+          "count": 56,
+          "judge_accuracy_mean": 0.9107
+        },
+        "single-session-preference": {
+          "count": 30,
+          "judge_accuracy_mean": 0.8
+        },
+        "single-session-user": {
+          "count": 70,
+          "judge_accuracy_mean": 0.9429
+        },
+        "temporal-reasoning": {
+          "count": 133,
+          "judge_accuracy_mean": 0.5414
+        }
+      }
+    },
+    "broadened-event-order-heuristic (151e5ef)": {
+      "_source": "longmemeval-v9.6.12-2026-07-14T16-00-43-475Z.json / artifact 2026-07-14-longmemeval-opus-151e5ef.json (git history, commit b2e51b73, PR #1867)",
+      "_aggregate_judge_accuracy": 0.768,
+      "_judge_kappa_stamped": 0.5592,
+      "_judge_kappa_post_run_recalibration": 0.4444,
+      "by_type": {
+        "knowledge-update": {
+          "count": 78,
+          "judge_accuracy_mean": 0.7949
+        },
+        "multi-session": {
+          "count": 133,
+          "judge_accuracy_mean": 0.7594
+        },
+        "single-session-assistant": {
+          "count": 56,
+          "judge_accuracy_mean": 0.9107
+        },
+        "single-session-preference": {
+          "count": 30,
+          "judge_accuracy_mean": 0.8
+        },
+        "single-session-user": {
+          "count": 70,
+          "judge_accuracy_mean": 0.9571
+        },
+        "temporal-reasoning": {
+          "count": 133,
+          "judge_accuracy_mean": 0.594
+        }
+      }
+    }
   },
-  "multi-session": {
-    "count": 133,
-    "judge_accuracy_mean": 0.7895
-  },
-  "single-session-assistant": {
-    "count": 56,
-    "judge_accuracy_mean": 0.9107
-  },
-  "single-session-preference": {
-    "count": 30,
-    "judge_accuracy_mean": 0.8
-  },
-  "single-session-user": {
-    "count": 70,
-    "judge_accuracy_mean": 0.9429
-  },
-  "temporal-reasoning": {
-    "count": 133,
-    "judge_accuracy_mean": 0.5414
-  },
-  "_source": "longmemeval-v9.6.10-2026-07-14T04-02-21-944Z.json (stored BenchmarkResult, per-task details.questionType)",
-  "_aggregate_judge_accuracy": 0.76,
-  "_aggregate_kappa": 0.7691
+  "_judge_independent_temporal_deltas": {
+    "contains_answer": {
+      "pre": 0.3158,
+      "post": 0.3308,
+      "delta": 0.015
+    },
+    "f1": {
+      "pre": 0.3517,
+      "post": 0.3507,
+      "delta": -0.001
+    }
+  }
 }
