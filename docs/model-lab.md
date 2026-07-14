@@ -81,8 +81,12 @@ needs a written justification in the manifest's `policyCompliance` block.
 ## Reproducing a model on a 3090-class GPU
 
 ```bash
-# 1. Bootstrap the version-pinned training stack (the manifest's trainingStack
-#    must reproduce these exact versions).
+# 1. Bootstrap the version-pinned training stack. For a NEW training run,
+#    HEAD's requirements.txt is the pin source. To REPRODUCE a committed
+#    trained manifest, install the exact versions recorded in that
+#    manifest's trainingStack.libs (verify with its pipFreezeSha256) —
+#    requirements.txt at HEAD moves ahead of committed manifests when
+#    dependencies bump, so it is not the reproduction pin source.
 bash model-lab/setup.sh
 source model-lab/.venv/bin/activate
 
@@ -153,5 +157,6 @@ a model-backed detector lands in the consuming child.
 
 `model-lab/**/data/`, `model-lab/**/runs/`, `model-lab/.venv/`, `*.safetensors`,
 and `*.gguf` are gitignored. The committed manifests are the **only** model-lab
-artifacts in git; everything else reproduces from the recipes + the version-pinned
-`requirements.txt`.
+artifacts in git; everything else reproduces from the recipes plus the pinned
+versions recorded in each manifest's `trainingStack.libs` (for committed
+models) or `requirements.txt` at HEAD (for new runs).
