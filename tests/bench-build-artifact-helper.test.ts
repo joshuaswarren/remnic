@@ -233,6 +233,31 @@ test("validateResultForPromotion rejects a partial run (nit [12])", () => {
   assert.match(!r.ok && r.message, /refusing to promote a partial run/);
 });
 
+test("validateResultForPromotion rejects legacy task-error artifacts missing partial status", () => {
+  const r = validateResultForPromotion(makeResult({
+    tasks: [makeTask({
+      taskId: "provider-failure",
+      actual: "(error: provider HTTP 400)",
+      scores: { f1: -1, llm_judge: -1 },
+      details: { error: "provider HTTP 400" },
+    })],
+  }));
+  assert.equal(r.ok, false);
+  assert.match(!r.ok && r.message, /refusing to promote.*failed trial.*provider-failure/);
+});
+
+test("validateResultForPromotion preserves legitimate negative scores and diagnostic error fields", () => {
+  const negativeScore = validateResultForPromotion(makeResult({
+    tasks: [makeTask({ scores: { judge_accuracy: -1 } })],
+  }));
+  assert.equal(negativeScore.ok, true);
+
+  const diagnosticOnly = validateResultForPromotion(makeResult({
+    tasks: [makeTask({ actual: "valid answer", details: { error: "non-fatal diagnostic" } })],
+  }));
+  assert.equal(diagnosticOnly.ok, true);
+});
+
 test("validateResultForPromotion rejects a quick-mode run (nit [12])", () => {
   const r = validateResultForPromotion(makeResult({ mode: "quick" }));
   assert.equal(r.ok, false);

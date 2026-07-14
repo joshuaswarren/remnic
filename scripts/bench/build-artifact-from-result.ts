@@ -228,6 +228,40 @@ export function validateResultForPromotion(result: unknown): ValidationResult {
     };
   }
 
+  // Defense in depth for artifacts produced before the harness propagated
+  // task failures to meta.status. Those legacy runs used both an `(error: …)`
+  // actual answer and details.error. Require both signals so legitimate
+  // negative metric values and benchmark-owned diagnostic fields remain
+  // publishable.
+  const results = r.results as Record<string, unknown> | undefined;
+  const tasks = Array.isArray(results?.tasks) ? results.tasks : [];
+  const failedTask = tasks.find((task) => {
+    if (typeof task !== "object" || task === null) return false;
+    const candidate = task as Record<string, unknown>;
+    const details = candidate.details;
+    if (typeof details !== "object" || details === null) return false;
+    const detailRecord = details as Record<string, unknown>;
+    const structured = detailRecord.benchmarkFailure;
+    const hasStructuredFailure =
+      typeof structured === "object" &&
+      structured !== null &&
+      (structured as Record<string, unknown>).kind === "trial_execution_failure";
+    const hasLegacyFailure =
+      typeof detailRecord.error === "string" &&
+      detailRecord.error.length > 0 &&
+      typeof candidate.actual === "string" &&
+      candidate.actual.startsWith("(error:");
+    return hasStructuredFailure || hasLegacyFailure;
+  }) as Record<string, unknown> | undefined;
+  if (failedTask) {
+    return {
+      ok: false,
+      message:
+        `refusing to promote a run containing failed trial "${String(failedTask.taskId)}"; ` +
+        "rerun with a usable provider and publish only a complete result.",
+    };
+  }
+
   if (meta?.mode === "quick") {
     return {
       ok: false,

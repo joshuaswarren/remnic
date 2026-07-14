@@ -413,7 +413,26 @@ export async function runBenchmark(
   ) {
     result.cost.judgeModelCalls = primaryCalls + crossCalls;
   }
-  return finalizeBenchmarkResultConfig(result, options);
+  const finalized = finalizeBenchmarkResultConfig(result, options);
+  assertCompleteBenchmarkResult(finalized);
+  return finalized;
+}
+
+/**
+ * Enforce the programmatic/CLI contract that a partial benchmark is a failed
+ * run, even when its runner returned a diagnostic result instead of throwing.
+ * The CLI's existing catch path persists the completed task prefix and exits
+ * non-zero; direct callers receive the same explicit failure.
+ */
+export function assertCompleteBenchmarkResult(result: BenchmarkResult): void {
+  if (result.meta.status !== "partial") {
+    return;
+  }
+  throw new Error(
+    `Benchmark "${result.meta.benchmark}" produced a partial result: ${
+      result.meta.failureReason ?? "unknown benchmark failure"
+    }`,
+  );
 }
 
 // Local expandTilde removed in PR #1591 round-5 OTGi5; expandTildePath

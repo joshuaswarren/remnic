@@ -341,7 +341,17 @@ async function executeTrialWithFailure(
       scores: buildFailureScores(ctx.metricsSpec.metrics),
       latencyMs: 0,
       tokens: { input: 0, output: 0 },
-      details: { error: message },
+      details: {
+        // `error` is retained for compatibility with existing diagnostics.
+        // The structured marker is the authoritative run-status signal; an
+        // arbitrary benchmark-owned `extraDetails.error` must not make a
+        // successful trial look failed.
+        error: message,
+        benchmarkFailure: {
+          kind: "trial_execution_failure",
+          message,
+        },
+      },
     };
   }
 }
@@ -675,6 +685,27 @@ async function buildBenchmarkResult(
     0,
   );
   const mode: BenchmarkMode = ctx.options.mode;
+  const failedTasks = tasks.flatMap((task) => {
+    const marker = task.details?.benchmarkFailure;
+    if (
+      typeof marker !== "object" ||
+      marker === null ||
+      (marker as { kind?: unknown }).kind !== "trial_execution_failure"
+    ) {
+      return [];
+    }
+    const message = (marker as { message?: unknown }).message;
+    return [{
+      taskId: task.taskId,
+      message: typeof message === "string" ? message : "unknown trial failure",
+    }];
+  });
+  const failureReason = failedTasks.length > 0
+    ? `trial_execution_failure: ${failedTasks.length}/${tasks.length} scored trial(s) failed (${failedTasks
+        .slice(0, 3)
+        .map((failure) => `${failure.taskId}: ${failure.message.slice(0, 240)}`)
+        .join("; ")}${failedTasks.length > 3 ? `; and ${failedTasks.length - 3} more` : ""})`
+    : undefined;
 
   return {
     meta: {
@@ -688,6 +719,9 @@ async function buildBenchmarkResult(
       mode,
       runCount: 1,
       seeds: [ctx.options.seed ?? 0],
+      ...(failureReason
+        ? { status: "partial" as const, failureReason }
+        : {}),
     },
     config: {
       systemProvider: ctx.options.systemProvider ?? null,
