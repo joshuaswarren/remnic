@@ -107,6 +107,6 @@ remnic bench export <run-id> --format html
 The quick run always uses a bundled fixture. That is what makes it
 zero-setup. Real-dataset runs take two more steps: download the datasets
 (see "Running on real datasets" in `packages/bench/README.md`), then run
-again without `--quick`, passing `--dataset-dir` and an OPENAI_API_KEY for
-the GPT-5.6 judge. Reproduction paths live in
-`docs/paper/repro-appendix.md`.
+again without `--quick`, passing `--dataset-dir` plus the judge flags
+`--judge-provider openai --judge-model gpt-5.6` with an OPENAI_API_KEY
+set. Reproduction paths live in `docs/paper/repro-appendix.md`.

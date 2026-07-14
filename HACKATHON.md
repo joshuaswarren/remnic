@@ -108,10 +108,13 @@ first, then drop the `--quick` flag:
 
 ```bash
 scripts/bench/fetch-datasets.sh --target ./bench-datasets   # from a repo checkout
-remnic bench run longmemeval --dataset-dir ./bench-datasets/longmemeval
+OPENAI_API_KEY=sk-... remnic bench run longmemeval \
+  --dataset-dir ./bench-datasets/longmemeval \
+  --judge-provider openai --judge-model gpt-5.6
 ```
 
-This path needs an OpenAI API key. Full reproduction paths live in
+Without `--judge-provider` and `--judge-model`, the run falls back to the
+unjudged scoring path. Full reproduction paths live in
 `docs/paper/repro-appendix.md`.
 
 ## Honest framing of the novelty claim
