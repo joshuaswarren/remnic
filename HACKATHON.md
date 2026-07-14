@@ -107,14 +107,16 @@ path. To score the real datasets with the GPT-5.6 judge, download them
 first, then drop the `--quick` flag:
 
 ```bash
-scripts/bench/fetch-datasets.sh --target ./bench-datasets   # from a repo checkout
-OPENAI_API_KEY=sk-... remnic bench run longmemeval \
-  --dataset-dir ./bench-datasets/longmemeval \
-  --judge-provider openai --judge-model gpt-5.6
+export OPENAI_API_KEY=sk-...
+remnic bench datasets download longmemeval
+remnic bench run longmemeval \
+  --judge-provider openai --judge-model gpt-5.6 \
+  --judge-api-key "$OPENAI_API_KEY"
 ```
 
-Without `--judge-provider` and `--judge-model`, the run falls back to the
-unjudged scoring path. Full reproduction paths live in
+Without the judge flags, the run falls back to the unjudged scoring
+path, and the key must go through `--judge-api-key` (the provider does
+not read the env var on its own). Full reproduction paths live in
 `docs/paper/repro-appendix.md`.
 
 ## Honest framing of the novelty claim
