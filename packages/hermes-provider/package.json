@@ -1,6 +1,6 @@
 {
   "name": "@remnic/hermes-provider",
-  "version": "9.6.15",
+  "version": "9.6.16",
   "description": "Typed HTTP client for the Remnic memory API",
   "type": "module",
   "main": "dist/index.js",
