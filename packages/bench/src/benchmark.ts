@@ -403,7 +403,14 @@ export async function runBenchmark(
   // re-run so the JSON observability contract holds — the field is
   // written whenever any judge was wrapped (primary or cross), not just
   // when at least one underlying model call actually fired.
-  if (judgeCacheCounters !== undefined || crossJudgeCacheCounters !== undefined) {
+  // MemCorrect records its two specialized Responses calls directly in the
+  // runner. Those methods deliberately bypass the generic scalar-judge cache,
+  // so replacing that explicit count with this wrapper's zero calls would
+  // erase real model traffic from the result.
+  if (
+    benchmarkId !== "memcorrect-v1" &&
+    (judgeCacheCounters !== undefined || crossJudgeCacheCounters !== undefined)
+  ) {
     result.cost.judgeModelCalls = primaryCalls + crossCalls;
   }
   return finalizeBenchmarkResultConfig(result, options);

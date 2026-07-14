@@ -67,6 +67,8 @@ export type {
   BenchResponse,
   BenchResponder,
   BenchJudgeResult,
+  MemCorrectJudgeRequest,
+  MemCorrectJudgeResult,
   BenchJudge,
   BenchMemoryAdapter,
   BenchRecallOptions,
@@ -100,6 +102,32 @@ export {
   createLightweightAdapter,
   createRemnicAdapter,
 } from "./adapters/remnic-adapter.js";
+export {
+  createMcpMemoryAdapter,
+  createMcpDemoMemoryAdapter,
+  createMcpDemoMemCorrectAdapter,
+  createMcpMemCorrectAdapter,
+  McpMemoryBackendError,
+} from "./adapters/mcp-memory-adapter.js";
+export type {
+  McpArgumentSemantic,
+  McpBackendErrorCode,
+  McpBackendResult,
+  McpBenchMemoryAdapter,
+  McpConformanceResult,
+  McpHttpTransportConfig,
+  McpListedTool,
+  McpMemCorrectAdapter,
+  McpMemoryAdapterOptions,
+  McpMemoryToolMapping,
+  McpMemoryTransportConfig,
+  McpStdioTransportConfig,
+  McpToolCallResult,
+  McpToolClient,
+  McpToolMappingEntry,
+  McpToolMappingValue,
+  McpToolOperation,
+} from "./adapters/mcp-memory-adapter.js";
 export {
   createTimeoutGuardedAdapter,
   resolveBenchmarkPhaseTimeoutMs,
@@ -234,6 +262,30 @@ export { createLiteLlmProvider } from "./providers/litellm.js";
 export { createLocalLlmProvider } from "./providers/local-llm.js";
 export { createOllamaProvider } from "./providers/ollama.js";
 export { createOpenAiCompatibleProvider } from "./providers/openai-compatible.js";
+export {
+  DEFAULT_OPENAI_RESPONSES_JUDGE_MODEL,
+  OpenAiResponsesJudgeError,
+  OpenAiResponsesProvider,
+  createOpenAiResponsesBenchJudge,
+  createOpenAiResponsesProvider,
+  judgeMemCorrectCorrectionAcceptance,
+  judgeMemCorrectStaleMemoryHarm,
+} from "./providers/openai-responses.js";
+export type {
+  OpenAiResponsesProviderConfig,
+  OpenAiResponsesJudgeErrorCode,
+  OpenAiResponsesJudgeTelemetry,
+  OpenAiResponsesVerdict,
+  OpenAiResponsesVerdictResult,
+} from "./providers/openai-responses.js";
+export {
+  GENERAL_ANSWER_JUDGE_RUBRIC,
+  MEMCORRECT_CORRECTION_ACCEPTANCE_RUBRIC,
+  MEMCORRECT_CORRECTION_ACCEPTANCE_RUBRIC_VERSION,
+  MEMCORRECT_STALE_HARM_RUBRIC,
+  MEMCORRECT_STALE_HARM_RUBRIC_VERSION,
+  OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION,
+} from "./judges/memcorrect-rubrics.js";
 export type {
   BenchModelSource,
   ResolveBenchRuntimeProfileOptions,
@@ -318,6 +370,7 @@ export {
   loadBenchmarkBaseline,
   listBenchmarkBaselines,
   listBenchmarkResults,
+  loadBenchmarkReportCardProvenance,
   renderBenchmarkResultExport,
   resolveBenchmarkResultReference,
   saveBenchmarkBaseline,
@@ -330,6 +383,7 @@ export type {
   PublishedBenchmarkFeed,
   PublishedBenchmarkFeedEntry,
 } from "./results-store.js";
+export type { ReportCardProvenanceContext } from "./report-card.js";
 
 // Published-benchmark dataset loaders (LongMemEval-S + LoCoMo-10).
 export {

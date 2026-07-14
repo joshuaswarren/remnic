@@ -1,9 +1,19 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 test("remnic CLI source wires the new bench command and keeps benchmark as an alias", async () => {
@@ -13,7 +23,10 @@ test("remnic CLI source wires the new bench command and keeps benchmark as an al
   assert.match(source, /case "bench": \{/);
   assert.match(source, /case "benchmark": \{/);
   assert.match(source, /await cmdBench\(rest\);/);
-  assert.match(source, /remnic bench <list\|run\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers>/);
+  assert.match(
+    source,
+    /remnic bench <list\|run\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers>/
+  );
   assert.match(source, /benchmark is kept as a compatibility alias/i);
 });
 
@@ -37,7 +50,10 @@ test("bench surface publishes the phase-1 benchmark catalog and quick-run fallba
   ]) {
     assert.match(source, new RegExp(`"${datasetBenchmarkId}"`));
   }
-  assert.match(fallbackSource, /if \(parsed\.quick\) \{\s*args\.push\("--lightweight"\);\s*\}[\s\S]*else if \(parsed\.quick\) \{\s*args\.push\("--limit", "1"\);\s*\}/);
+  assert.match(
+    fallbackSource,
+    /if \(parsed\.quick\) \{\s*args\.push\("--lightweight"\);\s*\}[\s\S]*else if \(parsed\.quick\) \{\s*args\.push\("--limit", "1"\);\s*\}/
+  );
   assert.match(fallbackSource, /args\.push\("--dataset-dir", parsed\.datasetDir\)/);
   assert.match(source, /Use 'remnic bench list' to see available\./);
 });
@@ -114,19 +130,16 @@ test("optional bench loader imports workspace source through a TS-aware fallback
 
   assert.match(source, /const TSX_ESM_API_SPECIFIER = "tsx\/esm\/" \+ "api";/);
   assert.match(source, /await import\(TSX_ESM_API_SPECIFIER\)/);
-  assert.match(
-    source,
-    /tsImport\(pathToFileURL\(sourceEntry\)\.href,\s*import\.meta\.url\)/,
-  );
+  assert.match(source, /tsImport\(pathToFileURL\(sourceEntry\)\.href,\s*import\.meta\.url\)/);
   assert.match(source, /fromLocalWorkspaceBenchSource: true/);
   assert.match(source, /cachedFromLocalWorkspaceBenchSource/);
   assert.match(
     source,
-    /if \(!cachedFromLocalWorkspaceBenchSource\) \{\s*assertBenchModuleFreshForDevelopment\(\);\s*\}/,
+    /if \(!cachedFromLocalWorkspaceBenchSource\) \{\s*assertBenchModuleFreshForDevelopment\(\);\s*\}/
   );
   assert.match(
     source,
-    /export function assertBenchModuleFreshForDevelopment\(\): void \{\s*if \(cachedFromLocalWorkspaceBenchSource\) \{\s*return;\s*\}\s*assertLocalBenchBuildFreshForDevelopment\(import\.meta\.url\);/s,
+    /export function assertBenchModuleFreshForDevelopment\(\): void \{\s*if \(cachedFromLocalWorkspaceBenchSource\) \{\s*return;\s*\}\s*assertLocalBenchBuildFreshForDevelopment\(import\.meta\.url\);/s
   );
   assert.doesNotMatch(source, /await import\(pathToFileURL\(sourceEntry\)\.href\)/);
 });
@@ -136,14 +149,8 @@ test("--all selection resolves to runnable package benchmarks when package metad
 
   assert.match(source, /category === "ingestion"/);
   assert.match(source, /async function resolveAllBenchmarks\(\)/);
-  assert.match(
-    source,
-    /packageBenchmarks\s*\n\s*\.filter\(\s*\(entry\) =>\s*entry\.runnerAvailable\s*\)/s,
-  );
-  assert.doesNotMatch(
-    source,
-    /packageBenchmarks[\s\S]*?entry\.meta\?\.category !== "ingestion"/,
-  );
+  assert.match(source, /packageBenchmarks\s*\n\s*\.filter\(\s*\(entry\) =>\s*entry\.runnerAvailable\s*\)/s);
+  assert.doesNotMatch(source, /packageBenchmarks[\s\S]*?entry\.meta\?\.category !== "ingestion"/);
   assert.match(source, /let selectedBenchmarks = parsed\.all\s+\? await resolveAllBenchmarks\(\)/s);
   assert.match(source, /async function resolveKnownBenchmarkIds\(\): Promise<Set<string>>/);
   assert.match(source, /const knownBenchmarkIds = await resolveKnownBenchmarkIds\(\);/);
@@ -163,12 +170,18 @@ test("bench CLI validates and resolves explicit dataset overrides for full packa
   assert.match(parserSource, /function collectBenchmarks\(argv: string\[\]\): string\[\]/);
   assert.match(
     parserSource,
-    /const benchmarkArgs =[\s\S]*action === "baseline"[\s\S]*action === "datasets"[\s\S]*action === "providers"[\s\S]*action === "runs"[\s\S]*args\.slice\(1\)[\s\S]*:\s*args;/,
+    /const benchmarkArgs =[\s\S]*action === "baseline"[\s\S]*action === "datasets"[\s\S]*action === "providers"[\s\S]*action === "runs"[\s\S]*args\.slice\(1\)[\s\S]*:\s*args;/
   );
   assert.match(parserSource, /const benchmarks = collectBenchmarks\(benchmarkArgs\);/);
   assert.match(parserSource, /requires a value\./);
-  assert.match(parserSource, /const BENCH_VALUE_FLAGS = Object\.freeze\(\[[\s\S]*"--dataset-dir"[\s\S]*"--results-dir"[\s\S]*"--baselines-dir"[\s\S]*"--threshold"[\s\S]*"--custom"[\s\S]*"--format"[\s\S]*"--output"/);
-  assert.match(parserSource, /function isBenchValueFlag\(arg: string\): arg is BenchValueFlag \{\s*return BENCH_VALUE_FLAG_SET\.has\(arg\);\s*\}/);
+  assert.match(
+    parserSource,
+    /const BENCH_VALUE_FLAGS = Object\.freeze\(\[[\s\S]*"--dataset-dir"[\s\S]*"--results-dir"[\s\S]*"--baselines-dir"[\s\S]*"--threshold"[\s\S]*"--custom"[\s\S]*"--format"[\s\S]*"--output"/
+  );
+  assert.match(
+    parserSource,
+    /function isBenchValueFlag\(arg: string\): arg is BenchValueFlag \{\s*return BENCH_VALUE_FLAG_SET\.has\(arg\);\s*\}/
+  );
   assert.match(parserSource, /datasetDir: datasetDir \? path\.resolve\(expandTilde\(datasetDir\)\) : undefined/);
   assert.match(parserSource, /custom: customRaw \? path\.resolve\(expandTilde\(customRaw\)\) : undefined/);
   assert.match(source, /resolveBenchDatasetDir\(\s*benchmarkId,\s*parsed\.quick,\s*parsed\.datasetDir/s);
@@ -224,7 +237,10 @@ test("bench CLI exposes runtime profile and provider-backed run surfaces", async
   assert.match(source, /remnic bench run longmemeval --matrix baseline,real,openclaw-chain/);
   assert.match(source, /--local-lab-manifest <path>/);
 
-  assert.match(parserSource, /export type BenchRuntimeProfile = "baseline" \| "real" \| "openclaw-chain" \| "local-lab";/);
+  assert.match(
+    parserSource,
+    /export type BenchRuntimeProfile = "baseline" \| "real" \| "openclaw-chain" \| "local-lab";/
+  );
   assert.match(parserSource, /runtimeProfile\?: BenchRuntimeProfile;/);
   assert.match(parserSource, /matrixProfiles\?: BenchRuntimeProfile\[];/);
   assert.match(parserSource, /systemProvider\?: BuiltInProvider;/);
@@ -301,7 +317,10 @@ test("bench compare routes through stored package results with threshold and res
   assert.match(source, /parsed\.resultsDir \?\? resolveBenchOutputDir\(\)/);
   assert.match(source, /compareResults\(\s*baseline,\s*candidate,\s*parsed\.threshold \?\? 0\.05/s);
   assert.match(source, /benchmark mismatch: \$\{baseline\.meta\.benchmark\} vs \$\{candidate\.meta\.benchmark\}/);
-  assert.match(parserSource, /export type BenchAction =[\s\S]*"datasets"[\s\S]*"runs"[\s\S]*"results"[\s\S]*"baseline"[\s\S]*"export"[\s\S]*"publish"[\s\S]*"check"[\s\S]*"report";/);
+  assert.match(
+    parserSource,
+    /export type BenchAction =[\s\S]*"datasets"[\s\S]*"runs"[\s\S]*"results"[\s\S]*"baseline"[\s\S]*"export"[\s\S]*"publish"[\s\S]*"check"[\s\S]*"report";/
+  );
   assert.match(parserSource, /const resultsDir = readBenchOptionValue\(args, "--results-dir"\);/);
   assert.match(parserSource, /const thresholdRaw = readBenchOptionValue\(args, "--threshold"\);/);
   assert.match(parserSource, /ERROR: --threshold must be a non-negative number\./);
@@ -330,7 +349,8 @@ test("bench results, baseline, and export route through the stored package resul
   assert.match(source, /baseline save <name> \[run\]/);
   assert.match(source, /bench export <run> --format <json\|csv\|html>/);
   assert.match(source, /const baselineDir = parsed\.baselinesDir \?\? defaultBenchmarkBaselineDir\(\)/);
-  assert.match(source, /const rendered = renderBenchmarkResultExport\(result, parsed\.format\);/);
+  assert.match(source, /loadBenchmarkReportCardProvenance\(path\.dirname\(summary\.path\), result\.meta\.id\)/);
+  assert.match(source, /const rendered = renderBenchmarkResultExport\(result, parsed\.format, \{/);
   assert.match(source, /ERROR: export requires --format json, csv, or html\./);
   assert.match(source, /printBenchPackageSummary\(result, summary\.path, "Stored result"\);/);
   assert.match(parserSource, /export type BenchBaselineAction = "save" \| "list";/);
@@ -350,7 +370,10 @@ test("bench providers discovery is exposed as a package-backed CLI surface", asy
   const readme = await readFile("packages/remnic-cli/README.md", "utf8");
 
   assert.match(source, /\bdiscoverAllProviders\b/);
-  assert.match(source, /Usage: remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate>/);
+  assert.match(
+    source,
+    /Usage: remnic bench <list\|run\|published\|datasets\|runs\|compare\|results\|baseline\|export\|publish\|ui\|providers\|judge-calibrate>/
+  );
   assert.match(source, /remnic bench providers discover/);
   assert.match(source, /async function discoverBenchProviders\(parsed: ParsedBenchArgs\): Promise<void>/);
   assert.match(source, /providers discover does not accept positional arguments/);
@@ -415,12 +438,8 @@ test("bench run exits non-zero after a mixed success/failure run", async () => {
   const path = await import("node:path");
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const repoRoot = join(__dirname, "..");
-  const datasetDir = await mkdtemp(
-    path.join(os.tmpdir(), "remnic-empty-locomo-dataset-"),
-  );
-  const resultsDir = await mkdtemp(
-    path.join(os.tmpdir(), "remnic-mixed-bench-results-"),
-  );
+  const datasetDir = await mkdtemp(path.join(os.tmpdir(), "remnic-empty-locomo-dataset-"));
+  const resultsDir = await mkdtemp(path.join(os.tmpdir(), "remnic-mixed-bench-results-"));
 
   try {
     const result = spawnSync(
@@ -442,13 +461,13 @@ test("bench run exits non-zero after a mixed success/failure run", async () => {
         cwd: repoRoot,
         encoding: "utf8",
         timeout: 30_000,
-      },
+      }
     );
 
     assert.equal(
       result.status,
       1,
-      `expected mixed benchmark run to exit 1\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      `expected mixed benchmark run to exit 1\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`
     );
     assert.match(result.stdout, /Benchmark: taxonomy-accuracy/);
     assert.match(result.stderr, /benchmark "locomo" failed/);
@@ -466,7 +485,10 @@ test("bench surface retains local UI compatibility alongside providers discovery
   assert.match(parserSource, /\| "ui"/);
   assert.match(parserSource, /first === "ui"/);
   assert.match(source, /ui\s+Launch the local benchmark overview UI/);
-  assert.match(source, /if \(parsed\.action === "ui"\) \{\s*await launchBenchUi\(parsed\.resultsDir \?\? resolveBenchOutputDir\(\)\);\s*return;\s*\}/s);
+  assert.match(
+    source,
+    /if \(parsed\.action === "ui"\) \{\s*await launchBenchUi\(parsed\.resultsDir \?\? resolveBenchOutputDir\(\)\);\s*return;\s*\}/s
+  );
 });
 
 test("bench datasets and runs surfaces are exposed through parser, help text, and README", async () => {
@@ -548,10 +570,7 @@ test("bench providers discover rejects unexpected trailing positional args", asy
   // CLI's dynamic imports resolve even when the monorepo hasn't been
   // built in CI. Each stub tracks what it created so we restore the
   // pre-test filesystem state in the finally block.
-  const stubWorkspacePackage = (
-    packageName: string,
-    moduleBody: string,
-  ): StubHandle => {
+  const stubWorkspacePackage = (packageName: string, moduleBody: string): StubHandle => {
     const linkRoot = join(repoRoot, "packages/remnic-cli/node_modules", packageName);
     const moduleRoot = existsSync(linkRoot) ? realpathSync(linkRoot) : linkRoot;
     const distDir = join(moduleRoot, "dist");
@@ -571,7 +590,7 @@ test("bench providers discover rejects unexpected trailing positional args", asy
             name: packageName,
             type: "module",
             exports: { ".": "./dist/index.js" },
-          }),
+          })
         );
       }
       writeFileSync(entry, moduleBody);
@@ -607,12 +626,13 @@ export async function runExplain() { return null; }
 export async function loadBaseline() { return null; }
 export async function saveBaseline() { return null; }
 export async function loadBenchmarkResult() { return null; }
+export async function loadBenchmarkReportCardProvenance() { return {}; }
 export function renderBenchmarkResultExport() { return ""; }
 export async function resolveBenchmarkResultReference() { return null; }
 export async function saveBenchmarkBaseline() { return null; }
 export async function deleteBenchmarkResults() { return { deleted: [], missing: [] }; }
 export async function writeBenchmarkPublishFeed() { return ""; }
-`,
+`
     ),
     // The CLI lazily imports these optional adapter packages to
     // register themselves with the core registry. If their dist
@@ -626,14 +646,14 @@ export const wecloneExportAdapter = { name: "weclone", fileExtension: "json", fo
 export function ensureWecloneExportAdapterRegistered() {}
 export function synthesizeTrainingPairs() { return []; }
 export function sweepPii(input) { return input; }
-`,
+`
     ),
     stubWorkspacePackage(
       "@remnic/import-weclone",
       `
 export const wecloneImportAdapter = { name: "weclone", parse: async () => ({ turns: [], metadata: {} }) };
 export function ensureWecloneImportAdapterRegistered() {}
-`,
+`
     ),
   ];
 
@@ -647,10 +667,7 @@ export function ensureWecloneImportAdapterRegistered() {}
 
   try {
     const { main } = await import(`${cliEntry}?test=${Date.now()}`);
-    await assert.rejects(
-      () => main(["bench", "providers", "discover", "foo"]),
-      /PROCESS_EXIT:1/,
-    );
+    await assert.rejects(() => main(["bench", "providers", "discover", "foo"]), /PROCESS_EXIT:1/);
     assert.deepEqual(exitCalls, [1]);
   } finally {
     process.exit = originalExit;
@@ -682,9 +699,9 @@ test("buildPackageBenchExecutionPlans fails loudly when an explicit --remnic-con
           },
         } as any,
         parsed,
-        ["real"],
+        ["real"]
       ),
-    /Remnic config file not found:/,
+    /Remnic config file not found:/
   );
 });
 
@@ -705,7 +722,7 @@ test("buildPackageBenchExecutionPlans surfaces a missing package runtime hook be
 
   await assert.rejects(
     () => buildPackageBenchExecutionPlans({} as any, parsed, ["real"]),
-    /does not expose resolveBenchRuntimeProfile\(\)/,
+    /does not expose resolveBenchRuntimeProfile\(\)/
   );
 });
 
@@ -720,10 +737,7 @@ test("buildBenchRuntimeProfileRequest keeps openclaw-chain on gateway routing in
     cleanup: () => void;
   }
 
-  const stubWorkspacePackage = (
-    packageName: string,
-    moduleBody: string,
-  ): StubHandle => {
+  const stubWorkspacePackage = (packageName: string, moduleBody: string): StubHandle => {
     const linkRoot = join(repoRoot, "packages/remnic-cli/node_modules", packageName);
     const moduleRoot = existsSync(linkRoot) ? realpathSync(linkRoot) : linkRoot;
     const distDir = join(moduleRoot, "dist");
@@ -743,7 +757,7 @@ test("buildBenchRuntimeProfileRequest keeps openclaw-chain on gateway routing in
             name: packageName,
             type: "module",
             exports: { ".": "./dist/index.js" },
-          }),
+          })
         );
       }
       writeFileSync(entry, moduleBody);
@@ -779,11 +793,12 @@ export async function runExplain() { return null; }
 export async function loadBaseline() { return null; }
 export async function saveBaseline() { return null; }
 export async function loadBenchmarkResult() { return null; }
+export async function loadBenchmarkReportCardProvenance() { return {}; }
 export function renderBenchmarkResultExport() { return ""; }
 export async function resolveBenchmarkResultReference() { return null; }
 export async function saveBenchmarkBaseline() { return null; }
 export async function writeBenchmarkPublishFeed() { return ""; }
-`,
+`
     ),
     stubWorkspacePackage(
       "@remnic/export-weclone",
@@ -792,14 +807,14 @@ export const wecloneExportAdapter = { name: "weclone", fileExtension: "json", fo
 export function ensureWecloneExportAdapterRegistered() {}
 export function synthesizeTrainingPairs() { return []; }
 export function sweepPii(input) { return input; }
-`,
+`
     ),
     stubWorkspacePackage(
       "@remnic/import-weclone",
       `
 export const wecloneImportAdapter = { name: "weclone", parse: async () => ({ turns: [], metadata: {} }) };
 export function ensureWecloneImportAdapterRegistered() {}
-`,
+`
     ),
   ];
 
@@ -851,6 +866,37 @@ export function ensureWecloneImportAdapterRegistered() {}
   }
 });
 
+test("buildBenchRuntimeProfileRequest resolves OPENAI_API_KEY only for an explicit OpenAI judge with flag precedence", async () => {
+  const previous = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "env-openai-key";
+  try {
+    const { buildBenchRuntimeProfileRequest } = await import(
+      `../packages/remnic-cli/src/index.ts?openai-key-boundary=${Date.now()}`
+    );
+    const base = {
+      action: "run",
+      benchmarks: ["memcorrect-v1"],
+      quick: true,
+      all: false,
+      json: false,
+      detail: false,
+      judgeProvider: "openai",
+    } as const;
+    assert.equal(buildBenchRuntimeProfileRequest(base, "baseline").judgeApiKey, "env-openai-key");
+    assert.equal(
+      buildBenchRuntimeProfileRequest({ ...base, judgeApiKey: "explicit-key" }, "baseline").judgeApiKey,
+      "explicit-key"
+    );
+    assert.equal(
+      buildBenchRuntimeProfileRequest({ ...base, judgeProvider: "anthropic" }, "baseline").judgeApiKey,
+      undefined
+    );
+  } finally {
+    if (previous === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previous;
+  }
+});
+
 test("buildPackageBenchExecutionPlans preflights the full custom matrix before any adapter runs", async () => {
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const repoRoot = join(__dirname, "..");
@@ -859,10 +905,7 @@ test("buildPackageBenchExecutionPlans preflights the full custom matrix before a
     cleanup: () => void;
   }
 
-  const stubWorkspacePackage = (
-    packageName: string,
-    moduleBody: string,
-  ): StubHandle => {
+  const stubWorkspacePackage = (packageName: string, moduleBody: string): StubHandle => {
     const linkRoot = join(repoRoot, "packages/remnic-cli/node_modules", packageName);
     const moduleRoot = existsSync(linkRoot) ? realpathSync(linkRoot) : linkRoot;
     const distDir = join(moduleRoot, "dist");
@@ -882,7 +925,7 @@ test("buildPackageBenchExecutionPlans preflights the full custom matrix before a
             name: packageName,
             type: "module",
             exports: { ".": "./dist/index.js" },
-          }),
+          })
         );
       }
       writeFileSync(entry, moduleBody);
@@ -918,11 +961,12 @@ export async function runExplain() { return null; }
 export async function loadBaseline() { return null; }
 export async function saveBaseline() { return null; }
 export async function loadBenchmarkResult() { return null; }
+export async function loadBenchmarkReportCardProvenance() { return {}; }
 export function renderBenchmarkResultExport() { return ""; }
 export async function resolveBenchmarkResultReference() { return null; }
 export async function saveBenchmarkBaseline() { return null; }
 export async function writeBenchmarkPublishFeed() { return ""; }
-`,
+`
     ),
     stubWorkspacePackage(
       "@remnic/export-weclone",
@@ -931,14 +975,14 @@ export const wecloneExportAdapter = { name: "weclone", fileExtension: "json", fo
 export function ensureWecloneExportAdapterRegistered() {}
 export function synthesizeTrainingPairs() { return []; }
 export function sweepPii(input) { return input; }
-`,
+`
     ),
     stubWorkspacePackage(
       "@remnic/import-weclone",
       `
 export const wecloneImportAdapter = { name: "weclone", parse: async () => ({ turns: [], metadata: {} }) };
 export function ensureWecloneImportAdapterRegistered() {}
-`,
+`
     ),
   ];
 
@@ -971,7 +1015,7 @@ export function ensureWecloneImportAdapterRegistered() {}
         },
       },
       parsed,
-      ["baseline", "real"],
+      ["baseline", "real"]
     );
 
     assert.equal(plans, false);
@@ -983,21 +1027,11 @@ export function ensureWecloneImportAdapterRegistered() {}
 test("parseBenchArgs excludes --dataset-dir values from benchmark ids", async () => {
   const { parseBenchArgs } = await import("../packages/remnic-cli/src/bench-args.ts");
 
-  const parsed = parseBenchArgs([
-    "run",
-    "longmemeval",
-    "--dataset-dir",
-    "~/datasets/longmemeval",
-  ]);
+  const parsed = parseBenchArgs(["run", "longmemeval", "--dataset-dir", "~/datasets/longmemeval"]);
   assert.deepEqual(parsed.benchmarks, ["longmemeval"]);
   assert.match(parsed.datasetDir ?? "", /datasets[\/\\]longmemeval$/);
 
-  const optionFirst = parseBenchArgs([
-    "run",
-    "--dataset-dir",
-    "/tmp/bench-dataset",
-    "longmemeval",
-  ]);
+  const optionFirst = parseBenchArgs(["run", "--dataset-dir", "/tmp/bench-dataset", "longmemeval"]);
   assert.deepEqual(optionFirst.benchmarks, ["longmemeval"]);
   assert.equal(optionFirst.datasetDir, "/tmp/bench-dataset");
 });
@@ -1024,13 +1058,7 @@ test("parseBenchArgs supports compare-specific results-dir and threshold options
 test("parseBenchArgs supports results, baseline, and export surfaces", async () => {
   const { parseBenchArgs } = await import("../packages/remnic-cli/src/bench-args.ts");
 
-  const resultsArgs = parseBenchArgs([
-    "results",
-    "candidate-run",
-    "--detail",
-    "--results-dir",
-    "~/bench-results",
-  ]);
+  const resultsArgs = parseBenchArgs(["results", "candidate-run", "--detail", "--results-dir", "~/bench-results"]);
   assert.equal(resultsArgs.action, "results");
   assert.deepEqual(resultsArgs.benchmarks, ["candidate-run"]);
   assert.equal(resultsArgs.detail, true);
@@ -1049,25 +1077,12 @@ test("parseBenchArgs supports results, baseline, and export surfaces", async () 
   assert.deepEqual(baselineArgs.benchmarks, ["main", "candidate-run"]);
   assert.match(baselineArgs.baselinesDir ?? "", /bench-baselines$/);
 
-  const exportArgs = parseBenchArgs([
-    "export",
-    "candidate-run",
-    "--format",
-    "html",
-    "--output",
-    "./report.html",
-  ]);
+  const exportArgs = parseBenchArgs(["export", "candidate-run", "--format", "html", "--output", "./report.html"]);
   assert.equal(exportArgs.action, "export");
   assert.equal(exportArgs.format, "html");
   assert.match(exportArgs.output ?? "", /report\.html$/);
 
-  const publishArgs = parseBenchArgs([
-    "publish",
-    "--target",
-    "remnic-ai",
-    "--output",
-    "./benchmarks.json",
-  ]);
+  const publishArgs = parseBenchArgs(["publish", "--target", "remnic-ai", "--output", "./benchmarks.json"]);
   assert.equal(publishArgs.action, "publish");
   assert.equal(publishArgs.target, "remnic-ai");
   assert.deepEqual(publishArgs.benchmarks, []);
@@ -1086,7 +1101,10 @@ test("bench publish routes through the stored package feed helpers", async () =>
   assert.match(source, /if \(feed\.benchmarks\.length === 0\) \{/);
   assert.match(source, /no publishable benchmark results found in \$\{resultsDir\}/);
   assert.match(source, /remnic-ai requires stored full runs for published benchmarks/);
-  assert.match(source, /Published \$\{feed\.benchmarks\.length\} benchmark entries for \$\{parsed\.target\} to \$\{writtenPath\}/);
+  assert.match(
+    source,
+    /Published \$\{feed\.benchmarks\.length\} benchmark entries for \$\{parsed\.target\} to \$\{writtenPath\}/
+  );
   assert.match(source, /if \(parsed\.action === "publish"\) \{\s*await publishBenchPackageResults\(parsed\);/s);
   assert.match(parserSource, /export type BenchPublishTarget = "remnic-ai";/);
   assert.match(parserSource, /const BENCH_VALUE_FLAGS = Object\.freeze\(\[[\s\S]*"--target"/);
@@ -1100,7 +1118,7 @@ test("parseBenchArgs rejects unknown bench publish targets", async () => {
 
   assert.throws(
     () => parseBenchArgs(["publish", "--target", "somewhere-else"]),
-    /ERROR: --target must be "remnic-ai"\./,
+    /ERROR: --target must be "remnic-ai"\./
   );
 });
 
@@ -1133,17 +1151,8 @@ test("parseBenchArgs rejects --provider local-llm without --base-url", async () 
   const { parseBenchArgs } = await import("../packages/remnic-cli/src/bench-args.ts");
 
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "longmemeval",
-        "--provider",
-        "local-llm",
-        "--model",
-        "qwen3-8b",
-      ]),
-    /ERROR: --provider local-llm requires --base-url/,
+    () => parseBenchArgs(["published", "--name", "longmemeval", "--provider", "local-llm", "--model", "qwen3-8b"]),
+    /ERROR: --provider local-llm requires --base-url/
   );
 });
 
@@ -1151,16 +1160,8 @@ test("parseBenchArgs rejects --system-provider local-llm without --system-base-u
   const { parseBenchArgs } = await import("../packages/remnic-cli/src/bench-args.ts");
 
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "longmemeval",
-        "--system-provider",
-        "local-llm",
-        "--system-model",
-        "qwen3-8b",
-      ]),
-    /ERROR: --provider local-llm requires --base-url/,
+    () => parseBenchArgs(["run", "longmemeval", "--system-provider", "local-llm", "--system-model", "qwen3-8b"]),
+    /ERROR: --provider local-llm requires --base-url/
   );
 });
 
@@ -1168,16 +1169,8 @@ test("parseBenchArgs rejects --judge-provider local-llm without --judge-base-url
   const { parseBenchArgs } = await import("../packages/remnic-cli/src/bench-args.ts");
 
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "longmemeval",
-        "--judge-provider",
-        "local-llm",
-        "--judge-model",
-        "qwen3-8b",
-      ]),
-    /ERROR: --judge-provider local-llm requires --judge-base-url/,
+    () => parseBenchArgs(["run", "longmemeval", "--judge-provider", "local-llm", "--judge-model", "qwen3-8b"]),
+    /ERROR: --judge-provider local-llm requires --judge-base-url/
   );
 });
 
@@ -1190,41 +1183,16 @@ test("parseBenchArgs rejects unknown providers across all three flags with liste
   // dodges a CodeQL "incomplete string escaping" finding from building
   // a regex out of a dash-containing flag name.
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "longmemeval",
-        "--provider",
-        "bogus",
-        "--model",
-        "m",
-      ]),
-    /ERROR: --provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./,
+    () => parseBenchArgs(["published", "--name", "longmemeval", "--provider", "bogus", "--model", "m"]),
+    /ERROR: --provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./
   );
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "longmemeval",
-        "--system-provider",
-        "bogus",
-        "--system-model",
-        "m",
-      ]),
-    /ERROR: --system-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./,
+    () => parseBenchArgs(["run", "longmemeval", "--system-provider", "bogus", "--system-model", "m"]),
+    /ERROR: --system-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./
   );
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "longmemeval",
-        "--judge-provider",
-        "bogus",
-        "--judge-model",
-        "m",
-      ]),
-    /ERROR: --judge-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./,
+    () => parseBenchArgs(["run", "longmemeval", "--judge-provider", "bogus", "--judge-model", "m"]),
+    /ERROR: --judge-provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"\./
   );
 });
 
@@ -1237,7 +1205,10 @@ test("CLI uses the package BenchmarkDefinition contract instead of a local bench
   // is still that the CLI reuses the package's BenchmarkDefinition type
   // rather than re-defining its own shape.
   assert.match(source, /BenchmarkDefinition,?[\s\S]*?\} from "@remnic\/bench";/s);
-  assert.match(source, /async function loadBenchDefinitionsFromPackage\(\): Promise<BenchmarkDefinition\[\] \| undefined>/);
+  assert.match(
+    source,
+    /async function loadBenchDefinitionsFromPackage\(\): Promise<BenchmarkDefinition\[\] \| undefined>/
+  );
   assert.match(source, /listBenchmarks\b/);
   assert.doesNotMatch(source, /interface PackageBenchDefinition/);
   assert.doesNotMatch(source, /listBenchmarks\?: \(\) => Promise<.*BenchmarkDefinition\[\].*\|/s);
@@ -1251,3 +1222,59 @@ test("legacy benchmark check/report reuse the normalized action args instead of 
   assert.match(source, /await cmdLegacyBenchmark\(parsed\.action,\s*benchAction\.args,\s*parsed\.json\);/);
   assert.doesNotMatch(source, /await cmdLegacyBenchmark\(parsed\.action,\s*rest\.slice\(1\),\s*parsed\.json\);/);
 });
+
+test(
+  "offline CLI runs quick MemCorrect through the packaged MCP demo and writes scored MCP results",
+  { timeout: 30_000 },
+  () => {
+    const resultsDir = mkdtempSync(join(tmpdir(), "remnic-cli-mcp-demo-"));
+    const cliEntry = join(process.cwd(), "packages/remnic-cli/src/index.ts");
+    const env = { ...process.env };
+    env.NODE_OPTIONS = [env.NODE_OPTIONS, "--conditions=remnic-source"].filter(Boolean).join(" ");
+    // This test executes live TypeScript sources; freshness of a pre-existing
+    // dist artifact is unrelated to the child-process behavior under test.
+    env.REMNIC_BENCH_ALLOW_STALE_DIST = "1";
+    for (const key of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "LITELLM_API_KEY", "REMNIC_BENCH_MCP_BEARER_TOKEN"]) {
+      delete env[key];
+    }
+    try {
+      const run = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          "tsx",
+          cliEntry,
+          "bench",
+          "run",
+          "--quick",
+          "memcorrect-v1",
+          "--adapter",
+          "mcp",
+          "--mcp-demo",
+          "--results-dir",
+          resultsDir,
+        ],
+        { cwd: process.cwd(), env, encoding: "utf8", timeout: 25_000 }
+      );
+      assert.equal(run.status, 0, `stdout:\n${run.stdout}\nstderr:\n${run.stderr}`);
+      const resultFiles = readdirSync(resultsDir)
+        .filter((name) => name.endsWith(".json") && name !== "MANIFEST.json")
+        .sort();
+      const result = resultFiles
+        .map((name) => JSON.parse(readFileSync(join(resultsDir, name), "utf8")) as Record<string, any>)
+        .find((candidate) => candidate.meta?.benchmark === "memcorrect-v1");
+      assert.ok(result, `no MemCorrect artifact found in ${resultFiles.join(", ")}`);
+      assert.equal(result.meta.mode, "quick");
+      assert.equal(result.config.adapterMode, "mcp");
+      assert.ok(result.results.tasks.length > 0, "the MCP demo run must score at least one task");
+      assert.equal(
+        result.results.aggregates.uptake_at_next?.mean,
+        1,
+        "the synthetic MCP demo must apply the generated correction before the next recall"
+      );
+      assert.match(run.stdout, /Benchmark: memcorrect-v1/);
+    } finally {
+      rmSync(resultsDir, { recursive: true, force: true });
+    }
+  }
+);

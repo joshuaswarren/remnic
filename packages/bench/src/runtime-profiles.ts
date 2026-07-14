@@ -28,6 +28,10 @@ import {
 } from "./responders.js";
 import type { ProviderFactoryConfig } from "./providers/types.js";
 import { createProvider } from "./providers/factory.js";
+import {
+  DEFAULT_OPENAI_RESPONSES_JUDGE_MODEL,
+} from "./providers/openai-responses.js";
+import { OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION } from "./judges/memcorrect-rubrics.js";
 import { isSecretKey } from "./security/secret-keys.js";
 import type { BenchRuntimeProfile, BuiltInProvider, ProviderConfig } from "./types.js";
 import {
@@ -205,14 +209,11 @@ export async function resolveBenchRuntimeProfile(
   const judgeFactoryConfig = judgeProvider
     ? asProviderFactoryConfig(judgeProvider)
     : undefined;
-  const judgeProviderInstance = judgeFactoryConfig
-    ? createProvider(judgeFactoryConfig)
-    : undefined;
   const judge = judgeFactoryConfig
-    ? createProviderBackedJudge(judgeFactoryConfig, judgeProviderInstance)
+    ? createProviderBackedJudge(judgeFactoryConfig)
     : undefined;
   const structuredJudge = judgeFactoryConfig
-    ? createProviderBackedStructuredJudge(judgeFactoryConfig, judgeProviderInstance)
+    ? createProviderBackedStructuredJudge(judgeFactoryConfig)
     : undefined;
 
   if (profile === "baseline") {
@@ -241,7 +242,7 @@ export async function resolveBenchRuntimeProfile(
         ...(drainTimeoutMs ? { drainTimeoutMs } : {}),
       },
       systemProvider,
-      judgeProvider,
+      judgeProvider: judgeProvider ? sanitizeProviderConfig(judgeProvider) : null,
       internalProvider: internalProvider ? sanitizeProviderConfig(internalProvider) : null,
     };
   }
@@ -287,7 +288,7 @@ export async function resolveBenchRuntimeProfile(
         ...(drainTimeoutMs ? { drainTimeoutMs } : {}),
       },
       systemProvider,
-      judgeProvider,
+      judgeProvider: judgeProvider ? sanitizeProviderConfig(judgeProvider) : null,
       internalProvider: internalProvider ? sanitizeProviderConfig(internalProvider) : null,
     };
   }
@@ -344,7 +345,7 @@ export async function resolveBenchRuntimeProfile(
       ...(drainTimeoutMs ? { drainTimeoutMs } : {}),
     },
     systemProvider: null,
-    judgeProvider,
+    judgeProvider: judgeProvider ? sanitizeProviderConfig(judgeProvider) : null,
     internalProvider: internalProvider ? sanitizeProviderConfig(internalProvider) : null,
   };
 }
@@ -441,7 +442,12 @@ function resolveProviderConfig(
   responderPromptBudgetChars?: number,
 ): ProviderConfig | null {
   const hasProvider = typeof provider === "string";
-  const hasModel = typeof model === "string" && model.trim().length > 0;
+  const defaultOpenAiJudgeModel =
+    kind === "judge" && provider === "openai" && model === undefined
+      ? DEFAULT_OPENAI_RESPONSES_JUDGE_MODEL
+      : undefined;
+  const resolvedModel = defaultOpenAiJudgeModel ?? model;
+  const hasModel = typeof resolvedModel === "string" && resolvedModel.trim().length > 0;
   const hasBaseUrl = typeof baseUrl === "string" && baseUrl.trim().length > 0;
   const hasApiKey = typeof apiKey === "string" && apiKey.trim().length > 0;
   const hasReasoningEffort = reasoningEffort !== undefined;
@@ -498,7 +504,10 @@ function resolveProviderConfig(
 
   return {
     provider,
-    model: model.trim(),
+    model: resolvedModel!.trim(),
+    ...(kind === "judge" && provider === "openai"
+      ? { rubricVersion: OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION }
+      : {}),
     ...(hasBaseUrl ? { baseUrl: baseUrl!.trim() } : {}),
     ...(hasApiKey ? { apiKey: apiKey!.trim() } : {}),
     ...(requestTimeout != null || max429WaitMs != null
@@ -889,6 +898,9 @@ function asProviderFactoryConfig(config: ProviderConfig): ProviderFactoryConfig 
     ...(config.responderPromptBudgetChars !== undefined
       ? { responderPromptBudgetChars: config.responderPromptBudgetChars }
       : {}),
+    ...(config.rubricVersion !== undefined
+      ? { rubricVersion: config.rubricVersion }
+      : {}),
   } as ProviderFactoryConfig;
 }
 
@@ -971,14 +983,11 @@ async function resolveLocalLabRuntimeProfile(
   const judgeFactoryConfig = judgeProvider
     ? asProviderFactoryConfig(judgeProvider)
     : undefined;
-  const judgeProviderInstance = judgeFactoryConfig
-    ? createProvider(judgeFactoryConfig)
-    : undefined;
   const judge = judgeFactoryConfig
-    ? createProviderBackedJudge(judgeFactoryConfig, judgeProviderInstance)
+    ? createProviderBackedJudge(judgeFactoryConfig)
     : undefined;
   const structuredJudge = judgeFactoryConfig
-    ? createProviderBackedStructuredJudge(judgeFactoryConfig, judgeProviderInstance)
+    ? createProviderBackedStructuredJudge(judgeFactoryConfig)
     : undefined;
   const responderFactoryConfig = systemProvider
     ? asProviderFactoryConfig(systemProvider)

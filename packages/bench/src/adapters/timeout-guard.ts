@@ -417,6 +417,36 @@ function wrapJudge(
       });
   }
 
+  if (judge.judgeMemCorrectCorrectionAcceptance) {
+    wrapped.judgeMemCorrectCorrectionAcceptance = (request, control) =>
+      run("judge.memcorrect.correctionAcceptance", async (signal) => {
+        const merged = mergeBenchPhaseControl(signal, control);
+        try {
+          return await judge.judgeMemCorrectCorrectionAcceptance!(
+            request,
+            merged.control,
+          );
+        } finally {
+          merged.cleanup();
+        }
+      });
+  }
+
+  if (judge.judgeMemCorrectStaleMemoryHarm) {
+    wrapped.judgeMemCorrectStaleMemoryHarm = (request, control) =>
+      run("judge.memcorrect.staleMemoryHarm", async (signal) => {
+        const merged = mergeBenchPhaseControl(signal, control);
+        try {
+          return await judge.judgeMemCorrectStaleMemoryHarm!(
+            request,
+            merged.control,
+          );
+        } finally {
+          merged.cleanup();
+        }
+      });
+  }
+
   return wrapped;
 }
 

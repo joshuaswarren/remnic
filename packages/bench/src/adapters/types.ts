@@ -56,6 +56,22 @@ export interface BenchJudgeResult {
   model?: string;
 }
 
+export interface MemCorrectJudgeRequest {
+  taskId: string;
+  query: string;
+  retiredContent: string[];
+  correctedContent: string[];
+  postCorrectionRecall: string[];
+  postMaintenanceRecall: string[];
+  postReingestRecall: string[];
+}
+
+export interface MemCorrectJudgeResult extends BenchJudgeResult {
+  decision: "pass" | "partial" | "fail";
+  reason: string;
+  rubricVersion: string;
+}
+
 export interface BenchJudge {
   score(
     question: string,
@@ -79,6 +95,14 @@ export interface BenchJudge {
     prompt: string,
     control?: BenchPhaseControl,
   ): Promise<BenchJudgeResult>;
+  judgeMemCorrectCorrectionAcceptance?(
+    request: MemCorrectJudgeRequest,
+    control?: BenchPhaseControl,
+  ): Promise<MemCorrectJudgeResult>;
+  judgeMemCorrectStaleMemoryHarm?(
+    request: MemCorrectJudgeRequest,
+    control?: BenchPhaseControl,
+  ): Promise<MemCorrectJudgeResult>;
 }
 
 export interface BenchMemoryAdapter {

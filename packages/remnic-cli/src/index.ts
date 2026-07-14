@@ -228,6 +228,7 @@ import type {
   BenchmarkDefinition,
   BenchmarkResult,
   ComparisonResult,
+  McpMemoryToolMapping,
   ResolvedLocalLabProfile,
 } from "@remnic/bench";
 import { firstSuccessfulCandidate, firstSuccessfulResult } from "./service-candidates.js";
@@ -516,6 +517,7 @@ type PackageBenchModule = {
     amaBenchJudgeProtocol?: "default" | "recommended";
     amaBenchCrossJudge?: unknown;
     amaBenchCrossJudgeProvider?: PackageBenchProviderConfig | null;
+    memCorrectJudge?: unknown;
     drainTimeoutMs?: number;
     noJudgeCache?: boolean;
     judgeCacheDir?: string;
@@ -678,6 +680,22 @@ type PackageBenchModule = {
     responder?: unknown;
     judge?: unknown;
     replayExtractionMode?: "await" | "background" | "skip";
+  }) => Promise<{ destroy(): Promise<void> }>;
+  createMcpMemoryAdapter?: (options: {
+    transport:
+      | { type: "stdio"; command: string; args?: string[] }
+      | { type: "http"; url: string; bearerToken?: string };
+    tools?: McpMemoryToolMapping;
+    timeoutMs?: number;
+  }) => Promise<{ destroy(): Promise<void> }>;
+  createMcpDemoMemoryAdapter?: (options?: { timeoutMs?: number }) => Promise<{ destroy(): Promise<void> }>;
+  createMcpDemoMemCorrectAdapter?: (options?: { timeoutMs?: number }) => Promise<{ destroy(): Promise<void> }>;
+  createMcpMemCorrectAdapter?: (options: {
+    transport:
+      | { type: "stdio"; command: string; args?: string[] }
+      | { type: "http"; url: string; bearerToken?: string };
+    tools?: McpMemoryToolMapping;
+    timeoutMs?: number;
   }) => Promise<{ destroy(): Promise<void> }>;
   createSyntheticEmailIngestionAdapter?: (options?: {
     system?: unknown;
@@ -896,7 +914,7 @@ type PackageBenchAdapterFactory = NonNullable<
   PackageBenchModule["createLightweightAdapter"] | PackageBenchModule["createRemnicAdapter"]
 >;
 
-type PackageBenchAdapterMode = "lightweight" | "direct";
+type PackageBenchAdapterMode = "lightweight" | "direct" | "mcp";
 
 export interface PackageBenchExecutionPlan {
   runtime: ResolvedBenchRuntimeProfile;
@@ -947,6 +965,14 @@ Commands:
 Options:
   --quick                  Run a lightweight quick pass (maps to --lightweight --limit 1)
   --all                    Run every published benchmark
+  --adapter <remnic|mcp>   Memory backend adapter (default: remnic)
+  --mcp-demo               Use the packaged keyless stdio MCP demo server
+  --mcp-command <command>  Spawn an MCP stdio server
+  --mcp-args <json>        JSON string array passed to --mcp-command
+  --mcp-url <url>          Connect to a Streamable HTTP MCP server
+  REMNIC_BENCH_MCP_BEARER_TOKEN
+                           Optional bearer token for --mcp-url (environment only)
+  --mcp-tool-map <json>    Explicit store/recall/correct/reset tool mapping
   --runtime-profile <baseline|real|openclaw-chain|local-lab>
                            Choose the benchmark runtime profile
   --matrix <profiles>      Run a benchmark across a comma-separated profile matrix
@@ -1090,7 +1116,9 @@ export function buildBenchRuntimeProfileRequest(
     judgeProvider: parsed.judgeProvider,
     judgeModel: parsed.judgeModel,
     judgeBaseUrl: parsed.judgeBaseUrl,
-    judgeApiKey: parsed.judgeApiKey,
+    judgeApiKey:
+      parsed.judgeApiKey ??
+      (parsed.judgeProvider === "openai" ? process.env.OPENAI_API_KEY : undefined),
     judgeCodexReasoningEffort: parsed.judgeCodexReasoningEffort,
     internalProvider: parsed.internalProvider,
     internalModel: parsed.internalModel,
@@ -2241,6 +2269,7 @@ async function exportBenchPackageResult(parsed: ParsedBenchArgs): Promise<void> 
   const {
     resolveBenchmarkResultReference,
     loadBenchmarkResult,
+    loadBenchmarkReportCardProvenance,
     renderBenchmarkResultExport,
   } = await loadBenchModule();
   const reference = parsed.benchmarks[0]!;
@@ -2251,7 +2280,12 @@ async function exportBenchPackageResult(parsed: ParsedBenchArgs): Promise<void> 
   }
 
   const result = await loadBenchmarkResult(summary.path);
-  const rendered = renderBenchmarkResultExport(result, parsed.format);
+  const reportCardProvenance = parsed.format === "html"
+    ? await loadBenchmarkReportCardProvenance(path.dirname(summary.path), result.meta.id)
+    : undefined;
+  const rendered = renderBenchmarkResultExport(result, parsed.format, {
+    ...(reportCardProvenance ? { reportCardProvenance } : {}),
+  });
 
   if (parsed.output) {
     fs.mkdirSync(path.dirname(parsed.output), { recursive: true });
@@ -3255,7 +3289,7 @@ async function runBenchViaPackage(
   // parsed but dropped, and the harness recorded `ctx.options.seed ?? 0`
   // instead of the user-specified seed, breaking reproducibility.
   const effectiveSeed = parsed.publishedSeed;
-  const benchmarkOptions = buildPublishedBenchmarkOptions(benchmarkId, parsed);
+  let benchmarkOptions = buildPublishedBenchmarkOptions(benchmarkId, parsed);
 
   try {
     const amaBenchProtocol = buildAmaBenchProtocolOptions(
@@ -3264,7 +3298,9 @@ async function runBenchViaPackage(
       benchmarkId,
       plan.runtime,
     );
-    system = await plan.createAdapter({
+    system = benchmarkId === "memcorrect-v1" && parsed.adapter === "mcp"
+      ? await createPackageMcpMemCorrectAdapter(benchModule, parsed)
+      : await plan.createAdapter({
       ...plan.runtime.adapterOptions,
       ...(benchmarkId === "locomo"
         ? { replayExtractionMode: "skip" as const }
@@ -3272,7 +3308,10 @@ async function runBenchViaPackage(
       ...(amaBenchProtocol.primaryJudge
         ? { judge: amaBenchProtocol.primaryJudge }
         : {}),
-    });
+      });
+    if (benchmarkId === "memcorrect-v1" && parsed.adapter === "mcp") {
+      benchmarkOptions = { ...(benchmarkOptions ?? {}), adapter: system };
+    }
     const result = await benchModule.runBenchmark(benchmarkId, {
       mode: parsed.quick ? "quick" : "full",
       datasetDir,
@@ -3298,6 +3337,9 @@ async function runBenchViaPackage(
         : {}),
       ...(amaBenchProtocol.crossJudgeProvider
         ? { amaBenchCrossJudgeProvider: amaBenchProtocol.crossJudgeProvider }
+        : {}),
+      ...(plan.runtime.adapterOptions.judge
+        ? { memCorrectJudge: plan.runtime.adapterOptions.judge }
         : {}),
       system,
       onTaskComplete: (task, completed, total) => {
@@ -3681,6 +3723,7 @@ const BENCH_REPRO_ENV_KEYS = [
   "REMNIC_BENCH_IDS",
   "REMNIC_BENCH_LIMIT",
   "REMNIC_BENCH_MODE",
+  "REMNIC_BENCH_MCP_BEARER_TOKEN",
   "REMNIC_BENCH_PHASE_TIMEOUT_MS",
   "REMNIC_BENCH_CODEX_CLI_EXECUTABLE",
   "REMNIC_BENCH_CODEX_CLI_TRANSPORT",
@@ -3832,20 +3875,80 @@ function resolveBenchRunProfiles(
 }
 
 function resolvePackageBenchAdapterMode(
+  parsed: ParsedBenchArgs,
   quick: boolean,
   runtimeProfile: BenchRuntimeProfile,
 ): PackageBenchAdapterMode {
+  if (parsed.adapter === "mcp") return "mcp";
   return quick && runtimeProfile === "baseline" ? "lightweight" : "direct";
 }
 
 function resolvePackageBenchAdapterFactory(
   benchModule: PackageBenchModule,
+  parsed: ParsedBenchArgs,
   quick: boolean,
   runtimeProfile: BenchRuntimeProfile,
 ): PackageBenchAdapterFactory | undefined {
-  return resolvePackageBenchAdapterMode(quick, runtimeProfile) === "lightweight"
+  if (parsed.adapter === "mcp") {
+    if (parsed.mcpDemo) {
+      if (!benchModule.createMcpDemoMemoryAdapter) return undefined;
+      return async () => benchModule.createMcpDemoMemoryAdapter!({
+        ...(parsed.requestTimeout ? { timeoutMs: parsed.requestTimeout } : {}),
+      });
+    }
+    if (!benchModule.createMcpMemoryAdapter) return undefined;
+    return async () => benchModule.createMcpMemoryAdapter!({
+      ...buildPackageMcpAdapterOptions(parsed),
+    });
+  }
+  return resolvePackageBenchAdapterMode(parsed, quick, runtimeProfile) === "lightweight"
     ? benchModule.createLightweightAdapter
     : benchModule.createRemnicAdapter;
+}
+
+function buildPackageMcpAdapterOptions(parsed: ParsedBenchArgs): {
+  transport:
+    | { type: "stdio"; command: string; args?: string[] }
+    | { type: "http"; url: string; bearerToken?: string };
+  tools?: McpMemoryToolMapping;
+  timeoutMs?: number;
+} {
+  const transport = parsed.mcpCommand
+    ? { type: "stdio" as const, command: parsed.mcpCommand, args: parsed.mcpArgs }
+    : {
+        type: "http" as const,
+        url: parsed.mcpUrl!,
+        bearerToken: process.env.REMNIC_BENCH_MCP_BEARER_TOKEN,
+      };
+  return {
+    transport,
+    ...(parsed.mcpToolMap ? { tools: parsed.mcpToolMap } : {}),
+    ...(parsed.requestTimeout ? { timeoutMs: parsed.requestTimeout } : {}),
+  };
+}
+
+async function createPackageMcpMemCorrectAdapter(
+  benchModule: PackageBenchModule,
+  parsed: ParsedBenchArgs,
+): Promise<{ destroy(): Promise<void> }> {
+  if (parsed.mcpDemo) {
+    if (!benchModule.createMcpDemoMemCorrectAdapter) {
+      throw new Error(
+        "Installed @remnic/bench does not export createMcpDemoMemCorrectAdapter().",
+      );
+    }
+    return benchModule.createMcpDemoMemCorrectAdapter({
+      ...(parsed.requestTimeout ? { timeoutMs: parsed.requestTimeout } : {}),
+    });
+  }
+  if (!benchModule.createMcpMemCorrectAdapter) {
+    throw new Error(
+      "Installed @remnic/bench does not export createMcpMemCorrectAdapter().",
+    );
+  }
+  return benchModule.createMcpMemCorrectAdapter(
+    buildPackageMcpAdapterOptions(parsed),
+  );
 }
 
 export async function buildPackageBenchExecutionPlans(
@@ -3863,6 +3966,7 @@ export async function buildPackageBenchExecutionPlans(
     );
     const createAdapter = resolvePackageBenchAdapterFactory(
       benchModule,
+      parsed,
       parsed.quick,
       runtime.profile,
     );
@@ -3874,7 +3978,7 @@ export async function buildPackageBenchExecutionPlans(
     plans.push({
       runtime,
       createAdapter,
-      adapterMode: resolvePackageBenchAdapterMode(parsed.quick, runtime.profile),
+      adapterMode: resolvePackageBenchAdapterMode(parsed, parsed.quick, runtime.profile),
     });
   }
 

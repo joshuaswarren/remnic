@@ -53,6 +53,19 @@ test("loadBenchmarkResult accepts a complete BenchmarkResult payload", async () 
   });
 });
 
+test("loadBenchmarkResult preserves OpenAI judge model and rubric provenance", async () => {
+  const result = validResult();
+  result.config.judgeProvider = {
+    provider: "openai",
+    model: "gpt-5.6",
+    rubricVersion: "openai-responses-bench-v1",
+  };
+  await withResultFile(result, async (filePath) => {
+    const loaded = await loadBenchmarkResult(filePath);
+    assert.deepEqual(loaded.config.judgeProvider, result.config.judgeProvider);
+  });
+});
+
 async function withResultFile(
   payload: unknown,
   callback: (filePath: string) => Promise<void>,

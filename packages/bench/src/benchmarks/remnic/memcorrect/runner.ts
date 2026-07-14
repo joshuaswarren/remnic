@@ -29,6 +29,11 @@ import type {
   ResolvedRunBenchmarkOptions,
   TaskResult,
 } from "../../../types.js";
+import type {
+  BenchJudge,
+  MemCorrectJudgeRequest,
+  MemCorrectJudgeResult,
+} from "../../../adapters/types.js";
 import { aggregateTaskScores } from "../../../scorer.js";
 import { getGitSha, getRemnicVersion } from "../../../reporter.js";
 import { generateMemCorrectCorpus, corpusHash } from "./generator.js";
@@ -348,6 +353,39 @@ async function runScenario(
   };
 }
 
+function buildMemCorrectJudgeRequest(
+  scenario: MemCorrectScenario,
+  log: ProbeLogEntry[],
+): MemCorrectJudgeRequest {
+  const recalledFor = (phase: ProbePhase): string[] =>
+    log.find((entry) =>
+      entry.phase === phase &&
+      entry.namespace === scenario.namespace &&
+      entry.query === scenario.probe.query
+    )?.recalled ?? [];
+  return {
+    taskId: scenario.id,
+    query: scenario.probe.query,
+    retiredContent: scenario.correction.retiredContent,
+    correctedContent: scenario.correction.correctedContent,
+    postCorrectionRecall: recalledFor("post_correction"),
+    postMaintenanceRecall: recalledFor("post_maintenance"),
+    postReingestRecall: recalledFor("post_reingest"),
+  };
+}
+
+function safeMemCorrectJudgeDetails(result: MemCorrectJudgeResult): Record<string, unknown> {
+  return {
+    score: result.score,
+    decision: result.decision,
+    model: result.model ?? "unknown",
+    rubricVersion: result.rubricVersion,
+    inputTokens: result.tokens.input,
+    outputTokens: result.tokens.output,
+    latencyMs: result.latencyMs,
+  };
+}
+
 export async function runMemCorrectBenchmark(
   options: ResolvedRunBenchmarkOptions,
 ): Promise<BenchmarkResult> {
@@ -366,6 +404,15 @@ export async function runMemCorrectBenchmark(
   }
 
   const { adapter, adapterLabel } = resolveAdapter(options);
+  const judge: BenchJudge | undefined = options.memCorrectJudge ?? options.system.judge;
+  const hasSpecializedJudge =
+    judge?.judgeMemCorrectCorrectionAcceptance !== undefined &&
+    judge.judgeMemCorrectStaleMemoryHarm !== undefined;
+  if (options.judgeProvider?.provider === "openai" && !hasSpecializedJudge) {
+    throw new Error(
+      "OpenAI MemCorrect judging requires the Responses API specialized correction and stale-harm judge methods.",
+    );
+  }
 
   // Honor options.limit so quick / limited runs don't fan out across every
   // scenario, mirroring the other remnic runners. `limit === 0` is a valid
@@ -391,6 +438,10 @@ export async function runMemCorrectBenchmark(
   const aggregateCollateralBefore: number[] = [];
   const aggregateCollateralAfter: number[] = [];
   const aggregateProvenance: (number | null)[] = [];
+  let judgeModelCalls = 0;
+  let judgeInputTokens = 0;
+  let judgeOutputTokens = 0;
+  let judgeLatencyMs = 0;
 
   for (const scenario of scenarios) {
     const started = performance.now();
@@ -400,8 +451,6 @@ export async function runMemCorrectBenchmark(
       generatorOptions.maintenanceCycles,
       generatorOptions.uptakeLatencyCap,
     );
-    const latencyMs = Math.round(performance.now() - started);
-
     aggregateLog.push(...run.log);
     aggregateCorrections.push(run.correction);
     aggregateAntiEvents.push(...run.antiEvents);
@@ -425,6 +474,26 @@ export async function runMemCorrectBenchmark(
     };
     if (m.scope_precision !== null) scores.scope_precision = m.scope_precision;
     if (m.reassertion !== null) scores.reassertion = m.reassertion;
+    let correctionJudge: MemCorrectJudgeResult | undefined;
+    let staleHarmJudge: MemCorrectJudgeResult | undefined;
+    if (hasSpecializedJudge) {
+      const request = buildMemCorrectJudgeRequest(scenario, run.log);
+      correctionJudge = await judge!.judgeMemCorrectCorrectionAcceptance!(request);
+      staleHarmJudge = await judge!.judgeMemCorrectStaleMemoryHarm!(request);
+      scores.judge_correction_acceptance = correctionJudge.score;
+      scores.judge_stale_harm_avoidance = staleHarmJudge.score;
+      for (const verdict of [correctionJudge, staleHarmJudge]) {
+        judgeModelCalls += 1;
+        judgeInputTokens += verdict.tokens.input;
+        judgeOutputTokens += verdict.tokens.output;
+        judgeLatencyMs += verdict.latencyMs;
+      }
+    }
+    const taskTokens = {
+      input: (correctionJudge?.tokens.input ?? 0) + (staleHarmJudge?.tokens.input ?? 0),
+      output: (correctionJudge?.tokens.output ?? 0) + (staleHarmJudge?.tokens.output ?? 0),
+    };
+    const latencyMs = Math.round(performance.now() - started);
     const task: TaskResult = {
       taskId: scenario.id,
       question: scenario.probe.query,
@@ -442,7 +511,7 @@ export async function runMemCorrectBenchmark(
       }),
       scores,
       latencyMs,
-      tokens: { input: 0, output: 0 },
+      tokens: taskTokens,
       details: {
         scenarioId: scenario.id,
         shape: scenario.correction.shape,
@@ -452,6 +521,14 @@ export async function runMemCorrectBenchmark(
         metrics: {
           memcorrect: m,
         },
+        ...(correctionJudge && staleHarmJudge
+          ? {
+              judges: {
+                correctionAcceptance: safeMemCorrectJudgeDetails(correctionJudge),
+                staleMemoryHarmAvoidance: safeMemCorrectJudgeDetails(staleHarmJudge),
+              },
+            }
+          : {}),
       },
     };
     tasks.push(task);
@@ -472,6 +549,7 @@ export async function runMemCorrectBenchmark(
 
   const remnicVersion = await getRemnicVersion();
   const totalLatencyMs = tasks.reduce((sum, t) => sum + t.latencyMs, 0);
+  const totalTokens = judgeInputTokens + judgeOutputTokens;
   // Omit the live adapter instance from the persisted config so the result
   // stays JSON-serializable — a stateful/circular adapter would otherwise be
   // walked by the reporter. The adapter label is already captured in `adapterMode`.
@@ -503,6 +581,16 @@ export async function runMemCorrectBenchmark(
         factsPerPersona: generatorOptions.factsPerPersona,
         maintenanceCycles: generatorOptions.maintenanceCycles,
         uptakeLatencyCap: generatorOptions.uptakeLatencyCap,
+        ...(judgeModelCalls > 0
+          ? {
+              judgeTelemetry: {
+                calls: judgeModelCalls,
+                inputTokens: judgeInputTokens,
+                outputTokens: judgeOutputTokens,
+                latencyMs: judgeLatencyMs,
+              },
+            }
+          : {}),
         // Headline metric bundle computed across the union of all scenario
         // probe logs (more robust than the per-task mean for fraction
         // metrics when scenario sizes vary). `aggregateTaskScores` in
@@ -511,13 +599,13 @@ export async function runMemCorrectBenchmark(
       },
     },
     cost: {
-      totalTokens: 0,
-      inputTokens: 0,
-      outputTokens: 0,
+      totalTokens,
+      inputTokens: judgeInputTokens,
+      outputTokens: judgeOutputTokens,
       estimatedCostUsd: 0,
       totalLatencyMs,
       meanQueryLatencyMs: tasks.length > 0 ? totalLatencyMs / tasks.length : 0,
-      judgeModelCalls: 0,
+      judgeModelCalls,
     },
     results: {
       tasks,
