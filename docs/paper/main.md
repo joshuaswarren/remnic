@@ -650,11 +650,13 @@ passes the §5 publishability rubric.** Until then, every block is a TODO.
   date-shaped queries. This is both an honest limitation and the
   concrete improvement lever documented in the Temporal Lift plan.
 
-  **`locomo_hidden_evidence_id_leak = 1.0`** on both tiers: the
-  responder always echoes the hidden evidence identifier embedded in
-  the recalled context. This is a known harness interaction (the IDs
-  are in the LCM evidence text the responder reads), not a Remnic
-  mechanism failure; it is reported honestly rather than suppressed.
+  **`locomo_hidden_evidence_id_leak = 1.0`** on both tiers: this is the
+  anti-leak guard holding, not a leak. The runner scores `1` only when
+  zero hidden evidence identifiers from the gold metadata surface in the
+  recalled context (`packages/bench/src/benchmarks/published/locomo/runner.ts`),
+  so `1.0` across every task means no run leaked gold evidence ids into
+  the answering path. This is the leaderboard-safety invariant from the
+  §5 rubric, verified per-task rather than assumed.
 
   - `TODO(#1747)`: Mem0 / Zep / Letta comparison rows are cited-not-
     reproduced until the third-party adapter runs land (API-key-gated,
@@ -672,7 +674,7 @@ passes the §5 publishability rubric.** Until then, every block is a TODO.
 
 ### 7.1 Single-flag ablations
 
-This subsection reports the committed single-flag ablation matrix from issues
+This subsection reports the single-flag ablation matrix from issues
 #1730, #1574, and #1725, produced on the RTX 3090 local-lab box under the
 `local-lab` runtime profile. Each ablation flips exactly one recall-stack flag
 off its default in the baseline run and re-runs the full LoCoMo-10 benchmark
@@ -681,9 +683,11 @@ constant: same model (`qwen2.5-7b-32k:latest`, Q4_K_M), same seed (1), same
 responder and judge model. The baseline is the first real Tier-L artifact,
 `2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json`, with memory-worth on,
 contradiction-scan off, and graph-recall off. The runner is
-`scripts/bench/run-ablation-matrix.ts`; each cell artifact is committed next to
-the baseline under `docs/benchmarks/results/` and verified with
-`pnpm exec tsx scripts/bench/verify-artifact.ts` before this section cites it.
+`scripts/bench/run-ablation-matrix.ts`; each cell artifact was verified with
+`pnpm exec tsx scripts/bench/verify-artifact.ts` before being cited. The
+committed source for this table is `docs/benchmarks/ablations.md`; the three
+cell artifacts themselves live in git history, not the current tree (see
+Artifact provenance below).
 
 | Cell | Flag flipped | `contains_answer` | `f1` | `llm_judge` | `rouge_l` | artifact |
 |---|---|---|---|---|---|---|
@@ -748,14 +752,18 @@ they confer is below the detection floor of this tier.
 **Artifact provenance.** The three ablation-cell artifacts
 (`…c67c2c7-memory-worth-off.json`,
 `…c67c2c7-contradiction-scan-on.json`,
-`…c67c2c7-graph-recall-on.json`) were untracked from the working tree to keep
-the Figure 1 Tier-L anchor clean. The figure generator picks the newest artifact
-per benchmark and tier, so leaving the cells tracked would have displaced the
-baseline anchor in the published figure. They remain reproducible from git
-history at commit `dcdcb5a8`
-(`git show dcdcb5a8:docs/benchmarks/results/<basename>`), on the lab host at
-`~/src/remnic/docs/benchmarks/results/`, and in the stored results at
-`~/.remnic/bench/results/`.
+`…c67c2c7-graph-recall-on.json`) were deliberately untracked from the working
+tree to keep the Figure 1 Tier-L anchor clean: the figure generator picks the
+newest artifact per benchmark and tier, so leaving the cells tracked would
+have displaced the baseline anchor in the published figure. They remain
+committed evidence in git history at commit `dcdcb5a8`: any clone can
+retrieve and re-verify them with
+`git show dcdcb5a8:docs/benchmarks/results/<basename>` followed by
+`pnpm exec tsx scripts/bench/verify-artifact.ts`. They are also present on
+the lab host at `~/src/remnic/docs/benchmarks/results/` and in the stored
+results at `~/.remnic/bench/results/`. This is the one deliberate exception
+to the "current-tree artifact" rule, and it is recorded both here and in
+`docs/benchmarks/ablations.md`.
 
 ### 7.2 Bounded-memory contract ablation
 
