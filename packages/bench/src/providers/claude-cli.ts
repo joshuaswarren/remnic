@@ -326,7 +326,8 @@ class ClaudeCliProvider implements LlmProvider {
         // non-empty result text is a successful completion regardless of
         const payload = parseClaudeCliJsonResult(result.stdout);
         const salvageableDespiteExit =
-          result.signal === null && // don't salvage an aborted/timed-out run (codex P2)
+          !result.stderr.includes("Claude CLI timed out") && // timeout-then-clean-exit (codex P2)
+          result.signal === null &&
           !isClaudeCliErrorFlagSet(payload.is_error) &&
           typeof payload.result === "string" &&
           payload.result.trim().length > 0;
