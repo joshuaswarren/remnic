@@ -769,6 +769,11 @@ type PackageBenchModule = {
         localJudgeModel?: string;
         frontierJudgeProvider?: string;
         frontierJudgeModel?: string;
+        sourceResultId?: string;
+        answerSetHash?: string;
+        sliceQuestionIds?: readonly string[];
+        confidenceInterval?: { lower: number; upper: number; level: number };
+        bootstrapSamples?: number;
       }
     | undefined
   >;
@@ -2520,6 +2525,8 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   const resultsDir = expandTilde(
     parsed.resultsDir ?? path.join(resolveHomeDir(), ".remnic", "bench", "results"),
   );
+  const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
+  const previousCalibration = await bench.loadJudgeCalibrationState?.(benchmarkId, calibrationDir);
 
   // Build the calibration answers from the most recent stored result for the
   // benchmark. `actual` is the responder's predicted answer; `expected` is the
@@ -2542,8 +2549,20 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
       }
       return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
     });
-  const latest = candidates[0];
+  // Issue #1877: once a benchmark has a calibration source, keep using that
+  // exact stored result. Selecting "whatever is newest" made the same judge
+  // pair swing from kappa 0.769 to 0.444 as cached answers changed.
+  const pinnedSourceId = previousCalibration?.sourceResultId;
+  const latest = pinnedSourceId
+    ? candidates.find((entry) => entry.id === pinnedSourceId)
+    : candidates[0];
   if (!latest) {
+    if (pinnedSourceId) {
+      console.error(
+        `ERROR: pinned calibration source ${pinnedSourceId} for "${benchmarkId}" is no longer present in ${resultsDir}. Restore that stored result or remove the calibration state intentionally before selecting a new answer set.`,
+      );
+      process.exit(1);
+    }
     const quickCount = allForBenchmark.filter((entry) => entry.mode === "quick").length;
     console.error(
       quickCount > 0
@@ -2559,7 +2578,7 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   // complete one; if every candidate is partial we keep the newest (the only
   // option available to the operator).
   let loaded = await bench.loadBenchmarkResult(latest.path);
-  if (loaded.meta.status === "partial") {
+  if (!pinnedSourceId && loaded.meta.status === "partial") {
     for (const candidate of candidates.slice(1)) {
       const candidateResult = await bench.loadBenchmarkResult(candidate.path);
       if (candidateResult.meta.status !== "partial") {
@@ -2567,6 +2586,12 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
         break;
       }
     }
+  }
+  if (pinnedSourceId && loaded.meta.status === "partial") {
+    console.error(
+      `ERROR: pinned calibration source ${pinnedSourceId} is partial. Restore a complete copy or remove the calibration state intentionally before selecting a new answer set.`,
+    );
+    process.exit(1);
   }
   // Codex P2 review: a `--limit 1` (or `--trial-limit 1`) full run produces
   // mode === "full" with a single task, yielding a degenerate one-sample κ
@@ -2613,9 +2638,14 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     localJudge,
     frontierJudge,
     answers,
+    ...(previousCalibration?.sliceQuestionIds
+      ? { pinnedQuestionIds: previousCalibration.sliceQuestionIds }
+      : {}),
+    ...(previousCalibration?.answerSetHash
+      ? { expectedAnswerSetHash: previousCalibration.answerSetHash }
+      : {}),
   });
 
-  const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
   // Bind the persisted kappa to the calibrated judge pair (codex P2 review):
   // without these identities, a later run that swaps the local-lab manifest
   // or the frontier judge would inherit a stale kappa for a different pair.
@@ -2625,7 +2655,12 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     frontierJudgeProvider: parsed.judgeProvider,
     frontierJudgeModel: parsed.judgeModel,
   };
-  const statePath = await bench.writeJudgeCalibrationState(result, calibrationDir, calibrationIdentities);
+  const statePath = await bench.writeJudgeCalibrationState(
+    result,
+    calibrationDir,
+    calibrationIdentities,
+    { sourceResultId: loaded.meta.id },
+  );
   // Read the persisted state straight back. This exercises the load path the
   // artifact builder will use (cursor review + codex P1: loadJudgeCalibration-
   // State was previously dead code — only tests called it). A mismatch here
@@ -2650,6 +2685,10 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
           sampleSize: result.sampleSize,
           threshold: result.threshold,
           warning: result.warning,
+          confidenceInterval: result.confidenceInterval,
+          bootstrapSamples: result.bootstrapSamples,
+          answerSetHash: result.answerSetHash,
+          sourceResultId: loaded.meta.id,
           categories: result.categories,
           statePath,
         },
@@ -2663,6 +2702,10 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   console.log(`Judge calibration: ${benchmarkId}`);
   console.log(`  Cohen's kappa: ${result.kappa.toFixed(4)} (threshold ${result.threshold})`);
   console.log(`  Sample size:   ${result.sampleSize}`);
+  console.log(
+    `  ${(result.confidenceInterval.level * 100).toFixed(0)}% bootstrap CI: [${result.confidenceInterval.lower.toFixed(4)}, ${result.confidenceInterval.upper.toFixed(4)}] (${result.bootstrapSamples} paired resamples)`,
+  );
+  console.log(`  Pinned source: ${loaded.meta.id} (answer set sha256:${result.answerSetHash})`);
   console.log(`  Observed agreement: ${result.observedAgreement.toFixed(4)}`);
   console.log(`  Expected agreement: ${result.expectedAgreement.toFixed(4)}`);
   if (result.warning) {
@@ -3472,6 +3515,11 @@ async function attachPersistedJudgeCalibration(
       sampleSize: state.sampleSize,
       threshold: state.threshold,
       warning: state.warning,
+      ...(state.confidenceInterval ? { confidenceInterval: state.confidenceInterval } : {}),
+      ...(state.bootstrapSamples ? { bootstrapSamples: state.bootstrapSamples } : {}),
+      ...(state.answerSetHash ? { answerSetHash: state.answerSetHash } : {}),
+      ...(state.sourceResultId ? { sourceResultId: state.sourceResultId } : {}),
+      ...(state.sliceQuestionIds ? { sliceQuestionIds: state.sliceQuestionIds } : {}),
     },
   };
 }

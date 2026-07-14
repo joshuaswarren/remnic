@@ -410,7 +410,7 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   // stored frontier identity must NOT inherit the local judge's kappa
   // (cursor Low + codex P2 review).
   assert.match(source, /calibrationIdentities = \{/);
-  assert.match(source, /writeJudgeCalibrationState\(result, calibrationDir, calibrationIdentities\)/);
+  assert.match(source, /writeJudgeCalibrationState\([\s\S]*result,[\s\S]*calibrationDir,[\s\S]*calibrationIdentities,[\s\S]*sourceResultId: loaded\.meta\.id/);
   assert.match(source, /if \(!matchesLocal\) \{/);
   assert.match(source, /state\.localJudgeModel !== undefined && state\.frontierJudgeModel !== undefined/);
 
@@ -430,6 +430,13 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /\.filter\(\(entry\) => entry\.mode === "full"\)/);
   assert.match(source, /loaded\.meta\.status === "partial"/);
   assert.match(source, /candidateResult\.meta\.status !== "partial"/);
+
+  // #1877: once selected, calibration reuses the exact stored result instead
+  // of drifting to whichever cached answers are newest.
+  assert.match(source, /const pinnedSourceId = previousCalibration\?\.sourceResultId/);
+  assert.match(source, /entry\.id === pinnedSourceId/);
+  assert.match(source, /\{ sourceResultId: loaded\.meta\.id \}/);
+  assert.match(source, /bootstrap CI/);
 });
 
 test("bench run exits non-zero after a mixed success/failure run", async () => {

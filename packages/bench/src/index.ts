@@ -474,10 +474,13 @@ export {
 // Cross-tier judge calibration — Cohen's kappa + calibration slice (issue #1573 PR3).
 export {
   CALIBRATION_SLICE_SIZE,
+  DEFAULT_KAPPA_BOOTSTRAP_SAMPLES,
+  DEFAULT_KAPPA_CONFIDENCE_LEVEL,
   DEFAULT_JUDGE_BINARIZATION_THRESHOLD,
   JUDGE_CALIBRATION_KAPPA_THRESHOLD,
   MIN_CALIBRATION_SOURCE_TASKS,
   binarizeJudgeScore,
+  bootstrapCohensKappaConfidenceInterval,
   computeCohensKappa,
   loadJudgeCalibrationState,
   runJudgeCalibration,
@@ -488,9 +491,12 @@ export type {
   CalibrationAnswer,
   CalibrationVerdictPair,
   CohenKappaResult,
+  BootstrapKappaOptions,
+  BootstrapKappaResult,
   JudgeCalibrationIdentities,
   JudgeCalibrationResult,
   JudgeCategory,
+  KappaConfidenceInterval,
   LoadedJudgeCalibrationState,
   RunJudgeCalibrationOptions,
 } from "./judges/calibration-slice.js";
