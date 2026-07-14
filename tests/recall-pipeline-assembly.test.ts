@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdtemp } from "node:fs/promises";
 import { Orchestrator } from "../src/orchestrator.js";
 import { parseConfig } from "../src/config.js";
+import { indexMemory } from "../packages/remnic-core/src/temporal-index.js";
 
 // #1495 P1: the namespaced LCM `session_id` is framed with a reserved sentinel
 // (U+001F UNIT SEPARATOR) — `\x1f<namespace>\x1f<sessionKey>` — kept in sync with
@@ -242,6 +243,126 @@ test("event-order and response-guidance pipeline sections are assembled from LCM
   assert.equal(eventIndex < guidanceIndex, true);
   assert.match(context, /culinary journey started with Turkish, Greek, and Lebanese cuisines/);
   assert.match(context, /structured month-by-month plan/);
+});
+
+test("event-order recall injects an ingest-indexed timeline across source sessions", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recall-cross-session-timeline-"));
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    sharedContextEnabled: false,
+    knowledgeIndexEnabled: false,
+    identityContinuityEnabled: false,
+    transcriptEnabled: false,
+    hourlySummariesEnabled: false,
+    injectQuestions: false,
+    lcmEnabled: false,
+    eventOrderRecallEnabled: true,
+    recallPipeline: [
+      { id: "event-order", enabled: true, maxChars: 2_400, maxResults: 8 },
+      { id: "profile", enabled: false },
+      { id: "memories", enabled: false },
+    ],
+  });
+  const orchestrator = new Orchestrator(cfg);
+  const rome = await orchestrator.storage.writeMemory("fact", "Visited Rome in spring.", {
+    validAt: "2026-05-10T00:00:00.000Z",
+    observedAt: "2026-07-02T00:00:00.000Z",
+    eventTimeSource: "extracted",
+    sources: [{
+      sessionKey: "session-b",
+      observedAt: "2026-07-02T00:00:00.000Z",
+      quote: "I visited Rome in spring.",
+    }],
+  });
+  const paris = await orchestrator.storage.writeMemory("fact", "Visited Paris in winter.", {
+    validAt: "2026-03-04T00:00:00.000Z",
+    observedAt: "2026-07-03T00:00:00.000Z",
+    eventTimeSource: "extracted",
+    sources: [{
+      sessionKey: "session-a",
+      observedAt: "2026-07-03T00:00:00.000Z",
+      quote: "I visited Paris in winter.",
+    }],
+  });
+  await (orchestrator as any).updateTemporalTagIndexes(
+    orchestrator.storage,
+    [rome.id, paris.id],
+  );
+
+  const context = await (orchestrator as any).recallInternal(
+    "Which trip happened first, Paris or Rome?",
+    "session-current",
+  );
+
+  assert.match(context, /## Cross-session temporal timeline/);
+  assert.ok(context.indexOf("Visited Paris") < context.indexOf("Visited Rome"));
+  assert.match(context, /session=session-a/);
+  assert.match(context, /session=session-b/);
+});
+
+test("event-order recall bounds large-index memory reads before injection", async () => {
+  const memoryDir = await mkdtemp(path.join(os.tmpdir(), "remnic-recall-bounded-timeline-"));
+  const cfg = parseConfig({
+    openaiApiKey: "sk-test",
+    memoryDir,
+    workspaceDir: path.join(memoryDir, "workspace"),
+    qmdEnabled: false,
+    sharedContextEnabled: false,
+    knowledgeIndexEnabled: false,
+    identityContinuityEnabled: false,
+    transcriptEnabled: false,
+    hourlySummariesEnabled: false,
+    injectQuestions: false,
+    lcmEnabled: false,
+    eventOrderRecallEnabled: true,
+    recallPipeline: [
+      { id: "event-order", enabled: true, maxChars: 2_400, maxResults: 1 },
+      { id: "profile", enabled: false },
+      { id: "memories", enabled: false },
+    ],
+  });
+  const orchestrator = new Orchestrator(cfg);
+  for (let i = 0; i < 600; i += 1) {
+    const day = String((i % 28) + 1).padStart(2, "0");
+    indexMemory(
+      memoryDir,
+      path.join(memoryDir, "facts", `event-${String(i).padStart(4, "0")}.md`),
+      `2026-03-${day}T00:00:00.000Z`,
+      [],
+      { validAt: `2026-03-${day}T00:00:00.000Z`, searchText: `routine event ${i}` },
+    );
+  }
+
+  let readCalls = 0;
+  (orchestrator.storage as any).readMemoryByPath = async (memoryPath: string) => {
+    readCalls += 1;
+    const id = path.basename(memoryPath, ".md");
+    return {
+      path: memoryPath,
+      content: `Timeline body ${id}`,
+      frontmatter: {
+        id,
+        category: "fact",
+        created: "2026-03-01T00:00:00.000Z",
+        updated: "2026-03-01T00:00:00.000Z",
+        source: "test",
+        confidence: 0.9,
+        confidenceTier: "explicit",
+        tags: [],
+      },
+    };
+  };
+
+  const context = await (orchestrator as any).recallInternal(
+    "What happened first or last?",
+    "session-current",
+  );
+
+  assert.match(context, /## Cross-session temporal timeline/);
+  assert.equal(readCalls, 48, "maxResults=1 uses the bounded 48-row oversample, not all 600 rows");
 });
 
 test("explicit response-guidance pipeline section recalls generic instructions for unclassified queries", async () => {

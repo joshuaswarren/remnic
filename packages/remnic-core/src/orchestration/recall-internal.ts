@@ -36,6 +36,7 @@ import { StorageManager } from "../index.js";
 import { inferIntentFromText, planRecallMode } from "../intent.js";
 import { LcmEngine } from "../lcm/index.js";
 import { log } from "../logger.js";
+import { isActiveMemoryStatus } from "../memory-lifecycle-ledger-utils.js";
 import { buildRetrievedMemoryProvenance } from "../memory-provenance.js";
 import { NamespaceCatalog } from "../namespaces/catalog.js";
 import { canReadNamespace, resolvePrincipal } from "../namespaces/principal.js";
@@ -64,6 +65,8 @@ import { isDisagreementPrompt } from "../signal.js";
 import { HourlySummarizer } from "../summarizer.js";
 import { buildTargetedFactRecallSection, shouldRecallTargetedFactEvidence } from "../targeted-fact-recall.js";
 import { shouldFilterSupersededFromRecall } from "../temporal-supersession.js";
+import { queryTemporalTimelineAsync } from "../temporal-index.js";
+import { buildTemporalTimelineRecallSection, type TemporalTimelineRecallItem } from "../temporal-timeline-recall.js";
 import { isValidAsOf } from "../temporal-validity.js";
 import { TmtBuilder } from "../tmt.js";
 import { TranscriptManager } from "../transcript.js";
@@ -3659,54 +3662,93 @@ export class RecallInternalCoordinator {
       }
     }
 
-    // 0e. Chronological event-order evidence. This recovers ordered user
-    // turns for prompts asking how topics unfolded across a conversation.
+    // 0e. Chronological event-order evidence. Prefer the ingest-time temporal
+    // index, which can safely merge event times across source sessions. Fall
+    // back to the legacy per-session LCM turn order when the index is absent.
     const eventOrderMaxChars =
       this.deps.getRecallSectionMaxChars("event-order") ??
       this.deps.config.eventOrderRecallMaxChars;
+    const eventOrderMaxItems =
+      this.deps.getRecallSectionNumber("event-order", "maxResults") ??
+      this.deps.config.eventOrderRecallMaxResults;
     if (
       this.deps.isSpecializedRecallSectionEnabled(
         "event-order",
         resolveRecallEnhancementCapabilities(this.deps.config).eventOrderRecall,
       ) &&
       eventOrderMaxChars !== 0 &&
-      this.deps.lcmEngine?.enabled &&
+      eventOrderMaxItems > 0 &&
       (recallMode as RecallPlanMode) !== "no_recall" &&
       shouldRecallEventOrderEvidence(retrievalQuery)
     ) {
       try {
-        // #1495 thread 3 + #1505 fallback unification: read across the ordered LCM
-        // read key set so a branch-scoped session reads its own chronological
-        // event-order evidence even at project/root scope. UNLIKE the relevance-
-        // ranked sections, event-order must NOT merge across keys: `turn_index` is
-        // LOCAL to each LCM `session_id` (`observe` numbers turns per session via
-        // `getMaxTurnIndex`), so interleaving two keys and sorting by `turn_index`
-        // would place an older project-scope turn after a newer branch-scope turn
-        // and misstate the chronology (#1505 codex P2). Like compressed-history,
-        // event-order is an inherently per-session ORDERED artifact, so it takes
-        // the highest-priority authorized key (primary overlay → project/root)
-        // that actually has chronological evidence — each key's timeline is
-        // internally consistent.
-        const eventOrderSection = await firstNonEmptyLcmRead(
-          (lcmSessionId) =>
-            buildEventOrderRecallSection({
-              engine: this.deps.lcmEngine,
-              sessionId: lcmSessionId,
-              query: retrievalQuery,
-              maxChars: eventOrderMaxChars,
-              maxItems:
-                this.deps.getRecallSectionNumber("event-order", "maxResults") ??
-                this.deps.config.eventOrderRecallMaxResults,
-              maxScanWindowTurns:
-                this.deps.getRecallSectionNumber("event-order", "maxTurns") ??
-                this.deps.config.eventOrderRecallScanWindowTurns,
-              maxScanWindowTokens:
-                this.deps.getRecallSectionNumber("event-order", "maxTokens") ??
-                this.deps.config.eventOrderRecallScanWindowTokens,
-            }),
-          (s) => !s,
-          "",
-        );
+        const maxItems = eventOrderMaxItems;
+        let eventOrderSection = "";
+        const timelineCandidateLimit = Math.min(256, Math.max(48, maxItems * 12));
+        const timeline = await queryTemporalTimelineAsync(this.deps.config.memoryDir, {
+          query: retrievalQuery,
+          limit: timelineCandidateLimit,
+        });
+        if (timeline) {
+          const timelineItems: TemporalTimelineRecallItem[] = [];
+          // Sequential reads keep file-descriptor pressure bounded. The index
+          // query above has already capped total reads deterministically.
+          for (const event of timeline) {
+            const namespace = this.deps.namespaceFromPath(event.path);
+            if (
+              resolveNamespaceCapabilities(this.deps.config).namespaces &&
+              !recallNamespaces.includes(namespace)
+            ) {
+              continue;
+            }
+            try {
+              const storage = resolveNamespaceCapabilities(this.deps.config).namespaces
+                ? await this.deps.storageRouter.storageFor(namespace)
+                : this.deps.storage;
+              const memory = await storage.readMemoryByPath(event.path);
+              if (!memory || !isActiveMemoryStatus(memory.frontmatter.status)) continue;
+              if (!isValidAsOf(memory.frontmatter, asOfMs ?? Date.now())) continue;
+              timelineItems.push({
+                memory,
+                eventAt: event.eventAt,
+                ...(event.observedAt ? { observedAt: event.observedAt } : {}),
+                ...(event.sessionKey ? { sessionKey: event.sessionKey } : {}),
+                ...(event.validUntil ? { validUntil: event.validUntil } : {}),
+              });
+            } catch {
+              continue;
+            }
+          }
+          eventOrderSection = buildTemporalTimelineRecallSection({
+            items: timelineItems,
+            query: retrievalQuery,
+            maxChars: eventOrderMaxChars,
+            maxItems,
+          });
+        }
+
+        // Legacy fallback: LCM turn indexes are local to one session, so keep
+        // first-non-empty semantics and never interleave them across sessions.
+        if (!eventOrderSection && this.deps.lcmEngine?.enabled) {
+          eventOrderSection = await firstNonEmptyLcmRead(
+            (lcmSessionId) =>
+              buildEventOrderRecallSection({
+                engine: this.deps.lcmEngine,
+                sessionId: lcmSessionId,
+                query: retrievalQuery,
+                maxChars: eventOrderMaxChars,
+                maxItems,
+                maxScanWindowTurns:
+                  this.deps.getRecallSectionNumber("event-order", "maxTurns") ??
+                  this.deps.config.eventOrderRecallScanWindowTurns,
+                maxScanWindowTokens:
+                  this.deps.getRecallSectionNumber("event-order", "maxTokens") ??
+                  this.deps.config.eventOrderRecallScanWindowTokens,
+              }),
+            (s) => !s,
+            "",
+          );
+        }
         if (eventOrderSection) {
           this.deps.appendRecallSection(
             sectionBuckets,

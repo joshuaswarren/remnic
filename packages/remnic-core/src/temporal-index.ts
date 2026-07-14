@@ -27,6 +27,37 @@ export interface TemporalIndex {
   lastRebuildAt?: string;
   /** Map from YYYY-MM-DD → array of memory paths */
   dates: Record<string, string[]>;
+  /**
+   * Per-memory event-time rows used to reconstruct one chronology across
+   * source sessions. Keyed by path so an update replaces the prior row.
+   */
+  events: Record<string, TemporalIndexEvent>;
+}
+
+export interface TemporalIndexEvent {
+  path: string;
+  /** Event/valid time used for chronology. */
+  eventAt: string;
+  /** Ingest/source-observation time, when known. */
+  observedAt?: string;
+  /** Source session provenance, when the extractor recorded it. */
+  sessionKey?: string;
+  /** Exclusive validity end, when the event is bounded. */
+  validUntil?: string;
+  /** SHA-256 lexical fingerprints for bounded query-aware candidate selection. */
+  searchTokenHashes?: string[];
+}
+
+export interface TemporalIndexEntry {
+  path: string;
+  createdAt: string;
+  tags: string[];
+  validAt?: string;
+  observedAt?: string;
+  sessionKey?: string;
+  validUntil?: string;
+  /** Used only to derive token hashes; raw text is never persisted in the index. */
+  searchText?: string;
 }
 
 export interface TagIndex {
@@ -44,7 +75,7 @@ export interface TagNode {
   parents?: string[];
 }
 
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;
 const TEMPORAL_INDEX_FILE = "index_time.json";
 const TAG_INDEX_FILE = "index_tags.json";
 const TAG_INDEX_VERSION = 2;
@@ -275,10 +306,28 @@ function writeJsonAtomic(filePath: string, data: unknown): void {
   }
 }
 
+function emptyTemporalIndex(): TemporalIndex {
+  return { version: INDEX_VERSION, dates: {}, events: {} };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeTemporalIndex(raw: TemporalIndex | null | undefined): TemporalIndex {
+  if (!isRecord(raw)) return emptyTemporalIndex();
+  return {
+    version: typeof raw.version === "number" ? raw.version : 0,
+    dates: isRecord(raw.dates) ? raw.dates as Record<string, string[]> : {},
+    events: isRecord(raw.events) ? raw.events as Record<string, TemporalIndexEvent> : {},
+    ...(typeof raw.lastRebuildAt === "string" ? { lastRebuildAt: raw.lastRebuildAt } : {}),
+  };
+}
+
 function updateTemporalIndex(memoryDir: string, update: (index: TemporalIndex) => void): void {
   const indexPath = temporalIndexPath(memoryDir);
   withIndexFileLock(indexPath, () => {
-    const index = readJsonSafe<TemporalIndex>(indexPath, { version: INDEX_VERSION, dates: {} });
+    const index = normalizeTemporalIndex(readJsonSafe<TemporalIndex>(indexPath, emptyTemporalIndex()));
     update(index);
     writeJsonAtomic(indexPath, index);
   });
@@ -303,6 +352,62 @@ function isoDateFromTimestamp(isoString: string): string {
     return new Date().toISOString().slice(0, 10);
   }
   return isoString.slice(0, 10); // YYYY-MM-DD
+}
+
+function normalizedIsoTimestamp(value: string | undefined): string | undefined {
+  if (typeof value !== "string" || value.trim().length === 0) return undefined;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return undefined;
+  try {
+    return new Date(ms).toISOString();
+  } catch {
+    return undefined;
+  }
+}
+
+function temporalEventFromEntry(entry: TemporalIndexEntry): TemporalIndexEvent {
+  const createdAt = normalizedIsoTimestamp(entry.createdAt) ?? new Date(0).toISOString();
+  const eventAt = normalizedIsoTimestamp(entry.validAt) ?? createdAt;
+  const observedAt = normalizedIsoTimestamp(entry.observedAt);
+  const validUntil = normalizedIsoTimestamp(entry.validUntil);
+  const sessionKey = typeof entry.sessionKey === "string" && entry.sessionKey.trim().length > 0
+    ? entry.sessionKey.replace(/[\u0000-\u001f\u007f]+/g, " ").trim()
+    : undefined;
+  const searchTokenHashes = temporalSearchTokenHashes(entry.searchText);
+  return {
+    path: entry.path,
+    eventAt,
+    ...(observedAt ? { observedAt } : {}),
+    ...(sessionKey ? { sessionKey } : {}),
+    ...(validUntil ? { validUntil } : {}),
+    ...(searchTokenHashes.length > 0 ? { searchTokenHashes } : {}),
+  };
+}
+
+function temporalSearchTokens(value: string | undefined): string[] {
+  if (!value) return [];
+  const tokens = value
+    .toLowerCase()
+    .match(/[\p{L}\p{N}][\p{L}\p{N}'_-]*/gu)
+    ?.filter((token) => token.length > 1) ?? [];
+  return [...new Set(tokens)].slice(0, 128);
+}
+
+function temporalSearchTokenHashes(value: string | undefined): string[] {
+  return temporalSearchTokens(value).map((token) =>
+    crypto.createHash("sha256").update(token).digest("hex"),
+  );
+}
+
+function compareTemporalIndexEvents(
+  left: TemporalIndexEvent,
+  right: TemporalIndexEvent,
+): number {
+  const byEvent = left.eventAt.localeCompare(right.eventAt);
+  if (byEvent !== 0) return byEvent;
+  const byObservation = (left.observedAt ?? "").localeCompare(right.observedAt ?? "");
+  if (byObservation !== 0) return byObservation;
+  return left.path.localeCompare(right.path);
 }
 
 function addPathToSet(record: Record<string, string[]>, key: string, p: string): void {
@@ -590,14 +695,27 @@ function promptContainsAlias(prompt: string, alias: string): boolean {
  * @param createdAt ISO timestamp of the memory's creation date
  * @param tags Array of tag strings from the memory's frontmatter
  */
-export function indexMemory(memoryDir: string, memoryPath: string, createdAt: string, tags: string[]): void {
+export function indexMemory(
+  memoryDir: string,
+  memoryPath: string,
+  createdAt: string,
+  tags: string[],
+  temporal: Omit<Partial<TemporalIndexEntry>, "path" | "createdAt" | "tags"> = {},
+): void {
   try {
     ensureStateDir(memoryDir);
 
     const dateKey = isoDateFromTimestamp(createdAt);
     updateTemporalIndex(memoryDir, (index) => {
+      index.version = INDEX_VERSION;
       removePathFromAllSets(index.dates, memoryPath);
       addPathToSet(index.dates, dateKey, memoryPath);
+      index.events[memoryPath] = temporalEventFromEntry({
+        path: memoryPath,
+        createdAt,
+        tags,
+        ...temporal,
+      });
     });
 
     updateTagIndex(memoryDir, (index) => {
@@ -623,6 +741,7 @@ export function deindexMemory(memoryDir: string, memoryPath: string, createdAt: 
     const dateKey = isoDateFromTimestamp(createdAt);
     updateTemporalIndex(memoryDir, (index) => {
       removePathFromSet(index.dates, dateKey, memoryPath);
+      delete index.events[memoryPath];
     });
 
     updateTagIndex(memoryDir, (index) => {
@@ -649,6 +768,7 @@ export function clearIndexes(memoryDir: string): void {
       index.version = INDEX_VERSION;
       index.lastRebuildAt = undefined;
       index.dates = {};
+      index.events = {};
     });
     updateTagIndex(memoryDir, (index) => {
       index.version = TAG_INDEX_VERSION;
@@ -667,7 +787,9 @@ export function clearIndexes(memoryDir: string): void {
  */
 export function indexesExist(memoryDir: string): boolean {
   try {
-    return fs.existsSync(temporalIndexPath(memoryDir)) && fs.existsSync(tagIndexPath(memoryDir));
+    if (!fs.existsSync(tagIndexPath(memoryDir))) return false;
+    const raw = JSON.parse(fs.readFileSync(temporalIndexPath(memoryDir), "utf8")) as unknown;
+    return isRecord(raw) && raw.version === INDEX_VERSION && isRecord(raw.dates) && isRecord(raw.events);
   } catch {
     return false;
   }
@@ -679,17 +801,19 @@ export function indexesExist(memoryDir: string): boolean {
  */
 export function indexMemoriesBatch(
   memoryDir: string,
-  entries: Array<{ path: string; createdAt: string; tags: string[] }>
+  entries: TemporalIndexEntry[]
 ): void {
   if (entries.length === 0) return;
   try {
     ensureStateDir(memoryDir);
 
     updateTemporalIndex(memoryDir, (index) => {
+      index.version = INDEX_VERSION;
       for (const entry of entries) {
         const dateKey = isoDateFromTimestamp(entry.createdAt);
         removePathFromAllSets(index.dates, entry.path);
         addPathToSet(index.dates, dateKey, entry.path);
+        index.events[entry.path] = temporalEventFromEntry(entry);
       }
     });
 
@@ -738,9 +862,9 @@ export async function queryByDateRangeAsync(
     }
     let tIndex: TemporalIndex;
     try {
-      tIndex = JSON.parse(raw) as TemporalIndex;
+      tIndex = normalizeTemporalIndex(JSON.parse(raw) as TemporalIndex);
     } catch {
-      tIndex = { version: INDEX_VERSION, dates: {} };
+      tIndex = emptyTemporalIndex();
     }
     // toDate is exclusive (first day NOT included). Default: tomorrow so "all of today" is included.
     const end = toDate ?? new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
@@ -754,6 +878,85 @@ export async function queryByDateRangeAsync(
       }
     }
     return results;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Return the persisted event-time rows as one deterministic cross-session
+ * chronology. Equal event times are ordered by observation time, then path.
+ * Returns `null` when the index is missing, corrupt, or from an older schema;
+ * callers can then fail open to the pre-index recall path.
+ */
+export async function queryTemporalTimelineAsync(
+  memoryDir: string,
+  options: { query?: string; limit?: number } = {},
+): Promise<TemporalIndexEvent[] | null> {
+  try {
+    const raw = await fs.promises.readFile(temporalIndexPath(memoryDir), "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      !isRecord(parsed) ||
+      parsed.version !== INDEX_VERSION ||
+      !isRecord(parsed.dates) ||
+      !isRecord(parsed.events)
+    ) return null;
+    const index = normalizeTemporalIndex(parsed as unknown as TemporalIndex);
+    const chronology = Object.values(index.events)
+      .filter((event) =>
+        typeof event?.path === "string" &&
+        event.path.length > 0 &&
+        normalizedIsoTimestamp(event.eventAt) !== undefined
+      )
+      .map((event) => ({
+        path: event.path,
+        eventAt: normalizedIsoTimestamp(event.eventAt)!,
+        ...(normalizedIsoTimestamp(event.observedAt)
+          ? { observedAt: normalizedIsoTimestamp(event.observedAt) }
+          : {}),
+        ...(typeof event.sessionKey === "string" && event.sessionKey.trim().length > 0
+          ? { sessionKey: event.sessionKey.trim() }
+          : {}),
+        ...(normalizedIsoTimestamp(event.validUntil)
+          ? { validUntil: normalizedIsoTimestamp(event.validUntil) }
+          : {}),
+        ...(Array.isArray(event.searchTokenHashes)
+          ? { searchTokenHashes: event.searchTokenHashes.filter((hash) => typeof hash === "string") }
+          : {}),
+      }))
+      .sort(compareTemporalIndexEvents);
+    const requestedLimit = typeof options.limit === "number" && Number.isFinite(options.limit)
+      ? Math.max(0, Math.floor(options.limit))
+      : chronology.length;
+    if (requestedLimit === 0) return [];
+    if (chronology.length <= requestedLimit) return chronology;
+
+    const queryHashes = new Set(temporalSearchTokenHashes(options.query));
+    const scored = chronology.map((event) => ({
+      event,
+      score: (event.searchTokenHashes ?? []).reduce(
+        (sum, hash) => sum + (queryHashes.has(hash) ? 1 : 0),
+        0,
+      ),
+    }));
+    if (scored.some(({ score }) => score > 0)) {
+      return scored
+        .filter(({ score }) => score > 0)
+        .sort((left, right) => right.score - left.score || compareTemporalIndexEvents(left.event, right.event))
+        .slice(0, requestedLimit)
+        .map(({ event }) => event)
+        .sort(compareTemporalIndexEvents);
+    }
+
+    // No lexical match (legacy rows or generic "first/last" query): retain
+    // both chronology edges so earliest and latest questions remain answerable.
+    const earlyCount = Math.ceil(requestedLimit / 2);
+    const selected = [
+      ...chronology.slice(0, earlyCount),
+      ...chronology.slice(-(requestedLimit - earlyCount)),
+    ];
+    return selected.sort(compareTemporalIndexEvents);
   } catch {
     return null;
   }
