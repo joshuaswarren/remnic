@@ -104,6 +104,9 @@ remnic bench runs list
 remnic bench export <run-id> --format html
 ```
 
-With an OPENAI_API_KEY, the same commands run real datasets with the
-GPT-5.6 judge. Setup details live in `packages/bench/README.md`.
-Reproduction paths live in `docs/paper/repro-appendix.md`.
+The quick run always uses a bundled fixture. That is what makes it
+zero-setup. Real-dataset runs take two more steps: download the datasets
+(see "Running on real datasets" in `packages/bench/README.md`), then run
+again without `--quick`, passing `--dataset-dir` and an OPENAI_API_KEY for
+the GPT-5.6 judge. Reproduction paths live in
+`docs/paper/repro-appendix.md`.

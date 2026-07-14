@@ -102,9 +102,16 @@ remnic bench runs list
 remnic bench export <run-id> --format html
 ```
 
-With an OpenAI API key, the same commands run the real datasets with the
-GPT-5.6 judge. `scripts/bench/fetch-datasets.sh` prints the dataset
-download commands. Full reproduction paths live in
+The quick run always uses the bundled fixture; that is the zero-setup
+path. To score the real datasets with the GPT-5.6 judge, download them
+first, then drop the `--quick` flag:
+
+```bash
+scripts/bench/fetch-datasets.sh --target ./bench-datasets   # from a repo checkout
+remnic bench run longmemeval --dataset-dir ./bench-datasets/longmemeval
+```
+
+This path needs an OpenAI API key. Full reproduction paths live in
 `docs/paper/repro-appendix.md`.
 
 ## Honest framing of the novelty claim
@@ -118,7 +125,7 @@ MemStrata, and MemoryAgentBench are prior art. We engage them in
 
 ## Compliance checklist
 
-- [ ] Free Codex credits requested by July 17, 12:00 PM PT.
+- [x] Free Codex credits requested by July 17, 12:00 PM PT (requested 2026-07-14).
 - [ ] Core functionality built in Codex sessions, with the `/feedback` session ID captured.
 - [ ] Demo video under 3 minutes, public on YouTube. Audio covers Codex and GPT-5.6 usage.
 - [ ] Repository public with MIT license (already true).
