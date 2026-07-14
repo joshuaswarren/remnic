@@ -309,8 +309,9 @@ export class RecordingAdapter implements MemCorrectSystemAdapter {
  *
  * `ingestTurn` → `store(sessionKey, [Message])`. `recall` →
  * `adapter.recall(sessionKey, query)` split into ranked strings.
- * `correct` → observe the correction as a user turn (the correction-contract
- * tool rides here once #1580 lands). `runMaintenance` → `adapter.drain()`,
+ * `correct` → routes through the Correction Contract (plan + confirmed
+ * apply) when the wrapped adapter exposes `correct()`, with the plain
+ * user-turn path as fallback. `runMaintenance` → `adapter.drain()`,
  * which forces the background consolidation/LCM/contradiction-scan pipeline
  * to settle; a forced-dreams/REM hook lands with #1579's tombstone path.
  *

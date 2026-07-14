@@ -73,8 +73,9 @@ In-tree adapters:
 2. **`createRemnicMemCorrectAdapter`** — wraps the public `BenchMemoryAdapter`
    (the access-service-level abstraction) into the contract. `ingestTurn` →
    `store`; `recall` → `adapter.recall` split into ranked strings; `correct`
-   → observe the correction as a user turn (the correction-contract tool
-   rides here once #1580 lands); `runMaintenance` → `adapter.drain()`.
+   → routes through the Correction Contract (plan + confirmed apply) via the
+   public access-service surface, with the plain user-turn path as fallback
+   (landed in PR #1862); `runMaintenance` → `adapter.drain()`.
 
 Third-party adapters (Mem0, OpenMemory, …) are welcome follow-ups behind
 the same interface. **Do not** reach into orchestrator internals — that
