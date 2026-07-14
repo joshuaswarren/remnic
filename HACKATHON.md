@@ -51,8 +51,7 @@ Prior work includes, at minimum:
 
 The dated commit history on `main` is the audit trail for this line.
 
-## Work built during the submission period (PENDING: entries below are
-committed in #1869 to #1873)
+## Work built during the submission period (PENDING: entries below are committed in #1869 to #1873)
 
 Status boxes get checked as the work lands. Each item links to its commits
 and Codex session evidence at submission time.
