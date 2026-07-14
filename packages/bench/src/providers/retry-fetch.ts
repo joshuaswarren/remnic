@@ -31,6 +31,16 @@ export interface RetryFetchOptions {
   max429WaitMs?: number;
 }
 
+export class RetryFetchHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "RetryFetchHttpError";
+    this.status = status;
+  }
+}
+
 const DEFAULTS: Required<RetryFetchOptions> = {
   maxAttempts: 3,
   baseBackoffMs: 1000,
@@ -264,8 +274,9 @@ export async function retryFetch(url: string, init: RequestInit, options?: Retry
       const bodyPreview = await readBodyPreview(response, 512);
       if (attempt >= opts.maxAttempts && remainingExtendedBudgetMs() <= 0) {
         callerSignal?.removeEventListener("abort", onCallerAbort);
-        throw new Error(
-          `HTTP ${response.status} ${response.statusText} (attempt ${attempt}/${opts.maxAttempts}): ${bodyPreview}`
+        throw new RetryFetchHttpError(
+          response.status,
+          `HTTP ${response.status} ${response.statusText} (attempt ${attempt}/${opts.maxAttempts}): ${bodyPreview}`,
         );
       }
       lastError = new Error(

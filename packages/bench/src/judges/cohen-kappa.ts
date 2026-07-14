@@ -31,6 +31,29 @@ export interface CohenKappaResult {
   categories: readonly JudgeCategory[];
 }
 
+export interface KappaConfidenceInterval {
+  lower: number;
+  upper: number;
+  level: number;
+}
+
+export interface BootstrapKappaOptions {
+  /** Number of paired bootstrap resamples. */
+  iterations?: number;
+  /** Confidence level in (0, 1). */
+  level?: number;
+  /** Optional deterministic seed. Derived from the labels when omitted. */
+  seed?: number;
+}
+
+export interface BootstrapKappaResult {
+  confidenceInterval: KappaConfidenceInterval;
+  bootstrapSamples: number;
+}
+
+export const DEFAULT_KAPPA_BOOTSTRAP_SAMPLES = 2_000;
+export const DEFAULT_KAPPA_CONFIDENCE_LEVEL = 0.95;
+
 /**
  * Compute Cohen's kappa from two parallel arrays of category labels.
  *
@@ -101,6 +124,94 @@ export function computeCohensKappa(
     expectedAgreement,
     sampleSize,
     categories: [...categories].sort(),
+  };
+}
+
+/**
+ * Deterministic paired-bootstrap percentile interval for Cohen's kappa.
+ *
+ * Each resample draws paired verdict indexes, preserving the dependence
+ * between the two raters. The default seed is derived from the complete label
+ * vectors, so the same calibration answer set and verdicts produce byte-for-
+ * byte identical confidence bounds across reruns.
+ */
+export function bootstrapCohensKappaConfidenceInterval(
+  raterA: readonly JudgeCategory[],
+  raterB: readonly JudgeCategory[],
+  options: BootstrapKappaOptions = {},
+): BootstrapKappaResult {
+  if (raterA.length !== raterB.length) {
+    throw new Error(
+      `bootstrapCohensKappaConfidenceInterval: rater arrays must have equal length; got ${raterA.length} and ${raterB.length}.`,
+    );
+  }
+  if (raterA.length === 0) {
+    throw new Error("bootstrapCohensKappaConfidenceInterval: cannot bootstrap zero paired judgements.");
+  }
+  const iterations = options.iterations ?? DEFAULT_KAPPA_BOOTSTRAP_SAMPLES;
+  const level = options.level ?? DEFAULT_KAPPA_CONFIDENCE_LEVEL;
+  if (!Number.isInteger(iterations) || iterations <= 0) {
+    throw new Error(`bootstrapCohensKappaConfidenceInterval: iterations must be a positive integer; got ${String(iterations)}.`);
+  }
+  if (!(level > 0 && level < 1)) {
+    throw new Error(`bootstrapCohensKappaConfidenceInterval: level must be between 0 and 1; got ${String(level)}.`);
+  }
+
+  const derivedSeed = options.seed ?? hashLabelsToSeed(raterA, raterB);
+  const random = mulberry32(derivedSeed >>> 0);
+  const kappas: number[] = [];
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const sampleA: JudgeCategory[] = [];
+    const sampleB: JudgeCategory[] = [];
+    for (let index = 0; index < raterA.length; index += 1) {
+      const picked = Math.floor(random() * raterA.length);
+      sampleA.push(raterA[picked]!);
+      sampleB.push(raterB[picked]!);
+    }
+    kappas.push(computeCohensKappa(sampleA, sampleB).kappa);
+  }
+  kappas.sort((left, right) => left - right);
+  const tail = (1 - level) / 2;
+  return {
+    confidenceInterval: {
+      lower: percentile(kappas, tail),
+      upper: percentile(kappas, 1 - tail),
+      level,
+    },
+    bootstrapSamples: iterations,
+  };
+}
+
+function percentile(sortedValues: readonly number[], fraction: number): number {
+  const position = (sortedValues.length - 1) * fraction;
+  const lowerIndex = Math.floor(position);
+  const upperIndex = Math.ceil(position);
+  const lower = sortedValues[lowerIndex]!;
+  const upper = sortedValues[upperIndex]!;
+  return lowerIndex === upperIndex ? lower : lower + (upper - lower) * (position - lowerIndex);
+}
+
+function hashLabelsToSeed(
+  raterA: readonly JudgeCategory[],
+  raterB: readonly JudgeCategory[],
+): number {
+  const value = JSON.stringify([raterA, raterB]);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
+function mulberry32(seed: number): () => number {
+  let state = seed;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = state;
+    value = Math.imul(value ^ (value >>> 15), value | 1);
+    value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
+    return ((value ^ (value >>> 14)) >>> 0) / 4_294_967_296;
   };
 }
 

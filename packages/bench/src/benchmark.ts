@@ -403,10 +403,36 @@ export async function runBenchmark(
   // re-run so the JSON observability contract holds — the field is
   // written whenever any judge was wrapped (primary or cross), not just
   // when at least one underlying model call actually fired.
-  if (judgeCacheCounters !== undefined || crossJudgeCacheCounters !== undefined) {
+  // MemCorrect records its two specialized Responses calls directly in the
+  // runner. Those methods deliberately bypass the generic scalar-judge cache,
+  // so replacing that explicit count with this wrapper's zero calls would
+  // erase real model traffic from the result.
+  if (
+    benchmarkId !== "memcorrect-v1" &&
+    (judgeCacheCounters !== undefined || crossJudgeCacheCounters !== undefined)
+  ) {
     result.cost.judgeModelCalls = primaryCalls + crossCalls;
   }
-  return finalizeBenchmarkResultConfig(result, options);
+  const finalized = finalizeBenchmarkResultConfig(result, options);
+  assertCompleteBenchmarkResult(finalized);
+  return finalized;
+}
+
+/**
+ * Enforce the programmatic/CLI contract that a partial benchmark is a failed
+ * run, even when its runner returned a diagnostic result instead of throwing.
+ * The CLI's existing catch path persists the completed task prefix and exits
+ * non-zero; direct callers receive the same explicit failure.
+ */
+export function assertCompleteBenchmarkResult(result: BenchmarkResult): void {
+  if (result.meta.status !== "partial") {
+    return;
+  }
+  throw new Error(
+    `Benchmark "${result.meta.benchmark}" produced a partial result: ${
+      result.meta.failureReason ?? "unknown benchmark failure"
+    }`,
+  );
 }
 
 // Local expandTilde removed in PR #1591 round-5 OTGi5; expandTildePath

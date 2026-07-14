@@ -34,7 +34,7 @@ built the receipts machine.
 MemCorrect tests the memory system behind an AI agent with one command:
 
 ```bash
-remnic bench run --quick longmemeval   # 60-second smoke run, no keys, no network
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
 ```
 
 It scores three things most memory benchmarks skip. First, recall: does the
@@ -43,29 +43,31 @@ LongMemEval, LoCoMo, and friends. Second, corrections: when the user fixes
 a stored fact, does the memory actually update? Third, stale-memory harm:
 after a fix, does the old fact ever come back?
 
-It runs against any memory backend, not just ours. A generic MCP adapter
-lets you point it at Mem0, Zep, LangMem, or your homegrown RAG store.
-GPT-5.6 grades every answer through the OpenAI Responses API. Every run
+It runs against Remnic or another conforming MCP memory backend. A generic MCP
+adapter supports stdio and Streamable HTTP plus explicit tool and argument
+mapping for non-canonical surfaces. When selected, GPT-5.6 grades answers
+through the OpenAI Responses API. Every run
 writes a locked manifest: dataset hashes, seeds, git state, config. The
 output is a memory report card you can share. "Our memory is good" becomes
 a scored claim anyone can re-run.
 
 ## How we built it
 
-The new work for Build Week was built in Codex sessions with GPT-5.6. The
-session ID is in the form. The line between prior work and hackathon work
-is drawn commit-by-commit in
+The new work for Build Week was built in Codex sessions. GPT-5.6 was integrated
+as the opt-in judge through the OpenAI Responses API. The session ID is in the
+form. The line between prior work and hackathon work is drawn commit-by-commit in
 [HACKATHON.md](https://github.com/joshuaswarren/remnic/blob/main/HACKATHON.md).
 
 Codex studied our adapter seam first. Then it built the generic MCP memory
 adapter, its tests, and the checks that decide if a backend can be scored
 at all. It wired GPT-5.6 in as the judge and iterated on the rubric with
-us. We also flipped the table: we ran GPT-5.6 as the system under test and
-committed that run as an artifact anyone can re-check. Codex then polished
-the HTML export into one scored report card you can hand to your team.
+us. Codex then polished the HTML export into one scored report card you can
+hand to your team. A GPT-5.6 system-under-test run remains credential-blocked
+and must be removed from the final submission unless its real artifact lands.
 
-GPT-5.6 does double duty here. It is the judge inside the tool, and it is a
-scored system in our published results.
+GPT-5.6 is the opt-in judge inside the tool through the OpenAI Responses API.
+We do not claim a published GPT-5.6 model result until a committed artifact and
+manifest exist.
 
 ## Challenges we ran into
 
@@ -78,16 +80,17 @@ contracts in the code.
 
 ## Accomplishments we're proud of
 
-A memory benchmark you can run in 60 seconds with zero setup. A correction
-score no other one-command harness gives you. And the discipline behind it:
-no number ships in our docs without a committed artifact behind it.
+A memory benchmark you can run in about a minute after installation. One
+command exercises MCP correction uptake and stale-memory harm together. And
+the discipline behind it: no number ships in our docs without a committed
+artifact behind it.
 
 ## What we learned
 
-Grading corrections is a judge-quality problem. We had to get GPT-5.6 to
-agree with human judgment on one question: did the system really accept the
-fix? That taught us more about prompt design than any new feature would
-have.
+Grading corrections is a judge-quality problem. A plausible score is not enough;
+the judge must be calibrated against labeled examples before it supports a
+headline claim. That constraint shaped the versioned rubric and explicit
+provenance in every result.
 
 ## What's next
 
@@ -99,18 +102,17 @@ honestly. This is a protocol claim, not a "first to think of it" claim.
 
 ## Try it (judges)
 
-No datasets, no API keys, no network needed for the smoke path:
+After package installation, the smoke path needs no dataset, API key, or network:
 
 ```bash
 npm install -g @remnic/cli @remnic/bench
-remnic bench run --quick longmemeval
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
 remnic bench runs list
-remnic bench export <run-id> --format html
+remnic bench export <run-id> --format html --output ./memcorrect-report.html
 ```
 
-The quick run always uses a bundled fixture. That is what makes it
-zero-setup. Real-dataset runs take two more steps. First,
-`remnic bench datasets download longmemeval`. Then the same run command
-without `--quick`, adding `--judge-provider openai --judge-model gpt-5.6
---judge-api-key "$OPENAI_API_KEY"`. Reproduction paths live in
+The quick run uses a packaged stdio MCP server. After installation it needs no
+dataset, key, or network, and it exercises the real adapter. To add GPT-5.6
+judging, export `OPENAI_API_KEY` and append `--judge-provider openai
+--judge-model gpt-5.6`. Reproduction paths live in
 `docs/paper/repro-appendix.md`.

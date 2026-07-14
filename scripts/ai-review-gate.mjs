@@ -14,9 +14,50 @@ const NEGATIVE_VERDICT_PATTERN =
 const POSITIVE_VERDICT_PATTERN = /\b(?:PASS|APPROVED|LGTM)\b/i;
 const SHA_REFERENCE_PATTERN =
   /\b(?:sha|commit|head|rev|revision)\s*[:#]?\s*([0-9a-f]{7,40})\b|\bfor\s+([0-9a-f]{7,40})\b/gi;
+const DEPENDABOT_LOGIN = "dependabot[bot]";
+const DEPENDABOT_UNAVAILABLE_REVIEWER_ALIASES = new Set([
+  "cursor-bugbot[bot]",
+  "cursor[bot]",
+  "cursor-bugbot",
+  "cursor",
+]);
+const DEPENDENCY_MANIFEST_BASENAMES = new Set([
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "requirements.txt",
+]);
 
 function normalizeLogin(value) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
+}
+
+function isDependencyManifestPath(value) {
+  if (typeof value !== "string" || !value.trim()) return false;
+  const normalized = value.replaceAll("\\", "/");
+  if (normalized.startsWith("/") || normalized.split("/").includes("..")) return false;
+  return DEPENDENCY_MANIFEST_BASENAMES.has(normalized.split("/").at(-1));
+}
+
+export function isDependabotManifestOnlyPullRequest({ authorLogin, files = [] } = {}) {
+  return normalizeLogin(authorLogin) === DEPENDABOT_LOGIN &&
+    Array.isArray(files) &&
+    files.length > 0 &&
+    files.every((file) => isDependencyManifestPath(file?.filename ?? file?.path ?? file));
+}
+
+export function canUseDependabotManifestException({ authorLogin, files, result } = {}) {
+  return isDependabotManifestOnlyPullRequest({ authorLogin, files }) &&
+    result?.ok === false &&
+    Array.isArray(result.blockers) &&
+    result.blockers.length === 0 &&
+    Array.isArray(result.missing) &&
+    result.missing.length > 0 &&
+    result.missing.every((group) =>
+      Array.isArray(group) &&
+      group.length > 0 &&
+      group.every((alias) => DEPENDABOT_UNAVAILABLE_REVIEWER_ALIASES.has(normalizeLogin(alias))),
+    );
 }
 
 function bodyHasPositiveVerdict(body) {

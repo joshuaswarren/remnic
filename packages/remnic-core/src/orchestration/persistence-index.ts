@@ -15,7 +15,7 @@
  */
 
 import path from "node:path";
-import { type GraphConstructionCapabilitySet, resolveCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities } from "../capabilities.js";
+import { type GraphConstructionCapabilitySet, resolveCapabilities, resolveGraphConstructionCapabilities, resolveIndexingCapabilities, resolveMemoryLifecycleCapabilities, resolveNamespaceCapabilities, resolveRecallEnhancementCapabilities } from "../capabilities.js";
 import type { SemanticDedupHit } from "../dedup/semantic.js";
 import { EmbeddingFallback } from "../embedding-fallback.js";
 import { GraphIndex } from "../graph.js";
@@ -386,7 +386,8 @@ export class PersistenceIndexCoordinator {
     // produce an empty temporal index, leaving the temporal agent with no data to work from.
     if (
       !resolveIndexingCapabilities(this.deps.config).queryAwareIndexing &&
-      !caps.parallelRetrieval
+      !caps.parallelRetrieval &&
+      !resolveRecallEnhancementCapabilities(this.deps.config).eventOrderRecall
     )
       return;
     // Check for missing indexes BEFORE the early-return so first-time enablement
@@ -423,6 +424,11 @@ export class PersistenceIndexCoordinator {
         path: string;
         createdAt: string;
         tags: string[];
+        validAt?: string;
+        observedAt?: string;
+        sessionKey?: string;
+        validUntil?: string;
+        searchText?: string;
       }> = [];
       for (const mem of pool) {
         if (mem.path && mem.frontmatter?.created) {
@@ -430,6 +436,13 @@ export class PersistenceIndexCoordinator {
             path: mem.path,
             createdAt: mem.frontmatter.created,
             tags: mem.frontmatter.tags ?? [],
+            ...(mem.frontmatter.valid_at ? { validAt: mem.frontmatter.valid_at } : {}),
+            ...(mem.frontmatter.observedAt ? { observedAt: mem.frontmatter.observedAt } : {}),
+            ...(mem.frontmatter.sources?.[0]?.sessionKey
+              ? { sessionKey: mem.frontmatter.sources[0].sessionKey }
+              : {}),
+            ...(mem.frontmatter.invalid_at ? { validUntil: mem.frontmatter.invalid_at } : {}),
+            searchText: `${mem.content} ${(mem.frontmatter.tags ?? []).join(" ")} ${mem.frontmatter.entityRef ?? ""}`,
           });
         }
       }

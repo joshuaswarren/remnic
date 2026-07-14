@@ -39,6 +39,8 @@ const CATEGORY_NAMES: Record<number, string> = {
 };
 const DIALOGUE_ID_PATTERN = /\bD\d+:\d+\b/g;
 const LOCOMO_FOCUSED_LINE_LIMIT = 14;
+const LOCOMO_DIRECT_LINE_LIMIT = 10;
+const LOCOMO_COMPOSITION_HOP_LIMIT = 2;
 const LOCOMO_FOCUSED_LINE_MAX_CHARS = 420;
 const LOCOMO_FOCUSED_CONTEXT_MAX_CHARS = 6000;
 const LOCOMO_FALLBACK_CONTEXT_MAX_CHARS = 8000;
@@ -344,11 +346,22 @@ export async function runLoCoMoBenchmark(
     options.limit,
   );
   const trialLimit = resolveTrialLimit(options.benchmarkOptions?.trialLimit);
-  const plans = applyTrialLimit(conversations.map(buildPlan), trialLimit);
-  const benchmarkOptions =
-    trialLimit === undefined
-      ? options.benchmarkOptions
-      : { ...(options.benchmarkOptions ?? {}), trialLimit };
+  const multiHopRecallComposition = resolveLoCoMoBooleanOption(
+    options.benchmarkOptions?.multiHopRecallComposition,
+    "multiHopRecallComposition",
+    true,
+  );
+  const plans = applyTrialLimit(
+    conversations.map((conversation) =>
+      buildPlan(conversation, multiHopRecallComposition)
+    ),
+    trialLimit,
+  );
+  const benchmarkOptions = {
+    ...(options.benchmarkOptions ?? {}),
+    ...(trialLimit === undefined ? {} : { trialLimit }),
+    multiHopRecallComposition,
+  };
 
   return runPublishedHarness({
     options: { ...options, benchmarkOptions },
@@ -358,6 +371,31 @@ export async function runLoCoMoBenchmark(
     plans,
     totalCount: plans.reduce((sum, plan) => sum + plan.trials.length, 0),
   });
+}
+
+function resolveLoCoMoBooleanOption(
+  raw: unknown,
+  optionName: string,
+  defaultValue: boolean,
+): boolean {
+  if (raw === undefined) {
+    return defaultValue;
+  }
+  if (typeof raw === "boolean") {
+    return raw;
+  }
+  if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off"].includes(normalized)) {
+      return false;
+    }
+  }
+  throw new Error(
+    `LoCoMo benchmarkOptions.${optionName} must be a boolean or one of true/false, 1/0, yes/no, on/off.`,
+  );
 }
 
 function resolveTrialLimit(raw: unknown): number | undefined {
@@ -399,7 +437,10 @@ function applyTrialLimit(
   return limitedPlans;
 }
 
-function buildPlan(conversation: LoCoMoConversation): HarnessPlan {
+function buildPlan(
+  conversation: LoCoMoConversation,
+  multiHopRecallComposition: boolean,
+): HarnessPlan {
   const sessions = extractSessions(conversation.conversation);
   const speakerA =
     typeof conversation.conversation.speaker_a === "string"
@@ -422,7 +463,13 @@ function buildPlan(conversation: LoCoMoConversation): HarnessPlan {
   }
 
   const trials: HarnessTrial[] = conversation.qa.map((qa, questionIndex) =>
-    buildTrial(conversation.sample_id, qa, questionIndex, sessionIds),
+    buildTrial(
+      conversation.sample_id,
+      qa,
+      questionIndex,
+      sessionIds,
+      multiHopRecallComposition,
+    ),
   );
 
   return { ingestSessions, trials };
@@ -433,6 +480,7 @@ function buildTrial(
   qa: LoCoMoQA,
   questionIndex: number,
   sessionIds: string[],
+  multiHopRecallComposition: boolean,
 ): HarnessTrial {
   const categoryName =
     CATEGORY_NAMES[qa.category] ?? `category_${qa.category}`;
@@ -446,6 +494,7 @@ function buildTrial(
       prioritizeLoCoMoRecallText({
         question,
         recalledText: sanitizeLoCoMoRecallText({ question, recalledText }),
+        multiHopRecallComposition,
       }),
     answerFallback: ({ question, recalledText }) =>
       answerLoCoMoFromRecall(question, recalledText),
@@ -739,13 +788,16 @@ function sanitizeLoCoMoRecallText(args: {
 function prioritizeLoCoMoRecallText(args: {
   question: string;
   recalledText: string;
+  multiHopRecallComposition: boolean;
 }): string {
-  const lines = args.recalledText
-    .replaceAll("\r\n", "\n")
-    .replaceAll("\r", "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
+  const lines = dedupePreserveOrder(
+    args.recalledText
+      .replaceAll("\r\n", "\n")
+      .replaceAll("\r", "\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0),
+  );
   const questionTokens = expandLoCoMoQuestionTokens(
     tokenizeForLoCoMo(args.question),
   );
@@ -761,21 +813,176 @@ function prioritizeLoCoMoRecallText(args: {
         ? left.index - right.index
         : right.score - left.score,
     );
-  const focused = dedupePreserveOrder(
-    scored
-      .slice(0, LOCOMO_FOCUSED_LINE_LIMIT)
-      .map((entry) => truncateLoCoMoLine(entry.line)),
+  const directSeeds = scored.slice(
+    0,
+    args.multiHopRecallComposition
+      ? LOCOMO_DIRECT_LINE_LIMIT
+      : LOCOMO_FOCUSED_LINE_LIMIT,
   );
-  if (focused.length === 0) {
+  const linkedHops = args.multiHopRecallComposition
+    ? composeLoCoMoLinkedEvidence({
+        lines,
+        direct: directSeeds,
+        questionTokens,
+        remainingLineBudget: LOCOMO_FOCUSED_LINE_LIMIT - directSeeds.length,
+      })
+    : [];
+  const linkedLineCount = linkedHops.reduce(
+    (sum, hop) => sum + hop.lines.length,
+    0,
+  );
+  const direct = [
+    ...directSeeds,
+    ...scored.slice(
+      directSeeds.length,
+      LOCOMO_FOCUSED_LINE_LIMIT - linkedLineCount,
+    ),
+  ];
+  if (direct.length === 0 && linkedHops.length === 0) {
     return truncateLoCoMoContext(
       args.recalledText,
       LOCOMO_FALLBACK_CONTEXT_MAX_CHARS,
     );
   }
+  const sections = [
+    "## LoCoMo Question-Focused Evidence",
+    ...direct.map((entry) => truncateLoCoMoLine(entry.line)),
+  ];
+  for (const hop of linkedHops) {
+    sections.push(
+      `## LoCoMo Linked Evidence (hop ${hop.hop})`,
+      ...hop.lines.map(truncateLoCoMoLine),
+    );
+  }
   return truncateLoCoMoContext(
-    ["## LoCoMo Question-Focused Evidence", ...focused].join("\n"),
+    sections.join("\n"),
     LOCOMO_FOCUSED_CONTEXT_MAX_CHARS,
   );
+}
+
+type LoCoMoScoredLine = {
+  line: string;
+  index: number;
+  score: number;
+};
+
+type LoCoMoLinkedEvidenceHop = {
+  hop: number;
+  lines: string[];
+};
+
+/**
+ * Expand question-matching recall lines through lexical bridge entities that
+ * occur in the already-recalled context. This never sees LoCoMo category,
+ * evidence IDs, or expected answers; it only preserves and groups verbatim
+ * recall lines for the responder.
+ */
+function composeLoCoMoLinkedEvidence(args: {
+  lines: string[];
+  direct: LoCoMoScoredLine[];
+  questionTokens: Set<string>;
+  remainingLineBudget: number;
+}): LoCoMoLinkedEvidenceHop[] {
+  if (args.direct.length === 0 || args.remainingLineBudget <= 0) {
+    return [];
+  }
+
+  const lineEntries = args.lines.map((line, index) => ({
+    line,
+    index,
+    directScore: scoreLoCoMoLine(line, args.questionTokens),
+    bridgeTokens: collectLoCoMoBridgeTokens(line, args.questionTokens),
+  }));
+  const selectedIndexes = new Set(args.direct.map((entry) => entry.index));
+  const visitedBridgeTokens = new Set<string>();
+  let frontierTokens = new Set<string>();
+  for (const entry of args.direct) {
+    for (const token of lineEntries[entry.index]?.bridgeTokens ?? []) {
+      frontierTokens.add(token);
+      visitedBridgeTokens.add(token);
+    }
+  }
+
+  const hops: LoCoMoLinkedEvidenceHop[] = [];
+  let remaining = args.remainingLineBudget;
+  for (
+    let hop = 1;
+    hop <= LOCOMO_COMPOSITION_HOP_LIMIT &&
+    remaining > 0 &&
+    frontierTokens.size > 0;
+    hop += 1
+  ) {
+    const candidates = lineEntries
+      .filter((entry) =>
+        entry.directScore === 0 && !selectedIndexes.has(entry.index)
+      )
+      .map((entry) => ({
+        ...entry,
+        sharedTokens: [...entry.bridgeTokens].filter((token) =>
+          frontierTokens.has(token)
+        ),
+      }))
+      .filter((entry) => entry.sharedTokens.length > 0)
+      .sort((left, right) => {
+        if (right.sharedTokens.length !== left.sharedTokens.length) {
+          return right.sharedTokens.length - left.sharedTokens.length;
+        }
+        const longestLeft = Math.max(
+          ...left.sharedTokens.map((token) => token.length),
+        );
+        const longestRight = Math.max(
+          ...right.sharedTokens.map((token) => token.length),
+        );
+        return longestRight === longestLeft
+          ? left.index - right.index
+          : longestRight - longestLeft;
+      })
+      .slice(0, remaining);
+    if (candidates.length === 0) {
+      break;
+    }
+
+    hops.push({ hop, lines: candidates.map((entry) => entry.line) });
+    remaining -= candidates.length;
+    const nextFrontier = new Set<string>();
+    for (const candidate of candidates) {
+      selectedIndexes.add(candidate.index);
+      for (const token of candidate.bridgeTokens) {
+        if (!visitedBridgeTokens.has(token)) {
+          nextFrontier.add(token);
+          visitedBridgeTokens.add(token);
+        }
+      }
+    }
+    frontierTokens = nextFrontier;
+  }
+  return hops;
+}
+
+function collectLoCoMoBridgeTokens(
+  line: string,
+  questionTokens: Set<string>,
+): Set<string> {
+  const entityLikeTokens = new Set<string>();
+  for (const match of line.matchAll(/\b[A-Z][A-Za-z0-9'-]{2,}\b/g)) {
+    for (const token of tokenizeForLoCoMo(match[0])) {
+      entityLikeTokens.add(token);
+    }
+  }
+  const result = new Set<string>();
+  for (const token of tokenizeForLoCoMo(line)) {
+    if (
+      !entityLikeTokens.has(token) ||
+      token.length < 3 ||
+      /^\d+$/.test(token) ||
+      questionTokens.has(token) ||
+      LOCOMO_LINK_STOP_WORDS.has(token)
+    ) {
+      continue;
+    }
+    result.add(token);
+  }
+  return result;
 }
 
 function tokenizeForLoCoMo(text: string): Set<string> {
@@ -813,6 +1020,50 @@ const LOCOMO_STOP_WORDS = new Set([
   "where",
   "who",
   "would",
+]);
+
+const LOCOMO_LINK_STOP_WORDS = new Set([
+  ...LOCOMO_STOP_WORDS,
+  "about",
+  "assistant",
+  "context",
+  "conversation",
+  "discuss",
+  "discussed",
+  "evidence",
+  "focused",
+  "from",
+  "have",
+  "has",
+  "had",
+  "linked",
+  "memory",
+  "mention",
+  "mentioned",
+  "metadata",
+  "observation",
+  "pipeline",
+  "question",
+  "recall",
+  "recalled",
+  "remnic",
+  "said",
+  "says",
+  "search",
+  "session",
+  "speaker",
+  "summary",
+  "system",
+  "talked",
+  "that",
+  "their",
+  "them",
+  "they",
+  "this",
+  "told",
+  "user",
+  "were",
+  "with",
 ]);
 
 function expandLoCoMoQuestionTokens(tokens: Set<string>): Set<string> {

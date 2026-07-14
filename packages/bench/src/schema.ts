@@ -93,6 +93,7 @@ export const BENCHMARK_RESULT_SCHEMA = {
               properties: {
                 provider: { type: "string" },
                 model: { type: "string" },
+                rubricVersion: { type: "string" },
                 baseUrl: { type: "string" },
                 reasoningEffort: { type: "string" },
               },

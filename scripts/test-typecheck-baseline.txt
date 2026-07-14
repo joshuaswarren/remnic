@@ -29,11 +29,11 @@ packages/bench/src/benchmarks/published/locomo/runner.test.ts(739,18): TS18048
 packages/bench/src/benchmarks/published/locomo/runner.test.ts(827,18): TS18048
 packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(61,15): TS2322
 packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(182,15): TS2322
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(344,18): TS2532
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(444,18): TS18048
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(445,18): TS18048
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(527,18): TS18048
-packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(528,18): TS18048
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(569,18): TS2532
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(669,18): TS18048
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(670,18): TS18048
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(752,18): TS18048
+packages/bench/src/benchmarks/published/longmemeval/runner.test.ts(753,18): TS18048
 packages/bench/src/benchmarks/published/membench/runner.test.ts(150,18): TS18048
 packages/bench/src/benchmarks/published/membench/runner.test.ts(226,18): TS18048
 packages/bench/src/benchmarks/published/membench/runner.test.ts(227,18): TS18048

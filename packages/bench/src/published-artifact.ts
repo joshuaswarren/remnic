@@ -104,6 +104,16 @@ export interface BenchmarkArtifactJudgeCalibration {
   threshold: number;
   /** True when `kappa < threshold` — local judge unreliable for this benchmark. */
   warning: boolean;
+  /** Optional paired-bootstrap percentile interval (added by issue #1877). */
+  confidenceInterval?: { lower: number; upper: number; level: number };
+  /** Number of paired bootstrap resamples used for the interval. */
+  bootstrapSamples?: number;
+  /** SHA-256 of the exact ordered answer set used for calibration. */
+  answerSetHash?: string;
+  /** Stored benchmark result that supplies the pinned answer payload. */
+  sourceResultId?: string;
+  /** Ordered, bounded task ids that make the pinned calibration slice auditable. */
+  sliceQuestionIds?: readonly string[];
 }
 
 export interface BenchmarkArtifactPerTaskScore {
@@ -315,7 +325,55 @@ function readJudgeCalibrationFromBenchmarkOptions(
   ) {
     return undefined;
   }
-  return { kappa, sampleSize, threshold, warning };
+  const confidenceInterval = readCalibrationConfidenceInterval(record.confidenceInterval);
+  const bootstrapSamples = record.bootstrapSamples;
+  const answerSetHash = record.answerSetHash;
+  const sourceResultId = record.sourceResultId;
+  const sliceQuestionIds = readCalibrationQuestionIds(record.sliceQuestionIds);
+  const hasCompleteProvenance =
+    typeof answerSetHash === "string" && /^[0-9a-f]{64}$/.test(answerSetHash) &&
+    typeof sourceResultId === "string" && sourceResultId.length > 0 &&
+    sliceQuestionIds !== undefined && sliceQuestionIds.length === sampleSize;
+  return {
+    kappa,
+    sampleSize,
+    threshold,
+    warning,
+    ...(confidenceInterval ? { confidenceInterval } : {}),
+    ...(typeof bootstrapSamples === "number" && Number.isInteger(bootstrapSamples) && bootstrapSamples > 0
+      ? { bootstrapSamples }
+      : {}),
+    ...(hasCompleteProvenance
+      ? { answerSetHash, sourceResultId, sliceQuestionIds }
+      : {}),
+  };
+}
+
+function readCalibrationConfidenceInterval(
+  value: unknown,
+): { lower: number; upper: number; level: number } | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const interval = value as Record<string, unknown>;
+  if (
+    typeof interval.lower !== "number" || !Number.isFinite(interval.lower) ||
+    typeof interval.upper !== "number" || !Number.isFinite(interval.upper) ||
+    typeof interval.level !== "number" || !Number.isFinite(interval.level) ||
+    interval.lower > interval.upper || interval.level <= 0 || interval.level >= 1
+  ) {
+    return undefined;
+  }
+  return { lower: interval.lower, upper: interval.upper, level: interval.level };
+}
+
+function readCalibrationQuestionIds(value: unknown): readonly string[] | undefined {
+  if (
+    !Array.isArray(value) || value.length === 0 || value.length > 200 ||
+    !value.every((id) => typeof id === "string" && id.length > 0) ||
+    new Set(value).size !== value.length
+  ) {
+    return undefined;
+  }
+  return value as string[];
 }
 
 /**
@@ -451,6 +509,46 @@ export function parseBenchmarkArtifact(raw: string): BenchmarkArtifact {
     const warning = calibration.warning;
     if (typeof warning !== "boolean") {
       throw new Error(`BenchmarkArtifact judgeCalibration.warning must be a boolean; got ${String(warning)}.`);
+    }
+    if (calibration.confidenceInterval !== undefined && !readCalibrationConfidenceInterval(calibration.confidenceInterval)) {
+      throw new Error("BenchmarkArtifact judgeCalibration.confidenceInterval must contain finite ordered lower/upper bounds and a level between 0 and 1.");
+    }
+    if (
+      calibration.bootstrapSamples !== undefined &&
+      (typeof calibration.bootstrapSamples !== "number" ||
+        !Number.isInteger(calibration.bootstrapSamples) || calibration.bootstrapSamples <= 0)
+    ) {
+      throw new Error("BenchmarkArtifact judgeCalibration.bootstrapSamples must be a positive integer when provided.");
+    }
+    if (
+      calibration.answerSetHash !== undefined &&
+      (typeof calibration.answerSetHash !== "string" || !/^[0-9a-f]{64}$/.test(calibration.answerSetHash))
+    ) {
+      throw new Error("BenchmarkArtifact judgeCalibration.answerSetHash must be a lowercase SHA-256 hex digest when provided.");
+    }
+    if (
+      calibration.sourceResultId !== undefined &&
+      (typeof calibration.sourceResultId !== "string" || calibration.sourceResultId.length === 0)
+    ) {
+      throw new Error("BenchmarkArtifact judgeCalibration.sourceResultId must be a non-empty string when provided.");
+    }
+    if (calibration.sliceQuestionIds !== undefined && !readCalibrationQuestionIds(calibration.sliceQuestionIds)) {
+      throw new Error("BenchmarkArtifact judgeCalibration.sliceQuestionIds must contain 1 to 200 unique non-empty strings when provided.");
+    }
+    const hasAnyPinnedProvenance =
+      calibration.answerSetHash !== undefined ||
+      calibration.sourceResultId !== undefined ||
+      calibration.sliceQuestionIds !== undefined;
+    if (
+      hasAnyPinnedProvenance &&
+      (
+        typeof calibration.answerSetHash !== "string" || !/^[0-9a-f]{64}$/.test(calibration.answerSetHash) ||
+        typeof calibration.sourceResultId !== "string" || calibration.sourceResultId.length === 0 ||
+        !readCalibrationQuestionIds(calibration.sliceQuestionIds) ||
+        (calibration.sliceQuestionIds as unknown[]).length !== calibration.sampleSize
+      )
+    ) {
+      throw new Error("BenchmarkArtifact judgeCalibration pinned provenance requires a sourceResultId, answerSetHash, and unique sliceQuestionIds matching sampleSize.");
     }
   }
   const metrics = requireObject(record, "metrics");

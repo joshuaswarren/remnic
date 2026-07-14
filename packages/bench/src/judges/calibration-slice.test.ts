@@ -79,8 +79,8 @@ test("selectCalibrationSlice: deterministic — same input yields same slice acr
   assert.deepEqual(slice1, slice2);
 });
 
-test("selectCalibrationSlice: default size is 50", () => {
-  const ids = Array.from({ length: 80 }, (_, index) => `question-${index}`);
+test("selectCalibrationSlice: default size is 200 (#1877)", () => {
+  const ids = Array.from({ length: 250 }, (_, index) => `question-${index}`);
   const slice = selectCalibrationSlice(ids);
   assert.equal(slice.length, CALIBRATION_SLICE_SIZE);
 });
@@ -135,6 +135,9 @@ test("runJudgeCalibration: perfect agreement → kappa = 1, no warning", async (
   assert.equal(result.sampleSize, 50);
   assert.equal(result.sliceQuestionIds.length, 50);
   assert.equal(result.threshold, JUDGE_CALIBRATION_KAPPA_THRESHOLD);
+  assert.deepEqual(result.confidenceInterval, { lower: 1, upper: 1, level: 0.95 });
+  assert.equal(result.bootstrapSamples, 2_000);
+  assert.match(result.answerSetHash, /^[0-9a-f]{64}$/);
 });
 
 test("runJudgeCalibration: systematic disagreement → warning when kappa < threshold", async () => {
@@ -214,6 +217,68 @@ test("runJudgeCalibration: respects sliceSize smaller than available answers", a
   });
   assert.equal(result.sampleSize, 10);
   assert.equal(result.sliceQuestionIds.length, 10);
+});
+
+test("runJudgeCalibration hashes the exact answer payload, not only question ids", async () => {
+  const answers = makeAnswers(10);
+  const scores = Object.fromEntries(answers.map((answer) => [answer.predicted, 1]));
+  const first = await runJudgeCalibration({
+    benchmarkId: "locomo",
+    localJudge: makeScalarStubJudge(scores),
+    frontierJudge: makeScalarStubJudge(scores),
+    answers,
+    sliceSize: 10,
+    bootstrapSamples: 50,
+  });
+  const changed = answers.map((answer, index) => index === 0
+    ? { ...answer, expected: `${answer.expected}-changed` }
+    : answer);
+  const second = await runJudgeCalibration({
+    benchmarkId: "locomo",
+    localJudge: makeScalarStubJudge(scores),
+    frontierJudge: makeScalarStubJudge(scores),
+    answers: changed,
+    sliceSize: 10,
+    bootstrapSamples: 50,
+  });
+  assert.deepEqual(first.sliceQuestionIds, second.sliceQuestionIds);
+  assert.notEqual(first.answerSetHash, second.answerSetHash);
+});
+
+test("runJudgeCalibration rejects changed pinned answers before either judge is called", async () => {
+  const answers = makeAnswers(10);
+  const scores = Object.fromEntries(answers.map((answer) => [answer.predicted, 1]));
+  const baseline = await runJudgeCalibration({
+    benchmarkId: "locomo",
+    localJudge: makeScalarStubJudge(scores),
+    frontierJudge: makeScalarStubJudge(scores),
+    answers,
+    sliceSize: 10,
+    bootstrapSamples: 50,
+  });
+  let calls = 0;
+  const countingJudge: BenchJudge = {
+    async score(): Promise<number> {
+      calls += 1;
+      return 1;
+    },
+  };
+  const changed = answers.map((answer, index) => index === 0
+    ? { ...answer, predicted: `${answer.predicted}-changed` }
+    : answer);
+  await assert.rejects(
+    () => runJudgeCalibration({
+      benchmarkId: "locomo",
+      localJudge: countingJudge,
+      frontierJudge: countingJudge,
+      answers: changed,
+      pinnedQuestionIds: baseline.sliceQuestionIds,
+      expectedAnswerSetHash: baseline.answerSetHash,
+      bootstrapSamples: 50,
+    }),
+    /pinned answer set changed/,
+  );
+  assert.equal(calls, 0, "answer drift must fail before spending local or frontier judge calls");
 });
 
 test("runJudgeCalibration: non-finite judge scores do not crash calibration", async () => {
@@ -361,6 +426,31 @@ test("writeJudgeCalibrationState + loadJudgeCalibrationState round-trip judge id
     assert.equal(loaded?.localJudgeModel, "llama3:70b");
     assert.equal(loaded?.frontierJudgeProvider, "openai");
     assert.equal(loaded?.frontierJudgeModel, "gpt-4o");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeJudgeCalibrationState pins source, slice, answer hash, and bootstrap interval (#1877)", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-pinned-"));
+  try {
+    const answers = makeAnswers(12);
+    const scores = Object.fromEntries(answers.map((answer) => [answer.predicted, 1]));
+    const result = await runJudgeCalibration({
+      benchmarkId: "locomo",
+      localJudge: makeScalarStubJudge(scores),
+      frontierJudge: makeScalarStubJudge(scores),
+      answers,
+      sliceSize: 12,
+      bootstrapSamples: 100,
+    });
+    await writeJudgeCalibrationState(result, dir, undefined, { sourceResultId: "run-pinned-123" });
+    const loaded = await loadJudgeCalibrationState("locomo", dir);
+    assert.equal(loaded?.sourceResultId, "run-pinned-123");
+    assert.equal(loaded?.answerSetHash, result.answerSetHash);
+    assert.deepEqual(loaded?.sliceQuestionIds, result.sliceQuestionIds);
+    assert.deepEqual(loaded?.confidenceInterval, result.confidenceInterval);
+    assert.equal(loaded?.bootstrapSamples, 100);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

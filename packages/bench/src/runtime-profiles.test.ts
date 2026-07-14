@@ -114,6 +114,8 @@ test("real runtime profile preserves the configured Remnic retrieval settings", 
   assert.equal(resolved.remnicConfig.clientsecret, "[redacted]");
   assert.equal(resolved.remnicConfig.oauthToken, "[redacted]");
   assert.equal(resolved.remnicConfig.sessionTokenCount, 3);
+  assert.equal(resolved.remnicConfig.answerSupportGate, true);
+  assert.equal(resolved.effectiveRemnicConfig.answerSupportGate, true);
   assert.equal(resolved.effectiveRemnicConfig.openaiApiKey, "super-secret");
   assert.equal(resolved.effectiveRemnicConfig.secretKey, "secondary-secret");
   assert.equal(resolved.effectiveRemnicConfig.refreshToken, "oauth-refresh-token");
@@ -129,6 +131,20 @@ test("real runtime profile preserves the configured Remnic retrieval settings", 
   assert.equal(resolved.adapterOptions.preserveRuntimeDefaults, true);
   assert.equal(resolved.systemProvider, null);
   assert.equal(resolved.judgeProvider, null);
+});
+
+test("real runtime profile preserves an explicit support-gate opt-out", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "remnic-bench-support-opt-out-"));
+  const configPath = path.join(root, "remnic.config.json");
+  await writeFile(configPath, JSON.stringify({ remnic: { answerSupportGate: "off" } }));
+
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "real",
+    remnicConfigPath: configPath,
+  });
+
+  assert.equal(resolved.remnicConfig.answerSupportGate, "off");
+  assert.equal(resolved.effectiveRemnicConfig.answerSupportGate, "off");
 });
 
 test("openclaw-chain runtime profile loads OpenClaw config and forces gateway routing", async () => {
@@ -354,6 +370,42 @@ test("provider-backed runtime resolution rejects incomplete provider configurati
       }),
     /judge provider requires both provider and model/i,
   );
+});
+
+test("OpenAI judging defaults to Responses API gpt-5.6 without selecting a judge implicitly", async () => {
+  const withoutJudge = await resolveBenchRuntimeProfile({ runtimeProfile: "baseline" });
+  assert.equal(withoutJudge.judgeProvider, null);
+
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    judgeProvider: "openai",
+  });
+  assert.deepEqual(resolved.judgeProvider, {
+    provider: "openai",
+    model: "gpt-5.6",
+    rubricVersion: "openai-responses-bench-v1",
+  });
+});
+
+test("OpenAI Responses judge preserves an explicit model override", async () => {
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    judgeProvider: "openai",
+    judgeModel: "gpt-5.6-2026-07-01",
+  });
+  assert.equal(resolved.judgeProvider?.model, "gpt-5.6-2026-07-01");
+  assert.equal(resolved.judgeProvider?.rubricVersion, "openai-responses-bench-v1");
+});
+
+test("OpenAI judge credentials stay in the live provider and are redacted from runtime provenance", async () => {
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    judgeProvider: "openai",
+    judgeApiKey: "sk-live-secret",
+  });
+  assert.equal(resolved.judgeProvider?.apiKey, "[redacted]");
+  assert.doesNotMatch(JSON.stringify(resolved.judgeProvider), /sk-live-secret/);
+  assert.equal(typeof resolved.adapterOptions.judge?.score, "function");
 });
 
 test("provider-backed runtime resolution configures codex-cli with xhigh reasoning", async () => {

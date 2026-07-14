@@ -8,37 +8,77 @@ import {
   parseBenchArgs,
 } from "./bench-args.js";
 
-test("parseBenchArgs keeps validated matrix profiles typed and ordered", () => {
+test("parseBenchArgs accepts the packaged MCP demo path", () => {
+  const parsed = parseBenchArgs(["run", "longmemeval", "--quick", "--adapter", "mcp", "--mcp-demo"]);
+  assert.equal(parsed.adapter, "mcp");
+  assert.equal(parsed.mcpDemo, true);
+});
+
+test("parseBenchArgs accepts stdio MCP config and explicit tool mapping", () => {
   const parsed = parseBenchArgs([
     "run",
-    "assistant-morning-brief",
-    "--matrix",
-    "baseline,real,openclaw-chain",
+    "longmemeval",
+    "--adapter",
+    "mcp",
+    "--mcp-command",
+    "node",
+    "--mcp-args",
+    '["server.js","--stdio"]',
+    "--mcp-tool-map",
+    '{"store":"remember","recall":"find","correct":"revise","reset":"forget"}',
   ]);
+  assert.deepEqual(parsed.mcpArgs, ["server.js", "--stdio"]);
+  assert.equal(parsed.mcpToolMap?.store, "remember");
+});
 
-  assert.deepEqual(parsed.matrixProfiles, [
-    "baseline",
-    "real",
-    "openclaw-chain",
-  ]);
+test("parseBenchArgs rejects ambiguous or unscoped MCP config", () => {
+  assert.throws(() => parseBenchArgs(["run", "longmemeval", "--mcp-demo"]), /MCP options require --adapter mcp/);
+  assert.throws(
+    () =>
+      parseBenchArgs(["run", "longmemeval", "--adapter", "mcp", "--mcp-demo", "--mcp-url", "https://example.test/mcp"]),
+    /requires exactly one/
+  );
+});
+
+test("parseBenchArgs rejects malformed MCP tool mappings completely", () => {
+  const invalidMappings = [
+    [{ surprise: "tool" }, /unknown operation surprise/],
+    [{ store: 42 }, /store must be a tool-name string or mapping object/],
+    [{ store: { name: "remember", extra: true } }, /unknown field extra/],
+    [{ store: { name: "remember", arguments: { global: "all" } } }, /unknown semantic global/],
+    [{ store: { name: "remember", arguments: { sessionId: 7 } } }, /sessionId must be a non-empty string/],
+    [{ recall: { name: "find", resultPath: "__proto__.hits" } }, /safe dot path/],
+  ] as const;
+  for (const [mapping, expected] of invalidMappings) {
+    assert.throws(
+      () =>
+        parseBenchArgs([
+          "run",
+          "longmemeval",
+          "--adapter",
+          "mcp",
+          "--mcp-demo",
+          "--mcp-tool-map",
+          JSON.stringify(mapping),
+        ]),
+      expected
+    );
+  }
+});
+
+test("parseBenchArgs keeps validated matrix profiles typed and ordered", () => {
+  const parsed = parseBenchArgs(["run", "assistant-morning-brief", "--matrix", "baseline,real,openclaw-chain"]);
+
+  assert.deepEqual(parsed.matrixProfiles, ["baseline", "real", "openclaw-chain"]);
 });
 
 test("parseBenchArgs rejects unknown bench flags", () => {
-  assert.throws(
-    () => parseBenchArgs(["run", "locomo", "--jsoon"]),
-    /unknown bench option --jsoon/,
-  );
+  assert.throws(() => parseBenchArgs(["run", "locomo", "--jsoon"]), /unknown bench option --jsoon/);
 });
 
 test("parseBenchArgs rejects action-incompatible bench flags", () => {
-  assert.throws(
-    () => parseBenchArgs(["run", "locomo", "--dry-run"]),
-    /--dry-run is not supported for bench run/,
-  );
-  assert.throws(
-    () => parseBenchArgs(["run", "locomo", "--format", "json"]),
-    /--format is not supported for bench run/,
-  );
+  assert.throws(() => parseBenchArgs(["run", "locomo", "--dry-run"]), /--dry-run is not supported for bench run/);
+  assert.throws(() => parseBenchArgs(["run", "locomo", "--format", "json"]), /--format is not supported for bench run/);
 });
 
 test("parseBenchArgs treats action help flags as help requests", () => {
@@ -47,14 +87,8 @@ test("parseBenchArgs treats action help flags as help requests", () => {
 });
 
 test("parseBenchArgs rejects empty legacy benchmark equals paths", () => {
-  assert.throws(
-    () => parseBenchArgs(["check", "--baseline="]),
-    /--baseline requires a value/,
-  );
-  assert.throws(
-    () => parseBenchArgs(["report", "--report=   "]),
-    /--report requires a value/,
-  );
+  assert.throws(() => parseBenchArgs(["check", "--baseline="]), /--baseline requires a value/);
+  assert.throws(() => parseBenchArgs(["report", "--report=   "]), /--report requires a value/);
 });
 
 test("parseBenchArgs accepts non-empty legacy benchmark equals paths", () => {
@@ -70,7 +104,7 @@ test("retry-failed filters matrix work at profile granularity", () => {
       { id: "locomo [baseline]", status: "complete" },
       { id: "locomo [real]", status: "failed" },
     ],
-    "retry-failed",
+    "retry-failed"
   );
 
   assert.deepEqual(filtered, [{ benchmarkId: "locomo", runtimeProfile: "real" }]);
@@ -84,7 +118,7 @@ test("retry-failed preserves prior matrix status for single-profile reruns", () 
       { id: "locomo [baseline]", status: "failed" },
       { id: "locomo", status: "complete" },
     ],
-    "retry-failed",
+    "retry-failed"
   );
 
   assert.deepEqual(filtered, [{ benchmarkId: "locomo", runtimeProfile: "baseline" }]);
@@ -98,7 +132,7 @@ test("resume skips only completed matrix profile work", () => {
       { id: "locomo [baseline]", status: "complete" },
       { id: "locomo [real]", status: "failed" },
     ],
-    "resume",
+    "resume"
   );
 
   assert.deepEqual(filtered, [{ benchmarkId: "locomo", runtimeProfile: "real" }]);
@@ -112,7 +146,7 @@ test("runtime profiles for repro manifests follow filtered matrix work", () => {
       { id: "locomo [baseline]", status: "complete" },
       { id: "locomo [real]", status: "failed" },
     ],
-    "resume",
+    "resume"
   );
 
   assert.deepEqual(deriveRuntimeProfilesFromBenchWorkItems(filtered), ["real"]);
@@ -120,11 +154,7 @@ test("runtime profiles for repro manifests follow filtered matrix work", () => {
 
 test("resume treats new matrix profiles as unrun when only bare status exists", () => {
   const workItems = createBenchWorkItems(["locomo"], ["baseline", "real"]);
-  const filtered = filterBenchWorkItemsForPreviousStatus(
-    workItems,
-    [{ id: "locomo", status: "complete" }],
-    "resume",
-  );
+  const filtered = filterBenchWorkItemsForPreviousStatus(workItems, [{ id: "locomo", status: "complete" }], "resume");
 
   assert.deepEqual(filtered, workItems);
 });
@@ -134,7 +164,7 @@ test("retry-failed expands bare failed status across matrix profiles", () => {
   const filtered = filterBenchWorkItemsForPreviousStatus(
     workItems,
     [{ id: "locomo", status: "failed" }],
-    "retry-failed",
+    "retry-failed"
   );
 
   assert.deepEqual(filtered, workItems);
@@ -162,10 +192,7 @@ test("parseBenchArgs accepts published action with --name, --dataset, --model", 
   assert.equal(parsed.action, "published");
   assert.equal(parsed.publishedName, "longmemeval");
   // `--dataset` aliases to `--dataset-dir`.
-  assert.equal(
-    parsed.datasetDir,
-    "/tmp/bench-datasets/longmemeval",
-  );
+  assert.equal(parsed.datasetDir, "/tmp/bench-datasets/longmemeval");
   assert.equal(parsed.systemModel, "gpt-4o-mini");
   assert.equal(parsed.publishedSeed, 42);
   assert.equal(parsed.publishedLimit, 100);
@@ -174,17 +201,8 @@ test("parseBenchArgs accepts published action with --name, --dataset, --model", 
 
 test("parseBenchArgs rejects unknown published --name", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "not-a-benchmark",
-        "--dataset",
-        "/tmp",
-        "--model",
-        "m",
-      ]),
-    /--name must be one of ama-bench, memory-arena, amemgym, longmemeval, locomo, beam, personamem, memoryagentbench, membench/,
+    () => parseBenchArgs(["published", "--name", "not-a-benchmark", "--dataset", "/tmp", "--model", "m"]),
+    /--name must be one of ama-bench, memory-arena, amemgym, longmemeval, locomo, beam, personamem, memoryagentbench, membench/
   );
 });
 
@@ -219,19 +237,8 @@ test("parseBenchArgs accepts every public benchmark for published runs", () => {
 
 test("parseBenchArgs rejects non-integer --limit", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "locomo",
-        "--dataset",
-        "/tmp",
-        "--model",
-        "m",
-        "--limit",
-        "3.14",
-      ]),
-    /--limit must be a non-negative integer/,
+    () => parseBenchArgs(["published", "--name", "locomo", "--dataset", "/tmp", "--model", "m", "--limit", "3.14"]),
+    /--limit must be a non-negative integer/
   );
 });
 
@@ -313,7 +320,7 @@ test("parseBenchArgs rejects invalid or unsupported --trial-concurrency", () => 
         "--trial-concurrency",
         "0",
       ]),
-    /--trial-concurrency must be an integer from 1 to 64/,
+    /--trial-concurrency must be an integer from 1 to 64/
   );
   assert.throws(
     () =>
@@ -328,7 +335,7 @@ test("parseBenchArgs rejects invalid or unsupported --trial-concurrency", () => 
         "--trial-concurrency",
         "2",
       ]),
-    /--trial-concurrency is currently supported only for LoCoMo and AMA-Bench/,
+    /--trial-concurrency is currently supported only for LoCoMo and AMA-Bench/
   );
 });
 
@@ -346,7 +353,7 @@ test("parseBenchArgs rejects invalid or unsupported --ingest-concurrency", () =>
         "--ingest-concurrency",
         "0",
       ]),
-    /--ingest-concurrency must be an integer from 1 to 64/,
+    /--ingest-concurrency must be an integer from 1 to 64/
   );
   assert.throws(
     () =>
@@ -361,19 +368,12 @@ test("parseBenchArgs rejects invalid or unsupported --ingest-concurrency", () =>
         "--ingest-concurrency",
         "2",
       ]),
-    /--ingest-concurrency is currently supported only for LoCoMo/,
+    /--ingest-concurrency is currently supported only for LoCoMo/
   );
 });
 
 test("parseBenchArgs accepts independent provider and drain timeouts", () => {
-  const parsed = parseBenchArgs([
-    "run",
-    "locomo",
-    "--request-timeout",
-    "120000",
-    "--drain-timeout",
-    "600000",
-  ]);
+  const parsed = parseBenchArgs(["run", "locomo", "--request-timeout", "120000", "--drain-timeout", "600000"]);
 
   assert.deepEqual(parsed.benchmarks, ["locomo"]);
   assert.equal(parsed.requestTimeout, 120000);
@@ -382,24 +382,12 @@ test("parseBenchArgs accepts independent provider and drain timeouts", () => {
 
 test("parseBenchArgs rejects invalid --drain-timeout", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "locomo",
-        "--drain-timeout",
-        "0",
-      ]),
-    /--drain-timeout must be a positive integer/,
+    () => parseBenchArgs(["run", "locomo", "--drain-timeout", "0"]),
+    /--drain-timeout must be a positive integer/
   );
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "locomo",
-        "--drain-timeout",
-        "1.5",
-      ]),
-    /--drain-timeout must be a positive integer/,
+    () => parseBenchArgs(["run", "locomo", "--drain-timeout", "1.5"]),
+    /--drain-timeout must be a positive integer/
   );
 });
 
@@ -420,23 +408,13 @@ test("parseBenchArgs accepts published --trial-limit for MemoryAgentBench", () =
 });
 
 test("parseBenchArgs accepts --trial-limit for bench run locomo", () => {
-  const parsed = parseBenchArgs([
-    "run",
-    "locomo",
-    "--trial-limit",
-    "3",
-  ]);
+  const parsed = parseBenchArgs(["run", "locomo", "--trial-limit", "3"]);
 
   assert.equal(parsed.publishedTrialLimit, 3);
 });
 
 test("parseBenchArgs accepts --trial-limit for bench run memoryagentbench", () => {
-  const parsed = parseBenchArgs([
-    "run",
-    "memoryagentbench",
-    "--trial-limit",
-    "2",
-  ]);
+  const parsed = parseBenchArgs(["run", "memoryagentbench", "--trial-limit", "2"]);
 
   assert.equal(parsed.publishedTrialLimit, 2);
 });
@@ -444,98 +422,41 @@ test("parseBenchArgs accepts --trial-limit for bench run memoryagentbench", () =
 test("parseBenchArgs rejects non-integer --trial-limit", () => {
   assert.throws(
     () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "locomo",
-        "--dataset",
-        "/tmp",
-        "--model",
-        "m",
-        "--trial-limit",
-        "2.5",
-      ]),
-    /--trial-limit must be a non-negative integer/,
+      parseBenchArgs(["published", "--name", "locomo", "--dataset", "/tmp", "--model", "m", "--trial-limit", "2.5"]),
+    /--trial-limit must be a non-negative integer/
   );
 });
 
 test("parseBenchArgs rejects published --trial-limit for unsupported benchmarks", () => {
   assert.throws(
     () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "longmemeval",
-        "--dataset",
-        "/tmp",
-        "--model",
-        "m",
-        "--trial-limit",
-        "1",
-      ]),
-    /--trial-limit is currently supported only for LoCoMo and MemoryAgentBench/,
+      parseBenchArgs(["published", "--name", "longmemeval", "--dataset", "/tmp", "--model", "m", "--trial-limit", "1"]),
+    /--trial-limit is currently supported only for LoCoMo and MemoryAgentBench/
   );
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "beam",
-        "--dataset",
-        "/tmp",
-        "--model",
-        "m",
-        "--trial-limit",
-        "1",
-      ]),
-    /--trial-limit is currently supported only for LoCoMo and MemoryAgentBench/,
+    () => parseBenchArgs(["published", "--name", "beam", "--dataset", "/tmp", "--model", "m", "--trial-limit", "1"]),
+    /--trial-limit is currently supported only for LoCoMo and MemoryAgentBench/
   );
 });
 
 test("parseBenchArgs rejects --trial-limit when a supported benchmark is not the only selected benchmark", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "locomo",
-        "longmemeval",
-        "--trial-limit",
-        "1",
-      ]),
-    /--trial-limit is currently supported only for LoCoMo and MemoryAgentBench/,
+    () => parseBenchArgs(["run", "locomo", "longmemeval", "--trial-limit", "1"]),
+    /--trial-limit is currently supported only for LoCoMo and MemoryAgentBench/
   );
 });
 
 test("parseBenchArgs rejects non-integer --seed", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "locomo",
-        "--dataset",
-        "/tmp",
-        "--model",
-        "m",
-        "--seed",
-        "1.5",
-      ]),
-    /--seed must be a non-negative integer/,
+    () => parseBenchArgs(["published", "--name", "locomo", "--dataset", "/tmp", "--model", "m", "--seed", "1.5"]),
+    /--seed must be a non-negative integer/
   );
 });
 
 test("parseBenchArgs rejects --model without value (CLAUDE.md rule 14)", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "locomo",
-        "--dataset",
-        "/tmp",
-        "--model",
-      ]),
-    /--model requires a value/,
+    () => parseBenchArgs(["published", "--name", "locomo", "--dataset", "/tmp", "--model"]),
+    /--model requires a value/
   );
 });
 
@@ -544,17 +465,8 @@ test("parseBenchArgs rejects empty --model string", () => {
   // (we don't support =), but an explicitly empty next-token is tested.
   // We use `" "` to make this robust: `trim().length === 0`.
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "locomo",
-        "--dataset",
-        "/tmp",
-        "--model",
-        "   ",
-      ]),
-    /--model must not be empty/,
+    () => parseBenchArgs(["published", "--name", "locomo", "--dataset", "/tmp", "--model", "   "]),
+    /--model must not be empty/
   );
 });
 
@@ -634,27 +546,15 @@ test("parseBenchArgs accepts direct responder prompt budgeting", () => {
 
 test("parseBenchArgs rejects responder context budget without a direct responder", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "ama-bench",
-        "--system-responder-context-budget-chars",
-        "8000",
-      ]),
-    /--system-responder-context-budget-chars requires --system-provider/,
+    () => parseBenchArgs(["run", "ama-bench", "--system-responder-context-budget-chars", "8000"]),
+    /--system-responder-context-budget-chars requires --system-provider/
   );
 });
 
 test("parseBenchArgs rejects responder prompt budget without a direct responder", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "ama-bench",
-        "--system-responder-prompt-budget-chars",
-        "2000",
-      ]),
-    /--system-responder-prompt-budget-chars requires --system-provider/,
+    () => parseBenchArgs(["run", "ama-bench", "--system-responder-prompt-budget-chars", "2000"]),
+    /--system-responder-prompt-budget-chars requires --system-provider/
   );
 });
 
@@ -671,7 +571,7 @@ test("parseBenchArgs rejects invalid responder context budgets", () => {
         "--system-responder-context-budget-chars",
         "0",
       ]),
-    /--system-responder-context-budget-chars must be a positive integer/,
+    /--system-responder-context-budget-chars must be a positive integer/
   );
 });
 
@@ -688,7 +588,7 @@ test("parseBenchArgs rejects invalid responder prompt budgets", () => {
         "--system-responder-prompt-budget-chars",
         "3.14",
       ]),
-    /--system-responder-prompt-budget-chars must be a positive integer/,
+    /--system-responder-prompt-budget-chars must be a positive integer/
   );
 });
 
@@ -705,7 +605,7 @@ test("parseBenchArgs rejects system Codex reasoning effort for non-Codex provide
         "--system-codex-reasoning-effort",
         "xhigh",
       ]),
-    /--system-codex-reasoning-effort requires --system-provider codex-cli/,
+    /--system-codex-reasoning-effort requires --system-provider codex-cli/
   );
 });
 
@@ -730,16 +630,8 @@ test("parseBenchArgs accepts internal Remnic LLM provider flags", () => {
 
 test("parseBenchArgs rejects --internal-provider claude-cli (no @remnic/core gateway wiring, PR #1735 review)", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "ama-bench",
-        "--internal-provider",
-        "claude-cli",
-        "--internal-model",
-        "opus",
-      ]),
-    /--internal-provider does not support "claude-cli"/,
+    () => parseBenchArgs(["run", "ama-bench", "--internal-provider", "claude-cli", "--internal-model", "opus"]),
+    /--internal-provider does not support "claude-cli"/
   );
 });
 
@@ -774,7 +666,7 @@ test("parseBenchArgs rejects internal Codex reasoning effort for non-Codex provi
         "--internal-codex-reasoning-effort",
         "xhigh",
       ]),
-    /--internal-codex-reasoning-effort requires --internal-provider codex-cli/,
+    /--internal-codex-reasoning-effort requires --internal-provider codex-cli/
   );
 });
 
@@ -802,27 +694,15 @@ test("parseBenchArgs accepts AMA-Bench recommended judge and cross-judge flags",
 
 test("parseBenchArgs rejects unknown AMA-Bench judge protocol", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "ama-bench",
-        "--ama-bench-judge-protocol",
-        "paperish",
-      ]),
-    /--ama-bench-judge-protocol must be "default" or "recommended"/,
+    () => parseBenchArgs(["run", "ama-bench", "--ama-bench-judge-protocol", "paperish"]),
+    /--ama-bench-judge-protocol must be "default" or "recommended"/
   );
 });
 
 test("parseBenchArgs requires cross-judge model when cross-judge provider is configured", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "ama-bench",
-        "--ama-bench-cross-judge-provider",
-        "ollama",
-      ]),
-    /--ama-bench-cross-judge-model is required/,
+    () => parseBenchArgs(["run", "ama-bench", "--ama-bench-cross-judge-provider", "ollama"]),
+    /--ama-bench-cross-judge-model is required/
   );
 });
 
@@ -839,7 +719,7 @@ test("parseBenchArgs requires cross-judge model when only cross-judge Codex effo
         "--ama-bench-cross-judge-codex-reasoning-effort",
         "low",
       ]),
-    /--ama-bench-cross-judge-model is required/,
+    /--ama-bench-cross-judge-model is required/
   );
 });
 
@@ -860,7 +740,7 @@ test("parseBenchArgs rejects cross-judge Codex reasoning effort for non-Codex pr
         "--ama-bench-cross-judge-codex-reasoning-effort",
         "xhigh",
       ]),
-    /--ama-bench-cross-judge-codex-reasoning-effort requires/,
+    /--ama-bench-cross-judge-codex-reasoning-effort requires/
   );
 });
 
@@ -878,7 +758,7 @@ test("parseBenchArgs rejects unknown --provider", () => {
         "--provider",
         "not-a-provider",
       ]),
-    /--provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"/,
+    /--provider must be one of "openai", "anthropic", "ollama", "litellm", "local-llm", "codex-cli", or "claude-cli"/
   );
 });
 
@@ -898,16 +778,7 @@ test("parseBenchArgs honors --dataset-dir over --dataset when both are set", () 
 });
 
 test("parseBenchArgs --dry-run sets publishedDryRun = true", () => {
-  const parsed = parseBenchArgs([
-    "published",
-    "--name",
-    "locomo",
-    "--dataset",
-    "/tmp",
-    "--model",
-    "m",
-    "--dry-run",
-  ]);
+  const parsed = parseBenchArgs(["published", "--name", "locomo", "--dataset", "/tmp", "--model", "m", "--dry-run"]);
   assert.equal(parsed.publishedDryRun, true);
 });
 
@@ -928,12 +799,7 @@ test("parseBenchArgs accepts BEAM diagnostic --task-filter", () => {
 });
 
 test("parseBenchArgs accepts --task-filter for bench run beam", () => {
-  const parsed = parseBenchArgs([
-    "run",
-    "beam",
-    "--task-filter",
-    "instruction_following",
-  ]);
+  const parsed = parseBenchArgs(["run", "beam", "--task-filter", "instruction_following"]);
 
   assert.equal(parsed.publishedTaskFilter, "instruction_following");
   assert.deepEqual(parsed.benchmarks, ["beam"]);
@@ -953,7 +819,7 @@ test("parseBenchArgs rejects --task-filter for non-BEAM benchmarks", () => {
         "--task-filter",
         "instruction_following",
       ]),
-    /--task-filter is currently supported only for BEAM/,
+    /--task-filter is currently supported only for BEAM/
   );
   assert.throws(
     () =>
@@ -968,54 +834,26 @@ test("parseBenchArgs rejects --task-filter for non-BEAM benchmarks", () => {
         "--task-filter",
         "instruction_following",
       ]),
-    /--task-filter is currently supported only for BEAM/,
+    /--task-filter is currently supported only for BEAM/
   );
 });
 
 test("parseBenchArgs rejects --task-filter when BEAM is not the only selected benchmark", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "run",
-        "beam",
-        "locomo",
-        "--task-filter",
-        "instruction_following",
-      ]),
-    /--task-filter is currently supported only for BEAM/,
+    () => parseBenchArgs(["run", "beam", "locomo", "--task-filter", "instruction_following"]),
+    /--task-filter is currently supported only for BEAM/
   );
 });
 
 test("parseBenchArgs rejects empty --task-filter", () => {
   assert.throws(
-    () =>
-      parseBenchArgs([
-        "published",
-        "--name",
-        "beam",
-        "--dataset",
-        "/tmp",
-        "--model",
-        "m",
-        "--task-filter",
-        " ",
-      ]),
-    /--task-filter must not be empty/,
+    () => parseBenchArgs(["published", "--name", "beam", "--dataset", "/tmp", "--model", "m", "--task-filter", " "]),
+    /--task-filter must not be empty/
   );
 });
 
 test("parseBenchArgs --limit 0 preserved (CLAUDE.md rule 27 slice-negative-zero)", () => {
-  const parsed = parseBenchArgs([
-    "published",
-    "--name",
-    "locomo",
-    "--dataset",
-    "/tmp",
-    "--model",
-    "m",
-    "--limit",
-    "0",
-  ]);
+  const parsed = parseBenchArgs(["published", "--name", "locomo", "--dataset", "/tmp", "--model", "m", "--limit", "0"]);
   assert.equal(parsed.publishedLimit, 0);
 });
 
@@ -1034,10 +872,7 @@ test("parseBenchArgs resolves --local-lab-manifest into localLabManifestPath (cu
   ]);
 
   assert.equal(parsed.runtimeProfile, "local-lab");
-  assert.ok(
-    parsed.localLabManifestPath?.startsWith("/"),
-    "localLabManifestPath must be resolved to an absolute path",
-  );
+  assert.ok(parsed.localLabManifestPath?.startsWith("/"), "localLabManifestPath must be resolved to an absolute path");
   assert.match(parsed.localLabManifestPath ?? "", /local-lab\.json$/);
 });
 
@@ -1050,8 +885,5 @@ test("parseBenchArgs --matrix empty error lists local-lab alongside the other pr
   // Regression: the empty-matrix error named only baseline/real/openclaw-chain
   // even though parseBenchRuntimeProfile accepts local-lab, so the message was
   // an outdated allow-list.
-  assert.throws(
-    () => parseBenchArgs(["run", "locomo", "--matrix", " , , "]),
-    /local-lab/,
-  );
+  assert.throws(() => parseBenchArgs(["run", "locomo", "--matrix", " , , "]), /local-lab/);
 });

@@ -702,6 +702,42 @@ test("buildBenchmarkReproManifest hashes datasets/results and redacts secret arg
   );
 });
 
+test("result manifest exposes sanitized judge identity and binds rubric changes into artifactHash", async () => {
+  const root = await createTempRoot("remnic-repro-judge-identity-");
+  const resultsDir = path.join(root, "results");
+  await mkdir(resultsDir, { recursive: true });
+  const resultPath = path.join(resultsDir, "judge.json");
+  const result = buildResult();
+  result.config.judgeProvider = {
+    provider: "openai",
+    model: "gpt-5.6",
+    rubricVersion: "rubric-v1",
+    apiKey: "must-not-persist",
+  };
+  await writeFile(resultPath, `${JSON.stringify(result)}\n`, "utf8");
+  const first = await buildBenchmarkReproManifest(resultsDir, {
+    resultPaths: [resultPath],
+    runId: "judge-identity",
+    command: { cwd: root, argv: ["bench", "run"] },
+  });
+  assert.deepEqual(first.results[0]?.judge, {
+    provider: "openai",
+    model: "gpt-5.6",
+    rubricVersion: "rubric-v1",
+  });
+  assert.doesNotMatch(JSON.stringify(first.results[0]?.judge), /must-not-persist/);
+
+  result.config.judgeProvider.rubricVersion = "rubric-v2";
+  await writeFile(resultPath, `${JSON.stringify(result)}\n`, "utf8");
+  const second = await buildBenchmarkReproManifest(resultsDir, {
+    resultPaths: [resultPath],
+    runId: "judge-identity",
+    command: { cwd: root, argv: ["bench", "run"] },
+  });
+  assert.equal(second.results[0]?.judge?.rubricVersion, "rubric-v2");
+  assert.notEqual(first.artifactHash, second.artifactHash);
+});
+
 test("writeBenchmarkReproManifest writes MANIFEST.json beside results", async () => {
   const root = await createTempRoot("remnic-repro-manifest-write-");
   const resultsDir = path.join(root, "results");

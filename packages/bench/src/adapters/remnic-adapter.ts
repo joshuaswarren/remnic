@@ -40,6 +40,8 @@ import type {
   BenchJudge,
   BenchMemoryAdapter,
   BenchRecallOptions,
+  BenchRecallSupportAssessment,
+  BenchRecallSupportRequest,
   BenchResponder,
   MemoryStats,
   Message,
@@ -57,6 +59,131 @@ export interface RemnicAdapterOptions {
   replayExtractionMode?: "await" | "background" | "skip";
   replaySourceValidAtMode?: "historical" | "batch";
   sandboxDir?: string;
+}
+
+const DEFAULT_ANSWER_SUPPORT_MIN_COVERAGE = 0.34;
+
+const ANSWER_SUPPORT_STOP_WORDS = new Set([
+  "about", "after", "again", "also", "answer", "before", "being", "could",
+  "does", "from", "have", "information", "into", "just", "know", "memory",
+  "might", "please", "question", "recall", "remember", "should", "that", "their",
+  "there", "these", "they", "this", "those", "user", "using", "what", "when",
+  "where", "which", "while", "with", "would", "your",
+]);
+
+function resolveAnswerSupportMinCoverage(config: Record<string, unknown> | undefined): number {
+  const raw = config?.answerSupportMinCoverage;
+  if (raw === undefined) return DEFAULT_ANSWER_SUPPORT_MIN_COVERAGE;
+  const parsed = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    throw new Error("answerSupportMinCoverage must be a finite number greater than 0 and at most 1.");
+  }
+  return parsed;
+}
+
+function resolveSkipExtractionLcmFirst(config: Record<string, unknown> | undefined): boolean {
+  const raw = config?.skipExtractionLcmFirst;
+  if (raw === undefined) return true;
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw === "string") {
+    const normalized = raw.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  throw new Error(
+    "skipExtractionLcmFirst must be a boolean or one of true/false, 1/0, yes/no, on/off.",
+  );
+}
+
+export function shouldIncludeCoreRecallForReplay(options: {
+  useCoreMemoryPipeline: boolean;
+  replayExtractionMode: "await" | "background" | "skip";
+  skipExtractionLcmFirst: boolean;
+}): boolean {
+  return options.useCoreMemoryPipeline &&
+    (options.replayExtractionMode !== "skip" || !options.skipExtractionLcmFirst);
+}
+
+function normalizeSupportToken(value: string): string {
+  if (value.length > 5 && value.endsWith("ing")) return value.slice(0, -3);
+  if (value.length > 4 && value.endsWith("ed")) {
+    const base = value.slice(0, -2);
+    return /[vs]$/.test(base) ? `${base}e` : base;
+  }
+  if (value.length > 4 && value.endsWith("es")) return value.slice(0, -2);
+  if (value.length > 3 && value.endsWith("s")) return value.slice(0, -1);
+  return value;
+}
+
+function supportTerms(value: string): string[] {
+  return [...new Set(
+    (value.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}_-]{2,}/gu) ?? [])
+      .filter((term) => !ANSWER_SUPPORT_STOP_WORDS.has(term))
+      .map(normalizeSupportToken)
+      .filter((term) => !ANSWER_SUPPORT_STOP_WORDS.has(term) && !/^\d+$/.test(term)),
+  )];
+}
+
+function exactContextEvidenceLines(recalledText: string): string[] {
+  return recalledText.split(/\r?\n/).map((line) => line.trim()).filter((line) => {
+    if (!line || /^#{1,6}\s/.test(line)) return false;
+    return !/^(?:answer guidance:|distinct user-stated targets found:|no (?:direct|historically valid)|these direct temporal statements|this is the most recent|use this list|when answering)/i.test(line);
+  });
+}
+
+/**
+ * Classify support from the exact final context supplied to the responder.
+ * This intentionally avoids auxiliary zero-hit searches: a different recall
+ * tier may have contributed strong verbatim evidence to this context.
+ */
+export function assessRemnicRecallSupport(
+  request: BenchRecallSupportRequest,
+  supportThreshold = DEFAULT_ANSWER_SUPPORT_MIN_COVERAGE,
+): BenchRecallSupportAssessment {
+  if (request.recalledText.trim().length === 0) {
+    return { status: "empty", reason: "exact responder context is empty", evidenceCount: 0 };
+  }
+  const queryTerms = supportTerms(request.query);
+  if (queryTerms.length < 2) {
+    return {
+      status: "unavailable",
+      reason: "query has fewer than two distinctive terms for conservative support scoring",
+    };
+  }
+  const evidenceLines = exactContextEvidenceLines(request.recalledText);
+  const evidenceTermSets = evidenceLines.map((line) => new Set(supportTerms(line)));
+  const matchedTerms = queryTerms.filter((term) =>
+    evidenceTermSets.some((terms) => terms.has(term)),
+  );
+  const evidenceCount = evidenceTermSets.filter((terms) =>
+    matchedTerms.some((term) => terms.has(term)),
+  ).length;
+  const coverage = matchedTerms.length / queryTerms.length;
+  if (evidenceCount === 0) {
+    return {
+      status: "empty",
+      reason: "exact responder context contains no matching evidence terms",
+      evidenceCount: 0,
+      maxScore: 0,
+      supportThreshold,
+    };
+  }
+  if (coverage < supportThreshold) {
+    return {
+      status: "weak",
+      reason: "exact responder context has only weak lexical support",
+      evidenceCount,
+      maxScore: coverage,
+      supportThreshold,
+    };
+  }
+  return {
+    status: "supported",
+    reason: "exact responder context has sufficient lexical support",
+    evidenceCount,
+    maxScore: coverage,
+    supportThreshold,
+  };
 }
 
 type BenchAdapterMode = "lightweight" | "direct";
@@ -1615,6 +1742,12 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
   ): Promise<BenchMemoryAdapter> {
     const useCoreMemoryPipeline = shouldUseCoreMemoryPipeline(mode, options);
     const replayExtractionMode = options.replayExtractionMode ?? "await";
+    const answerSupportMinCoverage = resolveAnswerSupportMinCoverage(
+      options.configOverrides,
+    );
+    const skipExtractionLcmFirst = resolveSkipExtractionLcmFirst(
+      options.configOverrides,
+    );
     const replaySourceValidAtMode = normalizeReplaySourceValidAtMode(
       options.replaySourceValidAtMode,
     );
@@ -1960,6 +2093,11 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
         const recallAsOf = normalizeBenchRecallAsOf(recallOptions.asOf);
         const historicalRecall = recallAsOf !== undefined;
+        const includeCoreRecall = shouldIncludeCoreRecallForReplay({
+          useCoreMemoryPipeline,
+          replayExtractionMode,
+          skipExtractionLcmFirst,
+        });
         if (
           historicalRecall &&
           (!useCoreMemoryPipeline ||
@@ -2091,7 +2229,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
         }
 
         if (
-          useCoreMemoryPipeline &&
+          includeCoreRecall &&
           !requireDirectPersonalHistoryEvidence &&
           !requireDirectTemporalEvidence &&
           !hasTemporalIntervalEvidence &&
@@ -2152,7 +2290,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
           !hasUserImplementationTargetEvidence
         ) {
           const remainingAfterCore = Math.max(0, budget - usedChars);
-          const searchBudget = useCoreMemoryPipeline
+          const searchBudget = includeCoreRecall
             ? Math.max(0, Math.floor(remainingAfterCore * 0.75))
             : Math.max(0, Math.floor(remainingAfterCore * 0.7));
           const searchLimit = Math.max(6, Math.min(18, Math.floor(budget / 2_000)));
@@ -2187,7 +2325,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
               throwIfBenchPhaseAborted(control, "recall");
               const windowRadius = preferFocusedExplicitContext
                 ? 2
-                : useCoreMemoryPipeline
+                : includeCoreRecall
                   ? 3
                   : 1;
               const fromTurn = Math.max(0, result.turn_index - windowRadius);
@@ -2197,7 +2335,7 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
                   result.session_id,
                   fromTurn,
                   toTurn,
-                  useCoreMemoryPipeline ? 1_600 : 600,
+                  includeCoreRecall ? 1_600 : 600,
                 ),
               );
 
@@ -2392,6 +2530,14 @@ function createAdapterFactory(mode: "lightweight" | "direct") {
 
         const joined = sections.join("\n\n");
         return joined.length > budget ? joined.slice(0, budget) : joined;
+      },
+
+      async assessRecallSupport(
+        request: BenchRecallSupportRequest,
+        control?: BenchPhaseControl,
+      ): Promise<BenchRecallSupportAssessment> {
+        throwIfBenchPhaseAborted(control, "assessRecallSupport");
+        return assessRemnicRecallSupport(request, answerSupportMinCoverage);
       },
 
       async search(

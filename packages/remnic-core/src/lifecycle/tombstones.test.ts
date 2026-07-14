@@ -509,6 +509,7 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
     // the retired fact silently un-revokes (resurrection).
     const dir = await mkdtemp(path.join(tmpdir(), "tomb-rebuild-race-"));
     const filePath = path.join(dir, "tombstones.jsonl");
+    const moduleUrl = new URL("./tombstones.ts", import.meta.url).href;
     const opts = { enabled: true, semanticMatch: false, semanticThreshold: 0.9, hashContent: computeHash, normalizeText: normalizeContent };
     const io = makeReadMergeWriteIo();
     // Store A writes tombstone-1, then goes stale (never sees the peer write).
@@ -519,17 +520,87 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
       sourceMemoryId: "fact-rebuild-1",
       rawContent: "The DB is MySQL.",
     });
-    // Peer (store B, same file) revokes t1 durably. Store A's in-memory index
-    // is now stale (it still thinks t1 is active).
-    const storeB = new TombstoneStore(filePath, "default", opts, io);
-    await storeB.revoke(t1, "user_correction");
+    // A real peer process revokes t1. Its append callback runs only after the
+    // peer holds the advisory write lock, so LOCK_HELD is a deterministic
+    // handshake: store A starts rebuilding while the peer still owns the
+    // lock, then RELEASE lets the peer durably append before A can acquire it.
+    const workerSource = [
+      "(async () => {",
+      "const { TombstoneStore } = await import(process.argv[1]);",
+      "const { mkdir, readFile, writeFile } = await import(\"node:fs/promises\");",
+      "const { statSync } = await import(\"node:fs\");",
+      "const path = await import(\"node:path\");",
+      "const { createHash } = await import(\"node:crypto\");",
+      "const filePath = path.join(process.argv[2], \"tombstones.jsonl\");",
+      "const tombstoneId = process.argv[3];",
+      "let release;",
+      "const released = new Promise((resolve) => { release = resolve; });",
+      "process.stdin.setEncoding(\"utf8\");",
+      "process.stdin.once(\"data\", (chunk) => { if (chunk.trim() === \"RELEASE\") release(); });",
+      "function hash(c){return createHash(\"sha256\").update(c).digest(\"hex\");}",
+      "function normalize(c){return c;}",
+      "const io = {",
+      "  read: (p) => readFile(p, \"utf8\"),",
+      "  append: async (p, c) => {",
+      "    await mkdir(path.dirname(p), { recursive: true });",
+      "    let existing = \"\";",
+      "    try { existing = await readFile(p, \"utf8\"); } catch (e) { if (e.code !== \"ENOENT\") throw e; }",
+      "    process.stdout.write(\"LOCK_HELD\\n\");",
+      "    await released;",
+      "    await writeFile(p, existing + c, \"utf8\");",
+      "  },",
+      "  write: async (p, c) => { await mkdir(path.dirname(p), { recursive: true }); await writeFile(p, c, \"utf8\"); },",
+      "  stat: (p) => statSync(p),",
+      "};",
+      "const store = new TombstoneStore(filePath, \"default\", { enabled: true, semanticMatch: false, semanticThreshold: 0.9, hashContent: hash, normalizeText: normalize }, io);",
+      "await store.revoke(tombstoneId, \"user_correction\");",
+      "process.stdout.write(\"DONE\\n\");",
+      "})().catch((error) => { console.error(error); process.exitCode = 1; });",
+    ].join("\n");
+
+    const peer = spawn(
+      process.execPath,
+      ["--import", "tsx", "-e", workerSource, moduleUrl, dir, t1],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    let stderr = "";
+    let stdout = "";
+    let lockHeld = false;
+    let resolveLockHeld!: () => void;
+    let rejectLockHeld!: (error: Error) => void;
+    const peerLockHeld = new Promise<void>((resolve, reject) => {
+      resolveLockHeld = resolve;
+      rejectLockHeld = reject;
+    });
+    peer.stdout.setEncoding("utf8");
+    peer.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      if (!lockHeld && stdout.split("\n").includes("LOCK_HELD")) {
+        lockHeld = true;
+        resolveLockHeld();
+      }
+    });
+    peer.stderr.setEncoding("utf8");
+    peer.stderr.on("data", (chunk) => { stderr += chunk; });
+    peer.on("error", (error) => rejectLockHeld(error));
+    const peerCompleted = new Promise<void>((resolve, reject) => {
+      peer.on("close", (code) => {
+        if (!lockHeld) {
+          rejectLockHeld(new Error(`revocation peer exited before acquiring lock (${code}): ${stderr}`));
+        }
+        if (code === 0 && stdout.split("\n").includes("DONE")) resolve();
+        else reject(new Error(`revocation peer exited ${code}: ${stderr}`));
+      });
+    });
+
+    await peerLockHeld;
     // Store A rebuilds from a retired-memory corpus that reconstructs t1.
     // Without the under-lock re-read, A computes existingRevocations from its
     // stale index (empty), overwrites the file with [rebuilt-t1], and the
     // revocation is LOST — t1 is active again (resurrection). With the fix,
     // ensureFreshAgainstDisk reloads the revocation under the lock and rebuild
     // preserves it.
-    await storeA.rebuild([
+    const rebuild = storeA.rebuild([
       {
         memoryId: "fact-rebuild-1",
         rawContent: "The DB is MySQL.",
@@ -538,6 +609,8 @@ describe("TombstoneStore — cross-process write lock (issue #1639)", () => {
         createdAt: "2026-01-01T00:00:00.000Z",
       },
     ]);
+    peer.stdin.end("RELEASE\n");
+    await Promise.all([rebuild, peerCompleted]);
     // The rebuilt file must still contain the revocation (the retired fact
     // stays revoked, not silently un-revoked by the rebuild).
     const raw = await readFile(filePath, "utf8");

@@ -30,6 +30,8 @@ export interface DiscoveredModel {
 
 export interface ProviderBaseConfig {
   model: string;
+  /** Versioned grading rubric used by judge providers, persisted for reproducibility. */
+  rubricVersion?: string;
   baseUrl?: string;
   apiKey?: string;
   headers?: Record<string, string>;

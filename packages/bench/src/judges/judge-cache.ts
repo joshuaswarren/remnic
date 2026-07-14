@@ -25,6 +25,8 @@ import type {
   BenchJudge,
   BenchJudgeResult,
   BenchPhaseControl,
+  MemCorrectJudgeRequest,
+  MemCorrectJudgeResult,
 } from "../adapters/types.ts";
 
 /** Inputs fed into {@link JudgeCache}. All fields are required. */
@@ -56,6 +58,14 @@ export interface WrappableBenchJudge {
     prompt: string,
     control?: BenchPhaseControl,
   ): Promise<BenchJudgeResult>;
+  judgeMemCorrectCorrectionAcceptance?(
+    request: MemCorrectJudgeRequest,
+    control?: BenchPhaseControl,
+  ): Promise<MemCorrectJudgeResult>;
+  judgeMemCorrectStaleMemoryHarm?(
+    request: MemCorrectJudgeRequest,
+    control?: BenchPhaseControl,
+  ): Promise<MemCorrectJudgeResult>;
 }
 
 /** Result returned by {@link JudgeCache.get}. */
@@ -553,6 +563,29 @@ async function readCacheWithAbort(
         putSafely(parts, fresh, control);
         return fresh;
       },
+    });
+  }
+
+  // MemCorrect's two OpenAI judge calls have distinct, sealed rubric
+  // contracts and their own run-level accounting. Preserve these optional
+  // methods through the generic cache wrapper, but do not fold them into the
+  // legacy scalar-judge cache keyspace.
+  if (typeof judge.judgeMemCorrectCorrectionAcceptance === "function") {
+    Object.defineProperty(wrapper, "judgeMemCorrectCorrectionAcceptance", {
+      configurable: true,
+      enumerable: true,
+      writable: false,
+      value: (request: MemCorrectJudgeRequest, control?: BenchPhaseControl) =>
+        judge.judgeMemCorrectCorrectionAcceptance!(request, control),
+    });
+  }
+  if (typeof judge.judgeMemCorrectStaleMemoryHarm === "function") {
+    Object.defineProperty(wrapper, "judgeMemCorrectStaleMemoryHarm", {
+      configurable: true,
+      enumerable: true,
+      writable: false,
+      value: (request: MemCorrectJudgeRequest, control?: BenchPhaseControl) =>
+        judge.judgeMemCorrectStaleMemoryHarm!(request, control),
     });
   }
 

@@ -1,5 +1,9 @@
 import path from "node:path";
-import type { BuiltInProvider, PublishedBenchmarkId } from "@remnic/bench";
+import type {
+  BuiltInProvider,
+  McpMemoryToolMapping,
+  PublishedBenchmarkId,
+} from "@remnic/bench";
 import { expandTilde } from "./path-utils.js";
 
 export type BenchAction =
@@ -38,6 +42,12 @@ export interface ParsedBenchArgs {
   all: boolean;
   json: boolean;
   detail: boolean;
+  adapter?: "remnic" | "mcp";
+  mcpCommand?: string;
+  mcpArgs?: string[];
+  mcpUrl?: string;
+  mcpToolMap?: McpMemoryToolMapping;
+  mcpDemo?: boolean;
   datasetDir?: string;
   resultsDir?: string;
   baselinesDir?: string;
@@ -305,6 +315,78 @@ function parseCodexReasoningEffort(
   return raw;
 }
 
+const MCP_TOOL_OPERATIONS = new Set(["store", "recall", "correct", "reset"]);
+const MCP_ARGUMENT_SEMANTICS = new Set([
+  "namespace",
+  "sessionId",
+  "content",
+  "role",
+  "timestamp",
+  "query",
+  "limit",
+]);
+
+function parseMcpToolMapping(value: unknown): McpMemoryToolMapping {
+  if (!isPlainObject(value)) throw new Error("expected a JSON object");
+  for (const operation of Object.keys(value).sort()) {
+    if (!MCP_TOOL_OPERATIONS.has(operation)) {
+      throw new Error(`unknown operation ${operation}`);
+    }
+    const entry = value[operation];
+    if (typeof entry === "string") {
+      if (entry.trim().length === 0) throw new Error(`${operation} tool name must not be empty`);
+      continue;
+    }
+    if (!isPlainObject(entry)) {
+      throw new Error(`${operation} must be a tool-name string or mapping object`);
+    }
+    for (const field of Object.keys(entry).sort()) {
+      if (field !== "name" && field !== "arguments" && field !== "resultPath") {
+        throw new Error(`${operation} contains unknown field ${field}`);
+      }
+    }
+    if (typeof entry.name !== "string" || entry.name.trim().length === 0) {
+      throw new Error(`${operation}.name must be a non-empty string`);
+    }
+    if (entry.resultPath !== undefined) {
+      if (typeof entry.resultPath !== "string" || !isSafeMcpResultPath(entry.resultPath)) {
+        throw new Error(`${operation}.resultPath must be a non-empty safe dot path`);
+      }
+    }
+    if (entry.arguments !== undefined) {
+      if (!isPlainObject(entry.arguments)) {
+        throw new Error(`${operation}.arguments must be an object`);
+      }
+      for (const semantic of Object.keys(entry.arguments).sort()) {
+        if (!MCP_ARGUMENT_SEMANTICS.has(semantic)) {
+          throw new Error(`${operation}.arguments contains unknown semantic ${semantic}`);
+        }
+        const argumentName = entry.arguments[semantic];
+        if (typeof argumentName !== "string" || argumentName.trim().length === 0) {
+          throw new Error(`${operation}.arguments.${semantic} must be a non-empty string`);
+        }
+      }
+    }
+  }
+  return value as McpMemoryToolMapping;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function isSafeMcpResultPath(value: string): boolean {
+  return value.split(".").every((segment) =>
+    segment.length > 0 &&
+    segment !== "__proto__" &&
+    segment !== "prototype" &&
+    segment !== "constructor" &&
+    /^[A-Za-z0-9_-]+$/.test(segment)
+  );
+}
+
 export function readBenchOptionValue(argv: string[], flag: string): string | undefined {
   const index = argv.indexOf(flag);
   if (index === -1) {
@@ -320,6 +402,11 @@ export function readBenchOptionValue(argv: string[], flag: string): string | und
 }
 
 const BENCH_VALUE_FLAGS = Object.freeze([
+  "--adapter",
+  "--mcp-command",
+  "--mcp-args",
+  "--mcp-url",
+  "--mcp-tool-map",
   "--dataset-dir",
   "--benchmark",
   "--results-dir",
@@ -380,6 +467,7 @@ const BENCH_VALUE_FLAGS = Object.freeze([
 ] as const);
 
 const BENCH_BOOLEAN_FLAGS = Object.freeze([
+  "--mcp-demo",
   "--quick",
   "--all",
   "--json",
@@ -410,6 +498,11 @@ function isBenchBooleanFlag(arg: string): arg is BenchBooleanFlag {
 }
 
 const RUN_VALUE_FLAGS = Object.freeze([
+  "--adapter",
+  "--mcp-command",
+  "--mcp-args",
+  "--mcp-url",
+  "--mcp-tool-map",
   "--dataset-dir",
   "--results-dir",
   "--runtime-profile",
@@ -462,6 +555,7 @@ const RUN_VALUE_FLAGS = Object.freeze([
 ] as const satisfies readonly BenchValueFlag[]);
 
 const RUN_BOOLEAN_FLAGS = Object.freeze([
+  "--mcp-demo",
   "--quick",
   "--all",
   "--json",
@@ -735,6 +829,12 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const datasetDir =
     readBenchOptionValue(args, "--dataset-dir") ??
     readBenchOptionValue(args, "--dataset");
+  const adapterRaw = readBenchOptionValue(args, "--adapter");
+  const mcpCommand = readBenchOptionValue(args, "--mcp-command");
+  const mcpArgsRaw = readBenchOptionValue(args, "--mcp-args");
+  const mcpUrl = readBenchOptionValue(args, "--mcp-url");
+  const mcpToolMapRaw = readBenchOptionValue(args, "--mcp-tool-map");
+  const mcpDemo = args.includes("--mcp-demo");
   const resultsDir = readBenchOptionValue(args, "--results-dir");
   const baselinesDir = readBenchOptionValue(args, "--baselines-dir");
   const runtimeProfileRaw = readBenchOptionValue(args, "--runtime-profile");
@@ -794,6 +894,64 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
   const amaBenchCrossJudgeModel = readBenchOptionValue(args, "--ama-bench-cross-judge-model");
   const amaBenchCrossJudgeBaseUrl = readBenchOptionValue(args, "--ama-bench-cross-judge-base-url");
   const amaBenchCrossJudgeApiKey = readBenchOptionValue(args, "--ama-bench-cross-judge-api-key");
+
+  let adapter: "remnic" | "mcp" | undefined;
+  if (adapterRaw !== undefined) {
+    if (adapterRaw !== "remnic" && adapterRaw !== "mcp") {
+      throw new Error('ERROR: --adapter must be "remnic" or "mcp".');
+    }
+    adapter = adapterRaw;
+  }
+  const hasMcpOptions = Boolean(
+    mcpCommand || mcpArgsRaw || mcpUrl || mcpToolMapRaw || mcpDemo,
+  );
+  if (hasMcpOptions && adapter !== "mcp") {
+    throw new Error("ERROR: MCP options require --adapter mcp.");
+  }
+  if (adapter === "mcp") {
+    const transportCount = Number(Boolean(mcpCommand)) + Number(Boolean(mcpUrl)) + Number(mcpDemo);
+    if (transportCount !== 1) {
+      throw new Error(
+        "ERROR: --adapter mcp requires exactly one of --mcp-command, --mcp-url, or --mcp-demo.",
+      );
+    }
+  }
+  if (mcpArgsRaw && !mcpCommand) {
+    throw new Error("ERROR: --mcp-args requires --mcp-command.");
+  }
+  if (mcpUrl) {
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(mcpUrl);
+    } catch {
+      throw new Error("ERROR: --mcp-url must be a valid HTTP(S) URL.");
+    }
+    if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+      throw new Error("ERROR: --mcp-url must use http or https.");
+    }
+  }
+  let mcpArgs: string[] | undefined;
+  if (mcpArgsRaw) {
+    try {
+      const parsed: unknown = JSON.parse(mcpArgsRaw);
+      if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
+        throw new Error("shape");
+      }
+      mcpArgs = parsed;
+    } catch {
+      throw new Error('ERROR: --mcp-args must be a JSON array of strings, for example ["server.js"].');
+    }
+  }
+  let mcpToolMap: McpMemoryToolMapping | undefined;
+  if (mcpToolMapRaw) {
+    try {
+      const parsed: unknown = JSON.parse(mcpToolMapRaw);
+      mcpToolMap = parseMcpToolMapping(parsed);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`ERROR: --mcp-tool-map is invalid: ${detail}`);
+    }
+  }
   const amaBenchCrossJudgeCodexReasoningEffortRaw = readBenchOptionValue(
     args,
     "--ama-bench-cross-judge-codex-reasoning-effort",
@@ -1327,6 +1485,12 @@ export function parseBenchArgs(argv: string[]): ParsedBenchArgs {
     all: args.includes("--all"),
     json: args.includes("--json"),
     detail: args.includes("--detail"),
+    adapter,
+    mcpCommand,
+    mcpArgs,
+    mcpUrl,
+    mcpToolMap,
+    mcpDemo,
     datasetDir: datasetDir ? path.resolve(expandTilde(datasetDir)) : undefined,
     resultsDir: resultsDir ? path.resolve(expandTilde(resultsDir)) : undefined,
     baselinesDir: baselinesDir ? path.resolve(expandTilde(baselinesDir)) : undefined,

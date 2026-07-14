@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -63,7 +64,7 @@ function buildResult(
     },
     environment: {
       os: "darwin",
-      nodeVersion: process.version,
+      nodeVersion: "v22.23.1",
     },
   };
 }
@@ -326,10 +327,153 @@ test("renderBenchmarkResultExport handles older results without seed metadata", 
 
   assert.match(html, /Older-run|older-run/i);
   assert.match(html, /Seeds/);
-  assert.match(html, /Unknown/);
+  assert.match(html, /Not recorded/);
   assert.match(html, /\[redacted 2 keys\]/);
   assert.doesNotMatch(html, /secret-token/);
   assert.doesNotMatch(html, /internal\.example\.com/);
+});
+
+test("HTML export renders a byte-identical offline memory report card with correction receipts", () => {
+  const result = buildResult("memcorrect-card", "2026-07-15T12:00:00.000Z", "memcorrect-v1");
+  result.config.adapterMode = "mcp-demo";
+  result.config.systemProvider = { provider: "openai", model: "gpt-5.6" };
+  result.config.judgeProvider = {
+    provider: "openai",
+    model: "gpt-5.6",
+    rubricVersion: "openai-responses-bench-v1",
+  };
+  result.config.benchmarkOptions = {
+    aggregateMetrics: {
+      uptake_at_next: 0.75,
+      non_resurrection: 1,
+      false_apply: 0,
+    },
+  };
+  result.results.tasks = [
+    {
+      taskId: "scenario-b",
+      question: "What database do we use?",
+      expected: "PostgreSQL",
+      actual: "PostgreSQL",
+      scores: { uptake_at_next: 1, non_resurrection: 1, false_apply: 0 },
+      latencyMs: 12,
+      tokens: { input: 0, output: 0 },
+      details: { shape: "replacement", category: "preference" },
+    },
+    {
+      taskId: "scenario-a",
+      question: "What region is active?",
+      expected: "us-east-2",
+      actual: "us-east-1",
+      scores: { uptake_at_next: 0, non_resurrection: 1, false_apply: 0 },
+      latencyMs: 9,
+      tokens: { input: 0, output: 0 },
+      details: { shape: "scoped", category: "location" },
+    },
+  ];
+  result.results.aggregates = {
+    uptake_at_next: { mean: 0.5, median: 0.5, stdDev: 0.5, min: 0, max: 1 },
+    non_resurrection: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+    false_apply: { mean: 0, median: 0, stdDev: 0, min: 0, max: 0 },
+    stale_memory_harm_rate: { mean: 0, median: 0, stdDev: 0, min: 0, max: 0 },
+  };
+
+  const first = renderBenchmarkResultExport(result, "html");
+  const second = renderBenchmarkResultExport(result, "html");
+
+  assert.equal(first, second);
+  assert.equal(
+    createHash("sha256").update(first).digest("hex"),
+    "09e38f40f483b60424fd2b2e1d54b547c55197a96c268c8524fce6ac5596ee75",
+  );
+  assert.match(first, /Overall score · uptake_at_next/);
+  assert.match(first, /no cross-metric composite/);
+  assert.match(first, /Correction ledger/);
+  assert.match(first, /Stale fact stayed retired/);
+  assert.match(first, /Did stale memory harm the answer\?/);
+  assert.match(first, /No pass threshold is recorded in the result/);
+  assert.match(first, /openai \/ gpt-5\.6/);
+  assert.match(first, /openai-responses-bench-v1/);
+  assert.match(first, /Manifest reference/);
+  assert.match(first, /Not available/);
+  assert.ok(first.indexOf("scenario-a") < first.indexOf("scenario-b"));
+  assert.doesNotMatch(first, /<(?:script|link)\b/i);
+  assert.doesNotMatch(first, /(?:src|href)=["']https?:/i);
+});
+
+test("HTML export renders backend-unusable and partial runs without zero-score claims", () => {
+  const unusable = buildResult("failed-mcp", "2026-07-15T12:30:00.000Z", "memcorrect-v1");
+  unusable.meta.status = "partial";
+  unusable.meta.failureReason = "backend_unusable: missing <update_memory> tool";
+  unusable.results.tasks = [];
+  unusable.results.aggregates = {};
+
+  const html = renderBenchmarkResultExport(unusable, "html");
+
+  assert.match(html, /Backend unusable/);
+  assert.match(html, /No defensible score/);
+  assert.match(html, /N\/A/);
+  assert.match(html, /Missing evidence stays missing/);
+  assert.match(html, /No aggregate metrics were recorded/);
+  assert.match(html, /missing &lt;update_memory&gt; tool/);
+  assert.doesNotMatch(html, /Overall score ·/);
+  assert.doesNotMatch(html, />0%<\/span>/);
+
+  const partial = buildResult("partial-run", "2026-07-15T12:45:00.000Z");
+  partial.meta.status = "partial";
+  partial.meta.failureReason = "judge timeout after task 1 of 4";
+  partial.results.tasks = [{
+    taskId: "completed-task",
+    question: "q",
+    expected: "a",
+    actual: "a",
+    scores: { accuracy: 1 },
+    latencyMs: 10,
+    tokens: { input: 1, output: 1 },
+  }];
+  partial.results.aggregates = {
+    accuracy: { mean: 1, median: 1, stdDev: 0, min: 1, max: 1 },
+  };
+  const partialHtml = renderBenchmarkResultExport(partial, "html");
+  assert.match(partialHtml, /Partial run/);
+  assert.match(partialHtml, /completed tasks only and are not a full result/);
+  assert.match(partialHtml, /Overall score · accuracy/);
+
+  for (const code of ["transport_failure", "tool_failure", "invalid_response"]) {
+    const failed = buildResult(`failed-${code}`, "2026-07-15T12:50:00.000Z");
+    failed.meta.status = "partial";
+    failed.meta.failureReason = `${code}: backend rejected request`;
+    failed.results.tasks = [];
+    const failedHtml = renderBenchmarkResultExport(failed, "html");
+    assert.match(failedHtml, /Backend unusable/);
+
+    failed.results.tasks = partial.results.tasks;
+    failed.results.aggregates = partial.results.aggregates;
+    const evidencedHtml = renderBenchmarkResultExport(failed, "html");
+    assert.match(evidencedHtml, /Partial run/);
+    assert.doesNotMatch(evidencedHtml, /Backend unusable/);
+  }
+});
+
+test("HTML export does not invent an overall score from an undeclared aggregate", () => {
+  const result = buildResult("latency-only", "2026-07-15T13:00:00.000Z");
+  result.results.tasks = [{
+    taskId: "completed-task",
+    question: "q",
+    expected: "a",
+    actual: "a",
+    scores: { uptake_latency: 0.5 },
+    latencyMs: 10,
+    tokens: { input: 0, output: 0 },
+  }];
+  result.results.aggregates = {
+    uptake_latency: { mean: 0.5, median: 0.5, stdDev: 0, min: 0.5, max: 0.5 },
+  };
+
+  const html = renderBenchmarkResultExport(result, "html");
+  assert.match(html, /No defensible score/);
+  assert.doesNotMatch(html, /Overall score · uptake_latency/);
+  assert.match(html, /<th scope="row">uptake_latency<\/th><td>0\.5<\/td>/);
 });
 
 test("buildBenchmarkPublishFeed keeps only the latest full published result per benchmark", async () => {
@@ -358,6 +502,12 @@ test("buildBenchmarkPublishFeed keeps only the latest full published result per 
   await writeFile(path.join(root, "new-quick.json"), `${JSON.stringify(newerPublishedQuick)}\n`);
   await writeFile(path.join(root, "new-remnic.json"), `${JSON.stringify(newerRemnicFull)}\n`);
   await writeFile(path.join(root, "locomo.json"), `${JSON.stringify(locomo)}\n`);
+  const artifactHash = "a".repeat(64);
+  await writeFile(path.join(root, "MANIFEST.json"), `${JSON.stringify({
+    schemaVersion: 1,
+    artifactHash,
+    results: [{ resultId: "run-old" }, { resultId: "run-locomo" }],
+  })}\n`);
 
   const feed = await buildBenchmarkPublishFeed(root, "remnic-ai");
 
@@ -368,6 +518,9 @@ test("buildBenchmarkPublishFeed keeps only the latest full published result per 
   );
   assert.equal(feed.benchmarks[0]?.aggregateMetrics.answerAccuracy?.mean, 0.5);
   assert.equal(feed.benchmarks[1]?.taskCount, 1);
+  assert.match(feed.benchmarks[0]?.reportCardHtml ?? "", /<!doctype html>/i);
+  assert.match(feed.benchmarks[0]?.reportCardHtml ?? "", /MANIFEST\.json/);
+  assert.match(feed.benchmarks[0]?.reportCardHtml ?? "", new RegExp(artifactHash));
   assert.equal("source" in (feed.benchmarks[0] ?? {}), false);
 });
 

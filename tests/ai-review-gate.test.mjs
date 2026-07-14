@@ -4,7 +4,9 @@ import test from "node:test";
 
 import {
   associatedPullRequestNumbers,
+  canUseDependabotManifestException,
   evaluateAiReviewGate,
+  isDependabotManifestOnlyPullRequest,
   parseReviewerGroups,
 } from "../scripts/ai-review-gate.mjs";
 
@@ -25,6 +27,83 @@ test("AI review gate workflow requires the active current-head reviewer group", 
   assert.match(workflow, /cursor-bugbot\[bot\]\|cursor\[bot\]\|cursor-bugbot\|cursor/);
   assert.doesNotMatch(workflow, /kilo-code-bot\[bot\].*REQUIRED_AI_REVIEWER_GROUPS/s);
   assert.doesNotMatch(workflow, /chatgpt-codex-connector.*REQUIRED_AI_REVIEWER_GROUPS/s);
+});
+
+test("AI review gate workflow limits the Dependabot exception to manifest-only missing Cursor activity", () => {
+  const workflow = readFileSync(".github/workflows/ai-review-gate.yml", "utf8");
+
+  assert.match(workflow, /pullRequest\.data\.user\?\.login/);
+  assert.match(workflow, /github\.paginate\(github\.rest\.pulls\.listFiles/);
+  assert.match(workflow, /dependabot\[bot\]/);
+  assert.match(workflow, /result\.blockers\.length === 0/);
+  assert.match(workflow, /result\.missing\.every/);
+  assert.match(workflow, /DEPENDABOT_UNAVAILABLE_REVIEWER_ALIASES\.has\(normalizeLogin\(alias\)\)/);
+  assert.match(workflow, /DEPENDENCY_MANIFEST_BASENAMES/);
+});
+
+test("Dependabot manifest-only classification accepts the repository dependency surfaces", () => {
+  for (const files of [
+    ["packages/bench-ui/package.json", "pnpm-lock.yaml"],
+    ["model-lab/requirements.txt"],
+    ["packages/hermes-provider/package-lock.json"],
+  ]) {
+    assert.equal(
+      isDependabotManifestOnlyPullRequest({ authorLogin: "dependabot[bot]", files }),
+      true,
+    );
+  }
+});
+
+test("Dependabot manifest-only classification rejects human, mixed, empty, and traversal diffs", () => {
+  for (const candidate of [
+    { authorLogin: "human", files: ["package.json"] },
+    { authorLogin: "dependabot[bot]", files: ["package.json", "src/index.ts"] },
+    { authorLogin: "dependabot[bot]", files: ["model-lab/requirements.txt", "docs/model-lab.md"] },
+    { authorLogin: "dependabot[bot]", files: [] },
+    { authorLogin: "dependabot[bot]", files: ["../package.json"] },
+  ]) {
+    assert.equal(isDependabotManifestOnlyPullRequest(candidate), false);
+  }
+});
+
+test("Dependabot exception applies only to missing Cursor activity without blockers", () => {
+  const manifestPullRequest = {
+    authorLogin: "dependabot[bot]",
+    files: ["packages/bench-ui/package.json", "pnpm-lock.yaml"],
+  };
+
+  assert.equal(
+    canUseDependabotManifestException({
+      ...manifestPullRequest,
+      result: { ok: false, missing: [["cursor-bugbot[bot]", "cursor"]], blockers: [] },
+    }),
+    true,
+  );
+  assert.equal(
+    canUseDependabotManifestException({
+      ...manifestPullRequest,
+      result: {
+        ok: false,
+        missing: [["cursor"]],
+        blockers: [{ alias: "cursor", kind: "check_run", state: "failure" }],
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    canUseDependabotManifestException({
+      ...manifestPullRequest,
+      result: { ok: false, missing: [["codex"]], blockers: [] },
+    }),
+    false,
+  );
+  assert.equal(
+    canUseDependabotManifestException({
+      ...manifestPullRequest,
+      result: { ok: false, missing: [["cursor-imposter"]], blockers: [] },
+    }),
+    false,
+  );
 });
 
 test("AI review gate resolves every pull request associated with a check_run event", () => {

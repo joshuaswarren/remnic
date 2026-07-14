@@ -30,7 +30,13 @@ import type { BenchmarkArtifactJudgeCalibration } from "../published-artifact.js
 import {
   DEFAULT_JUDGE_BINARIZATION_THRESHOLD,
   binarizeJudgeScore,
+  bootstrapCohensKappaConfidenceInterval,
   computeCohensKappa,
+  DEFAULT_KAPPA_BOOTSTRAP_SAMPLES,
+  DEFAULT_KAPPA_CONFIDENCE_LEVEL,
+  type BootstrapKappaOptions,
+  type BootstrapKappaResult,
+  type KappaConfidenceInterval,
   type CohenKappaResult,
   type JudgeCategory,
 } from "./cohen-kappa.js";
@@ -56,13 +62,21 @@ export interface JudgeCalibrationIdentities {
  * preserve backwards compatibility.
  */
 export type LoadedJudgeCalibrationState = BenchmarkArtifactJudgeCalibration &
-  Partial<JudgeCalibrationIdentities>;
+  Partial<JudgeCalibrationIdentities> & {
+    /** Stored-result id that pins the answer payload across recalibrations. */
+    sourceResultId?: string;
+    /** Stable hash of the exact question/predicted/expected triples judged. */
+    answerSetHash?: string;
+    /** Question ids in the pinned calibration slice, in verdict order. */
+    sliceQuestionIds?: readonly string[];
+  };
 
 /**
- * Fixed slice size per benchmark. The issue specifies a 50-question slice; a
+ * Fixed slice size per benchmark. Issue #1877 raises the calibration target
+ * from 50 to 200 to reduce slice sensitivity; a
  * benchmark with fewer available questions uses all of them.
  */
-export const CALIBRATION_SLICE_SIZE = 50;
+export const CALIBRATION_SLICE_SIZE = 200;
 
 /**
  * Minimum number of completed tasks a stored result must have to be a valid
@@ -119,6 +133,14 @@ export interface RunJudgeCalibrationOptions {
   sliceSize?: number;
   /** Override the warning threshold (default 0.7). */
   threshold?: number;
+  /** Override paired-bootstrap resamples (default 2,000; mainly for tests). */
+  bootstrapSamples?: number;
+  /** Override confidence level (default 0.95). */
+  confidenceLevel?: number;
+  /** Exact persisted question-id slice to reuse instead of reselecting. */
+  pinnedQuestionIds?: readonly string[];
+  /** Fail before judge calls when the pinned answer payload changed. */
+  expectedAnswerSetHash?: string;
 }
 
 export interface JudgeCalibrationResult extends CohenKappaResult {
@@ -129,6 +151,12 @@ export interface JudgeCalibrationResult extends CohenKappaResult {
   threshold: number;
   /** True when `kappa < threshold` — local judge is unreliable for this benchmark. */
   warning: boolean;
+  /** Paired-bootstrap percentile interval for kappa. */
+  confidenceInterval: KappaConfidenceInterval;
+  /** Number of paired-bootstrap resamples. */
+  bootstrapSamples: number;
+  /** SHA-256 of the exact ordered answer triples used for calibration. */
+  answerSetHash: string;
   /** Per-question verdict pairs, in slice order. */
   verdicts: readonly CalibrationVerdictPair[];
 }
@@ -183,10 +211,10 @@ export async function runJudgeCalibration(
   const threshold = options.threshold ?? JUDGE_CALIBRATION_KAPPA_THRESHOLD;
   const sliceSize = options.sliceSize ?? CALIBRATION_SLICE_SIZE;
 
-  const sliceIds = selectCalibrationSlice(
-    options.answers.map((answer) => answer.questionId),
-    sliceSize,
-  );
+  const availableIds = new Set(options.answers.map((answer) => answer.questionId));
+  const sliceIds = options.pinnedQuestionIds
+    ? validatePinnedQuestionIds(options.pinnedQuestionIds, availableIds)
+    : selectCalibrationSlice([...availableIds], sliceSize);
   const sliceIdSet = new Set(sliceIds);
   // Dedupe by questionId (cursor review: a stored result with duplicate
   // taskIds would otherwise double-count the same question, inflating
@@ -201,6 +229,15 @@ export async function runJudgeCalibration(
   const sliceAnswers = sliceIds
     .map((id) => answerById.get(id))
     .filter((answer): answer is CalibrationAnswer => answer !== undefined);
+  const answerSetHash = hashCalibrationAnswerSet(sliceAnswers);
+  if (
+    options.expectedAnswerSetHash !== undefined &&
+    answerSetHash !== options.expectedAnswerSetHash
+  ) {
+    throw new Error(
+      `runJudgeCalibration: pinned answer set changed (expected sha256:${options.expectedAnswerSetHash}, got sha256:${answerSetHash}). Restore the original stored result or intentionally reset calibration state.`,
+    );
+  }
 
   const localLabels: JudgeCategory[] = [];
   const frontierLabels: JudgeCategory[] = [];
@@ -229,6 +266,10 @@ export async function runJudgeCalibration(
   }
 
   const kappaResult = computeCohensKappa(localLabels, frontierLabels);
+  const bootstrap = bootstrapCohensKappaConfidenceInterval(localLabels, frontierLabels, {
+    iterations: options.bootstrapSamples ?? DEFAULT_KAPPA_BOOTSTRAP_SAMPLES,
+    level: options.confidenceLevel,
+  });
   const warning = kappaResult.kappa < threshold;
 
   return {
@@ -237,8 +278,40 @@ export async function runJudgeCalibration(
     sliceQuestionIds: sliceIds,
     threshold,
     warning,
+    confidenceInterval: bootstrap.confidenceInterval,
+    bootstrapSamples: bootstrap.bootstrapSamples,
+    answerSetHash,
     verdicts,
   };
+}
+
+function validatePinnedQuestionIds(
+  ids: readonly string[],
+  availableIds: ReadonlySet<string>,
+): string[] {
+  if (
+    ids.length === 0 || ids.length > CALIBRATION_SLICE_SIZE ||
+    ids.some((id) => typeof id !== "string" || id.length === 0) ||
+    new Set(ids).size !== ids.length
+  ) {
+    throw new Error(`runJudgeCalibration: pinned question ids must contain 1 to ${CALIBRATION_SLICE_SIZE} unique non-empty strings.`);
+  }
+  const missing = ids.filter((id) => !availableIds.has(id));
+  if (missing.length > 0) {
+    throw new Error(`runJudgeCalibration: pinned answer set is missing ${missing.length} question id(s), including "${missing[0]}".`);
+  }
+  return [...ids];
+}
+
+function hashCalibrationAnswerSet(answers: readonly CalibrationAnswer[]): string {
+  return createHash("sha256")
+    .update(JSON.stringify(answers.map((answer) => [
+      answer.questionId,
+      answer.question,
+      answer.predicted,
+      answer.expected,
+    ])))
+    .digest("hex");
 }
 
 /**
@@ -259,6 +332,7 @@ export async function writeJudgeCalibrationState(
   result: JudgeCalibrationResult,
   calibrationDir: string,
   identities?: JudgeCalibrationIdentities,
+  provenance?: { sourceResultId: string },
 ): Promise<string> {
   await mkdir(calibrationDir, { recursive: true });
   const state: BenchmarkArtifactJudgeCalibration & Partial<JudgeCalibrationIdentities> = {
@@ -266,6 +340,11 @@ export async function writeJudgeCalibrationState(
     sampleSize: result.sampleSize,
     threshold: result.threshold,
     warning: result.warning,
+    confidenceInterval: result.confidenceInterval,
+    bootstrapSamples: result.bootstrapSamples,
+    answerSetHash: result.answerSetHash,
+    sliceQuestionIds: result.sliceQuestionIds,
+    ...(provenance ? provenance : {}),
     ...(identities ? identities : {}),
   };
   const filePath = path.join(calibrationDir, `${sanitizeCalibrationSegment(result.benchmarkId)}.json`);
@@ -323,6 +402,36 @@ export async function loadJudgeCalibrationState(
     return undefined;
   }
   const loaded: LoadedJudgeCalibrationState = { kappa, sampleSize, threshold, warning };
+  const confidenceInterval = record.confidenceInterval;
+  const bootstrapSamples = record.bootstrapSamples;
+  if (
+    confidenceInterval && typeof confidenceInterval === "object" && !Array.isArray(confidenceInterval) &&
+    typeof (confidenceInterval as Record<string, unknown>).lower === "number" &&
+    Number.isFinite((confidenceInterval as Record<string, unknown>).lower) &&
+    typeof (confidenceInterval as Record<string, unknown>).upper === "number" &&
+    Number.isFinite((confidenceInterval as Record<string, unknown>).upper) &&
+    typeof (confidenceInterval as Record<string, unknown>).level === "number" &&
+    Number.isFinite((confidenceInterval as Record<string, unknown>).level) &&
+    typeof bootstrapSamples === "number" && Number.isInteger(bootstrapSamples) && bootstrapSamples > 0
+  ) {
+    loaded.confidenceInterval = confidenceInterval as unknown as KappaConfidenceInterval;
+    loaded.bootstrapSamples = bootstrapSamples;
+  }
+  const sourceResultId = record.sourceResultId;
+  const answerSetHash = record.answerSetHash;
+  if (
+    typeof sourceResultId === "string" && sourceResultId.length > 0 &&
+    typeof answerSetHash === "string" && /^[0-9a-f]{64}$/.test(answerSetHash) &&
+    Array.isArray(record.sliceQuestionIds) &&
+    record.sliceQuestionIds.length > 0 && record.sliceQuestionIds.length <= CALIBRATION_SLICE_SIZE &&
+    record.sliceQuestionIds.length === sampleSize &&
+    record.sliceQuestionIds.every((id) => typeof id === "string" && id.length > 0) &&
+    new Set(record.sliceQuestionIds).size === record.sliceQuestionIds.length
+  ) {
+    loaded.sourceResultId = sourceResultId;
+    loaded.answerSetHash = answerSetHash;
+    loaded.sliceQuestionIds = record.sliceQuestionIds as string[];
+  }
   // Identities are optional (older state files predate them). If ANY identity
   // field is present, ALL four must be present and string — otherwise the
   // binding is unreliable and identities are dropped (the calibration subset
@@ -391,7 +500,16 @@ function sanitizeCalibrationSegment(value: string): string {
 
 export {
   DEFAULT_JUDGE_BINARIZATION_THRESHOLD,
+  DEFAULT_KAPPA_BOOTSTRAP_SAMPLES,
+  DEFAULT_KAPPA_CONFIDENCE_LEVEL,
   binarizeJudgeScore,
   computeCohensKappa,
+  bootstrapCohensKappaConfidenceInterval,
 };
-export type { CohenKappaResult, JudgeCategory };
+export type {
+  BootstrapKappaOptions,
+  BootstrapKappaResult,
+  CohenKappaResult,
+  JudgeCategory,
+  KappaConfidenceInterval,
+};

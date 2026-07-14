@@ -689,6 +689,7 @@ test("buildBenchmarkArtifact omits tier/hardware/judgeCalibration when absent (b
 });
 
 test("tier/hardware/judgeCalibration round-trip through serialize + parse (issue #1573)", () => {
+  const answerSetHash = "a".repeat(64);
   const built = buildBenchmarkArtifact({
     benchmarkId: "locomo",
     datasetVersion: "v1",
@@ -699,7 +700,17 @@ test("tier/hardware/judgeCalibration round-trip through serialize + parse (issue
     result: sampleResult(),
     tier: "local",
     hardware: { gpu: "RTX 3090", vramGb: 24, quantization: "AWQ-int4" },
-    judgeCalibration: { kappa: 0.55, sampleSize: 50, threshold: 0.7, warning: true },
+    judgeCalibration: {
+      kappa: 0.55,
+      sampleSize: 2,
+      threshold: 0.7,
+      warning: true,
+      confidenceInterval: { lower: 0.31, upper: 0.76, level: 0.95 },
+      bootstrapSamples: 2_000,
+      answerSetHash,
+      sourceResultId: "run-pinned-123",
+      sliceQuestionIds: ["q-17", "q-42"],
+    },
   });
   const roundTripped = parseBenchmarkArtifact(serializeBenchmarkArtifact(built));
   assert.equal(roundTripped.tier, "local");
@@ -708,6 +719,11 @@ test("tier/hardware/judgeCalibration round-trip through serialize + parse (issue
   assert.equal(roundTripped.hardware?.quantization, "AWQ-int4");
   assert.equal(roundTripped.judgeCalibration?.kappa, 0.55);
   assert.equal(roundTripped.judgeCalibration?.warning, true);
+  assert.deepEqual(roundTripped.judgeCalibration?.confidenceInterval, { lower: 0.31, upper: 0.76, level: 0.95 });
+  assert.equal(roundTripped.judgeCalibration?.bootstrapSamples, 2_000);
+  assert.equal(roundTripped.judgeCalibration?.answerSetHash, answerSetHash);
+  assert.equal(roundTripped.judgeCalibration?.sourceResultId, "run-pinned-123");
+  assert.deepEqual(roundTripped.judgeCalibration?.sliceQuestionIds, ["q-17", "q-42"]);
 });
 
 test("parseBenchmarkArtifact accepts old artifacts without tier/hardware (forwards compatible)", () => {
@@ -745,6 +761,31 @@ test("parseBenchmarkArtifact rejects non-boolean judgeCalibration.warning", () =
     () => parseBenchmarkArtifact(JSON.stringify(payload)),
     /judgeCalibration\.warning must be a boolean/,
   );
+});
+
+test("parseBenchmarkArtifact rejects malformed calibration provenance (#1877)", () => {
+  for (const judgeCalibration of [
+    {
+      kappa: 0.7, sampleSize: 2, threshold: 0.7, warning: false,
+      confidenceInterval: { lower: 0.8, upper: 0.4, level: 0.95 },
+    },
+    { kappa: 0.7, sampleSize: 2, threshold: 0.7, warning: false, bootstrapSamples: 0 },
+    { kappa: 0.7, sampleSize: 2, threshold: 0.7, warning: false, answerSetHash: "short" },
+    { kappa: 0.7, sampleSize: 2, threshold: 0.7, warning: false, sourceResultId: "" },
+    { kappa: 0.7, sampleSize: 2, threshold: 0.7, warning: false, sliceQuestionIds: ["q1", "q1"] },
+    {
+      kappa: 0.7,
+      sampleSize: 201,
+      threshold: 0.7,
+      warning: false,
+      sliceQuestionIds: Array.from({ length: 201 }, (_, index) => `q${index}`),
+    },
+  ]) {
+    assert.throws(
+      () => parseBenchmarkArtifact(JSON.stringify({ ...sampleArtifactPayload(), judgeCalibration })),
+      /judgeCalibration/,
+    );
+  }
 });
 
 test("hashBenchmarkArtifact is stable for tier/hardware/judgeCalibration presence (sorted-key canonical JSON)", () => {

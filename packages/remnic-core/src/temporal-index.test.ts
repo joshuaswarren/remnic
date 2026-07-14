@@ -7,9 +7,12 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
+  deindexMemory,
   indexMemory,
+  indexesExist,
   queryByDateRangeAsync,
   queryByTagsAsync,
+  queryTemporalTimelineAsync,
   resolvePromptTagPrefilterAsync,
 } from "./temporal-index.js";
 
@@ -235,4 +238,158 @@ test("indexMemory replaces stale date and tag memberships for an existing path",
   assert.deepEqual(februaryMatches, new Set([memoryPath]));
   assert.deepEqual(alphaMatches, new Set());
   assert.deepEqual(betaMatches, new Set([memoryPath]));
+});
+
+test("temporal timeline orders event time across sessions, not ingest order", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-order-"));
+  indexMemory(memoryDir, "/tmp/rome.md", "2026-07-02T00:00:00.000Z", [], {
+    validAt: "2026-05-10T00:00:00.000Z",
+    observedAt: "2026-07-02T00:00:00.000Z",
+    sessionKey: "session-b",
+  });
+  indexMemory(memoryDir, "/tmp/paris.md", "2026-07-03T00:00:00.000Z", [], {
+    validAt: "2026-03-04T00:00:00.000Z",
+    observedAt: "2026-07-03T00:00:00.000Z",
+    sessionKey: "session-a",
+  });
+
+  const timeline = await queryTemporalTimelineAsync(memoryDir);
+  assert.deepEqual(
+    timeline?.map(({ path, eventAt, sessionKey }) => ({ path, eventAt, sessionKey })),
+    [
+      { path: "/tmp/paris.md", eventAt: "2026-03-04T00:00:00.000Z", sessionKey: "session-a" },
+      { path: "/tmp/rome.md", eventAt: "2026-05-10T00:00:00.000Z", sessionKey: "session-b" },
+    ],
+  );
+});
+
+test("temporal timeline uses stable observation/path ordering for event-time ties", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-tie-"));
+  const eventAt = "2026-03-04T00:00:00.000Z";
+  indexMemory(memoryDir, "/tmp/z.md", eventAt, [], { validAt: eventAt, observedAt: "2026-07-03T00:00:00.000Z" });
+  indexMemory(memoryDir, "/tmp/a.md", eventAt, [], { validAt: eventAt, observedAt: "2026-07-02T00:00:00.000Z" });
+  indexMemory(memoryDir, "/tmp/b.md", eventAt, [], { validAt: eventAt, observedAt: "2026-07-02T00:00:00.000Z" });
+
+  const first = await queryTemporalTimelineAsync(memoryDir);
+  const second = await queryTemporalTimelineAsync(memoryDir);
+  assert.deepEqual(first?.map((entry) => entry.path), ["/tmp/a.md", "/tmp/b.md", "/tmp/z.md"]);
+  assert.deepEqual(second, first);
+});
+
+test("old or malformed temporal index shape is unavailable and requests rebuild", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-malformed-"));
+  await mkdir(join(memoryDir, "state"), { recursive: true });
+  await writeFile(
+    join(memoryDir, "state", "index_time.json"),
+    JSON.stringify({ version: 2, dates: {}, events: [] }),
+    "utf8",
+  );
+  await writeFile(
+    join(memoryDir, "state", "index_tags.json"),
+    JSON.stringify({ version: 2, tags: {}, aliases: {} }),
+    "utf8",
+  );
+
+  assert.equal(indexesExist(memoryDir), false);
+  assert.equal(await queryTemporalTimelineAsync(memoryDir), null);
+
+  await writeFile(
+    join(memoryDir, "state", "index_time.json"),
+    JSON.stringify({ version: 1, dates: {} }),
+    "utf8",
+  );
+  assert.equal(indexesExist(memoryDir), false);
+  assert.equal(await queryTemporalTimelineAsync(memoryDir), null);
+});
+
+test("deindex removes timeline rows so stale events cannot be recalled", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-delete-"));
+  const memoryPath = "/tmp/deleted.md";
+  const createdAt = "2026-03-04T00:00:00.000Z";
+  indexMemory(memoryDir, memoryPath, createdAt, ["trip"], { sessionKey: "session-a" });
+  deindexMemory(memoryDir, memoryPath, createdAt, ["trip"]);
+  assert.deepEqual(await queryTemporalTimelineAsync(memoryDir), []);
+});
+
+test("large temporal indexes return a bounded relevant oversample before memory reads", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-bounded-"));
+  for (let i = 0; i < 600; i += 1) {
+    const day = String((i % 28) + 1).padStart(2, "0");
+    indexMemory(
+      memoryDir,
+      `/tmp/event-${String(i).padStart(4, "0")}.md`,
+      `2026-03-${day}T00:00:00.000Z`,
+      [],
+      {
+        validAt: `2026-03-${day}T00:00:00.000Z`,
+        searchText: i === 317 ? "unique-marzipan-trip to Lisbon" : `routine event ${i}`,
+      },
+    );
+  }
+
+  const relevant = await queryTemporalTimelineAsync(memoryDir, {
+    query: "When was the marzipan trip to Lisbon?",
+    limit: 48,
+  });
+  assert.ok(relevant);
+  assert.ok(relevant.length <= 48);
+  assert.ok(relevant.some((entry) => entry.path.endsWith("event-0317.md")));
+
+  const generic = await queryTemporalTimelineAsync(memoryDir, {
+    query: "What happened first or last?",
+    limit: 48,
+  });
+  assert.equal(generic?.length, 48);
+  assert.equal(generic?.[0]?.eventAt, "2026-03-01T00:00:00.000Z");
+  assert.equal(generic?.at(-1)?.eventAt, "2026-03-28T00:00:00.000Z");
+});
+
+test("temporal timeline generic edge selection honors small and zero limits", async () => {
+  const memoryDir = await mkdtemp(join(tmpdir(), "remnic-temporal-timeline-small-limit-"));
+  for (let day = 1; day <= 4; day += 1) {
+    const timestamp = `2026-04-0${day}T00:00:00.000Z`;
+    indexMemory(memoryDir, `/tmp/edge-${day}.md`, timestamp, [], {
+      validAt: timestamp,
+      searchText: `unrelated event ${day}`,
+    });
+  }
+
+  const genericQuery = "What happened first or last?";
+  const limitOne = await queryTemporalTimelineAsync(memoryDir, {
+    query: genericQuery,
+    limit: 1,
+  });
+  assert.deepEqual(limitOne?.map((entry) => entry.path), ["/tmp/edge-1.md"]);
+
+  const limitTwo = await queryTemporalTimelineAsync(memoryDir, {
+    query: genericQuery,
+    limit: 2,
+  });
+  assert.deepEqual(limitTwo?.map((entry) => entry.path), [
+    "/tmp/edge-1.md",
+    "/tmp/edge-4.md",
+  ]);
+
+  assert.deepEqual(
+    await queryTemporalTimelineAsync(memoryDir, { query: genericQuery, limit: 0 }),
+    [],
+  );
+  assert.deepEqual(
+    await queryTemporalTimelineAsync(memoryDir, { query: genericQuery, limit: -3 }),
+    [],
+  );
+  assert.deepEqual(
+    (await queryTemporalTimelineAsync(memoryDir, {
+      query: genericQuery,
+      limit: 1.9,
+    }))?.map((entry) => entry.path),
+    ["/tmp/edge-1.md"],
+  );
+  assert.equal(
+    (await queryTemporalTimelineAsync(memoryDir, {
+      query: genericQuery,
+      limit: Number.POSITIVE_INFINITY,
+    }))?.length,
+    4,
+  );
 });

@@ -151,6 +151,79 @@ test("runner: baseline scores near-zero on non_resurrection-under-reingest (the 
   );
 });
 
+test("runner: adds two specialized judge scores per scenario without replacing deterministic metrics", async () => {
+  const calls: string[] = [];
+  const specializedJudge = {
+    async score() { return 1; },
+    async judgeMemCorrectCorrectionAcceptance() {
+      calls.push("correction");
+      return {
+        score: 0.75,
+        decision: "partial" as const,
+        reason: "private model explanation",
+        rubricVersion: "memcorrect-correction-acceptance-v1",
+        tokens: { input: 3, output: 2 },
+        latencyMs: 7,
+        model: "gpt-5.6",
+      };
+    },
+    async judgeMemCorrectStaleMemoryHarm() {
+      calls.push("stale");
+      return {
+        score: 1,
+        decision: "pass" as const,
+        reason: "private model explanation",
+        rubricVersion: "memcorrect-stale-memory-harm-v1",
+        tokens: { input: 4, output: 1 },
+        latencyMs: 9,
+        model: "gpt-5.6",
+      };
+    },
+  };
+  const result = await runMemCorrectBenchmark(options({
+    benchmarkOptions: { adapter: new PromptOnlyBaselineAdapter() },
+    judgeProvider: { provider: "openai", model: "gpt-5.6", rubricVersion: "openai-responses-bench-v1" },
+    memCorrectJudge: specializedJudge,
+    limit: 1,
+  }));
+
+  assert.deepEqual(calls, ["correction", "stale"]);
+  const task = result.results.tasks[0]!;
+  assert.ok("uptake_at_next" in task.scores);
+  assert.equal(task.scores.judge_correction_acceptance, 0.75);
+  assert.equal(task.scores.judge_stale_harm_avoidance, 1);
+  assert.equal(result.results.aggregates.judge_correction_acceptance?.mean, 0.75);
+  assert.deepEqual(task.tokens, { input: 7, output: 3 });
+  assert.deepEqual(
+    { calls: result.cost.judgeModelCalls, input: result.cost.inputTokens, output: result.cost.outputTokens },
+    { calls: 2, input: 7, output: 3 },
+  );
+  assert.doesNotMatch(JSON.stringify(task.details), /private model explanation/);
+  assert.deepEqual(
+    (result.config.benchmarkOptions as any).judgeTelemetry,
+    { calls: 2, inputTokens: 7, outputTokens: 3, latencyMs: 16 },
+  );
+});
+
+test("runner: propagates categorized specialized judge failures", async () => {
+  const refusal = Object.assign(new Error("refused"), { code: "refusal" });
+  await assert.rejects(
+    runMemCorrectBenchmark(options({
+      benchmarkOptions: { adapter: new PromptOnlyBaselineAdapter() },
+      judgeProvider: { provider: "openai", model: "gpt-5.6" },
+      memCorrectJudge: {
+        async score() { return 1; },
+        async judgeMemCorrectCorrectionAcceptance() { throw refusal; },
+        async judgeMemCorrectStaleMemoryHarm() {
+          throw new Error("must not be reached");
+        },
+      },
+      limit: 1,
+    })),
+    (error: unknown) => error === refusal && (error as { code?: string }).code === "refusal",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Determinism: two runs, same seed, identical corpus hash + identical metrics
 // ---------------------------------------------------------------------------

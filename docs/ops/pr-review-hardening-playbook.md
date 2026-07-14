@@ -209,6 +209,22 @@ Repository automation:
 - `pre-push` runs `npm run preflight`
 - Local AI pre-push signal: run `npm run review:cursor` before requesting external AI review when the CLI is available.
 
+### Dependabot manifest-only exception
+
+Cursor does not currently produce review activity for Dependabot-authored PRs.
+The `ai-reviewers` workflow therefore treats a missing Cursor signal as
+satisfied only when every changed file is one of the repository's dependency
+manifests: `package.json`, `package-lock.json`, `pnpm-lock.yaml`, or
+`requirements.txt`. The exception is fail-closed: an empty diff, a human-authored
+PR, any documentation/source/workflow change, any future non-Cursor reviewer
+group, or an explicit negative Cursor signal keeps the AI gate blocking.
+
+This exception changes only the structurally unavailable Cursor signal. All
+other branch-protection checks remain required, including dependency review,
+tests, CodeQL, and the unresolved-review-thread guard. If a Dependabot PR needs
+any source or documentation fix, it no longer qualifies; apply the usual
+current-head review workflow before merge.
+
 ## Stale AI Review Recovery
 
 If `Cursor Bugbot` is still pending after all other checks are green:

@@ -472,6 +472,45 @@ test("runPublishedHarness records failed judge_accuracy when judge score is nega
   assert.ok(!("llm_judge" in task.scores));
   assert.equal(task.scores.judge_accuracy, -1);
   assert.equal(result.results.aggregates.judge_accuracy?.mean, -1);
+  assert.equal(result.meta.status, undefined, "a legitimate negative judge score is not a transport failure");
+});
+
+test("runPublishedHarness marks caught provider failures partial without hiding the failed task", async () => {
+  const { system } = makeFakeSystem();
+  system.responder.respond = async () => {
+    throw new Error("provider HTTP 400: model is unavailable");
+  };
+  const completedTaskIds: string[] = [];
+
+  const result = await runPublishedHarness({
+    options: makeOptions(system, {
+      onTaskComplete: (task) => completedTaskIds.push(task.taskId),
+    }),
+    metricsSpec: { metrics: ["f1", "llm_judge"] },
+    plans: [
+      {
+        ingestSessions: [],
+        trials: [
+          {
+            taskId: "provider-failure",
+            question: "q",
+            expected: "a",
+            recallSessionIds: [],
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.equal(result.meta.status, "partial");
+  assert.match(result.meta.failureReason ?? "", /trial_execution_failure.*provider-failure.*HTTP 400/);
+  assert.deepEqual(completedTaskIds, ["provider-failure"]);
+  assert.equal(result.results.tasks.length, 1);
+  assert.deepEqual(result.results.tasks[0]?.scores, { f1: -1, llm_judge: -1 });
+  assert.deepEqual(result.results.tasks[0]?.details?.benchmarkFailure, {
+    kind: "trial_execution_failure",
+    message: "provider HTTP 400: model is unavailable",
+  });
 });
 
 test("runPublishedHarness supports benchmark-owned binary judge prompts", async () => {
@@ -678,4 +717,5 @@ test("runPublishedHarness produces empty result for empty plans", async () => {
   });
   assert.equal(result.results.tasks.length, 0);
   assert.equal(result.cost.meanQueryLatencyMs, 0);
+  assert.equal(result.meta.status, undefined, "an empty dataset is not a backend failure");
 });

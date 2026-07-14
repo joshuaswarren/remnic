@@ -43,6 +43,11 @@ export interface BenchmarkReproManifestResult {
   seeds: number[];
   taskCount: number;
   configHash: string;
+  judge: {
+    provider: string;
+    model: string;
+    rubricVersion: string | null;
+  } | null;
 }
 
 export interface BenchmarkReproManifest {
@@ -1064,6 +1069,13 @@ async function buildResultManifest(
     seeds: [...result.meta.seeds],
     taskCount: result.results.tasks.length,
     configHash: sha256String(stableStringify(result.config)),
+    judge: result.config.judgeProvider
+      ? {
+          provider: result.config.judgeProvider.provider,
+          model: result.config.judgeProvider.model,
+          rubricVersion: result.config.judgeProvider.rubricVersion ?? null,
+        }
+      : null,
   };
 }
 

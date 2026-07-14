@@ -65,8 +65,13 @@ export type {
   SearchResult,
   MemoryStats,
   BenchResponse,
+  BenchRecallSupportStatus,
+  BenchRecallSupportAssessment,
+  BenchRecallSupportRequest,
   BenchResponder,
   BenchJudgeResult,
+  MemCorrectJudgeRequest,
+  MemCorrectJudgeResult,
   BenchJudge,
   BenchMemoryAdapter,
   BenchRecallOptions,
@@ -100,6 +105,32 @@ export {
   createLightweightAdapter,
   createRemnicAdapter,
 } from "./adapters/remnic-adapter.js";
+export {
+  createMcpMemoryAdapter,
+  createMcpDemoMemoryAdapter,
+  createMcpDemoMemCorrectAdapter,
+  createMcpMemCorrectAdapter,
+  McpMemoryBackendError,
+} from "./adapters/mcp-memory-adapter.js";
+export type {
+  McpArgumentSemantic,
+  McpBackendErrorCode,
+  McpBackendResult,
+  McpBenchMemoryAdapter,
+  McpConformanceResult,
+  McpHttpTransportConfig,
+  McpListedTool,
+  McpMemCorrectAdapter,
+  McpMemoryAdapterOptions,
+  McpMemoryToolMapping,
+  McpMemoryTransportConfig,
+  McpStdioTransportConfig,
+  McpToolCallResult,
+  McpToolClient,
+  McpToolMappingEntry,
+  McpToolMappingValue,
+  McpToolOperation,
+} from "./adapters/mcp-memory-adapter.js";
 export {
   createTimeoutGuardedAdapter,
   resolveBenchmarkPhaseTimeoutMs,
@@ -234,6 +265,30 @@ export { createLiteLlmProvider } from "./providers/litellm.js";
 export { createLocalLlmProvider } from "./providers/local-llm.js";
 export { createOllamaProvider } from "./providers/ollama.js";
 export { createOpenAiCompatibleProvider } from "./providers/openai-compatible.js";
+export {
+  DEFAULT_OPENAI_RESPONSES_JUDGE_MODEL,
+  OpenAiResponsesJudgeError,
+  OpenAiResponsesProvider,
+  createOpenAiResponsesBenchJudge,
+  createOpenAiResponsesProvider,
+  judgeMemCorrectCorrectionAcceptance,
+  judgeMemCorrectStaleMemoryHarm,
+} from "./providers/openai-responses.js";
+export type {
+  OpenAiResponsesProviderConfig,
+  OpenAiResponsesJudgeErrorCode,
+  OpenAiResponsesJudgeTelemetry,
+  OpenAiResponsesVerdict,
+  OpenAiResponsesVerdictResult,
+} from "./providers/openai-responses.js";
+export {
+  GENERAL_ANSWER_JUDGE_RUBRIC,
+  MEMCORRECT_CORRECTION_ACCEPTANCE_RUBRIC,
+  MEMCORRECT_CORRECTION_ACCEPTANCE_RUBRIC_VERSION,
+  MEMCORRECT_STALE_HARM_RUBRIC,
+  MEMCORRECT_STALE_HARM_RUBRIC_VERSION,
+  OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION,
+} from "./judges/memcorrect-rubrics.js";
 export type {
   BenchModelSource,
   ResolveBenchRuntimeProfileOptions,
@@ -309,6 +364,18 @@ export {
 export { cohensD, interpretEffectSize } from "./stats/effect-size.js";
 export { compareResults, getBenchmarkLowerIsBetter } from "./stats/comparison.js";
 export {
+  diagnoseLoComoProfileDelta,
+  renderLoComoProfileDeltaMarkdown,
+} from "./stats/locomo-profile-delta.js";
+export type {
+  DiagnoseLoComoProfileDeltaOptions,
+  LoComoCategoryDelta,
+  LoComoMetricDelta,
+  LoComoProfileArtifactEvidence,
+  LoComoProfileDeltaReport,
+  LoComoTaskRegression,
+} from "./stats/locomo-profile-delta.js";
+export {
   assertPublishableIntegrity,
   buildBenchmarkPublishFeed,
   deleteBenchmarkResults,
@@ -318,6 +385,7 @@ export {
   loadBenchmarkBaseline,
   listBenchmarkBaselines,
   listBenchmarkResults,
+  loadBenchmarkReportCardProvenance,
   renderBenchmarkResultExport,
   resolveBenchmarkResultReference,
   saveBenchmarkBaseline,
@@ -330,6 +398,7 @@ export type {
   PublishedBenchmarkFeed,
   PublishedBenchmarkFeedEntry,
 } from "./results-store.js";
+export type { ReportCardProvenanceContext } from "./report-card.js";
 
 // Published-benchmark dataset loaders (LongMemEval-S + LoCoMo-10).
 export {
@@ -420,10 +489,13 @@ export {
 // Cross-tier judge calibration — Cohen's kappa + calibration slice (issue #1573 PR3).
 export {
   CALIBRATION_SLICE_SIZE,
+  DEFAULT_KAPPA_BOOTSTRAP_SAMPLES,
+  DEFAULT_KAPPA_CONFIDENCE_LEVEL,
   DEFAULT_JUDGE_BINARIZATION_THRESHOLD,
   JUDGE_CALIBRATION_KAPPA_THRESHOLD,
   MIN_CALIBRATION_SOURCE_TASKS,
   binarizeJudgeScore,
+  bootstrapCohensKappaConfidenceInterval,
   computeCohensKappa,
   loadJudgeCalibrationState,
   runJudgeCalibration,
@@ -434,9 +506,12 @@ export type {
   CalibrationAnswer,
   CalibrationVerdictPair,
   CohenKappaResult,
+  BootstrapKappaOptions,
+  BootstrapKappaResult,
   JudgeCalibrationIdentities,
   JudgeCalibrationResult,
   JudgeCategory,
+  KappaConfidenceInterval,
   LoadedJudgeCalibrationState,
   RunJudgeCalibrationOptions,
 } from "./judges/calibration-slice.js";

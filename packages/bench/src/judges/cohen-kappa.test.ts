@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   DEFAULT_JUDGE_BINARIZATION_THRESHOLD,
+  bootstrapCohensKappaConfidenceInterval,
   binarizeJudgeScore,
   computeCohensKappa,
 } from "./cohen-kappa.ts";
@@ -66,6 +67,38 @@ test("computeCohensKappa: rejects empty arrays", () => {
   assert.throws(
     () => computeCohensKappa([], []),
     /zero paired judgements/,
+  );
+});
+
+test("bootstrapCohensKappaConfidenceInterval is deterministic and contains the point estimate", () => {
+  const local = ["correct", "correct", "correct", "correct", "incorrect", "incorrect", "incorrect", "incorrect"];
+  const frontier = ["correct", "correct", "correct", "incorrect", "incorrect", "incorrect", "incorrect", "correct"];
+  const point = computeCohensKappa(local, frontier).kappa;
+  const first = bootstrapCohensKappaConfidenceInterval(local, frontier, { iterations: 500 });
+  const second = bootstrapCohensKappaConfidenceInterval(local, frontier, { iterations: 500 });
+  assert.deepEqual(first, second);
+  assert.equal(first.bootstrapSamples, 500);
+  assert.equal(first.confidenceInterval.level, 0.95);
+  assert.ok(first.confidenceInterval.lower <= point);
+  assert.ok(first.confidenceInterval.upper >= point);
+});
+
+test("bootstrapCohensKappaConfidenceInterval validates paired input and options", () => {
+  assert.throws(
+    () => bootstrapCohensKappaConfidenceInterval(["correct"], []),
+    /equal length/,
+  );
+  assert.throws(
+    () => bootstrapCohensKappaConfidenceInterval([], []),
+    /zero paired judgements/,
+  );
+  assert.throws(
+    () => bootstrapCohensKappaConfidenceInterval(["correct"], ["correct"], { iterations: 0 }),
+    /positive integer/,
+  );
+  assert.throws(
+    () => bootstrapCohensKappaConfidenceInterval(["correct"], ["correct"], { level: 1 }),
+    /between 0 and 1/,
   );
 });
 test("computeCohensKappa: skewed marginals depress kappa below raw agreement (textbook 2x2)", () => {

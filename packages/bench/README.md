@@ -16,6 +16,71 @@ pnpm add @remnic/bench
 
 The CLI loads `@remnic/bench` via a computed-specifier dynamic import. If it's not installed, `remnic bench *` prints a clear install hint; the rest of the CLI keeps working.
 
+## OpenAI Build Week: five-minute MemCorrect path
+
+MemCorrect scores correction uptake and stale-memory harm through the same
+`remnic bench` surface. This keyless smoke path uses the packaged stdio MCP
+server, so it tests the actual MCP adapter rather than the in-memory baseline:
+
+```bash
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
+remnic bench runs list
+remnic bench export <run-id> --format html --output ./memcorrect-report.html
+```
+
+The run itself is deterministic and offline. It needs no dataset or API key.
+The generated HTML is self-contained and includes the correction ledger,
+per-dimension evidence, task drill-down, and reproducibility provenance. Treat
+the packaged demo as a transport and product smoke test, not a publishable
+backend-quality result.
+
+From a source checkout, build the optional companion before invoking the CLI:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm --filter @remnic/bench build
+pnpm exec tsx packages/remnic-cli/src/index.ts bench run \
+  --quick memcorrect-v1 --adapter mcp --mcp-demo
+```
+
+An external MCP server can replace `--mcp-demo` with exactly one of:
+
+```bash
+# stdio
+remnic bench run --quick memcorrect-v1 --adapter mcp \
+  --mcp-command memory-server --mcp-args '["--stdio"]' \
+  --mcp-tool-map '{"store":"memory_store","recall":"memory_recall","correct":"memory_correct","reset":"memory_reset"}'
+
+# Streamable HTTP; set REMNIC_BENCH_MCP_BEARER_TOKEN if authentication is required
+remnic bench run --quick memcorrect-v1 --adapter mcp \
+  --mcp-url https://memory.example/mcp \
+  --mcp-tool-map '{"store":"memory_store","recall":"memory_recall","correct":"memory_correct","reset":"memory_reset"}'
+```
+
+Tool names alone may not be enough for a non-canonical server. The mapping can
+also describe argument semantics; see `remnic bench --help` for the current CLI
+surface and use preflight failures as conformance errors rather than empty
+recall scores.
+
+GPT-5.6 judging is explicit and uses the OpenAI Responses API:
+
+```bash
+export OPENAI_API_KEY=...
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
+  --judge-provider openai --judge-model gpt-5.6
+```
+
+Codex built and adversarially reviewed the Build Week adapter, Responses
+provider, and report card. The underlying Remnic engine and original benchmark
+harness are prior work. The evidence ledger, credential-dependent frontier-run
+placeholder, and release status live in the root [`HACKATHON.md`](../../HACKATHON.md).
+
+The claimed judge path requires Node.js 22.12+. It is verified from source and
+from packed tarballs installed into a clean global prefix on Linux; macOS is
+supported with the same Node CLI but still needs a release-install receipt.
+Windows judges should use WSL2; native Windows is not currently claimed as
+Build Week-verified.
+
 ## What it does
 
 - **Benchmark runners** for a growing set of memory-oriented evals: `longmemeval`, `locomo`, `memory-arena`, `amemgym`, `ama-bench`, plus a lightweight smoke fixture.

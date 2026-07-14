@@ -43,6 +43,8 @@ export type BenchReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export interface ProviderConfig {
   provider: BuiltInProvider;
   model: string;
+  /** Versioned grading rubric used by judge providers, persisted for reproducibility. */
+  rubricVersion?: string;
   baseUrl?: string;
   apiKey?: string;
   retryOptions?: {
@@ -250,6 +252,8 @@ export interface RunBenchmarkOptions {
   amaBenchJudgeProtocol?: AmaBenchJudgeProtocol;
   amaBenchCrossJudge?: import("./adapters/types.js").BenchJudge;
   amaBenchCrossJudgeProvider?: ProviderConfig | null;
+  /** Live specialized judge used by MemCorrect; never persisted in result config. */
+  memCorrectJudge?: import("./adapters/types.js").BenchJudge;
   /**
    * Force-disable the content-keyed judge-result cache (#1573 PR1). When
    * true, every judge call reaches the underlying model regardless of

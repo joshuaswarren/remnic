@@ -14,7 +14,8 @@
     "./baselines/*.json": "./baselines/*.json",
     "./profiles/*": "./profiles/*",
     "./profiles/*.json": "./profiles/*.json",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./mcp-demo-server": "./dist/demo/mcp-memory-server.js"
   },
   "license": "MIT",
   "repository": {
@@ -41,10 +42,12 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@remnic/coding-graph": "workspace:^",
     "@remnic/core": "workspace:^",
     "hyparquet": "^1.25.7",
-    "yaml": "^2.4.2"
+    "yaml": "^2.4.2",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "tsup": "^8.5.1",
