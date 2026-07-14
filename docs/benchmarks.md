@@ -214,6 +214,71 @@ of the operator's weekly Claude Max Opus quota. The full run is an
 the pipeline is correct; the full Tier F pass (or the raw-API headline
 number) awaits quota authorization.
 
+### Build Week Codex CLI credit protocol
+
+The Build Week GPT-5.6 run is a separate frontier provenance path from both
+Opus via Claude Code and the OpenAI Responses API. Codex CLI model slugs must
+be recorded exactly: `gpt-5.6-luna` handles bulk responder and Remnic-internal
+work, while `gpt-5.6-terra` handles quality-critical judging. The exact
+Responses API model id `gpt-5.6` is an optional API judge, not an alias for
+either CLI model. Check the authenticated catalog immediately before a run
+with `codex debug models`. `gpt-5.6-sol` is disabled for the bounded plan and
+requires an explicit operator opt-in.
+
+The account starts with exactly 2,473 token credits. A 473-credit in-flight
+safety reserve leaves a hard planned-spend ceiling of 2,000 credits. Runs use
+normal service, not fast mode. The provider adds actual usage from every
+`turn.completed` JSONL event to an atomic JSON ledger before the next batch is
+sized. The reserve absorbs only the possible overshoot from a completion whose
+cost cannot be known before it returns; no new call starts after planned spend
+reaches 2,000 credits.
+
+| CLI model | Planned role | Input / 1M | Cached input / 1M | Output / 1M |
+| --- | --- | ---: | ---: | ---: |
+| `gpt-5.6-luna` | Responder and internal work | 25 | 2.5 | 150 |
+| `gpt-5.6-terra` | Judge | 62.5 | 6.25 | 375 |
+
+For one completed turn, charge
+`((input_tokens - cached_input_tokens) * input_rate + cached_input_tokens * cached_rate + output_tokens * output_rate) / 1,000,000`.
+The exact ledger invariant is `spent + remaining = 2,473`. Dispatch stops at
+2,000 spent; a just-completed call may consume part of the reserve, but total
+spend may never exceed 2,473. Estimates do not replace the completed-turn
+record.
+
+Each provider call is a one-shot, non-interactive `codex exec` launched in a
+new empty temporary workspace. It ignores user configuration and repository
+rules, disables hooks, and keeps no session. The sandbox is read-only,
+approvals are denied, and the benchmark prompt instructs the model not to use
+tools. Artifacts must record this isolation and the selected provider/model
+for each role.
+
+Configure the guard and run a measured smoke before selecting a task count:
+
+```bash
+export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
+export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
+export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger.json"
+
+remnic bench run --quick longmemeval \
+  --runtime-profile real \
+  --system-provider codex-cli --system-model gpt-5.6-luna \
+  --internal-provider codex-cli --internal-model gpt-5.6-luna \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra
+
+# Replace this only after the smoke ledger establishes observed cost.
+remnic bench run longmemeval \
+  --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
+  --system-provider codex-cli --system-model gpt-5.6-luna \
+  --internal-provider codex-cli --internal-model gpt-5.6-luna \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra
+```
+
+`--limit` caps loaded items. `--trial-limit` caps scored trials only for LoCoMo
+and MemoryAgentBench. Neither flag is a token-credit budget, so the placeholder
+cannot be replaced with a fixed universal value: derive it from the ledger's
+observed per-task cost and resize after each bounded batch. A limited run is a
+trial artifact and cannot be promoted as a full leaderboard result.
+
 To build a publishable artifact from a finished run's stored result, see
 `scripts/bench/build-artifact-from-result.ts` (bridges `BenchmarkResult` →
 `BenchmarkArtifact`, stamping the two-tier `tier`/`hardware` envelope). Real

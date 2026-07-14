@@ -70,9 +70,53 @@ remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
   --judge-provider openai --judge-model gpt-5.6
 ```
 
+The credit-backed Codex CLI path is a distinct provider and model namespace.
+Use `gpt-5.6-luna` for bulk responder and internal work and
+`gpt-5.6-terra` for quality-critical judging. The exact API id `gpt-5.6`
+above is not a CLI alias. Confirm the authenticated catalog before a run with
+`codex debug models`. `gpt-5.6-sol` is opt-in only and is disabled in the
+bounded plan.
+
+Each Codex completion is a fresh, non-interactive `codex exec` in a new empty
+temporary workspace. It ignores user configuration and project rules,
+disables hooks, and keeps no session. The sandbox is read-only, approvals are
+denied, and the benchmark prompt instructs the model not to use tools. The
+Build Week plan uses normal service, not fast mode.
+
+The account has 2,473 token credits. A 473-credit safety reserve leaves 2,000
+usable credits. Configure the atomic completed-turn ledger and guards,
+then measure a quick task before choosing a workload bound:
+
+```bash
+export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
+export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
+export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger.json"
+
+remnic bench run --quick longmemeval \
+  --runtime-profile real \
+  --system-provider codex-cli --system-model gpt-5.6-luna \
+  --internal-provider codex-cli --internal-model gpt-5.6-luna \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra
+
+remnic bench run longmemeval \
+  --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
+  --system-provider codex-cli --system-model gpt-5.6-luna \
+  --internal-provider codex-cli --internal-model gpt-5.6-luna \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra
+```
+
+The placeholder is intentional. `--limit` and LoCoMo/MemoryAgentBench's
+`--trial-limit` bound tasks, not token credits. Derive each next batch from
+actual `turn.completed` JSONL usage. Stop dispatching at 2,000 spent; the
+473-credit reserve absorbs only a final in-flight call whose exact cost becomes
+known after completion.
+Rates per one million tokens are Luna: 25 input, 2.5 cached input, 150 output;
+Terra: 62.5 input, 6.25 cached input, 375 output. A bounded result is a trial,
+not a full leaderboard artifact.
+
 Codex built and adversarially reviewed the Build Week adapter, Responses
 provider, and report card. The underlying Remnic engine and original benchmark
-harness are prior work. The evidence ledger, credential-dependent frontier-run
+harness are prior work. The evidence ledger, credit-backed frontier-run
 placeholder, and release status live in the root [`HACKATHON.md`](../../HACKATHON.md).
 
 The claimed judge path requires Node.js 22.12+. It is verified from source and

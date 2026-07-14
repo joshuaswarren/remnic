@@ -5,7 +5,8 @@ Target duration: 2 minutes 40 seconds. Hard limit: 3 minutes.
 Operator gate before recording: replace every bracketed placeholder used in the
 video with real evidence. Do not record until the npm cold-install path and
 Codex `/feedback` session ID exist. If the GPT-5.6 frontier artifact does not
-land, omit that result and its URL rather than substituting another model.
+land, omit that result and its URL rather than substituting another model or
+turning a bounded trial into a full-run claim.
 
 ## 0:00-0:20: the stale-memory problem
 
@@ -77,8 +78,9 @@ recall."
 ## 2:10-2:35: Codex and GPT-5.6 roles
 
 Picture: Show the dated implementation commit, selected test names, and the
-OpenAI judge command. If available, briefly show `[CODEX_FEEDBACK_SESSION_ID]`
-and `[GPT_5_6_ARTIFACT_URL]`.
+model provenance from a real artifact. If available, briefly show
+`[CODEX_FEEDBACK_SESSION_ID]`, `[GPT_5_6_ARTIFACT_URL]`, and the sanitized
+credit summary. Do not show the private JSON ledger.
 
 ```bash
 export OPENAI_API_KEY=...
@@ -88,9 +90,19 @@ remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo \
 
 Voiceover: "Codex built and adversarially reviewed the new MCP adapter,
 Responses provider, and report card during Build Week. GPT-5.6 is the optional
-structured-output judge inside the harness. Remnic itself and the original
+structured-output judge inside the harness. Our bounded CLI measurement uses
+Luna for bulk work and Terra for quality-critical judging, with every completed
+turn charged to an exact credit ledger. Remnic itself and the original
 benchmark package are prior work; our public evidence ledger draws that line
 commit by commit."
+
+The exact API model id above is `gpt-5.6`. It is distinct from the
+ChatGPT-backed Codex CLI slugs `gpt-5.6-luna` and `gpt-5.6-terra`. If the CLI
+artifact is shown, its run must use one-shot isolated `codex exec` calls, normal
+service rather than fast mode, a 2,473-credit budget, a 473-credit reserve, and
+the real model labels. `gpt-5.6-sol` is opt-in only and is outside the bounded
+plan. Confirm the authenticated catalog immediately before recording with
+`codex debug models`.
 
 Do not say GPT-5.6 was benchmarked as the system under test unless the real,
 hash-locked artifact is on screen.
@@ -110,5 +122,8 @@ database."
 - [ ] Commands shown match the released packages or the disclosed source path.
 - [ ] No API key, token, personal data, or private terminal history is visible.
 - [ ] Every narrated score appears in the recorded artifact.
+- [ ] Any CLI artifact identifies Luna/Terra separately from API `gpt-5.6`.
+- [ ] Any credit claim reconciles 2,473 total, 473 reserved, and 2,000 usable.
+- [ ] No fast-mode or Sol run is presented as part of the bounded plan.
 - [ ] Codex `/feedback` session ID: `[CODEX_FEEDBACK_SESSION_ID]`
 - [ ] GPT-5.6 artifact, if claimed: `[GPT_5_6_ARTIFACT_URL]`

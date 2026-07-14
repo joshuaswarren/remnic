@@ -574,6 +574,8 @@ machine; the training entry point exits with code 2 and an install hint if
 
 ## A.5 Tier F (frontier) reproduction
 
+### A.5.1 Opus via Claude Code
+
 The Tier F responder is **Opus 4.8 via Claude Code (`claude -p`)**, through
 the `claude-cli` bench provider. This is a valid research harness and a
 distinct provenance path from the raw Anthropic API; the benchmark artifact
@@ -618,6 +620,80 @@ the 5-hour / weekly caps. The protocol:
    scale to the full set before any number is published.
 5. **Judge cache** — never re-judge an identical answer (already in the
    harness).
+
+### A.5.2 GPT-5.6 via Codex CLI with a credit ledger
+
+The Build Week GPT-5.6 run is a second CLI-backed Tier F path. It must retain
+the exact Codex CLI model slugs and must not be relabeled as a raw API run:
+
+- `gpt-5.6-luna`: bulk responder and Remnic-internal work.
+- `gpt-5.6-terra`: quality-critical judging.
+- `gpt-5.6-sol`: explicit opt-in only; disabled for the bounded plan.
+- `gpt-5.6`: the distinct Responses API model id for the optional API judge.
+
+Run `codex debug models` immediately before the benchmark and retain its model
+catalog result with the operator receipt. The harness starts a new
+non-interactive `codex exec` for each completion in a fresh empty temporary
+workspace. It ignores user config and project rules, disables hooks, and keeps
+no session. It uses a read-only sandbox with approvals denied, and its
+benchmark prompt instructs the model not to use tools. The harness passes the
+prompt on stdin, captures only the final response, and removes the workspace.
+This is one-shot isolation per completion, not one shared chat session per
+benchmark.
+
+The Build Week balance is 2,473 token credits. Keep 473 credits as an in-flight
+safety reserve and allow no more than 2,000 credits of planned spend. Use
+normal service, not fast mode. Configure the provider's guard before the first
+turn:
+
+```bash
+export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
+export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
+export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger.json"
+unset REMNIC_BENCH_CODEX_ALLOW_SOL
+```
+
+The ledger is an atomic JSON document whose `entries` array grows from Codex
+`turn.completed` JSONL events. For each completion, reconcile actual input,
+cached-input, and output tokens against these rates (credits per one million
+tokens):
+
+| Model | Input | Cached input | Output |
+| --- | ---: | ---: | ---: |
+| `gpt-5.6-luna` | 25 | 2.5 | 150 |
+| `gpt-5.6-terra` | 62.5 | 6.25 | 375 |
+
+The per-turn charge is
+`((input_tokens - cached_input_tokens) * input_rate + cached_input_tokens * cached_rate + output_tokens * output_rate) / 1,000,000`.
+Verify after every batch that `spent + remaining = 2,473`. Do not dispatch a
+new call after planned spend reaches 2,000; the 473-credit reserve exists to
+absorb only the final in-flight call because its actual usage arrives after
+completion. Total spend may never exceed 2,473. Because task prompts and
+answers vary, do not allocate a fixed trial count in advance. Measure one
+quick task, calculate observed credits per task, then set the next workload
+bound conservatively:
+
+```bash
+remnic bench run --quick longmemeval \
+  --runtime-profile real \
+  --system-provider codex-cli --system-model gpt-5.6-luna \
+  --internal-provider codex-cli --internal-model gpt-5.6-luna \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra
+
+remnic bench run longmemeval \
+  --runtime-profile real --limit <LEDGER_DERIVED_LIMIT> \
+  --system-provider codex-cli --system-model gpt-5.6-luna \
+  --internal-provider codex-cli --internal-model gpt-5.6-luna \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra
+```
+
+`<LEDGER_DERIVED_LIMIT>` is an operator-computed placeholder, not a missing
+token-budget flag. The existing `--limit` caps loaded items, and
+`--trial-limit` caps scored trials for LoCoMo or MemoryAgentBench; neither
+directly caps credits. The provider environment variables enforce the credit
+ceiling, while the ledger determines the next safe task bound. Label every
+bounded output as partial coverage and keep the private ledger out of the
+public artifact unless it has been sanitized.
 
 ---
 
