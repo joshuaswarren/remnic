@@ -351,8 +351,17 @@ class ClaudeCliProvider implements LlmProvider {
             continue;
           }
           const exitLabel = result.signal ? `signal ${result.signal}` : `exit ${result.status ?? "unknown"}`;
+          // Diagnostics: the envelope's identifying fields live at the HEAD
+          // of stdout (type/subtype/is_error/result), but the summary tails
+          // it — include the head explicitly so deterministic per-task
+          // failures are classifiable from the run log alone (live 2026-07-13
+          // full-run triage: ~8% of tasks failed with a parseable envelope
+          // that was not salvageable, invisible from the tail).
+          const stdoutHead = result.stdout.trim().slice(0, 300);
           const error = new Error(
-            `Claude CLI completion failed (${exitLabel}): ${summarizeProcessOutput(result.stderr, result.stdout)}`,
+            `Claude CLI completion failed (${exitLabel}): ${
+              stdoutHead.length > 0 ? `head=${JSON.stringify(stdoutHead)} tail=` : ""
+            }${summarizeProcessOutput(result.stderr, result.stdout)}`,
           );
           if (transientAttempt < maxAttempts && isRetryableClaudeCliResult(result)) {
             await sleepBeforeClaudeCliRetry({
