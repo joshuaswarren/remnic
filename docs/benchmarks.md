@@ -90,6 +90,16 @@ contradiction-scan, graph-recall) are in
 At 7B-Q4 single-seed no cell moves any metric outside the run-to-run noise
 band, so no shipped default is changed by that ablation.
 
+The July 14 Tier-F `real` versus LCM-only `baseline` LoCoMo comparison is
+diagnosed in
+[`docs/benchmarks/locomo-profile-diagnosis.md`](./benchmarks/locomo-profile-diagnosis.md).
+The regression is concentrated in multi-hop questions and is present on
+judge-independent F1, but paired recall X-ray receipts are not available, so
+the recall-side mechanism is not yet established. Pending that evidence,
+benchmark operators should use the `baseline` profile only for LoCoMo's
+skip-extraction replay path when optimizing this measured configuration; this
+is not production guidance and does not change shipped defaults.
+
 The two `*-mock000.json` files remain as **pipeline examples** with
 `datasetVersion: "mock-fixture"` and placeholder scores; **do not cite
 them publicly**. They will be removed once full uncapped Tier L runs

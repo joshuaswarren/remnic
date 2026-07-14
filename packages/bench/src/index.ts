@@ -361,6 +361,18 @@ export {
 export { cohensD, interpretEffectSize } from "./stats/effect-size.js";
 export { compareResults, getBenchmarkLowerIsBetter } from "./stats/comparison.js";
 export {
+  diagnoseLoComoProfileDelta,
+  renderLoComoProfileDeltaMarkdown,
+} from "./stats/locomo-profile-delta.js";
+export type {
+  DiagnoseLoComoProfileDeltaOptions,
+  LoComoCategoryDelta,
+  LoComoMetricDelta,
+  LoComoProfileArtifactEvidence,
+  LoComoProfileDeltaReport,
+  LoComoTaskRegression,
+} from "./stats/locomo-profile-delta.js";
+export {
   assertPublishableIntegrity,
   buildBenchmarkPublishFeed,
   deleteBenchmarkResults,
