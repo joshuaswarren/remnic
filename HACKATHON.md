@@ -116,8 +116,11 @@ remnic bench run longmemeval \
 
 Without the judge flags, the run falls back to the unjudged scoring
 path, and the key must go through `--judge-api-key` (the provider does
-not read the env var on its own). Full reproduction paths live in
-`docs/paper/repro-appendix.md`.
+not read the env var on its own). One caveat until #1870 lands: today
+`--judge-provider openai` routes through the existing chat-completions
+compatible provider. The Responses API judge provider is part of the
+in-window work, and the same command exercises it once merged. Full
+reproduction paths live in `docs/paper/repro-appendix.md`.
 
 ## Honest framing of the novelty claim
 
