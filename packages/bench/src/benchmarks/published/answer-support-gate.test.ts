@@ -103,10 +103,12 @@ async function runTrial(options: {
 test("answer support gate instructs abstention after a successful empty recall", async () => {
   const { system, prompts } = makeSystem({ recalledText: "" });
   const result = await runTrial({ system, gate: true });
+  const task = result.results.tasks[0]!;
+  assert.ok(task);
 
-  assert.equal(result.results.tasks[0]?.actual, "unknown");
+  assert.equal(task.actual, "unknown");
   assert.match(prompts[0]!, /successful recall returned no evidence/);
-  assert.deepEqual(result.results.tasks[0]?.details.recallSupport, {
+  assert.deepEqual(task.details!.recallSupport, {
     status: "empty",
     reason: "successful recall returned empty responder context",
     evidenceCount: 0,
@@ -151,10 +153,15 @@ test("supported answerable categories preserve factual answering", async () => {
     gate: "on",
     trial: { extraDetails: { locomoCategory: 1 } },
   });
+  const task = result.results.tasks[0]!;
+  assert.ok(task);
 
-  assert.equal(result.results.tasks[0]?.actual, "Seattle");
-  assert.equal(result.results.tasks[0]?.details.locomoCategory, 1);
-  assert.equal(result.results.tasks[0]?.details.recallSupport.status, "supported");
+  assert.equal(task.actual, "Seattle");
+  assert.equal(task.details!.locomoCategory, 1);
+  assert.deepEqual(task.details!.recallSupport, {
+    status: "supported",
+    evidenceCount: 1,
+  });
   assert.doesNotMatch(prompts[0]!, /Recall support gate:/);
 });
 
@@ -166,9 +173,11 @@ test("support-assessment backend failure remains distinct and does not force abs
     },
   });
   const result = await runTrial({ system, gate: true });
+  const task = result.results.tasks[0]!;
+  assert.ok(task);
 
-  assert.equal(result.results.tasks[0]?.actual, "Seattle");
-  assert.deepEqual(result.results.tasks[0]?.details.recallSupport, {
+  assert.equal(task.actual, "Seattle");
+  assert.deepEqual(task.details!.recallSupport, {
     status: "backend_failure",
     reason: "support backend timed out",
   });
@@ -179,9 +188,11 @@ test("string false-like config disables the gate without vacuous coercion", asyn
   for (const gate of ["false", "0", "no", "off"]) {
     const { system, prompts } = makeSystem({ recalledText: "" });
     const result = await runTrial({ system, gate });
-    assert.equal(result.results.tasks[0]?.actual, "Seattle", `gate=${gate}`);
+    const task = result.results.tasks[0]!;
+    assert.ok(task);
+    assert.equal(task.actual, "Seattle", `gate=${gate}`);
     assert.doesNotMatch(prompts[0]!, /Recall support gate:/, `gate=${gate}`);
-    assert.equal(result.results.tasks[0]?.details.answerSupportGate, undefined);
+    assert.equal(task.details!.answerSupportGate, undefined);
   }
 });
 

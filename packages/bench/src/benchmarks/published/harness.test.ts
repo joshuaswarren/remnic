@@ -507,7 +507,7 @@ test("runPublishedHarness marks caught provider failures partial without hiding 
   assert.deepEqual(completedTaskIds, ["provider-failure"]);
   assert.equal(result.results.tasks.length, 1);
   assert.deepEqual(result.results.tasks[0]?.scores, { f1: -1, llm_judge: -1 });
-  assert.deepEqual(result.results.tasks[0]?.details.benchmarkFailure, {
+  assert.deepEqual(result.results.tasks[0]?.details?.benchmarkFailure, {
     kind: "trial_execution_failure",
     message: "provider HTTP 400: model is unavailable",
   });
