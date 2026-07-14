@@ -13,6 +13,14 @@
 # Trimmed to what the recipes truly import (train.py: torch/transformers/
 # datasets + numpy-via-torch; eval.py: torch/transformers; hf_push needs
 # huggingface-hub). sentence-transformers / scikit-learn were not imported.
+#
+# Reproducing an ALREADY-TRAINED model: install the exact versions recorded
+# in that model's manifest.json trainingStack.libs (verify with
+# pipFreezeSha256), NOT this file at HEAD — this file is the forward-looking
+# stack for NEW runs and moves ahead of committed manifests when deps bump.
+# common.training_stack.assert_stack_matches_requirements() surfaces the
+# drift; per its contract, drift means this pin file moved, not that the
+# manifest is wrong.
 
 # --- Encoder baseline stack (DeBERTa-v3-large, first choice per #1585) -----
 # Security pins (dependency-review, fail-on-severity: high):
