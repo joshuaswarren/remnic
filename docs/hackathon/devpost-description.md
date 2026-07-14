@@ -1,10 +1,11 @@
 # Devpost submission text (OpenAI Build Week 2026)
 
-Status: DRAFT. This copy describes the finished submission and its
-deliverables land through #1869 to #1873. It is NOT paste-ready until the
-final verification pass (#1873) confirms every claim against shipped code
-and strikes anything that did not land. HACKATHON.md tracks that line.
-Gated with voice-lint (article mode) before each revision ships.
+Status: DRAFT. This copy describes the finished submission and the
+deliverables that will land through #1869 to #1873. It is NOT paste-ready
+until the final verification pass (#1873) confirms every claim against
+shipped code and strikes anything that did not land. HACKATHON.md
+tracks that line. Gated with voice-lint (article mode) before each
+revision ships.
 
 Project name: MemCorrect: benchmark any AI agent's memory.
 

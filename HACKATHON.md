@@ -51,9 +51,9 @@ Prior work includes, at minimum:
 
 The dated commit history on `main` is the audit trail for this line.
 
-## Work built during the submission period
+## Work built during the submission period (PENDING: entries below are
+committed in #1869 to #1873)
 
-Every item below is built in Codex sessions with GPT-5.6 during the window.
 Status boxes get checked as the work lands. Each item links to its commits
 and Codex session evidence at submission time.
 
