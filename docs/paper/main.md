@@ -70,26 +70,19 @@ the response. End with an explicit **contributions list**:
 
 ## 2. Related Work
 
-**Intent.** Seed directly from `docs/research/paper-mapping.md`
-(Memory-OS, HiMem, SwiftMem, TiMem, MAGMA/SYNAPSE, MemoryOS, ACON) and the
-competitor landscape (Mem0, Zep, Letta). Position Remnic on the axes
-competitors ignore: **correction, provenance, faithfulness**. Engage the
-prior-art named in the plan's Novelty section metric-by-metric so the
-composition novelty is defensible against a reviewer or HN commenter who finds
-each one.
-
-- **This section is drafted standalone in `related-work.md`, owned by sibling
-  issue #1729.** This file does not duplicate it. When #1729 lands, replace
-  this block with a one-line pointer to `related-work.md` plus the
-  differentiation-table reference.
-- `TODO(#1729)`: produce the differentiation table (axes: correction,
-  provenance, faithfulness, reproducibility, consumer-hardware).
-- `TODO(#1729)`: confirm the metric-attribution split — genuinely new
-  (`uptake_latency`, `reassertion`, `provenance_fidelity`, namespace-twin
-  `scope_precision`, anti-event `false_apply`) vs borrowed-but-attributed
-  (`collateral_delta` ← RippleEdits RS/PV, `uptake_at_next` ←
-  MemoryAgentBench FactConsolidation, `non_resurrection` ← StateBench SFRR /
-  MemStrata).
+Related Work is drafted standalone in [`related-work.md`](related-work.md)
+(issue #1729, landed). It positions MemCorrect as a composition/protocol
+claim, engages the closest relatives metric-by-metric (StateBench, STALE,
+MemSyco-Bench, MemStrata, MemoryAgentBench FactConsolidation, and the
+weight-editing ancestors RippleEdits/MQuAKE/TOFU/MUSE), and carries the
+two load-bearing tables: **Table 1** (metric-by-metric differentiation
+with attribution) and the capability matrix against StateBench, STALE,
+MemSyco-Bench, and the commercial systems (Mem0, Zep, Letta). The
+metric-attribution split is stated there explicitly: three metrics
+borrowed-and-attributed (`uptake_at_next`, `non_resurrection`,
+`collateral_delta`), two partly new (`scope_precision`, `false_apply`),
+three new (`uptake_latency`, `reassertion`, `provenance_fidelity`). This
+file does not duplicate that content.
 
 ---
 
@@ -563,20 +556,25 @@ softens into overclaim:
 
 ## 9. Conclusion & Reproducibility
 
-**Intent.** Restate the three contributions; point at the reproducibility
-appendix as the proof that the protocol is one-GPU-rerunnable. The appendix
-itself is a sibling file (`repro-appendix.md`, owned by the plan's execution
-item 8) and is not created in this skeleton.
+This paper made three claims. MemCorrect turns memory correction into a
+system-agnostic, deterministically scoreable protocol, and its first
+full-matrix runs expose a concrete failure class: fact-store correction
+succeeds while stale content keeps reaching the serving layer (§6.1). The
+two-tier protocol makes every published number carry its provenance: Tier F
+(Opus 4.8 via Claude Code) holds the accuracy claim, Tier L re-runs on one
+RTX 3090, and Cohen's-κ calibration connects the two judges (§5, §6.2). The
+glass-box mechanisms (§3) make each recalled memory explainable and
+correctable, and the §6 measurements show why that matters: the open problem
+is no longer whether a system can recall, but whether a correction
+propagates everywhere the stale fact can still be served.
 
-- `TODO(plan-exec-item-8)`: produce `docs/paper/repro-appendix.md` containing
-  the repro-manifest reference (`repro-manifest.ts`), the model-lab manifests
-  (#1585), and the one-GPU (RTX 3090) reproduction instructions. Until it
-  exists, §9 carries only the pointer.
-- `TODO(#1728)`: include the Tier-F repro instructions (claude-cli provider
-  from #1735, isolation flags, checkpoint/resume across Claude Max windows,
-  sampled-first → full).
-- `TODO(#1726)`: when the appendix lands, replace this block with a one-line
-  pointer and a "reproduce on one GPU" summary.
+Reproducibility is documented in [Appendix A](repro-appendix.md): the
+repro-manifest schema (`repro-manifest.ts`), the model-lab manifests, the
+end-to-end Tier-L reproduction path on a single RTX 3090 (24 GB) with
+Ollama-served models, and the Tier-F path (§A.5: `claude-cli` provider
+isolation flags, checkpoint/resume across Claude Max usage windows,
+sampled-pilot-then-full discipline). In one line: clone the repo, pin the
+manifests, and every Tier-L number in §6 re-derives on one consumer GPU.
 
 ---
 
