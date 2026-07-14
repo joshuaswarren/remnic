@@ -391,15 +391,15 @@ passes the §5 publishability rubric.** Until then, every block is a TODO.
 - **Figures (#1731):** the §6 result figures are rendered by
   `scripts/generate-paper-figures.mjs` (regenerate with `pnpm run figures:paper`)
   into `docs/paper/figures/`, with full real-vs-pending provenance in
-  `docs/paper/figures/README.md`. As of this slice only the Remnic Tier-L panels
-  (Figure 1) and the TrustScore component illustration (Figure 3) carry real
-  data; every comparison panel for which no committed artifact exists is an
-  explicit DATA-PENDING placeholder keyed to the public artifact schema, so the
-  figures auto-upgrade the moment an artifact lands. No fabricated number is
+  `docs/paper/figures/README.md`. The Remnic Tier-L and Tier-F panels
+  (Figure 1), the MemCorrect metrics (Figure 2), and the TrustScore
+  component illustration (Figure 3) all carry real data; only the
+  Mem0/Zep/Letta comparison bars remain DATA-PENDING placeholders (API-
+  key-gated, excluded by operator directive). No fabricated number is
   rendered (rule 55).
-  - **Figure 1** — `figures/fig1-locomo-longmemeval.svg`: LoCoMo / LongMemEval.
-    Real = Remnic Tier-L anchor; pending = Tier-F (#1728) + Mem0/Zep/Letta
-    (#1747).
+  - **Figure 1** — `figures/fig1-locomo-longmemeval.svg`: LoCoMo /
+    LongMemEval. Real = Remnic Tier-L anchor + Tier-F (real profile);
+    pending = Mem0/Zep/Letta (#1747).
   - **Figure 2** — `figures/fig2-memcorrect-metrics.svg`: the 8 MemCorrect
     metrics. Remnic-native and prompt-only-baseline bars are real (Tier-L
     artifacts committed 2026-07-13); Mem0/Zep/Letta bars remain pending

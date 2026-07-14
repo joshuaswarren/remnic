@@ -18,7 +18,7 @@ across runs — asserted by `tests/paper-figures.test.mjs`). The generator is
 
 | Figure | File | Real data | Pending data |
 |---|---|---|---|
-| 1 — LoCoMo / LongMemEval | `fig1-locomo-longmemeval.svg` | Remnic Tier-L (both benchmarks) | Remnic Tier-F (#1728); Mem0 / Zep / Letta (#1747) |
+| 1 — LoCoMo / LongMemEval | `fig1-locomo-longmemeval.svg` | Remnic Tier-L + Tier-F (both benchmarks, real profile) | Mem0 / Zep / Letta (#1747) |
 | 2 — MemCorrect 8 metrics | `fig2-memcorrect-metrics.svg` | Remnic-native + prompt-only baseline (Tier-L full matrix, 2026-07-13) | Mem0 / Zep / Letta (#1747, API-key-gated) |
 | 3 — TrustScore 8 components | `fig3-trustscore-components.svg` | all 8 (source-extracted weights) | — |
 
