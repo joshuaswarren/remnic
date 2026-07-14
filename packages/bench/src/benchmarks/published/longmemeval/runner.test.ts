@@ -308,6 +308,11 @@ test("LongMemEval composes split session evidence and surfaces update supersessi
           );
         },
         async recall(sessionId) {
+          // Complete the second session first to prove aggregation follows the
+          // plan's deterministic session order rather than completion order.
+          await new Promise((resolve) =>
+            setTimeout(resolve, sessionId === "flight-session" ? 5 : 0),
+          );
           return (storedSessions.get(sessionId) ?? []).join("\n");
         },
         async search() {
@@ -363,24 +368,30 @@ test("LongMemEval composes split session evidence and surfaces update supersessi
     assert.match(responderContexts[0]!, /The flight leaves on Tuesday/);
     assert.match(responderContexts[0]!, /source_session: hotel-session/);
     assert.match(responderContexts[0]!, /I booked the Hilton/);
+    assert.ok(
+      responderContexts[0]!.indexOf("source_session: flight-session") <
+        responderContexts[0]!.indexOf("source_session: hotel-session"),
+      "composed evidence must retain deterministic dataset session order",
+    );
 
     assert.match(responderContexts[1]!, /\[knowledge_update_evidence\]/);
     assert.match(
       responderContexts[1]!,
-      /source_session: new-diet[^\n]+knowledge_state: current_candidate[^\n]+My diet is now vegan/,
+      /source_session: new-diet[^\n]+source_recency: latest_source[^\n]+My diet is now vegan/,
     );
     assert.match(
       responderContexts[1]!,
-      /source_session: old-diet[^\n]+knowledge_state: superseded_candidate[^\n]+I am vegetarian/,
+      /source_session: old-diet[^\n]+source_recency: historical_source[^\n]+I am vegetarian/,
     );
-    assert.equal(
-      result.results.tasks[1]?.details.evidenceStrategy,
-      "knowledge-update",
+    assert.match(
+      responderContexts[1]!,
+      /Only when the same fact conflicts across sources, treat its older value as superseded/,
     );
-    assert.equal(
-      result.results.tasks[1]?.details.knowledgeSupersessionSurfaced,
-      true,
-    );
+    const updateDetails = result.results.tasks[1]?.details as
+      | Record<string, unknown>
+      | undefined;
+    assert.equal(updateDetails?.evidenceStrategy, "knowledge-update");
+    assert.equal(updateDetails?.knowledgeSupersessionSurfaced, true);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

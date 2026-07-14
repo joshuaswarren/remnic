@@ -100,12 +100,12 @@ function buildPlan(
               haystackDate,
               sourceOrder: sourceChronology[sessionIndex]!,
               sourceCount: item.haystack_sessions.length,
-              knowledgeState:
+              sourceRecency:
                 currentKnowledgeSourceIndex === undefined
                   ? undefined
                   : sessionIndex === currentKnowledgeSourceIndex
-                    ? "current_candidate"
-                    : "superseded_candidate",
+                    ? "latest_source"
+                    : "historical_source",
             })
           : turn.content,
       }),
@@ -287,7 +287,7 @@ function formatLongMemEvalTurn(
     haystackDate?: string;
     sourceOrder: number;
     sourceCount: number;
-    knowledgeState?: "current_candidate" | "superseded_candidate";
+    sourceRecency?: "latest_source" | "historical_source";
   },
 ): string {
   const fields = [
@@ -297,8 +297,8 @@ function formatLongMemEvalTurn(
   if (metadata.haystackDate) {
     fields.push(`source_date: ${metadata.haystackDate}`);
   }
-  if (metadata.knowledgeState) {
-    fields.push(`knowledge_state: ${metadata.knowledgeState}`);
+  if (metadata.sourceRecency) {
+    fields.push(`source_recency: ${metadata.sourceRecency}`);
   }
   return `[${fields.join("] [")}] ${content}`;
 }
@@ -334,7 +334,7 @@ function composeLongMemEvalEvidence(
   ];
   if (strategy === "knowledge-update") {
     guidance.push(
-      "[knowledge_update_evidence] When facts conflict, treat current_candidate as the current value and superseded_candidate as historical; use source_date and source_order to resolve chronology.",
+      "[knowledge_update_evidence] Only when the same fact conflicts across sources, treat its older value as superseded and prefer the later source_date/source_order. source_recency describes source chronology, not the validity of unrelated facts.",
     );
   }
   return `${guidance.join("\n")}\n\n${recalledText}`;
