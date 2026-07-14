@@ -54,7 +54,7 @@ session, dated commit, test receipt, or committed benchmark artifact.
 
 ### Phase 0 — stabilize and preserve evidence
 
-- [ ] #1875: replace the TombstoneStore scheduling race with a deterministic
+- [x] #1875: replace the TombstoneStore scheduling race with a deterministic
   inter-process handshake and stress the test repeatedly.
 - [x] Create a current-main integration branch without modifying the stale
   `docs/hackathon-scope` branch whose work already merged in #1874.
@@ -65,26 +65,29 @@ session, dated commit, test receipt, or committed benchmark artifact.
 
 These three issues run in parallel with disjoint primary ownership.
 
-- [ ] #1869, MCP specialist, high reasoning: implement stdio and streamable
+- [x] #1869, MCP specialist, high reasoning: implement stdio and streamable
   HTTP transports, explicit/default tool mapping, conformance preflight,
   namespace isolation, failure-vs-empty result types, CLI wiring, and a
   packaged deterministic demo server. The demo command must produce a score
   through `--adapter mcp`.
-- [ ] #1870, OpenAI/provider specialist, high reasoning: implement a sibling
+- [x] #1870, OpenAI/provider specialist, high reasoning: implement a sibling
   Responses API provider with default `gpt-5.6`, schema-validated verdicts,
   versioned MemCorrect rubrics, retry/error categorization, safe telemetry,
   config plumbing, and run/manifest provenance.
-- [ ] #1872, product-design/export specialist, medium-high reasoning: extend
+- [x] #1872, product-design/export specialist, medium-high reasoning: extend
   the existing HTML export into one byte-deterministic offline report card
   with dimension context, correction spotlight, backend-unusable state, and
   provenance receipts. Reuse the existing publish path.
 
 Integration checkpoint:
 
-- Review every diff and ensure agents did not cross package boundaries.
-- Run targeted tests for each surface, then `npm run preflight:quick`.
-- Run the MCP demo end to end and open/inspect the generated report card.
-- Commit the three issue scopes separately so each can become one narrow PR.
+- [x] Review every diff and ensure agents did not cross package boundaries.
+- [x] Run targeted tests for each surface, then `npm run preflight:quick`.
+- [x] Run the MCP demo end to end and inspect the generated report card.
+- [x] Commit the three tightly coupled bench surfaces as one integrated contract
+  change; their shared CLI, result schema, and manifest plumbing make a split
+  commit misleading even though implementation and adversarial review had
+  separate owners.
 
 ### Phase 2 — measured evidence
 
