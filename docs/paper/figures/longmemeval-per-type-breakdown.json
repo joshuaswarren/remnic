@@ -1,0 +1,29 @@
+{
+  "knowledge-update": {
+    "count": 78,
+    "judge_accuracy_mean": 0.7949
+  },
+  "multi-session": {
+    "count": 133,
+    "judge_accuracy_mean": 0.7895
+  },
+  "single-session-assistant": {
+    "count": 56,
+    "judge_accuracy_mean": 0.9107
+  },
+  "single-session-preference": {
+    "count": 30,
+    "judge_accuracy_mean": 0.8
+  },
+  "single-session-user": {
+    "count": 70,
+    "judge_accuracy_mean": 0.9429
+  },
+  "temporal-reasoning": {
+    "count": 133,
+    "judge_accuracy_mean": 0.5414
+  },
+  "_source": "longmemeval-v9.6.10-2026-07-14T04-02-21-944Z.json (stored BenchmarkResult, per-task details.questionType)",
+  "_aggregate_judge_accuracy": 0.76,
+  "_aggregate_kappa": 0.7691
+}

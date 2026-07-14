@@ -484,6 +484,10 @@ passes the §5 publishability rubric.** Until then, every block is a TODO.
   | multi-session | 133 | 0.789 |
   | **temporal-reasoning** | **133** | **0.541** |
 
+
+  *(Source: `docs/paper/figures/longmemeval-per-type-breakdown.json`, computed
+  from the stored BenchmarkResult's per-task `questionType` field.
+  Reproducible via the dataset + the committed artifact.)*
   Temporal reasoning is the entire gap: lifting that one category to
   the multi-session level (0.789) would move the aggregate from 0.760
   to ~0.82. The mechanism is nameable: temporal questions need

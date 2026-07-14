@@ -77,10 +77,6 @@ export function shouldRecallEventOrderEvidence(query: string): boolean {
   if (/\bwhich\b.*\blast\b/.test(normalized) || /\bthe last\b.*\bi\b/.test(normalized)) {
     return true;
   }
-  // "Which X were started/born/completed first?"
-  if (/\bwhich\b.*\bfirst\b/.test(normalized)) {
-    return true;
-  }
   // "Who did I meet/become first, X or Y?" (person ordering)
   if (/\bwho\b.*\bfirst\b/.test(normalized)) {
     return true;

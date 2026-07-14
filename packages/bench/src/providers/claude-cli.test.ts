@@ -1228,3 +1228,30 @@ test("claude-cli usage-limit retries do NOT consume the transient maxAttempts bu
     global.setTimeout = originalSetTimeout;
   }
 });
+
+test("claude-cli provider rejects a timeout-marked completion even with a clean exit status", async () => {
+  // A child that catches SIGTERM can exit 0 with a partial envelope in stdout.
+  // The timeout marker in stderr must override the clean exit (codex P2).
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus", retryOptions: { maxAttempts: 1 } },
+    {
+      async runClaudeCli() {
+        return {
+          status: 0,
+          signal: null,
+          stdout: JSON.stringify({
+            is_error: false,
+            result: "partial answer from before the timeout",
+            usage: { input_tokens: 3, output_tokens: 2 },
+          }),
+          stderr: "Claude CLI timed out after 1000ms.",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(
+    provider.complete("q"),
+    /Claude CLI completion was killed \(timeout\/abort\)/,
+  );
+});
