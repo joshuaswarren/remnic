@@ -375,6 +375,19 @@ class ClaudeCliProvider implements LlmProvider {
           throw error;
         }
 
+        // A timed-out or aborted completion is never salvageable, regardless of
+        // exit status — a child that catches SIGTERM can exit 0 with a partial
+        // envelope in stdout. The salvage guard above catches status!=0; this
+        // catches the status==0 edge (codex P2).
+        if (
+          result.stderr.includes("Claude CLI timed out") ||
+          result.stderr.includes("Claude CLI aborted by benchmark timeout")
+        ) {
+          throw new Error(
+            `Claude CLI completion was killed (timeout/abort): ${summarizeProcessOutput(result.stderr, result.stdout)}`,
+          );
+        }
+
         if (isClaudeCliErrorFlagSet(payload.is_error)) {
           // Usage-limit responses can surface as a zero-exit is_error JSON
           // payload, or as bare stderr with empty stdout — both land here.

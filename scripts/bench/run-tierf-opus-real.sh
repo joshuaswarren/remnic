@@ -50,6 +50,9 @@ preflight_calibration_state() {
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert d.get('localJudgeProvider') == 'ollama', f\"localJudgeProvider: {d.get('localJudgeProvider')}\"
+assert d.get('localJudgeModel') == 'qwen2.5-7b-32k:latest', f\"localJudgeModel: {d.get('localJudgeModel')}\"
+assert d.get('frontierJudgeProvider') == 'claude-cli', f\"frontierJudgeProvider: {d.get('frontierJudgeProvider')}\"
+assert d.get('frontierJudgeModel') == 'opus', f\"frontierJudgeModel: {d.get('frontierJudgeModel')}\"
 assert isinstance(d.get('kappa'), (int, float)), f\"kappa: {d.get('kappa')}\"
 assert isinstance(d.get('sampleSize'), int), f\"sampleSize: {d.get('sampleSize')}\"
 assert isinstance(d.get('threshold'), (int, float)), f\"threshold: {d.get('threshold')}\"
