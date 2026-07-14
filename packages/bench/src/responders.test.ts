@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createTimeoutGuardedAdapter } from "./adapters/timeout-guard.ts";
+import type { StructuredJudgeProvider } from "./providers/structured-judge.ts";
 import type { LlmProvider } from "./providers/types.ts";
 import {
   compactResponderContext,
@@ -10,6 +11,7 @@ import {
   createProviderBackedAmaBenchRecommendedJudge,
   createProviderBackedJudge,
   createProviderBackedResponder,
+  createProviderBackedStructuredJudge,
   createResponderFromProvider,
   createStructuredJudgeFromProvider,
 } from "./responders.ts";
@@ -106,6 +108,77 @@ test("responder wrappers adapt a provider instance into answer-generation and ju
     taskId: "task-1",
   });
   assert.match(raw, /identity_accuracy/);
+});
+
+test("provider-backed judges dispatch structured and MemCorrect capabilities by interface", async () => {
+  const rubricVersions: string[] = [];
+  let assistantRubricCalls = 0;
+  let completeCalls = 0;
+  const provider: StructuredJudgeProvider = {
+    id: "codex-cli:Terra",
+    name: "Terra",
+    provider: "codex-cli",
+    async complete() {
+      completeCalls += 1;
+      return {
+        text: "unexpected generic completion",
+        tokens: { input: 0, output: 0 },
+        latencyMs: 1,
+        model: "Terra",
+      };
+    },
+    async judge(request) {
+      rubricVersions.push(request.rubricVersion);
+      return {
+        ok: true,
+        verdict: { score: 1, decision: "pass", reason: "supported" },
+        telemetry: {
+          model: "Terra",
+          rubricVersion: request.rubricVersion,
+          inputTokens: 7,
+          outputTokens: 3,
+          latencyMs: 9,
+        },
+      };
+    },
+    async evaluateAssistantRubric() {
+      assistantRubricCalls += 1;
+      return '{"identity_accuracy":5,"stance_coherence":5,"novelty":4,"calibration":5,"notes":"ok"}';
+    },
+    getUsage() {
+      return { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+    },
+    resetUsage() {},
+  };
+  const config = { provider: "codex-cli" as const, model: "Terra" };
+  const judge = createProviderBackedJudge(config, provider);
+
+  assert.equal(await judge.score("q", "predicted", "expected"), 1);
+  const request = {
+    taskId: "scenario-1",
+    query: "current fact?",
+    retiredContent: ["old"],
+    correctedContent: ["new"],
+    postCorrectionRecall: ["new"],
+    postMaintenanceRecall: ["new"],
+    postReingestRecall: ["new"],
+  };
+  const correction = await judge.judgeMemCorrectCorrectionAcceptance?.(request);
+  const staleHarm = await judge.judgeMemCorrectStaleMemoryHarm?.(request);
+  assert.equal(correction?.decision, "pass");
+  assert.equal(staleHarm?.decision, "pass");
+  assert.match(rubricVersions[1] ?? "", /correction-acceptance/);
+  assert.match(rubricVersions[2] ?? "", /stale-memory-harm/);
+
+  const structuredJudge = createProviderBackedStructuredJudge(config, provider);
+  assert.match(await structuredJudge.evaluate({
+    system: "sealed",
+    user: "answer",
+    rubricId: "assistant-v1",
+    taskId: "task-1",
+  }), /identity_accuracy/);
+  assert.equal(assistantRubricCalls, 1);
+  assert.equal(completeCalls, 0);
 });
 
 test("responder context compaction preserves referenced trajectory evidence", async () => {

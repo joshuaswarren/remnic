@@ -66,8 +66,6 @@ test("codex-cli provider invokes codex exec in an isolated benchmark mode", asyn
     "--config",
     'model_reasoning_effort="xhigh"',
     "--config",
-    'service_tier="fast"',
-    "--config",
     'approval_policy="never"',
     "--disable",
     "codex_hooks",
@@ -79,6 +77,7 @@ test("codex-cli provider invokes codex exec in an isolated benchmark mode", asyn
     "--cd",
     captured.workspacePath,
     "--skip-git-repo-check",
+    "--json",
     "--output-last-message",
     captured.outputPath,
     "-",
@@ -90,8 +89,101 @@ test("codex-cli provider invokes codex exec in an isolated benchmark mode", asyn
   assert.equal(captured.env?.REMNIC_MEMORY_DIR, undefined);
   assert.equal(captured.env?.ENGRAM_MEMORY_DIR, undefined);
   assert.equal(captured.env?.OPENCLAW_ENGRAM_ACCESS_TOKEN, undefined);
-  assert.equal(captured.env?.OPENAI_API_KEY, "test-api-key");
-  assert.equal(captured.env?.OPENAI_BASE_URL, "https://gateway.example/v1");
+  assert.equal(captured.env?.OPENAI_API_KEY, undefined);
+  assert.equal(captured.env?.OPENAI_BASE_URL, undefined);
+});
+
+test("codex-cli provider exposes validated structured judge capabilities", async () => {
+  const inputs: string[] = [];
+  const outputs = [
+    JSON.stringify({ score: 0.75, decision: "partial", reason: "mostly correct" }),
+    JSON.stringify({
+      identity_accuracy: 5,
+      stance_coherence: 4,
+      novelty: 3,
+      calibration: 5,
+      notes: "grounded",
+    }),
+  ];
+  const provider = createCodexCliProvider(
+    { provider: "codex-cli", model: "Terra" },
+    {
+      async runCodexCli(request) {
+        inputs.push(request.input);
+        return {
+          status: 0,
+          signal: null,
+          stdout: '{"type":"turn.completed","usage":{"input_tokens":30,"cached_input_tokens":0,"output_tokens":10,"reasoning_output_tokens":0}}',
+          stderr: "",
+          outputText: outputs.shift() ?? "",
+        };
+      },
+    },
+  );
+
+  const verdict = await provider.judge({
+    rubric: "Grade factual correctness.",
+    rubricVersion: "judge-v1",
+    input: "candidate answer",
+  });
+  assert.equal(verdict.ok, true);
+  if (verdict.ok) {
+    assert.deepEqual(verdict.verdict, {
+      score: 0.75,
+      decision: "partial",
+      reason: "mostly correct",
+    });
+    assert.equal(verdict.telemetry.rubricVersion, "judge-v1");
+  }
+
+  const assistantRubric = await provider.evaluateAssistantRubric({
+    system: "Apply the sealed rubric.",
+    user: "assistant response",
+    rubricId: "assistant-v1",
+  });
+  assert.match(assistantRubric, /identity_accuracy/);
+  assert.match(inputs[0] ?? "", /Grade factual correctness/);
+  assert.match(inputs[0] ?? "", /Return raw JSON only/);
+  assert.match(inputs[1] ?? "", /Apply the sealed rubric/);
+  assert.equal(provider.getUsage().totalTokens, 80);
+});
+
+test("codex-cli structured judge distinguishes malformed output and caller aborts", async () => {
+  const provider = createCodexCliProvider(
+    { provider: "codex-cli", model: "Luna" },
+    {
+      async runCodexCli(request) {
+        if (request.signal?.aborted) {
+          throw new DOMException("aborted", "AbortError");
+        }
+        return {
+          status: 0,
+          signal: null,
+          stdout: '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}',
+          stderr: "",
+          outputText: '{"score":2,"decision":"pass","reason":"out of range"}',
+        };
+      },
+    },
+  );
+  const malformed = await provider.judge({
+    rubric: "rubric",
+    rubricVersion: "v1",
+    input: "input",
+  });
+  assert.equal(malformed.ok, false);
+  if (!malformed.ok) assert.equal(malformed.error.code, "malformed_verdict");
+
+  const controller = new AbortController();
+  controller.abort();
+  const aborted = await provider.judge({
+    rubric: "rubric",
+    rubricVersion: "v1",
+    input: "input",
+    signal: controller.signal,
+  });
+  assert.equal(aborted.ok, false);
+  if (!aborted.ok) assert.equal(aborted.error.code, "aborted");
 });
 
 test("codex-cli provider does not expose unrelated process secrets to the child", async () => {
@@ -129,7 +221,7 @@ test("codex-cli provider does not expose unrelated process secrets to the child"
 
     await provider.complete("hello");
 
-    assert.equal(capturedEnv?.OPENAI_API_KEY, "openai-secret");
+    assert.equal(capturedEnv?.OPENAI_API_KEY, undefined);
     assert.equal(capturedEnv?.ANTHROPIC_API_KEY, undefined);
     assert.equal(capturedEnv?.AWS_SECRET_ACCESS_KEY, undefined);
     assert.equal(capturedEnv?.GITHUB_TOKEN, undefined);
@@ -159,11 +251,11 @@ test("codex-cli provider preserves mixed-case Windows runtime env keys", () => {
   }
 
   try {
-    const env = __codexCliProviderTestHooks.buildIsolatedCodexEnv("test-api-key");
+    const env = __codexCliProviderTestHooks.buildIsolatedCodexEnv();
 
     assert.equal(env.Path, "C:\\tools\\bin");
     assert.equal(env.SystemRoot, "C:\\Windows");
-    assert.equal(env.OPENAI_API_KEY, "test-api-key");
+    assert.equal(env.OPENAI_API_KEY, undefined);
   } finally {
     for (const key of Object.keys(seededEnv)) {
       const previous = previousEnv.get(key);
@@ -192,7 +284,7 @@ test("codex-cli provider preserves networking env required by the child", () => 
   }
 
   try {
-    const env = __codexCliProviderTestHooks.buildIsolatedCodexEnv("test-api-key");
+    const env = __codexCliProviderTestHooks.buildIsolatedCodexEnv();
 
     assert.equal(env.CODEX_HOME, "/tmp/codex-home");
     assert.equal(env.HTTPS_PROXY, "http://proxy.example:8080");
@@ -212,7 +304,7 @@ test("codex-cli provider preserves networking env required by the child", () => 
   }
 });
 
-test("codex-cli provider preserves OpenAI scoping env required by the child", () => {
+test("codex-cli provider does not forward API transport scoping to the child", () => {
   const seededEnv = {
     OPENAI_BASE_URL: "https://gateway.example/v1",
     OPENAI_ORGANIZATION: "org-example",
@@ -225,11 +317,11 @@ test("codex-cli provider preserves OpenAI scoping env required by the child", ()
   }
 
   try {
-    const env = __codexCliProviderTestHooks.buildIsolatedCodexEnv("test-api-key");
+    const env = __codexCliProviderTestHooks.buildIsolatedCodexEnv();
 
-    assert.equal(env.OPENAI_BASE_URL, "https://gateway.example/v1");
-    assert.equal(env.OPENAI_ORGANIZATION, "org-example");
-    assert.equal(env.OPENAI_PROJECT, "proj-example");
+    assert.equal(env.OPENAI_BASE_URL, undefined);
+    assert.equal(env.OPENAI_ORGANIZATION, undefined);
+    assert.equal(env.OPENAI_PROJECT, undefined);
   } finally {
     for (const key of Object.keys(seededEnv)) {
       const previous = previousEnv.get(key);
@@ -266,7 +358,8 @@ test("codex-cli provider defaults reasoning effort to xhigh", async () => {
     args[args.indexOf("--config") + 1],
     'model_reasoning_effort="xhigh"',
   );
-  assert.ok(args.includes('service_tier="fast"'));
+  assert.equal(args.some((arg) => arg.includes("service_tier")), false);
+  assert.ok(args.includes("--json"));
 });
 
 test("codex-cli provider can use a benchmark-scoped executable env override", async () => {
@@ -410,41 +503,12 @@ test("codex-cli provider records token usage when Codex writes token accounting 
   assert.equal(provider.getUsage().totalTokens, 44);
 });
 
-test("codex-cli provider falls back to Responses API when CLI health probe fails", async () => {
-  const previousTransport = process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT;
+test("codex-cli provider fails closed on CLI errors without calling the Responses API", async () => {
   const previousFetch = globalThis.fetch;
-  let probeCount = 0;
   let fetchCount = 0;
-
-  delete process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT;
-  globalThis.fetch = (async (input, init) => {
+  globalThis.fetch = (async () => {
     fetchCount += 1;
-    assert.equal(String(input), "https://api.openai.com/v1/responses");
-    assert.equal(
-      (init?.headers as Record<string, string>).authorization,
-      "Bearer test-api-key",
-    );
-    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    assert.equal(body.model, "gpt-5.5");
-    assert.deepEqual(body.reasoning, { effort: "xhigh" });
-    assert.equal(Object.hasOwn(body, "service_tier"), false);
-    assert.equal(body.max_output_tokens, 12);
-    assert.equal(body.store, false);
-    assert.match(String(body.instructions), /benchmark LLM completion endpoint/);
-    assert.match(String(body.instructions), /Answer briefly\./);
-    assert.equal(body.input, "What is remembered?");
-    return new Response(
-      JSON.stringify({
-        model: "gpt-5.5",
-        output: [
-          {
-            content: [{ type: "output_text", text: "direct answer" }],
-          },
-        ],
-        usage: { input_tokens: 11, output_tokens: 2, total_tokens: 13 },
-      }),
-      { status: 200 },
-    );
+    throw new Error("network must not be used");
   }) as typeof fetch;
 
   try {
@@ -456,45 +520,23 @@ test("codex-cli provider falls back to Responses API when CLI health probe fails
         reasoningEffort: "xhigh",
         retryOptions: { timeoutMs: 1234, maxAttempts: 1 },
       },
-      {
-        async runCodexVersion() {
-          probeCount += 1;
-          return { status: 124, stderr: "version probe timed out" };
-        },
-      },
+      { async runCodexCli() {
+        return { status: 2, signal: null, stdout: "", stderr: "login required", outputText: "" };
+      } },
     );
 
-    const result = await provider.complete("What is remembered?", {
-      systemPrompt: "Answer briefly.",
-      maxTokens: 12,
-    });
-
-    assert.equal(probeCount, 1);
-    assert.equal(fetchCount, 1);
-    assert.equal(result.text, "direct answer");
-    assert.deepEqual(result.tokens, { input: 11, output: 2 });
-    assert.deepEqual(provider.getUsage(), {
-      inputTokens: 11,
-      outputTokens: 2,
-      totalTokens: 13,
-    });
+    await assert.rejects(provider.complete("What is remembered?"), /login required/);
+    assert.equal(fetchCount, 0);
   } finally {
     globalThis.fetch = previousFetch;
-    if (previousTransport === undefined) {
-      delete process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT;
-    } else {
-      process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT = previousTransport;
-    }
   }
 });
 
-test("codex-cli provider fails fast when Responses transport is forced without an API key", async () => {
+test("codex-cli provider ignores the removed Responses transport override", async () => {
   const previousTransport = process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT;
-  const previousOpenAiKey = process.env.OPENAI_API_KEY;
   let cliCalled = false;
 
   process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT = "responses";
-  delete process.env.OPENAI_API_KEY;
 
   try {
     const provider = createCodexCliProvider(
@@ -507,27 +549,19 @@ test("codex-cli provider fails fast when Responses transport is forced without a
             signal: null,
             stdout: "",
             stderr: "",
-            outputText: "unexpected",
+            outputText: "cli answer",
           };
         },
       },
     );
 
-    await assert.rejects(
-      provider.complete("hello"),
-      /Codex CLI fallback requires OPENAI_API_KEY/,
-    );
-    assert.equal(cliCalled, false);
+    assert.equal((await provider.complete("hello")).text, "cli answer");
+    assert.equal(cliCalled, true);
   } finally {
     if (previousTransport === undefined) {
       delete process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT;
     } else {
       process.env.REMNIC_BENCH_CODEX_CLI_TRANSPORT = previousTransport;
-    }
-    if (previousOpenAiKey === undefined) {
-      delete process.env.OPENAI_API_KEY;
-    } else {
-      process.env.OPENAI_API_KEY = previousOpenAiKey;
     }
   }
 });
@@ -768,7 +802,7 @@ test("codex-cli provider writes metadata diagnostics without full prompt text", 
     assert.equal(diagnostic.runId, "test-public-matrix-run");
     assert.equal(diagnostic.model, "gpt-5.5");
     assert.equal(diagnostic.reasoningEffort, "xhigh");
-    assert.equal(diagnostic.serviceTier, "fast");
+    assert.equal(diagnostic.serviceTier, "default");
     assert.equal(diagnostic.timeoutMs, 1234);
     assert.equal("fullPrompt" in diagnostic, false);
     assert.equal((diagnostic.prompt as { userPromptChars: number }).userPromptChars, 19);

@@ -2,10 +2,11 @@ import { FallbackLlmClient, type FallbackLlmRuntimeContext, type GatewayConfig }
 import type { BenchJudge, BenchJudgeResult, BenchResponder, BenchResponse } from "./adapters/types.js";
 import type { StructuredJudge } from "./judges/sealed-rubric.js";
 import { createProvider } from "./providers/factory.js";
+import { createOpenAiResponsesProvider } from "./providers/openai-responses.js";
 import {
-  createOpenAiResponsesBenchJudge,
-  createOpenAiResponsesProvider,
-} from "./providers/openai-responses.js";
+  createStructuredBenchJudge,
+  isStructuredJudgeProvider,
+} from "./providers/structured-judge.js";
 import type { LlmProvider, ProviderFactoryConfig } from "./providers/types.js";
 
 const DEFAULT_RESPONDER_SYSTEM_PROMPT = [
@@ -611,10 +612,11 @@ function createJudgeFromProvider(provider: LlmProvider): BenchJudge {
 
 export function createProviderBackedJudge(config: ProviderFactoryConfig, providerInstance?: LlmProvider): BenchJudge {
   validateProviderConfig(config, "judge");
-  if (config.provider === "openai" && providerInstance === undefined) {
-    return createOpenAiResponsesBenchJudge({ ...config, provider: "openai" });
+  const provider = providerInstance ?? createJudgeProvider(config);
+  if (isStructuredJudgeProvider(provider)) {
+    return createStructuredBenchJudge(provider, config.rubricVersion);
   }
-  return createJudgeFromProvider(providerInstance ?? createProvider(config));
+  return createJudgeFromProvider(provider);
 }
 
 function createAmaBenchRecommendedJudgeFromProvider(provider: LlmProvider): BenchJudge {
@@ -684,15 +686,19 @@ export function createProviderBackedStructuredJudge(
   providerInstance?: LlmProvider
 ): StructuredJudge {
   validateProviderConfig(config, "judge");
-  if (config.provider === "openai" && providerInstance === undefined) {
-    const provider = createOpenAiResponsesProvider({ ...config, provider: "openai" });
+  const provider = providerInstance ?? createJudgeProvider(config);
+  if (isStructuredJudgeProvider(provider)) {
     return {
       evaluate: (request) => provider.evaluateAssistantRubric(request),
     };
   }
-  return createStructuredJudgeFromProvider(
-    providerInstance ?? createProvider(config),
-  );
+  return createStructuredJudgeFromProvider(provider);
+}
+
+function createJudgeProvider(config: ProviderFactoryConfig): LlmProvider {
+  return config.provider === "openai"
+    ? createOpenAiResponsesProvider({ ...config, provider: "openai" })
+    : createProvider(config);
 }
 
 export function createGatewayResponder(options: GatewayResponderOptions): BenchResponder {

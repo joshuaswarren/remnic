@@ -5,73 +5,41 @@
  * Chat Completions-compatible third-party servers and must remain unchanged.
  */
 
-import type {
-  BenchJudge,
-  BenchJudgeResult,
-  MemCorrectJudgeRequest,
-  MemCorrectJudgeResult,
-} from "../adapters/types.js";
+import type { BenchJudge } from "../adapters/types.js";
 import {
-  GENERAL_ANSWER_JUDGE_RUBRIC,
   MEMCORRECT_CORRECTION_ACCEPTANCE_RUBRIC,
   MEMCORRECT_CORRECTION_ACCEPTANCE_RUBRIC_VERSION,
   MEMCORRECT_STALE_HARM_RUBRIC,
   MEMCORRECT_STALE_HARM_RUBRIC_VERSION,
   OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION,
 } from "../judges/memcorrect-rubrics.js";
+import { RetryFetchHttpError, retryFetch } from "./retry-fetch.js";
+import {
+  ASSISTANT_RUBRIC_JSON_SCHEMA,
+  type StructuredJudgeErrorCode,
+  type StructuredJudgeProvider,
+  type StructuredJudgeTelemetry,
+  type StructuredJudgeVerdict,
+  type StructuredJudgeVerdictResult,
+  type StructuredVerdictRequest,
+  VERDICT_JSON_SCHEMA,
+  createStructuredBenchJudge,
+  isValidAssistantRubric,
+  parseStructuredJudgeVerdict,
+} from "./structured-judge.js";
 import type {
   CompletionOpts,
   CompletionResult,
-  LlmProvider,
   OpenAiCompatibleProviderConfig,
   TokenUsage,
 } from "./types.js";
-import { RetryFetchHttpError, retryFetch } from "./retry-fetch.js";
 
 export const DEFAULT_OPENAI_RESPONSES_JUDGE_MODEL = "gpt-5.6";
 
-export type OpenAiResponsesJudgeErrorCode =
-  | "api_error"
-  | "rate_limited"
-  | "refusal"
-  | "malformed_response"
-  | "malformed_verdict"
-  | "incomplete_response"
-  | "transport_error"
-  | "aborted";
-
-export interface OpenAiResponsesJudgeTelemetry {
-  model: string;
-  rubricVersion: string;
-  inputTokens: number;
-  outputTokens: number;
-  latencyMs: number;
-  errorCode?: OpenAiResponsesJudgeErrorCode;
-  httpStatus?: number;
-}
-
-export interface OpenAiResponsesVerdict {
-  score: number;
-  decision: "pass" | "partial" | "fail";
-  reason: string;
-}
-
-export type OpenAiResponsesVerdictResult =
-  | {
-      ok: true;
-      verdict: OpenAiResponsesVerdict;
-      telemetry: OpenAiResponsesJudgeTelemetry;
-    }
-  | {
-      ok: false;
-      error: {
-        code: OpenAiResponsesJudgeErrorCode;
-        message: string;
-        retryable: boolean;
-        httpStatus?: number;
-      };
-      telemetry: OpenAiResponsesJudgeTelemetry;
-    };
+export type OpenAiResponsesJudgeErrorCode = StructuredJudgeErrorCode;
+export type OpenAiResponsesJudgeTelemetry = StructuredJudgeTelemetry;
+export type OpenAiResponsesVerdict = StructuredJudgeVerdict;
+export type OpenAiResponsesVerdictResult = StructuredJudgeVerdictResult;
 
 export interface OpenAiResponsesProviderConfig
   extends Omit<OpenAiCompatibleProviderConfig, "provider" | "model"> {
@@ -95,38 +63,6 @@ interface ResponsesPayload {
   }>;
 }
 
-interface VerdictRequest {
-  rubric: string;
-  rubricVersion: string;
-  input: string;
-  signal?: AbortSignal;
-  maxTokens?: number;
-}
-
-const VERDICT_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["score", "decision", "reason"],
-  properties: {
-    score: { type: "number", minimum: 0, maximum: 1 },
-    decision: { type: "string", enum: ["pass", "partial", "fail"] },
-    reason: { type: "string" },
-  },
-} as const;
-
-const ASSISTANT_RUBRIC_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["identity_accuracy", "stance_coherence", "novelty", "calibration", "notes"],
-  properties: {
-    identity_accuracy: { type: "number", minimum: 0, maximum: 5 },
-    stance_coherence: { type: "number", minimum: 0, maximum: 5 },
-    novelty: { type: "number", minimum: 0, maximum: 5 },
-    calibration: { type: "number", minimum: 0, maximum: 5 },
-    notes: { type: "string" },
-  },
-} as const;
-
 export class OpenAiResponsesJudgeError extends Error {
   readonly code: OpenAiResponsesJudgeErrorCode;
   readonly retryable: boolean;
@@ -143,7 +79,7 @@ export class OpenAiResponsesJudgeError extends Error {
   }
 }
 
-export class OpenAiResponsesProvider implements LlmProvider {
+export class OpenAiResponsesProvider implements StructuredJudgeProvider {
   readonly provider = "openai" as const;
   readonly id: string;
   readonly name: string;
@@ -220,7 +156,7 @@ export class OpenAiResponsesProvider implements LlmProvider {
     };
   }
 
-  async judge(request: VerdictRequest): Promise<OpenAiResponsesVerdictResult> {
+  async judge(request: StructuredVerdictRequest): Promise<OpenAiResponsesVerdictResult> {
     const startedAt = performance.now();
     let response: Response;
     try {
@@ -274,7 +210,7 @@ export class OpenAiResponsesProvider implements LlmProvider {
       return failure;
     }
 
-    const verdict = parseVerdict(parsed.text);
+    const verdict = parseStructuredJudgeVerdict(parsed.text);
     if (!verdict) {
       const failure = this.failure(
         "malformed_verdict",
@@ -335,7 +271,7 @@ export class OpenAiResponsesProvider implements LlmProvider {
       this.recordTelemetry(parsed.telemetry);
       throw new OpenAiResponsesJudgeError(parsed);
     }
-    if (parsed.text === null || !parseAssistantRubric(parsed.text)) {
+    if (parsed.text === null || !isValidAssistantRubric(parsed.text)) {
       const failure = this.failure(
         "malformed_verdict",
         "OpenAI Responses API returned an invalid sealed assistant-rubric verdict.",
@@ -359,6 +295,12 @@ export class OpenAiResponsesProvider implements LlmProvider {
 
   getTelemetryEvents(): OpenAiResponsesJudgeTelemetry[] {
     return this.telemetryEvents.map((event) => ({ ...event }));
+  }
+
+  createJudgeError(
+    failure: Extract<OpenAiResponsesVerdictResult, { ok: false }>,
+  ): OpenAiResponsesJudgeError {
+    return new OpenAiResponsesJudgeError(failure);
   }
 
   private async parseResponse(
@@ -560,80 +502,10 @@ export function createOpenAiResponsesBenchJudge(
   config: OpenAiResponsesProviderConfig = {},
   provider = createOpenAiResponsesProvider(config),
 ): BenchJudge {
-  const scoreWithMetrics = async (
-    question: string,
-    predicted: string,
-    expected: string,
-    control?: { signal?: AbortSignal },
-  ): Promise<BenchJudgeResult> => {
-    const result = await provider.judge({
-      rubric: GENERAL_ANSWER_JUDGE_RUBRIC,
-      rubricVersion: config.rubricVersion ?? OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION,
-      input: [
-        `QUESTION: ${question}`,
-        `REFERENCE_ANSWER: ${expected}`,
-        `PREDICTED_ANSWER: ${predicted}`,
-      ].join("\n\n"),
-      signal: control?.signal,
-    });
-    if (!result.ok) throw new OpenAiResponsesJudgeError(result);
-    return toBenchJudgeResult(result);
-  };
-
-  const scoreBinaryPrompt = async (
-    prompt: string,
-    control?: { signal?: AbortSignal },
-  ): Promise<BenchJudgeResult> => {
-    const result = await provider.judge({
-      rubric: `${GENERAL_ANSWER_JUDGE_RUBRIC} This evaluator is binary: score must be exactly 0 or 1.`,
-      rubricVersion: config.rubricVersion ?? OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION,
-      input: prompt,
-      signal: control?.signal,
-    });
-    if (!result.ok) throw new OpenAiResponsesJudgeError(result);
-    if (result.verdict.score !== 0 && result.verdict.score !== 1) {
-      const failure: Extract<OpenAiResponsesVerdictResult, { ok: false }> = {
-        ok: false,
-        error: {
-          code: "malformed_verdict",
-          message: "OpenAI Responses API returned a non-binary verdict for a binary rubric.",
-          retryable: false,
-        },
-        telemetry: { ...result.telemetry, errorCode: "malformed_verdict" },
-      };
-      throw new OpenAiResponsesJudgeError(failure);
-    }
-    return toBenchJudgeResult(result);
-  };
-
-  const judgeSpecialized = async (
-    request: MemCorrectJudgeRequest,
-    rubric: "correction" | "stale_harm",
-    control?: { signal?: AbortSignal },
-  ): Promise<MemCorrectJudgeResult> => {
-    const result = rubric === "correction"
-      ? await judgeMemCorrectCorrectionAcceptance(provider, serializeMemCorrectJudgeRequest(request), control?.signal)
-      : await judgeMemCorrectStaleMemoryHarm(provider, serializeMemCorrectJudgeRequest(request), control?.signal);
-    if (!result.ok) throw new OpenAiResponsesJudgeError(result);
-    return {
-      ...toBenchJudgeResult(result),
-      decision: result.verdict.decision,
-      reason: result.verdict.reason,
-      rubricVersion: result.telemetry.rubricVersion,
-    };
-  };
-
-  return {
-    async score(question, predicted, expected, control) {
-      return (await scoreWithMetrics(question, predicted, expected, control)).score;
-    },
-    scoreWithMetrics,
-    scoreBinaryPrompt,
-    judgeMemCorrectCorrectionAcceptance: (request, control) =>
-      judgeSpecialized(request, "correction", control),
-    judgeMemCorrectStaleMemoryHarm: (request, control) =>
-      judgeSpecialized(request, "stale_harm", control),
-  };
+  return createStructuredBenchJudge(
+    provider,
+    config.rubricVersion ?? OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION,
+  );
 }
 
 export async function judgeMemCorrectCorrectionAcceptance(
@@ -662,20 +534,6 @@ export async function judgeMemCorrectStaleMemoryHarm(
   });
 }
 
-function toBenchJudgeResult(
-  result: Extract<OpenAiResponsesVerdictResult, { ok: true }>,
-): BenchJudgeResult {
-  return {
-    score: result.verdict.score,
-    tokens: {
-      input: result.telemetry.inputTokens,
-      output: result.telemetry.outputTokens,
-    },
-    latencyMs: result.telemetry.latencyMs,
-    model: result.telemetry.model,
-  };
-}
-
 function normalizeModel(model: string | undefined): string {
   if (model === undefined) return DEFAULT_OPENAI_RESPONSES_JUDGE_MODEL;
   const trimmed = model.trim();
@@ -683,70 +541,6 @@ function normalizeModel(model: string | undefined): string {
     throw new Error("OpenAI Responses judge model must be a non-empty string");
   }
   return trimmed;
-}
-
-function parseVerdict(text: string): OpenAiResponsesVerdict | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
-  const candidate = parsed as Record<string, unknown>;
-  const keys = Object.keys(candidate).sort();
-  if (keys.join(",") !== "decision,reason,score") return null;
-  if (
-    typeof candidate.score !== "number" ||
-    !Number.isFinite(candidate.score) ||
-    candidate.score < 0 ||
-    candidate.score > 1 ||
-    (candidate.decision !== "pass" &&
-      candidate.decision !== "partial" &&
-      candidate.decision !== "fail") ||
-    typeof candidate.reason !== "string" ||
-    candidate.reason.trim().length === 0
-  ) {
-    return null;
-  }
-  return {
-    score: candidate.score,
-    decision: candidate.decision,
-    reason: candidate.reason.trim(),
-  };
-}
-
-function parseAssistantRubric(text: string): boolean {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return false;
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-  const candidate = parsed as Record<string, unknown>;
-  const keys = Object.keys(candidate).sort();
-  if (keys.join(",") !== "calibration,identity_accuracy,notes,novelty,stance_coherence") return false;
-  return ["identity_accuracy", "stance_coherence", "novelty", "calibration"].every((key) =>
-    typeof candidate[key] === "number" &&
-    Number.isFinite(candidate[key]) &&
-    (candidate[key] as number) >= 0 &&
-    (candidate[key] as number) <= 5
-  ) && typeof candidate.notes === "string";
-}
-
-function serializeMemCorrectJudgeRequest(request: MemCorrectJudgeRequest): string {
-  return JSON.stringify({
-    taskId: request.taskId,
-    query: request.query,
-    retiredContent: request.retiredContent,
-    correctedContent: request.correctedContent,
-    evidence: {
-      postCorrectionRecall: request.postCorrectionRecall,
-      postMaintenanceRecall: request.postMaintenanceRecall,
-      postReingestRecall: request.postReingestRecall,
-    },
-  });
 }
 
 function readOutputText(payload: ResponsesPayload): string | null {

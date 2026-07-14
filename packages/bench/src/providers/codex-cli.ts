@@ -9,10 +9,23 @@ import type {
   CompletionOpts,
   CompletionResult,
   DiscoveredModel,
-  LlmProvider,
   TokenUsage,
 } from "./types.js";
-import { retryFetch } from "./retry-fetch.js";
+import {
+  StructuredJudgeError,
+  isValidAssistantRubric,
+  parseStructuredJudgeVerdict,
+  type AssistantRubricRequest,
+  type StructuredJudgeProvider,
+  type StructuredJudgeVerdictResult,
+  type StructuredVerdictRequest,
+} from "./structured-judge.js";
+import {
+  parseCodexJsonlUsage,
+  resolveCodexCreditBudgetConfig,
+  runWithinCodexCreditBudget,
+  type CodexCliNativeUsage,
+} from "./codex-credit-budget.js";
 import { resolveBenchmarkRunId } from "../run-identity.js";
 
 interface CodexCliRunRequest {
@@ -41,26 +54,6 @@ interface CodexCliProviderDeps {
     env: NodeJS.ProcessEnv,
   ) => Promise<{ status: number | null; stderr: string }>;
 }
-
-interface ResponsesApiResponse {
-  model?: string;
-  output_text?: string;
-  output?: Array<{
-    type?: string;
-    text?: string;
-    content?: Array<{
-      type?: string;
-      text?: string;
-    }>;
-  }>;
-  usage?: {
-    input_tokens?: number;
-    output_tokens?: number;
-    total_tokens?: number;
-  };
-}
-
-type ResponsesApiServiceTier = "auto" | "default" | "flex" | "scale" | "priority";
 
 interface CodexCliDiagnosticRecord {
   schemaVersion: 1;
@@ -117,7 +110,7 @@ interface CodexCliDiagnosticOutcome {
 }
 
 const DEFAULT_REASONING_EFFORT = "xhigh";
-const DEFAULT_SERVICE_TIER = "fast";
+const DEFAULT_SERVICE_TIER = "default";
 const CODEX_CLI_STDIO_LIMIT = 64_000;
 const CODEX_CLI_PARENT_SIGNALS: NodeJS.Signals[] = [
   "SIGHUP",
@@ -128,12 +121,7 @@ const CODEX_CLI_FORCED_PARENT_EXIT_MS = 1_000;
 const CODEX_CLI_DIAGNOSTICS_DIR_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_DIR";
 const CODEX_CLI_DIAGNOSTICS_MODE_ENV = "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_MODE";
 const CODEX_CLI_EXECUTABLE_ENV = "REMNIC_BENCH_CODEX_CLI_EXECUTABLE";
-const CODEX_CLI_TRANSPORT_ENV = "REMNIC_BENCH_CODEX_CLI_TRANSPORT";
 const CODEX_CLI_VERSION_TIMEOUT_MS = 5_000;
-const CODEX_CLI_HEALTH_CACHE_TTL_MS = 30_000;
-const OPENAI_API_KEY_ENV = "OPENAI_API_KEY";
-const OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL";
-const OPENAI_RESPONSES_BASE_URL = "https://api.openai.com/v1";
 const CODEX_CLI_RUNTIME_ENV_ALLOWLIST = new Set([
   "ALL_PROXY",
   "APPDATA",
@@ -151,9 +139,6 @@ const CODEX_CLI_RUNTIME_ENV_ALLOWLIST = new Set([
   "NODE_EXTRA_CA_CERTS",
   "NO_PROXY",
   "NUMBER_OF_PROCESSORS",
-  OPENAI_BASE_URL_ENV,
-  "OPENAI_ORGANIZATION",
-  "OPENAI_PROJECT",
   "OS",
   "PATH",
   "PATHEXT",
@@ -182,12 +167,7 @@ const CODEX_CLI_RUNTIME_ENV_ALLOWLIST = new Set([
 
 const activeCodexCliChildPids = new Set<number>();
 let codexCliParentCleanupInstalled = false;
-const codexCliHealthCache = new Map<
-  string,
-  { checkedAt: number; promise: Promise<boolean> }
->();
-
-class CodexCliProvider implements LlmProvider {
+class CodexCliProvider implements StructuredJudgeProvider {
   readonly provider = "codex-cli" as const;
   readonly id: string;
   readonly name: string;
@@ -198,7 +178,6 @@ class CodexCliProvider implements LlmProvider {
     executable: string,
     env: NodeJS.ProcessEnv,
   ) => Promise<{ status: number | null; stderr: string }>;
-  private readonly shouldProbeCliHealth: boolean;
   private usage: TokenUsage = {
     inputTokens: 0,
     outputTokens: 0,
@@ -209,7 +188,6 @@ class CodexCliProvider implements LlmProvider {
     this.config = config;
     this.runCodexCli = deps.runCodexCli ?? runCodexCliCommand;
     this.runCodexVersion = deps.runCodexVersion ?? runCodexVersionCommand;
-    this.shouldProbeCliHealth = deps.runCodexCli === undefined;
     this.id = `codex-cli:${config.model}`;
     this.name = config.model;
   }
@@ -219,12 +197,10 @@ class CodexCliProvider implements LlmProvider {
     opts: CompletionOpts = {},
   ): Promise<CompletionResult> {
     const startedAt = performance.now();
-    if (await this.shouldUseResponsesFallback()) {
-      return this.completeViaResponsesApi(prompt, opts, startedAt);
-    }
+    const creditBudget = resolveCodexCreditBudgetConfig();
 
     const maxAttempts = normalizeCodexCliMaxAttempts(
-      this.config.retryOptions?.maxAttempts,
+      creditBudget ? 1 : this.config.retryOptions?.maxAttempts,
     );
     let lastError: unknown;
 
@@ -252,14 +228,21 @@ class CodexCliProvider implements LlmProvider {
           serviceTier: DEFAULT_SERVICE_TIER,
           retry: { attempt, maxAttempts },
         });
-        const result = await this.runCodexCli(request);
+        const result = creditBudget
+          ? await runWithinCodexCreditBudget({
+              config: creditBudget,
+              model: this.config.model,
+              run: async () => {
+                const value = await this.runCodexCli(request);
+                if (value.status !== 0) {
+                  throw codexCliResultError(value);
+                }
+                return { value, usage: requireCodexJsonlUsage(value) };
+              },
+            })
+          : await this.runCodexCli(request);
         if (result.status !== 0) {
-          const exitLabel = result.signal
-            ? `signal ${result.signal}`
-            : `exit ${result.status ?? "unknown"}`;
-          const error = new Error(
-            `Codex CLI completion failed (${exitLabel}): ${summarizeProcessOutput(result.stderr, result.stdout)}`,
-          );
+          const error = codexCliResultError(result);
           if (
             attempt < maxAttempts &&
             isRetryableCodexCliResult(result)
@@ -290,10 +273,11 @@ class CodexCliProvider implements LlmProvider {
           throw error;
         }
         await finishDiagnostics({ result });
-        const tokens = parseCodexTokenUsage(
-          `${result.stderr}\n${result.stdout}`,
-          text,
-        );
+        const nativeUsage = readCodexUsage(result, text);
+        const tokens = {
+          input: nativeUsage.inputTokens,
+          output: nativeUsage.outputTokens,
+        };
         this.recordUsage(tokens.input, tokens.output);
 
         return {
@@ -312,6 +296,87 @@ class CodexCliProvider implements LlmProvider {
     }
 
     throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  }
+
+  async judge(request: StructuredVerdictRequest): Promise<StructuredJudgeVerdictResult> {
+    const startedAt = performance.now();
+    try {
+      const completion = await this.complete(request.input, {
+        systemPrompt: buildCodexStructuredJudgePrompt(request.rubric),
+        temperature: 0,
+        maxTokens: request.maxTokens ?? 256,
+        signal: request.signal,
+      });
+      const telemetry = {
+        model: completion.model,
+        rubricVersion: request.rubricVersion,
+        inputTokens: completion.tokens.input,
+        outputTokens: completion.tokens.output,
+        latencyMs: completion.latencyMs,
+      };
+      const verdict = parseStructuredJudgeVerdict(completion.text);
+      if (!verdict) {
+        return {
+          ok: false,
+          error: {
+            code: "malformed_verdict",
+            message: "Codex CLI returned a verdict that failed schema validation.",
+            retryable: false,
+          },
+          telemetry: { ...telemetry, errorCode: "malformed_verdict" },
+        };
+      }
+      return { ok: true, verdict, telemetry };
+    } catch (error) {
+      const aborted = isCodexStructuredJudgeAbort(error, request.signal);
+      const errorCode = aborted ? "aborted" : "transport_error";
+      return {
+        ok: false,
+        error: {
+          code: errorCode,
+          message: aborted
+            ? "Codex CLI judging was aborted by the caller."
+            : `Codex CLI judging failed (${structuredJudgeErrorName(error)}).`,
+          retryable: false,
+        },
+        telemetry: {
+          model: this.config.model,
+          rubricVersion: request.rubricVersion,
+          inputTokens: 0,
+          outputTokens: 0,
+          latencyMs: Math.round(performance.now() - startedAt),
+          errorCode,
+        },
+      };
+    }
+  }
+
+  async evaluateAssistantRubric(request: AssistantRubricRequest): Promise<string> {
+    const rubricVersion = `sealed:${request.rubricId}`;
+    const completion = await this.complete(request.user, {
+      systemPrompt: buildCodexAssistantRubricPrompt(request.system),
+      temperature: 0,
+      maxTokens: 512,
+    });
+    if (isValidAssistantRubric(completion.text)) {
+      return completion.text;
+    }
+    throw new StructuredJudgeError({
+      ok: false,
+      error: {
+        code: "malformed_verdict",
+        message: "Codex CLI returned an invalid sealed assistant-rubric verdict.",
+        retryable: false,
+      },
+      telemetry: {
+        model: completion.model,
+        rubricVersion,
+        inputTokens: completion.tokens.input,
+        outputTokens: completion.tokens.output,
+        latencyMs: completion.latencyMs,
+        errorCode: "malformed_verdict",
+      },
+    });
   }
 
   async discover(): Promise<DiscoveredModel[]> {
@@ -355,137 +420,6 @@ class CodexCliProvider implements LlmProvider {
     };
   }
 
-  private async shouldUseResponsesFallback(): Promise<boolean> {
-    const transport = process.env[CODEX_CLI_TRANSPORT_ENV]?.trim().toLowerCase();
-    if (transport === "cli") {
-      return false;
-    }
-    if (transport === "responses") {
-      return true;
-    }
-    if (!this.shouldProbeCliHealth || this.resolveOpenAiApiKey().length === 0) {
-      return false;
-    }
-
-    return !(await this.isCliHealthy());
-  }
-
-  private async isCliHealthy(): Promise<boolean> {
-    const executable = resolveCodexCliExecutable(this.config);
-    const env = buildIsolatedCodexEnv(this.config.apiKey);
-    if (this.runCodexVersion !== runCodexVersionCommand) {
-      return this.probeCliHealth(executable, env);
-    }
-
-    const cacheKey = `${executable}\0${env.PATH ?? ""}`;
-    const cached = codexCliHealthCache.get(cacheKey);
-    if (
-      cached &&
-      Date.now() - cached.checkedAt < CODEX_CLI_HEALTH_CACHE_TTL_MS
-    ) {
-      return cached.promise;
-    }
-    if (cached) {
-      codexCliHealthCache.delete(cacheKey);
-    }
-
-    const promise = this.probeCliHealth(executable, env).then((healthy) => {
-      if (!healthy) {
-        codexCliHealthCache.delete(cacheKey);
-      }
-      return healthy;
-    });
-    codexCliHealthCache.set(cacheKey, { checkedAt: Date.now(), promise });
-    return promise;
-  }
-
-  private async probeCliHealth(
-    executable: string,
-    env: NodeJS.ProcessEnv,
-  ): Promise<boolean> {
-    try {
-      const version = await this.runCodexVersion(executable, env);
-      return version.status === 0;
-    } catch {
-      return false;
-    }
-  }
-
-  private resolveOpenAiApiKey(): string {
-    return (this.config.apiKey ?? process.env[OPENAI_API_KEY_ENV] ?? "").trim();
-  }
-
-  private async completeViaResponsesApi(
-    prompt: string,
-    opts: CompletionOpts,
-    startedAt: number,
-  ): Promise<CompletionResult> {
-    const apiKey = this.resolveOpenAiApiKey();
-    if (apiKey.length === 0) {
-      throw new Error(
-        `Codex CLI fallback requires ${OPENAI_API_KEY_ENV} or codex-cli apiKey.`,
-      );
-    }
-
-    const serviceTier = responsesApiServiceTier(DEFAULT_SERVICE_TIER);
-    const body: Record<string, unknown> = {
-      model: this.config.model,
-      instructions: buildResponsesInstructions(opts.systemPrompt),
-      input: prompt,
-      reasoning: {
-        effort: this.config.reasoningEffort ?? DEFAULT_REASONING_EFFORT,
-      },
-      ...(serviceTier ? { service_tier: serviceTier } : {}),
-      max_output_tokens: Math.max(1, Math.floor(opts.maxTokens ?? 1024)),
-      store: false,
-    };
-
-    const response = await retryFetch(
-      this.responsesApiUrl(),
-      {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${apiKey}`,
-        },
-        signal: opts.signal,
-        body: JSON.stringify(body),
-      },
-      this.config.retryOptions,
-    );
-
-    if (!response.ok) {
-      throw new Error(
-        `Codex CLI Responses API fallback failed: ${response.status} ${response.statusText}${await readResponseErrorBody(response)}`,
-      );
-    }
-
-    const payload = (await response.json()) as ResponsesApiResponse;
-    const text = extractResponsesOutputText(payload).trim();
-    if (text.length === 0) {
-      throw new Error("Codex CLI Responses API fallback returned no text.");
-    }
-
-    const inputTokens = payload.usage?.input_tokens ?? 0;
-    const outputTokens = payload.usage?.output_tokens ?? 0;
-    this.recordUsage(inputTokens, outputTokens);
-
-    return {
-      text,
-      tokens: { input: inputTokens, output: outputTokens },
-      latencyMs: Math.round(performance.now() - startedAt),
-      model: payload.model ?? this.config.model,
-    };
-  }
-
-  private responsesApiUrl(): string {
-    const baseUrl = (this.config.baseUrl ?? OPENAI_RESPONSES_BASE_URL).replace(
-      /\/$/,
-      "",
-    );
-    return baseUrl.endsWith("/v1") ? `${baseUrl}/responses` : `${baseUrl}/v1/responses`;
-  }
-
   private buildRunRequest(
     prompt: string,
     opts: CompletionOpts,
@@ -501,8 +435,6 @@ class CodexCliProvider implements LlmProvider {
       "--config",
       `model_reasoning_effort=${tomlString(reasoningEffort)}`,
       "--config",
-      `service_tier=${tomlString(DEFAULT_SERVICE_TIER)}`,
-      "--config",
       'approval_policy="never"',
       "--disable",
       "codex_hooks",
@@ -514,6 +446,7 @@ class CodexCliProvider implements LlmProvider {
       "--cd",
       workspacePath,
       "--skip-git-repo-check",
+      "--json",
       "--output-last-message",
       outputPath,
       "-",
@@ -527,66 +460,9 @@ class CodexCliProvider implements LlmProvider {
       workspacePath,
       timeoutMs: this.config.retryOptions?.timeoutMs,
       signal: opts.signal,
-      env: buildIsolatedCodexEnv(this.config.apiKey, this.config.baseUrl),
+      env: buildIsolatedCodexEnv(),
     };
   }
-}
-
-function responsesApiServiceTier(
-  serviceTier: string,
-): ResponsesApiServiceTier | undefined {
-  if (
-    serviceTier === "auto" ||
-    serviceTier === "default" ||
-    serviceTier === "flex" ||
-    serviceTier === "scale" ||
-    serviceTier === "priority"
-  ) {
-    return serviceTier;
-  }
-  return undefined;
-}
-
-function buildResponsesInstructions(systemPrompt: string | undefined): string {
-  return [
-    "You are acting as a benchmark LLM completion endpoint, not as a coding agent.",
-    "Use only the user input and the benchmark system instructions.",
-    "Do not inspect files, run commands, browse, use tools, or use persisted memory.",
-    "Return only the final answer text. If the request asks for JSON, return raw JSON only.",
-    ...(systemPrompt?.trim() ? ["", systemPrompt.trim()] : []),
-  ].join("\n");
-}
-
-async function readResponseErrorBody(response: Response): Promise<string> {
-  try {
-    const body = await response.text();
-    return body.trim().length > 0 ? ` — ${body.slice(0, 1_000)}` : "";
-  } catch {
-    return "";
-  }
-}
-
-function extractResponsesOutputText(payload: ResponsesApiResponse): string {
-  if (typeof payload.output_text === "string" && payload.output_text.length > 0) {
-    return payload.output_text;
-  }
-
-  const parts: string[] = [];
-  for (const item of payload.output ?? []) {
-    if (typeof item.text === "string" && item.text.length > 0) {
-      parts.push(item.text);
-    }
-    for (const content of item.content ?? []) {
-      if (
-        typeof content.text === "string" &&
-        content.text.length > 0 &&
-        (content.type === undefined || content.type.endsWith("_text"))
-      ) {
-        parts.push(content.text);
-      }
-    }
-  }
-  return parts.join("\n");
 }
 
 function runCodexVersionCommand(
@@ -689,10 +565,7 @@ function buildCodexCompletionPrompt(
   ].join("\n");
 }
 
-function buildIsolatedCodexEnv(
-  apiKey?: string,
-  baseUrl?: string,
-): NodeJS.ProcessEnv {
+function buildIsolatedCodexEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
     if (value !== undefined && isAllowedCodexRuntimeEnvKey(key)) {
@@ -700,14 +573,6 @@ function buildIsolatedCodexEnv(
     }
   }
 
-  const resolvedApiKey = (apiKey ?? process.env[OPENAI_API_KEY_ENV] ?? "").trim();
-  if (resolvedApiKey.length > 0) {
-    env[OPENAI_API_KEY_ENV] = resolvedApiKey;
-  }
-  const resolvedBaseUrl = (baseUrl ?? process.env[OPENAI_BASE_URL_ENV] ?? "").trim();
-  if (resolvedBaseUrl.length > 0) {
-    env[OPENAI_BASE_URL_ENV] = resolvedBaseUrl;
-  }
   return env;
 }
 
@@ -1233,52 +1098,111 @@ function summarizeProcessOutput(stderr: string, stdout: string): string {
   return summary.length > 0 ? summary.slice(-1_000) : "no process output";
 }
 
-function parseCodexTokenUsage(
-  stderr: string,
-  outputText: string,
-): { input: number; output: number } {
-  const totalTokens = parseCodexTotalTokens(stderr);
-  if (totalTokens === undefined) {
-    return { input: 0, output: 0 };
+function requireCodexJsonlUsage(result: CodexCliRunResult): CodexCliNativeUsage {
+  const usage = parseCodexJsonlUsage(`${result.stdout}\n${result.stderr}`);
+  if (!usage) {
+    throw new Error(
+      `Codex CLI completion did not emit a valid turn.completed usage event: ${summarizeProcessOutput(result.stderr, result.stdout)}`,
+    );
   }
+  return usage;
+}
 
-  const estimatedOutputTokens = Math.min(
-    totalTokens,
-    Math.max(1, Math.ceil(outputText.length / 4)),
+function readCodexUsage(
+  result: CodexCliRunResult,
+  outputText: string,
+): CodexCliNativeUsage {
+  const exact = parseCodexJsonlUsage(`${result.stdout}\n${result.stderr}`);
+  if (exact) return exact;
+  const legacy = parseCodexTokenUsage(
+    `${result.stderr}\n${result.stdout}`,
+    outputText,
   );
   return {
-    input: totalTokens - estimatedOutputTokens,
-    output: estimatedOutputTokens,
+    inputTokens: legacy.input,
+    cachedInputTokens: 0,
+    outputTokens: legacy.output,
+    reasoningOutputTokens: 0,
   };
 }
 
-function parseCodexTotalTokens(stderr: string): number | undefined {
-  const matches = [...stderr.matchAll(/\btokens used\s+([0-9][0-9,]*)\b/gi)];
+function parseCodexTokenUsage(
+  output: string,
+  outputText: string,
+): { input: number; output: number } {
+  const matches = [...output.matchAll(/\btokens used\s+([0-9][0-9,]*)\b/gi)];
   const raw = matches.at(-1)?.[1];
-  if (!raw) {
-    return undefined;
+  if (!raw) return { input: 0, output: 0 };
+  const totalTokens = Number(raw.replace(/,/g, ""));
+  if (!Number.isSafeInteger(totalTokens) || totalTokens < 0) {
+    return { input: 0, output: 0 };
   }
+  const outputTokens = Math.min(
+    totalTokens,
+    Math.max(1, Math.ceil(outputText.length / 4)),
+  );
+  return { input: totalTokens - outputTokens, output: outputTokens };
+}
 
-  const parsed = Number(raw.replace(/,/g, ""));
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : undefined;
+function codexCliResultError(result: CodexCliRunResult): Error {
+  const exitLabel = result.signal
+    ? `signal ${result.signal}`
+    : `exit ${result.status ?? "unknown"}`;
+  return new Error(
+    `Codex CLI completion failed (${exitLabel}): ${summarizeProcessOutput(result.stderr, result.stdout)}`,
+  );
 }
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
 }
 
+function buildCodexStructuredJudgePrompt(rubric: string): string {
+  return [
+    rubric,
+    "Return raw JSON only, with exactly these keys:",
+    '{"score":<number from 0 to 1>,"decision":"pass|partial|fail","reason":"non-empty concise reason"}',
+    "Do not wrap the JSON in Markdown or add any other text.",
+  ].join("\n\n");
+}
+
+function buildCodexAssistantRubricPrompt(systemPrompt: string): string {
+  return [
+    systemPrompt,
+    "Return raw JSON only, with exactly these keys:",
+    '{"identity_accuracy":<0-5>,"stance_coherence":<0-5>,"novelty":<0-5>,"calibration":<0-5>,"notes":"string"}',
+    "Every numeric value must be finite and within the inclusive range 0 to 5.",
+    "Do not wrap the JSON in Markdown or add any other text.",
+  ].join("\n\n");
+}
+
+function isCodexStructuredJudgeAbort(
+  error: unknown,
+  signal: AbortSignal | undefined,
+): boolean {
+  return signal?.aborted === true ||
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError");
+}
+
+function structuredJudgeErrorName(error: unknown): string {
+  return error instanceof Error && error.name.trim().length > 0
+    ? error.name
+    : "unknown error";
+}
+
 export function createCodexCliProvider(
   config: CodexCliProviderConfig,
   deps?: CodexCliProviderDeps,
-): LlmProvider {
+): StructuredJudgeProvider {
   return new CodexCliProvider(config, deps);
 }
 
 export const __codexCliProviderTestHooks = {
   buildCodexCompletionPrompt,
   buildIsolatedCodexEnv,
-  clearCodexCliHealthCache: () => codexCliHealthCache.clear(),
   getActiveCodexCliChildCount: () => activeCodexCliChildPids.size,
+  parseCodexJsonlUsage,
   parseCodexTokenUsage,
   resolveCodexCliDiagnosticsDir,
   resolveCodexCliExecutable,
