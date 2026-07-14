@@ -48,12 +48,17 @@ issue owns one (`related-work.md`). Keeping the rest of the skeleton in a single
    bounded Tier-F trials (`2026-07-08-*-798fe8a.json` — partial coverage,
    never leaderboard numbers), two MemCorrect full-matrix runs
    (`2026-07-13-memcorrect-v1-*-9485f44.json`), and two full Tier-F frontier
-   runs (`2026-07-14-*-opus-0676347.json`). One recorded exception: the three
-   §7.1 ablation-cell artifacts (`…c67c2c7-*.json`) are committed in git
-   history at `dcdcb5a8` but deliberately untracked from the current tree so
-   the figure generator's newest-per-tier pick keeps the Figure 1 Tier-L
-   anchor clean; `docs/benchmarks/ablations.md` and §7.1's provenance note
-   document the retrieval path.
+   runs (`2026-07-14-*-opus-0676347.json`). Two recorded exceptions live in
+   git history rather than the current tree, both to keep the figure
+   generator's newest-per-benchmark+tier pick anchored on the intended
+   artifacts: (a) the three §7.1 ablation-cell artifacts
+   (`…c67c2c7-*.json`) at commit `dcdcb5a8` (documented in
+   `docs/benchmarks/ablations.md` and §7.1's provenance note), and (b) the
+   §6.2 temporal re-run comparison artifact
+   (`2026-07-14-longmemeval-opus-151e5ef.json`) at commit `b2e51b73`
+   (PR #1867; its judge calibration is below threshold, so it must not
+   displace the κ-clean `0676347` Figure 1 anchor — §6.2's comparison note
+   documents the retrieval path).
 3. **Distinguish trial coverage from full coverage.** The full Tier-F run
    (Opus 4.8 via `claude -p`, `real` profile) landed 2026-07-14 and is the
    accuracy claim; the 2026-07-08 bounded artifacts remain partial-coverage
