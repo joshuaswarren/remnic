@@ -616,14 +616,14 @@ passes the §5 publishability rubric.** Until then, every block is a TODO.
 
   **Judge calibration.** Cohen's κ was computed by re-judging a
   deterministic 50-question slice with both the local 3090 judge and
-  Opus (the gold standard). LongMemEval's κ=0.769 clears the 0.7
-  publishability threshold — the local judge is a defensible proxy for
-  that benchmark. LoCoMo's κ=0.135 does not; the local judge's verdicts
-  diverge substantially from Opus on LoCoMo's open-ended answers, so
-  the LoCoMo `llm_judge` carries a warning flag in the artifact and
-  should be read as an approximate, not authoritative, score. The
-  deterministic metrics (`contains_answer`, `f1`, `rouge_l`) are
-  judge-independent and unaffected.
+  Opus (the gold standard). This artifact pair carries LongMemEval
+  κ=0.769, above the 0.7 publishability threshold, and LoCoMo κ=0.135,
+  well below it; the LoCoMo `llm_judge` carries a warning flag in the
+  artifact and should be read as an approximate, not authoritative,
+  score. Repeated calibration slices later measured lower LongMemEval κ
+  values (§8), so κ is reported per artifact rather than claimed as a
+  benchmark-wide constant. The deterministic metrics (`contains_answer`,
+  `f1`, `rouge_l`) are judge-independent and unaffected.
 
   **Per-type breakdown (LongMemEval Tier F, real profile).** The
   aggregate 0.760 hides a sharp split:
@@ -650,6 +650,36 @@ passes the §5 publishability rubric.** Until then, every block is a TODO.
   but the bench recall path surfaces neither as an ordered timeline for
   date-shaped queries. This is both an honest limitation and the
   concrete improvement lever documented in the Temporal Lift plan.
+
+  **Broadened event-order heuristic (same-judge comparison).** PR #1864
+  broadened the event-order recall tier's query matching from 0% to 83.5%
+  coverage of the dataset's temporal-reasoning phrasings (verified against
+  the 500-question LongMemEval-oracle set, 11.7% false-positive rate). A
+  full re-run at that commit (real profile, 500/500, zero failures)
+  measured temporal-reasoning judge accuracy 0.594 against the 0.541
+  above (+5.3 points, 7 of 133 questions) and aggregate 0.768 against
+  0.760. The judge-independent view is smaller but positive:
+  `contains_answer` on temporal questions moved from 0.316 to 0.331
+  (+1.5 points) while `f1` stayed flat. Multi-session moved down 3.0
+  judge points while its `contains_answer` rose 1.5 points, a
+  noise-shaped pair, not a regression signal. Two caveats bound the
+  claim. First, this is same-judge relative movement: the re-run's judge
+  calibration is below threshold (stamped κ=0.559 from run-time state; a
+  post-run recalibration over this run's own answers measured κ=0.444;
+  see the slice-instability note in §8), so its absolute judge-scored
+  values are approximate. Second, an 83.5% heuristic match rate bought
+  only a 5-point lift: matching the query shape is not the bottleneck.
+  The remaining gap is what the Temporal Lift plan's deeper items
+  target, cross-session event-order aggregation and an ingest-time
+  temporal index that returns an ordered timeline instead of evidence
+  snippets. The comparison artifact
+  `2026-07-14-longmemeval-opus-151e5ef.json` is retrievable from git
+  history at commit `b2e51b73` (PR #1867;
+  `git show b2e51b73:docs/benchmarks/results/2026-07-14-longmemeval-opus-151e5ef.json`), deliberately
+  untracked from the current tree so the κ-clean `0676347` artifact
+  remains the newest tracked Tier-F LongMemEval artifact the figure
+  generator anchors Figure 1 on (the same recorded exception pattern as
+  the §7.1 ablation cells).
 
   **`locomo_hidden_evidence_id_leak = 1.0`** on both tiers: this is the
   anti-leak guard holding, not a leak. The runner scores `1` only when
@@ -762,8 +792,10 @@ retrieve and re-verify them with
 `git show dcdcb5a8:docs/benchmarks/results/<basename>` followed by
 `pnpm exec tsx scripts/bench/verify-artifact.ts`. They are also present on
 the lab host at `~/src/remnic/docs/benchmarks/results/` and in the stored
-results at `~/.remnic/bench/results/`. This is the one deliberate exception
-to the "current-tree artifact" rule, and it is recorded both here and in
+results at `~/.remnic/bench/results/`. This is one of the two recorded
+exceptions to the "current-tree artifact" rule (the other is §6.2's
+temporal comparison artifact); both are listed centrally in the paper
+README's rule 2, and this one is also documented in
 `docs/benchmarks/ablations.md`.
 
 ### 7.2 Bounded-memory contract ablation
@@ -790,12 +822,23 @@ paper as a standalone accuracy quote.
 **Local-judge calibration.** The local RTX 3090 judges both tiers. Cohen's
 κ calibration (`remnic bench judge-calibrate`, §5) re-judges a
 deterministic 50-question slice with both the local 7B judge and Opus as the
-gold standard. LongMemEval's κ=0.769 clears the 0.7 publishability threshold,
-making the local judge a defensible proxy for that benchmark. LoCoMo's κ=0.135
-does not. The local 7B judge diverges substantially from Opus on LoCoMo's
-open-ended answers, so the LoCoMo `llm_judge` carries a warning flag in the
-artifact and should be read as approximate, not authoritative. The
-deterministic metrics (`contains_answer`, `f1`, `rouge_l`) are judge-independent
+gold standard. LongMemEval's headline artifact carries κ=0.769, above the
+0.7 publishability threshold. LoCoMo's κ=0.135 does not; its `llm_judge`
+carries a warning flag in the artifact and should be read as approximate,
+not authoritative. A further honest complication surfaced when the
+calibration was repeated: three 50-question slices of the same judge pair
+(local `qwen2.5-7b-32k:latest` vs Opus) measured κ=0.769 (before the
+headline run; stamped into the `0676347` artifact), κ=0.559 (during the
+baseline-profile pass; as the persisted state at run time this is also
+the value stamped into the §6.2 temporal re-run artifact), and κ=0.444
+(a post-run recalibration over the temporal re-run's own cached answers,
+recorded in that artifact's note rather than its `judgeCalibration`
+field). Cohen's κ over 50 questions is slice-sensitive,
+so each artifact carries the κ persisted when it was produced and no
+benchmark-wide judge-reliability constant is claimed; the local judge's
+agreement with Opus on LongMemEval should be treated as uncertain rather
+than established. The deterministic metrics (`contains_answer`, `f1`,
+`rouge_l`) are judge-independent
 and unaffected. Two operational gotchas compound the calibration risk. Some
 local models (for example qwen3) truncate long contexts silently, and Ollama's
 context-length default is conservative. The manifest's `ctx` field declares the
