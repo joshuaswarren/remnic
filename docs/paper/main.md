@@ -792,8 +792,10 @@ retrieve and re-verify them with
 `git show dcdcb5a8:docs/benchmarks/results/<basename>` followed by
 `pnpm exec tsx scripts/bench/verify-artifact.ts`. They are also present on
 the lab host at `~/src/remnic/docs/benchmarks/results/` and in the stored
-results at `~/.remnic/bench/results/`. This is the one deliberate exception
-to the "current-tree artifact" rule, and it is recorded both here and in
+results at `~/.remnic/bench/results/`. This is one of the two recorded
+exceptions to the "current-tree artifact" rule (the other is §6.2's
+temporal comparison artifact); both are listed centrally in the paper
+README's rule 2, and this one is also documented in
 `docs/benchmarks/ablations.md`.
 
 ### 7.2 Bounded-memory contract ablation
@@ -825,10 +827,14 @@ gold standard. LongMemEval's headline artifact carries κ=0.769, above the
 carries a warning flag in the artifact and should be read as approximate,
 not authoritative. A further honest complication surfaced when the
 calibration was repeated: three 50-question slices of the same judge pair
-(local `qwen2.5-7b-32k:latest` vs Opus) measured κ=0.769 (the headline
-run's slice), κ=0.559 (the baseline-pass slice), and κ=0.444 (the §6.2
-temporal re-run's slice). Cohen's κ over 50 questions is slice-sensitive,
-so each artifact carries the κ measured for its own run and no
+(local `qwen2.5-7b-32k:latest` vs Opus) measured κ=0.769 (before the
+headline run; stamped into the `0676347` artifact), κ=0.559 (during the
+baseline-profile pass; as the persisted state at run time this is also
+the value stamped into the §6.2 temporal re-run artifact), and κ=0.444
+(a post-run recalibration over the temporal re-run's own cached answers,
+recorded in that artifact's note rather than its `judgeCalibration`
+field). Cohen's κ over 50 questions is slice-sensitive,
+so each artifact carries the κ persisted when it was produced and no
 benchmark-wide judge-reliability constant is claimed; the local judge's
 agreement with Opus on LongMemEval should be treated as uncertain rather
 than established. The deterministic metrics (`contains_answer`, `f1`,
