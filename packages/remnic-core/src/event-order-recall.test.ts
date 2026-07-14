@@ -160,6 +160,32 @@ test("event order recall is query-triggered", () => {
   );
 });
 
+test("temporal-reasoning heuristic: catches ordering and duration phrasings", () => {
+  // Ordering comparisons
+  assert.equal(shouldRecallEventOrderEvidence("Which event did I attend first, the workshop or the webinar?"), true);
+  assert.equal(shouldRecallEventOrderEvidence("What was the first issue I had with my car?"), true);
+  assert.equal(shouldRecallEventOrderEvidence("Which event happened first, the purchase or the malfunction?"), true);
+  assert.equal(shouldRecallEventOrderEvidence("Who did I meet first, Mark or Sarah?"), true);
+  assert.equal(shouldRecallEventOrderEvidence("What is the order of the three trips I took?"), true);
+  assert.equal(shouldRecallEventOrderEvidence("Which seeds were started first, the tomatoes or the marigolds?"), true);
+  // Duration and relative time
+  assert.equal(shouldRecallEventOrderEvidence("How many days before the meeting did I attend the workshop?"), true);
+  assert.equal(shouldRecallEventOrderEvidence("How long have I been working before I started my current job?"), true);
+  assert.equal(shouldRecallEventOrderEvidence("How many months ago did I book the Airbnb?"), true);
+  assert.equal(shouldRecallEventOrderEvidence("How old was I when I moved to the United States?"), true);
+  // Recency
+  assert.equal(shouldRecallEventOrderEvidence("Which streaming service did I start using most recently?"), true);
+  // Date-shaped
+  assert.equal(shouldRecallEventOrderEvidence("When did I first mention the database issue?"), true);
+});
+
+test("temporal-reasoning heuristic: does not match non-temporal questions", () => {
+  assert.equal(shouldRecallEventOrderEvidence("What time do I wake up on Tuesdays?"), false);
+  assert.equal(shouldRecallEventOrderEvidence("Which airline did I fly with the most in March?"), false);
+  assert.equal(shouldRecallEventOrderEvidence("What is my favorite coffee order?"), false);
+  assert.equal(shouldRecallEventOrderEvidence("How many people attended the workshop?"), false);
+});
+
 test("event order recall honors zero max items without scanning", async () => {
   const engine = new FakeEventOrderEngine("event-order-zero", [
     {
