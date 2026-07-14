@@ -317,7 +317,22 @@ class ClaudeCliProvider implements LlmProvider {
         const request = this.buildRunRequest(prompt, opts, tempDir);
         const result = await this.runClaudeCli(request);
 
-        if (result.status !== 0) {
+        // Parse the stdout envelope BEFORE gating on the exit status. Claude
+        // Code can exit non-zero for reasons unrelated to the completion
+        // itself (a failing user hook, a teardown race) while still emitting
+        // a complete zero-error result envelope — the dominant source of
+        // spuriously 0-scored tasks in the 2026-07-08 bounded trials (~8%
+        // of tasks). A parseable payload with `is_error` unset and
+        // non-empty result text is a successful completion regardless of
+        const payload = parseClaudeCliJsonResult(result.stdout);
+        const salvageableDespiteExit =
+          !result.stderr.includes("Claude CLI timed out") &&
+          !result.stderr.includes("Claude CLI aborted by benchmark timeout") &&
+          result.signal === null &&
+          !isClaudeCliErrorFlagSet(payload.is_error) &&
+          typeof payload.result === "string" &&
+          payload.result.trim().length > 0;
+        if (result.status !== 0 && !salvageableDespiteExit) {
           // Usage-limit detection is deliberately restricted to FAILURE
           // paths (non-zero exits here, is_error payloads below). A
           // successful benchmark answer that merely mentions "rate limit"
@@ -334,8 +349,17 @@ class ClaudeCliProvider implements LlmProvider {
             continue;
           }
           const exitLabel = result.signal ? `signal ${result.signal}` : `exit ${result.status ?? "unknown"}`;
+          // Diagnostics: the envelope's identifying fields live at the HEAD
+          // of stdout (type/subtype/is_error/result), but the summary tails
+          // it — include the head explicitly so deterministic per-task
+          // failures are classifiable from the run log alone (live 2026-07-13
+          // full-run triage: ~8% of tasks failed with a parseable envelope
+          // that was not salvageable, invisible from the tail).
+          const stdoutHead = result.stdout.trim().slice(0, 300);
           const error = new Error(
-            `Claude CLI completion failed (${exitLabel}): ${summarizeProcessOutput(result.stderr, result.stdout)}`,
+            `Claude CLI completion failed (${exitLabel}): ${
+              stdoutHead.length > 0 ? `head=${JSON.stringify(stdoutHead)} tail=` : ""
+            }${summarizeProcessOutput(result.stderr, result.stdout)}`,
           );
           if (transientAttempt < maxAttempts && isRetryableClaudeCliResult(result)) {
             await sleepBeforeClaudeCliRetry({
@@ -351,7 +375,19 @@ class ClaudeCliProvider implements LlmProvider {
           throw error;
         }
 
-        const payload = parseClaudeCliJsonResult(result.stdout);
+        // A timed-out or aborted completion is never salvageable, regardless of
+        // exit status — a child that catches SIGTERM can exit 0 with a partial
+        // envelope in stdout. The salvage guard above catches status!=0; this
+        // catches the status==0 edge (codex P2).
+        if (
+          result.stderr.includes("Claude CLI timed out") ||
+          result.stderr.includes("Claude CLI aborted by benchmark timeout")
+        ) {
+          throw new Error(
+            `Claude CLI completion was killed (timeout/abort): ${summarizeProcessOutput(result.stderr, result.stdout)}`,
+          );
+        }
+
         if (isClaudeCliErrorFlagSet(payload.is_error)) {
           // Usage-limit responses can surface as a zero-exit is_error JSON
           // payload, or as bare stderr with empty stdout — both land here.
@@ -587,13 +623,24 @@ function buildClaudeCompletionPrompt(userPrompt: string): string {
  * to 200 produced 434 output tokens uncapped, and only 117 output tokens (8 lines)
  * with `CLAUDE_CODE_MAX_OUTPUT_TOKENS=50` set, with `is_error: false` (a silent
  * truncation, not a hard error). This is the CLI's real, if unofficial, mechanism
- * for `opts.maxTokens`, so it's forwarded here rather than left unhonored. Because
- * truncation is silent, this is a soft cap: the judge/responder prompts themselves
- * ("answer yes/no only", "return a single number", ...) still do the primary work
- * of keeping the answer shape small; this env var is a backstop, not a hard
- * contract enforced by the API itself the way an SDK's `max_tokens` param is.
+ * for `opts.maxTokens`, so it's forwarded here rather than left unhonored.
+ *
+ * LIVE CORRECTION (2026-07-13 full Tier-F run, Claude Code 2.1.199): with the
+ * current CLI + default Opus effort, the cap is NOT always a silent
+ * truncation — the CLI counts its internal reasoning/scaffolding output
+ * against the same budget and HARD-ERRORS (`is_error: true`, exit 1,
+ * "API Error: Claude's response exceeded the N output token maximum") when
+ * the total crosses it. The harness responder's `maxTokens: 256` therefore
+ * deterministically failed ~8% of LongMemEval tasks (every long-answer
+ * question) while API providers treated the same 256 as a plain completion
+ * cap. The forwarded env value is floored at
+ * {@link CLAUDE_CLI_OUTPUT_TOKENS_ENV_FLOOR} so the caller's answer-shaping
+ * intent stays with the prompt ("answer yes/no only", ...) — the primary
+ * mechanism — while the env backstop can no longer hard-fail a legitimate
+ * completion's internal overhead.
  */
 const CLAUDE_CLI_MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS";
+const CLAUDE_CLI_OUTPUT_TOKENS_ENV_FLOOR = 4096;
 
 function buildIsolatedClaudeEnv(config: ClaudeCliProviderConfig, maxTokens?: number): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
@@ -613,7 +660,9 @@ function buildIsolatedClaudeEnv(config: ClaudeCliProviderConfig, maxTokens?: num
     env.ANTHROPIC_BASE_URL = config.baseUrl.trim();
   }
   if (typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0) {
-    env[CLAUDE_CLI_MAX_OUTPUT_TOKENS_ENV] = String(Math.floor(maxTokens));
+    env[CLAUDE_CLI_MAX_OUTPUT_TOKENS_ENV] = String(
+      Math.max(Math.floor(maxTokens), CLAUDE_CLI_OUTPUT_TOKENS_ENV_FLOOR),
+    );
   }
 
   return env;
@@ -663,6 +712,26 @@ function parseClaudeCliJsonResult(stdout: string): ClaudeCliJsonResult {
     }
     return parsed as ClaudeCliJsonResult;
   } catch {
+    // Whole-stdout parse failed. Claude Code prints the result envelope as a
+    // single JSON line, but user-level hooks and warnings can interleave
+    // extra lines around it (observed live: complete envelopes with
+    // `terminal_reason: "completed"` rejected because a stray line broke the
+    // whole-stdout parse). Scan lines from the END for the last parseable
+    // top-level object before giving up — the envelope is the final thing
+    // the CLI prints on success.
+    const lines = trimmed.split(/\r?\n/);
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = lines[index].trim();
+      if (!line.startsWith("{") || !line.endsWith("}")) continue;
+      try {
+        const parsed = JSON.parse(line) as unknown;
+        if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+          return parsed as ClaudeCliJsonResult;
+        }
+      } catch {
+        // keep scanning
+      }
+    }
     // Fall back to treating raw stdout as an error blob — a non-JSON
     // response from `--output-format json` is itself an anomaly.
     return { is_error: true, error: trimmed.slice(-1_000) };

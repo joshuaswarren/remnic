@@ -232,22 +232,36 @@ test("Figure 1: Remnic Tier-L bars trace to the committed locomo/longmemeval art
   }
 });
 
-test("Figure 1: Tier-F + third-party panels are DATA-PENDING (no fabricated competitor numbers)", () => {
+test("Figure 1: Tier-F panels are REAL when frontier artifacts are committed; third-party stays DATA-PENDING", () => {
   const svg = readFigure("fig1-locomo-longmemeval.svg");
-  // Pending bars use the hatch pattern fill.
-  assert.match(svg, /url\(#pendingHatch1\)/, "pending panels are hatched");
-  assert.match(svg, /pending #1728/, "Tier-F pending cites the blocking issue");
-  assert.match(svg, /third-party pending #1747/, "third-party pending cites the adapter issue");
-  // No Tier-F artifact committed today → the figure must NOT claim a Tier-F value.
   const locomoF = findRealArtifact("locomo", "frontier");
   const longmemevalF = findRealArtifact("longmemeval", "frontier");
-  if (!locomoF && !longmemevalF) {
-    assert.doesNotMatch(
-      svg,
-      /Opus|frontier.*real/i,
-      "no Tier-F value may be rendered while no Tier-F artifact is committed",
-    );
+
+  if (locomoF || longmemevalF) {
+    // Tier-F artifacts exist → the figure must render real Tier-F values,
+    // not pending-hatched bars. No "#1728" pending marker for Tier-F.
+    assert.doesNotMatch(svg, /pending #1728/, "Tier-F is real — no #1728 pending marker");
+    // The real values must trace to the committed artifacts.
+    if (longmemevalF) {
+      const v = longmemevalF.doc.metrics.llm_judge ?? longmemevalF.doc.metrics.judge_accuracy;
+      assert.ok(v !== undefined, "longmemeval frontier artifact has a judge metric");
+      assert.ok(svg.includes(v.toFixed(3)), `fig1 renders longmemeval Tier-F llm_judge=${v.toFixed(3)}`);
+    }
+    if (locomoF) {
+      const v = locomoF.doc.metrics.llm_judge;
+      assert.ok(v !== undefined, "locomo frontier artifact has an llm_judge metric");
+      assert.ok(svg.includes(v.toFixed(3)), `fig1 renders locomo Tier-F llm_judge=${v.toFixed(3)}`);
+    }
+  } else {
+    // No Tier-F artifact → pending bars with hatch + blocking issue cite.
+    assert.match(svg, /url\(#pendingHatch1\)/, "pending panels are hatched");
+    assert.match(svg, /pending #1728/, "Tier-F pending cites the blocking issue");
   }
+
+  // Third-party (Mem0/Zep/Letta) is ALWAYS pending until #1747 adapter runs land,
+  // regardless of Tier-F state — no fabricated competitor numbers.
+  assert.match(svg, /third-party pending #1747/, "third-party pending cites the adapter issue");
+  assert.doesNotMatch(svg, /mock000/, "no mock cited as a result");
 });
 
 test("Figure 1: mocks are never cited as results", () => {

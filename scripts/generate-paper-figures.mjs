@@ -590,7 +590,9 @@ function figure1() {
     H,
     body,
     "Figure 1 — LoCoMo / LongMemEval comparison",
-    "Grouped bar chart. Remnic Tier-L bars are real (committed artifacts); Tier-F and Mem0/Zep/Letta bars are data-pending placeholders.",
+    locomoF || longmemevalF
+      ? "Grouped bar chart. Remnic Tier-L and Tier-F bars are real (committed artifacts); Mem0/Zep/Letta bars are data-pending placeholders."
+      : "Grouped bar chart. Remnic Tier-L bars are real (committed artifacts); Tier-F and Mem0/Zep/Letta bars are data-pending placeholders.",
   );
 }
 

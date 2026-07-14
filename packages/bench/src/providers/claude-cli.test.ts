@@ -77,6 +77,104 @@ test("claude-cli provider invokes claude -p in an isolated benchmark mode", asyn
   assert.notEqual(captured.cwd, process.cwd());
 });
 
+test("claude-cli provider trusts a clean result envelope over a non-zero exit", async () => {
+  // Claude Code can exit 1 for reasons unrelated to the completion (a
+  // failing user hook, a teardown race) while still printing a complete
+  // zero-error envelope — the ~8% spurious task failures in the 2026-07-08
+  // bounded trials. The envelope wins; no retry is spent.
+  let calls = 0;
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        calls += 1;
+        return {
+          status: 1,
+          signal: null,
+          stdout: JSON.stringify({
+            is_error: false,
+            result: "salvaged answer",
+            usage: { input_tokens: 7, output_tokens: 3 },
+          }),
+          stderr: "SessionEnd hook failed: exit status 1",
+        };
+      },
+    },
+  );
+
+  const result = await provider.complete("q");
+  assert.equal(result.text, "salvaged answer");
+  assert.deepEqual(result.tokens, { input: 7, output: 3 });
+  assert.equal(calls, 1, "a salvageable envelope must not burn retries");
+});
+
+
+test("claude-cli provider salvages an envelope preceded by hook/warning lines", async () => {
+  // User-level hooks and warnings can interleave extra stdout lines around
+  // the single-line JSON envelope, breaking a whole-stdout parse. The
+  // last parseable JSON line is the envelope and must win — with or
+  // without a clean exit code.
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus" },
+    {
+      async runClaudeCli() {
+        return {
+          status: 1,
+          signal: null,
+          stdout: [
+            "SessionEnd hook [bash hook.sh] failed: No such file or directory",
+            JSON.stringify({
+              is_error: false,
+              result: "interleaved answer",
+              usage: { input_tokens: 5, output_tokens: 2 },
+            }),
+          ].join("\n"),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  const result = await provider.complete("q");
+  assert.equal(result.text, "interleaved answer");
+  assert.deepEqual(result.tokens, { input: 5, output: 2 });
+});
+test("claude-cli provider still fails a non-zero exit whose envelope is an error", async () => {
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus", retryOptions: { maxAttempts: 1 } },
+    {
+      async runClaudeCli() {
+        return {
+          status: 1,
+          signal: null,
+          stdout: JSON.stringify({ is_error: true, result: "Not logged in · Please run /login" }),
+          stderr: "",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(provider.complete("q"), /Claude CLI completion failed \(exit 1\)/);
+});
+
+test("claude-cli provider still fails a non-zero exit with an empty-result envelope", async () => {
+  const provider = createClaudeCliProvider(
+    { provider: "claude-cli", model: "opus", retryOptions: { maxAttempts: 1 } },
+    {
+      async runClaudeCli() {
+        return {
+          status: 1,
+          signal: null,
+          stdout: JSON.stringify({ is_error: false, result: "" }),
+          stderr: "boom",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(provider.complete("q"), /Claude CLI completion failed \(exit 1\)/);
+});
+
 test("claude-cli provider omits --system-prompt when no systemPrompt is given", async () => {
   const captured: { args?: string[] } = {};
   const provider = createClaudeCliProvider(
@@ -898,15 +996,21 @@ test("claude-cli buildClaudeCliArgs always includes --no-session-persistence (ve
   assert.ok(buildClaudeCliArgs({ provider: "claude-cli", model: "opus" }).includes("--no-session-persistence"));
 });
 
-test("claude-cli buildIsolatedClaudeEnv forwards opts.maxTokens as CLAUDE_CODE_MAX_OUTPUT_TOKENS", () => {
+test("claude-cli buildIsolatedClaudeEnv forwards opts.maxTokens as CLAUDE_CODE_MAX_OUTPUT_TOKENS with the hard-error floor", () => {
   const { buildIsolatedClaudeEnv } = __claudeCliProviderTestHooks;
 
+  // Small caller caps are floored: the CLI counts internal reasoning output
+  // against the same budget and HARD-ERRORS past it (2026-07-13 live run —
+  // the harness responder's 256 deterministically failed long-answer tasks).
   const withMaxTokens = buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 50);
-  assert.equal(withMaxTokens.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "50");
+  assert.equal(withMaxTokens.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "4096");
 
-  // Fractional values are floored to an integer token count.
-  const withFractionalMaxTokens = buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 50.9);
-  assert.equal(withFractionalMaxTokens.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "50");
+  const withResponderCap = buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 256);
+  assert.equal(withResponderCap.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "4096");
+
+  // Caps above the floor pass through, floored to an integer token count.
+  const withLargeMaxTokens = buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 8192.9);
+  assert.equal(withLargeMaxTokens.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "8192");
 });
 
 test("claude-cli buildIsolatedClaudeEnv omits CLAUDE_CODE_MAX_OUTPUT_TOKENS when maxTokens is absent or invalid", () => {
@@ -949,7 +1053,10 @@ test("claude-cli provider forwards opts.maxTokens through to the child process e
 
   await provider.complete("hello", { maxTokens: 128 });
 
-  assert.equal(capturedEnv?.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "128");
+  // Floored to the hard-error floor (the CLI counts internal reasoning
+  // output against this budget and hard-errors past it — see
+  // buildIsolatedClaudeEnv).
+  assert.equal(capturedEnv?.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "4096");
 });
 
 function escapeRegExp(value: string): string {

@@ -1,0 +1,8 @@
+{
+  "$comment": "Pinned Remnic config for the FULL-FEATURE Tier-F pass (issue #1728, operator decision 2026-07-13: run both a baseline-profile pass, anchor-comparable with Tier L, and a real-profile pass measuring the shipped product). Used with `remnic bench run <locomo|longmemeval> --runtime-profile real --remnic-config <this file>`. The real profile preserves Remnic's shipped defaults (QMD hybrid search, knowledge index, entity retrieval, verified recall, Memory Boxes, contradiction detection, etc. per parseConfig defaults); this file pins ONLY the local-LLM endpoint so extraction and internal calls run on the lab GPU without environment-variable templating. Extraction gates stay at shipped defaults deliberately - this pass measures the product as shipped.",
+  "modelSource": "plugin",
+  "localLlmEnabled": true,
+  "localLlmFallback": false,
+  "localLlmUrl": "http://127.0.0.1:11434",
+  "localLlmModel": "qwen2.5-7b-32k:latest"
+}

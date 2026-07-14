@@ -3,13 +3,12 @@
     "2026-04-20-locomo-gpt-4o-mini-mock000.json",
     "2026-04-20-longmemeval-gpt-4o-mini-mock000.json",
     "2026-07-07-locomo-qwen2.5-7b-32k_latest-47aae03.json",
-    "2026-07-07-locomo-qwen2.5-7b-32k_latest-c67c2c7-contradiction-scan-on.json",
-    "2026-07-07-locomo-qwen2.5-7b-32k_latest-c67c2c7-graph-recall-on.json",
-    "2026-07-07-locomo-qwen2.5-7b-32k_latest-c67c2c7-memory-worth-off.json",
     "2026-07-07-longmemeval-qwen2.5-7b-32k_latest-47aae03.json",
     "2026-07-08-locomo-opus-via-claude-code-trial100-798fe8a.json",
     "2026-07-08-longmemeval-opus-via-claude-code-trial50-798fe8a.json",
     "2026-07-13-memcorrect-v1-prompt-only-baseline-9485f44.json",
-    "2026-07-13-memcorrect-v1-remnic-native-9485f44.json"
+    "2026-07-13-memcorrect-v1-remnic-native-9485f44.json",
+    "2026-07-14-locomo-opus-0676347.json",
+    "2026-07-14-longmemeval-opus-0676347.json"
   ]
 }
