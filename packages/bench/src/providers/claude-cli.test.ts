@@ -996,15 +996,21 @@ test("claude-cli buildClaudeCliArgs always includes --no-session-persistence (ve
   assert.ok(buildClaudeCliArgs({ provider: "claude-cli", model: "opus" }).includes("--no-session-persistence"));
 });
 
-test("claude-cli buildIsolatedClaudeEnv forwards opts.maxTokens as CLAUDE_CODE_MAX_OUTPUT_TOKENS", () => {
+test("claude-cli buildIsolatedClaudeEnv forwards opts.maxTokens as CLAUDE_CODE_MAX_OUTPUT_TOKENS with the hard-error floor", () => {
   const { buildIsolatedClaudeEnv } = __claudeCliProviderTestHooks;
 
+  // Small caller caps are floored: the CLI counts internal reasoning output
+  // against the same budget and HARD-ERRORS past it (2026-07-13 live run —
+  // the harness responder's 256 deterministically failed long-answer tasks).
   const withMaxTokens = buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 50);
-  assert.equal(withMaxTokens.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "50");
+  assert.equal(withMaxTokens.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "4096");
 
-  // Fractional values are floored to an integer token count.
-  const withFractionalMaxTokens = buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 50.9);
-  assert.equal(withFractionalMaxTokens.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "50");
+  const withResponderCap = buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 256);
+  assert.equal(withResponderCap.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "4096");
+
+  // Caps above the floor pass through, floored to an integer token count.
+  const withLargeMaxTokens = buildIsolatedClaudeEnv({ provider: "claude-cli", model: "opus" }, 8192.9);
+  assert.equal(withLargeMaxTokens.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "8192");
 });
 
 test("claude-cli buildIsolatedClaudeEnv omits CLAUDE_CODE_MAX_OUTPUT_TOKENS when maxTokens is absent or invalid", () => {
@@ -1047,7 +1053,10 @@ test("claude-cli provider forwards opts.maxTokens through to the child process e
 
   await provider.complete("hello", { maxTokens: 128 });
 
-  assert.equal(capturedEnv?.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "128");
+  // Floored to the hard-error floor (the CLI counts internal reasoning
+  // output against this budget and hard-errors past it — see
+  // buildIsolatedClaudeEnv).
+  assert.equal(capturedEnv?.CLAUDE_CODE_MAX_OUTPUT_TOKENS, "4096");
 });
 
 function escapeRegExp(value: string): string {

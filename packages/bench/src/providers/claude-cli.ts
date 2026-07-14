@@ -612,13 +612,24 @@ function buildClaudeCompletionPrompt(userPrompt: string): string {
  * to 200 produced 434 output tokens uncapped, and only 117 output tokens (8 lines)
  * with `CLAUDE_CODE_MAX_OUTPUT_TOKENS=50` set, with `is_error: false` (a silent
  * truncation, not a hard error). This is the CLI's real, if unofficial, mechanism
- * for `opts.maxTokens`, so it's forwarded here rather than left unhonored. Because
- * truncation is silent, this is a soft cap: the judge/responder prompts themselves
- * ("answer yes/no only", "return a single number", ...) still do the primary work
- * of keeping the answer shape small; this env var is a backstop, not a hard
- * contract enforced by the API itself the way an SDK's `max_tokens` param is.
+ * for `opts.maxTokens`, so it's forwarded here rather than left unhonored.
+ *
+ * LIVE CORRECTION (2026-07-13 full Tier-F run, Claude Code 2.1.199): with the
+ * current CLI + default Opus effort, the cap is NOT always a silent
+ * truncation — the CLI counts its internal reasoning/scaffolding output
+ * against the same budget and HARD-ERRORS (`is_error: true`, exit 1,
+ * "API Error: Claude's response exceeded the N output token maximum") when
+ * the total crosses it. The harness responder's `maxTokens: 256` therefore
+ * deterministically failed ~8% of LongMemEval tasks (every long-answer
+ * question) while API providers treated the same 256 as a plain completion
+ * cap. The forwarded env value is floored at
+ * {@link CLAUDE_CLI_OUTPUT_TOKENS_ENV_FLOOR} so the caller's answer-shaping
+ * intent stays with the prompt ("answer yes/no only", ...) — the primary
+ * mechanism — while the env backstop can no longer hard-fail a legitimate
+ * completion's internal overhead.
  */
 const CLAUDE_CLI_MAX_OUTPUT_TOKENS_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS";
+const CLAUDE_CLI_OUTPUT_TOKENS_ENV_FLOOR = 4096;
 
 function buildIsolatedClaudeEnv(config: ClaudeCliProviderConfig, maxTokens?: number): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
@@ -638,7 +649,9 @@ function buildIsolatedClaudeEnv(config: ClaudeCliProviderConfig, maxTokens?: num
     env.ANTHROPIC_BASE_URL = config.baseUrl.trim();
   }
   if (typeof maxTokens === "number" && Number.isFinite(maxTokens) && maxTokens > 0) {
-    env[CLAUDE_CLI_MAX_OUTPUT_TOKENS_ENV] = String(Math.floor(maxTokens));
+    env[CLAUDE_CLI_MAX_OUTPUT_TOKENS_ENV] = String(
+      Math.max(Math.floor(maxTokens), CLAUDE_CLI_OUTPUT_TOKENS_ENV_FLOOR),
+    );
   }
 
   return env;
