@@ -134,21 +134,27 @@ critical path unless they block a truthful claim.
 
 ### Measurement and retrieval hardening
 
-1. #1879: the deterministic 1,986-task category join is complete. Multi-hop
-   accounts for most of the score regression, but the root-cause acceptance
-   criterion remains blocked on paired baseline/real recall X-ray receipts.
-2. #1878: a default-off empty-recall abstention foundation and exact-context
-   support contract are complete. Remnic does not yet expose a trustworthy
-   same-context confidence signal; the calibrated 1,986-task rerun and
-   answerable-category noise check remain blocked on runtime wiring, dataset,
-   and credentials.
+1. #1879: the deterministic 1,986-task category join and recall-side mechanics
+   are complete. Skip-extraction replay is now LCM-first by default, preventing
+   extraction-dependent recall from displacing verbatim evidence while keeping
+   an explicit ablation opt-out. The acceptance criterion still requires paired
+   baseline/real recall X-ray receipts and a full rerun.
+2. #1878: the answer-time support gate is wired to a bounded assessment of the
+   exact final responder context and is enabled by default for the real profile.
+   Empty and weak support abstain; unavailable assessment and backend failure
+   remain distinct and fail open. The calibrated 1,986-task rerun and
+   answerable-category noise check remain credential-gated.
 3. #1876: the cross-session temporal scenario matrix, event aggregation,
    ingest-time v2 index, bounded reads, legacy fallback, and entity-hardening
-   tests are complete. The acceptance artifact still requires the LongMemEval
-   source dataset and provider credentials.
-4. #1880: remove the accidental shell wrapper from the issue body, record the
-   honest achievable ceiling, and open separate issues only for selected
-   multi-session, supersession, or multi-hop work.
+   tests are complete. LongMemEval now also composes split multi-session
+   evidence and surfaces source chronology for knowledge updates without
+   declaring unrelated historical facts superseded. The acceptance artifact
+   still requires provider credentials; the source dataset is staged locally.
+4. #1880: the three previously untracked performance levers are implemented:
+   LongMemEval multi-session composition, conditional knowledge-update
+   supersession surfacing, and bounded two-hop LoCoMo recall composition. The
+   accidental shell wrapper has been removed from the GitHub issue body. The
+   new behavior still needs full post-hardening benchmark artifacts.
 
 ### Governance and paper closeout
 
