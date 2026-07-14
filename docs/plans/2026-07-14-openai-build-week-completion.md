@@ -114,13 +114,17 @@ Integration checkpoint:
   and the missing-optional-bench install hint.
 - [x] Add README and bench README Build Week sections, supported platforms,
   exact judge commands, Codex collaboration narrative, and GPT-5.6 role.
-- [ ] Finalize `HACKATHON.md` with commit/artifact/test receipts and session ID.
+- [ ] Finalize `HACKATHON.md` with the operator-provided `/feedback` session ID
+  and GPT-5.6 artifact. All locally reproducible commit and test receipts are
+  recorded.
 - [x] Reconcile Devpost copy with shipped reality and delete unshipped claims.
 - [x] Write a sub-three-minute demo script: stale-memory problem,
   MCP-backed run, correction/non-resurrection result, report card, receipts,
   and explicit Codex/GPT-5.6 voiceover.
-- [ ] Run final license/privacy/secret audit. Voice lint and the packed-tarball
-  cold-path test pass; the recorded demo still needs operator rehearsal.
+- [x] Run the source license/privacy/secret audit. Voice lint and the
+  packed-tarball cold-path test pass; no credential material was found in the
+  in-window diff. The recorded demo and macOS install still need operator
+  rehearsal/verification.
 - [ ] Submit Devpost entry; close #1868 only when every child has receipts.
 
 ## Remaining open-issue program
@@ -130,22 +134,28 @@ critical path unless they block a truthful claim.
 
 ### Measurement and retrieval hardening
 
-1. #1879: diagnose full-profile LoCoMo interference with category joins and
-   recall X-ray receipts before changing responder behavior.
-2. #1878: add support-aware abstention, then rerun all 1,986 tasks and verify
-   answerable categories stay within noise.
-3. #1876: design the full cross-session temporal scenario matrix, implement
-   event aggregation and ingest-time indexing, run entity hardening, and
-   promote only a non-regressing artifact.
+1. #1879: the deterministic 1,986-task category join is complete. Multi-hop
+   accounts for most of the score regression, but the root-cause acceptance
+   criterion remains blocked on paired baseline/real recall X-ray receipts.
+2. #1878: a default-off empty-recall abstention foundation and exact-context
+   support contract are complete. Remnic does not yet expose a trustworthy
+   same-context confidence signal; the calibrated 1,986-task rerun and
+   answerable-category noise check remain blocked on runtime wiring, dataset,
+   and credentials.
+3. #1876: the cross-session temporal scenario matrix, event aggregation,
+   ingest-time v2 index, bounded reads, legacy fallback, and entity-hardening
+   tests are complete. The acceptance artifact still requires the LongMemEval
+   source dataset and provider credentials.
 4. #1880: remove the accidental shell wrapper from the issue body, record the
    honest achievable ceiling, and open separate issues only for selected
    multi-session, supersession, or multi-hop work.
 
 ### Governance and paper closeout
 
-5. #1883: choose and test a narrow manifest-only Dependabot exception, or
-   document a supported Cursor configuration/admin policy without weakening
-   human-authored PR gates.
+5. #1883: complete. The gate now permits only non-empty, manifest-only PRs
+   authored by `dependabot[bot]` when the exact Cursor group is the sole
+   missing reviewer; human, mixed-file, and negative-signal cases remain
+   fail-closed.
 6. #1725: reconcile its stale blockers (the referenced issues are closed),
    integrate artifact-backed results, complete operator-gated comparisons,
    assemble the paper, and submit to arXiv.

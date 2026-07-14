@@ -104,6 +104,21 @@ Additional in-window receipts:
   `adapterMode=mcp`, saved one task with `uptake_at_next=1`, and made a
   15,144-byte report. Run it with
   `node scripts/verify-build-week-sandbox.mjs`.
+- [`3777d3ac`](https://github.com/joshuaswarren/remnic/commit/3777d3ac)
+  makes provider failures fail closed. A rejected GPT-5.6 smoke can no longer
+  produce a complete-looking artifact or exit successfully; 47 focused tests
+  cover partial status, legitimate negative scores, empty results, and
+  promotion refusal.
+- [`4a6a8192`](https://github.com/joshuaswarren/remnic/commit/4a6a8192),
+  [`6aa5d22f`](https://github.com/joshuaswarren/remnic/commit/6aa5d22f), and
+  [`2e692843`](https://github.com/joshuaswarren/remnic/commit/2e692843)
+  are in-window research hardening beyond the submission core: bounded
+  cross-session temporal recall, an evidence-bounded LoCoMo category
+  diagnosis, and a default-off empty-recall abstention foundation. They are
+  not presented as benchmark lifts because the required acceptance artifacts
+  are still operator-gated.
+- [`4b17970e`](https://github.com/joshuaswarren/remnic/commit/4b17970e)
+  adds the narrowly tested manifest-only Dependabot review-gate exception.
 
 Codex `/feedback` session ID for the core functionality:
 **PENDING OPERATOR INPUT.** Run `/feedback` in the primary Codex session and
@@ -194,6 +209,6 @@ MemStrata, and MemoryAgentBench are prior art. We engage them in
 - [x] Free Codex credits requested by July 17, 12:00 PM PT (requested 2026-07-14).
 - [ ] Core functionality built in Codex sessions, with the `/feedback` session ID captured.
 - [ ] Demo video under 3 minutes, public on YouTube. Audio covers Codex and GPT-5.6 usage.
-- [ ] Repository public with MIT license (already true).
+- [x] Repository public with MIT license.
 - [x] README documents where Codex sped up the work and how GPT-5.6 is used.
 - [ ] Devpost submission filed before July 21, 5:00 PM PT.
