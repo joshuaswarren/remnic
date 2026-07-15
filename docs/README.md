@@ -29,6 +29,7 @@
 - [Operations](operations.md) — Backup, export, hourly summaries, CLI, logs
 - [Published Benchmarks](benchmarks.md) — Full published benchmark suite, artifact expectations, and leaderboard safety
 - [Benchmark Readiness](benchmarks/sota-readiness.md) — #841-#850 cue-recall audit for published memory benchmarks
+- [Codex Credit Reconciliation](benchmarks/codex-credit-reconciliation.md) — Conservative recovery for blocked bounded-benchmark ledgers
 - [Retention Policy](retention-policy.md) — Hot/cold tier substrate, value-score model, `remnic forget`, `remnic tier list/explain` (issue #686)
 - [Import / Export](import-export.md) — Portable backups and migration
 - [Local AI Session Summary Drafts](local-session-summaries.md) — Privacy-first local transcript harvesting into sanitized summary drafts
