@@ -432,7 +432,7 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /calibrationIdentities = \{/);
   assert.match(source, /writeJudgeCalibrationState\([\s\S]*result,[\s\S]*calibrationDir,[\s\S]*calibrationIdentities,[\s\S]*sourceResultId: loaded\.meta\.id,[\s\S]*localJudgeConfigHash,[\s\S]*frontierJudgeConfigHash/);
   assert.match(source, /getProviderBackedJudgePromptIdentity\(localJudgeConfig\)/);
-  assert.match(source, /if \(!matchesLocal\) return undefined;/);
+  assert.match(source, /if \(!matchesLocal\) \{[\s\S]*if \(hasBothPins\)[\s\S]*return undefined;/);
   assert.match(source, /state\.localJudgeProvider !== undefined && state\.localJudgeModel !== undefined/);
 
   // P2 (codex): limited full runs (--limit 1) are rejected before calibrating
@@ -581,6 +581,90 @@ test("frontier and unrelated runs ignore local calibration state without requiri
       undefined,
     );
   }
+});
+
+test("explicit calibration pins fail closed when state is unavailable or targets another judge", async () => {
+  const { preparePersistedJudgeCalibrationAttachment } = await import(
+    "../packages/remnic-cli/src/index.ts"
+  );
+  const localHash = "a".repeat(64);
+  const frontierHash = "b".repeat(64);
+  const pins = {
+    calibrationLocalConfigSha256: localHash,
+    calibrationFrontierConfigSha256: frontierHash,
+  };
+  let loadCalls = 0;
+  let benchmarkCalls = 0;
+  let modelCalls = 0;
+  const unavailableBenchModule = {
+    async loadJudgeCalibrationState() {
+      loadCalls += 1;
+      return undefined;
+    },
+  };
+  const guardedRun = async (
+    benchModule: object,
+    binding: {
+      calibrationLocalConfigSha256?: string;
+      calibrationFrontierConfigSha256?: string;
+    },
+  ) => {
+    const prepared = await preparePersistedJudgeCalibrationAttachment(
+      benchModule as never,
+      "locomo",
+      { provider: "ollama", model: "local-judge" },
+      binding,
+    );
+    benchmarkCalls += 1;
+    modelCalls += 1;
+    return prepared;
+  };
+
+  await assert.rejects(
+    () => guardedRun(unavailableBenchModule, pins),
+    /no valid calibration state could be loaded/,
+  );
+  await assert.rejects(
+    () => guardedRun({}, pins),
+    /no valid calibration state could be loaded/,
+  );
+  assert.equal(
+    await guardedRun(unavailableBenchModule, {}),
+    undefined,
+  );
+  for (const binding of [
+    { calibrationLocalConfigSha256: localHash },
+    { calibrationFrontierConfigSha256: frontierHash },
+  ]) {
+    await assert.rejects(
+      () => guardedRun(unavailableBenchModule, binding),
+      /must be supplied together/,
+    );
+  }
+  assert.equal(loadCalls, 2);
+
+  const localStateBenchModule = {
+    async loadJudgeCalibrationState() {
+      return {
+        kappa: 0.81,
+        sampleSize: 200,
+        threshold: 0.7,
+        warning: false,
+        localJudgeProvider: "ollama",
+        localJudgeModel: "different-local-judge",
+        frontierJudgeProvider: "openai",
+        frontierJudgeModel: "gpt-5.6",
+        localJudgeConfigHash: localHash,
+        frontierJudgeConfigHash: frontierHash,
+      };
+    },
+  };
+  await assert.rejects(
+    () => guardedRun(localStateBenchModule, pins),
+    /refusing to ignore explicit pins/,
+  );
+  assert.equal(benchmarkCalls, 1);
+  assert.equal(modelCalls, 1);
 });
 
 test("missing, stale, and resolved-config calibration failures occur before benchmark or model calls", async () => {

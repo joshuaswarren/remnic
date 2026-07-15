@@ -3536,7 +3536,9 @@ async function runBenchViaPackage(
  * local artifact and is visible to the publish/feed/leaderboard readers.
  *
  * Absent calibration is the common case (operator has not run
- * `judge-calibrate` yet): the result is returned unchanged. Eligible local
+ * `judge-calibrate` yet): an unpinned result is returned unchanged. Explicit
+ * binding pins make a valid, matching calibration mandatory, so missing or
+ * corrupt state cannot silently produce an unbound artifact. Eligible local
  * runs validate state, pins, and the resolved judge configuration before any
  * endpoint or model work, so a stale calibration cannot discard a completed
  * result.
@@ -3564,12 +3566,28 @@ export async function preparePersistedJudgeCalibrationAttachment(
     "calibrationDir" | "calibrationLocalConfigSha256" | "calibrationFrontierConfigSha256"
   >,
 ): Promise<PreparedJudgeCalibrationAttachment | undefined> {
+  const hasLocalPin = Boolean(calibrationBinding.calibrationLocalConfigSha256);
+  const hasFrontierPin = Boolean(calibrationBinding.calibrationFrontierConfigSha256);
+  const hasAnyPin = hasLocalPin || hasFrontierPin;
+  const hasBothPins = hasLocalPin && hasFrontierPin;
+  if (hasAnyPin && !hasBothPins) {
+    throw new Error(
+      "--calibration-local-config-sha256 and --calibration-frontier-config-sha256 must be supplied together.",
+    );
+  }
   const calibrationDir = expandTilde(
     calibrationBinding.calibrationDir ??
       path.join(resolveHomeDir(), ".remnic", "bench", "calibration"),
   );
   const state = await benchModule.loadJudgeCalibrationState?.(benchmarkId, calibrationDir);
-  if (!state) return undefined;
+  if (!state) {
+    if (hasAnyPin) {
+      throw new Error(
+        `Calibration binding pins were supplied for ${benchmarkId}, but no valid calibration state could be loaded from ${calibrationDir}; rerun judge-calibrate or remove both pins.`,
+      );
+    }
+    return undefined;
+  }
 
   if (state.localJudgeProvider !== undefined && state.localJudgeModel !== undefined) {
     const matchesLocal =
@@ -3578,7 +3596,16 @@ export async function preparePersistedJudgeCalibrationAttachment(
     // The persisted kappa measures the calibrated local judge's agreement
     // with the frontier judge. Frontier and unrelated runs are not attachment
     // candidates, so their normal execution must not require local-run pins.
-    if (!matchesLocal) return undefined;
+    if (!matchesLocal) {
+      if (hasBothPins) {
+        throw new Error(
+          `Calibration binding pins for ${benchmarkId} target the calibrated local judge ` +
+            `${state.localJudgeProvider}/${state.localJudgeModel}, but the run judge is ` +
+            `${runJudgeProvider?.provider ?? "unset"}/${runJudgeProvider?.model ?? "unset"}; refusing to ignore explicit pins.`,
+        );
+      }
+      return undefined;
+    }
   }
 
   if (!state.localJudgeConfigHash || !state.frontierJudgeConfigHash) {
