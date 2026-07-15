@@ -1289,7 +1289,8 @@ export async function buildBenchmarkReproManifest(
   const pnpmVersion = resolvePackageManager(cwd);
   const commandEnv = options.command?.env ?? process.env;
   const runId = options.runId ?? resolveBenchmarkRunId(commandEnv);
-  const creditConfig = resolveCodexCreditBudgetConfig(commandEnv, runId);
+  const resolvedCreditConfig = resolveCodexCreditBudgetConfig(commandEnv, runId);
+  const creditConfig = resolvedCreditConfig ? { ...resolvedCreditConfig, runId } : undefined;
   let codexCredit: CodexCreditReceipt | undefined;
   if (creditConfig) {
     try {

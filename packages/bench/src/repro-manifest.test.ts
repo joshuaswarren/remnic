@@ -873,7 +873,7 @@ test("manifest records Codex credit env-key provenance from process.env", async 
     REMNIC_BENCH_CODEX_CREDIT_BUDGET: "2473",
     REMNIC_BENCH_CODEX_CREDIT_RESERVE: "473",
     REMNIC_BENCH_CODEX_CREDIT_LEDGER: ledgerPath,
-    REMNIC_BENCH_RUN_ID: "process-env-run",
+    REMNIC_BENCH_RUN_ID: "conflicting-env-run",
   };
   const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
   Object.assign(process.env, env);
