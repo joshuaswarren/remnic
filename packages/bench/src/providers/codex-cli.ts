@@ -216,7 +216,10 @@ class CodexCliProvider implements StructuredJudgeProvider {
       throw codexCliAbortError(opts.signal);
     }
     const startedAt = performance.now();
-    const creditBudget = resolveCodexCreditBudgetConfig();
+    const creditBudget = resolveCodexCreditBudgetConfig(
+      process.env,
+      resolveBenchmarkRunId(),
+    );
     if (creditBudget) {
       await this.assertChatGptCreditAuth();
     }

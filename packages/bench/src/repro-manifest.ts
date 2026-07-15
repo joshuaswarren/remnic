@@ -4,6 +4,11 @@ import { createReadStream } from "node:fs";
 import { lstat, mkdir, readFile, readdir, readlink, realpath, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import {
+  buildCodexCreditReceipt,
+  resolveCodexCreditBudgetConfig,
+  type CodexCreditReceipt,
+} from "./providers/codex-credit-budget.js";
 import { listBenchmarkResults, loadBenchmarkResult } from "./results-store.js";
 import { resolveBenchmarkRunId } from "./run-identity.js";
 import { redactUrlSecrets as redactUrlSecretMaterial } from "./security/url-secrets.js";
@@ -98,6 +103,7 @@ export interface BenchmarkReproManifest {
   }>;
   datasets: BenchmarkReproManifestDataset[];
   results: BenchmarkReproManifestResult[];
+  codexCredit?: CodexCreditReceipt;
   artifactHash: string;
 }
 
@@ -235,6 +241,14 @@ const SECRET_KEY_PATTERN =
   /(^|[-_])(?:api[-_]?key|secret[-_]?access[-_]?key|secret[-_]?key|client[-_]?secret(?:[-_]?key)?|app[-_]?secret(?:[-_]?key)?|provider[-_]?secret(?:[-_]?key)?|access[-_]?key|private[-_]?key|secret|password|authorization|credential|access[-_]?token|auth[-_]?token|refresh[-_]?token|id[-_]?token|token)$/i;
 
 const REDACTED_ARG_VALUE = "[redacted]";
+const CODEX_CREDIT_REPRO_ENV_KEYS = [
+  "REMNIC_BENCH_CODEX_ALLOW_SOL",
+  "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+  "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
+  "REMNIC_BENCH_CODEX_CREDIT_RESERVE",
+  "REMNIC_BENCH_CODEX_CLI_DIAGNOSTICS_MODE",
+  "REMNIC_BENCH_RUN_ID",
+] as const;
 
 function sha256String(value: string): string {
   return createHash("sha256").update(value).digest("hex");
@@ -850,7 +864,10 @@ function isAsciiAlnum(char: string): boolean {
 }
 
 function sanitizeEnvKeys(env: NodeJS.ProcessEnv | undefined, explicitKeys: string[] | undefined): string[] {
-  const sourceKeys = explicitKeys ?? Object.keys(env ?? {});
+  const sourceKeys = [
+    ...(explicitKeys ?? Object.keys(env ?? {})),
+    ...CODEX_CREDIT_REPRO_ENV_KEYS.filter((key) => env?.[key] !== undefined),
+  ];
   return [...new Set(sourceKeys)]
     .filter((key) => typeof key === "string" && key.length > 0)
     .sort((left, right) => left.localeCompare(right));
@@ -912,6 +929,7 @@ function buildArtifactHashIdentity(manifest: Omit<BenchmarkReproManifest, "artif
     configFiles: manifest.configFiles,
     datasets: manifest.datasets,
     results: manifest.results,
+    ...(manifest.codexCredit ? { codexCredit: manifest.codexCredit } : {}),
   };
 }
 
@@ -1269,11 +1287,22 @@ export async function buildBenchmarkReproManifest(
   );
   const qmdCollections = collectQmdCollections(options.qmd?.collections, loadedResults);
   const pnpmVersion = resolvePackageManager(cwd);
+  const commandEnv = options.command?.env ?? process.env;
+  const runId = options.runId ?? resolveBenchmarkRunId(commandEnv);
+  const creditConfig = resolveCodexCreditBudgetConfig(commandEnv, runId);
+  let codexCredit: CodexCreditReceipt | undefined;
+  if (creditConfig) {
+    try {
+      codexCredit = await buildCodexCreditReceipt(creditConfig.ledgerPath, creditConfig.runId);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
   const manifestWithoutHash = {
     schemaVersion: BENCHMARK_REPRO_MANIFEST_SCHEMA_VERSION,
     generatedAt: new Date().toISOString(),
     run: {
-      id: options.runId ?? resolveBenchmarkRunId(),
+      id: runId,
       ...(options.mode ? { mode: options.mode } : {}),
       selectedBenchmarks,
       runtimeProfiles: options.runtimeProfiles ?? [],
@@ -1306,6 +1335,7 @@ export async function buildBenchmarkReproManifest(
     configFiles: await buildConfigFileEntries(options.configFiles),
     datasets,
     results: resultEntries.sort((left, right) => left.path.localeCompare(right.path)),
+    ...(codexCredit ? { codexCredit } : {}),
   };
 
   return {

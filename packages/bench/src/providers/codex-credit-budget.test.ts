@@ -5,9 +5,10 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  __codexCreditBudgetTestHooks,
   CodexCreditAccountingError,
   CodexCreditDispatchError,
+  __codexCreditBudgetTestHooks,
+  buildCodexCreditReceipt,
   calculateCodexCredits,
   parseCodexJsonlUsage,
   resolveCodexCreditBudgetConfig,
@@ -123,11 +124,11 @@ test("bounded runs reject Sol unless explicitly opted in", async () => {
   );
 });
 
-test("bounded runs persist exact usage and stop at the safety-reserve boundary", async () => {
+test("bounded runs persist exact usage and preserve worst-case headroom at the planned-spend boundary", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-ledger-"));
   const ledgerPath = path.join(directory, "ledger.json");
   const config = {
-    budgetCredits: 308.875,
+    budgetCredits: 608.874,
     reserveCredits: 300,
     ledgerPath,
     allowSol: false,
@@ -161,7 +162,7 @@ test("bounded runs persist exact usage and stop at the safety-reserve boundary",
           return { value: "unexpected", usage };
         },
       }),
-      /budget exhausted/,
+      /cannot safely dispatch another call/,
     );
     assert.equal(called, false);
   } finally {
@@ -200,9 +201,38 @@ test("budget environment parsing uses the competition reserve and rejects invali
     })?.ledgerPath,
     path.join(os.homedir(), ".remnic/bench/credits.json"),
   );
+  assert.equal(
+    resolveCodexCreditBudgetConfig(
+      { REMNIC_BENCH_CODEX_CREDIT_BUDGET: "2473" },
+      "generated-run-id",
+    )?.runId,
+    "generated-run-id",
+  );
+  assert.equal(
+    resolveCodexCreditBudgetConfig(
+      {
+        REMNIC_BENCH_CODEX_CREDIT_BUDGET: "2473",
+        REMNIC_BENCH_RUN_ID: "explicit-run-id",
+      },
+      "generated-run-id",
+    )?.runId,
+    "explicit-run-id",
+  );
+  for (const explicitRunId of ["", "   "]) {
+    assert.equal(
+      resolveCodexCreditBudgetConfig(
+        {
+          REMNIC_BENCH_CODEX_CREDIT_BUDGET: "2473",
+          REMNIC_BENCH_RUN_ID: explicitRunId,
+        },
+        "generated-run-id",
+      )?.runId,
+      "generated-run-id",
+    );
+  }
 });
 
-test("completed over-budget usage is persisted before the stop error", async () => {
+test("completed usage above the conservative call bound is persisted before the planned-spend stop", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-overrun-"));
   const ledgerPath = path.join(directory, "ledger.json");
   let persistedUsage: typeof usage | undefined;
@@ -210,7 +240,7 @@ test("completed over-budget usage is persisted before the stop error", async () 
   try {
     await assert.rejects(
       runWithinCodexCreditBudget({
-        config: { budgetCredits: 400, reserveCredits: 300, ledgerPath, allowSol: false },
+        config: { budgetCredits: 600, reserveCredits: 300, ledgerPath, allowSol: false },
         model: "gpt-5.6-terra",
         onUsagePersisted: (completedUsage) => {
           persistedUsage = completedUsage;
@@ -225,7 +255,7 @@ test("completed over-budget usage is persisted before the stop error", async () 
           },
         }),
       }),
-      /Usage was persisted/,
+      /planned-spend ceiling exceeded.*Usage was persisted/,
     );
     const ledger = JSON.parse(await readFile(ledgerPath, "utf8")) as {
       spentCredits: number;
@@ -239,6 +269,116 @@ test("completed over-budget usage is persisted before the stop error", async () 
       outputTokens: 0,
       reasoningOutputTokens: 0,
     });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("bounded runs reject before dispatch when worst-case headroom would cross planned spend", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-headroom-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  let called = false;
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 1_700.001,
+        entries: [
+          {
+            at: "2026-07-15T00:00:00.000Z",
+            model: "gpt-5.6-luna",
+            credits: 1_700.001,
+            inputTokens: 68_000_040,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await assert.rejects(
+      runWithinCodexCreditBudget({
+        config: { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false },
+        model: "gpt-5.6-luna",
+        run: async () => {
+          called = true;
+          return { value: "unexpected", usage };
+        },
+      }),
+      /299\.999 remains.*300\.000 credits of worst-case call headroom/,
+    );
+    assert.equal(called, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("credit receipt binds the private ledger without exposing paths or blocked reasons", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-receipt-"));
+  const ledgerPath = path.join(directory, "private-ledger.json");
+  try {
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 12.425,
+        blockedReason: "private reconciliation detail",
+        entries: [
+          { at: "2026-07-15T00:00:00.000Z", model: "gpt-5.6-luna", runId: "run-a", credits: 3.55, ...usage },
+          { at: "2026-07-15T00:01:00.000Z", model: "gpt-5.6-terra", runId: "run-a", credits: 8.875, ...usage },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const receipt = await buildCodexCreditReceipt(ledgerPath, "run-a");
+    assert.equal(receipt.plannedSpendCeilingCredits, 2_000);
+    assert.equal(receipt.totalSpentCredits, 12.425);
+    assert.equal(receipt.blocked, true);
+    assert.equal(receipt.cumulative.calls, 2);
+    assert.equal(receipt.run?.credits, 12.425);
+    assert.deepEqual(receipt.run?.models.map((model) => model.model), [
+      "gpt-5.6-luna",
+      "gpt-5.6-terra",
+    ]);
+    assert.doesNotMatch(JSON.stringify(receipt), /private-ledger|private reconciliation detail/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("credit receipt rejects token accounting that does not reproduce recorded credits", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-invalid-entry-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  try {
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 3.55,
+        entries: [
+          {
+            at: "2026-07-15T00:00:00.000Z",
+            model: "gpt-5.6-luna",
+            credits: 3.55,
+            inputTokens: 1,
+            cachedInputTokens: 2,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await assert.rejects(buildCodexCreditReceipt(ledgerPath), /ledger schema is invalid/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

@@ -15,7 +15,18 @@ interface VerifyPublicMatrixEvidenceOptions {
   manifestPath?: string;
   requireManifest?: boolean;
   requireDiagnostics?: boolean;
+  requireCodexCreditReceipt?: boolean;
+  allowBoundedTrial?: boolean;
   requireInternalProvider?: boolean;
+  expectedModel?: string;
+  expectedSystemModel?: string;
+  expectedJudgeModel?: string;
+  expectedInternalModel?: string;
+  expectedReasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  expectedSystemReasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  expectedJudgeReasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  expectedInternalReasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  expectedServiceTier?: string;
   expectedGitSha?: string;
   skipGitSha?: boolean;
 }
@@ -239,6 +250,7 @@ function manifestArtifactHashIdentity(manifest: Record<string, unknown>): unknow
     configFiles: manifest.configFiles,
     datasets: manifest.datasets,
     results: manifest.results,
+    ...(manifest.codexCredit ? { codexCredit: manifest.codexCredit } : {}),
   };
 }
 
@@ -253,12 +265,47 @@ function withManifestArtifactHash(
   };
 }
 
+function validCodexCreditReceipt(): Record<string, unknown> {
+  const usage = {
+    inputTokens: 100_000,
+    cachedInputTokens: 20_000,
+    outputTokens: 10_000,
+    reasoningOutputTokens: 8_000,
+  };
+  const models = [
+    { model: "gpt-5.6-luna", calls: 1, credits: 3.55, ...usage },
+    { model: "gpt-5.6-terra", calls: 1, credits: 8.875, ...usage },
+  ];
+  const scope = {
+    calls: 2,
+    credits: 12.425,
+    inputTokens: 200_000,
+    cachedInputTokens: 40_000,
+    outputTokens: 20_000,
+    reasoningOutputTokens: 16_000,
+    models,
+  };
+  return {
+    schemaVersion: 1,
+    ledgerSha256: "c".repeat(64),
+    budgetCredits: 2_473,
+    reserveCredits: 473,
+    plannedSpendCeilingCredits: 2_000,
+    totalSpentCredits: 12.425,
+    totalRemainingCredits: 2_460.575,
+    blocked: false,
+    cumulative: scope,
+    run: { id: "test-public-matrix-run", ...scope },
+  };
+}
+
 async function writeManifest(
   resultsDir: string,
   benchmarks: readonly string[],
   gitSha = "abc123",
   limit?: number,
   runId = "test-public-matrix-run",
+  codexCredit?: Record<string, unknown>,
 ): Promise<void> {
   const manifest = {
     schemaVersion: 1,
@@ -287,6 +334,7 @@ async function writeManifest(
     results: await Promise.all(
       benchmarks.map((benchmark) => manifestResultEntry(resultsDir, benchmark, gitSha)),
     ),
+    ...(codexCredit ? { codexCredit } : {}),
   };
   await writeJson(path.join(resultsDir, "MANIFEST.json"), withManifestArtifactHash(manifest));
 }
@@ -296,7 +344,7 @@ async function writeDiagnostic(
   overrides: Record<string, unknown> = {},
 ): Promise<void> {
   const fileName = typeof overrides.runId === "string"
-    ? `codex-cli-${overrides.runId}.json`
+    ? `codex-cli-${overrides.runId}-${String(overrides.model ?? "default")}.json`
     : "codex-cli.json";
   await writeJson(path.join(diagnosticsDir, fileName), {
     runId: "test-public-matrix-run",
@@ -362,6 +410,200 @@ test("verifies a complete Codex CLI public matrix evidence subset", async (t) =>
     skipGitSha: true,
   });
   assert.equal(skipGitReport.ok, true, JSON.stringify(skipGitReport.issues, null, 2));
+});
+
+test("accepts a manifest whose artifact hash binds a Codex credit receipt", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-public-matrix-credit-"));
+  t.after(() => rm(tmpDir, { recursive: true, force: true }));
+
+  const resultsDir = path.join(tmpDir, "results");
+  const diagnosticsDir = path.join(resultsDir, "codex-cli-diagnostics");
+  const benchmark = "longmemeval";
+  const result = benchmarkResult(benchmark);
+  result.config.systemProvider = {
+    ...codexProvider(),
+    model: "gpt-5.6-luna",
+    reasoningEffort: "medium",
+  };
+  result.config.judgeProvider = {
+    ...codexProvider(),
+    model: "gpt-5.6-terra",
+    reasoningEffort: "high",
+  };
+  result.config.internalProvider = {
+    ...codexProvider(),
+    model: "gpt-5.6-luna",
+    reasoningEffort: "medium",
+  };
+  result.config.benchmarkOptions = { limit: 1 };
+  await writeResult(resultsDir, result);
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+    validCodexCreditReceipt(),
+  );
+  await writeDiagnostic(diagnosticsDir, {
+    runId: "test-public-matrix-run",
+    model: "gpt-5.6-luna",
+    reasoningEffort: "medium",
+    serviceTier: "default",
+  });
+  await writeDiagnostic(diagnosticsDir, {
+    runId: "test-public-matrix-run",
+    model: "gpt-5.6-terra",
+    reasoningEffort: "high",
+    serviceTier: "default",
+  });
+
+  const verifyPublicMatrixEvidence = await loadVerifier();
+  const report = await verifyPublicMatrixEvidence({
+    resultsDir,
+    benchmarks: [benchmark],
+    expectedGitSha: "abc123",
+    expectedSystemModel: "gpt-5.6-luna",
+    expectedJudgeModel: "gpt-5.6-terra",
+    expectedInternalModel: "gpt-5.6-luna",
+    expectedSystemReasoningEffort: "medium",
+    expectedJudgeReasoningEffort: "high",
+    expectedInternalReasoningEffort: "medium",
+    expectedServiceTier: "default",
+    requireCodexCreditReceipt: true,
+    allowBoundedTrial: true,
+  });
+  assert.equal(report.ok, true, JSON.stringify(report.issues, null, 2));
+
+  const noManifestBypass = await verifyPublicMatrixEvidence({
+    resultsDir,
+    benchmarks: [benchmark],
+    requireManifest: false,
+    requireDiagnostics: false,
+    allowBoundedTrial: true,
+    skipGitSha: true,
+  });
+  assert.equal(
+    noManifestBypass.issues.some(
+      (issue) => issue.code === "manifest-required-for-credit-evidence",
+    ),
+    true,
+    JSON.stringify(noManifestBypass.issues, null, 2),
+  );
+
+  await rm(
+    path.join(
+      diagnosticsDir,
+      "codex-cli-test-public-matrix-run-gpt-5.6-terra.json",
+    ),
+  );
+  const missingProfile = await verifyPublicMatrixEvidence({
+    resultsDir,
+    benchmarks: [benchmark],
+    expectedGitSha: "abc123",
+    expectedSystemModel: "gpt-5.6-luna",
+    expectedJudgeModel: "gpt-5.6-terra",
+    expectedInternalModel: "gpt-5.6-luna",
+    expectedSystemReasoningEffort: "medium",
+    expectedJudgeReasoningEffort: "high",
+    expectedInternalReasoningEffort: "medium",
+    expectedServiceTier: "default",
+    allowBoundedTrial: true,
+  });
+  assert.equal(
+    missingProfile.issues.some(
+      (issue) => issue.code === "missing-codex-diagnostic-profile",
+    ),
+    true,
+    JSON.stringify(missingProfile.issues, null, 2),
+  );
+
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+  );
+  const missingReceipt = await verifyPublicMatrixEvidence({
+    resultsDir,
+    benchmarks: [benchmark],
+    expectedGitSha: "abc123",
+    requireDiagnostics: false,
+    allowBoundedTrial: true,
+  });
+  assert.equal(
+    missingReceipt.issues.some(
+      (issue) => issue.code === "manifest-missing-codex-credit-receipt",
+    ),
+    true,
+    JSON.stringify(missingReceipt.issues, null, 2),
+  );
+});
+
+test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "remnic-public-matrix-invalid-credit-"));
+  t.after(() => rm(tmpDir, { recursive: true, force: true }));
+  const resultsDir = path.join(tmpDir, "results");
+  const benchmark = "longmemeval";
+  await writeResult(resultsDir, benchmarkResult(benchmark));
+  const variants: Array<Record<string, unknown>> = [
+    { ...validCodexCreditReceipt(), blocked: true },
+    {
+      ...validCodexCreditReceipt(),
+      totalSpentCredits: 2_001,
+      totalRemainingCredits: 472,
+    },
+    { ...validCodexCreditReceipt(), ledgerSha256: "not-a-sha" },
+    {
+      ...validCodexCreditReceipt(),
+      budgetCredits: 2_300,
+      reserveCredits: 300,
+      totalRemainingCredits: 2_287.575,
+    },
+    {
+      ...validCodexCreditReceipt(),
+      run: {
+        ...(validCodexCreditReceipt().run as Record<string, unknown>),
+        id: "different-run",
+      },
+    },
+    {
+      ...validCodexCreditReceipt(),
+      run: {
+        id: "test-public-matrix-run",
+        calls: 0,
+        credits: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningOutputTokens: 0,
+        models: [],
+      },
+    },
+  ];
+  const verifyPublicMatrixEvidence = await loadVerifier();
+  for (const receipt of variants) {
+    await writeManifest(
+      resultsDir,
+      [benchmark],
+      "abc123",
+      undefined,
+      "test-public-matrix-run",
+      receipt,
+    );
+    const report = await verifyPublicMatrixEvidence({
+      resultsDir,
+      benchmarks: [benchmark],
+      expectedGitSha: "abc123",
+      requireDiagnostics: false,
+    });
+    assert.equal(
+      report.issues.some((issue) => issue.code === "manifest-invalid-codex-credit-receipt"),
+      true,
+      JSON.stringify(report.issues, null, 2),
+    );
+  }
 });
 
 test("selects the expected runtime profile from multi-profile manifests", async (t) => {

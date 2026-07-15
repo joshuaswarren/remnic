@@ -2,8 +2,8 @@ const BENCHMARK_RUN_ID_ENV = "REMNIC_BENCH_RUN_ID";
 
 let generatedBenchmarkRunId: string | undefined;
 
-export function resolveBenchmarkRunId(): string {
-  const explicit = process.env[BENCHMARK_RUN_ID_ENV]?.trim();
+export function resolveBenchmarkRunId(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env[BENCHMARK_RUN_ID_ENV]?.trim();
   if (explicit) {
     return explicit;
   }

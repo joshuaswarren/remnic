@@ -757,6 +757,114 @@ test("writeBenchmarkReproManifest writes MANIFEST.json beside results", async ()
   assert.equal(manifest.results[0]?.benchmark, "longmemeval");
 });
 
+test("manifest binds sanitized Codex credit totals and public env-key provenance", async () => {
+  const root = await createTempRoot("remnic-repro-codex-credit-");
+  const resultsDir = path.join(root, "results");
+  const ledgerPath = path.join(root, "private-credit-ledger.json");
+  await mkdir(resultsDir, { recursive: true });
+  const resultPath = path.join(resultsDir, "longmemeval.json");
+  await writeFile(resultPath, `${JSON.stringify(buildResult(), null, 2)}\n`, "utf8");
+  await writeFile(
+    ledgerPath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      budgetCredits: 2_473,
+      reserveCredits: 473,
+      spentCredits: 3.55,
+      entries: [
+        {
+          at: "2026-07-15T00:00:00.000Z",
+          model: "gpt-5.6-luna",
+          runId: "frontier-smoke",
+          credits: 3.55,
+          inputTokens: 100_000,
+          cachedInputTokens: 20_000,
+          outputTokens: 10_000,
+          reasoningOutputTokens: 8_000,
+        },
+      ],
+    })}\n`,
+    { mode: 0o600 },
+  );
+
+  const manifest = await buildBenchmarkReproManifest(resultsDir, {
+    resultPaths: [resultPath],
+    runId: "frontier-smoke",
+    command: {
+      cwd: root,
+      argv: ["bench", "run", "longmemeval"],
+      env: {
+        REMNIC_BENCH_CODEX_CREDIT_BUDGET: "2473",
+        REMNIC_BENCH_CODEX_CREDIT_RESERVE: "473",
+        REMNIC_BENCH_CODEX_CREDIT_LEDGER: ledgerPath,
+        REMNIC_BENCH_RUN_ID: "frontier-smoke",
+      },
+      envKeys: [],
+    },
+  });
+
+  assert.equal(manifest.codexCredit?.plannedSpendCeilingCredits, 2_000);
+  assert.equal(manifest.codexCredit?.run?.id, "frontier-smoke");
+  assert.equal(manifest.codexCredit?.run?.credits, 3.55);
+  assert.deepEqual(manifest.command.envKeys, [
+    "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+    "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
+    "REMNIC_BENCH_CODEX_CREDIT_RESERVE",
+    "REMNIC_BENCH_RUN_ID",
+  ]);
+  assert.doesNotMatch(JSON.stringify(manifest), /private-credit-ledger\.json/);
+
+  const firstArtifactHash = manifest.artifactHash;
+  const ledger = JSON.parse(await readFile(ledgerPath, "utf8")) as {
+    spentCredits: number;
+    entries: Array<Record<string, unknown>>;
+  };
+  ledger.spentCredits = 7.1;
+  ledger.entries.push({ ...ledger.entries[0], at: "2026-07-15T00:01:00.000Z", credits: 3.55 });
+  await writeFile(ledgerPath, `${JSON.stringify(ledger)}\n`, { mode: 0o600 });
+  const changed = await buildBenchmarkReproManifest(resultsDir, {
+    resultPaths: [resultPath],
+    runId: "frontier-smoke",
+    command: {
+      cwd: root,
+      argv: ["bench", "run", "longmemeval"],
+      env: {
+        REMNIC_BENCH_CODEX_CREDIT_BUDGET: "2473",
+        REMNIC_BENCH_CODEX_CREDIT_RESERVE: "473",
+        REMNIC_BENCH_CODEX_CREDIT_LEDGER: ledgerPath,
+        REMNIC_BENCH_RUN_ID: "frontier-smoke",
+      },
+    },
+  });
+  assert.notEqual(changed.artifactHash, firstArtifactHash);
+});
+
+test("budget-configured zero-call runs still produce a manifest before a ledger exists", async () => {
+  const root = await createTempRoot("remnic-repro-codex-zero-call-");
+  const resultsDir = path.join(root, "results");
+  await mkdir(resultsDir, { recursive: true });
+  const resultPath = path.join(resultsDir, "longmemeval.json");
+  await writeFile(resultPath, `${JSON.stringify(buildResult(), null, 2)}\n`, "utf8");
+
+  const manifest = await buildBenchmarkReproManifest(resultsDir, {
+    resultPaths: [resultPath],
+    runId: "zero-call-run",
+    command: {
+      cwd: root,
+      argv: ["bench", "run", "longmemeval", "--limit", "0"],
+      env: {
+        REMNIC_BENCH_CODEX_CREDIT_BUDGET: "2473",
+        REMNIC_BENCH_CODEX_CREDIT_RESERVE: "473",
+        REMNIC_BENCH_CODEX_CREDIT_LEDGER: path.join(root, "missing-ledger.json"),
+      },
+    },
+  });
+
+  assert.equal(manifest.run.id, "zero-call-run");
+  assert.equal(manifest.codexCredit, undefined);
+  assert.equal(manifest.command.envKeys.includes("REMNIC_BENCH_CODEX_CREDIT_LEDGER"), true);
+});
+
 test("buildBenchmarkReproManifest redacts terminal URL query secrets inside JSON argv", async () => {
   const root = await createTempRoot("remnic-repro-manifest-json-url-redaction-");
   const resultsDir = path.join(root, "results");
