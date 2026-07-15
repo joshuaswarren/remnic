@@ -145,8 +145,24 @@ export interface SymbolIR {
 export interface ImportIR {
   /** Raw module specifier as written in source. */
   readonly module: string;
+  /** Exported names as declared by the source module (pre-alias). */
   readonly importedNames: readonly string[];
+  /**
+   * Alias-aware bindings (issue #1894 review): `local` is the identifier
+   * usable at call sites in THIS file; `exported` is the name in the
+   * source module. For non-aliased imports the two are equal. Optional so
+   * pre-existing IR consumers and JSON fixtures stay valid; when absent,
+   * consumers treat every `importedNames` entry as `local === exported`.
+   */
+  readonly bindings?: readonly ImportBindingIR[];
   readonly span: { readonly startByte: number; readonly endByte: number };
+}
+
+export interface ImportBindingIR {
+  /** Name exported by the source module. */
+  readonly exported: string;
+  /** Local identifier bound in the importing file. */
+  readonly local: string;
 }
 
 export interface ExportIR {
@@ -156,6 +172,13 @@ export interface ExportIR {
 
 export interface CallSiteIR {
   readonly calleeNameCandidates: readonly string[];
+  /**
+   * True when the callee is a member/property access (`obj.save()`,
+   * `recv.field()`), issue #1894 review: bare-name heuristics must never
+   * bind these — method dispatch is Phase B (LSP) territory. Optional so
+   * pre-existing IR stays valid; absent = false.
+   */
+  readonly memberAccess?: boolean;
   readonly span: { readonly startByte: number; readonly endByte: number };
 }
 

@@ -56,14 +56,24 @@ const JS_FAMILY_DEFINITIONS = `
 const JS_IMPORTS = `
 (import_statement
   source: (string (string_fragment) @import.module)) @__import.stmt
+; Default and namespace imports bind LOCAL aliases whose exported symbol
+; is unknowable to Phase A (issue #1894 round 12): they appear in
+; importedNames (informational) but never in bindings (call-bindable).
 (import_statement
-  (import_clause (identifier) @import.name)
+  (import_clause (identifier) @import.unboundName)
   source: (string (string_fragment) @import.module)) @__import.stmt
 (import_statement
-  (import_clause (namespace_import (identifier) @import.name))
+  (import_clause (namespace_import (identifier) @import.unboundName))
   source: (string (string_fragment) @import.module)) @__import.stmt
 (import_statement
   (import_clause (named_imports (import_specifier name: (identifier) @import.name)))
+  source: (string (string_fragment) @import.module)) @__import.stmt
+; Aliased named import (issue #1894 review): import { foo as bar } — the
+; local binding is the alias; the exported name stays the binding target.
+(import_statement
+  (import_clause (named_imports (import_specifier
+    name: (identifier) @import.aliasExported
+    alias: (identifier) @import.aliasLocal)))
   source: (string (string_fragment) @import.module)) @__import.stmt
 
 ; CommonJS require("...") — capture the module specifier so dependency
@@ -130,7 +140,10 @@ const JS_EXPORTS = `
 
 const JS_CALLS = `
 (call_expression function: (identifier) @call.callee)
-(call_expression function: (member_expression property: (property_identifier) @call.callee))
+; Member calls are captured separately (issue #1894 review): obj.save()'s
+; \`save\` must never bind a bare visible symbol — method dispatch is
+; Phase B (LSP) territory. The emit layer marks these memberAccess: true.
+(call_expression function: (member_expression property: (property_identifier) @call.member))
 `.trim();
 
 const JS_ROUTES = `
@@ -187,6 +200,17 @@ const PYTHON_EXTRACTOR: LanguageExtractor = {
   importsQuery: `
 (import_statement (dotted_name) @import.module) @__import.stmt
 (import_from_statement module_name: (dotted_name) @import.module) @__import.stmt
+; Imported names (issue #1894 review round 7): without these captures,
+; extractImports emits importedNames: [] and the heuristic resolver's
+; import bindings never fire for real Python parses.
+(import_from_statement
+  module_name: (dotted_name) @import.module
+  name: (dotted_name) @import.name) @__import.stmt
+(import_from_statement
+  module_name: (dotted_name) @import.module
+  name: (aliased_import
+    name: (dotted_name) @import.aliasExported
+    alias: (identifier) @import.aliasLocal)) @__import.stmt
 ; Python relative imports: from .models import User / from ..parent import X
 ; tree-sitter-python wraps the module inside a relative_import node, so the
 ; module_name field is NOT set. Capture the relative_import node itself so
@@ -194,11 +218,19 @@ const PYTHON_EXTRACTOR: LanguageExtractor = {
 ; relative levels must not collapse to the same module name
 ; (chatgpt-codex-connector #1688 P2: 'Preserve dots in Python relative imports').
 (import_from_statement (relative_import) @import.module) @__import.stmt
+(import_from_statement
+  (relative_import) @import.module
+  name: (dotted_name) @import.name) @__import.stmt
+(import_from_statement
+  (relative_import) @import.module
+  name: (aliased_import
+    name: (dotted_name) @import.aliasExported
+    alias: (identifier) @import.aliasLocal)) @__import.stmt
 `.trim(),
   exportsQuery: ``,
   callSitesQuery: `
 (call function: (identifier) @call.callee)
-(call function: (attribute attribute: (identifier) @call.callee))
+(call function: (attribute attribute: (identifier) @call.member))
 `.trim(),
   routesQuery: `
 (decorated_definition
@@ -235,7 +267,7 @@ const GO_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (call_expression function: (identifier) @call.callee)
-(call_expression function: (selector_expression field: (field_identifier) @call.callee))
+(call_expression function: (selector_expression field: (field_identifier) @call.member))
 `.trim(),
   routesQuery: ``,
 };
@@ -271,7 +303,7 @@ const RUST_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (call_expression function: (identifier) @call.callee)
-(call_expression function: (field_expression field: (field_identifier) @call.callee))
+(call_expression function: (field_expression field: (field_identifier) @call.member))
 (call_expression function: (scoped_identifier) @call.callee)
 `.trim(),
   routesQuery: ``,
@@ -291,7 +323,8 @@ const JAVA_EXTRACTOR: LanguageExtractor = {
 `.trim(),
   exportsQuery: ``,
   callSitesQuery: `
-(method_invocation name: (identifier) @call.callee)
+(method_invocation !object name: (identifier) @call.callee)
+(method_invocation object: (_) name: (identifier) @call.member)
 `.trim(),
   routesQuery: ``,
 };
@@ -331,7 +364,7 @@ const CPP_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (call_expression function: (identifier) @call.callee)
-(call_expression function: (field_expression field: (field_identifier) @call.callee))
+(call_expression function: (field_expression field: (field_identifier) @call.member))
 `.trim(),
   routesQuery: ``,
 };
@@ -351,7 +384,7 @@ const CSHARP_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (invocation_expression function: (identifier) @call.callee)
-(invocation_expression function: (member_access_expression name: (identifier) @call.callee))
+(invocation_expression function: (member_access_expression name: (identifier) @call.member))
 `.trim(),
   routesQuery: ``,
 };
@@ -371,7 +404,8 @@ const RUBY_EXTRACTOR: LanguageExtractor = {
 `.trim(),
   exportsQuery: ``,
   callSitesQuery: `
-(call method: (identifier) @call.callee)
+(call !receiver method: (identifier) @call.callee)
+(call receiver: (_) method: (identifier) @call.member)
 `.trim(),
   routesQuery: ``,
 };
@@ -390,7 +424,7 @@ const PHP_EXTRACTOR: LanguageExtractor = {
   exportsQuery: ``,
   callSitesQuery: `
 (function_call_expression function: (name) @call.callee)
-(member_call_expression (name) @call.callee)
+(member_call_expression (name) @call.member)
 `.trim(),
   routesQuery: ``,
 };

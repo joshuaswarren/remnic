@@ -185,7 +185,13 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
     // all captures share the same module.
     const groups = new Map<
       string,
-      { module: string; names: Set<string>; startByte: number; endByte: number }
+      {
+        module: string;
+        names: Set<string>;
+        bindings: Map<string, string>; // local -> exported (issue #1894 review)
+        startByte: number;
+        endByte: number;
+      }
     >();
 
     for (const match of matches) {
@@ -193,12 +199,24 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
       let stmtStart = -1;
       let stmtEnd = -1;
       const names: string[] = [];
+      // Default/namespace import locals: informational only, never
+      // call-bindable (issue #1894 round 12).
+      const unboundNames: string[] = [];
+      // local -> exported for aliased named imports (issue #1894 review).
+      let aliasExported = "";
+      let aliasLocal = "";
 
       for (const cap of match.captures) {
         if (cap.name === "import.module") {
           moduleText = cleanModuleSpecifier(cap.node.text);
         } else if (cap.name === "import.name") {
           names.push(cap.node.text);
+        } else if (cap.name === "import.unboundName") {
+          unboundNames.push(cap.node.text);
+        } else if (cap.name === "import.aliasExported") {
+          aliasExported = cap.node.text;
+        } else if (cap.name === "import.aliasLocal") {
+          aliasLocal = cap.node.text;
         } else if (cap.name === "__import.stmt") {
           stmtStart = cap.node.startIndex;
           stmtEnd = cap.node.endIndex;
@@ -217,16 +235,33 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
       }
 
       const key = `${stmtStart}:${moduleText}`;
-      const existing = groups.get(key);
-      if (existing) {
-        for (const n of names) existing.names.add(n);
-      } else {
-        groups.set(key, {
+      let group = groups.get(key);
+      if (!group) {
+        group = {
           module: moduleText,
-          names: new Set(names),
+          names: new Set<string>(),
+          bindings: new Map<string, string>(),
           startByte: stmtStart,
           endByte: stmtEnd,
-        });
+        };
+        groups.set(key, group);
+      }
+      for (const n of names) {
+        group.names.add(n);
+        // Non-aliased: local === exported. May be overwritten below when
+        // the alias pattern also matched this specifier.
+        if (!group.bindings.has(n)) group.bindings.set(n, n);
+      }
+      for (const n of unboundNames) {
+        group.names.add(n);
+      }
+      if (aliasExported && aliasLocal) {
+        group.names.add(aliasExported);
+        // The plain-name pattern also matched this specifier and recorded
+        // exported->exported; the alias binding replaces it: the LOCAL
+        // identifier is what call sites use.
+        group.bindings.delete(aliasExported);
+        group.bindings.set(aliasLocal, aliasExported);
       }
     }
 
@@ -234,6 +269,9 @@ function extractImports(root: TSNode, language: Language, lang: CodingGraphLangu
       .map((g) => ({
         module: g.module,
         importedNames: Array.from(g.names).sort(),
+        bindings: Array.from(g.bindings.entries())
+          .map(([local, exported]) => ({ exported, local }))
+          .sort((a, b) => a.local.localeCompare(b.local)),
         span: { startByte: g.startByte, endByte: g.endByte },
       }))
       .sort((a, b) => a.span.startByte - b.span.startByte || a.module.localeCompare(b.module));
@@ -316,6 +354,15 @@ function extractCallSites(root: TSNode, language: Language, lang: CodingGraphLan
       if (cap.name === "call.callee") {
         callSites.push({
           calleeNameCandidates: [cap.node.text],
+          span: { startByte: cap.node.startIndex, endByte: cap.node.endIndex },
+        });
+      } else if (cap.name === "call.member") {
+        // Member/property call (issue #1894 review): the bare property
+        // name must never bind a visible symbol — mark it so the
+        // heuristic resolver skips it (LSP owns method dispatch).
+        callSites.push({
+          calleeNameCandidates: [cap.node.text],
+          memberAccess: true,
           span: { startByte: cap.node.startIndex, endByte: cap.node.endIndex },
         });
       }

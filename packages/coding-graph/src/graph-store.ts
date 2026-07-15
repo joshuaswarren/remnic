@@ -134,6 +134,23 @@ export interface EdgeIR {
   readonly srcNodeId?: string;
   /** Optional content-derived destination node id — see {@link EdgeIR.srcNodeId}. */
   readonly dstNodeId?: string;
+  /**
+   * Repo-relative, extension-stripped path the dst must live in (issue
+   * #1894 review): derived from a relative import's module specifier. A
+   * hinted edge resolves ONLY among nodes whose file path matches the
+   * hint (`<hint>`, `<hint>.<ext>`, `<hint>/index.<ext>`, or
+   * `<hint>/__init__.<ext>`) — never via
+   * the global bare-name fallback — so `import { foo } from "./missing"`
+   * can never bind an unrelated same-named symbol elsewhere in the repo.
+   */
+  readonly dstPathHint?: string;
+  /**
+   * Language of the importing file (issue #1894 round 13): constrains the
+   * hinted dst's file extension to that language's module-resolution set
+   * so a polyglot repo cannot cross-bind a JS import to a same-named .py
+   * file.
+   */
+  readonly dstImporterLanguage?: string;
 }
 
 /**
@@ -159,6 +176,16 @@ export interface StoreFileIR {
   readonly symbols: readonly SymbolIR[];
   /** Store-specific edges derived from the IR by the caller. */
   readonly edges?: readonly EdgeIR[];
+  /**
+   * When present, the stale-edge delete in `upsertFileEdges` is scoped to
+   * edges whose provenance is in this list: prior src-owned edges of OTHER
+   * provenances survive un-asserted (issue #1891). The reindex pipeline
+   * asserts `["heuristic"]` because a fresh parse says nothing about
+   * `trace`/`lsp` edges; deleting them on every re-ingest would destroy
+   * state the parse never contradicted (rule 25). Absent = legacy
+   * behavior: every stale src-owned edge is deleted.
+   */
+  readonly assertedEdgeProvenances?: readonly EdgeProvenance[];
   /**
    * Per-file export list (mirrors core FileIR.exports). When present,
    * the write pipeline marks every node in this file whose `name`
@@ -1752,12 +1779,18 @@ export class GraphStore {
       // re-ingest (chatgpt-codex-connector P2).
       const srcId = qualifiedNameToId.get(edge.srcQualifiedName);
       if (!srcId) continue;
-      // DST may be cross-file — use the full-DB fallback.
-      const dstId = resolveNodeId(
-        edge.dstQualifiedName,
-        qualifiedNameToId,
-        this.db,
-      );
+      // DST may be cross-file. A path-hinted edge (relative import,
+      // issue #1894 review) resolves ONLY within its declared target
+      // file — never via the global bare-name fallback; unhinted edges
+      // keep the batch-map + full-DB fallback.
+      const dstId = edge.dstPathHint
+        ? resolveNodeIdWithPathHint(
+            edge.dstQualifiedName,
+            edge.dstPathHint,
+            this.db,
+            edge.dstImporterLanguage,
+          )
+        : resolveNodeId(edge.dstQualifiedName, qualifiedNameToId, this.db);
       if (!dstId) continue;
       const key = `${srcId}\u0000${dstId}\u0000${edge.type}`;
       assertedKeys.add(key);
@@ -1788,12 +1821,24 @@ export class GraphStore {
     );
     const priorByKey = new Map<string, { confidence: number; provenance: string }>();
     const staleSrcDstTypes: Array<{ src: string; dst: string; type: string }> = [];
+    // Provenance scoping (issue #1891): when the IR declares which
+    // provenances it asserts, stale edges of OTHER provenances are not
+    // this ingest's to delete — a fresh parse contradicts only its own
+    // derivation class (rule 25). Absent = legacy delete-all-stale.
+    // An EMPTY scope array is treated as absent (cursor review round 9):
+    // "[]" would otherwise be truthy, protect every prior edge from
+    // deletion AND from updates, and silently disable cleanup — an
+    // assertion that scopes nothing scopes nothing.
+    const scoped =
+      ir.assertedEdgeProvenances && ir.assertedEdgeProvenances.length > 0
+        ? ir.assertedEdgeProvenances
+        : undefined;
     for (const p of priorEdges) {
       const key = `${p.src}\u0000${p.dst}\u0000${p.type}`;
       priorByKey.set(key, { confidence: p.confidence, provenance: p.provenance });
-      if (!assertedKeys.has(key)) {
-        staleSrcDstTypes.push({ src: p.src, dst: p.dst, type: p.type });
-      }
+      if (assertedKeys.has(key)) continue;
+      if (scoped && !(scoped as readonly string[]).includes(p.provenance)) continue;
+      staleSrcDstTypes.push({ src: p.src, dst: p.dst, type: p.type });
     }
 
     // Delete only the stale src-owned edges (prior-but-not-asserted).
@@ -1850,6 +1895,27 @@ export class GraphStore {
         // `changes` stays 0 and the idempotency contract holds. The
         // row still exists because the delete above only removed
         // stale keys.
+        continue;
+      }
+      // Two update-path protections under provenance scoping (issue
+      // #1891 + #1894 review rounds):
+      //  1. a prior row whose provenance is OUTSIDE the asserted scope
+      //     is not this assertion's to modify (defense in depth — in
+      //     practice cross-provenance key collisions are heuristic/lsp
+      //     only, handled by 2);
+      //  2. an lsp row is a strictly stronger derivation of the SAME
+      //     source-derived edge: re-asserting the heuristic key keeps
+      //     the row alive (it is not stale) but must never downgrade it.
+      //     Retirement of lsp rows happens through the stale-delete when
+      //     the call disappears from the parse — lsp IS in the reindex
+      //     assertion scope precisely so vanished calls retire their
+      //     upgraded rows too.
+      if (
+        prior &&
+        scoped &&
+        (!(scoped as readonly string[]).includes(prior.provenance) ||
+          (prior.provenance === "lsp" && edge.provenance === "heuristic"))
+      ) {
         continue;
       }
       const r = insertEdge.run(srcId, dstId, edge.type, edge.confidence, edge.provenance);
@@ -3287,6 +3353,97 @@ function resolveNodeId(
     return undefined;
   }
   return rows[0]?.id;
+}
+
+/**
+ * Resolve a dst node constrained to a path hint (issue #1894 review): the
+ * node's file path must be the hint verbatim, `<hint>.<ext>`,
+ * `<hint>/index.<ext>`, or `<hint>/__init__.<ext>` (Python packages) —
+ * where `<ext>` is a SINGLE dot-free extension segment, so `main.test.ts`
+ * and `main.d.ts` never satisfy a `main` hint (they are not what a module
+ * resolver would load for `./main`). Candidate rows are fetched by
+ * qualified name and the path shape is checked in JS: no LIKE/GLOB, so
+ * hint characters are never pattern metacharacters. Zero or multiple
+ * matches return `undefined` — the edge is dropped rather than guessed
+ * (same conservative policy as {@link resolveNodeId}).
+ */
+/**
+ * Language families and the file extensions a module resolver in that
+ * family accepts (issue #1894 round 13). A polyglot repo cannot let a
+ * JS import bind a same-named .py file: constrain by importer language.
+ */
+const LANG_FAMILY_EXTENSIONS: Record<string, ReadonlySet<string>> = {
+  js: new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]),
+  python: new Set(["py", "pyi"]),
+  ruby: new Set(["rb"]),
+  go: new Set(["go"]),
+  rust: new Set(["rs"]),
+  php: new Set(["php"]),
+  java: new Set(["java"]),
+  csharp: new Set(["cs"]),
+  cpp: new Set(["cc", "cpp", "cxx", "c", "hh", "hpp", "hxx", "h"]),
+  kotlin: new Set(["kt"]),
+  swift: new Set(["swift"]),
+  bash: new Set(["sh", "bash"]),
+};
+
+const IMPORTER_LANG_FAMILY: Record<string, keyof typeof LANG_FAMILY_EXTENSIONS> = {
+  typescript: "js",
+  tsx: "js",
+  javascript: "js",
+  python: "python",
+  ruby: "ruby",
+  go: "go",
+  rust: "rust",
+  php: "php",
+  java: "java",
+  csharp: "csharp",
+  c: "cpp",
+  cpp: "cpp",
+  kotlin: "kotlin",
+  swift: "swift",
+  bash: "bash",
+};
+
+function resolveNodeIdWithPathHint(
+  qualifiedName: string,
+  pathHint: string,
+  db: BetterSqlite3Database,
+  importerLanguage?: string,
+): string | undefined {
+  const family = importerLanguage ? IMPORTER_LANG_FAMILY[importerLanguage] : undefined;
+  const allowedExts = family ? LANG_FAMILY_EXTENSIONS[family] : undefined;
+  const rows = expectRows<{ id: string; path: string }>(
+    db
+      .prepare(
+        `SELECT n.id, f.path FROM nodes n JOIN files f ON n.file_id = f.id
+          WHERE n.qualified_name = ?
+          ORDER BY f.path, n.id`,
+      )
+      .all(qualifiedName),
+    ["id", "path"],
+  );
+  const matches = rows.filter((row) => {
+    if (row.path === pathHint) {
+      // Language filter still applies on exact match: a TS import whose
+      // normalized hint happens to equal a bare directory name must not
+      // bind a same-named .py file (codex review round 15).
+      if (allowedExts) {
+        return false; // bare hint with no extension cannot match a family
+      }
+      return true;
+    }
+    if (!row.path.startsWith(pathHint)) return false;
+    const rest = row.path.slice(pathHint.length);
+    const m = /^(?:\.([^./]+)|\/(?:index|__init__)\.([^./]+))$/.exec(rest);
+    if (!m) return false;
+    const ext = m[1] ?? m[2];
+    // When the importer's language family is known, only that family's
+    // extensions may satisfy the hint; otherwise any single extension.
+    return !allowedExts || allowedExts.has(ext);
+  });
+  if (matches.length !== 1) return undefined;
+  return matches[0]?.id;
 }
 
 /**

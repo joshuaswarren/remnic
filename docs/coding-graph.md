@@ -259,9 +259,15 @@ mines `FILE_CHANGES_WITH`-style file-to-file co-change edges from bounded
 
 ## Type resolution (phased)
 
-- **Phase A — heuristic** (shipped with the store): resolution from the syntax
-  graph — import/export matching, scope, qualified names, arity. Edges carry
-  `provenance: "heuristic"`.
+- **Phase A — heuristic**
+  ([`heuristic-resolution.ts`](../packages/coding-graph/src/heuristic-resolution.ts),
+  wired into the reindex ingest path, issue #1891): CALLS edges are derived
+  from the fresh parse — src is the innermost symbol enclosing the call
+  site, dst is a unique same-file name or an import-bound name; ambiguous
+  and evidence-free bare names are skipped conservatively. Edges carry
+  `provenance: "heuristic"`. The stale-edge delete is provenance-scoped
+  (`StoreFileIR.assertedEdgeProvenances`), so re-derivation never removes
+  `trace`/`lsp` edges.
 - **Phase B — LSP client layer** ([`lsp/`](../packages/coding-graph/src/lsp/)):
   a minimal JSON-RPC-over-stdio client driving **already-installed** language
   servers (typescript-language-server, pyright, gopls, rust-analyzer, …) as
