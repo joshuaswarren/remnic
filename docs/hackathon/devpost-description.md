@@ -1,17 +1,17 @@
 # Devpost submission text (OpenAI Build Week 2026)
 
-Status: DRAFT. This copy describes the finished submission and the
-deliverables that will land through #1869 to #1873. It is NOT paste-ready
-until the final verification pass (#1873) confirms every claim against
-shipped code and strikes anything that did not land. HACKATHON.md
-tracks that line. Gated with voice-lint (article mode) before each
-revision ships.
+Status: DRAFT. Do not paste this copy into Devpost yet. First, check every
+claim against shipped code. Add the Codex `/feedback` session ID and video URL.
+Any paid GPT-5.6 result named here also needs a committed artifact and manifest.
+`HACKATHON.md` tracks those gates. This file must pass voice-lint in article
+mode before each revision ships.
 
-Project name: MemCorrect: benchmark any AI agent's memory.
+Project name: MemCorrect: benchmark an AI agent's memory.
 
 Tagline: Agent memory without evals is vibes with a database. MemCorrect
-scores any agent memory backend with one command. It checks recall quality,
-correction handling, and stale-memory harm. GPT-5.6 does the grading.
+scores Remnic or another conforming memory backend with one command. It checks
+recall quality, correction handling, and stale-memory harm. GPT-5.6 can grade
+answers when selected.
 
 Built with: typescript, node.js, gpt-5.6, codex, openai-responses-api, mcp,
 sqlite.
@@ -54,24 +54,28 @@ a scored claim anyone can re-run.
 ## How we built it
 
 The new work for Build Week was built in Codex sessions. GPT-5.6 was integrated
-as the opt-in judge through the OpenAI Responses API. The session ID is in the
-form. The line between prior work and hackathon work is drawn commit-by-commit in
+as the opt-in judge through the OpenAI Responses API. The Codex `/feedback`
+session ID remains operator input and must be added to the form before
+submission. The line between prior work and hackathon work is drawn commit by
+commit in
 [HACKATHON.md](https://github.com/joshuaswarren/remnic/blob/main/HACKATHON.md).
 
 Codex studied our adapter seam first. Then it built the generic MCP memory
 adapter, its tests, and the checks that decide if a backend can be scored
-at all. It wired GPT-5.6 in as the judge and iterated on the rubric with
-us. Codex then polished the HTML export into one scored report card you can
+at all. It wired GPT-5.6 in as the judge and implemented the versioned rubric.
+Codex then polished the HTML export into one scored report card you can
 hand to your team.
 
 GPT-5.6 is the opt-in judge inside the tool through the OpenAI Responses API.
 That exact API model id is `gpt-5.6`. Our separate ChatGPT-backed Codex CLI
-measurement plan uses `gpt-5.6-luna` for bulk responder and internal work and
-`gpt-5.6-terra` for quality-critical judging. Each completion is a fresh,
-isolated `codex exec`; no fast mode is used. The 2,473-credit grant is used
-exclusively by that run and keeps a 473-credit reserve, so the bounded harness
-can spend at most 2,000 credits. Bounded mode verifies ChatGPT authentication. Actual
-input, cached-input, and output usage is reconciled after every completed turn.
+measurement protocol assigns `gpt-5.6-luna` to bulk responder and internal
+work, and `gpt-5.6-terra` to quality-critical judging. Each completion is a
+fresh, isolated `codex exec`; the protocol forbids fast mode. During a
+benchmark window, it requires exclusive account use and keeps 473 of the
+2,473-credit grant in reserve, so planned spend cannot exceed 2,000 credits.
+Bounded mode verifies ChatGPT authentication. The harness records actual
+input, cached-input, and output usage after every completed turn and blocks
+further dispatch if exact usage is missing.
 `gpt-5.6-sol` is opt-in only and outside that bounded plan. We do not claim a
 published GPT-5.6 model result until a committed artifact and manifest exist,
 and a bounded artifact is labeled as partial coverage.
@@ -87,9 +91,9 @@ contracts in the code.
 
 ## Accomplishments we're proud of
 
-A memory benchmark you can run in about a minute after installation. One
-command exercises MCP correction uptake and stale-memory harm together. And
-the discipline behind it: no number ships in our docs without a committed
+A keyless quick benchmark you can run after installation. One command
+exercises MCP correction uptake and stale-memory harm together. And the
+discipline behind it: every public submission number requires a committed
 artifact behind it.
 
 ## What we learned
@@ -109,16 +113,19 @@ honestly. This is a protocol claim, not a "first to think of it" claim.
 
 ## Try it (judges)
 
-After package installation, the smoke path needs no dataset, API key, or network:
+Version 9.6.24 of both packages is published. After installation, the smoke
+path needs no dataset, API key, or network:
 
 ```bash
-npm install -g @remnic/cli @remnic/bench
+npm install -g @remnic/cli@9.6.24 @remnic/bench@9.6.24
 remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
 remnic bench runs list
 remnic bench export <run-id> --format html --output ./memcorrect-report.html
 ```
 
-The quick run uses a packaged stdio MCP server. After installation it needs no
+The quick run uses a packaged stdio MCP server. The corresponding 9.6.24
+packed-tarball path passed in a clean Linux x86_64 global prefix with Node
+22.23.1 and produced a 15,144-byte offline report. The run itself needs no
 dataset, key, or network, and it exercises the real adapter. To add GPT-5.6
 judging, export `OPENAI_API_KEY` and append `--judge-provider openai
 --judge-model gpt-5.6`. Reproduction paths live in
