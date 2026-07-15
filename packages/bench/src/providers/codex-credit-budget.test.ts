@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { parseReconcileCodexCreditLedgerArgs } from "../../../../scripts/bench/reconcile-codex-credit-ledger.ts";
 import {
   CodexCreditAccountingError,
   CodexCreditDispatchError,
@@ -11,6 +14,7 @@ import {
   buildCodexCreditReceipt,
   calculateCodexCredits,
   parseCodexJsonlUsage,
+  reconcileCodexCreditLedger,
   resolveCodexCreditBudgetConfig,
   runWithinCodexCreditBudget,
 } from "./codex-credit-budget.ts";
@@ -384,6 +388,57 @@ test("credit receipt rejects token accounting that does not reproduce recorded c
   }
 });
 
+test("credit receipt rejects malformed reconciliation accounting", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-invalid-reconciliation-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  try {
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 1,
+        entries: [],
+        reconciliations: [
+          {
+            at: "2026-07-15T00:00:00.000Z",
+            basis: "operator-observed-original-budget-balance",
+            attribution: "benchmark-run-exact",
+            priorLedgerSha256: "a".repeat(64),
+            originalBudgetCredits: 2_473,
+            priorRecordedSpentCredits: 0,
+            observedRemainingCredits: 2_472,
+            credits: 1,
+            confirmations: {
+              observedBalanceBelongsToOriginalBudget: true,
+              noCreditsAddedOrRefunded: true,
+              accountWideUnattributedChargeAccepted: true,
+            },
+            affectedBlockedEvent: {
+              runId: "run-a",
+              blockedReason: "unknown usage",
+            },
+          },
+        ],
+      })}\n`,
+      { mode: 0o600 },
+    );
+    await assert.rejects(buildCodexCreditReceipt(ledgerPath), /ledger schema is invalid/);
+    const wrongBudget = JSON.parse(await readFile(ledgerPath, "utf8")) as {
+      reconciliations: Array<Record<string, unknown>>;
+    };
+    const reconciliation = wrongBudget.reconciliations[0];
+    assert.ok(reconciliation);
+    reconciliation.attribution = "account-wide-unattributed";
+    reconciliation.originalBudgetCredits = 2_472;
+    await writeFile(ledgerPath, `${JSON.stringify(wrongBudget)}\n`, { mode: 0o600 });
+    await assert.rejects(buildCodexCreditReceipt(ledgerPath), /ledger schema is invalid/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("unknown charged usage blocks the ledger until manual reconciliation", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-blocked-"));
   const ledgerPath = path.join(directory, "ledger.json");
@@ -413,6 +468,293 @@ test("unknown charged usage blocks the ledger until manual reconciliation", asyn
       /blocked pending manual reconciliation/,
     );
     assert.equal(called, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reconciliation charges all unexplained account activity without per-run attribution", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-reconcile-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  const blockedReason = "missing terminal usage after timeout";
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 3.55,
+        entries: [
+          {
+            at: "2026-07-15T00:00:00.000Z",
+            model: "gpt-5.6-luna",
+            runId: "smoke-run",
+            credits: 3.55,
+            ...usage,
+          },
+        ],
+        blockedReason,
+      }, null, 2)}\n`,
+      { mode: 0o600 },
+    );
+    const before = await readFile(ledgerPath);
+    const priorLedgerSha256 = createHash("sha256").update(before).digest("hex");
+    const receipt = await reconcileCodexCreditLedger({
+      ledgerPath,
+      priorLedgerSha256,
+      observedRemainingCredits: 2_468,
+      originalBudgetBalanceConfirmed: true,
+      noCreditsAddedOrRefundedConfirmed: true,
+      accountWideUnattributedChargeAccepted: true,
+      affectedRunId: "smoke-run",
+    });
+
+    assert.equal(receipt.priorLedgerSha256, priorLedgerSha256);
+    assert.equal(receipt.attribution, "account-wide-unattributed");
+    assert.equal(receipt.affectedRunId, "smoke-run");
+    assert.equal(receipt.originalBudgetCredits, 2_473);
+    assert.equal(receipt.priorRecordedSpentCredits, 3.55);
+    assert.ok(Math.abs(receipt.unattributedCredits - 1.45) <= 1e-9);
+    assert.equal(receipt.totalSpentCredits, 5);
+    assert.equal(receipt.totalRemainingCredits, 2_468);
+    assert.match(receipt.affectedBlockedEventSha256, /^[a-f0-9]{64}$/);
+    assert.doesNotMatch(JSON.stringify(receipt), new RegExp(blockedReason));
+    const ledger = JSON.parse(await readFile(ledgerPath, "utf8")) as {
+      blockedReason?: string;
+      spentCredits: number;
+      reconciliations: Array<Record<string, unknown>>;
+    };
+    assert.equal(ledger.blockedReason, undefined);
+    assert.equal(ledger.spentCredits, 5);
+    assert.equal(ledger.reconciliations.length, 1);
+    const reconciliation = ledger.reconciliations[0];
+    assert.ok(reconciliation);
+    assert.equal(reconciliation.attribution, "account-wide-unattributed");
+    assert.equal(reconciliation.originalBudgetCredits, 2_473);
+    assert.equal(reconciliation.priorRecordedSpentCredits, 3.55);
+    assert.deepEqual(reconciliation.confirmations, {
+      observedBalanceBelongsToOriginalBudget: true,
+      noCreditsAddedOrRefunded: true,
+      accountWideUnattributedChargeAccepted: true,
+    });
+    assert.deepEqual(reconciliation.affectedBlockedEvent, {
+      runId: "smoke-run",
+      blockedReason,
+    });
+    assert.equal("runId" in reconciliation, false);
+    assert.equal("inputTokens" in reconciliation, false);
+    assert.equal("model" in reconciliation, false);
+    assert.equal((await stat(ledgerPath)).mode & 0o777, 0o600);
+    await assert.rejects(stat(`${ledgerPath}.lock`), { code: "ENOENT" });
+
+    const publicReceipt = await buildCodexCreditReceipt(ledgerPath, "smoke-run");
+    assert.equal(publicReceipt.cumulative.credits, 5);
+    assert.equal(publicReceipt.cumulative.calls, 1);
+    assert.equal(publicReceipt.cumulative.unattributedReconciliationCount, 1);
+    assert.ok(
+      Math.abs(publicReceipt.cumulative.unattributedReconciledCredits - 1.45) <= 1e-9,
+    );
+    assert.equal(publicReceipt.run?.credits, 3.55);
+    assert.equal(publicReceipt.run?.unattributedReconciliationCount, 0);
+    assert.equal(publicReceipt.run?.unattributedReconciledCredits, 0);
+    assert.doesNotMatch(JSON.stringify(publicReceipt), new RegExp(blockedReason));
+
+    assert.equal(
+      await runWithinCodexCreditBudget({
+        config: { budgetCredits: 2_473, reserveCredits: 473, ledgerPath, allowSol: false },
+        model: "gpt-5.6-luna",
+        run: async () => ({ value: "continued", usage }),
+      }),
+      "continued",
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reconciliation fails closed without changing ledger bytes", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-reconcile-reject-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  __codexCreditBudgetTestHooks.resetQueue();
+  try {
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 0,
+        entries: [],
+        blockedReason: "unknown usage",
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const before = await readFile(ledgerPath);
+    const hash = createHash("sha256").update(before).digest("hex");
+    const base = {
+      ledgerPath,
+      priorLedgerSha256: hash,
+      observedRemainingCredits: 2_470,
+      originalBudgetBalanceConfirmed: true as const,
+      noCreditsAddedOrRefundedConfirmed: true as const,
+      accountWideUnattributedChargeAccepted: true as const,
+      affectedRunId: "run-a",
+    };
+    await assert.rejects(
+      reconcileCodexCreditLedger({ ...base, priorLedgerSha256: "0".repeat(64) }),
+      /changed since operator observation/,
+    );
+    await assert.rejects(
+      reconcileCodexCreditLedger({
+        ...base,
+        originalBudgetBalanceConfirmed: false as unknown as true,
+      }),
+      /original budget/,
+    );
+    await assert.rejects(
+      reconcileCodexCreditLedger({
+        ...base,
+        noCreditsAddedOrRefundedConfirmed: false as unknown as true,
+      }),
+      /no credits were added or refunded/,
+    );
+    await assert.rejects(
+      reconcileCodexCreditLedger({
+        ...base,
+        accountWideUnattributedChargeAccepted: false as unknown as true,
+      }),
+      /account-wide unattributed spend/,
+    );
+    await assert.rejects(
+      reconcileCodexCreditLedger({ ...base, observedRemainingCredits: 2_474 }),
+      /cannot exceed the ledger budget/,
+    );
+    assert.deepEqual(await readFile(ledgerPath), before);
+
+    await writeFile(
+      ledgerPath,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        budgetCredits: 2_473,
+        reserveCredits: 473,
+        spentCredits: 3.55,
+        entries: [
+          {
+            at: "2026-07-15T00:00:00.000Z",
+            model: "gpt-5.6-luna",
+            credits: 3.55,
+            ...usage,
+          },
+        ],
+        blockedReason: "unknown usage",
+      })}\n`,
+      { mode: 0o600 },
+    );
+    const exactBytes = await readFile(ledgerPath);
+    await assert.rejects(
+      reconcileCodexCreditLedger({
+        ...base,
+        priorLedgerSha256: createHash("sha256").update(exactBytes).digest("hex"),
+        observedRemainingCredits: 2_471,
+      }),
+      /implies less spend than the ledger already records/,
+    );
+    assert.deepEqual(await readFile(ledgerPath), exactBytes);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("reconciliation CLI requires original-budget and account-wide charge acknowledgments", () => {
+  const hash = "a".repeat(64);
+  assert.throws(
+    () =>
+      parseReconcileCodexCreditLedgerArgs([
+        "--ledger", "/tmp/ledger.json",
+        "--prior-ledger-sha256", hash,
+        "--observed-remaining-credits", "2468",
+        "--affected-run-id", "smoke-run",
+      ]),
+    /--confirm-original-budget-balance is required/,
+  );
+  assert.throws(
+    () =>
+      parseReconcileCodexCreditLedgerArgs([
+        "--ledger", "/tmp/ledger.json",
+        "--prior-ledger-sha256", hash,
+        "--observed-remaining-credits", "2468",
+        "--affected-run-id", "smoke-run",
+        "--confirm-original-budget-balance",
+      ]),
+    /--confirm-no-credit-additions-or-refunds is required/,
+  );
+  assert.throws(
+    () =>
+      parseReconcileCodexCreditLedgerArgs([
+        "--ledger", "/tmp/ledger.json",
+        "--prior-ledger-sha256", hash,
+        "--observed-remaining-credits", "2468",
+        "--affected-run-id", "smoke-run",
+        "--confirm-original-budget-balance",
+        "--confirm-no-credit-additions-or-refunds",
+      ]),
+    /including activity outside the affected benchmark call/,
+  );
+  assert.deepEqual(
+    parseReconcileCodexCreditLedgerArgs([
+      "--ledger", "/tmp/ledger.json",
+      "--prior-ledger-sha256", hash,
+      "--observed-remaining-credits", "2468",
+      "--affected-run-id", "smoke-run",
+      "--confirm-original-budget-balance",
+      "--confirm-no-credit-additions-or-refunds",
+      "--acknowledge-account-wide-unattributed-charge",
+    ]),
+    {
+      ledgerPath: "/tmp/ledger.json",
+      priorLedgerSha256: hash,
+      observedRemainingCredits: 2_468,
+      affectedRunId: "smoke-run",
+      originalBudgetBalanceConfirmed: true,
+      noCreditsAddedOrRefundedConfirmed: true,
+      accountWideUnattributedChargeAccepted: true,
+    },
+  );
+});
+
+test("reconciliation CLI help documents every guard without touching a ledger", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-reconcile-help-"));
+  const ledgerPath = path.join(directory, "ledger.json");
+  const sentinel = "private ledger sentinel\n";
+  try {
+    await writeFile(ledgerPath, sentinel, { mode: 0o600 });
+    const scriptPath = path.resolve(
+      import.meta.dirname,
+      "../../../../scripts/bench/reconcile-codex-credit-ledger.ts",
+    );
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", scriptPath, "--help", "--ledger", ledgerPath],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    for (const flag of [
+      "--ledger",
+      "--prior-ledger-sha256",
+      "--observed-remaining-credits",
+      "--affected-run-id",
+      "--confirm-original-budget-balance",
+      "--confirm-no-credit-additions-or-refunds",
+      "--acknowledge-account-wide-unattributed-charge",
+    ]) {
+      assert.match(result.stdout, new RegExp(flag));
+    }
+    assert.match(result.stdout, /not attribution of the account-wide delta/);
+    assert.match(result.stdout, /stop every other Codex session/);
+    assert.equal(await readFile(ledgerPath, "utf8"), sentinel);
+    assert.deepEqual((await stat(ledgerPath)).mode & 0o777, 0o600);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

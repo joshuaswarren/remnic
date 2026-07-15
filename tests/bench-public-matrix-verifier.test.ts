@@ -322,6 +322,19 @@ function codexCreditReceiptWithUnexpectedModel(): Record<string, unknown> {
   return receipt;
 }
 
+function codexCreditReceiptWithRunAttributedReconciliation(): Record<string, unknown> {
+  const receipt = validCodexCreditReceipt();
+  for (const key of ["cumulative", "run"] as const) {
+    const scope = receipt[key] as Record<string, unknown>;
+    scope.unattributedReconciliationCount = 1;
+    scope.unattributedReconciledCredits = 1;
+    scope.credits = (scope.credits as number) + 1;
+  }
+  receipt.totalSpentCredits = 13.425;
+  receipt.totalRemainingCredits = 2_459.575;
+  return receipt;
+}
+
 async function writeManifest(
   resultsDir: string,
   benchmarks: readonly string[],
@@ -504,6 +517,37 @@ test("accepts a manifest whose artifact hash binds a Codex credit receipt", asyn
     allowBoundedTrial: true,
   });
   assert.equal(report.ok, true, JSON.stringify(report.issues, null, 2));
+
+  const reconciledReceipt = validCodexCreditReceipt();
+  const cumulativeScope = reconciledReceipt.cumulative as Record<string, unknown>;
+  cumulativeScope.unattributedReconciliationCount = 1;
+  cumulativeScope.unattributedReconciledCredits = 1;
+  cumulativeScope.credits = (cumulativeScope.credits as number) + 1;
+  reconciledReceipt.totalSpentCredits = 13.425;
+  reconciledReceipt.totalRemainingCredits = 2_459.575;
+  await writeManifest(
+    resultsDir,
+    [benchmark],
+    "abc123",
+    1,
+    "test-public-matrix-run",
+    reconciledReceipt,
+  );
+  const reconciledReport = await verifyPublicMatrixEvidence({
+    resultsDir,
+    benchmarks: [benchmark],
+    expectedGitSha: "abc123",
+    expectedSystemModel: "gpt-5.6-luna",
+    expectedJudgeModel: "gpt-5.6-terra",
+    expectedInternalModel: "gpt-5.6-luna",
+    expectedSystemReasoningEffort: "medium",
+    expectedJudgeReasoningEffort: "high",
+    expectedInternalReasoningEffort: "medium",
+    expectedServiceTier: "default",
+    requireCodexCreditReceipt: true,
+    allowBoundedTrial: true,
+  });
+  assert.equal(reconciledReport.ok, true, JSON.stringify(reconciledReport.issues, null, 2));
 
   result.config.internalProvider = undefined;
   await writeResult(resultsDir, result);
@@ -826,6 +870,7 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
       },
     },
     codexCreditReceiptWithUnexpectedModel(),
+    codexCreditReceiptWithRunAttributedReconciliation(),
   ];
   const verifyPublicMatrixEvidence = await loadVerifier();
   for (const receipt of variants) {

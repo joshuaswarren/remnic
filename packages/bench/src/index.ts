@@ -213,6 +213,15 @@ export type {
 export { createAnthropicProvider } from "./providers/anthropic.js";
 export { createClaudeCliProvider } from "./providers/claude-cli.js";
 export { createCodexCliProvider } from "./providers/codex-cli.js";
+export {
+  buildCodexCreditReceipt,
+  reconcileCodexCreditLedger,
+} from "./providers/codex-credit-budget.js";
+export type {
+  CodexCreditReceipt,
+  CodexCreditReceiptScope,
+  CodexCreditReconciliationReceipt,
+} from "./providers/codex-credit-budget.js";
 export { getRemnicVersion } from "./reporter.js";
 export {
   createProvider,

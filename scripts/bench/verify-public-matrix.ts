@@ -57,6 +57,8 @@ interface CodexDiagnosticRecord {
 interface CodexCreditReceiptScope {
   calls?: number;
   credits?: number;
+  unattributedReconciliationCount?: number;
+  unattributedReconciledCredits?: number;
   inputTokens?: number;
   cachedInputTokens?: number;
   outputTokens?: number;
@@ -820,9 +822,15 @@ function isValidCreditScope(scope: CodexCreditReceiptScope | undefined): boolean
     modelNames.add(model.model);
   }
   return (
+    Number.isSafeInteger(scope.unattributedReconciliationCount ?? 0) &&
+    (scope.unattributedReconciliationCount ?? 0) >= 0 &&
+    isFiniteNonNegativeNumber(scope.unattributedReconciledCredits ?? 0) &&
+    ((scope.unattributedReconciliationCount ?? 0) > 0 ||
+      (scope.unattributedReconciledCredits ?? 0) === 0) &&
     scope.models.reduce((sum, model) => sum + (model.calls ?? 0), 0) === scope.calls &&
     nearlyEqual(
-      scope.models.reduce((sum, model) => sum + (model.credits ?? 0), 0),
+      scope.models.reduce((sum, model) => sum + (model.credits ?? 0), 0) +
+        (scope.unattributedReconciledCredits ?? 0),
       scope.credits,
     ) &&
     (["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"] as const)
@@ -883,6 +891,8 @@ function scopeDoesNotExceed(
   return (
     run.calls! <= cumulative.calls! &&
     run.credits! <= cumulative.credits! + 1e-9 &&
+    (run.unattributedReconciliationCount ?? 0) === 0 &&
+    (run.unattributedReconciledCredits ?? 0) === 0 &&
     tokenKeys.every((key) => run[key]! <= cumulative[key]!) &&
     run.models!.every((runModel) => {
       const cumulativeModel = cumulative.models!.find(

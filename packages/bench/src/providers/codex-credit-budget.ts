@@ -23,12 +23,33 @@ interface CodexCreditLedgerEntry extends CodexCliNativeUsage {
   runId?: string;
 }
 
+interface CodexCreditLedgerReconciliation {
+  at: string;
+  basis: "operator-observed-original-budget-balance";
+  attribution: "account-wide-unattributed";
+  priorLedgerSha256: string;
+  originalBudgetCredits: number;
+  priorRecordedSpentCredits: number;
+  observedRemainingCredits: number;
+  credits: number;
+  confirmations: {
+    observedBalanceBelongsToOriginalBudget: true;
+    noCreditsAddedOrRefunded: true;
+    accountWideUnattributedChargeAccepted: true;
+  };
+  affectedBlockedEvent: {
+    runId: string;
+    blockedReason: string;
+  };
+}
+
 interface CodexCreditLedger {
   schemaVersion: 1;
   budgetCredits: number;
   reserveCredits: number;
   spentCredits: number;
   entries: CodexCreditLedgerEntry[];
+  reconciliations?: CodexCreditLedgerReconciliation[];
   blockedReason?: string;
 }
 
@@ -45,6 +66,8 @@ export interface CodexCreditBudgetConfig {
 export interface CodexCreditReceiptScope extends CodexCliNativeUsage {
   calls: number;
   credits: number;
+  unattributedReconciliationCount: number;
+  unattributedReconciledCredits: number;
   models: Array<
     CodexCliNativeUsage & {
       model: string;
@@ -52,6 +75,22 @@ export interface CodexCreditReceiptScope extends CodexCliNativeUsage {
       credits: number;
     }
   >;
+}
+
+export interface CodexCreditReconciliationReceipt {
+  schemaVersion: 1;
+  priorLedgerSha256: string;
+  ledgerSha256: string;
+  at: string;
+  attribution: "account-wide-unattributed";
+  affectedRunId: string;
+  originalBudgetCredits: number;
+  priorRecordedSpentCredits: number;
+  observedRemainingCredits: number;
+  unattributedCredits: number;
+  totalSpentCredits: number;
+  totalRemainingCredits: number;
+  affectedBlockedEventSha256: string;
 }
 
 export interface CodexCreditReceipt {
@@ -97,6 +136,134 @@ export class CodexCreditDispatchError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
     this.name = "CodexCreditDispatchError";
+  }
+}
+
+export async function reconcileCodexCreditLedger(args: {
+  ledgerPath: string;
+  priorLedgerSha256: string;
+  observedRemainingCredits: number;
+  originalBudgetBalanceConfirmed: true;
+  noCreditsAddedOrRefundedConfirmed: true;
+  accountWideUnattributedChargeAccepted: true;
+  affectedRunId: string;
+}): Promise<CodexCreditReconciliationReceipt> {
+  if (args.originalBudgetBalanceConfirmed !== true) {
+    throw new Error(
+      "Codex credit reconciliation requires confirmation that the observed balance belongs to the ledger's original budget",
+    );
+  }
+  if (args.noCreditsAddedOrRefundedConfirmed !== true) {
+    throw new Error(
+      "Codex credit reconciliation requires confirmation that no credits were added or refunded after the original budget was established",
+    );
+  }
+  if (args.accountWideUnattributedChargeAccepted !== true) {
+    throw new Error(
+      "Codex credit reconciliation requires acknowledgment that all unexplained account activity will be charged as account-wide unattributed spend",
+    );
+  }
+  if (!isSha256(args.priorLedgerSha256)) {
+    throw new Error("priorLedgerSha256 must be a lowercase SHA-256 digest");
+  }
+  if (!Number.isFinite(args.observedRemainingCredits) || args.observedRemainingCredits < 0) {
+    throw new Error("observedRemainingCredits must be a finite non-negative number");
+  }
+  const affectedRunId = parseRequiredRunId(args.affectedRunId, "affectedRunId");
+  const ledgerPath = path.resolve(expandHomeRelativePath(args.ledgerPath));
+
+  const previous = completionQueue;
+  let release!: () => void;
+  completionQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+
+  const lockPath = `${ledgerPath}.lock`;
+  let lock: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    await mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+    lock = await acquireLedgerLock(lockPath);
+    const contents = await readFile(ledgerPath);
+    const currentSha256 = sha256(contents);
+    if (currentSha256 !== args.priorLedgerSha256) {
+      throw new Error(
+        `Codex credit ledger changed since operator observation: expected ${args.priorLedgerSha256}, ` +
+          `found ${currentSha256}; obtain a fresh ledger hash and remaining balance`,
+      );
+    }
+    const ledger = parseLedger(JSON.parse(contents.toString("utf8")) as Partial<CodexCreditLedger>);
+    if (!ledger.blockedReason) {
+      throw new Error("Codex credit ledger is not blocked; reconciliation is not permitted");
+    }
+    if (args.observedRemainingCredits > ledger.budgetCredits) {
+      throw new Error("observedRemainingCredits cannot exceed the ledger budget");
+    }
+    const observedSpentCredits = ledger.budgetCredits - args.observedRemainingCredits;
+    const unattributedCredits = observedSpentCredits - ledger.spentCredits;
+    if (!Number.isFinite(unattributedCredits) || unattributedCredits < 0) {
+      throw new Error(
+        "observedRemainingCredits implies less spend than the ledger already records; reconciliation refused",
+      );
+    }
+    const at = new Date().toISOString();
+    const reconciliation: CodexCreditLedgerReconciliation = {
+      at,
+      basis: "operator-observed-original-budget-balance",
+      attribution: "account-wide-unattributed",
+      priorLedgerSha256: currentSha256,
+      originalBudgetCredits: ledger.budgetCredits,
+      priorRecordedSpentCredits: ledger.spentCredits,
+      observedRemainingCredits: args.observedRemainingCredits,
+      credits: normalizeZero(unattributedCredits),
+      confirmations: {
+        observedBalanceBelongsToOriginalBudget: true,
+        noCreditsAddedOrRefunded: true,
+        accountWideUnattributedChargeAccepted: true,
+      },
+      affectedBlockedEvent: {
+        runId: affectedRunId,
+        blockedReason: ledger.blockedReason,
+      },
+    };
+    const nextLedger: CodexCreditLedger = {
+      ...ledger,
+      spentCredits: observedSpentCredits,
+      reconciliations: [...(ledger.reconciliations ?? []), reconciliation],
+      blockedReason: undefined,
+    };
+    await writeLedger(ledgerPath, nextLedger);
+    await writeLockState(lock, "settled");
+    const nextContents = await readFile(ledgerPath);
+    return {
+      schemaVersion: 1,
+      priorLedgerSha256: currentSha256,
+      ledgerSha256: sha256(nextContents),
+      at,
+      attribution: "account-wide-unattributed",
+      affectedRunId,
+      originalBudgetCredits: ledger.budgetCredits,
+      priorRecordedSpentCredits: ledger.spentCredits,
+      observedRemainingCredits: args.observedRemainingCredits,
+      unattributedCredits: reconciliation.credits,
+      totalSpentCredits: observedSpentCredits,
+      totalRemainingCredits: args.observedRemainingCredits,
+      affectedBlockedEventSha256: sha256(
+        JSON.stringify(reconciliation.affectedBlockedEvent),
+      ),
+    };
+  } finally {
+    try {
+      if (lock) {
+        try {
+          await lock.close();
+        } finally {
+          await removeOwnedLedgerLock(lockPath);
+        }
+      }
+    } finally {
+      release();
+    }
   }
 }
 
@@ -443,13 +610,14 @@ export async function buildCodexCreditReceipt(
   const contents = await readFile(resolvedPath);
   const ledger = parseLedger(JSON.parse(contents.toString("utf8")) as Partial<CodexCreditLedger>);
   const normalizedRunId = parseOptionalRunId(runId);
-  const cumulative = summarizeLedgerEntries(ledger.entries);
+  const reconciliations = ledger.reconciliations ?? [];
+  const cumulative = summarizeLedgerEntries(ledger.entries, reconciliations);
   const runEntries = normalizedRunId
     ? ledger.entries.filter((entry) => entry.runId === normalizedRunId)
     : [];
   return {
     schemaVersion: 1,
-    ledgerSha256: createHash("sha256").update(contents).digest("hex"),
+    ledgerSha256: sha256(contents),
     budgetCredits: ledger.budgetCredits,
     reserveCredits: ledger.reserveCredits,
     plannedSpendCeilingCredits: ledger.budgetCredits - ledger.reserveCredits,
@@ -458,7 +626,12 @@ export async function buildCodexCreditReceipt(
     blocked: ledger.blockedReason !== undefined,
     cumulative,
     ...(normalizedRunId
-      ? { run: { id: normalizedRunId, ...summarizeLedgerEntries(runEntries) } }
+      ? {
+          run: {
+            id: normalizedRunId,
+            ...summarizeLedgerEntries(runEntries),
+          },
+        }
       : {}),
   };
 }
@@ -521,6 +694,18 @@ function parseLedger(parsed: Partial<CodexCreditLedger>): CodexCreditLedger {
         0,
       )
     : Number.NaN;
+  const reconciliationCredits = parsed.reconciliations === undefined
+    ? 0
+    : Array.isArray(parsed.reconciliations)
+      ? parsed.reconciliations.reduce(
+          (sum, reconciliation) =>
+            sum +
+            (typeof (reconciliation as Partial<CodexCreditLedgerReconciliation>)?.credits === "number"
+              ? (reconciliation as Partial<CodexCreditLedgerReconciliation>).credits ?? 0
+              : 0),
+          0,
+        )
+      : Number.NaN;
   if (
     parsed.schemaVersion !== 1 ||
     typeof parsed.budgetCredits !== "number" ||
@@ -535,12 +720,72 @@ function parseLedger(parsed: Partial<CodexCreditLedger>): CodexCreditLedger {
     parsed.spentCredits < 0 ||
     !Array.isArray(parsed.entries) ||
     !parsed.entries.every(isLedgerEntry) ||
-    Math.abs(entryCredits - parsed.spentCredits) > 1e-9 ||
+    (parsed.reconciliations !== undefined &&
+      (!Array.isArray(parsed.reconciliations) ||
+        !parsed.reconciliations.every((reconciliation) =>
+          isLedgerReconciliationWithinBudget(reconciliation, parsed.budgetCredits),
+        ))) ||
+    Math.abs(entryCredits + reconciliationCredits - parsed.spentCredits) > 1e-9 ||
     (parsed.blockedReason !== undefined && typeof parsed.blockedReason !== "string")
   ) {
     throw new Error("ledger schema is invalid");
   }
   return parsed as CodexCreditLedger;
+}
+
+function isLedgerReconciliation(value: unknown): value is CodexCreditLedgerReconciliation {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<CodexCreditLedgerReconciliation>;
+  const forbiddenUsageFields = [
+    "runId",
+    "unknownEvent",
+    "model",
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+  ];
+  return (
+    forbiddenUsageFields.every((field) => !Object.prototype.hasOwnProperty.call(candidate, field)) &&
+    isIsoTimestamp(candidate.at) &&
+    candidate.basis === "operator-observed-original-budget-balance" &&
+    candidate.attribution === "account-wide-unattributed" &&
+    isSha256(candidate.priorLedgerSha256) &&
+    typeof candidate.originalBudgetCredits === "number" &&
+    Number.isFinite(candidate.originalBudgetCredits) &&
+    candidate.originalBudgetCredits > 0 &&
+    typeof candidate.priorRecordedSpentCredits === "number" &&
+    Number.isFinite(candidate.priorRecordedSpentCredits) &&
+    candidate.priorRecordedSpentCredits >= 0 &&
+    typeof candidate.observedRemainingCredits === "number" &&
+    Number.isFinite(candidate.observedRemainingCredits) &&
+    candidate.observedRemainingCredits >= 0 &&
+    typeof candidate.credits === "number" &&
+    Number.isFinite(candidate.credits) &&
+    candidate.credits >= 0 &&
+    candidate.confirmations?.observedBalanceBelongsToOriginalBudget === true &&
+    candidate.confirmations.noCreditsAddedOrRefunded === true &&
+    candidate.confirmations.accountWideUnattributedChargeAccepted === true &&
+    isValidStoredRunId(candidate.affectedBlockedEvent?.runId) &&
+    typeof candidate.affectedBlockedEvent?.blockedReason === "string" &&
+    candidate.affectedBlockedEvent.blockedReason.length > 0
+  );
+}
+
+function isLedgerReconciliationWithinBudget(value: unknown, budget: unknown): boolean {
+  return (
+    typeof budget === "number" &&
+    isLedgerReconciliation(value) &&
+    value.originalBudgetCredits === budget &&
+    value.observedRemainingCredits <= budget &&
+    value.credits <= budget &&
+    Math.abs(
+      value.priorRecordedSpentCredits +
+        value.credits +
+        value.observedRemainingCredits -
+        budget,
+    ) <= 1e-9
+  );
 }
 
 function isLedgerEntry(entry: unknown): entry is CodexCreditLedgerEntry {
@@ -571,7 +816,10 @@ function isEntryCreditConsistent(entry: CodexCreditLedgerEntry): boolean {
   }
 }
 
-function summarizeLedgerEntries(entries: CodexCreditLedgerEntry[]): CodexCreditReceiptScope {
+function summarizeLedgerEntries(
+  entries: CodexCreditLedgerEntry[],
+  reconciliations: CodexCreditLedgerReconciliation[] = [],
+): CodexCreditReceiptScope {
   const byModel = new Map<string, CodexCreditLedgerEntry[]>();
   for (const entry of entries) {
     const modelEntries = byModel.get(entry.model) ?? [];
@@ -581,7 +829,14 @@ function summarizeLedgerEntries(entries: CodexCreditLedgerEntry[]): CodexCreditR
   const totals = summarizeUsage(entries);
   return {
     calls: entries.length,
-    credits: entries.reduce((sum, entry) => sum + entry.credits, 0),
+    credits:
+      entries.reduce((sum, entry) => sum + entry.credits, 0) +
+      reconciliations.reduce((sum, reconciliation) => sum + reconciliation.credits, 0),
+    unattributedReconciliationCount: reconciliations.length,
+    unattributedReconciledCredits: reconciliations.reduce(
+      (sum, reconciliation) => sum + reconciliation.credits,
+      0,
+    ),
     ...totals,
     models: [...byModel.entries()]
       .sort(([left], [right]) => left.localeCompare(right))
@@ -679,6 +934,35 @@ function hasControlCharacters(value: string): boolean {
     if (codePoint <= 0x1f || codePoint === 0x7f) return true;
   }
   return false;
+}
+
+function parseRequiredRunId(value: string, name: string): string {
+  const runId = value?.trim();
+  if (!runId || !isValidStoredRunId(runId)) {
+    throw new Error(`${name} must be 1 to 128 trimmed characters without control characters`);
+  }
+  return runId;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+}
+
+function sha256(value: string | Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizeZero(value: number): number {
+  return Object.is(value, -0) ? 0 : value;
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  try {
+    return new Date(value).toISOString() === value;
+  } catch {
+    return false;
+  }
 }
 
 export const __codexCreditBudgetTestHooks = {
