@@ -494,7 +494,12 @@ function checkBuildWeekCodexDatasetPaths() {
       const lastCreditBudgetMutation = creditBudgetMutations.findLast(
         ({ line }) => line < commandStartLine,
       );
-      if (!lastCreditBudgetMutation?.valid) {
+      const remnicCommandAt = command.search(/\bremnic\s+bench\s+run\b/);
+      const commandPrefix = remnicCommandAt > 0 ? command.slice(0, remnicCommandAt) : "";
+      const hasSameCommandBudgetMutation = commandPrefix
+        .split(/[;&]+/)
+        .some((statement) => BUILD_WEEK_CREDIT_BUDGET_MUTATION_RE.test(statement));
+      if (!lastCreditBudgetMutation?.valid || hasSameCommandBudgetMutation) {
         failures.push(
           `${rel}: Build Week Codex command must follow a shell export of ` +
             "`REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`",

@@ -848,6 +848,37 @@ test("a later credit-budget override or unset invalidates an earlier guard", () 
   }
 });
 
+test("a same-command credit-budget mutation before the run invalidates an earlier guard", () => {
+  for (const prefix of [
+    "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=100; ",
+    "unset REMNIC_BENCH_CODEX_CREDIT_BUDGET; ",
+  ]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+          `${prefix}remnic bench run longmemeval --limit 1 \\`,
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+          "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+          "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+          "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${prefix}: ${result.stderr}`);
+      assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+    });
+  }
+});
+
 test("a comment mentioning bench run before the credit guard does not invalidate it", () => {
   withFixture((root) => {
     writeFileSync(
