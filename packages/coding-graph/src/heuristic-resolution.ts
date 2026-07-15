@@ -44,6 +44,20 @@ import { posix } from "node:path";
 
 import type { EdgeIR, FileIR, StoreFileIR } from "./graph-store.js";
 
+/**
+ * Languages where a method call on the enclosing instance REQUIRES an
+ * explicit receiver (this./self.) — a bare identifier call can never mean
+ * a sibling method, so class-like scopes are excluded from bare-call
+ * resolution. Implicit-this languages (Java, C#, Kotlin, Swift, Ruby,
+ * PHP, C++, Go methods via receivers, ...) keep their class scopes.
+ */
+const EXPLICIT_RECEIVER_LANGUAGES: ReadonlySet<string> = new Set([
+  "typescript",
+  "tsx",
+  "javascript",
+  "python",
+]);
+
 /** Confidence for a call resolved to a unique same-file symbol. */
 export const HEURISTIC_CONFIDENCE_SAME_FILE = 0.9;
 /** Confidence for a call resolved through an import binding. */
@@ -220,18 +234,24 @@ export function deriveHeuristicEdges(
       // Visible scope levels for this call site, innermost first: the
       // caller's own children, then each ancestor's children, ending at
       // the file level. Symbols nested under unrelated parents are never
-      // consulted. Class-like ancestors (class/interface/enum) are NOT
-      // bare-call scopes (codex review round 8): a bare helper() inside a
-      // method cannot mean the sibling method C.helper — that call would
-      // be this.helper()/self.helper(), i.e. a member access Phase A
-      // skips. Function/method/module ancestors DO contribute (nested
-      // functions and module-local functions are bare-callable).
+      // consulted. In EXPLICIT-receiver languages (JS/TS/Python),
+      // class-like ancestors are NOT bare-call scopes (codex review
+      // round 8): a bare helper() inside a method cannot mean the
+      // sibling method C.helper — that call would be
+      // this.helper()/self.helper(), i.e. a member access Phase A
+      // skips. Implicit-this languages (Java/C#/Kotlin/Swift/Ruby/...)
+      // DO allow an unqualified call to target a same-type method, so
+      // their class scopes contribute (codex review round 11).
+      // Function/method/module ancestors always contribute.
+      const excludeClassScopes = EXPLICIT_RECEIVER_LANGUAGES.has(ir.language);
       const scopeLevels: string[] = [src.qualifiedName];
       let cursor: string | undefined = src.qualifiedName;
       while (cursor !== undefined && cursor !== "") {
         cursor = parentOf.get(cursor) ?? "";
-        const kind = cursor === "" ? undefined : kindOf.get(cursor);
-        if (kind === "class" || kind === "interface" || kind === "enum") continue;
+        if (excludeClassScopes) {
+          const kind = cursor === "" ? undefined : kindOf.get(cursor);
+          if (kind === "class" || kind === "interface" || kind === "enum") continue;
+        }
         scopeLevels.push(cursor);
       }
 

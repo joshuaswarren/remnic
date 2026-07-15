@@ -523,3 +523,22 @@ test("pure parent-package python imports hint the package directory (codex revie
     ],
   );
 });
+
+test("implicit-this languages bind sibling methods on bare calls (codex review round 11)", () => {
+  const ir = fileIR({
+    path: "C.java",
+    language: "java",
+    symbols: [
+      { kind: "class", name: "C", qualifiedName: "C", span: span(0, 200) },
+      { kind: "method", name: "run", qualifiedName: "C.run", span: span(10, 100) },
+      { kind: "method", name: "helper", qualifiedName: "C.helper", span: span(110, 190) },
+    ],
+    // Java: helper() inside run() legally targets the sibling method.
+    callSites: [{ calleeNameCandidates: ["helper"], span: span(40, 48) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.deepEqual(
+    firstFile(result).edges.map((e: EdgeIR) => [e.srcQualifiedName, e.dstQualifiedName]),
+    [["C.run", "C.helper"]],
+  );
+});
