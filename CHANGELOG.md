@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- coding-graph indexing now derives CALLS edges from parsed call sites
+  (Phase A heuristic resolution, issue #1891). Previously `codegraph_index`
+  produced nodes but zero edges, leaving `trace_path`, blast radius, and
+  dead-code detection degenerate. The reindex pipeline resolves each call
+  site to its innermost enclosing symbol (src) and a unique same-file or
+  import-bound name (dst); the stale-edge delete is provenance-scoped
+  (`StoreFileIR.assertedEdgeProvenances`) so re-derivation never removes
+  `trace`/`lsp` edges.
+
 ## [v9.6.11] — 2026-07-13
 
 ### Added

@@ -41,12 +41,17 @@ import type { ParseFileInput, ParseResult } from "@remnic/core";
 
 import type { CodingGitInvoker, GitFailure, NameStatusEntry } from "./git-invoker.js";
 import type {
+  FileIR,
   GraphStore,
   StoreFileIR,
   ReadMetaResult,
   ReadFileHashesResult,
+  GraphStoreFailure,
 } from "./graph-store.js";
-import type { GraphStoreFailure } from "./graph-store.js";
+import {
+  deriveHeuristicEdges,
+  HEURISTIC_PROVENANCE_SCOPE,
+} from "./heuristic-resolution.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Public types — the planner's input and output
@@ -854,7 +859,7 @@ async function ingestFiles(
   paths: readonly string[],
   deletePaths: readonly string[] = [],
 ): Promise<IngestResult> {
-  const batch: StoreFileIR[] = [];
+  const parsed: FileIR[] = [];
   const parseFailedPaths: string[] = [];
   for (const relPath of paths) {
     if (!isCanonicalRelativePath(relPath)) {
@@ -887,11 +892,18 @@ async function ingestFiles(
       parseFailedPaths.push(relPath);
       continue;
     }
-    // FileIR is structurally assignable to StoreFileIR — the store only
-    // reads the fields it needs and ignores extra FileIR fields (imports,
-    // callSites). No cast needed.
-    batch.push(parseResult.ir);
+    parsed.push(parseResult.ir);
   }
+  // Phase A heuristic resolution (issue #1891): derive CALLS edge
+  // assertions from the fresh parse before ingest. Each file carries an
+  // explicit edges array plus a provenance scope of ["heuristic"], so
+  // stale heuristic edges from a prior version are cleaned up while
+  // trace/lsp edges owned by the file survive (rule 25).
+  const derived = deriveHeuristicEdges(parsed);
+  const batch: StoreFileIR[] = derived.files.map((file) => ({
+    ...file,
+    assertedEdgeProvenances: HEURISTIC_PROVENANCE_SCOPE,
+  }));
   // Even when batch is empty we must run the upsert so deletePaths are
   // pruned atomically (the store's transaction wraps both). A zero-file,
   // zero-delete call is a cheap no-op.

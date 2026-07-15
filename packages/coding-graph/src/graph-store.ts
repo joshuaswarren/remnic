@@ -160,6 +160,16 @@ export interface StoreFileIR {
   /** Store-specific edges derived from the IR by the caller. */
   readonly edges?: readonly EdgeIR[];
   /**
+   * When present, the stale-edge delete in `upsertFileEdges` is scoped to
+   * edges whose provenance is in this list: prior src-owned edges of OTHER
+   * provenances survive un-asserted (issue #1891). The reindex pipeline
+   * asserts `["heuristic"]` because a fresh parse says nothing about
+   * `trace`/`lsp` edges; deleting them on every re-ingest would destroy
+   * state the parse never contradicted (rule 25). Absent = legacy
+   * behavior: every stale src-owned edge is deleted.
+   */
+  readonly assertedEdgeProvenances?: readonly EdgeProvenance[];
+  /**
    * Per-file export list (mirrors core FileIR.exports). When present,
    * the write pipeline marks every node in this file whose `name`
    * matches an ExportIR.name as `is_exported=1` in `node_attributes`.
@@ -1788,12 +1798,17 @@ export class GraphStore {
     );
     const priorByKey = new Map<string, { confidence: number; provenance: string }>();
     const staleSrcDstTypes: Array<{ src: string; dst: string; type: string }> = [];
+    // Provenance scoping (issue #1891): when the IR declares which
+    // provenances it asserts, stale edges of OTHER provenances are not
+    // this ingest's to delete — a fresh parse contradicts only its own
+    // derivation class (rule 25). Absent = legacy delete-all-stale.
+    const scoped = ir.assertedEdgeProvenances;
     for (const p of priorEdges) {
       const key = `${p.src}\u0000${p.dst}\u0000${p.type}`;
       priorByKey.set(key, { confidence: p.confidence, provenance: p.provenance });
-      if (!assertedKeys.has(key)) {
-        staleSrcDstTypes.push({ src: p.src, dst: p.dst, type: p.type });
-      }
+      if (assertedKeys.has(key)) continue;
+      if (scoped && !(scoped as readonly string[]).includes(p.provenance)) continue;
+      staleSrcDstTypes.push({ src: p.src, dst: p.dst, type: p.type });
     }
 
     // Delete only the stale src-owned edges (prior-but-not-asserted).
