@@ -1314,7 +1314,7 @@ export async function buildBenchmarkReproManifest(
     command: {
       cwd,
       argv: sanitizeArgv(options.command?.argv ?? process.argv.slice(2)),
-      envKeys: sanitizeEnvKeys(options.command?.env, options.command?.envKeys),
+      envKeys: sanitizeEnvKeys(commandEnv, options.command?.envKeys),
     },
     environment: {
       platform: process.platform,

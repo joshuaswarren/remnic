@@ -839,6 +839,67 @@ test("manifest binds sanitized Codex credit totals and public env-key provenance
   assert.notEqual(changed.artifactHash, firstArtifactHash);
 });
 
+test("manifest records Codex credit env-key provenance from process.env", async () => {
+  const root = await createTempRoot("remnic-repro-codex-process-env-");
+  const resultsDir = path.join(root, "results");
+  const ledgerPath = path.join(root, "private-credit-ledger.json");
+  await mkdir(resultsDir, { recursive: true });
+  const resultPath = path.join(resultsDir, "longmemeval.json");
+  await writeFile(resultPath, `${JSON.stringify(buildResult(), null, 2)}\n`, "utf8");
+  await writeFile(
+    ledgerPath,
+    `${JSON.stringify({
+      schemaVersion: 1,
+      budgetCredits: 2_473,
+      reserveCredits: 473,
+      spentCredits: 0.04,
+      entries: [
+        {
+          at: "2026-07-15T00:00:00.000Z",
+          model: "gpt-5.6-luna",
+          runId: "process-env-run",
+          credits: 0.04,
+          inputTokens: 1_000,
+          cachedInputTokens: 0,
+          outputTokens: 100,
+          reasoningOutputTokens: 50,
+        },
+      ],
+    })}\n`,
+    { mode: 0o600 },
+  );
+
+  const env = {
+    REMNIC_BENCH_CODEX_CREDIT_BUDGET: "2473",
+    REMNIC_BENCH_CODEX_CREDIT_RESERVE: "473",
+    REMNIC_BENCH_CODEX_CREDIT_LEDGER: ledgerPath,
+    REMNIC_BENCH_RUN_ID: "process-env-run",
+  };
+  const previous = Object.fromEntries(Object.keys(env).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  try {
+    const manifest = await buildBenchmarkReproManifest(resultsDir, {
+      resultPaths: [resultPath],
+      runId: "process-env-run",
+      command: { cwd: root, argv: ["bench", "run", "longmemeval"], envKeys: [] },
+    });
+
+    assert.deepEqual(manifest.command.envKeys, [
+      "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+      "REMNIC_BENCH_CODEX_CREDIT_LEDGER",
+      "REMNIC_BENCH_CODEX_CREDIT_RESERVE",
+      "REMNIC_BENCH_RUN_ID",
+    ]);
+    assert.equal(manifest.codexCredit?.run?.id, "process-env-run");
+    assert.doesNotMatch(JSON.stringify(manifest), /private-credit-ledger\.json/);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("budget-configured zero-call runs still produce a manifest before a ledger exists", async () => {
   const root = await createTempRoot("remnic-repro-codex-zero-call-");
   const resultsDir = path.join(root, "results");
