@@ -1813,7 +1813,14 @@ export class GraphStore {
     // provenances it asserts, stale edges of OTHER provenances are not
     // this ingest's to delete — a fresh parse contradicts only its own
     // derivation class (rule 25). Absent = legacy delete-all-stale.
-    const scoped = ir.assertedEdgeProvenances;
+    // An EMPTY scope array is treated as absent (cursor review round 9):
+    // "[]" would otherwise be truthy, protect every prior edge from
+    // deletion AND from updates, and silently disable cleanup — an
+    // assertion that scopes nothing scopes nothing.
+    const scoped =
+      ir.assertedEdgeProvenances && ir.assertedEdgeProvenances.length > 0
+        ? ir.assertedEdgeProvenances
+        : undefined;
     for (const p of priorEdges) {
       const key = `${p.src}\u0000${p.dst}\u0000${p.type}`;
       priorByKey.set(key, { confidence: p.confidence, provenance: p.provenance });

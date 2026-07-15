@@ -424,3 +424,34 @@ test("a path hint never matches test/declaration filename variants (codex review
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("an empty assertedEdgeProvenances array behaves like an absent one (cursor review round 9)", async () => {
+  const { store, dir } = await openTempStore();
+  try {
+    const seeded = await store.upsertFileBatch([
+      {
+        ...twoSymbolFile(),
+        edges: [
+          {
+            srcQualifiedName: "greet",
+            dstQualifiedName: "format",
+            type: "CALLS",
+            confidence: 0.9,
+            provenance: "heuristic",
+          },
+        ],
+      },
+    ]);
+    assert.ok(seeded.ok);
+    const reingested = await store.upsertFileBatch([
+      { ...twoSymbolFile({ contentHash: "hash-2" }), edges: [], assertedEdgeProvenances: [] },
+    ]);
+    assert.ok(reingested.ok);
+    const stats = await store.schemaStats();
+    assert.ok(stats.ok);
+    assert.equal(stats.stats.edges, 0, "empty scope = legacy delete-all-stale, not protect-all");
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

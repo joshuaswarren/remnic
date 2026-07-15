@@ -483,3 +483,17 @@ test("with only a sibling method available, a bare call stays unresolved", () =>
   assert.deepEqual(firstFile(result).edges, []);
   assert.equal(stats.skippedUnresolved, 1);
 });
+
+test("empty bindings array falls back to importedNames (cursor review round 9)", () => {
+  const ir = fileIR({
+    path: "util.ts",
+    symbols: [
+      { kind: "function", name: "shout", qualifiedName: "shout", span: span(30, 110) },
+    ],
+    imports: [{ module: "./main", importedNames: ["greet"], bindings: [], span: span(0, 29) }],
+    callSites: [{ calleeNameCandidates: ["greet"], span: span(60, 67) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.equal(firstFile(result).edges.length, 1);
+  assert.equal(firstFile(result).edges[0]?.dstQualifiedName, "greet");
+});

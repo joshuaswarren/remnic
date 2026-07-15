@@ -175,8 +175,13 @@ export function deriveHeuristicEdges(
       if (hint.startsWith("../")) continue;
       // Alias-aware (codex review on #1894): call sites use the LOCAL
       // identifier; the dst in the target file is the EXPORTED name.
+      // An empty bindings array falls back to importedNames like an
+      // absent one (cursor review round 9): emitters that populate names
+      // but not bindings must still bind.
       const bindings =
-        imp.bindings ?? imp.importedNames.map((name) => ({ exported: name, local: name }));
+        imp.bindings && imp.bindings.length > 0
+          ? imp.bindings
+          : imp.importedNames.map((name) => ({ exported: name, local: name }));
       for (const b of bindings) importBindings.set(b.local, { exported: b.exported, hint });
     }
 
