@@ -139,6 +139,7 @@ export interface ResolvedBenchRuntimeProfile {
 const REDACTED_CONFIG_VALUE = "[redacted]";
 const INTERNAL_GATEWAY_AGENT_ID = "remnic-bench-internal";
 const DEFAULT_CODEX_CLI_REQUEST_TIMEOUT_MS = 180_000;
+const DEFAULT_CODEX_CLI_DRAIN_TIMEOUT_MS = 600_000;
 let codexCliFallbackRegistered = false;
 let codexCliFallbackChain: Promise<void> = Promise.resolve();
 
@@ -200,8 +201,17 @@ export async function resolveBenchRuntimeProfile(
   );
   const lcmObserveConcurrencyOverrides =
     buildLcmObserveConcurrencyOverrides(options.lcmObserveConcurrency);
+  const usesImplicitCodexRequestTimeout =
+    options.requestTimeout === undefined &&
+    [systemProvider, judgeProvider, internalProvider].some(
+      (config) => config?.provider === "codex-cli",
+    );
   const drainTimeoutMs = normalizeDrainTimeoutMs(
-    options.drainTimeout ?? options.requestTimeout,
+    options.drainTimeout ??
+      options.requestTimeout ??
+      (usesImplicitCodexRequestTimeout
+        ? DEFAULT_CODEX_CLI_DRAIN_TIMEOUT_MS
+        : undefined),
   );
   registerCodexCliFallbackRunnerIfNeeded(internalProvider);
   const responderFactoryConfig = systemProvider

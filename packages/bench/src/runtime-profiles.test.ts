@@ -24,6 +24,7 @@ test("baseline runtime profile keeps the stripped retrieval-only config", async 
   assert.equal(resolved.remnicConfig.rerankEnabled, false);
   assert.equal(resolved.remnicConfig.verifiedRecallEnabled, false);
   assert.equal(resolved.remnicConfig.knowledgeIndexEnabled, false);
+  assert.equal(resolved.adapterOptions.drainTimeoutMs, undefined);
 });
 
 test("runtime profile forwards LCM observe concurrency override", async () => {
@@ -431,6 +432,7 @@ test("provider-backed runtime resolution configures codex-cli with xhigh reasoni
   });
   assert.equal(typeof resolved.adapterOptions.responder?.respond, "function");
   assert.equal(typeof resolved.adapterOptions.judge?.score, "function");
+  assert.equal(resolved.adapterOptions.drainTimeoutMs, 600_000);
 });
 
 test("provider-backed runtime resolution can override codex-cli reasoning effort", async () => {
@@ -532,7 +534,7 @@ test("runtime profile gives Codex CLI internal fast and main tiers a safe defaul
   assert.equal(resolved.remnicConfig.localLlmFastTimeoutMs, 180_000);
   assert.equal(resolved.effectiveRemnicConfig.localLlmTimeoutMs, 180_000);
   assert.equal(resolved.effectiveRemnicConfig.localLlmFastTimeoutMs, 180_000);
-  assert.equal(resolved.adapterOptions.drainTimeoutMs, undefined);
+  assert.equal(resolved.adapterOptions.drainTimeoutMs, 600_000);
 
   const gatewayConfig = resolved.effectiveRemnicConfig.gatewayConfig as {
     models?: { providers?: Record<string, { retryOptions?: { timeoutMs?: number } }> };
@@ -570,6 +572,18 @@ test("runtime profile can decouple provider request timeout from drain timeout",
   });
   assert.equal(resolved.remnicConfig.localLlmTimeoutMs, 120_000);
   assert.equal(resolved.effectiveRemnicConfig.localLlmTimeoutMs, 120_000);
+});
+
+test("runtime profile preserves an explicit drain timeout with the implicit Codex request timeout", async () => {
+  const resolved = await resolveBenchRuntimeProfile({
+    runtimeProfile: "baseline",
+    internalProvider: "codex-cli",
+    internalModel: "gpt-5.6-luna",
+    drainTimeout: 900_000,
+  });
+
+  assert.equal(resolved.internalProvider?.retryOptions?.timeoutMs, 180_000);
+  assert.equal(resolved.adapterOptions.drainTimeoutMs, 900_000);
 });
 
 test("runtime profile can route Remnic internal LLM calls through Ollama native chat", async () => {

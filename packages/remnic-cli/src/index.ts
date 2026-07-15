@@ -1030,7 +1030,8 @@ Options:
   --results-dir <path>     Override the stored benchmark results directory
   --baselines-dir <path>   Override the named baseline directory
   --request-timeout <ms>   Provider request timeout in milliseconds (codex-cli default: 180000)
-  --drain-timeout <ms>     Memory drain timeout in milliseconds (defaults to --request-timeout when unset)
+  --drain-timeout <ms>     Memory drain timeout in milliseconds
+                           (defaults to --request-timeout; implicit codex-cli default: 600000)
   --local-lab-manifest <path>
                            Path to a local-lab manifest JSON file (required for --runtime-profile local-lab)
   --threshold <value>      Regression threshold for compare (default: 0.05)
