@@ -32,33 +32,6 @@ There is a useful split in AI memory between **memory backends** (extract facts,
 | Built-in agent memory that does not scale | Hybrid search, lifecycle management, namespaces, and governance |
 | Third-party memory services that cost money and hold your data | Everything stays local: your filesystem, your rules |
 
-## MemCorrect, our OpenAI Build Week entry
-
-Remnic's Developer Tools entry is **MemCorrect**. It tests Remnic or another
-memory backend that uses the same adapter contract. The test asks three
-questions: Did recall find the right fact? Did the memory accept a correction?
-Did the stale fact stay gone?
-
-```bash
-npm install -g @remnic/cli@9.6.24 @remnic/bench@9.6.24
-remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
-remnic bench runs list
-remnic bench export <run-id> --format html --output ./memcorrect-report.html
-```
-
-After installation, this quick path needs no dataset, API key, or network. It
-starts the packaged stdio MCP demo and tests the generic MCP adapter. It also
-writes an offline HTML report. We tested the 9.6.24 packed tarballs from a clean
-global prefix on Linux x86_64 with Node 22.23.1.
-
-During Build Week, we added the MCP adapter, an optional GPT-5.6 judge through
-the OpenAI Responses API, and the report card. Codex helped us study the old
-adapter seam, write and test the new path, and review it. Remnic and the first
-benchmark harness predate the event. The
-[submission evidence ledger](HACKATHON.md) draws that line commit by commit. It
-also leaves the Codex `/feedback`, paid frontier artifact, video, and final
-submission marked as pending.
-
 ## Quick start
 
 ### Prerequisites
@@ -208,18 +181,19 @@ The search index lives separately and is rebuildable from these files at any tim
 
 See [docs/importers.md](docs/importers.md) for input formats, provenance metadata, and the full privacy breakdown.
 
+**Live connectors: Google Drive and Notion.** Beyond one-time imports, Remnic can *continuously* sync external sources into memory. The Google Drive and Notion connectors poll for changed documents on a schedule and ingest them incrementally — connect once (`remnic connectors run google-drive` / `remnic connectors run notion` for a manual sync, `remnic connectors status` to inspect), and your docs stay searchable alongside everything else your agents know. Gmail and GitHub connectors run on the hosted scheduler as well. Setup, OAuth, and polling details: [docs/live-connectors.md](docs/live-connectors.md).
+
 **Wearables.** Three optional connectors ingest AI-wearable recordings, clean and speaker-label the transcripts, apply your personal corrections, store searchable per-day transcript files, and create memories under strict per-source trust gates: `@remnic/connector-limitless` (Limitless Pendant), `@remnic/connector-bee` (Bee bracelet), and `@remnic/connector-omi` (Omi necklace). See [docs/wearables.md](docs/wearables.md).
 
 **Glass-box tooling.** [Recall X-ray](docs/xray.md) shows which retrieval tier produced each result and why, the [daily briefing](docs/guides/daily-briefing.md) surfaces active entities and open commitments, and the [operator console](docs/console.md) gives live engine introspection with trace record and replay.
 
-**Benchmarks.** Memory quality is measured, not asserted. [MemCorrect](docs/benchmarks/memcorrect.md) checks whether a backend recalls the right fact, accepts a correction, and stops serving the stale one. The [full benchmark suite](docs/benchmarks.md) covers the rest, with reproducible artifacts and leaderboard safety.
+**Benchmarks.** Memory quality is measured, not asserted. [MemCorrect](docs/benchmarks/memcorrect.md) — Remnic's OpenAI Build Week 2026 entry ([submission ledger](HACKATHON.md)) — checks whether a backend recalls the right fact, accepts a correction, and stops serving the stale one, and runs offline in one command. The [full benchmark suite](docs/benchmarks.md) covers the rest, with reproducible artifacts and leaderboard safety.
 
 **More capabilities.** A few of the deeper features, each with its own guide:
 
 - [Procedural memory](docs/procedural-memory.md) — multi-step runbooks captured from your work (on by default outside the `conservative` preset).
 - [Temporal recall](docs/temporal-recall.md) — `valid_at` / `invalid_at` fact lifecycle and an `as_of` recall filter.
 - [Pattern reinforcement](docs/pattern-reinforcement.md) — cross-session pattern detection with a recall boost for reinforced primitives.
-- [Live connectors](docs/live-connectors.md) — a continuous-sync framework for external sources.
 - [Shared context](docs/shared-context.md) — cross-agent shared intelligence for multi-agent teams.
 - [Coding-agent memory](docs/coding-agent.md) — repo conventions, review behavior, and ask-before rules for coding tools.
 
