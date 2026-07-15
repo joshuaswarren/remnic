@@ -619,6 +619,32 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
 
   try {
     __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
+    let preStartCalled = false;
+    const preStartAborted = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.6-luna" },
+      {
+        async runCodexLoginStatus() {
+          preStartCalled = true;
+          return { status: 0, stdout: "Logged in using ChatGPT", stderr: "" };
+        },
+        async runCodexCli() {
+          preStartCalled = true;
+          throw new Error("must not run");
+        },
+      },
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      preStartAborted.complete("hello", { signal: controller.signal }),
+      (error: unknown) => error instanceof Error && error.name === "AbortError",
+    );
+    assert.equal(preStartCalled, false);
+    await assert.rejects(readFile(path.join(directory, "ledger.json"), "utf8"), {
+      code: "ENOENT",
+    });
+
+    __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
     let called = false;
     const apiAuthed = createCodexCliProvider(
       { provider: "codex-cli", model: "gpt-5.6-luna" },

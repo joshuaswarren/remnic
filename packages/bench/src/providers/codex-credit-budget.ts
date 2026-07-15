@@ -1,4 +1,5 @@
 import { mkdir, open, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 
 export interface CodexCliNativeUsage {
@@ -98,8 +99,10 @@ export function resolveCodexCreditBudgetConfig(
   }
 
   const ledgerPath = path.resolve(
-    env.REMNIC_BENCH_CODEX_CREDIT_LEDGER?.trim() ||
-      ".remnic/bench/codex-credit-ledger.json",
+    expandHomeRelativePath(
+      env.REMNIC_BENCH_CODEX_CREDIT_LEDGER?.trim() ||
+        ".remnic/bench/codex-credit-ledger.json",
+    ),
   );
   return {
     budgetCredits,
@@ -468,6 +471,14 @@ function readOptionalCounter(value: unknown): number | undefined {
 
 function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function expandHomeRelativePath(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/") || value.startsWith("~\\")) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  return value;
 }
 
 function parsePositiveNumber(value: string, name: string): number {

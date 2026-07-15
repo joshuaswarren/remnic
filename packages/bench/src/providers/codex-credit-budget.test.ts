@@ -150,6 +150,13 @@ test("budget environment parsing uses the competition reserve and rejects invali
     }),
     /at least 300 credits/,
   );
+  assert.equal(
+    resolveCodexCreditBudgetConfig({
+      REMNIC_BENCH_CODEX_CREDIT_BUDGET: "2473",
+      REMNIC_BENCH_CODEX_CREDIT_LEDGER: "~/.remnic/bench/credits.json",
+    })?.ledgerPath,
+    path.join(os.homedir(), ".remnic/bench/credits.json"),
+  );
 });
 
 test("completed over-budget usage is persisted before the stop error", async () => {

@@ -211,6 +211,9 @@ class CodexCliProvider implements StructuredJudgeProvider {
     prompt: string,
     opts: CompletionOpts = {},
   ): Promise<CompletionResult> {
+    if (opts.signal?.aborted) {
+      throw codexCliAbortError(opts.signal);
+    }
     const startedAt = performance.now();
     const creditBudget = resolveCodexCreditBudgetConfig();
     if (creditBudget) {
