@@ -12,18 +12,25 @@
  *     symbol) are skipped and counted — module-level side effects are not
  *     a caller symbol.
  *   - dst, in candidate order:
- *       1. the unique same-file symbol with that bare name
- *         (confidence {@link HEURISTIC_CONFIDENCE_SAME_FILE});
- *       2. an import-bound name (`imports[].importedNames`), emitted by
- *         bare name for the store's cross-file/full-DB resolution
- *         (confidence {@link HEURISTIC_CONFIDENCE_IMPORT_BOUND}).
+ *       1. a same-file symbol VISIBLE from the call site under lexical
+ *         scoping approximated by span containment: the caller's own
+ *         nested symbols first, then each enclosing scope's children out
+ *         to the file level. Innermost match wins (shadowing); a nested
+ *         symbol under an unrelated parent is not visible (codex P2 on
+ *         #1894). Confidence {@link HEURISTIC_CONFIDENCE_SAME_FILE}.
+ *       2. an import-bound name (`imports[].importedNames`) whose module
+ *         specifier is RELATIVE ("./", "../") — i.e. resolvable inside
+ *         the repo. External-package imports (lodash, node:fs) never
+ *         bind: emitting their bare names would let the store's
+ *         qualified-name fallback attach them to unrelated in-repo
+ *         symbols (codex P2 on #1894). Confidence
+ *         {@link HEURISTIC_CONFIDENCE_IMPORT_BOUND}; the store's
+ *         cross-file/full-DB resolution finds the exporting file.
  *     A bare name with neither anchor (e.g. `console.log`'s `log`) is
- *     skipped — emitting it would delegate a guess, not evidence, and the
- *     store's dst fallback would happily attach it to any same-named
- *     symbol anywhere in the graph.
+ *     skipped — emitting it would delegate a guess, not evidence.
  *   - Ambiguity is dropped conservatively (same policy as the store's
- *     pass-2): a bare name matching two same-file symbols resolves to
- *     neither; the next candidate is tried.
+ *     pass-2): a bare name matching two symbols in the SAME scope level
+ *     resolves to neither; the next candidate is tried.
  *
  * Final id resolution (batch map + full-DB dst fallback + ambiguity
  * drops) stays in `GraphStore.upsertFileEdges`; this module never touches
@@ -85,19 +92,49 @@ export function deriveHeuristicEdges(
   const files: ResolvedFileIR[] = [];
 
   for (const ir of batch) {
-    // Bare-name → symbols map for this file. Names binding more than one
-    // symbol are ambiguous and resolve to nothing (conservative drop).
-    const byName = new Map<string, { qualifiedName: string; count: number }>();
+    // Lexical-scope approximation from span containment: each symbol's
+    // parent is the innermost OTHER symbol strictly containing its span;
+    // no parent = file level (empty-string key).
+    const parentOf = new Map<string, string>();
     for (const sym of ir.symbols) {
-      const prior = byName.get(sym.name);
+      let parent: { qualifiedName: string; size: number } | undefined;
+      for (const other of ir.symbols) {
+        if (other === sym) continue;
+        const contains =
+          other.span.startByte <= sym.span.startByte &&
+          sym.span.endByte <= other.span.endByte;
+        const identical =
+          other.span.startByte === sym.span.startByte &&
+          other.span.endByte === sym.span.endByte;
+        if (!contains || identical) continue;
+        const size = other.span.endByte - other.span.startByte;
+        if (!parent || size < parent.size) {
+          parent = { qualifiedName: other.qualifiedName, size };
+        }
+      }
+      parentOf.set(sym.qualifiedName, parent ? parent.qualifiedName : "");
+    }
+    // scope level (parent qualifiedName or "" = file) → name → matches.
+    const scopeByName = new Map<string, Map<string, { qualifiedName: string; count: number }>>();
+    for (const sym of ir.symbols) {
+      const level = parentOf.get(sym.qualifiedName) ?? "";
+      let names = scopeByName.get(level);
+      if (!names) {
+        names = new Map();
+        scopeByName.set(level, names);
+      }
+      const prior = names.get(sym.name);
       if (prior) {
         prior.count += 1;
       } else {
-        byName.set(sym.name, { qualifiedName: sym.qualifiedName, count: 1 });
+        names.set(sym.name, { qualifiedName: sym.qualifiedName, count: 1 });
       }
     }
+    // Only imports with a relative module specifier bind bare names —
+    // an external package's names must never resolve to in-repo symbols.
     const importedNames = new Set<string>();
     for (const imp of ir.imports) {
+      if (!imp.module.startsWith("./") && !imp.module.startsWith("../")) continue;
       for (const name of imp.importedNames) importedNames.add(name);
     }
 
@@ -121,21 +158,35 @@ export function deriveHeuristicEdges(
         continue;
       }
 
+      // Visible scope levels for this call site, innermost first: the
+      // caller's own children, then each ancestor's children, ending at
+      // the file level. Symbols nested under unrelated parents are never
+      // consulted.
+      const scopeLevels: string[] = [src.qualifiedName];
+      let cursor: string | undefined = src.qualifiedName;
+      while (cursor !== undefined && cursor !== "") {
+        cursor = parentOf.get(cursor) ?? "";
+        scopeLevels.push(cursor);
+      }
+
       // dst: first candidate with in-IR evidence.
       let dstQualifiedName: string | undefined;
       let confidence = 0;
       let sawAmbiguous = false;
       for (const candidate of site.calleeNameCandidates) {
-        const local = byName.get(candidate);
-        if (local) {
-          if (local.count === 1) {
-            dstQualifiedName = local.qualifiedName;
+        for (const level of scopeLevels) {
+          const match = scopeByName.get(level)?.get(candidate);
+          if (!match) continue;
+          if (match.count === 1) {
+            dstQualifiedName = match.qualifiedName;
             confidence = HEURISTIC_CONFIDENCE_SAME_FILE;
-            break;
+          } else {
+            sawAmbiguous = true;
           }
-          sawAmbiguous = true;
-          continue;
+          break; // innermost level with the name decides (shadowing).
         }
+        if (dstQualifiedName !== undefined) break;
+        if (sawAmbiguous) continue;
         if (importedNames.has(candidate)) {
           dstQualifiedName = candidate;
           confidence = HEURISTIC_CONFIDENCE_IMPORT_BOUND;

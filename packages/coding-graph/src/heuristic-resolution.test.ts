@@ -226,3 +226,84 @@ test("output is deterministic and byte-stable across runs (rule 38)", () => {
   const two = JSON.stringify(deriveHeuristicEdges([ir]));
   assert.equal(one, two);
 });
+
+test("a nested symbol under a different parent is NOT visible to a sibling caller", () => {
+  const ir = fileIR({
+    path: "main.ts",
+    symbols: [
+      { kind: "function", name: "outer", qualifiedName: "outer", span: span(0, 100) },
+      { kind: "function", name: "helper", qualifiedName: "outer.helper", span: span(10, 60) },
+      { kind: "function", name: "run", qualifiedName: "run", span: span(110, 180) },
+    ],
+    callSites: [{ calleeNameCandidates: ["helper"], span: span(130, 138) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  const { stats } = result;
+  assert.deepEqual(firstFile(result).edges, [], "outer.helper is not in run's lexical scope");
+  assert.equal(stats.skippedUnresolved, 1);
+});
+
+test("shadowing: the innermost visible declaration wins over a top-level one", () => {
+  const ir = fileIR({
+    path: "main.ts",
+    symbols: [
+      { kind: "function", name: "greet", qualifiedName: "greet", span: span(0, 100) },
+      { kind: "function", name: "format", qualifiedName: "greet.format", span: span(10, 50) },
+      { kind: "function", name: "format", qualifiedName: "format", span: span(110, 160) },
+    ],
+    callSites: [{ calleeNameCandidates: ["format"], span: span(60, 68) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.equal(firstFile(result).edges.length, 1);
+  assert.equal(
+    firstFile(result).edges[0]?.dstQualifiedName,
+    "greet.format",
+    "the nested declaration shadows the top-level one for calls inside greet",
+  );
+});
+
+test("a caller's own nested declaration is visible to it", () => {
+  const ir = fileIR({
+    path: "main.ts",
+    symbols: [
+      { kind: "function", name: "outer", qualifiedName: "outer", span: span(0, 100) },
+      { kind: "function", name: "helper", qualifiedName: "outer.helper", span: span(10, 40) },
+    ],
+    // Call inside outer but outside helper.
+    callSites: [{ calleeNameCandidates: ["helper"], span: span(60, 68) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.deepEqual(
+    firstFile(result).edges.map((e: EdgeIR) => [e.srcQualifiedName, e.dstQualifiedName]),
+    [["outer", "outer.helper"]],
+  );
+});
+
+test("external-package imports never bind bare names (no false in-repo edges)", () => {
+  const ir = fileIR({
+    path: "util.ts",
+    symbols: [
+      { kind: "function", name: "shout", qualifiedName: "shout", span: span(30, 110) },
+    ],
+    imports: [{ module: "lodash", importedNames: ["map"], span: span(0, 29) }],
+    callSites: [{ calleeNameCandidates: ["map"], span: span(60, 65) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  const { stats } = result;
+  assert.deepEqual(firstFile(result).edges, [], "lodash's map must not bind an in-repo symbol");
+  assert.equal(stats.skippedUnresolved, 1);
+});
+
+test("relative-module imports still bind (in-repo resolvable)", () => {
+  const ir = fileIR({
+    path: "util.ts",
+    symbols: [
+      { kind: "function", name: "shout", qualifiedName: "shout", span: span(30, 110) },
+    ],
+    imports: [{ module: "../lib/main.js", importedNames: ["greet"], span: span(0, 29) }],
+    callSites: [{ calleeNameCandidates: ["greet"], span: span(60, 67) }],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.equal(firstFile(result).edges.length, 1);
+  assert.equal(firstFile(result).edges[0]?.confidence, HEURISTIC_CONFIDENCE_IMPORT_BOUND);
+});
