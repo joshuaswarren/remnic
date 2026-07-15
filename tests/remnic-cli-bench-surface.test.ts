@@ -457,6 +457,8 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /expectedAnswerSetHash: parsed\.expectedAnswerSetSha256/);
   assert.match(source, /orderedQuestionIdsHash !== parsed\.expectedQuestionIdListSha256/);
   assert.match(source, /requestTimeout: parsed\.localJudgeRequestTimeout/);
+  assert.match(source, /max429WaitMs: parsed\.max429WaitMs/);
+  assert.match(source, /disableThinking: parsed\.disableThinking/);
   assert.match(source, /timeoutMs: parsed\.frontierJudgeRequestTimeout/);
   assert.match(source, /checkpoint: \{/);
   assert.match(source, /\{ sourceResultId: loaded\.meta\.id, localJudgeConfigHash, frontierJudgeConfigHash \}/);

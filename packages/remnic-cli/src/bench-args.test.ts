@@ -389,6 +389,8 @@ test("parseBenchArgs validates judge-calibration pinning and independent timeout
     "--expected-question-id-list-sha256", "b".repeat(64),
     "--local-judge-request-timeout", "120000",
     "--frontier-judge-request-timeout", "240000",
+    "--max-429-wait", "30000",
+    "--disable-thinking",
     "--calibration-dir", "./private-calibration",
   ]);
   assert.equal(parsed.sourceResultId, "run-1");
@@ -396,6 +398,8 @@ test("parseBenchArgs validates judge-calibration pinning and independent timeout
   assert.equal(parsed.expectedQuestionIdListSha256, "b".repeat(64));
   assert.equal(parsed.localJudgeRequestTimeout, 120000);
   assert.equal(parsed.frontierJudgeRequestTimeout, 240000);
+  assert.equal(parsed.max429WaitMs, 30000);
+  assert.equal(parsed.disableThinking, true);
   assert.equal(parsed.calibrationDir, path.resolve("private-calibration"));
   assert.throws(() => parseBenchArgs([
     "judge-calibrate", "--expected-answer-set-sha256", "short",
@@ -403,6 +407,9 @@ test("parseBenchArgs validates judge-calibration pinning and independent timeout
   assert.throws(() => parseBenchArgs([
     "judge-calibrate", "--frontier-judge-request-timeout", "0",
   ]), /positive integer/);
+  assert.throws(() => parseBenchArgs([
+    "judge-calibrate", "--max-429-wait", "1.5",
+  ]), /non-negative integer/);
   assert.throws(() => parseBenchArgs([
     "judge-calibrate", "--source-result-id",
   ]), /requires a value/);

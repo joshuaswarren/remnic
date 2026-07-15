@@ -1048,6 +1048,8 @@ Options:
                            Calibration-only timeout for each local judge call
   --frontier-judge-request-timeout <ms>
                            Calibration-only timeout for each frontier judge call
+  --max-429-wait <ms>      Maximum cumulative 429 retry wait for provider calls
+  --disable-thinking       Disable thinking for supported provider-backed models
   --source-result-id <id>  Exact full stored result used by judge-calibrate
   --expected-answer-set-sha256 <sha256>
                            Expected deterministic calibration-slice payload hash
@@ -2659,6 +2661,8 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     ...(parsed.localJudgeRequestTimeout
       ? { requestTimeout: parsed.localJudgeRequestTimeout }
       : {}),
+    max429WaitMs: parsed.max429WaitMs,
+    disableThinking: parsed.disableThinking,
   }) as ProviderFactoryConfig;
   const localJudge = bench.createProviderBackedJudge(localJudgeConfig);
   const frontierJudgeConfig = {

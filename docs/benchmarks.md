@@ -430,9 +430,11 @@ remnic bench run locomo \
 For a non-`local-lab` responder profile, `--local-lab-manifest` binds only the
 judge. The CLI judge provider/model/base URL remain explicit assertions against
 the normalized manifest identity, while temperature, seed, and the runtime
-timeout overlay come from the shared resolver used by `judge-calibrate`. This
-keeps the runtime judge configuration hash identical to the calibrated local
-judge and fails before dispatch if either surface drifts.
+timeout, 429-wait, and disable-thinking overlays come from the shared resolver
+used by `judge-calibrate`. If a later run supplies `--max-429-wait` or
+`--disable-thinking`, supply the identical flag/value to `judge-calibrate` so
+the persisted and runtime local-judge configuration hashes remain identical.
+The attachment path fails before dispatch if either surface drifts.
 
 The attached artifact records
 `judgeCalibration`, including `kappa`, `sampleSize`, `threshold`, `warning`,

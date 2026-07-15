@@ -411,6 +411,9 @@ same `--local-lab-manifest` and the same local judge timeout as
 `--request-timeout`; the manifest is the source of normalized base URL,
 temperature, and seed, while explicit `--judge-provider`, `--judge-model`, and
 `--judge-base-url` flags are checked as identity assertions before dispatch.
+Any `--max-429-wait` value or `--disable-thinking` flag used by the later run
+must also be supplied identically to `judge-calibrate`; both surfaces resolve
+and hash the same fully overlaid local-judge configuration.
 Absent calibration
 is the common case — the result is written unchanged. The command selects a
 deterministic 200-question slice (or all available questions when fewer than

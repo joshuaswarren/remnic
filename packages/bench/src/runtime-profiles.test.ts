@@ -801,6 +801,8 @@ test("baseline manifest-bound judge matches the calibration resolver exactly", a
   const calibrationJudge = await resolveLocalLabJudgeProviderConfig({
     localLabManifestPath: manifestPath,
     requestTimeout: 180_000,
+    max429WaitMs: 30_000,
+    disableThinking: true,
   });
   const resolved = await resolveBenchRuntimeProfile({
     runtimeProfile: "baseline",
@@ -813,6 +815,8 @@ test("baseline manifest-bound judge matches the calibration resolver exactly", a
     judgeBaseUrl: "http://127.0.0.1:11434/api",
     localLabManifestPath: manifestPath,
     requestTimeout: 180_000,
+    max429WaitMs: 30_000,
+    disableThinking: true,
   });
 
   assert.deepEqual(resolved.judgeProvider, calibrationJudge);
@@ -822,7 +826,8 @@ test("baseline manifest-bound judge matches the calibration resolver exactly", a
     baseUrl: "http://127.0.0.1:11434/api",
     temperature: 0,
     seed: 47,
-    retryOptions: { timeoutMs: 180_000 },
+    retryOptions: { timeoutMs: 180_000, max429WaitMs: 30_000 },
+    disableThinking: true,
   });
   assert.equal(resolved.systemProvider?.provider, "claude-cli");
   assert.equal(resolved.systemProvider?.model, "opus");
