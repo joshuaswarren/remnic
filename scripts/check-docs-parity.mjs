@@ -111,8 +111,9 @@ const BENCH_RUN_BOOLEAN_FLAGS = new Set([
   "-h",
 ]);
 
-const BUILD_WEEK_ALLOWED_RUN_FLAGS = new Set([
-  "--json",
+const BUILD_WEEK_ALLOWED_RUN_BOOLEAN_FLAGS = new Set(["--json"]);
+
+const BUILD_WEEK_ALLOWED_RUN_VALUE_FLAGS = new Set([
   "--runtime-profile",
   "--limit",
   "--trial-limit",
@@ -128,6 +129,11 @@ const BUILD_WEEK_ALLOWED_RUN_FLAGS = new Set([
   "--judge-provider",
   "--judge-model",
   "--judge-codex-reasoning-effort",
+]);
+
+const BUILD_WEEK_ALLOWED_RUN_FLAGS = new Set([
+  ...BUILD_WEEK_ALLOWED_RUN_BOOLEAN_FLAGS,
+  ...BUILD_WEEK_ALLOWED_RUN_VALUE_FLAGS,
 ]);
 
 const BUILD_WEEK_CREDIT_ENV_CONTRACTS = Object.freeze([
@@ -534,19 +540,36 @@ function checkBuildWeekCodexDatasetPaths() {
         }
       }
       const remnicAt = commandTokens.indexOf("remnic");
-      const disallowedFlags = [
-        ...new Set(
-          commandTokens
-            .slice(remnicAt + 3)
-            .filter((token) => token.startsWith("--") || token === "-h")
-            .map((token) => token.split("=", 1)[0])
-            .filter((flag) => !BUILD_WEEK_ALLOWED_RUN_FLAGS.has(flag)),
-        ),
-      ];
-      for (const flag of disallowedFlags) {
-        failures.push(
-          `${rel}: Build Week Codex command must not include unpinned run flag \`${flag}\``,
-        );
+      const runOptionTokens = commandTokens.slice(remnicAt + 3);
+      const optionCounts = new Map();
+      for (let optionIndex = 0; optionIndex < runOptionTokens.length; optionIndex += 1) {
+        const token = runOptionTokens[optionIndex];
+        if (!token.startsWith("-")) continue;
+        if (!BUILD_WEEK_ALLOWED_RUN_FLAGS.has(token)) {
+          failures.push(
+            token.includes("=")
+              ? `${rel}: Build Week Codex command must use separate option/value tokens; ` +
+                `equals-form option \`${token}\` is not supported by the bench CLI`
+              : `${rel}: Build Week Codex command must not include unpinned run option \`${token}\``,
+          );
+          continue;
+        }
+        const count = (optionCounts.get(token) ?? 0) + 1;
+        optionCounts.set(token, count);
+        if (count > 1) {
+          failures.push(
+            `${rel}: Build Week Codex command must include option \`${token}\` at most once`,
+          );
+        }
+        if (BUILD_WEEK_ALLOWED_RUN_BOOLEAN_FLAGS.has(token)) continue;
+        const value = runOptionTokens[optionIndex + 1];
+        if (!value || value.startsWith("-")) {
+          failures.push(
+            `${rel}: Build Week Codex command option \`${token}\` requires a separate non-option value`,
+          );
+          continue;
+        }
+        optionIndex += 1;
       }
       for (const selector of ["--all", "--custom", "--matrix"]) {
         if (commandTokens.some((token) => token === selector || token.startsWith(`${selector}=`))) {

@@ -1348,7 +1348,76 @@ test("Build Week Codex commands reject every unpinned runtime override", () => {
 
       const result = runParity(root);
       assert.equal(result.status, 1, `${override}: ${result.stderr}`);
-      assert.match(result.stderr, /must not include unpinned run flag/);
+      assert.match(result.stderr, /must not include unpinned run option/);
+    });
+  }
+});
+
+test("Build Week Codex commands reject equals-form and duplicate options", () => {
+  const valueFlags = [
+    "--runtime-profile",
+    "--limit",
+    "--trial-limit",
+    "--dataset-dir",
+    "--results-dir",
+    "--drain-timeout",
+    "--system-provider",
+    "--system-model",
+    "--system-codex-reasoning-effort",
+    "--internal-provider",
+    "--internal-model",
+    "--internal-codex-reasoning-effort",
+    "--judge-provider",
+    "--judge-model",
+    "--judge-codex-reasoning-effort",
+  ];
+  const cases = [
+    ...["--json=false", "--json=true", "--json="].map((suffix) => ({
+      suffix,
+      expected: new RegExp(`equals-form option \`${suffix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\``),
+    })),
+    ...valueFlags.map((flag) => ({
+      suffix: `${flag}=attached`,
+      expected: new RegExp(`equals-form option \`${flag}=attached\``),
+    })),
+    { suffix: "--runtime-profile baseline", expected: /option `--runtime-profile` at most once/ },
+    { suffix: "--limit 2", expected: /option `--limit` at most once/ },
+    { suffix: "--json --json", expected: /option `--json` at most once/ },
+    { suffix: "-x", expected: /unpinned run option `-x`/ },
+    { suffix: "-h", expected: /unpinned run option `-h`/ },
+    { suffix: "-h=foo", expected: /equals-form option `-h=foo`/ },
+    { suffix: "--", expected: /unpinned run option `--`/ },
+    { suffix: "-", expected: /unpinned run option `-`/ },
+    {
+      suffix: "--results-dir --json",
+      expected: /option `--results-dir` requires a separate non-option value/,
+    },
+  ];
+  for (const { suffix, expected } of cases) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+          "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+          'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+          `remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> ${suffix} \\`,
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+          "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+          "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+          "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${suffix}: ${result.stderr}`);
+      assert.match(result.stderr, expected);
     });
   }
 });
