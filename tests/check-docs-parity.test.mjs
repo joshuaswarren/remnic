@@ -815,6 +815,39 @@ test("a credit-budget export in prose does not authorize a later shell command",
   });
 });
 
+test("a later credit-budget override or unset invalidates an earlier guard", () => {
+  for (const mutation of [
+    "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=100",
+    "export -n REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+    "unset REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+  ]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+          mutation,
+          "remnic bench run longmemeval --limit 1 \\",
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+          "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+          "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+          "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${mutation}: ${result.stderr}`);
+      assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+    });
+  }
+});
+
 test("a comment mentioning bench run before the credit guard does not invalidate it", () => {
   withFixture((root) => {
     writeFileSync(
@@ -883,6 +916,37 @@ test("Build Week Codex commands pin the complete paid-run protocol", () => {
       }
     });
   }
+});
+
+test("the first command in a two-command paid sequence is exactly a one-item smoke", () => {
+  withFixture((root) => {
+    const protocol = [
+      '--dataset-dir ./bench-datasets/longmemeval --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR"',
+      "--drain-timeout 600000",
+      "--system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium",
+      "--internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium",
+      "--judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+    ].join(" ");
+    const readme = path.join(root, "packages", "bench", "README.md");
+    mkdirSync(path.dirname(readme), { recursive: true });
+    writeFileSync(
+      readme,
+      [
+        "# Bench",
+        "",
+        "```bash",
+        "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        `remnic bench run longmemeval --limit 100 ${protocol}`,
+        `remnic bench run longmemeval --limit <LEDGER_DERIVED_LIMIT> ${protocol}`,
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /command 1 of 2 must include `--limit 1`; got 100/);
+  });
 });
 
 test("a guarded Build Week command cannot bypass checks by dropping Codex flags", () => {

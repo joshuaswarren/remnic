@@ -132,6 +132,8 @@ const BUILD_WEEK_ALLOWED_RUN_FLAGS = new Set([
 
 const BUILD_WEEK_CREDIT_GUARD_LINE_RE =
   /^\s*export\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473\s*(?:#.*)?$/m;
+const BUILD_WEEK_CREDIT_BUDGET_MUTATION_RE =
+  /^\s*(?:export(?:\s+-n)?\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET(?:\s*=|\s*$)|REMNIC_BENCH_CODEX_CREDIT_BUDGET\s*=|unset(?:\s+-v)?\s+REMNIC_BENCH_CODEX_CREDIT_BUDGET\b)/;
 const BUILD_WEEK_SHELL_LANGS = new Set(["", "bash", "sh", "shell", "shell-session", "zsh", "console"]);
 
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
@@ -361,55 +363,60 @@ function extractRemnicInvocations(relPath, src) {
  * are ordinary multiline shell invocations, not arbitrary shell programs.
  *
  * @param {string} src
- * @returns {Array<{ command: string; guardedBuildWeekBlock: boolean; blockStartLine: number }>}
+ * @returns {Array<{ command: string; commandStartLine: number; blockHasCreditBudgetMutation: boolean }>}
  */
 function extractLogicalShellCommands(src) {
   const commands = [];
   for (const block of extractFencedBlocks(src)) {
     if (!BUILD_WEEK_SHELL_LANGS.has(block.lang)) continue;
-    const guardAt = block.text.search(BUILD_WEEK_CREDIT_GUARD_LINE_RE);
-    let firstRunAt = -1;
-    let offset = 0;
-    for (const line of block.text.split("\n")) {
-      if (!/^\s*#/.test(line)) {
-        const runAt = line.search(/\bremnic\s+bench\s+run\b/);
-        if (runAt >= 0) {
-          firstRunAt = offset + runAt;
-          break;
-        }
-      }
-      offset += line.length + 1;
-    }
-    const guardedBuildWeekBlock = guardAt >= 0 && firstRunAt >= 0 && guardAt < firstRunAt;
-    const logical = block.text.replace(/\\\s*\n/g, " ");
-    for (const line of logical.split("\n")) {
-      const command = line.trim();
+    const lines = block.text.split("\n");
+    const blockHasCreditBudgetMutation = lines.some(
+      (line) => !/^\s*#/.test(line) && BUILD_WEEK_CREDIT_BUDGET_MUTATION_RE.test(line),
+    );
+    let logicalParts = [];
+    let logicalStartIndex = 0;
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+      if (logicalParts.length === 0) logicalStartIndex = index;
+      const continues = /\\\s*$/.test(line);
+      logicalParts.push(line.replace(/\\\s*$/, ""));
+      if (continues && index + 1 < lines.length) continue;
+      const command = logicalParts.join(" ").trim();
       if (command.length > 0 && !command.startsWith("#")) {
-        commands.push({ command, guardedBuildWeekBlock, blockStartLine: block.startLine });
+        commands.push({
+          command,
+          commandStartLine: block.startLine + 1 + logicalStartIndex,
+          blockHasCreditBudgetMutation,
+        });
       }
+      logicalParts = [];
     }
   }
   return commands;
 }
 
 /**
- * Return absolute Markdown line numbers for executable credit-budget exports.
- * Prose and non-shell fences must not authorize a later copy-pasteable command.
+ * Return document-ordered shell mutations of the credit budget. The last
+ * mutation before a command determines whether its child process is guarded.
+ * Prose and non-shell fences never affect executable environment state.
  *
  * @param {string} src
- * @returns {number[]}
+ * @returns {Array<{ line: number; valid: boolean }>}
  */
-function extractShellCreditGuardLines(src) {
-  const guardLines = [];
+function extractShellCreditBudgetMutations(src) {
+  const mutations = [];
   for (const block of extractFencedBlocks(src)) {
     if (!BUILD_WEEK_SHELL_LANGS.has(block.lang)) continue;
     for (const [index, line] of block.text.split("\n").entries()) {
-      if (BUILD_WEEK_CREDIT_GUARD_LINE_RE.test(line)) {
-        guardLines.push(block.startLine + 1 + index);
+      if (!/^\s*#/.test(line) && BUILD_WEEK_CREDIT_BUDGET_MUTATION_RE.test(line)) {
+        mutations.push({
+          line: block.startLine + 1 + index,
+          valid: BUILD_WEEK_CREDIT_GUARD_LINE_RE.test(line),
+        });
       }
     }
   }
-  return guardLines;
+  return mutations;
 }
 
 /**
@@ -473,20 +480,21 @@ function checkBuildWeekCodexDatasetPaths() {
     const abs = path.join(ROOT, ...rel.split("/"));
     if (!existsSync(abs)) continue;
     const src = readFileSync(abs, "utf8");
-    const creditGuardLines = extractShellCreditGuardLines(src);
+    const creditBudgetMutations = extractShellCreditBudgetMutations(src);
     let checkedInDoc = 0;
-    for (const { command, guardedBuildWeekBlock, blockStartLine } of extractLogicalShellCommands(src)) {
+    for (const { command, commandStartLine, blockHasCreditBudgetMutation } of extractLogicalShellCommands(src)) {
       if (!/\bremnic\s+bench\s+run\b/.test(command)) continue;
       const usesCodexCli = /\bcodex-cli\b/.test(command);
-      if (!guardedBuildWeekBlock && !usesCodexCli) continue;
+      if (!blockHasCreditBudgetMutation && !usesCodexCli) continue;
       const commandTokens = command.trim().split(/\s+/);
       const datasetFlag = extractShellOptionValue(command, "--dataset-dir");
       const positionalBenchmarks = extractRunBenchmarks(command) ?? [];
       checked += 1;
       checkedInDoc += 1;
-      const creditGuardPrecedesCommand =
-        guardedBuildWeekBlock || creditGuardLines.some((line) => line < blockStartLine);
-      if (!creditGuardPrecedesCommand) {
+      const lastCreditBudgetMutation = creditBudgetMutations.findLast(
+        ({ line }) => line < commandStartLine,
+      );
+      if (!lastCreditBudgetMutation?.valid) {
         failures.push(
           `${rel}: Build Week Codex command must follow a shell export of ` +
             "`REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`",
@@ -611,6 +619,16 @@ function checkBuildWeekCodexDatasetPaths() {
         if (!/^(?:[1-9]\d*|<LEDGER_DERIVED_LIMIT>)$/.test(value)) {
           failures.push(
             `${rel}: Build Week Codex ${benchmark} ${flag} must be a positive integer or \`<LEDGER_DERIVED_LIMIT>\`; got ${value}`,
+          );
+        }
+      }
+      if (expectedCommands === 2) {
+        const limit = extractShellOptionValue(command, "--limit");
+        const requiredLimit = checkedInDoc === 1 ? "1" : "<LEDGER_DERIVED_LIMIT>";
+        if (limit !== requiredLimit) {
+          failures.push(
+            `${rel}: Build Week Codex command ${checkedInDoc} of 2 must include ` +
+              `\`--limit ${requiredLimit}\`; got ${limit ?? "no --limit"}`,
           );
         }
       }
