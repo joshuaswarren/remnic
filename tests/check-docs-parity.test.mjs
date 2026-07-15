@@ -745,6 +745,28 @@ test("Build Week dataset path cannot impersonate a missing positional benchmark"
   });
 });
 
+test("malformed Build Week Codex commands cannot bypass validation", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "remnic bench run --limit 1 \\",
+        "  --dataset-dir ./bench-datasets/longmemeval-typo \\",
+        "  --system-provider codex-cli --system-model gpt-5.6-luna",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /must include positional benchmark `longmemeval` or `locomo`/);
+  });
+});
+
 test("Build Week Codex bounds reject missing, zero, and negative values", () => {
   for (const [suffix, expected] of [
     ["--limit", /has no value for `--limit`/],

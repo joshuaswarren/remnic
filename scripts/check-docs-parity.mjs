@@ -425,13 +425,7 @@ function checkBuildWeekCodexDatasetPaths() {
       if (!/\bcodex-cli\b/.test(command)) continue;
       const commandTokens = command.trim().split(/\s+/);
       const datasetFlag = extractShellOptionValue(command, "--dataset-dir");
-      const stagedBenchmark = datasetFlag?.match(
-        /^\.\/bench-datasets\/(longmemeval|locomo)$/,
-      )?.[1];
       const positionalBenchmark = extractRunBenchmark(command);
-      if (!stagedBenchmark && positionalBenchmark !== "longmemeval" && positionalBenchmark !== "locomo") {
-        continue;
-      }
       checked += 1;
       if (positionalBenchmark !== "longmemeval" && positionalBenchmark !== "locomo") {
         failures.push(
