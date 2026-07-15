@@ -211,3 +211,63 @@ test("edges undefined still preserves all prior edges (early return)", async () 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("scoped re-assertion never downgrades an lsp-upgraded row on the same key", async () => {
+  const { store, dir } = await openTempStore();
+  try {
+    const heuristicEdge = {
+      srcQualifiedName: "greet",
+      dstQualifiedName: "format",
+      type: "CALLS",
+      confidence: 0.9,
+      provenance: "heuristic" as const,
+    };
+    const seeded = await store.upsertFileBatch([{ ...twoSymbolFile(), edges: [heuristicEdge] }]);
+    assert.ok(seeded.ok);
+    // LSP layer upgrades the same (src, dst, type) row.
+    const upgraded = await store.upsertEdges([
+      { ...heuristicEdge, confidence: 1, provenance: "lsp" },
+    ]);
+    assert.ok(upgraded.ok);
+
+    // Reindex re-derives the same heuristic key with provenance scoping:
+    // the assertion keeps the row alive but must NOT overwrite the
+    // stronger out-of-scope provenance back to heuristic.
+    const reingested = await store.upsertFileBatch([
+      {
+        ...twoSymbolFile({ contentHash: "hash-2" }),
+        edges: [heuristicEdge],
+        assertedEdgeProvenances: ["heuristic"],
+      },
+    ]);
+    assert.ok(reingested.ok);
+
+    const trace = store.traverse({ start: "greet", direction: "outgoing", maxDepth: 1 });
+    assert.ok(trace.ok);
+    const stats = await store.schemaStats();
+    assert.ok(stats.ok);
+    assert.deepEqual(stats.stats.edgesByType, { CALLS: 1 });
+    // Provenance must still be lsp. schemaStats has no provenance split, so
+    // assert via a scoped-delete probe: an assertion of [] with heuristic
+    // scope must PRESERVE the row (it is lsp-owned now) — which is only
+    // true if the earlier re-assertion did not downgrade it.
+    const probe = await store.upsertFileBatch([
+      {
+        ...twoSymbolFile({ contentHash: "hash-3" }),
+        edges: [],
+        assertedEdgeProvenances: ["heuristic"],
+      },
+    ]);
+    assert.ok(probe.ok);
+    const after = await store.schemaStats();
+    assert.ok(after.ok);
+    assert.deepEqual(
+      after.stats.edgesByType,
+      { CALLS: 1 },
+      "lsp-provenance row survived a scoped empty assertion — no downgrade happened",
+    );
+  } finally {
+    await store.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});

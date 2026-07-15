@@ -1867,6 +1867,19 @@ export class GraphStore {
         // stale keys.
         continue;
       }
+      // Provenance scoping also protects the UPDATE path (issue #1891,
+      // codex P2): a prior row whose provenance is OUTSIDE the asserted
+      // scope (e.g. an lsp-upgraded row on the same key) must not be
+      // downgraded by re-deriving the heuristic assertion. The assertion
+      // already kept the row out of the stale-delete set; leaving the
+      // stronger row untouched is the whole point of the scope.
+      if (
+        prior &&
+        scoped &&
+        !(scoped as readonly string[]).includes(prior.provenance)
+      ) {
+        continue;
+      }
       const r = insertEdge.run(srcId, dstId, edge.type, edge.confidence, edge.provenance);
       edgeCount += r.changes;
     }
