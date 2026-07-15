@@ -266,6 +266,20 @@ export { createLocalLlmProvider } from "./providers/local-llm.js";
 export { createOllamaProvider } from "./providers/ollama.js";
 export { createOpenAiCompatibleProvider } from "./providers/openai-compatible.js";
 export {
+  StructuredJudgeError,
+  createStructuredBenchJudge,
+  isStructuredJudgeProvider,
+} from "./providers/structured-judge.js";
+export type {
+  AssistantRubricRequest,
+  StructuredJudgeErrorCode,
+  StructuredJudgeProvider,
+  StructuredJudgeTelemetry,
+  StructuredJudgeVerdict,
+  StructuredJudgeVerdictResult,
+  StructuredVerdictRequest,
+} from "./providers/structured-judge.js";
+export {
   DEFAULT_OPENAI_RESPONSES_JUDGE_MODEL,
   OpenAiResponsesJudgeError,
   OpenAiResponsesProvider,

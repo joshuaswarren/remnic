@@ -74,13 +74,13 @@ and Codex session evidence at submission time.
 - [x] GPT-5.6 judge provider (`packages/bench/src/providers/`). Wires
   GPT-5.6 through the OpenAI Responses API as the grading model. It scores
   benchmark answers, correction acceptance, and stale-memory harm.
-- [ ] GPT-5.6 frontier-tier run. A full Tier-F benchmark run with GPT-5.6
-  as the system under test. Committed as a reproducible artifact under
-  `docs/benchmarks/results/` with its manifest. **Blocked on operator input:**
-  Codex CLI 0.144.4 authenticated through ChatGPT rejects `gpt-5.6` as an
-  unsupported account model, and this environment has no `OPENAI_API_KEY` or
-  `REMNIC_BENCH_OPENAI_API_KEY`. Run it through the raw Responses API once a
-  key is available; do not substitute or relabel a different model.
+- [ ] GPT-5.6 frontier-tier run. A bounded, credit-backed Tier-F run uses
+  `gpt-5.6-luna` for bulk responder and internal work and `gpt-5.6-terra` for
+  quality-critical judging. `gpt-5.6-sol` is outside the bounded plan and is
+  disabled unless the operator explicitly opts in. A result is claimed only
+  after its artifact and manifest are committed under
+  `docs/benchmarks/results/`; bounded coverage is labeled as a trial, never a
+  full leaderboard number.
 - [x] Memory report card. Extends `remnic bench export --format html` into
   a single shareable scored report with per-dimension scores, correction
   behavior, and provenance. Included in the existing publish feed for
@@ -125,8 +125,9 @@ Codex `/feedback` session ID for the core functionality:
 paste the real session ID here before submission.
 
 GPT-5.6 frontier artifact and manifest:
-**PENDING OPERATOR INPUT.** This requires an OpenAI API key. Link only the committed
-artifact produced by the raw Responses API run.
+**PENDING OPERATOR RUN.** Link only a committed artifact produced by the
+credit-backed Codex CLI protocol below. Do not convert a bounded trial into a
+full-run claim.
 
 ## How Codex and GPT-5.6 were used
 
@@ -137,10 +138,80 @@ the `/feedback` session ID document where Codex sped up the work. They also
 record the key design calls: the adapter contract shape, the scoring
 rubric, and the report layout.
 
-GPT-5.6 is load-bearing in the implemented product as the opt-in benchmark
-judge that grades memory answers through strict structured outputs. The
-planned second use, benchmarking GPT-5.6 as the system under test, remains
-credential-blocked and is not claimed as delivered.
+GPT-5.6 is part of the product. It can act as an opt-in judge with strict
+structured output. There are two provider paths. The optional Responses API
+judge uses the exact model id `gpt-5.6`. The ChatGPT-backed Codex CLI has other
+names. Luna does the bulk work. Terra does the key judge work. These names and
+paths are not the same. We will not claim a CLI result until a real, locked
+artifact exists.
+
+## Credit-backed Codex CLI run protocol
+
+The Build Week grant is **2,473 Codex credits**. During a benchmark window,
+this account must be used exclusively by this one harness process; the Codex
+CLI has no machine-readable account-balance command, so unrelated Codex use
+cannot be reconciled into the local ledger. Before starting, `codex login
+status` must report ChatGPT authentication. We hold back **473 credits**.
+That leaves **2,000 usable credits**. The holdback is not a spend target. It
+covers the last call, since its true cost is known only after it ends. Codex
+adds each finished turn to one JSON ledger. The usage comes from the
+`turn.completed` JSONL event. We read that ledger before we choose the next
+small batch.
+
+| Ledger item | Credits |
+| --- | ---: |
+| Starting balance | 2,473 |
+| Safety reserve | -473 |
+| Maximum planned spend | 2,000 |
+| Unallocated balance after the plan | 473 |
+
+Credit accounting uses the published per-million-token rates:
+
+| CLI model | Role | Input | Cached input | Output |
+| --- | --- | ---: | ---: | ---: |
+| `gpt-5.6-luna` | Bulk responder and internal work | 25 | 2.5 | 150 |
+| `gpt-5.6-terra` | Quality-critical judge | 62.5 | 6.25 | 375 |
+
+For each finished turn, credits equal
+`((input_tokens - cached_input_tokens) * input_rate + cached_input_tokens * cached_rate + output_tokens * output_rate) / 1,000,000`.
+The ledger records harness-observed use. If a process exits without exact usage,
+the ledger blocks further calls until the account is manually reconciled. It
+does not guess a fixed trial count. After each
+small batch, set the next `--limit` or `--trial-limit` from the balance and the
+measured cost per task. Stop at the 2,000-credit spend line. Stop sooner if the
+balance cannot cover one more task. We do not use fast service. Sol needs its
+own opt-in and is not part of this plan.
+
+First, inspect the signed-in CLI catalog with `codex debug models`. Each call
+starts a new, non-interactive `codex exec` in an empty work folder. It ignores
+user config and project rules, disables hooks, and keeps no chat. The sandbox
+is read-only, and approval is set to `never`. The benchmark prompt also tells
+the model not to use tools. The artifact records this one-shot setup.
+
+The harness can cap task counts with `--limit`. LoCoMo and MemoryAgentBench can
+also use `--trial-limit`. These flags do not cap credits. The provider has
+separate credit guards. Set them, then choose the task cap from the ledger:
+
+```bash
+export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473
+export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473
+export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$PWD/.bench-private/codex-credit-ledger.json"
+
+# Replace <LEDGER_DERIVED_LIMIT> after a smoke turn establishes actual cost.
+remnic bench run longmemeval --runtime-profile real \
+  --limit <LEDGER_DERIVED_LIMIT> \
+  --system-provider codex-cli --system-model gpt-5.6-luna \
+  --system-codex-reasoning-effort medium \
+  --internal-provider codex-cli --internal-model gpt-5.6-luna \
+  --internal-codex-reasoning-effort medium \
+  --judge-provider codex-cli --judge-model gpt-5.6-terra \
+  --judge-codex-reasoning-effort high
+```
+
+The placeholder is on purpose. There is no honest fixed task count until we
+measure this prompt and test mix. Keep the ledger private because it can hold
+local run data. Publish only the safe cost and token totals from the result and
+manifest.
 
 ## How to test it in five minutes
 
