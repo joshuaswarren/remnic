@@ -774,7 +774,9 @@ function validateCodexCreditReceipt(
     nearlyEqual(receipt.cumulative!.credits!, receipt.totalSpentCredits!) &&
     scopeDoesNotExceed(receipt.run!, receipt.cumulative!) &&
     expectedModels.every((model) =>
-      receipt.run!.models!.some((entry) => entry.model === model),
+      receipt.run!.models!.some(
+        (entry) => entry.model === model && entry.calls! > 0 && entry.credits! > 0,
+      ),
     );
   if (!accountingValid) {
     issues.push({

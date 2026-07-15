@@ -581,6 +581,38 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
         models: [],
       },
     },
+    {
+      ...validCodexCreditReceipt(),
+      run: {
+        id: "test-public-matrix-run",
+        calls: 1,
+        credits: 3.55,
+        inputTokens: 100_000,
+        cachedInputTokens: 20_000,
+        outputTokens: 10_000,
+        reasoningOutputTokens: 8_000,
+        models: [
+          {
+            model: "gpt-5.6-luna",
+            calls: 1,
+            credits: 3.55,
+            inputTokens: 100_000,
+            cachedInputTokens: 20_000,
+            outputTokens: 10_000,
+            reasoningOutputTokens: 8_000,
+          },
+          {
+            model: "gpt-5.6-terra",
+            calls: 0,
+            credits: 0,
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            reasoningOutputTokens: 0,
+          },
+        ],
+      },
+    },
   ];
   const verifyPublicMatrixEvidence = await loadVerifier();
   for (const receipt of variants) {
@@ -596,6 +628,8 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
       resultsDir,
       benchmarks: [benchmark],
       expectedGitSha: "abc123",
+      expectedSystemModel: "gpt-5.6-luna",
+      expectedJudgeModel: "gpt-5.6-terra",
       requireDiagnostics: false,
     });
     assert.equal(
