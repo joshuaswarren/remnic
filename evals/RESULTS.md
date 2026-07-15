@@ -1,5 +1,12 @@
 # Engram Eval Suite — Benchmark Results
 
+> **Old results: not current or Build Week proof.** This page keeps a March
+> 2026 Engram v9.0 test snapshot and its first notes. It is not a current
+> Remnic report. It is not a valid leaderboard. It is not proof for OpenAI
+> Build Week. MemoryArena used a bad score method that let F1 exceed 1.0. Do
+> not quote its `0.704` headline or the broad win claims as valid. Use new,
+> provenance-locked runs for current claims.
+
 **Engram version:** 9.0.89+
 **Git SHA:** 56a50a9
 **Date:** 2026-03-15
