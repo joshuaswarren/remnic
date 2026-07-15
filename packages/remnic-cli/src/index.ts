@@ -3339,6 +3339,13 @@ async function runBenchViaPackage(
     return { ok: false };
   }
 
+  const judgeCalibration = await preparePersistedJudgeCalibrationAttachment(
+    benchModule,
+    benchmarkId,
+    plan.runtime.judgeProvider,
+    parsed,
+  );
+
   // local-lab endpoint preflight gate (issue #1573 PR2, review rounds 5-11).
   // Shared with runCustomBenchViaPackage via preflightLocalLabEndpointsIfNeeded.
   await preflightLocalLabEndpointsIfNeeded(benchModule, plan);
@@ -3456,7 +3463,7 @@ async function runBenchViaPackage(
     // carries the kappa + warning after `remnic bench judge-calibrate`. Absent
     // calibration (file missing) is the common case — the result is written
     // unchanged, preserving backwards compatibility.
-    await attachPersistedJudgeCalibration(benchModule, benchmarkId, result, parsed);
+    attachPreparedJudgeCalibration(result, judgeCalibration);
     const writtenPath = await benchModule.writeBenchmarkResult(result, outputDir);
     if (parsed.json) {
       console.log(JSON.stringify(redactBenchResultForStdout(benchModule, result), null, 2));
@@ -3479,7 +3486,7 @@ async function runBenchViaPackage(
       );
       // Attach persisted calibration to partial results too — the kappa
       // reflects judge reliability, independent of whether the run finished.
-      await attachPersistedJudgeCalibration(benchModule, benchmarkId, partialResult, parsed);
+      attachPreparedJudgeCalibration(partialResult, judgeCalibration);
       try {
         const partialPath = await benchModule.writeBenchmarkResult(partialResult, outputDir);
         console.error(`  Partial results (${partialTasks.length} tasks) written to ${partialPath}`);
@@ -3504,9 +3511,10 @@ async function runBenchViaPackage(
   }
 }
 /**
- * Attach a previously persisted judge-calibration state to a benchmark result
- * before it is written (issue #1573 PR3). The calibration dir mirrors the one
- * `calibrateBenchJudges` writes to (`~/.remnic/bench/calibration`). When a
+ * Prepare a previously persisted judge-calibration state before the benchmark
+ * starts, then attach it to the result before writing (issue #1573 PR3). The
+ * calibration dir mirrors the one `calibrateBenchJudges` writes to
+ * (`~/.remnic/bench/calibration`). When a
  * calibration file exists for the benchmark, its `{ kappa, sampleSize,
  * threshold, warning }` lands in `result.config.benchmarkOptions.judgeCalibration`
  * — the same `benchmarkOptions` envelope that already carries
@@ -3514,9 +3522,10 @@ async function runBenchViaPackage(
  * local artifact and is visible to the publish/feed/leaderboard readers.
  *
  * Absent calibration is the common case (operator has not run
- * `judge-calibrate` yet): the result is returned unchanged. A corrupt state
- * file is a silent miss inside `loadJudgeCalibrationState` (rule 34) — the run
- * is never failed by stale calibration.
+ * `judge-calibrate` yet): the result is returned unchanged. Eligible local
+ * runs validate state, pins, and the resolved judge configuration before any
+ * endpoint or model work, so a stale calibration cannot discard a completed
+ * result.
  *
  * Judge binding: attachment requires both persisted configuration hashes to be
  * explicitly pinned by the run, and the run's provider/model must match the
@@ -3524,23 +3533,40 @@ async function runBenchViaPackage(
  * regenerated. Only the artifact subset and hashes are stashed — provider
  * identities remain state-file bookkeeping.
  */
-export async function attachPersistedJudgeCalibration(
+type PreparedJudgeCalibrationAttachment = Record<string, unknown>;
+
+/**
+ * Resolve and validate calibration state before any endpoint preflight,
+ * adapter construction, or benchmark/model call. A run that does not use the
+ * calibrated local judge is ineligible and ignores the state without needing
+ * attachment pins. Eligible runs fail closed on legacy state, missing or stale
+ * pins, and any drift in the fully resolved judge provider configuration.
+ */
+export async function preparePersistedJudgeCalibrationAttachment(
   benchModule: PackageBenchModule,
   benchmarkId: string,
-  result: {
-    config: {
-      benchmarkOptions?: Record<string, unknown>;
-      judgeProvider?: { provider?: string; model?: string } | null;
-    };
-  },
+  runJudgeProvider: PackageBenchProviderConfig | null | undefined,
   calibrationBinding: Pick<ParsedBenchArgs,
     "calibrationDir" | "calibrationLocalConfigSha256" | "calibrationFrontierConfigSha256"
   >,
-): Promise<void> {
-  const calibrationDir = calibrationBinding.calibrationDir ??
-    path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
+): Promise<PreparedJudgeCalibrationAttachment | undefined> {
+  const calibrationDir = expandTilde(
+    calibrationBinding.calibrationDir ??
+      path.join(resolveHomeDir(), ".remnic", "bench", "calibration"),
+  );
   const state = await benchModule.loadJudgeCalibrationState?.(benchmarkId, calibrationDir);
-  if (!state) return;
+  if (!state) return undefined;
+
+  if (state.localJudgeProvider !== undefined && state.localJudgeModel !== undefined) {
+    const matchesLocal =
+      runJudgeProvider?.provider === state.localJudgeProvider &&
+      runJudgeProvider.model === state.localJudgeModel;
+    // The persisted kappa measures the calibrated local judge's agreement
+    // with the frontier judge. Frontier and unrelated runs are not attachment
+    // candidates, so their normal execution must not require local-run pins.
+    if (!matchesLocal) return undefined;
+  }
+
   if (!state.localJudgeConfigHash || !state.frontierJudgeConfigHash) {
     throw new Error(
       `Calibration state for ${benchmarkId} is missing bound judge configuration hashes; recalibrate before attaching it.`,
@@ -3560,39 +3586,43 @@ export async function attachPersistedJudgeCalibration(
   ) {
     throw new Error(`Calibration configuration hash mismatch for ${benchmarkId}; refusing to attach stale kappa.`);
   }
-  if (state.localJudgeModel !== undefined && state.frontierJudgeModel !== undefined) {
-    const runJudgeProvider = result.config.judgeProvider?.provider;
-    const runJudgeModel = result.config.judgeProvider?.model;
-    const matchesLocal =
-      runJudgeProvider === state.localJudgeProvider && runJudgeModel === state.localJudgeModel;
-    // Only attach when the run uses the LOCAL judge the kappa was computed for
-    // (codex P2 + cursor Low review). A frontier-tier run that happens to
-    // reuse the stored frontier judge identity must NOT inherit the local
-    // judge's reliability kappa — the kappa measures the local judge's
-    // agreement with the frontier, not the frontier judge's self-consistency.
-    if (!matchesLocal) {
-      return;
-    }
+
+  const resolvedRunJudgeConfigHash = hashCalibrationProviderConfig(runJudgeProvider);
+  if (resolvedRunJudgeConfigHash !== state.localJudgeConfigHash) {
+    throw new Error(
+      `Resolved run judge configuration hash mismatch for ${benchmarkId}; ` +
+        `expected sha256:${state.localJudgeConfigHash}, got sha256:${resolvedRunJudgeConfigHash}. ` +
+        "Refusing to attach stale kappa before benchmark dispatch.",
+    );
   }
-  result.config.benchmarkOptions = {
-    ...(result.config.benchmarkOptions ?? {}),
-    judgeCalibration: {
-      kappa: state.kappa,
-      sampleSize: state.sampleSize,
-      threshold: state.threshold,
-      warning: state.warning,
-      ...(state.confidenceInterval ? { confidenceInterval: state.confidenceInterval } : {}),
-      ...(state.bootstrapSamples ? { bootstrapSamples: state.bootstrapSamples } : {}),
-      ...(state.answerSetHash ? { answerSetHash: state.answerSetHash } : {}),
-      ...(state.sourceResultId ? { sourceResultId: state.sourceResultId } : {}),
-      ...(state.sliceQuestionIds ? { sliceQuestionIds: state.sliceQuestionIds } : {}),
-      localJudgeConfigHash: state.localJudgeConfigHash,
-      frontierJudgeConfigHash: state.frontierJudgeConfigHash,
-    },
+
+  return {
+    kappa: state.kappa,
+    sampleSize: state.sampleSize,
+    threshold: state.threshold,
+    warning: state.warning,
+    ...(state.confidenceInterval ? { confidenceInterval: state.confidenceInterval } : {}),
+    ...(state.bootstrapSamples ? { bootstrapSamples: state.bootstrapSamples } : {}),
+    ...(state.answerSetHash ? { answerSetHash: state.answerSetHash } : {}),
+    ...(state.sourceResultId ? { sourceResultId: state.sourceResultId } : {}),
+    ...(state.sliceQuestionIds ? { sliceQuestionIds: state.sliceQuestionIds } : {}),
+    localJudgeConfigHash: state.localJudgeConfigHash,
+    frontierJudgeConfigHash: state.frontierJudgeConfigHash,
   };
 }
 
-function hashCalibrationProviderConfig(config: unknown): string {
+export function attachPreparedJudgeCalibration(
+  result: { config: { benchmarkOptions?: Record<string, unknown> } },
+  judgeCalibration: PreparedJudgeCalibrationAttachment | undefined,
+): void {
+  if (!judgeCalibration) return;
+  result.config.benchmarkOptions = {
+    ...(result.config.benchmarkOptions ?? {}),
+    judgeCalibration,
+  };
+}
+
+export function hashCalibrationProviderConfig(config: unknown): string {
   const canonicalize = (value: unknown, key = ""): unknown => {
     if (typeof value === "string" && /(?:api.?key|authorization|token|secret)/i.test(key)) {
       return { secretSha256: createHash("sha256").update(value).digest("hex") };
