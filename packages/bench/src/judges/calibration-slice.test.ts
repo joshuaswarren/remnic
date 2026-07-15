@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import test from "node:test";
 import path from "node:path";
@@ -10,11 +10,24 @@ import {
   JUDGE_CALIBRATION_KAPPA_THRESHOLD,
   MIN_CALIBRATION_SOURCE_TASKS,
   loadJudgeCalibrationState,
+  hashOrderedQuestionIds,
   runJudgeCalibration,
   selectCalibrationSlice,
   writeJudgeCalibrationState,
   type CalibrationAnswer,
 } from "./calibration-slice.ts";
+
+function checkpointProvenance(dir: string, answers: readonly CalibrationAnswer[]) {
+  return {
+    dir,
+    sourceResultId: "source-run-1",
+    sourceResultSha256: "a".repeat(64),
+    orderedQuestionIdsHash: hashOrderedQuestionIds(answers.map((answer) => answer.questionId)),
+    rubricVersion: "rubric-v1",
+    localJudgeConfigHash: "c".repeat(64),
+    frontierJudgeConfigHash: "d".repeat(64),
+  };
+}
 
 /** Stub judge that returns a fixed score per questionId (deterministic). */
 function makeStubJudge(scoreById: Record<string, number>): BenchJudge {
@@ -77,6 +90,66 @@ test("selectCalibrationSlice: deterministic — same input yields same slice acr
   const slice1 = selectCalibrationSlice(ids);
   const slice2 = selectCalibrationSlice(ids);
   assert.deepEqual(slice1, slice2);
+});
+
+test("hashOrderedQuestionIds is deterministic and order-sensitive", () => {
+  assert.equal(hashOrderedQuestionIds(["a", "b"]), hashOrderedQuestionIds(["a", "b"]));
+  assert.notEqual(hashOrderedQuestionIds(["a", "b"]), hashOrderedQuestionIds(["b", "a"]));
+});
+
+test("runJudgeCalibration checkpoints each judge side and resumes only missing calls", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-resume-"));
+  try {
+    const answers = makeAnswers(3);
+    let localCalls = 0;
+    let frontierCalls = 0;
+    const local: BenchJudge = { async score() { localCalls += 1; return 1; } };
+    const interruptedFrontier: BenchJudge = { async score() { frontierCalls += 1; throw new Error("interrupted"); } };
+    await assert.rejects(() => runJudgeCalibration({
+      benchmarkId: "locomo", localJudge: local, frontierJudge: interruptedFrontier,
+      answers, sliceSize: 3, checkpoint: checkpointProvenance(dir, answers),
+    }), /interrupted/);
+    assert.equal(localCalls, 1);
+    assert.equal(frontierCalls, 1);
+
+    const resumed = await runJudgeCalibration({
+      benchmarkId: "locomo", localJudge: local,
+      frontierJudge: { async score() { frontierCalls += 1; return 1; } },
+      answers, sliceSize: 3, checkpoint: checkpointProvenance(dir, answers), bootstrapSamples: 20,
+    });
+    assert.equal(resumed.execution.localJudgeCalls, 2);
+    assert.equal(resumed.execution.frontierJudgeCalls, 3);
+    assert.equal(resumed.execution.resumedJudgeOutputs, 1);
+    assert.equal(localCalls, 3, "the completed local side is not repaid");
+    assert.equal(frontierCalls, 4);
+    assert.equal((await stat(path.join(dir, "locomo.checkpoint.json"))).mode & 0o777, 0o600);
+    assert.equal((await stat(dir)).mode & 0o777, 0o700);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("runJudgeCalibration fails closed on corrupt or mismatched checkpoint before calls", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "bench-calib-closed-"));
+  try {
+    const answers = makeAnswers(2);
+    await runJudgeCalibration({
+      benchmarkId: "locomo", localJudge: makeScalarStubJudge({ q0: 1, q1: 1 }),
+      frontierJudge: makeScalarStubJudge({ q0: 1, q1: 1 }), answers, sliceSize: 2,
+      checkpoint: checkpointProvenance(dir, answers), bootstrapSamples: 20,
+    });
+    let calls = 0;
+    const counting: BenchJudge = { async score() { calls += 1; return 1; } };
+    await assert.rejects(() => runJudgeCalibration({
+      benchmarkId: "locomo", localJudge: counting, frontierJudge: counting, answers, sliceSize: 2,
+      checkpoint: { ...checkpointProvenance(dir, answers), frontierJudgeConfigHash: "e".repeat(64) },
+    }), /contract mismatch/);
+    assert.equal(calls, 0);
+    await writeFile(path.join(dir, "locomo.checkpoint.json"), "not-json", "utf8");
+    await assert.rejects(() => runJudgeCalibration({
+      benchmarkId: "locomo", localJudge: counting, frontierJudge: counting, answers, sliceSize: 2,
+      checkpoint: checkpointProvenance(dir, answers),
+    }), /corrupt checkpoint/);
+    assert.equal(calls, 0);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("selectCalibrationSlice: default size is 200 (#1877)", () => {
@@ -279,6 +352,20 @@ test("runJudgeCalibration rejects changed pinned answers before either judge is 
     /pinned answer set changed/,
   );
   assert.equal(calls, 0, "answer drift must fail before spending local or frontier judge calls");
+});
+
+test("runJudgeCalibration rejects changed ordered question ids before either judge is called", async () => {
+  const answers = makeAnswers(10);
+  let calls = 0;
+  const countingJudge: BenchJudge = { async score() { calls += 1; return 1; } };
+  await assert.rejects(() => runJudgeCalibration({
+    benchmarkId: "locomo",
+    localJudge: countingJudge,
+    frontierJudge: countingJudge,
+    answers: [...answers].reverse(),
+    expectedOrderedQuestionIdsHash: hashOrderedQuestionIds(answers.map((answer) => answer.questionId)),
+  }), /ordered question-id list changed/);
+  assert.equal(calls, 0);
 });
 
 test("runJudgeCalibration: non-finite judge scores do not crash calibration", async () => {

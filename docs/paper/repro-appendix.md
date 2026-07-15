@@ -392,7 +392,13 @@ remnic bench judge-calibrate \
   --local-lab-manifest ~/bench/local-lab.json \
   --judge-provider <frontier-provider> \
   --judge-model <frontier-judge-model> \
-  --results-dir ~/.remnic/bench/results
+  --results-dir ~/.remnic/bench/results \
+  --calibration-dir ~/.remnic/bench/calibration \
+  --source-result-id <exact-full-result-id> \
+  --expected-answer-set-sha256 <sha256> \
+  --expected-question-id-list-sha256 <sha256> \
+  --local-judge-request-timeout 180000 \
+  --frontier-judge-request-timeout 600000
 ```
 
 The κ lands on the next `remnic bench run` artifact for that benchmark
@@ -402,7 +408,10 @@ deterministic 200-question slice (or all available questions when fewer than
 200 exist), pins the source result, question IDs, and exact answer-set hash,
 and reports a deterministic 2,000-resample paired-bootstrap 95% confidence
 interval. Re-running calibration reuses the pinned answer payload instead of
-silently selecting whichever stored answers are newest.
+silently selecting whichever stored answers are newest. An atomic 0600
+checkpoint records each completed judge side and resumes only missing calls;
+its complete source/slice/rubric/judge contract must match or the command fails
+closed before either judge runs.
 
 ### A.3.7 Build, verify, and promote the artifact
 

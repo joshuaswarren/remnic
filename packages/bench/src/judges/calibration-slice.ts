@@ -22,7 +22,7 @@
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { BenchJudge } from "../adapters/types.js";
@@ -114,6 +114,18 @@ export interface CalibrationVerdictPair {
   frontierCategory: JudgeCategory;
 }
 
+export const JUDGE_CALIBRATION_PROTOCOL_VERSION = "judge-calibration-v2";
+
+export interface JudgeCalibrationCheckpointProvenance {
+  dir: string;
+  sourceResultId: string;
+  sourceResultSha256: string;
+  orderedQuestionIdsHash: string;
+  rubricVersion: string;
+  localJudgeConfigHash: string;
+  frontierJudgeConfigHash: string;
+}
+
 export interface RunJudgeCalibrationOptions {
   /** Benchmark id the calibration is scoped to (recorded in the result). */
   benchmarkId: string;
@@ -141,6 +153,10 @@ export interface RunJudgeCalibrationOptions {
   pinnedQuestionIds?: readonly string[];
   /** Fail before judge calls when the pinned answer payload changed. */
   expectedAnswerSetHash?: string;
+  /** Fail before judge calls when the full source task-id order changed. */
+  expectedOrderedQuestionIdsHash?: string;
+  /** Durable per-judge-side resume state. A mismatch or corrupt file fails closed. */
+  checkpoint?: JudgeCalibrationCheckpointProvenance;
 }
 
 export interface JudgeCalibrationResult extends CohenKappaResult {
@@ -159,6 +175,14 @@ export interface JudgeCalibrationResult extends CohenKappaResult {
   answerSetHash: string;
   /** Per-question verdict pairs, in slice order. */
   verdicts: readonly CalibrationVerdictPair[];
+  /** Execution provenance distinguishes resumed outputs from fresh model calls. */
+  execution: {
+    localJudgeCalls: number;
+    frontierJudgeCalls: number;
+    resumedJudgeOutputs: number;
+    checkpointPath?: string;
+    checkpointContractHash?: string;
+  };
 }
 
 /**
@@ -230,6 +254,15 @@ export async function runJudgeCalibration(
     .map((id) => answerById.get(id))
     .filter((answer): answer is CalibrationAnswer => answer !== undefined);
   const answerSetHash = hashCalibrationAnswerSet(sliceAnswers);
+  const orderedQuestionIdsHash = hashOrderedQuestionIds(options.answers.map((answer) => answer.questionId));
+  if (
+    options.expectedOrderedQuestionIdsHash !== undefined &&
+    orderedQuestionIdsHash !== options.expectedOrderedQuestionIdsHash
+  ) {
+    throw new Error(
+      `runJudgeCalibration: ordered question-id list changed (expected sha256:${options.expectedOrderedQuestionIdsHash}, got sha256:${orderedQuestionIdsHash}).`,
+    );
+  }
   if (
     options.expectedAnswerSetHash !== undefined &&
     answerSetHash !== options.expectedAnswerSetHash
@@ -239,23 +272,46 @@ export async function runJudgeCalibration(
     );
   }
 
+  const checkpoint = options.checkpoint
+    ? await loadOrInitializeCheckpoint(options.benchmarkId, options.checkpoint, sliceIds, answerSetHash, orderedQuestionIdsHash)
+    : undefined;
+
   const localLabels: JudgeCategory[] = [];
   const frontierLabels: JudgeCategory[] = [];
   const verdicts: CalibrationVerdictPair[] = [];
+  let localJudgeCalls = 0;
+  let frontierJudgeCalls = 0;
+  let resumedJudgeOutputs = 0;
 
   for (const answer of sliceAnswers) {
-    const localScore = await options.localJudge.score(
-      answer.question,
-      answer.predicted,
-      answer.expected,
-    );
-    const frontierScore = await options.frontierJudge.score(
-      answer.question,
-      answer.predicted,
-      answer.expected,
-    );
-    const localCategory = binScore(localScore);
-    const frontierCategory = binScore(frontierScore);
+    const saved = checkpoint?.state.completed[answer.questionId];
+    let localCategory = saved?.localCategory;
+    if (localCategory !== undefined) {
+      resumedJudgeOutputs += 1;
+    } else {
+      const localScore = await options.localJudge.score(answer.question, answer.predicted, answer.expected);
+      localJudgeCalls += 1;
+      localCategory = binScore(localScore);
+      if (checkpoint) {
+        checkpoint.state.completed[answer.questionId] = { ...saved, localCategory };
+        await writeCalibrationCheckpoint(checkpoint.path, checkpoint.state);
+      }
+    }
+    let frontierCategory = checkpoint?.state.completed[answer.questionId]?.frontierCategory;
+    if (frontierCategory !== undefined) {
+      resumedJudgeOutputs += 1;
+    } else {
+      const frontierScore = await options.frontierJudge.score(answer.question, answer.predicted, answer.expected);
+      frontierJudgeCalls += 1;
+      frontierCategory = binScore(frontierScore);
+      if (checkpoint) {
+        checkpoint.state.completed[answer.questionId] = {
+          ...checkpoint.state.completed[answer.questionId],
+          frontierCategory,
+        };
+        await writeCalibrationCheckpoint(checkpoint.path, checkpoint.state);
+      }
+    }
     localLabels.push(localCategory);
     frontierLabels.push(frontierCategory);
     verdicts.push({
@@ -282,7 +338,23 @@ export async function runJudgeCalibration(
     bootstrapSamples: bootstrap.bootstrapSamples,
     answerSetHash,
     verdicts,
+    execution: {
+      localJudgeCalls,
+      frontierJudgeCalls,
+      resumedJudgeOutputs,
+      ...(checkpoint ? {
+        checkpointPath: checkpoint.path,
+        checkpointContractHash: checkpoint.state.contractHash,
+      } : {}),
+    },
   };
+}
+
+export function hashOrderedQuestionIds(questionIds: readonly string[]): string {
+  if (questionIds.some((id) => typeof id !== "string" || id.length === 0)) {
+    throw new Error("hashOrderedQuestionIds: question ids must be non-empty strings.");
+  }
+  return createHash("sha256").update(JSON.stringify(questionIds), "utf8").digest("hex");
 }
 
 function validatePinnedQuestionIds(
@@ -314,6 +386,109 @@ function hashCalibrationAnswerSet(answers: readonly CalibrationAnswer[]): string
     .digest("hex");
 }
 
+interface CalibrationCheckpointState {
+  schemaVersion: 1;
+  contractHash: string;
+  contract: Record<string, unknown>;
+  completed: Record<string, { localCategory?: JudgeCategory; frontierCategory?: JudgeCategory }>;
+}
+
+async function loadOrInitializeCheckpoint(
+  benchmarkId: string,
+  provenance: JudgeCalibrationCheckpointProvenance,
+  sliceQuestionIds: readonly string[],
+  answerSetHash: string,
+  orderedQuestionIdsHash: string,
+): Promise<{ path: string; state: CalibrationCheckpointState }> {
+  for (const [name, digest] of Object.entries({
+    sourceResultSha256: provenance.sourceResultSha256,
+    orderedQuestionIdsHash,
+    localJudgeConfigHash: provenance.localJudgeConfigHash,
+    frontierJudgeConfigHash: provenance.frontierJudgeConfigHash,
+  })) {
+    if (!/^[0-9a-f]{64}$/.test(digest)) throw new Error(`runJudgeCalibration: ${name} must be a lowercase SHA-256 digest.`);
+  }
+  if (!provenance.sourceResultId || !provenance.rubricVersion) {
+    throw new Error("runJudgeCalibration: checkpoint sourceResultId and rubricVersion are required.");
+  }
+  if (provenance.orderedQuestionIdsHash !== orderedQuestionIdsHash) {
+    throw new Error("runJudgeCalibration: checkpoint ordered-question-id hash does not match the validated source.");
+  }
+  await ensurePrivateDirectory(provenance.dir);
+  const checkpointPath = path.join(provenance.dir, `${sanitizeCalibrationSegment(benchmarkId)}.checkpoint.json`);
+  const contract = {
+    protocolVersion: JUDGE_CALIBRATION_PROTOCOL_VERSION,
+    benchmarkId,
+    sourceResultId: provenance.sourceResultId,
+    sourceResultSha256: provenance.sourceResultSha256,
+    orderedQuestionIdsHash: provenance.orderedQuestionIdsHash,
+    answerSetHash,
+    sliceQuestionIds,
+    rubricVersion: provenance.rubricVersion,
+    localJudgeConfigHash: provenance.localJudgeConfigHash,
+    frontierJudgeConfigHash: provenance.frontierJudgeConfigHash,
+  };
+  const contractHash = createHash("sha256").update(stableJson(contract)).digest("hex");
+  let raw: string;
+  try {
+    const info = await lstat(checkpointPath);
+    if (!info.isFile() || info.isSymbolicLink()) throw new Error("checkpoint path is not a regular file");
+    raw = await readFile(checkpointPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    const state: CalibrationCheckpointState = { schemaVersion: 1, contractHash, contract, completed: {} };
+    await writeCalibrationCheckpoint(checkpointPath, state);
+    return { path: checkpointPath, state };
+  }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw new Error(`runJudgeCalibration: corrupt checkpoint at ${checkpointPath}; refusing to call judges.`); }
+  if (!isValidCheckpoint(parsed, new Set(sliceQuestionIds))) {
+    throw new Error(`runJudgeCalibration: corrupt checkpoint at ${checkpointPath}; refusing to call judges.`);
+  }
+  if (parsed.contractHash !== contractHash || stableJson(parsed.contract) !== stableJson(contract)) {
+    throw new Error(`runJudgeCalibration: checkpoint contract mismatch at ${checkpointPath}; refusing to call judges.`);
+  }
+  await chmod(checkpointPath, 0o600);
+  return { path: checkpointPath, state: parsed };
+}
+
+function isValidCheckpoint(value: unknown, sliceIds: ReadonlySet<string>): value is CalibrationCheckpointState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (record.schemaVersion !== 1 || typeof record.contractHash !== "string" || !/^[0-9a-f]{64}$/.test(record.contractHash) ||
+      !record.contract || typeof record.contract !== "object" || Array.isArray(record.contract) ||
+      !record.completed || typeof record.completed !== "object" || Array.isArray(record.completed)) return false;
+  return Object.entries(record.completed as Record<string, unknown>).every(([id, output]) => {
+    if (!sliceIds.has(id) || !output || typeof output !== "object" || Array.isArray(output)) return false;
+    const fields = output as Record<string, unknown>;
+    return Object.keys(fields).every((key) => key === "localCategory" || key === "frontierCategory") &&
+      [fields.localCategory, fields.frontierCategory].every((category) => category === undefined || (typeof category === "string" && category.length > 0));
+  });
+}
+
+async function ensurePrivateDirectory(dir: string): Promise<void> {
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  const info = await lstat(dir);
+  if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`runJudgeCalibration: checkpoint directory must be a real directory: ${dir}`);
+  await chmod(dir, 0o700);
+}
+
+async function writeCalibrationCheckpoint(filePath: string, state: CalibrationCheckpointState): Promise<void> {
+  const tempPath = `${filePath}.${randomBytes(6).toString("hex")}.tmp`;
+  await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  try { await rename(tempPath, filePath); await chmod(filePath, 0o600); }
+  catch (error) { await unlink(tempPath).catch(() => undefined); throw error; }
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
 /**
  * Persist a calibration result so subsequent local artifacts can carry the
  * kappa (issue #1573 done-when: "a kappa number that lands in subsequent
@@ -334,7 +509,7 @@ export async function writeJudgeCalibrationState(
   identities?: JudgeCalibrationIdentities,
   provenance?: { sourceResultId: string },
 ): Promise<string> {
-  await mkdir(calibrationDir, { recursive: true });
+  await ensurePrivateDirectory(calibrationDir);
   const state: BenchmarkArtifactJudgeCalibration & Partial<JudgeCalibrationIdentities> = {
     kappa: result.kappa,
     sampleSize: result.sampleSize,
@@ -351,9 +526,10 @@ export async function writeJudgeCalibrationState(
   // Atomic write: land bytes on a temp file, then rename into place. The
   // rename is atomic on POSIX; best-effort temp cleanup on failure.
   const tempPath = `${filePath}.${randomBytes(6).toString("hex")}.tmp`;
-  await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  await writeFile(tempPath, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   try {
     await rename(tempPath, filePath);
+    await chmod(filePath, 0o600);
   } catch (error) {
     await unlink(tempPath).catch(() => undefined);
     throw error;

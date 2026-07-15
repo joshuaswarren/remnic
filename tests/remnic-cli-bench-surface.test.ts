@@ -424,17 +424,20 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /const knownBenchmarkIds = await resolveKnownBenchmarkIds\(\);/);
   assert.match(source, /if \(!knownBenchmarkIds\.has\(benchmarkId\)\)/);
 
-  // P2 (codex): calibration candidates are filtered to full runs so a stale
-  // 1-task quick result cannot seed a meaningless kappa, AND a partial full
-  // run is skipped in favor of an older complete run.
+  // Calibration accepts only the explicitly pinned full result; it never
+  // auto-selects a newer result or falls back from a partial source.
   assert.match(source, /\.filter\(\(entry\) => entry\.mode === "full"\)/);
   assert.match(source, /loaded\.meta\.status === "partial"/);
-  assert.match(source, /candidateResult\.meta\.status !== "partial"/);
 
-  // #1877: once selected, calibration reuses the exact stored result instead
-  // of drifting to whichever cached answers are newest.
-  assert.match(source, /const pinnedSourceId = previousCalibration\?\.sourceResultId/);
+  // #1877: the operator pins source and both payload hashes before any call;
+  // independent timeout controls are propagated to the two judge configs.
+  assert.match(source, /const pinnedSourceId = parsed\.sourceResultId/);
   assert.match(source, /entry\.id === pinnedSourceId/);
+  assert.match(source, /expectedAnswerSetHash: parsed\.expectedAnswerSetSha256/);
+  assert.match(source, /orderedQuestionIdsHash !== parsed\.expectedQuestionIdListSha256/);
+  assert.match(source, /timeoutMs: parsed\.localJudgeRequestTimeout/);
+  assert.match(source, /timeoutMs: parsed\.frontierJudgeRequestTimeout/);
+  assert.match(source, /checkpoint: \{/);
   assert.match(source, /\{ sourceResultId: loaded\.meta\.id \}/);
   assert.match(source, /bootstrap CI/);
 });

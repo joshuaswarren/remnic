@@ -957,7 +957,9 @@ Commands:
                            Generate the Remnic.ai benchmark feed from stored runs
   ui                       Launch the local benchmark overview UI
   providers discover       Auto-detect available local provider backends
-  judge-calibrate --benchmark <id> --local-lab-manifest <path> --judge-provider <p> --judge-model <m>
+  judge-calibrate --benchmark <id> --source-result-id <id> --expected-answer-set-sha256 <sha256>
+                           --expected-question-id-list-sha256 <sha256>
+                           --local-lab-manifest <path> --judge-provider <p> --judge-model <m>
                            Cross-tier judge calibration (issue #1573): runs the
                            local + frontier judges over a benchmark's cached
                            answers, reports Cohen's kappa, and persists it so
@@ -1030,6 +1032,16 @@ Options:
   --results-dir <path>     Override the stored benchmark results directory
   --baselines-dir <path>   Override the named baseline directory
   --request-timeout <ms>   Provider request timeout in milliseconds (codex-cli default: 180000)
+  --local-judge-request-timeout <ms>
+                           Calibration-only timeout for each local judge call
+  --frontier-judge-request-timeout <ms>
+                           Calibration-only timeout for each frontier judge call
+  --source-result-id <id>  Exact full stored result used by judge-calibrate
+  --expected-answer-set-sha256 <sha256>
+                           Expected deterministic calibration-slice payload hash
+  --expected-question-id-list-sha256 <sha256>
+                           Expected ordered source task-ID list hash
+  --calibration-dir <path> Private final-state and resumable-checkpoint directory
   --drain-timeout <ms>     Memory drain timeout in milliseconds
                            (defaults to --request-timeout; implicit codex-cli default: 600000)
   --local-lab-manifest <path>
@@ -2521,13 +2533,20 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     );
     process.exit(1);
   }
+  if (!parsed.sourceResultId || !parsed.expectedAnswerSetSha256 || !parsed.expectedQuestionIdListSha256) {
+    console.error(
+      "ERROR: judge-calibrate requires --source-result-id, --expected-answer-set-sha256, and --expected-question-id-list-sha256 so all source drift is rejected before judge calls.",
+    );
+    process.exit(1);
+  }
 
   const bench = await loadBenchModule();
   const resultsDir = expandTilde(
     parsed.resultsDir ?? path.join(resolveHomeDir(), ".remnic", "bench", "results"),
   );
-  const calibrationDir = path.join(resolveHomeDir(), ".remnic", "bench", "calibration");
-  const previousCalibration = await bench.loadJudgeCalibrationState?.(benchmarkId, calibrationDir);
+  const calibrationDir = expandTilde(
+    parsed.calibrationDir ?? path.join(resolveHomeDir(), ".remnic", "bench", "calibration"),
+  );
 
   // Build the calibration answers from the most recent stored result for the
   // benchmark. `actual` is the responder's predicted answer; `expected` is the
@@ -2553,22 +2572,11 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   // Issue #1877: once a benchmark has a calibration source, keep using that
   // exact stored result. Selecting "whatever is newest" made the same judge
   // pair swing from kappa 0.769 to 0.444 as cached answers changed.
-  const pinnedSourceId = previousCalibration?.sourceResultId;
-  const latest = pinnedSourceId
-    ? candidates.find((entry) => entry.id === pinnedSourceId)
-    : candidates[0];
+  const pinnedSourceId = parsed.sourceResultId;
+  const latest = candidates.find((entry) => entry.id === pinnedSourceId);
   if (!latest) {
-    if (pinnedSourceId) {
-      console.error(
-        `ERROR: pinned calibration source ${pinnedSourceId} for "${benchmarkId}" is no longer present in ${resultsDir}. Restore that stored result or remove the calibration state intentionally before selecting a new answer set.`,
-      );
-      process.exit(1);
-    }
-    const quickCount = allForBenchmark.filter((entry) => entry.mode === "quick").length;
     console.error(
-      quickCount > 0
-        ? `ERROR: no full stored results for "${benchmarkId}" in ${resultsDir} (found ${quickCount} quick run(s); a 1-task quick sample cannot calibrate the judge). Run a full benchmark first (remnic bench run ${benchmarkId}).`
-        : `ERROR: no stored benchmark results for "${benchmarkId}" in ${resultsDir}. Run the benchmark first (remnic bench run ${benchmarkId}) so cached answers exist to calibrate against.`,
+      `ERROR: explicitly pinned full calibration source ${pinnedSourceId} for "${benchmarkId}" is not present in ${resultsDir}. Restore that exact stored result.`,
     );
     process.exit(1);
   }
@@ -2579,16 +2587,7 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   // complete one; if every candidate is partial we keep the newest (the only
   // option available to the operator).
   let loaded = await bench.loadBenchmarkResult(latest.path);
-  if (!pinnedSourceId && loaded.meta.status === "partial") {
-    for (const candidate of candidates.slice(1)) {
-      const candidateResult = await bench.loadBenchmarkResult(candidate.path);
-      if (candidateResult.meta.status !== "partial") {
-        loaded = candidateResult;
-        break;
-      }
-    }
-  }
-  if (pinnedSourceId && loaded.meta.status === "partial") {
+  if (loaded.meta.status === "partial") {
     console.error(
       `ERROR: pinned calibration source ${pinnedSourceId} is partial. Restore a complete copy or remove the calibration state intentionally before selecting a new answer set.`,
     );
@@ -2614,6 +2613,16 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     predicted: task.actual,
     expected: task.expected,
   }));
+  const orderedQuestionIdsHash = bench.hashOrderedQuestionIds(
+    loaded.results.tasks.map((task) => task.taskId),
+  );
+  if (orderedQuestionIdsHash !== parsed.expectedQuestionIdListSha256) {
+    console.error(
+      `ERROR: ordered question-id list changed for ${loaded.meta.id} (expected sha256:${parsed.expectedQuestionIdListSha256}, got sha256:${orderedQuestionIdsHash}); refusing to call judges.`,
+    );
+    process.exit(1);
+  }
+  const sourceResultSha256 = createHash("sha256").update(fs.readFileSync(latest.path)).digest("hex");
 
   // Resolve the two judges. The local judge comes from the manifest's judge
   // role (Tier L); the frontier judge from the --judge-* flags (Tier F gold).
@@ -2625,26 +2634,57 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
   // from CLI flags whose `provider` is the broad `BuiltInProvider` union, so
   // it is narrowed through the same cast the local judge uses.
   type ProviderFactoryConfig = Parameters<typeof bench.createProviderBackedJudge>[0];
-  const localJudgeConfig = resolvedProfile.judge.providerConfig as ProviderFactoryConfig;
+  const localJudgeConfig = {
+    ...resolvedProfile.judge.providerConfig,
+    ...(parsed.localJudgeRequestTimeout
+      ? { retryOptions: { ...resolvedProfile.judge.providerConfig.retryOptions, timeoutMs: parsed.localJudgeRequestTimeout } }
+      : {}),
+  } as ProviderFactoryConfig;
   const localJudge = bench.createProviderBackedJudge(localJudgeConfig);
-  const frontierJudge = bench.createProviderBackedJudge({
+  const frontierJudgeConfig = {
     provider: parsed.judgeProvider,
     model: parsed.judgeModel,
     ...(parsed.judgeBaseUrl ? { baseUrl: parsed.judgeBaseUrl } : {}),
     ...(parsed.judgeApiKey ? { apiKey: parsed.judgeApiKey } : {}),
-  } as ProviderFactoryConfig);
+    ...(parsed.frontierJudgeRequestTimeout
+      ? { retryOptions: { timeoutMs: parsed.frontierJudgeRequestTimeout } }
+      : {}),
+  } as ProviderFactoryConfig;
+  const frontierJudge = bench.createProviderBackedJudge(frontierJudgeConfig);
+
+  const calibrationConfigHash = (config: ProviderFactoryConfig): string => {
+    const canonicalize = (value: unknown, key = ""): unknown => {
+      if (typeof value === "string" && /(?:api.?key|authorization|token|secret)/i.test(key)) {
+        return { secretSha256: createHash("sha256").update(value).digest("hex") };
+      }
+      if (Array.isArray(value)) return value.map((item) => canonicalize(item));
+      if (value && typeof value === "object") {
+        return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map((childKey) => [
+          childKey,
+          canonicalize((value as Record<string, unknown>)[childKey], childKey),
+        ]));
+      }
+      return value;
+    };
+    return createHash("sha256").update(JSON.stringify(canonicalize(config))).digest("hex");
+  };
 
   const result = await bench.runJudgeCalibration({
     benchmarkId,
     localJudge,
     frontierJudge,
     answers,
-    ...(previousCalibration?.sliceQuestionIds
-      ? { pinnedQuestionIds: previousCalibration.sliceQuestionIds }
-      : {}),
-    ...(previousCalibration?.answerSetHash
-      ? { expectedAnswerSetHash: previousCalibration.answerSetHash }
-      : {}),
+    expectedAnswerSetHash: parsed.expectedAnswerSetSha256,
+    expectedOrderedQuestionIdsHash: parsed.expectedQuestionIdListSha256,
+    checkpoint: {
+      dir: calibrationDir,
+      sourceResultId: loaded.meta.id,
+      sourceResultSha256,
+      orderedQuestionIdsHash,
+      rubricVersion: bench.OPENAI_RESPONSES_JUDGE_RUBRIC_VERSION,
+      localJudgeConfigHash: calibrationConfigHash(localJudgeConfig),
+      frontierJudgeConfigHash: calibrationConfigHash(frontierJudgeConfig),
+    },
   });
 
   // Bind the persisted kappa to the calibrated judge pair (codex P2 review):
@@ -2691,6 +2731,9 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
           answerSetHash: result.answerSetHash,
           sourceResultId: loaded.meta.id,
           categories: result.categories,
+          orderedQuestionIdsHash,
+          sourceResultSha256,
+          execution: result.execution,
           statePath,
         },
         null,
@@ -2707,6 +2750,8 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
     `  ${(result.confidenceInterval.level * 100).toFixed(0)}% bootstrap CI: [${result.confidenceInterval.lower.toFixed(4)}, ${result.confidenceInterval.upper.toFixed(4)}] (${result.bootstrapSamples} paired resamples)`,
   );
   console.log(`  Pinned source: ${loaded.meta.id} (answer set sha256:${result.answerSetHash})`);
+  console.log(`  Ordered question ids: sha256:${orderedQuestionIdsHash}`);
+  console.log(`  Judge calls: local ${result.execution.localJudgeCalls}, frontier ${result.execution.frontierJudgeCalls}; resumed outputs ${result.execution.resumedJudgeOutputs}`);
   console.log(`  Observed agreement: ${result.observedAgreement.toFixed(4)}`);
   console.log(`  Expected agreement: ${result.expectedAgreement.toFixed(4)}`);
   if (result.warning) {
