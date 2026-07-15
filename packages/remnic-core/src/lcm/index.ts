@@ -1,4 +1,9 @@
-export { LcmEngine, extractLcmConfig, type LcmEngineConfig } from "./engine.js";
+export {
+  LcmEngine,
+  extractLcmConfig,
+  type LcmEngineConfig,
+  type LcmExpandedMessage,
+} from "./engine.js";
 export { LcmArchive, estimateTokens } from "./archive.js";
 export { LcmDag, type SummaryNode } from "./dag.js";
 export { LcmSummarizer, type SummarizeFn } from "./summarizer.js";
