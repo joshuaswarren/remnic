@@ -299,6 +299,29 @@ function validCodexCreditReceipt(): Record<string, unknown> {
   };
 }
 
+function codexCreditReceiptWithUnexpectedModel(): Record<string, unknown> {
+  const receipt = validCodexCreditReceipt();
+  const usage = {
+    inputTokens: 100_000,
+    cachedInputTokens: 20_000,
+    outputTokens: 10_000,
+    reasoningOutputTokens: 8_000,
+  };
+  const extraModel = { model: "gpt-5.5", calls: 1, credits: 17.75, ...usage };
+  for (const key of ["cumulative", "run"] as const) {
+    const scope = receipt[key] as Record<string, unknown>;
+    scope.calls = (scope.calls as number) + 1;
+    scope.credits = (scope.credits as number) + extraModel.credits;
+    for (const tokenKey of Object.keys(usage) as Array<keyof typeof usage>) {
+      scope[tokenKey] = (scope[tokenKey] as number) + usage[tokenKey];
+    }
+    scope.models = [...(scope.models as unknown[]), extraModel];
+  }
+  receipt.totalSpentCredits = 30.175;
+  receipt.totalRemainingCredits = 2_442.825;
+  return receipt;
+}
+
 async function writeManifest(
   resultsDir: string,
   benchmarks: readonly string[],
@@ -613,6 +636,39 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
         ],
       },
     },
+    {
+      ...validCodexCreditReceipt(),
+      run: {
+        id: "test-public-matrix-run",
+        calls: 2,
+        credits: 11.36,
+        inputTokens: 140_000,
+        cachedInputTokens: 28_000,
+        outputTokens: 14_000,
+        reasoningOutputTokens: 11_200,
+        models: [
+          {
+            model: "gpt-5.6-luna",
+            calls: 1,
+            credits: 0.71,
+            inputTokens: 20_000,
+            cachedInputTokens: 4_000,
+            outputTokens: 2_000,
+            reasoningOutputTokens: 1_600,
+          },
+          {
+            model: "gpt-5.6-terra",
+            calls: 1,
+            credits: 10.65,
+            inputTokens: 120_000,
+            cachedInputTokens: 24_000,
+            outputTokens: 12_000,
+            reasoningOutputTokens: 9_600,
+          },
+        ],
+      },
+    },
+    codexCreditReceiptWithUnexpectedModel(),
   ];
   const verifyPublicMatrixEvidence = await loadVerifier();
   for (const receipt of variants) {
@@ -630,6 +686,7 @@ test("rejects malformed, blocked, over-ceiling, and wrong-run Codex receipts", a
       expectedGitSha: "abc123",
       expectedSystemModel: "gpt-5.6-luna",
       expectedJudgeModel: "gpt-5.6-terra",
+      expectedInternalModel: "gpt-5.6-luna",
       requireDiagnostics: false,
     });
     assert.equal(

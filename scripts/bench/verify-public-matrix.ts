@@ -773,10 +773,10 @@ function validateCodexCreditReceipt(
     ) &&
     nearlyEqual(receipt.cumulative!.credits!, receipt.totalSpentCredits!) &&
     scopeDoesNotExceed(receipt.run!, receipt.cumulative!) &&
-    expectedModels.every((model) =>
-      receipt.run!.models!.some(
-        (entry) => entry.model === model && entry.calls! > 0 && entry.credits! > 0,
-      ),
+    receipt.run!.models!.length === expectedModels.length &&
+    receipt.run!.models!.every(
+      (entry) =>
+        expectedModels.includes(entry.model!) && entry.calls! > 0 && entry.credits! > 0,
     );
   if (!accountingValid) {
     issues.push({
@@ -859,11 +859,27 @@ function scopeDoesNotExceed(
   run: CodexCreditReceiptScope,
   cumulative: CodexCreditReceiptScope,
 ): boolean {
+  const tokenKeys = [
+    "inputTokens",
+    "cachedInputTokens",
+    "outputTokens",
+    "reasoningOutputTokens",
+  ] as const;
   return (
     run.calls! <= cumulative.calls! &&
     run.credits! <= cumulative.credits! + 1e-9 &&
-    (["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens"] as const)
-      .every((key) => run[key]! <= cumulative[key]!)
+    tokenKeys.every((key) => run[key]! <= cumulative[key]!) &&
+    run.models!.every((runModel) => {
+      const cumulativeModel = cumulative.models!.find(
+        (candidate) => candidate.model === runModel.model,
+      );
+      return Boolean(
+        cumulativeModel &&
+        runModel.calls! <= cumulativeModel.calls! &&
+        runModel.credits! <= cumulativeModel.credits! + 1e-9 &&
+        tokenKeys.every((key) => runModel[key]! <= cumulativeModel[key]!),
+      );
+    })
   );
 }
 
