@@ -166,7 +166,11 @@ export function deriveHeuristicEdges(
       }
       if (specifier === undefined) continue;
       const joined = posix.join(posix.dirname(ir.path), specifier);
-      const hint = joined.replace(/\.[cm]?[jt]sx?$/, "");
+      // Strip any trailing slash BEFORE extension-stripping: a pure
+      // parent-package import (python "from .. import x") joins to
+      // "pkg/" and the store's hint patterns match "pkg" /
+      // "pkg/__init__.<ext>", never "pkg/" (codex review round 10).
+      const hint = joined.replace(/\/+$/, "").replace(/\.[cm]?[jt]sx?$/, "");
       // A normalized hint still starting with "../" escapes the repo root:
       // files.path values are canonical (no ".." segments), so such an
       // edge could never resolve — skip the binding here so the call site

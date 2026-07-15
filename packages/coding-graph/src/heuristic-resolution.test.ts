@@ -497,3 +497,29 @@ test("empty bindings array falls back to importedNames (cursor review round 9)",
   assert.equal(firstFile(result).edges.length, 1);
   assert.equal(firstFile(result).edges[0]?.dstQualifiedName, "greet");
 });
+
+test("pure parent-package python imports hint the package directory (codex review round 10)", () => {
+  const ir = fileIR({
+    path: "pkg/app/views.py",
+    language: "python",
+    symbols: [
+      { kind: "function", name: "render", qualifiedName: "render", span: span(30, 110) },
+    ],
+    imports: [
+      { module: ".", importedNames: ["sibling"], span: span(0, 20) },
+      { module: "..", importedNames: ["helper"], span: span(21, 45) },
+    ],
+    callSites: [
+      { calleeNameCandidates: ["sibling"], span: span(60, 67) },
+      { calleeNameCandidates: ["helper"], span: span(70, 76) },
+    ],
+  });
+  const result = deriveHeuristicEdges([ir]);
+  assert.deepEqual(
+    firstFile(result).edges.map((e: EdgeIR) => [e.dstQualifiedName, e.dstPathHint]),
+    [
+      ["sibling", "pkg/app"],
+      ["helper", "pkg"],
+    ],
+  );
+});
