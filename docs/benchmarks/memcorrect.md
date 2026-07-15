@@ -178,6 +178,24 @@ The prompt-only baseline must score near-zero on
 must not. If a Remnic run fails that floor, **file the bugs against
 #1580/#1579 — do not tune the benchmark**.
 
+### Old failed runs
+
+Two full runs from 2026-07-13 stay in the repo. They are failed test records.
+They are not lab wins. They are not proof for OpenAI Build Week.
+
+- [`2026-07-13-memcorrect-v1-prompt-only-baseline-9485f44.json`](results/2026-07-13-memcorrect-v1-prompt-only-baseline-9485f44.json)
+  is the expected prompt-only floor. It scored `uptake_at_next=0`,
+  `non_resurrection=0`, and `false_apply=1`.
+- [`2026-07-13-memcorrect-v1-remnic-native-9485f44.json`](results/2026-07-13-memcorrect-v1-remnic-native-9485f44.json)
+  got the same bad correction scores. Its `non_resurrection=0` result breaks
+  the rule above.
+
+The Remnic file shows a bug at commit `9485f4482`. It does not show a pass.
+Keep both files so we can trace and fix the bug. Do not post them as new
+leaderboard results. Do not use them for a contest claim. A new run can replace
+this status only when it passes the stated gates, including the
+non-resurrection floor.
+
 ## Submitting third-party results
 
 1. Implement `MemCorrectSystemAdapter` for your system (see the contract
@@ -194,9 +212,8 @@ must not. If a Remnic run fails that floor, **file the bugs against
 
 - PR 1 (generator + schema) — landed.
 - PR 2 (runner + metrics) — landed.
-- PR 3 (adapters) — baseline + Remnic-native wrapper landed. **Lab
-  artifacts are not committed in this PR**: the local-lab Tier-L run
-  requires the lab GPU (Jarvis), which is intentionally out of scope for
-  the harness PR. Run it on the lab box and commit both artifacts per the
-  issue's PR 3 acceptance.
+- PR 3 (adapters): baseline + Remnic-native wrapper landed. Both saved runs are
+  old failure evidence. The prompt-only run fails as expected. The Remnic run
+  also fails the required `non_resurrection` test. A fresh passing run is still
+  due. The old files do not meet PR 3 acceptance.
 - PR 4 (this doc + leaderboard-export wiring) — landed.
