@@ -32,6 +32,35 @@ eval that measures the correction behaviors #1580 (Correction Contract) and
 #1579 (tombstones) exist to guarantee. Remnic should define this eval and
 win it — that is the contribution.
 
+## Run it in two minutes
+
+The quick path needs no dataset, API key, or network. It starts the packaged
+stdio MCP demo backend, scores the generic MCP adapter against it, and writes
+an offline HTML report:
+
+```bash
+npm install -g @remnic/cli@9.6.24 @remnic/bench@9.6.24
+remnic bench run --quick memcorrect-v1 --adapter mcp --mcp-demo
+remnic bench runs list
+remnic bench export <run-id> --format html --output ./memcorrect-report.html
+```
+
+The test asks three questions: did recall find the right fact, did the memory
+accept a correction, and did the stale fact stay gone? We verified this exact
+flow against the 9.6.24 packed tarballs from a clean global prefix on Linux
+x86_64 with Node 22.23.1; newer releases work the same way without the version
+pins.
+
+## OpenAI Build Week 2026 provenance
+
+MemCorrect is Remnic's Developer Tools entry for OpenAI Build Week 2026.
+During the event we added the generic MCP adapter, an optional GPT-5.6 judge
+through the OpenAI Responses API, and the report card; Codex helped study the
+old adapter seam, write and test the new path, and review it. Remnic itself
+and the first benchmark harness predate the event. The
+[submission evidence ledger](../../HACKATHON.md) draws that line commit by
+commit, and marks the remaining submission artifacts as pending.
+
 ## Where it lives
 
 Inside `@remnic/bench`:
