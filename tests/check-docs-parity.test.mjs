@@ -852,6 +852,7 @@ test("a same-command credit-budget mutation before the run invalidates an earlie
   for (const prefix of [
     "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=100; ",
     "unset REMNIC_BENCH_CODEX_CREDIT_BUDGET; ",
+    "env REMNIC_BENCH_CODEX_CREDIT_BUDGET=3000 ",
   ]) {
     withFixture((root) => {
       writeFileSync(
@@ -976,7 +977,43 @@ test("the first command in a two-command paid sequence is exactly a one-item smo
 
     const result = runParity(root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /command 1 of 2 must include `--limit 1`; got 100/);
+    assert.match(result.stderr, /command 1 of 2 must include exactly one of `--limit 1`; got --limit 100/);
+  });
+});
+
+test("a two-command LoCoMo sequence accepts the benchmark-supported trial bound", () => {
+  withFixture((root) => {
+    const cliPath = path.join(root, "packages", "remnic-cli", "src", "index.ts");
+    writeFileSync(
+      cliPath,
+      readFileSyncSafe(cliPath).replace('"extensions" | "daemon";', '"extensions" | "daemon" | "bench";'),
+    );
+    const protocol = [
+      '--dataset-dir ./bench-datasets/locomo --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR"',
+      "--drain-timeout 600000",
+      "--system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium",
+      "--internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium",
+      "--judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+    ].join(" ");
+    const readme = path.join(root, "packages", "bench", "README.md");
+    mkdirSync(path.dirname(readme), { recursive: true });
+    writeFileSync(
+      readme,
+      [
+        "# Bench",
+        "",
+        "```bash",
+        "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        `remnic bench run locomo --trial-limit 1 ${protocol}`,
+        `remnic bench run locomo --trial-limit <LEDGER_DERIVED_LIMIT> ${protocol}`,
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /2 Build Week Codex dataset command\(s\) pinned/);
   });
 });
 

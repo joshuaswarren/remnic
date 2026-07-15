@@ -496,9 +496,9 @@ function checkBuildWeekCodexDatasetPaths() {
       );
       const remnicCommandAt = command.search(/\bremnic\s+bench\s+run\b/);
       const commandPrefix = remnicCommandAt > 0 ? command.slice(0, remnicCommandAt) : "";
-      const hasSameCommandBudgetMutation = commandPrefix
-        .split(/[;&]+/)
-        .some((statement) => BUILD_WEEK_CREDIT_BUDGET_MUTATION_RE.test(statement));
+      const hasSameCommandBudgetMutation = commandPrefix.includes(
+        "REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+      );
       if (!lastCreditBudgetMutation?.valid || hasSameCommandBudgetMutation) {
         failures.push(
           `${rel}: Build Week Codex command must follow a shell export of ` +
@@ -628,12 +628,17 @@ function checkBuildWeekCodexDatasetPaths() {
         }
       }
       if (expectedCommands === 2) {
-        const limit = extractShellOptionValue(command, "--limit");
         const requiredLimit = checkedInDoc === 1 ? "1" : "<LEDGER_DERIVED_LIMIT>";
-        if (limit !== requiredLimit) {
+        const roleBounds = presentBoundFlags.map((flag) => ({
+          flag,
+          value: extractShellOptionValue(command, flag),
+        }));
+        if (roleBounds.length !== 1 || roleBounds[0].value !== requiredLimit) {
+          const acceptedFlags = supportedBoundFlags.map((flag) => `\`${flag} ${requiredLimit}\``);
+          const actualBounds = roleBounds.map(({ flag, value }) => `${flag} ${value ?? "<missing>"}`);
           failures.push(
-            `${rel}: Build Week Codex command ${checkedInDoc} of 2 must include ` +
-              `\`--limit ${requiredLimit}\`; got ${limit ?? "no --limit"}`,
+            `${rel}: Build Week Codex command ${checkedInDoc} of 2 must include exactly one of ` +
+              `${acceptedFlags.join(" or ")}; got ${actualBounds.join(", ") || "no supported bound"}`,
           );
         }
       }
