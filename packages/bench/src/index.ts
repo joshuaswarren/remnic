@@ -390,6 +390,27 @@ export type {
   LoComoTaskRegression,
 } from "./stats/locomo-profile-delta.js";
 export {
+  LOCOMO_FULL_TASK_COUNT,
+  LOCOMO_RECALL_DIFF_LINE_LIMIT,
+  LOCOMO_RECALL_EXCERPT_CHARS,
+  diagnoseLoComoRecallDelta,
+  renderLoComoRecallDeltaMarkdown,
+  sanitizeLoComoResultReference,
+} from "./stats/locomo-recall-delta.js";
+export type {
+  DiagnoseLoComoRecallDeltaOptions,
+  LoComoFinalContextRegression,
+  LoComoRawResultEvidence,
+  LoComoRecallCategoryDelta,
+  LoComoRecallContextSummary,
+  LoComoRecallDeltaReport,
+  LoComoRecallLineDelta,
+  LoComoRecallLineEvidence,
+  LoComoRecallMetricDelta,
+  LoComoRecallResultProvenance,
+  LoComoRecallTextDigest,
+} from "./stats/locomo-recall-delta.js";
+export {
   assertPublishableIntegrity,
   buildBenchmarkPublishFeed,
   deleteBenchmarkResults,
