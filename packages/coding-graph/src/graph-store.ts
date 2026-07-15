@@ -3373,7 +3373,7 @@ function resolveNodeId(
  * JS import bind a same-named .py file: constrain by importer language.
  */
 const LANG_FAMILY_EXTENSIONS: Record<string, ReadonlySet<string>> = {
-  js: new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs"]),
+  js: new Set(["ts", "tsx", "js", "jsx", "mjs", "cjs", "mts", "cts"]),
   python: new Set(["py", "pyi"]),
   ruby: new Set(["rb"]),
   go: new Set(["go"]),
@@ -3424,7 +3424,15 @@ function resolveNodeIdWithPathHint(
     ["id", "path"],
   );
   const matches = rows.filter((row) => {
-    if (row.path === pathHint) return true;
+    if (row.path === pathHint) {
+      // Language filter still applies on exact match: a TS import whose
+      // normalized hint happens to equal a bare directory name must not
+      // bind a same-named .py file (codex review round 15).
+      if (allowedExts) {
+        return false; // bare hint with no extension cannot match a family
+      }
+      return true;
+    }
     if (!row.path.startsWith(pathHint)) return false;
     const rest = row.path.slice(pathHint.length);
     const m = /^(?:\.([^./]+)|\/(?:index|__init__)\.([^./]+))$/.exec(rest);
