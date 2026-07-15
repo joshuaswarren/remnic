@@ -318,7 +318,10 @@ export type {
   ResolveBenchRuntimeProfileOptions,
   ResolvedBenchRuntimeProfile,
 } from "./runtime-profiles.js";
-export { resolveBenchRuntimeProfile } from "./runtime-profiles.js";
+export {
+  resolveBenchRuntimeProfile,
+  resolveLocalLabJudgeProviderConfig,
+} from "./runtime-profiles.js";
 
 export {
   LOCAL_LAB_PROVIDER_KINDS,

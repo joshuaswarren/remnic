@@ -136,7 +136,9 @@ export interface ParsedBenchArgs {
   judgeCacheDir?: string;
   /**
    * Issue #1573 PR2: path to a local-lab manifest JSON file. Required when
-   * `runtimeProfile` / `matrixProfiles` includes `"local-lab"`.
+   * `runtimeProfile` / `matrixProfiles` includes `"local-lab"`. On other
+   * profiles it binds the judge to the manifest's normalized full config while
+   * leaving the selected responder profile unchanged.
    */
   localLabManifestPath?: string;
 }

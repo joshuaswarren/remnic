@@ -406,7 +406,12 @@ the run supplies the same `--calibration-dir` and both configuration hashes
 reported by `judge-calibrate --json` via
 `--calibration-local-config-sha256` and
 `--calibration-frontier-config-sha256` (and the run's judge matches the
-calibrated local judge). Absent calibration
+calibrated local judge). For baseline/real responder profiles, also pass the
+same `--local-lab-manifest` and the same local judge timeout as
+`--request-timeout`; the manifest is the source of normalized base URL,
+temperature, and seed, while explicit `--judge-provider`, `--judge-model`, and
+`--judge-base-url` flags are checked as identity assertions before dispatch.
+Absent calibration
 is the common case — the result is written unchanged. The command selects a
 deterministic 200-question slice (or all available questions when fewer than
 200 exist), pins the source result, question IDs, and exact answer-set hash,

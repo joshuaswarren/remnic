@@ -456,7 +456,7 @@ test("judge-calibrate calibration reaches artifacts, resolves package benchmarks
   assert.match(source, /entry\.id === pinnedSourceId/);
   assert.match(source, /expectedAnswerSetHash: parsed\.expectedAnswerSetSha256/);
   assert.match(source, /orderedQuestionIdsHash !== parsed\.expectedQuestionIdListSha256/);
-  assert.match(source, /timeoutMs: parsed\.localJudgeRequestTimeout/);
+  assert.match(source, /requestTimeout: parsed\.localJudgeRequestTimeout/);
   assert.match(source, /timeoutMs: parsed\.frontierJudgeRequestTimeout/);
   assert.match(source, /checkpoint: \{/);
   assert.match(source, /\{ sourceResultId: loaded\.meta\.id, localJudgeConfigHash, frontierJudgeConfigHash \}/);
@@ -475,6 +475,8 @@ test("custom calibration directory and both config hashes bind attachment end to
     model: "judge",
     baseUrl: "http://127.0.0.1:11434",
     retryOptions: { timeoutMs: 60_000 },
+    temperature: 0,
+    seed: 47,
   };
   const localHash = hashCalibrationProviderConfig(localConfig);
   const frontierHash = "b".repeat(64);
@@ -524,6 +526,26 @@ test("custom calibration directory and both config hashes bind attachment end to
   });
 });
 
+test("Tier-F runbook binds baseline runs to the same manifest judge configuration", async () => {
+  const source = await readFile("packages/remnic-cli/src/index.ts", "utf8");
+  const script = await readFile("scripts/bench/run-tierf-opus.sh", "utf8");
+
+  assert.match(source, /localLabManifestPath: parsed\.localLabManifestPath/);
+  assert.match(source, /bench\.resolveLocalLabJudgeProviderConfig\(\{/);
+  for (const benchmark of ["longmemeval", "locomo"]) {
+    const commandStart = script.indexOf(`run ${benchmark} \\\n`);
+    assert.ok(commandStart >= 0, `missing Tier-F ${benchmark} run command`);
+    const commandEnd = script.indexOf("2>&1 | tee", commandStart);
+    const command = script.slice(commandStart, commandEnd);
+    assert.match(command, /--runtime-profile baseline/);
+    assert.match(command, /--local-lab-manifest "\$MANIFEST"/);
+    assert.match(command, /--request-timeout 180000/);
+    assert.match(command, /"\$\{JUDGE_ARGS\[@\]\}"/);
+    assert.match(command, /--calibration-local-config-sha256/);
+    assert.match(command, /--calibration-frontier-config-sha256/);
+  }
+});
+
 test("frontier and unrelated runs ignore local calibration state without requiring pins", async () => {
   const { preparePersistedJudgeCalibrationAttachment } = await import(
     "../packages/remnic-cli/src/index.ts"
@@ -571,6 +593,8 @@ test("missing, stale, and resolved-config calibration failures occur before benc
     model: "local-judge",
     baseUrl: "http://127.0.0.1:11434",
     retryOptions: { timeoutMs: 60_000 },
+    temperature: 0,
+    seed: 47,
   };
   const localHash = hashCalibrationProviderConfig(localConfig);
   const frontierHash = "b".repeat(64);
@@ -621,6 +645,8 @@ test("missing, stale, and resolved-config calibration failures occur before benc
   for (const changedConfig of [
     { ...localConfig, baseUrl: "http://127.0.0.1:22434" },
     { ...localConfig, retryOptions: { timeoutMs: 120_000 } },
+    { ...localConfig, temperature: 0.1 },
+    { ...localConfig, seed: 48 },
   ]) {
     await assert.rejects(
       () => guardedRun(changedConfig, {

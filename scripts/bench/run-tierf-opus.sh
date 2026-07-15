@@ -90,6 +90,8 @@ node scripts/run-bench-cli.mjs run longmemeval \
   --runtime-profile baseline \
   --system-provider claude-cli --system-model opus \
   "${JUDGE_ARGS[@]}" \
+  --local-lab-manifest "$MANIFEST" \
+  --request-timeout 180000 \
   --dataset-dir bench-datasets/longmemeval \
   --calibration-dir "$CALIBRATION_DIR" \
   --calibration-local-config-sha256 "$LONGMEM_LOCAL_HASH" \
@@ -104,6 +106,8 @@ node scripts/run-bench-cli.mjs run locomo \
   --runtime-profile baseline \
   --system-provider claude-cli --system-model opus \
   "${JUDGE_ARGS[@]}" \
+  --local-lab-manifest "$MANIFEST" \
+  --request-timeout 180000 \
   --dataset-dir bench-datasets/locomo \
   --calibration-dir "$CALIBRATION_DIR" \
   --calibration-local-config-sha256 "$LOCOMO_LOCAL_HASH" \

@@ -415,11 +415,24 @@ the `localJudgeConfigHash` and `frontierJudgeConfigHash` printed by
 
 ```bash
 remnic bench run locomo \
+  --runtime-profile baseline \
+  --judge-provider ollama \
+  --judge-model qwen2.5-7b-32k:latest \
+  --judge-base-url http://127.0.0.1:11434/api \
+  --local-lab-manifest docs/benchmarks/configs/local-lab-3090.json \
+  --request-timeout 180000 \
   --calibration-dir ~/.remnic/bench/build-week-2026/calibration \
   --calibration-local-config-sha256 <localJudgeConfigHash> \
-  --calibration-frontier-config-sha256 <frontierJudgeConfigHash> \
-  # ...the same local judge provider/model and normal run flags
+  --calibration-frontier-config-sha256 <frontierJudgeConfigHash>
+  # ...the same local judge identity and normal run flags
 ```
+
+For a non-`local-lab` responder profile, `--local-lab-manifest` binds only the
+judge. The CLI judge provider/model/base URL remain explicit assertions against
+the normalized manifest identity, while temperature, seed, and the runtime
+timeout overlay come from the shared resolver used by `judge-calibrate`. This
+keeps the runtime judge configuration hash identical to the calibrated local
+judge and fails before dispatch if either surface drifts.
 
 The attached artifact records
 `judgeCalibration`, including `kappa`, `sampleSize`, `threshold`, `warning`,

@@ -489,6 +489,8 @@ type PackageBenchProviderConfig = {
     timeoutMs?: number;
     max429WaitMs?: number;
   };
+  temperature?: number;
+  seed?: number;
   disableThinking?: boolean;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
 };
@@ -501,6 +503,12 @@ type PackageBenchModule = {
   resolveBenchRuntimeProfile?: (
     options: ResolveBenchRuntimeProfileOptions,
   ) => Promise<ResolvedBenchRuntimeProfile>;
+  resolveLocalLabJudgeProviderConfig?: (options: {
+    localLabManifestPath: string;
+    requestTimeout?: number;
+    max429WaitMs?: number;
+    disableThinking?: boolean;
+  }) => Promise<PackageBenchProviderConfig>;
   runBenchmark?: (id: string, options: {
     mode?: "full" | "quick";
     datasetDir?: string;
@@ -833,6 +841,8 @@ interface BenchProviderConfig {
   };
   disableThinking?: boolean;
   reasoningEffort?: "low" | "medium" | "high" | "xhigh";
+  temperature?: number;
+  seed?: number;
   responderContextBudgetChars?: number;
   responderPromptBudgetChars?: number;
 }
@@ -875,8 +885,8 @@ interface ResolveBenchRuntimeProfileOptions {
   disableThinking?: boolean;
   /**
    * Path to a local-lab manifest JSON file (issue #1573 PR2). Required when
-   * `runtimeProfile: "local-lab"`. The manifest pins responder/judge/embedding
-   * to operator-hosted models with temperature=0 and a fixed seed.
+   * `runtimeProfile: "local-lab"`; on other profiles it binds the judge to the
+   * normalized manifest config while preserving the selected responder.
    */
   localLabManifestPath?: string;
 }
@@ -1155,8 +1165,7 @@ export function buildBenchRuntimeProfileRequest(
     max429WaitMs: parsed.max429WaitMs,
     disableThinking: parsed.disableThinking,
     lcmObserveConcurrency: parsed.publishedIngestConcurrency,
-    localLabManifestPath:
-      runtimeProfile === "local-lab" ? parsed.localLabManifestPath : undefined,
+    localLabManifestPath: parsed.localLabManifestPath,
   };
 }
 
@@ -2632,20 +2641,25 @@ async function calibrateBenchJudges(parsed: ParsedBenchArgs, rawArgs: string[]):
 
   // Resolve the two judges. The local judge comes from the manifest's judge
   // role (Tier L); the frontier judge from the --judge-* flags (Tier F gold).
-  const manifest = await bench.loadLocalLabManifest(expandTilde(manifestPath));
-  const resolvedProfile = bench.resolveLocalLabProfile(manifest);
+  const expandedManifestPath = expandTilde(manifestPath);
   // Both judges resolve to a `ProviderFactoryConfig` — a discriminated union
   // keyed on a literal `provider`. The local judge's config arrives already
   // typed from the resolved local-lab profile; the frontier judge is assembled
   // from CLI flags whose `provider` is the broad `BuiltInProvider` union, so
   // it is narrowed through the same cast the local judge uses.
   type ProviderFactoryConfig = Parameters<typeof bench.createProviderBackedJudge>[0];
-  const localJudgeConfig = {
-    ...resolvedProfile.judge.providerConfig,
+  if (!bench.resolveLocalLabJudgeProviderConfig) {
+    console.error(
+      "ERROR: installed @remnic/bench version does not export resolveLocalLabJudgeProviderConfig; rebuild or upgrade @remnic/bench before calibrating.",
+    );
+    process.exit(1);
+  }
+  const localJudgeConfig = await bench.resolveLocalLabJudgeProviderConfig({
+    localLabManifestPath: expandedManifestPath,
     ...(parsed.localJudgeRequestTimeout
-      ? { retryOptions: { ...resolvedProfile.judge.providerConfig.retryOptions, timeoutMs: parsed.localJudgeRequestTimeout } }
+      ? { requestTimeout: parsed.localJudgeRequestTimeout }
       : {}),
-  } as ProviderFactoryConfig;
+  }) as ProviderFactoryConfig;
   const localJudge = bench.createProviderBackedJudge(localJudgeConfig);
   const frontierJudgeConfig = {
     provider: parsed.judgeProvider,
