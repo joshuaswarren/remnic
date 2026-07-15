@@ -24,7 +24,7 @@ For the live-connector framework contract (how to write one) see
 | `remnic connectors install <id>` | Agent-tool | Install a connector and publish its memory extension |
 | `remnic connectors remove <id>` | Agent-tool | Remove a connector and unpublish its extension |
 | `remnic connectors doctor <id>` | Agent-tool | Health-check one connector and its publisher |
-| `remnic connectors marketplace <sub>` | Agent-tool | Browse / install third-party connectors from a marketplace source |
+| `remnic connectors marketplace <generate\|validate\|install>` | Agent-tool | Generate, validate, or install marketplace manifests |
 | `remnic connectors status` | Live | Live-connector poll status (Google Drive + Notion), JSON by default |
 | `remnic connectors run <name>` | Live | Manually trigger one incremental sync (Google Drive + Notion) |
 
@@ -74,12 +74,13 @@ connector's own checks and the publisher's extension status.
 ### Marketplace
 
 ```bash
-remnic connectors marketplace list               # browse marketplace sources
-remnic connectors marketplace install <source>   # install from a source
+remnic connectors marketplace generate            # generate marketplace.json
+remnic connectors marketplace validate [path]     # validate a marketplace.json file
+remnic connectors marketplace install <source>    # install from a source
 ```
 
-`marketplace` takes `--config <path>` for a config *file* (not `key=value`
-pairs) when installing.
+`marketplace install` takes `--config <path>` for a config *file* (not
+`key=value` pairs).
 
 ---
 

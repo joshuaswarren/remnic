@@ -60,27 +60,33 @@ EMO daemon (:4318)          ← standalone process
 
 ## Configuration
 
-```json
-// In OpenClaw config or remnic.config.json
-{
-  "remnic": {
-    "mode": "embedded",          // "embedded" or "delegate"
-    "delegateUrl": "http://127.0.0.1:4318",  // only for delegate mode
-    "delegateToken": "remnic_oc_..."          // only for delegate mode
-  }
-}
-```
+Bridge mode is not a config-file key. The OpenClaw plugin resolves it at gateway
+startup (`detectBridgeMode()` in `packages/plugin-openclaw/src/bridge.ts`):
 
-## Switching Modes
+1. If the `REMNIC_BRIDGE_MODE` environment variable is set (`embedded` or
+   `delegate`; legacy `ENGRAM_BRIDGE_MODE` also works), that wins.
+2. Otherwise, if a daemon is already listening on the configured port, the
+   bridge auto-detects **delegate** mode.
+3. Otherwise it runs **embedded**.
+
+In delegate mode the daemon endpoint comes from `REMNIC_HOST` (default
+`127.0.0.1`) and the daemon port env (legacy `ENGRAM_*` equivalents accepted).
+
+## Switching modes
 
 ```bash
-# Switch to delegate mode (requires running daemon)
-remnic daemon install           # start daemon on boot
-remnic config set mode delegate
+# Switch to delegate mode: start a daemon, then restart the gateway —
+# auto-detection picks delegate when the daemon is reachable.
+remnic daemon install
+launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 
-# Switch back to embedded mode
-remnic config set mode embedded
-remnic daemon stop              # optional: stop standalone daemon
+# Or pin the mode explicitly in the gateway's environment:
+#   REMNIC_BRIDGE_MODE=delegate
+
+# Switch back to embedded: stop the daemon (or pin REMNIC_BRIDGE_MODE=embedded),
+# then restart the gateway.
+remnic daemon stop
+launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 ```
 
 ## Port Conflict Prevention
