@@ -365,29 +365,31 @@ function extractLogicalShellCommands(src) {
 }
 
 /**
- * Read the positional benchmark after `remnic bench run`, skipping options
- * that may legally precede it. This intentionally tokenizes only the simple
- * documented shell commands handled by extractLogicalShellCommands.
+ * Read every positional benchmark after `remnic bench run`, skipping options
+ * and their values. This intentionally tokenizes only the simple documented
+ * shell commands handled by extractLogicalShellCommands.
  *
  * @param {string} command
- * @returns {string | undefined}
+ * @returns {string[] | undefined}
  */
-function extractRunBenchmark(command) {
+function extractRunBenchmarks(command) {
   const tokens = command.trim().split(/\s+/);
   const remnicAt = tokens.indexOf("remnic");
   if (remnicAt < 0 || tokens[remnicAt + 1] !== "bench" || tokens[remnicAt + 2] !== "run") {
     return undefined;
   }
+  const benchmarks = [];
   for (let i = remnicAt + 3; i < tokens.length; i++) {
     const token = tokens[i];
     if (BENCH_RUN_BOOLEAN_FLAGS.has(token)) continue;
     if (token.startsWith("-")) {
-      if (!token.includes("=")) i += 1;
+      const next = tokens[i + 1];
+      if (!token.includes("=") && next && !next.startsWith("-")) i += 1;
       continue;
     }
-    return token;
+    benchmarks.push(token);
   }
-  return undefined;
+  return benchmarks;
 }
 
 /**
@@ -425,15 +427,27 @@ function checkBuildWeekCodexDatasetPaths() {
       if (!/\bcodex-cli\b/.test(command)) continue;
       const commandTokens = command.trim().split(/\s+/);
       const datasetFlag = extractShellOptionValue(command, "--dataset-dir");
-      const positionalBenchmark = extractRunBenchmark(command);
+      const positionalBenchmarks = extractRunBenchmarks(command) ?? [];
       checked += 1;
-      if (positionalBenchmark !== "longmemeval" && positionalBenchmark !== "locomo") {
+      for (const selector of ["--all", "--custom", "--matrix"]) {
+        if (commandTokens.some((token) => token === selector || token.startsWith(`${selector}=`))) {
+          failures.push(
+            `${rel}: Build Week Codex command must not include \`${selector}\`; ` +
+              "run exactly one pinned benchmark and runtime profile",
+          );
+        }
+      }
+      if (
+        positionalBenchmarks.length !== 1 ||
+        (positionalBenchmarks[0] !== "longmemeval" && positionalBenchmarks[0] !== "locomo")
+      ) {
         failures.push(
-          `${rel}: Build Week Codex command must include positional benchmark \`longmemeval\` or \`locomo\` after \`remnic bench run\``,
+          `${rel}: Build Week Codex command must include exactly one positional benchmark, ` +
+            `\`longmemeval\` or \`locomo\`, after \`remnic bench run\``,
         );
         continue;
       }
-      const benchmark = positionalBenchmark;
+      const benchmark = positionalBenchmarks[0];
       const expected = `./bench-datasets/${benchmark}`;
       if (datasetFlag !== expected) {
         failures.push(

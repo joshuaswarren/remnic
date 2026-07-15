@@ -763,7 +763,7 @@ test("Build Week dataset path cannot impersonate a missing positional benchmark"
 
     const result = runParity(root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /must include positional benchmark `longmemeval` or `locomo`/);
+    assert.match(result.stderr, /must include exactly one positional benchmark/);
   });
 });
 
@@ -785,8 +785,41 @@ test("malformed Build Week Codex commands cannot bypass validation", () => {
 
     const result = runParity(root);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, /must include positional benchmark `longmemeval` or `locomo`/);
+    assert.match(result.stderr, /must include exactly one positional benchmark/);
   });
+});
+
+test("Build Week Codex commands reject benchmark and runtime fan-out selectors", () => {
+  for (const [selector, command] of [
+    ["--all", "remnic bench run --all longmemeval --limit 1"],
+    ["multiple positional benchmarks", "remnic bench run longmemeval locomo --limit 1"],
+    ["--matrix", "remnic bench run longmemeval --matrix baseline,real --limit 1"],
+    ["--custom", "remnic bench run longmemeval --custom ./custom.json --limit 1"],
+  ]) {
+    withFixture((root) => {
+      writeFileSync(
+        path.join(root, "HACKATHON.md"),
+        [
+          "# Build Week",
+          "",
+          "```bash",
+          `${command} \\`,
+          "  --dataset-dir ./bench-datasets/longmemeval \\",
+          "  --system-provider codex-cli --system-model gpt-5.6-luna",
+          "```",
+          "",
+        ].join("\n"),
+      );
+
+      const result = runParity(root);
+      assert.equal(result.status, 1, `${selector}: ${result.stderr}`);
+      if (selector === "multiple positional benchmarks") {
+        assert.match(result.stderr, /must include exactly one positional benchmark/);
+      } else {
+        assert.match(result.stderr, new RegExp("must not include `" + selector + "`"));
+      }
+    });
+  }
 });
 
 test("Build Week Codex bounds reject missing, zero, and negative values", () => {
