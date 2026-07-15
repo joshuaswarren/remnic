@@ -219,6 +219,21 @@ export interface ResolveOptions {
     upgrades: readonly EdgeUpgrade[],
   ) => Promise<void>;
   /**
+   * Optional stale-edge reconciliation (issue #1895): after applying a
+   * file batch's upgrades, the caller retires prior `lsp`-provenance
+   * edges owned by that file whose `(src, dst, type)` keys the current
+   * batch does NOT assert. When absent, stale lsp edges persist until
+   * node pruning — the soft-fail path documented in #1894.
+   */
+  readonly reconcileLspEdges?: (
+    filePath: string,
+    assertedEdges: ReadonlyArray<{
+      srcQualifiedName: string;
+      dstQualifiedName: string;
+      type: string;
+    }>,
+  ) => void;
+  /**
    * Workspace root for resolving repo-relative file paths to absolute LSP
    * URIs and normalizing returned URIs back to repo-relative paths.
    */
@@ -362,21 +377,35 @@ export async function executeLspResolution(
       break;
     }
 
-    // Apply upgrades transactionally per file batch. If the apply throws,
-    // zero upgrades from this batch persist (rule 25 — the applyUpgrades
+    // Apply upgrades transactionally per file batch, then reconcile stale
+    // lsp edges for this file (issue #1895). If the apply throws, zero
+    // upgrades from this batch persist (rule 25 — the applyUpgrades
     // callback MUST be transactional).
-    if (upgrades.length > 0) {
-      try {
+    try {
+      if (upgrades.length > 0) {
         await applyUpgrades(upgrades);
         upgraded += upgrades.length;
-      } catch {
-        // The apply failed — degrade but don't crash. Upgrades from this
-        // batch are lost (the callback's transaction rolled back). Edges
-        // from already-applied batches survive (they were in separate
-        // transactions — this is the documented per-batch isolation).
-        // Count the lost upgrades as unresolved for reporting.
-        unresolved += upgrades.length;
       }
+      // Reconcile regardless of upgrade count: an empty upgrade list
+      // still asserts "no lsp edges for this file's current call sites",
+      // so prior lsp rows for removed calls retire.
+      if (options.reconcileLspEdges) {
+        options.reconcileLspEdges(
+          filePath,
+          upgrades.map((u) => ({
+            srcQualifiedName: u.srcQualifiedName,
+            dstQualifiedName: u.dstQualifiedName,
+            type: u.type,
+          })),
+        );
+      }
+    } catch {
+      // The apply failed — degrade but don't crash. Upgrades from this
+      // batch are lost (the callback's transaction rolled back). Edges
+      // from already-applied batches survive (they were in separate
+      // transactions — this is the documented per-batch isolation).
+      // Count the lost upgrades as unresolved for reporting.
+      unresolved += upgrades.length;
     }
   }
 
