@@ -357,7 +357,7 @@ function extractRemnicInvocations(relPath, src) {
  * are ordinary multiline shell invocations, not arbitrary shell programs.
  *
  * @param {string} src
- * @returns {Array<{ command: string; guardedBuildWeekBlock: boolean }>}
+ * @returns {Array<{ command: string; guardedBuildWeekBlock: boolean; blockStartLine: number }>}
  */
 function extractLogicalShellCommands(src) {
   const shellLangs = new Set([
@@ -372,14 +372,14 @@ function extractLogicalShellCommands(src) {
   const commands = [];
   for (const block of extractFencedBlocks(src)) {
     if (!shellLangs.has(block.lang)) continue;
-    const guardedBuildWeekBlock = block.text.includes(
-      "REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
-    );
+    const guardAt = block.text.indexOf("REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473");
+    const firstRunAt = block.text.search(/\bremnic\s+bench\s+run\b/);
+    const guardedBuildWeekBlock = guardAt >= 0 && firstRunAt >= 0 && guardAt < firstRunAt;
     const logical = block.text.replace(/\\\s*\n/g, " ");
     for (const line of logical.split("\n")) {
       const command = line.trim();
       if (command.length > 0 && !command.startsWith("#")) {
-        commands.push({ command, guardedBuildWeekBlock });
+        commands.push({ command, guardedBuildWeekBlock, blockStartLine: block.startLine });
       }
     }
   }
@@ -447,15 +447,27 @@ function checkBuildWeekCodexDatasetPaths() {
     const abs = path.join(ROOT, ...rel.split("/"));
     if (!existsSync(abs)) continue;
     const src = readFileSync(abs, "utf8");
+    const creditGuardLine = src
+      .split("\n")
+      .findIndex((line) => line.includes("REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473")) + 1;
     let checkedInDoc = 0;
-    for (const { command, guardedBuildWeekBlock } of extractLogicalShellCommands(src)) {
+    for (const { command, guardedBuildWeekBlock, blockStartLine } of extractLogicalShellCommands(src)) {
       if (!/\bremnic\s+bench\s+run\b/.test(command)) continue;
-      if (!guardedBuildWeekBlock && !/\bcodex-cli\b/.test(command)) continue;
+      const usesCodexCli = /\bcodex-cli\b/.test(command);
+      if (!guardedBuildWeekBlock && !usesCodexCli) continue;
       const commandTokens = command.trim().split(/\s+/);
       const datasetFlag = extractShellOptionValue(command, "--dataset-dir");
       const positionalBenchmarks = extractRunBenchmarks(command) ?? [];
       checked += 1;
       checkedInDoc += 1;
+      const creditGuardPrecedesCommand =
+        guardedBuildWeekBlock || (creditGuardLine > 0 && creditGuardLine < blockStartLine);
+      if (!creditGuardPrecedesCommand) {
+        failures.push(
+          `${rel}: Build Week Codex command must follow a shell export of ` +
+            "`REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`",
+        );
+      }
       const remnicAt = commandTokens.indexOf("remnic");
       const disallowedFlags = [
         ...new Set(

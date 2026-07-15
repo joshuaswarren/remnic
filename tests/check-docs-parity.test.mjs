@@ -660,6 +660,7 @@ test("Build Week Codex commands accept only the matching staged dataset path", (
         "# Build Week",
         "",
         "```bash",
+        "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
         "remnic bench run --json longmemeval --limit 1 \\",
         "  --dataset-dir ./bench-datasets/longmemeval \\",
         "  --runtime-profile real --results-dir \"$BUILD_WEEK_RESULTS_DIR\" --drain-timeout 600000 \\",
@@ -681,6 +682,57 @@ test("Build Week Codex commands accept only the matching staged dataset path", (
     const result = runParity(root);
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /2 Build Week Codex dataset command\(s\) pinned/);
+  });
+});
+
+test("an otherwise valid Codex command fails without the credit-budget guard", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "remnic bench run longmemeval --limit 1 \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+        "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+        "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+        "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
+  });
+});
+
+test("a credit-budget guard after the Codex command does not authorize it", () => {
+  withFixture((root) => {
+    writeFileSync(
+      path.join(root, "HACKATHON.md"),
+      [
+        "# Build Week",
+        "",
+        "```bash",
+        "remnic bench run longmemeval --limit 1 \\",
+        "  --dataset-dir ./bench-datasets/longmemeval \\",
+        '  --runtime-profile real --results-dir "$BUILD_WEEK_RESULTS_DIR" --drain-timeout 600000 \\',
+        "  --system-provider codex-cli --system-model gpt-5.6-luna --system-codex-reasoning-effort medium \\",
+        "  --internal-provider codex-cli --internal-model gpt-5.6-luna --internal-codex-reasoning-effort medium \\",
+        "  --judge-provider codex-cli --judge-model gpt-5.6-terra --judge-codex-reasoning-effort high",
+        "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473",
+        "```",
+        "",
+      ].join("\n"),
+    );
+
+    const result = runParity(root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /must follow a shell export of `REMNIC_BENCH_CODEX_CREDIT_BUDGET=2473`/);
   });
 });
 
