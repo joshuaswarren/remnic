@@ -197,6 +197,17 @@ const PYTHON_EXTRACTOR: LanguageExtractor = {
   importsQuery: `
 (import_statement (dotted_name) @import.module) @__import.stmt
 (import_from_statement module_name: (dotted_name) @import.module) @__import.stmt
+; Imported names (issue #1894 review round 7): without these captures,
+; extractImports emits importedNames: [] and the heuristic resolver's
+; import bindings never fire for real Python parses.
+(import_from_statement
+  module_name: (dotted_name) @import.module
+  name: (dotted_name) @import.name) @__import.stmt
+(import_from_statement
+  module_name: (dotted_name) @import.module
+  name: (aliased_import
+    name: (dotted_name) @import.aliasExported
+    alias: (identifier) @import.aliasLocal)) @__import.stmt
 ; Python relative imports: from .models import User / from ..parent import X
 ; tree-sitter-python wraps the module inside a relative_import node, so the
 ; module_name field is NOT set. Capture the relative_import node itself so
@@ -204,6 +215,14 @@ const PYTHON_EXTRACTOR: LanguageExtractor = {
 ; relative levels must not collapse to the same module name
 ; (chatgpt-codex-connector #1688 P2: 'Preserve dots in Python relative imports').
 (import_from_statement (relative_import) @import.module) @__import.stmt
+(import_from_statement
+  (relative_import) @import.module
+  name: (dotted_name) @import.name) @__import.stmt
+(import_from_statement
+  (relative_import) @import.module
+  name: (aliased_import
+    name: (dotted_name) @import.aliasExported
+    alias: (identifier) @import.aliasLocal)) @__import.stmt
 `.trim(),
   exportsQuery: ``,
   callSitesQuery: `

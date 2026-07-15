@@ -1036,3 +1036,60 @@ test("executor: explicit empty candidatePaths ([]) is treated as insufficient â€
     await dispose(store, dir);
   }
 });
+
+test("executor: an lsp-only edge on an UNCHANGED file survives incremental reindex (issue #1894 round 7)", async () => {
+  const { store, dir } = await tempStore();
+  try {
+    await writeFiles(dir, {
+      "src/a.ts": "export function foo() {}",
+      "src/b.ts": "export function bar() {}",
+    });
+    const git1 = mockGit({ head: SHA_A });
+    await executeReindex({
+      store,
+      git: git1,
+      repoRoot: dir,
+      parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts", "src/b.ts"],
+    });
+    // LSP resolves a member call Phase A skipped: an lsp-ONLY edge owned
+    // by src/a.ts (never asserted by any heuristic derivation).
+    const upgraded = await store.upsertEdges([
+      {
+        srcQualifiedName: "src/a.ts::foo",
+        dstQualifiedName: "src/b.ts::foo",
+        type: "CALLS",
+        confidence: 1,
+        provenance: "lsp",
+      },
+    ]);
+    assert.ok(upgraded.ok && upgraded.persisted === 1);
+
+    // Only src/b.ts changes; src/a.ts is NOT re-ingested, so its lsp-only
+    // edge must survive â€” ingested files are changed-or-fresh by
+    // construction, which is the invariant that keeps the [heuristic, lsp]
+    // assertion scope safe for lsp-only edges on untouched files.
+    await writeFiles(dir, { "src/b.ts": "export function bar() { return 2; }" });
+    const git2 = mockGit({
+      head: SHA_B,
+      reachable: true,
+      changedFiles: [{ status: "M", path: "src/b.ts" }],
+    });
+    const result = await executeReindex({
+      store,
+      git: git2,
+      repoRoot: dir,
+      parseFile: mockParseFile,
+      candidatePaths: ["src/a.ts", "src/b.ts"],
+    });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.mode, "incremental");
+    assert.equal(result.filesIngested, 1);
+    const stats = store.schemaStats();
+    assert.ok(stats.ok);
+    assert.deepEqual(stats.stats.edgesByType, { CALLS: 1 }, "lsp-only edge on unchanged src/a.ts survived");
+  } finally {
+    await dispose(store, dir);
+  }
+});
