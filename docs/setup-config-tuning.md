@@ -50,7 +50,8 @@ In `openclaw.json` (the current plugin id is `openclaw-remnic`; installs created
 ```
 
 Service env override (optional):
-- `OPENCLAW_ENGRAM_CONFIG_PATH=/absolute/path/to/openclaw.json`
+- `OPENCLAW_CONFIG_PATH=/absolute/path/to/openclaw.json` (legacy
+  `OPENCLAW_ENGRAM_CONFIG_PATH` is honored as a fallback)
 
 Third-party OpenAI-compatible extraction endpoints:
 - Set `localLlmEnabled: true` and point `localLlmUrl` at the provider base URL.

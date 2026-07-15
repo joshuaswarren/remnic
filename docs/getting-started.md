@@ -108,20 +108,22 @@ plugin settings.
 ### Standalone: `remnic.config.json`
 
 A top-level file with `remnic` (plugin settings) and `server` (bind + auth) blocks.
-This is what `remnic init` scaffolds:
+`remnic init` scaffolds the skeleton — note it writes `memoryDir` relative to the
+directory you ran it in (`<cwd>/.remnic/memory`) and leaves `${...}` placeholders
+for secrets. A recommended config after editing:
 
 ```jsonc
 {
   "remnic": {
-    "openaiApiKey": "${OPENAI_API_KEY}",
-    "memoryDir": "~/.remnic/memory",
+    "openaiApiKey": "sk-...",              // real value — placeholders are not expanded
+    "memoryDir": "~/.remnic/memory",       // pick a stable absolute path
     "memoryOsPreset": "balanced",
-    "recallBudgetChars": 64000
+    "recallBudgetChars": 64000             // recommended; init does not set this
   },
   "server": {
     "host": "127.0.0.1",
     "port": 4318,
-    "authToken": "${REMNIC_AUTH_TOKEN}"
+    "authToken": "<paste openssl rand -hex 32>"
   }
 }
 ```
@@ -163,8 +165,8 @@ gateway restart (`SIGUSR1` hot reload does not re-fire `gateway_start`):
 launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
 ```
 
-Override the config path with `OPENCLAW_ENGRAM_CONFIG_PATH` (falling back to
-`OPENCLAW_CONFIG_PATH`) for service environments.
+Override the config path with `OPENCLAW_CONFIG_PATH` for service environments
+(the legacy `OPENCLAW_ENGRAM_CONFIG_PATH` is still honored as a fallback).
 
 ### Tune `recallBudgetChars`
 
