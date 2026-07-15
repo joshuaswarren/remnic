@@ -118,6 +118,7 @@ export async function runWithinCodexCreditBudget<T>(args: {
   config: CodexCreditBudgetConfig | undefined;
   model: string;
   run: () => Promise<{ value: T; usage: CodexCliNativeUsage }>;
+  onUsagePersisted?: (usage: CodexCliNativeUsage) => void;
 }): Promise<T> {
   if (!args.config) {
     return (await args.run()).value;
@@ -192,6 +193,7 @@ export async function runWithinCodexCreditBudget<T>(args: {
     await writeLedger(args.config.ledgerPath, nextLedger);
     await writeLockState(lock, "settled");
     accountingSettled = true;
+    args.onUsagePersisted?.(result.usage);
     if (nextSpent > args.config.budgetCredits) {
       throw new Error(
         `Codex credit budget exceeded by completed call: ${nextSpent.toFixed(3)} > ` +

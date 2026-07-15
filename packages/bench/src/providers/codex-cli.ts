@@ -253,8 +253,24 @@ class CodexCliProvider implements StructuredJudgeProvider {
           ? await runWithinCodexCreditBudget({
               config: creditBudget,
               model: this.config.model,
+              onUsagePersisted: (usage) => {
+                this.recordUsage(usage.inputTokens, usage.outputTokens);
+              },
               run: async () => {
-                const value = await this.runCodexCli(request);
+                let value: CodexCliRunResult;
+                try {
+                  value = await this.runCodexCli(request);
+                } catch (error) {
+                  if (
+                    error instanceof CodexCreditDispatchError ||
+                    error instanceof CodexCreditAccountingError
+                  ) {
+                    throw error;
+                  }
+                  throw new CodexCreditAccountingError(
+                    `Codex CLI failed after dispatch; account balance must be reconciled before resuming: ${safeErrorMessage(error)}`,
+                  );
+                }
                 const usage = parseCodexJsonlUsage(
                   `${value.stdout}\n${value.stderr}`,
                 );
@@ -268,6 +284,12 @@ class CodexCliProvider implements StructuredJudgeProvider {
               },
             })
           : await this.runCodexCli(request);
+        const exactUsage = parseCodexJsonlUsage(
+          `${result.stdout}\n${result.stderr}`,
+        );
+        if (!creditBudget && exactUsage) {
+          this.recordUsage(exactUsage.inputTokens, exactUsage.outputTokens);
+        }
         if (result.status !== 0) {
           const error = codexCliResultError(result);
           if (
@@ -300,14 +322,16 @@ class CodexCliProvider implements StructuredJudgeProvider {
           throw error;
         }
         await finishDiagnostics({ result });
-        const nativeUsage = this.requiresExactUsage
+        const nativeUsage = exactUsage ?? (this.requiresExactUsage
           ? requireCodexJsonlUsage(result)
-          : readCodexUsage(result, text);
+          : readCodexUsage(result, text));
         const tokens = {
           input: nativeUsage.inputTokens,
           output: nativeUsage.outputTokens,
         };
-        this.recordUsage(tokens.input, tokens.output);
+        if (!creditBudget && !exactUsage) {
+          this.recordUsage(tokens.input, tokens.output);
+        }
 
         return {
           text,
@@ -1011,8 +1035,9 @@ function runCodexCliCommand(request: CodexCliRunRequest): Promise<CodexCliRunRes
       request.signal?.removeEventListener("abort", onAbort);
       reject(
         child.pid
-          ? new CodexCreditAccountingError(
-              `Codex CLI failed after its process started; account balance must be reconciled before resuming: ${safeErrorMessage(error)}`,
+          ? new Error(
+              `Codex CLI failed after its process started: ${safeErrorMessage(error)}`,
+              { cause: error },
             )
           : new CodexCreditDispatchError(
               `Codex CLI could not start: ${safeErrorMessage(error)}`,
@@ -1057,11 +1082,13 @@ function runCodexCliCommand(request: CodexCliRunRequest): Promise<CodexCliRunRes
         const outputText = await readCodexOutput(request.outputPath, status);
         resolve({ status, signal, stdout, stderr, outputText });
       } catch (error) {
-        reject(
-          new CodexCreditAccountingError(
-            `${safeErrorMessage(error)} Account balance must be reconciled before resuming.`,
-          ),
-        );
+        resolve({
+          status,
+          signal,
+          stdout,
+          stderr: appendBounded(stderr, `\n${safeErrorMessage(error)}`),
+          outputText: "",
+        });
       }
     });
     try {

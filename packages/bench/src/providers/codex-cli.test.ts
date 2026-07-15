@@ -702,6 +702,97 @@ test("bounded codex-cli runs require ChatGPT auth and persist native usage", asy
       outputTokens: 10,
       reasoningOutputTokens: 5,
     });
+    assert.deepEqual(chatGptAuthed.getUsage(), {
+      inputTokens: 100,
+      outputTokens: 10,
+      totalTokens: 110,
+    });
+
+    const failedWithUsage = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.6-luna" },
+      {
+        async runCodexCli() {
+          return {
+            status: 2,
+            signal: null,
+            stdout: '{"type":"turn.completed","usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}',
+            stderr: "model rejected the request",
+            outputText: "",
+          };
+        },
+      },
+    );
+    await assert.rejects(
+      failedWithUsage.complete("hello"),
+      /model rejected the request/,
+    );
+    assert.deepEqual(failedWithUsage.getUsage(), {
+      inputTokens: 40,
+      outputTokens: 5,
+      totalTokens: 45,
+    });
+
+    const emptyWithUsage = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.6-luna" },
+      {
+        async runCodexCli() {
+          return {
+            status: 0,
+            signal: null,
+            stdout: '{"type":"turn.completed","usage":{"input_tokens":30,"cached_input_tokens":0,"output_tokens":4,"reasoning_output_tokens":0}}',
+            stderr: "",
+            outputText: "",
+          };
+        },
+      },
+    );
+    await assert.rejects(
+      emptyWithUsage.complete("hello"),
+      /returned no final message/,
+    );
+    assert.deepEqual(emptyWithUsage.getUsage(), {
+      inputTokens: 30,
+      outputTokens: 4,
+      totalTokens: 34,
+    });
+
+    const ledgerAfterFailures = JSON.parse(
+      await readFile(path.join(directory, "ledger.json"), "utf8"),
+    ) as { entries: Array<{ inputTokens: number; outputTokens: number }> };
+    assert.deepEqual(
+      ledgerAfterFailures.entries.map(({ inputTokens, outputTokens }) => ({
+        inputTokens,
+        outputTokens,
+      })),
+      [
+        { inputTokens: 100, outputTokens: 10 },
+        { inputTokens: 40, outputTokens: 5 },
+        { inputTokens: 30, outputTokens: 4 },
+      ],
+    );
+
+    const postDispatchFailure = createCodexCliProvider(
+      { provider: "codex-cli", model: "gpt-5.6-luna" },
+      {
+        async runCodexCli() {
+          throw new Error("output collection failed");
+        },
+      },
+    );
+    await assert.rejects(
+      postDispatchFailure.complete("hello"),
+      /account balance must be reconciled.*output collection failed/i,
+    );
+    assert.deepEqual(postDispatchFailure.getUsage(), {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+    });
+    const blockedLedger = JSON.parse(
+      await readFile(path.join(directory, "ledger.json"), "utf8"),
+    ) as { entries: unknown[]; blockedReason?: string };
+    assert.equal(blockedLedger.entries.length, 3);
+    assert.match(blockedLedger.blockedReason ?? "", /output collection failed/);
   } finally {
     __codexCliProviderTestHooks.clearCodexCliLoginStatusCache();
     for (const key of keys) {
@@ -721,7 +812,7 @@ test("codex-cli provider surfaces non-zero CLI exits", async () => {
         return {
           status: 2,
           signal: null,
-          stdout: "",
+          stdout: '{"type":"turn.completed","usage":{"input_tokens":40,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}',
           stderr: "invalid model",
           outputText: "",
         };
@@ -733,6 +824,41 @@ test("codex-cli provider surfaces non-zero CLI exits", async () => {
     provider.complete("hello"),
     /Codex CLI completion failed \(exit 2\): invalid model/,
   );
+  assert.deepEqual(provider.getUsage(), {
+    inputTokens: 40,
+    outputTokens: 5,
+    totalTokens: 45,
+  });
+});
+
+test("unbudgeted empty completions record exact usage without ledger wording", async () => {
+  const provider = createCodexCliProvider(
+    { provider: "codex-cli", model: "gpt-5.5" },
+    {
+      async runCodexCli() {
+        return {
+          status: 0,
+          signal: null,
+          stdout: '{"type":"turn.completed","usage":{"input_tokens":30,"cached_input_tokens":0,"output_tokens":4,"reasoning_output_tokens":0}}',
+          stderr: "",
+          outputText: "",
+        };
+      },
+    },
+  );
+
+  await assert.rejects(
+    provider.complete("hello"),
+    (error: unknown) =>
+      error instanceof Error &&
+      /returned no final message/.test(error.message) &&
+      !/credit|ledger|balance|reconcil/i.test(error.message),
+  );
+  assert.deepEqual(provider.getUsage(), {
+    inputTokens: 30,
+    outputTokens: 4,
+    totalTokens: 34,
+  });
 });
 
 test("codex-cli provider retries transient subprocess signals", async () => {
@@ -1054,25 +1180,26 @@ test("codex-cli command terminates subprocess when aborted", async () => {
   }
 });
 
-test("codex-cli command rejects a successful process that omits the final-message file", async () => {
+test("codex-cli command reports missing output without ledger-specific errors", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "remnic-codex-output-"));
   const workspacePath = path.join(tempDir, "workspace");
   await mkdir(workspacePath);
   try {
-    await assert.rejects(
-      __codexCliProviderTestHooks.runCodexCliCommand({
-        executable: process.execPath,
-        args: [
-          "-e",
-          'process.stdout.write(\'{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}\\n\')',
-        ],
-        input: "prompt",
-        outputPath: path.join(tempDir, "missing-last-message.txt"),
-        workspacePath,
-        env: process.env,
-      }),
-      /did not write --output-last-message/,
-    );
+    const result = await __codexCliProviderTestHooks.runCodexCliCommand({
+      executable: process.execPath,
+      args: [
+        "-e",
+        'process.stdout.write(\'{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0}}\\n\')',
+      ],
+      input: "prompt",
+      outputPath: path.join(tempDir, "missing-last-message.txt"),
+      workspacePath,
+      env: process.env,
+    });
+    assert.equal(result.status, 0);
+    assert.equal(result.outputText, "");
+    assert.match(result.stderr, /did not write --output-last-message/);
+    assert.doesNotMatch(result.stderr, /account balance|ledger|reconcil/i);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

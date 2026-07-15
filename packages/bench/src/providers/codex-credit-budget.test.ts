@@ -205,12 +205,16 @@ test("budget environment parsing uses the competition reserve and rejects invali
 test("completed over-budget usage is persisted before the stop error", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "remnic-credit-overrun-"));
   const ledgerPath = path.join(directory, "ledger.json");
+  let persistedUsage: typeof usage | undefined;
   __codexCreditBudgetTestHooks.resetQueue();
   try {
     await assert.rejects(
       runWithinCodexCreditBudget({
         config: { budgetCredits: 400, reserveCredits: 300, ledgerPath, allowSol: false },
         model: "gpt-5.6-terra",
+        onUsagePersisted: (completedUsage) => {
+          persistedUsage = completedUsage;
+        },
         run: async () => ({
           value: "charged",
           usage: {
@@ -229,6 +233,12 @@ test("completed over-budget usage is persisted before the stop error", async () 
     };
     assert.equal(ledger.spentCredits, 500);
     assert.equal(ledger.entries.length, 1);
+    assert.deepEqual(persistedUsage, {
+      inputTokens: 8_000_000,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+    });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
