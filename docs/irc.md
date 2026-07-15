@@ -1,18 +1,18 @@
-# Inductive Rule Consolidation (IRC)
+# Inductive rule consolidation (IRC)
 
-IRC is a preference synthesis layer in Engram's recall pipeline. It detects preference signals in stored conversations and synthesizes explicit preference statements that are injected into recall context.
+IRC is a preference synthesis layer in Remnic's recall pipeline. It detects preference signals in stored conversations and synthesizes explicit preference statements that are injected into recall context.
 
 ## Problem
 
-Engram stores conversations as factual content: *"I enjoy Adobe Premiere Pro for video editing."* But when a user later asks *"Can you recommend video editing resources?"*, the recall context needs to clearly signal that this user prefers Adobe Premiere Pro. Without IRC, the raw text is returned but preference intent isn't surfaced explicitly.
+Remnic stores conversations as factual content: *"I enjoy Adobe Premiere Pro for video editing."* But when a user later asks *"Can you recommend video editing resources?"*, the recall context needs to clearly signal that this user prefers Adobe Premiere Pro. Without IRC, the raw text is returned but preference intent isn't surfaced explicitly.
 
-## How It Works
+## How it works
 
 IRC runs as a parallel recall section in the orchestrator, using a dual-strategy approach:
 
 ### Strategy 1: Extracted Memory Files (Production)
 
-When LLM-powered extraction is available, Engram extracts structured facts, entities, and preferences from conversations. IRC reads these extracted memories and consolidates them into preference statements using pattern matching and the `consolidatePreferences()` function.
+When LLM-powered extraction is available, Remnic extracts structured facts, entities, and preferences from conversations. IRC reads these extracted memories and consolidates them into preference statements using pattern matching and the `consolidatePreferences()` function.
 
 ### Strategy 2: LCM FTS Fallback (No LLM)
 
@@ -42,7 +42,7 @@ To disable IRC:
 }
 ```
 
-## Detected Patterns
+## Detected patterns
 
 Strategy 2 recognizes these preference signal patterns (with optional adverbs):
 
@@ -66,7 +66,7 @@ recallInternal()
 
 IRC is non-fatal: errors are caught and logged, never blocking recall.
 
-## Key Files
+## Key files
 
 - `src/compounding/preference-consolidator.ts` — Core IRC logic (both strategies)
 - `src/orchestrator.ts` — IRC integration in recall pipeline

@@ -46,7 +46,7 @@ The trace is the noise. We are not going to keep it.
 
 ### Extraction — distill the trace into observation candidates
 
-When the buffer flushes (smart-flush signals: topic shift, time elapsed, explicit `before_reset`), `extraction.ts` calls the extractor (GPT-5.2 via the OpenAI Responses API). The extractor reads the trace and emits zero or more `ExtractedFact` records, each with a category (decision, preference, fact, principle, …), content, confidence, and tags. A separate pass (`importance.ts` / `calibration.ts`) then assigns an importance score in `[0, 1]` — importance is computed *after* extraction, not part of the `ExtractedFact` payload itself.
+When the buffer flushes (smart-flush signals: topic shift, time elapsed, explicit `before_reset`), `extraction.ts` calls the extractor (the configured extraction model via the OpenAI Responses API). The extractor reads the trace and emits zero or more `ExtractedFact` records, each with a category (decision, preference, fact, principle, …), content, confidence, and tags. A separate pass (`importance.ts` / `calibration.ts`) then assigns an importance score in `[0, 1]` — importance is computed *after* extraction, not part of the `ExtractedFact` payload itself.
 
 For our session, the pipeline might emit (extractor output → after importance scoring):
 
@@ -54,7 +54,7 @@ For our session, the pipeline might emit (extractor output → after importance 
 2. `{ category: "fact", content: "Postgres replica lag alarm fires when GC pauses cross 200ms", confidence: 0.9 }` → `importance: 0.78`
 3. `{ category: "principle", content: "Caching layer should be per-tenant, not global", confidence: 0.85 }` → `importance: 0.7`
 
-The extraction judge (`extraction-judge.ts`) then post-filters: it asks an LLM whether each candidate is genuinely durable or just transient task chatter. The flaky-test debugging turns produce no observations — they were noise.
+The extraction judge (`extraction-judge.ts`) — opt-in via `extractionJudgeEnabled` (default `false`) — then post-filters when enabled: it asks an LLM whether each candidate is genuinely durable or just transient task chatter. In this walkthrough the flaky-test debugging turns produce no observations — they were noise.
 
 Each surviving candidate becomes a `MemoryObservation` (the public type in `@remnic/core`):
 
@@ -113,7 +113,7 @@ That `MemoryFile` is the **primitive**. Three primitives now exist where four ho
 
 ### Reinforcement — primitives compound over time
 
-`compounding/engine.ts` runs weekly, surfacing primitives that recurred or were referenced and bumping their access counters / heat scores. Stale, never-recalled primitives drift toward the cold tier under the lifecycle policy (issue #686). The retention substrate decides when a primitive is durable enough to keep, when it's cold enough to demote, and — via `remnic forget` — when an operator wants it gone entirely.
+`compounding/engine.ts` runs weekly, surfacing primitives that recurred or were referenced and bumping their access counters / heat scores. Stale, never-recalled primitives drift toward the cold tier under the lifecycle policy (issue #686). The retention substrate decides when a primitive is durable enough to keep, when it's cold enough to demote, and — via `openclaw engram forget` — when an operator wants it gone entirely.
 
 ## Why this framing matters
 
@@ -124,7 +124,7 @@ Remnic's pipeline produces primitives that are:
 - **Searchable** — primitives are first-class records, not buried inside transcripts.
 - **Citable** — every recall response includes `<oai-mem-citation>` blocks pointing back to the source primitive.
 - **Reinforceable** — compounding raises the value of primitives that keep mattering.
-- **Forgettable** — `remnic forget <id>` is the explicit escape hatch.
+- **Forgettable** — `openclaw engram forget <id>` is the explicit escape hatch.
 
 The trace is noise. The primitive is the product.
 
@@ -135,7 +135,7 @@ The trace is noise. The primitive is the product.
 | `@remnic/core` types | The `MemoryObservation` interface ships in the public types so callers can read post-extraction state without reaching into `extraction.ts`. |
 | `remnic doctor` | Reports observation throughput, judge accept/reject/defer breakdown, and the most recent `observedAt` via the `observations` check (issue #685). Reads from `state/observation-ledger/extraction-judge-verdicts.jsonl`. |
 | `recall` responses | `<oai-mem-citation>` blocks point at the primitive ids that came out the other end of the pipeline. |
-| `remnic tier list` / `tier explain` | Inspect what happened to primitives after they were written (issue #686). |
+| `openclaw engram tier list` / `tier explain` | Inspect what happened to primitives after they were written (issue #686). |
 | `observation-ledger` | A separate concept: a JSONL telemetry directory (`state/observation-ledger/`) capturing turn-count aggregates (`maintenance/rebuild-observations.ts`) and judge verdict events (`extraction-judge-telemetry.ts`). Operator-observability data, distinct from the lifecycle-event ledger and from the `MemoryObservation` type — see the naming note below. |
 
 ## Naming note: observation vs observation-ledger

@@ -1,10 +1,10 @@
-# Ingestion Benchmark: Canonical Page Frontmatter Schema
+# Ingestion benchmark: canonical page frontmatter schema
 
 This document defines the frontmatter schema that the **schema-completeness** rubric scores
 against during ingestion benchmarks. Every generated memory page is evaluated field by field;
 the aggregate score is `passing_field_checks / total_applicable_checks`.
 
-## Required Fields
+## Required fields
 
 All generated pages must include the following YAML frontmatter fields:
 
@@ -19,7 +19,7 @@ All generated pages must include the following YAML frontmatter fields:
 A page that omits any of these fields contributes a failing check for that field toward the
 completeness score.
 
-## Conditional Fields
+## Conditional fields
 
 These fields are required only for certain entity types. The benchmark gold graph records
 `expectExecSummary` and `expectTimeline` per gold page; the rubric only scores them when the
@@ -44,7 +44,7 @@ dedicated heading section (`## Timeline`) in the body.
 
 The scorer treats the field as present if `ExtractedPage.hasTimeline` is `true`.
 
-## Scoring Details
+## Scoring details
 
 The scorer is implemented in `packages/bench/src/ingestion-scorer.ts` under `schemaCompleteness`.
 

@@ -14,7 +14,7 @@ Everything behavioral is gated by plugin config **`procedural.enabled`** (defaul
 - Intent-gated recall does not inject a procedure section.
 - The nightly miner MCP entry returns without writing files.
 
-Operators who want to stay opt-out must set `procedural.enabled: false` explicitly. Mirror the same keys under `openclaw.plugin.json` / host config as for other Engram-style toggles.
+Operators who want to stay opt-out must set `procedural.enabled: false` explicitly, or select the **conservative** memory-OS preset, which pins `procedural.enabled: false` against the default-on flip. Mirror the same keys under `openclaw.plugin.json` / host config as for other Remnic toggles.
 
 ### Migration from default-off
 
@@ -58,7 +58,7 @@ Operators who need to override any of these should do so explicitly; all fields 
 
 A dedicated miner clusters **causal trajectory** records (bounded lookback by `recordedAt` / `lookbackDays`) and can write **`status: pending_review`** procedure candidates. Promotion to **`active`** respects optional auto-promote rules and avoids clobbering user-edited bodies.
 
-Automation is **not** part of `runMemoryGovernance`. Use the MCP tool **`engram.procedure_mining_run`** (and optional cron registration mirroring other nightly jobs) so procedural mining stays isolated from shadow/apply governance.
+Automation is **not** part of `runMemoryGovernance`. Use the MCP tool **`remnic.procedure_mining_run`** (legacy alias **`engram.procedure_mining_run`**), with optional cron registration mirroring other nightly jobs, so procedural mining stays isolated from shadow/apply governance.
 
 ## Stats surface (issue #567 PR 5/5)
 
@@ -78,14 +78,14 @@ All three surfaces are read-only and namespace-scoped (CLAUDE.md rule 42). The H
 
 ## Pattern reinforcement CLI (issue #687 PR 4/4)
 
-The `remnic patterns` command group exposes the pattern-reinforcement output written by the maintenance job (PR 2/4).  Both subcommands read from the active `memoryDir` and require no extra config.
+The pattern-reinforcement CLI ships on the OpenClaw-hosted surface as `openclaw engram patterns`; there is no standalone `remnic patterns` command. The command group exposes the pattern-reinforcement output written by the maintenance job (PR 2/4). Both subcommands read from the active `memoryDir` and require no extra config.
 
-### `remnic patterns list`
+### `openclaw engram patterns list`
 
 Lists memories whose `reinforcement_count > 0`, sorted by count descending.
 
 ```bash
-remnic patterns list [--limit N] [--category cat1,cat2] [--since ISO] [--format text|markdown|json]
+openclaw engram patterns list [--limit N] [--category cat1,cat2] [--since ISO] [--format text|markdown|json]
 ```
 
 | Flag | Description | Default |
@@ -95,12 +95,12 @@ remnic patterns list [--limit N] [--category cat1,cat2] [--since ISO] [--format 
 | `--since ISO` | Only include memories reinforced on or after this ISO 8601 timestamp | all time |
 | `--format fmt` | Output format: `text`, `markdown`, or `json` | `text` |
 
-### `remnic patterns explain <memoryId>`
+### `openclaw engram patterns explain <memoryId>`
 
 Shows the full reinforcement picture for a single canonical: reinforcement count, `last_reinforced_at`, `derived_from` provenance chain (page-version refs stamped by PR 2/4), canonical body, and cluster members (memories whose `supersededBy` points at this canonical).
 
 ```bash
-remnic patterns explain <memoryId> [--format text|markdown|json]
+openclaw engram patterns explain <memoryId> [--format text|markdown|json]
 ```
 
 Exits with code `1` and a descriptive error if `<memoryId>` is not found or has no `reinforcement_count > 0`.

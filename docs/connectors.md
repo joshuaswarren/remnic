@@ -1,46 +1,108 @@
-# Connectors CLI Reference
+# Connectors
 
-`remnic connectors` is the operator surface for inspecting and manually
-controlling the [live connectors](./live-connectors.md) that continuously ingest
-content from external services (Google Drive, Notion, Gmail, GitHub, …) into your memory
-directory.
+Remnic has two distinct connector families, both driven by the `remnic
+connectors` command group. They do opposite things — read the table before
+reaching for a subcommand.
 
-This page documents configuration keys, environment variables, OAuth setup
-notes per connector, the full CLI reference, and troubleshooting.  For the
-framework contract (how to write a connector) see
+- **Live connectors** continuously ingest content *from* an external service
+  (Google Drive, Notion, Gmail, GitHub) into your memory directory on a poll
+  schedule. This is inbound content ingestion.
+- **Agent-tool connectors** publish a Remnic memory extension *into* an AI
+  coding tool (Claude Code, Codex CLI, Cursor, and 11 more) so that tool shares
+  your memory store. This is outbound tool wiring, not ingestion.
+
+For the live-connector framework contract (how to write one) see
 [live-connectors.md](./live-connectors.md).
 
 ---
 
-## Quick reference
+## Command families at a glance
 
-```bash
-# List all configured connectors (human-readable table)
-remnic connectors list
+| Command | Family | What it does |
+|---|---|---|
+| `remnic connectors list` | Agent-tool | List the 14 marketplace agent-tool connectors and their install state |
+| `remnic connectors install <id>` | Agent-tool | Install a connector and publish its memory extension |
+| `remnic connectors remove <id>` | Agent-tool | Remove a connector and unpublish its extension |
+| `remnic connectors doctor <id>` | Agent-tool | Health-check one connector and its publisher |
+| `remnic connectors marketplace <sub>` | Agent-tool | Browse / install third-party connectors from a marketplace source |
+| `remnic connectors status` | Live | Live-connector poll status (Google Drive + Notion), JSON by default |
+| `remnic connectors run <name>` | Live | Manually trigger one incremental sync (Google Drive + Notion) |
 
-# Machine-readable JSON status (useful in scripts / CI)
-remnic connectors status
-
-# Manually run one incremental sync (operator debug)
-remnic connectors run google-drive
-remnic connectors run notion
-```
+The standalone `remnic` binary wires the live-connector debug path for **Google
+Drive and Notion only**. Gmail and GitHub are live connectors too, but they run
+under the hosted maintenance scheduler; inspect all four with the hosted
+surface `openclaw engram connectors list` / `status` / `run`.
 
 ---
 
-## Subcommand: `remnic connectors list`
+## Agent-tool connectors
 
-Lists every configured live connector with its enabled state, last poll time,
-cumulative docs imported, and last error (if any).
+`remnic connectors list` shows the built-in marketplace of agent-tool
+connectors. Each publishes a Remnic memory extension (skill, MCP wiring, or
+plugin) into the target tool so it shares your memory store.
 
 ```
-Usage: remnic connectors list [options]
+Available connectors:
+  ✓ claude-code            Claude Code v9.6.22 — Anthropic's Claude Code CLI — direct memory access via MCP
+  ○ codex-cli              Codex CLI v9.6.22 — OpenAI Codex CLI — memory via MCP tool
+  ○ cursor                 Cursor IDE v9.6.22 — Cursor IDE — memory via config file + tool calls
+  ...
+```
+
+`✓` marks an installed connector, `○` an available one. The 14 built-ins are
+`claude-code`, `codex-cli`, `cursor`, `cline`, `github-copilot`, `roo-code`,
+`windsurf`, `amp`, `pi`, `omp`, `replit`, `generic-mcp`, `weclone`, and
+`hermes`. Add `--json` for machine-readable `{ installed, available }`.
+
+### Install, remove, doctor
+
+```bash
+remnic connectors install claude-code            # publish the memory extension
+remnic connectors install cursor --config key=value
+remnic connectors remove cursor                  # unpublish + remove
+remnic connectors doctor codex-cli               # health-check connector + publisher
+```
+
+`install` writes the connector config, then (unless `installExtension=false`)
+publishes the memory extension into the tool when that tool is present on the
+host. `doctor` reports both the connector's own checks and the publisher's
+extension status.
+
+### Marketplace
+
+```bash
+remnic connectors marketplace list               # browse marketplace sources
+remnic connectors marketplace install <source>   # install from a source
+```
+
+`marketplace` takes `--config <path>` for a config *file* (not `key=value`
+pairs) when installing.
+
+---
+
+## Live connectors
+
+Live connectors poll an external service and import changed documents into your
+memory directory. The maintenance scheduler runs them automatically once
+configured: the `engram-live-connectors-sync` cron calls the
+`engram.live_connectors_run` MCP tool every minute and honors each connector's
+`pollIntervalMs`. The subcommands below are the operator/debug surface.
+
+### `remnic connectors status`
+
+Live-connector poll status. Defaults to **JSON** so scripts can `jq` it without
+passing `--format json` every time. The standalone binary reports **Google
+Drive and Notion**; use the hosted `openclaw engram connectors list` to see
+Gmail and GitHub as well.
+
+```
+Usage: remnic connectors status [options]
 
 Options:
-  --format <fmt>   Output format: text (default), markdown, or json
+  --format <fmt>   Output format: json (default), text, or markdown
 ```
 
-**Example — text output (default):**
+**Example — `--format text`:**
 
 ```
 Live connectors (2):
@@ -57,7 +119,7 @@ Live connectors (2):
     last_error:    invalid_token: The token you provided is invalid.
 ```
 
-**Example — `--format json`:**
+**Example — JSON (default):**
 
 ```json
 [
@@ -74,29 +136,12 @@ Live connectors (2):
 ]
 ```
 
----
+### `remnic connectors run <name>`
 
-## Subcommand: `remnic connectors status`
+Manually triggers one incremental `syncIncremental()` pass for the named live
+connector. Useful when:
 
-Identical data to `list` but defaults to **JSON output** so shell scripts can
-reliably `jq`-parse the result without requiring `--format json` every time.
-
-```
-Usage: remnic connectors status [options]
-
-Options:
-  --format <fmt>   Output format: json (default), text, or markdown
-```
-
----
-
-## Subcommand: `remnic connectors run <name>`
-
-Manually triggers one incremental `syncIncremental()` pass for the named
-connector.  Useful when:
-
-- You want to verify credentials work without waiting for the next scheduler
-  tick.
+- You want to verify credentials without waiting for the next scheduler tick.
 - A sync failed and you want to retry immediately.
 - You are debugging cursor advancement.
 
@@ -104,22 +149,15 @@ connector.  Useful when:
 Usage: remnic connectors run <name> [options]
 
 Arguments:
-  name             Connector id (e.g. google-drive, notion)
+  name             Live connector id: google-drive or notion
 
 Options:
   --format <fmt>   Output format: text (default), markdown, or json
 ```
 
-On success, exits `0` and prints the number of new documents imported.  On
+On success, exits `0` and prints the number of new documents imported. On
 failure, exits `1`, writes the error to stderr, and records the failure in the
-connector's state file so `connectors list` reflects it.
-
-The maintenance scheduler calls the MCP tool `engram.live_connectors_run` every
-minute once connectors are configured through the `engram-live-connectors-sync`
-cron. That runner honors each connector's `pollIntervalMs` and covers every
-enabled built-in connector.
-`remnic connectors run <name>` currently supports Google Drive and Notion as the
-single-connector debug path.
+connector's state file so `connectors status` reflects it.
 
 **Example — success:**
 
@@ -287,6 +325,18 @@ The database ID is the 32-character hex string between the last `/` and `?`.
 
 ---
 
+## Connectors: Gmail and GitHub
+
+Gmail and GitHub run on the same live-connector framework as Google Drive and
+Notion, but the standalone `remnic connectors status` / `run` debug path covers
+Drive and Notion only. Manage and inspect Gmail and GitHub through the hosted
+maintenance scheduler and the `openclaw engram connectors list` / `status` /
+`run` surface. Their config lives under `connectors.gmail` and
+`connectors.github`; see [live-connectors.md](./live-connectors.md) for keys
+and OAuth setup.
+
+---
+
 ## State files
 
 Per-connector state (cursor + sync metadata) lives at:
@@ -307,7 +357,7 @@ atomic (temp + rename) but a manual edit during an active sync could race.
 
 ## Troubleshooting
 
-### `connectors list` shows all connectors as disabled
+### `connectors status` shows a live connector as disabled
 
 Connectors are opt-in.  Set `connectors.<name>.enabled: true` in your config
 and ensure credentials are populated.

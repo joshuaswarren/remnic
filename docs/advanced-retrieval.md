@@ -1,12 +1,12 @@
-# Advanced Retrieval (v2.2)
+# Advanced retrieval
 
-Engram’s retrieval pipeline can optionally do extra work at recall time to improve relevance.
+Remnic's retrieval pipeline can optionally do extra work at recall time to improve relevance.
 
 These features are **disabled by default** to keep latency low and avoid new failure modes.
 
 ## Features
 
-### Heuristic Query Expansion (No LLM)
+### Heuristic query expansion (no LLM)
 
 Config:
 - `queryExpansionEnabled` (default `false`)
@@ -17,7 +17,7 @@ Behavior:
 - Runs the original query plus a few deterministic expansions derived from salient tokens.
 - Merges and de-dupes results by memory path.
 
-### LLM Re-ranking (Optional)
+### LLM re-ranking (optional)
 
 Config:
 - `rerankEnabled` (default `false`)
@@ -31,9 +31,9 @@ Behavior:
 - Sends up to `rerankMaxCandidates` candidates (ID + snippet) to a short ranking prompt.
 - **Fail-open**: on timeout/error, keeps the original ordering.
 - Recommended: `rerankProvider: "local"` so this never forces cloud calls.
-- Note: `rerankProvider: "cloud"` is reserved/experimental in v2.2.0 and currently behaves as a no-op.
+- Note: `rerankProvider: "cloud"` is reserved/experimental and currently behaves as a no-op.
 
-### Feedback Loop (Thumbs Up/Down)
+### Feedback loop (thumbs up/down)
 
 Config:
 - `feedbackEnabled` (default `false`)
@@ -48,7 +48,7 @@ Storage:
 - Stored locally at `memoryDir/state/relevance.json`
 - Applied as a small score bias during retrieval (bounded; never a hard filter).
 
-### Negative Examples (Retrieved-but-Not-Useful)
+### Negative examples (retrieved-but-not-useful)
 
 Config:
 - `negativeExamplesEnabled` (default `false`)
@@ -83,12 +83,12 @@ Behavior: when **`recallDirectAnswerEnabled`** is true, Remnic runs a lightweigh
 What exists today:
 
 - `packages/remnic-core/src/direct-answer.ts` — pure eligibility function (`isDirectAnswerEligible`) exercised by unit tests.
-- `packages/remnic-core/src/direct-answer-wiring.ts` — `tryDirectAnswer(...)` source-agnostic binding, callable by tests but not yet invoked by the orchestrator.
+- `packages/remnic-core/src/direct-answer-wiring.ts` — `tryDirectAnswer(...)` source-agnostic binding, invoked by the recall orchestrator (`orchestration/recall-introspection.ts`) in observation mode: it annotates the tier decision when `recallDirectAnswerEnabled` is true and does not yet short-circuit the QMD path.
 - The five `recallDirectAnswer*` config keys below (parsed and validated; `recallDirectAnswerEnabled: false` disables observation-mode annotations).
 
 A dedicated `retrieval-direct-answer` bench fixture is planned but not yet in-tree.
 
-Planned eligibility ladder (in order, unchanged between observation and short-circuit modes):
+Eligibility ladder (in order, unchanged between observation and short-circuit modes):
 
 1. `config.recallDirectAnswerEnabled === false` → reason `disabled`
 2. Query normalizes to zero searchable tokens → reason `empty-query`
@@ -106,9 +106,9 @@ Config keys:
 - `recallDirectAnswerAmbiguityMargin` (default `0.15`)
 - `recallDirectAnswerEligibleTaxonomyBuckets` (default `["decisions","principles","conventions","runbooks","entities"]`)
 
-See [Retrieval explain](./retrieval-explain.md) for the planned shape of the tier annotation and the CLI / HTTP / MCP surfaces that will expose it.
+See [Retrieval explain](./retrieval-explain.md) for the shape of the tier annotation and the shipped CLI / HTTP / MCP surfaces that expose it.
 
-## Example: Enable Local-only Re-ranking
+## Example: enable local-only re-ranking
 
 In `openclaw.json`:
 
@@ -129,13 +129,13 @@ In `openclaw.json`:
 }
 ```
 
-## Debugging Slow Calls (Metadata-only)
+## Debugging slow calls (metadata-only)
 
 Config:
 - `slowLogEnabled` (default `false`)
 - `slowLogThresholdMs` (default `30000`)
 
-When enabled, Engram logs warnings like:
+When enabled, Remnic logs warnings like:
 - `SLOW local LLM: op=rerank durationMs=...`
 - `SLOW QMD query: durationMs=...`
 

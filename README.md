@@ -176,7 +176,7 @@ The search index lives separately and is rebuildable from these files at any tim
 | Gemini | `@remnic/import-gemini` | `remnic import --adapter gemini` |
 | mem0 | `@remnic/import-mem0` | `remnic import --adapter mem0` |
 | Supermemory | `@remnic/import-supermemory` | `remnic import --adapter supermemory` |
-| WeClone | `@remnic/import-weclone` | `remnic import --adapter weclone` |
+| WeClone | `@remnic/import-weclone` | `openclaw engram bulk-import --source weclone` |
 | lossless-claw | `@remnic/import-lossless-claw` | `remnic import-lossless-claw` |
 
 See [docs/importers.md](docs/importers.md) for input formats, provenance metadata, and the full privacy breakdown.
@@ -210,7 +210,7 @@ Local-first is a trust feature, not a tagline.
 
 Remnic is a [pnpm](https://pnpm.io/) monorepo of **25+ published packages**. The engine is host-agnostic; every integration is a thin adapter over it, so standalone Remnic is always first-class and adapter work follows each host's upstream SDK rather than recreating host behavior inside Remnic.
 
-```
+```text
                         @remnic/core
              (extraction, storage, search,
               graph, trust, consolidation)

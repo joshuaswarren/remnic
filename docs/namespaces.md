@@ -1,11 +1,13 @@
-# Namespaces (v3.0)
+# Namespaces
 
-Namespaces allow multiple agents to share one Engram installation while keeping most memories isolated per agent, with a curated shared namespace.
+Namespaces let multiple agents share one Remnic installation while keeping most memories isolated per agent, plus a curated shared namespace for cross-agent context. Opt-in via `namespacesEnabled` (default `false`).
 
-## Key Config
+> Provenance: namespaces landed in v3.0; shared-namespace promotion and the `fact` promotion category in v9.0.66/v9.0.67; the namespace catalog is issue #1499 and namespace-aware maintenance fanout is issue #1500.
+
+## Key config
 
 - `namespacesEnabled` (default: false)
-- `namespaceCatalogEnabled` (default: true; inert unless `namespacesEnabled` — see [Namespace Catalog](#namespace-catalog-issue-1499))
+- `namespaceCatalogEnabled` (default: true; inert unless `namespacesEnabled` — see [Namespace catalog](#namespace-catalog))
 - `defaultNamespace` (default: `default`)
 - `sharedNamespace` (default: `shared`)
 - `namespacePolicies`: list of namespaces and read/write principals
@@ -14,11 +16,11 @@ Namespaces allow multiple agents to share one Engram installation while keeping 
 - `scopeProfiles` + `defaultScopeProfile`: optional hosted-team layered scope profiles
 - `teams`: trusted team membership and team-project namespace templates used by scope profiles
 
-## Cross-Agent Memory Access
+## Cross-agent memory access
 
 Non-generalist agents (any agent besides the one matching the `defaultNamespace`) recall from both their own **self namespace** and the **shared namespace** (as configured via `defaultRecallNamespaces`). Each agent's extracted memories are stored in its `self` namespace, so agents always have access to their own memories. The shared namespace provides cross-agent context — if it is empty, these agents still receive their own memories but miss context extracted by other agents.
 
-**Shared namespace promotion (v9.0.66+):** When `autoPromoteToSharedEnabled: true`, extracted memories are automatically promoted to the shared namespace. This is the primary mechanism for cross-agent memory sharing. Verify promotion is working:
+**Shared namespace promotion:** When `autoPromoteToSharedEnabled: true`, extracted memories are automatically promoted to the shared namespace. This is the primary mechanism for cross-agent memory sharing. Verify promotion is working:
 
 ```bash
 ls ~/.openclaw/workspace/memory/local/namespaces/shared/facts/
@@ -28,11 +30,11 @@ If this directory is empty or missing, non-generalist agents may have limited cr
 
 **Note:** Shared namespace promotion is not the only source of cross-agent recall. Namespaces configured with `includeInRecallByDefault: true` in `namespacePolicies` are also included in recall for all agents. Check your namespace policies if agents need access to specific namespaces beyond `self` and `shared`.
 
-**Categories eligible for promotion:** The `autoPromoteToSharedCategories` setting controls which memory categories are promoted. The default is `["fact", "correction", "decision", "preference"]`. The `"fact"` category was added in v9.0.67 — prior versions defaulted to `["correction", "decision", "preference"]` only.
+**Categories eligible for promotion:** The `autoPromoteToSharedCategories` setting controls which memory categories are promoted. The default is `["fact", "correction", "decision", "preference"]`; earlier releases defaulted to `["correction", "decision", "preference"]` only.
 
 **Cross-agent recall:** The primary mechanism for cross-agent memory sharing is shared namespace promotion. When promotion is configured, memories extracted by any agent are copied to the shared namespace and become available to all agents during recall.
 
-## Scope Profiles
+## Scope profiles
 
 `scopeProfiles` are optional. When absent, Remnic keeps the existing `defaultRecallNamespaces` behavior. When `defaultScopeProfile` points to a profile, implicit recall and write-producing access paths resolve the profile through the same core scope planner used for observe diagnostics.
 
@@ -84,9 +86,9 @@ Security rules:
 - Automatic profile promotion remains off unless `autoPromote.enabled` is true. The initial core contract exposes authorized promotion targets for surfaces; it does not make automatic cross-user sharing the default.
 - If project context is missing, Remnic skips project layers and falls back to the next authorized configured layer instead of inventing a project namespace.
 
-## QMD Collections for Namespaces
+## QMD collections for namespaces
 
-When namespaces are enabled, QMD needs entries for namespace-specific collections in `~/.config/qmd/index.yml`. The collection names follow the pattern `<qmdCollection>--ns--<namespace>`, where `<qmdCollection>` is the base collection name from your Engram config (default: `openclaw-engram`). This matches the runtime logic in `namespaceCollectionName()` (`src/namespaces/search.ts`). Check the gateway log for the exact names — Engram logs `QMD collection "..." not found` with the expected name when entries are missing.
+When namespaces are enabled, QMD needs entries for namespace-specific collections in `~/.config/qmd/index.yml`. The collection names follow the pattern `<qmdCollection>--ns--<namespace>`, where `<qmdCollection>` is the base collection name from your Remnic config (default: `openclaw-engram`, an intentional compatibility name). This matches the runtime logic in `namespaceCollectionName()` (`src/namespaces/search.ts`). Check the gateway log for the exact names — Remnic logs `QMD collection "..." not found` with the expected name when entries are missing.
 
 ```yaml
 # Base collection (default namespace root)
@@ -113,7 +115,7 @@ After adding entries, rebuild the indexes:
 qmd update && qmd embed
 ```
 
-## Storage Layout
+## Storage layout
 
 Compatibility behavior:
 - The default namespace continues to use the legacy `memoryDir` root unless `memoryDir/namespaces/<defaultNamespace>` exists.
@@ -133,9 +135,9 @@ This prevents "lost memories" when an install enables namespaces before migratin
   - default namespace: `workspace/IDENTITY.md`
   - non-default namespaces: `workspace/IDENTITY.<namespace>.md`
 
-## Multi-Tenant Example
+## Multi-tenant example
 
-Namespaces work well for multi-tenant deployments where different projects or clients share one Engram installation. Here is a generic configuration isolating two tenants with a shared knowledge layer:
+Namespaces work well for multi-tenant deployments where different projects or clients share one Remnic installation. Here is a generic configuration isolating two tenants with a shared knowledge layer:
 
 ```json
 {
@@ -158,7 +160,7 @@ Namespaces work well for multi-tenant deployments where different projects or cl
 
 Each tenant's agents use a session key prefix (e.g., `project-alpha:session-123`) which maps to a principal (`alpha-agent`) via the prefix rules. The principal determines namespace access: `alpha-agent` can read and write `project-alpha`, read `shared`, but cannot access `project-beta`.
 
-## Shared Knowledge Layer
+## Shared knowledge layer
 
 The shared namespace provides cross-tenant or cross-agent knowledge sharing. Typical configuration:
 
@@ -172,7 +174,7 @@ Memories reach the shared namespace in two ways:
 
 2. **Manual promotion** — Use the `memory_promote` tool or `memory_store` with `namespace: "shared"` when the authenticated principal has write access.
 
-## Principal Resolution for HTTP Callers
+## Principal resolution for HTTP callers
 
 When connecting via the HTTP API or MCP-over-HTTP, the principal is resolved in this order:
 
@@ -226,7 +228,7 @@ curl -X POST http://localhost:4318/engram/v1/observe \
 
 See the [Standalone Server Guide](guides/standalone-server.md) for full multi-tenant setup instructions.
 
-## Namespace Catalog (issue #1499)
+## Namespace catalog
 
 The **namespace catalog** is a rebuildable metadata index that lets Remnic
 *enumerate* the configured and dynamically-created namespaces that exist or
@@ -270,7 +272,7 @@ Rebuild preserves known metadata (timestamps, principal hints) where safe,
 preserves the legacy/default-root compatibility case, and reports ambiguous
 roots instead of silently misclassifying them.
 
-## Namespace-Aware Maintenance Fanout (issue #1500)
+## Namespace-aware maintenance fanout
 
 When `namespacesEnabled: true`, background maintenance can use the namespace
 catalog to process dynamic project and team-project namespaces that were created

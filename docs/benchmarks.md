@@ -432,7 +432,7 @@ pnpm install && pnpm --filter @remnic/core run build
 # Follow docs/benchmarks/runbook.md with the same --seed and --model.
 ```
 
-## Cue Recall And Leaderboard Safety
+## Cue recall and leaderboard safety
 
 Issues #841 through #850 added a shared rule for all published
 benchmarks: Remnic may use exact cues only when those cues are visible in

@@ -1,4 +1,4 @@
-# Live Connectors
+# Live connectors
 
 Live connectors are the **continuous** ingest path: they run on a schedule,
 remember where they left off, and pull *new* documents from external services
@@ -268,7 +268,7 @@ maintenance cron job:
 
 | Job id | Schedule | Tool |
 |--------|----------|------|
-| `engram-live-connectors-sync` | `* * * * *` when configured; `*/5 * * * *` before connector config loads | `engram.live_connectors_run` |
+| `engram-live-connectors-sync` | `* * * * *` when configured; `*/5 * * * *` before connector config loads | `remnic.live_connectors_run` (legacy alias `engram.live_connectors_run`) |
 
 The cron wakes every minute once connectors are configured and runs only
 connectors whose own `pollIntervalMs` says they are due. Operators can call the
