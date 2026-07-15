@@ -47,24 +47,19 @@ for (const dir of [packDir, prefixDir, homeDir, workDir, npmCacheDir]) {
   mkdirSync(dir, { recursive: true });
 }
 
-const coldEnv = {
-  ...process.env,
+const coldEnv = Object.fromEntries(
+  ["PATH", "PATHEXT", "SystemRoot", "ComSpec", "WINDIR", "TMPDIR", "TMP", "TEMP", "LANG", "LC_ALL", "CI"]
+    .filter((key) => process.env[key] !== undefined)
+    .map((key) => [key, process.env[key]]),
+);
+Object.assign(coldEnv, {
   HOME: homeDir,
   npm_config_cache: npmCacheDir,
   npm_config_audit: "false",
   npm_config_fund: "false",
   npm_config_update_notifier: "false",
   REMNIC_BENCH_GIT_SHA: process.env.REMNIC_BENCH_GIT_SHA ?? "packaged-sandbox",
-};
-
-for (const key of Object.keys(coldEnv)) {
-  if (
-    /(?:^|_)(?:API_KEY|AUTH_TOKEN|BEARER_TOKEN)$/i.test(key) ||
-    /^(?:CLAUDE_CODE_OAUTH_TOKEN|OPENAI_ACCESS_TOKEN|CODEX_API_KEY)$/i.test(key)
-  ) {
-    delete coldEnv[key];
-  }
-}
+});
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -117,6 +112,32 @@ function manifestArtifactIdentity(manifest) {
     results: manifest.results,
     ...(manifest.codexCredit ? { codexCredit: manifest.codexCredit } : {}),
   };
+}
+
+function assertSelfContainedReport(report) {
+  const attributePattern = /\b(?:src|href|data|poster|srcset)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
+  for (const match of report.matchAll(attributePattern)) {
+    const reference = (match[1] ?? match[2] ?? match[3] ?? "").trim();
+    if (reference && !reference.startsWith("#") && !reference.startsWith("data:")) {
+      throw new Error(`HTML report card references an external asset: ${reference}`);
+    }
+  }
+
+  const cssUrlPattern = /url\(\s*(?:"([^"]*)"|'([^']*)'|([^\s"')]+))\s*\)/gi;
+  for (const match of report.matchAll(cssUrlPattern)) {
+    const reference = (match[1] ?? match[2] ?? match[3] ?? "").trim();
+    if (reference && !reference.startsWith("#") && !reference.startsWith("data:")) {
+      throw new Error(`HTML report card CSS references an external asset: ${reference}`);
+    }
+  }
+
+  const cssImportPattern = /@import\s+(?:url\()?\s*(?:"([^"]*)"|'([^']*)'|([^\s"');]+))/gi;
+  for (const match of report.matchAll(cssImportPattern)) {
+    const reference = (match[1] ?? match[2] ?? match[3] ?? "").trim();
+    if (reference && !reference.startsWith("data:")) {
+      throw new Error(`HTML report card imports an external asset: ${reference}`);
+    }
+  }
 }
 
 function shellQuote(value) {
@@ -345,13 +366,7 @@ try {
   if (!report.includes("Correction ledger") || !report.includes("Provenance")) {
     throw new Error("HTML export is not the Build Week memory report card");
   }
-  if (
-    /\b(?:src|href|data)\s*=\s*["']?\s*(?:https?:)?\/\//i.test(report) ||
-    /@import\s+(?:url\()?\s*["']?\s*(?:https?:)?\/\//i.test(report) ||
-    /url\(\s*["']?\s*(?:https?:)?\/\//i.test(report)
-  ) {
-    throw new Error("HTML report card is not self-contained");
-  }
+  assertSelfContainedReport(report);
   if (!report.includes(manifest.artifactHash)) {
     throw new Error("HTML report card does not identify the verified manifest artifact hash");
   }
