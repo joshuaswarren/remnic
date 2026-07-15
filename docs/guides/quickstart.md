@@ -36,9 +36,10 @@ daemon process is down. For auto-start, logs, and port changes, see
 [Daemon management](./daemon-management.md).
 
 To let Remnic *extract* new memories (not just recall), give it a model provider:
-put your OpenAI API key — or local-LLM settings — in `~/.config/remnic/config.json`.
-The managed service reads secrets from that file, not from your shell environment.
-See [Getting started](../getting-started.md#configure) for the config shape.
+put your OpenAI API key — or local-LLM settings — in `~/.config/remnic/config.json`,
+then run `remnic daemon restart` (the server reads config only at startup). The
+managed service reads secrets from that file, not from your shell environment. See
+[Getting started](../getting-started.md#configure) for the config shape.
 
 ## Step 3: Connect your tool
 
@@ -85,16 +86,14 @@ Now just use your tools normally. Remnic works in the background:
 - **Edit files** → it observes and learns your patterns
 - **Switch tools** → your memory carries over instantly
 
-Try it in Claude Code:
+Try it in Claude Code (with the [Claude Code plugin](../plugins/claude-code.md) loaded):
 
 ```
-> /engram:remember I prefer functional programming over OOP
-> /engram:recall programming preferences
+> /remnic-remember I prefer functional programming over OOP
+> /remnic-recall programming preferences
 ```
 
-Slash commands keep the `/engram:*` names during the v1.x compatibility window; the
-product and CLI are `remnic`. Now open another tool — say Codex CLI — and it already
-knows your preference.
+Now open another tool — say Codex CLI — and it already knows your preference.
 
 Once memories are flowing, get a focused summary of what changed recently:
 

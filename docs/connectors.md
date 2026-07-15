@@ -57,16 +57,19 @@ Available connectors:
 ### Install, remove, doctor
 
 ```bash
-remnic connectors install claude-code            # publish the memory extension
+remnic connectors install codex-cli              # token + config + memory extension
 remnic connectors install cursor --config key=value
 remnic connectors remove cursor                  # unpublish + remove
 remnic connectors doctor codex-cli               # health-check connector + publisher
 ```
 
-`install` writes the connector config, then (unless `installExtension=false`)
-publishes the memory extension into the tool when that tool is present on the
-host. `doctor` reports both the connector's own checks and the publisher's
-extension status.
+`install` mints the host token and writes the connector config, then (unless
+`installExtension=false`) publishes the memory extension into the tool when that
+tool is present on the host *and has a real publisher* — Codex CLI does, while
+the Claude Code and Hermes publishers are intentional no-op stubs: their host
+wiring is manual, per [docs/plugins/claude-code.md](plugins/claude-code.md) and
+[docs/plugins/hermes.md](plugins/hermes.md). `doctor` reports both the
+connector's own checks and the publisher's extension status.
 
 ### Marketplace
 
