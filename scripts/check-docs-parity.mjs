@@ -151,10 +151,13 @@ const BUILD_WEEK_CREDIT_ENV_CONTRACTS = Object.freeze([
 ]);
 const BUILD_WEEK_SHELL_LANGS = new Set(["", "bash", "sh", "shell", "shell-session", "zsh", "console"]);
 
-function isShellEnvMutation(line, name) {
-  return new RegExp(
-    `^\\s*(?:export(?:\\s+-n)?\\s+${name}(?:\\s*=|\\s*$)|${name}\\s*=|unset(?:\\s+-v)?\\s+${name}\\b)`,
-  ).test(line);
+function containsShellCreditProtocolName(line, name) {
+  // Shell offers too many mutation forms to enumerate safely (`+=`, arrays,
+  // declarations, multi-name builtins, arithmetic, `printf -v`, namerefs,
+  // and command lists). Paid-run fences therefore fail closed: the exact
+  // valid export is allowlisted below, while any other executable reference
+  // to a protected name becomes an invalid later protocol mutation.
+  return new RegExp(`\\b${name}\\b`).test(line);
 }
 
 // Fenced code blocks: ```lang ... ``` or ~~~lang ... ~~~. We only extract
@@ -394,7 +397,7 @@ function extractLogicalShellCommands(src) {
     const blockHasCreditProtocolMutation = lines.some(
       (line) =>
         !/^\s*#/.test(line) &&
-        BUILD_WEEK_CREDIT_ENV_CONTRACTS.some(({ name }) => isShellEnvMutation(line, name)),
+        BUILD_WEEK_CREDIT_ENV_CONTRACTS.some(({ name }) => containsShellCreditProtocolName(line, name)),
     );
     let logicalParts = [];
     let logicalStartIndex = 0;
@@ -433,7 +436,7 @@ function extractShellCreditProtocolMutations(src) {
     for (const [index, line] of block.text.split("\n").entries()) {
       if (/^\s*#/.test(line)) continue;
       for (const contract of BUILD_WEEK_CREDIT_ENV_CONTRACTS) {
-        if (!isShellEnvMutation(line, contract.name)) continue;
+        if (!containsShellCreditProtocolName(line, contract.name)) continue;
         mutations.push({
           name: contract.name,
           line: block.startLine + 1 + index,

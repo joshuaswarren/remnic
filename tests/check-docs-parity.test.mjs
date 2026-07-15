@@ -820,6 +820,15 @@ test("a credit-budget export in prose does not authorize a later shell command",
 test("a later credit-budget override or unset invalidates an earlier guard", () => {
   for (const mutation of [
     "export REMNIC_BENCH_CODEX_CREDIT_BUDGET=100",
+    "export REMNIC_BENCH_CODEX_CREDIT_BUDGET+=0",
+    "REMNIC_BENCH_CODEX_CREDIT_BUDGET+=0",
+    "REMNIC_BENCH_CODEX_CREDIT_BUDGET[0]=24730",
+    "declare -x REMNIC_BENCH_CODEX_CREDIT_BUDGET=24730",
+    "export OTHER=value REMNIC_BENCH_CODEX_CREDIT_BUDGET=24730",
+    "unset OTHER REMNIC_BENCH_CODEX_CREDIT_BUDGET",
+    "((REMNIC_BENCH_CODEX_CREDIT_BUDGET++))",
+    "printf -v REMNIC_BENCH_CODEX_CREDIT_BUDGET %s 24730",
+    "true; REMNIC_BENCH_CODEX_CREDIT_BUDGET=24730",
     "export -n REMNIC_BENCH_CODEX_CREDIT_BUDGET",
     "unset REMNIC_BENCH_CODEX_CREDIT_BUDGET",
   ]) {
@@ -857,11 +866,20 @@ test("later reserve and ledger mutations invalidate the paid protocol", () => {
       expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
     },
     {
+      mutation: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE+=0",
+      expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
+    },
+    {
       mutation: "unset REMNIC_BENCH_CODEX_CREDIT_RESERVE",
       expected: "export REMNIC_BENCH_CODEX_CREDIT_RESERVE=473",
     },
     {
       mutation: 'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="/tmp/other-ledger.json"',
+      expected:
+        'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
+    },
+    {
+      mutation: "REMNIC_BENCH_CODEX_CREDIT_LEDGER+=.bak",
       expected:
         'export REMNIC_BENCH_CODEX_CREDIT_LEDGER="$BUILD_WEEK_RUN_ROOT/codex-credit-ledger.json"',
     },
